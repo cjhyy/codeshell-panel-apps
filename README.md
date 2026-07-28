@@ -1,14 +1,15 @@
 # CodeShell Panel Apps
 
-Independent desktop Panel Apps for [CodeShell](https://github.com/cjhyy/codeshell).
-This repository contains UI applications only. It does not register Skills,
-Agents, Commands, Hooks, MCP servers, or other Agent Plugin capabilities.
+Desktop Panel Apps for [CodeShell](https://github.com/cjhyy/codeshell). A
+schema-v2 app may package its sandboxed UI, declared Agent tools, and read-only
+Skills behind one reviewed installation. General Agents, Commands, Hooks, MCP
+servers, and arbitrary plugin backends remain outside Panel Apps.
 
 ## Included apps
 
 | App           | Subdirectory         | Purpose                                                                            |
 | ------------- | -------------------- | ---------------------------------------------------------------------------------- |
-| Design Studio | `apps/design-studio` | Figma-like, repository-native visual design with deterministic JSON and SVG output |
+| Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with structured tools and v3 JSON/SVG output |
 | Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports        |
 | Starter       | `templates/starter`  | Minimal template for creating another Panel App                                    |
 
@@ -37,6 +38,7 @@ apps/
   design-studio/
     .codeshell-panel/panel.json
     app/
+    agent/skills/
   quant-lab/
     .codeshell-panel/panel.json
     app/
@@ -47,8 +49,9 @@ scripts/
 ```
 
 Every Panel App is self-contained. Its manifest lives at
-`.codeshell-panel/panel.json`; browser assets live under `app/` beside the
-declared HTML entry.
+`.codeshell-panel/panel.json`; browser assets live under `app/`. Optional
+schema-v2 Skills live at manifest-declared `agent/skills/<id>/SKILL.md` paths,
+while tool handlers register through the sandboxed panel bridge.
 
 ## Develop
 

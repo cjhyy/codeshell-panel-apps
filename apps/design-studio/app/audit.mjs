@@ -92,18 +92,26 @@ export function auditDesign(document) {
   const byId = new Map(document.nodes.map((node) => [node.id, node]));
   const effectivelyVisible = (node) => {
     if (!node.visible || node.opacity <= 0) return false;
-    const parent = node.parentId ? byId.get(node.parentId) : null;
-    return !parent || (parent.visible && parent.opacity > 0);
+    const seen = new Set();
+    let parentId = node.parentId;
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      const parent = byId.get(parentId);
+      if (!parent) break;
+      if (!parent.visible || parent.opacity <= 0) return false;
+      parentId = parent.parentId;
+    }
+    return true;
   };
   document.nodes.forEach((node, index) => {
     let parent = null;
     if (node.parentId) {
       parent = byId.get(node.parentId);
-      if (!parent || parent.type !== "frame") {
+      if (!parent || !["frame", "group", "component"].includes(parent.type)) {
         issues.push({
           severity: "error",
           nodeId: node.id,
-          message: `父级 Frame 不存在：${node.parentId}`,
+          message: `父级容器不存在：${node.parentId}`,
         });
       }
     }
@@ -116,13 +124,13 @@ export function auditDesign(document) {
         message: "图层超出文档画布边界",
       });
     }
-    if (node.parentId && parent?.type === "frame") {
+    if (node.parentId && parent && ["frame", "group", "component"].includes(parent.type)) {
       const localVisualBounds = transformedNodeBounds(node);
       if (!localVisualBounds || !contains(parent, localVisualBounds)) {
         issues.push({
           severity: "warning",
           nodeId: node.id,
-          message: `图层超出所属 Frame「${parent.name}」`,
+          message: `图层超出所属容器「${parent.name}」`,
         });
       }
     }

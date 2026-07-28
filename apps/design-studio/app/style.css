@@ -171,6 +171,30 @@ textarea:focus-visible {
   gap: 7px;
 }
 
+.repo-link-state {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.repo-link-state[data-kind="linked"] {
+  border-color: color-mix(in srgb, var(--accent), transparent 55%);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent), transparent 90%);
+}
+
+.repo-link-state[data-kind="error"] {
+  border-color: color-mix(in srgb, #ff6b6b, transparent 55%);
+  color: #ff8f8f;
+  background: color-mix(in srgb, #ff6b6b, transparent 90%);
+}
+
 #document-path {
   width: min(330px, 100%);
   min-width: 90px;
@@ -559,6 +583,18 @@ textarea:focus-visible {
   padding: 11px 10px 12px;
 }
 
+.layout-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.component-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .checkbox-field {
   display: flex;
   align-items: center;
@@ -875,13 +911,26 @@ kbd {
 
 .layer-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 24px;
+  grid-template-columns: 14px 18px minmax(0, 1fr) 24px;
   align-items: center;
   gap: 4px;
   min-height: 30px;
   border-radius: 6px;
   padding: 0 3px 0 calc(6px + var(--layer-depth, 0) * 12px);
   color: var(--muted);
+}
+
+.layer-disclosure {
+  width: 14px;
+  height: 24px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  font-size: 14px;
+}
+
+.layer-disclosure:hover {
+  color: var(--text);
 }
 
 .layer-row:hover {
@@ -1162,6 +1211,10 @@ dialog::backdrop {
 @media (max-width: 680px) {
   :root {
     --inspector-width: 184px;
+  }
+
+  .repo-link-state {
+    display: none;
   }
 
   .brand-name,

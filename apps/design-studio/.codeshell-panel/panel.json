@@ -1,13 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
     "zh-CN": "设计工作台"
   },
-  "description": "A repo-native visual design application with deterministic JSON and SVG output.",
+  "description": "A repo-native visual design workspace with auto layout, components, and live JSON sync.",
   "entry": "app/index.html",
   "icon": "palette",
   "placement": "right-dock",
@@ -20,5 +20,77 @@
     "workspace.write",
     "storage",
     "agent.submitPrompt"
-  ]
+  ],
+  "agent": {
+    "tools": [
+      {
+        "name": "get_design_metadata",
+        "description": "Read the active repository design's file, page, canvas, selection, and compact layer index.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "readOnly": true
+      },
+      {
+        "name": "get_design_context",
+        "description": "Read the complete active CodeShell Design v3 document, or one node subtree by stable node id.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "node_id": {
+              "type": "string",
+              "description": "Optional stable node id. Omit to return the full repository document."
+            }
+          }
+        },
+        "readOnly": true
+      },
+      {
+        "name": "use_design",
+        "description": "Apply a transaction of create_node, update_node, delete_node, move_node, or set_document operations and refresh the live canvas.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            },
+            "save": {
+              "type": "boolean",
+              "description": "Save to the active repo file after applying. Defaults to true."
+            }
+          },
+          "required": ["operations"]
+        },
+        "readOnly": false
+      },
+      {
+        "name": "validate_design",
+        "description": "Validate the active v3 source model and return deterministic accessibility and layout audit issues.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "readOnly": true
+      },
+      {
+        "name": "save_design",
+        "description": "Save the current live canvas to its active .codesign.json repository source.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "readOnly": false
+      }
+    ],
+    "skills": [
+      "agent/skills/repo-design/SKILL.md"
+    ]
+  }
 }

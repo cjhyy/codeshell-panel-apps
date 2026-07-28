@@ -18,9 +18,10 @@
           <input
             id="document-path"
             aria-label="设计文件路径"
-            value="designs/product-home.codesign.json"
+            value="designs/design.codesign.json"
             spellcheck="false"
           />
+          <span id="repo-link-state" class="repo-link-state" data-kind="idle">Repo · 连接中</span>
           <span id="save-state" class="save-state" data-kind="idle">未保存</span>
         </div>
         <div class="top-actions">
@@ -242,6 +243,10 @@
                   装入新画板
                   <kbd>⌥⌘G</kbd>
                 </button>
+                <button id="group-selection" class="wide-action" type="button">
+                  编组图层
+                  <kbd>⌘G</kbd>
+                </button>
               </div>
             </div>
 
@@ -344,14 +349,87 @@
               </div>
 
               <div id="frame-section" class="property-section" hidden>
-                <div class="section-label">画板</div>
-                <label class="checkbox-field">
+                <div id="container-section-label" class="section-label">画板</div>
+                <label id="clip-content-field" class="checkbox-field">
                   <input id="prop-clip-content" type="checkbox" />
                   <span>裁剪超出画板的内容</span>
                 </label>
                 <button id="release-frame" class="wide-action" type="button">
-                  解除画板，保留内容
+                  <span id="release-container-label">解除画板，保留内容</span>
                   <kbd>⇧⌘G</kbd>
+                </button>
+              </div>
+
+              <div id="layout-section" class="property-section" hidden>
+                <div class="section-label">自动布局</div>
+                <div id="container-layout-controls" class="layout-controls">
+                  <label class="stacked-field">
+                    <span>方向</span>
+                    <select id="prop-layout">
+                      <option value="none">自由布局</option>
+                      <option value="horizontal">水平排列</option>
+                      <option value="vertical">垂直排列</option>
+                    </select>
+                  </label>
+                  <div class="property-grid">
+                    <label
+                      ><span>间距</span
+                      ><input id="prop-layout-gap" type="number" min="0" max="2000"
+                    /></label>
+                    <label
+                      ><span>内边距</span
+                      ><input id="prop-layout-padding" type="number" min="0" max="2000"
+                    /></label>
+                  </div>
+                  <div class="property-grid">
+                    <label>
+                      <span>交叉轴</span>
+                      <select id="prop-align-items">
+                        <option value="start">起点</option>
+                        <option value="center">居中</option>
+                        <option value="end">终点</option>
+                        <option value="stretch">拉伸</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>主轴</span>
+                      <select id="prop-justify-content">
+                        <option value="start">起点</option>
+                        <option value="center">居中</option>
+                        <option value="end">终点</option>
+                        <option value="space-between">两端对齐</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div id="child-layout-controls" class="layout-controls" hidden>
+                  <label class="checkbox-field">
+                    <input id="prop-layout-grow" type="checkbox" />
+                    <span>填满主轴剩余空间</span>
+                  </label>
+                  <label class="stacked-field">
+                    <span>交叉轴对齐</span>
+                    <select id="prop-layout-align">
+                      <option value="auto">跟随容器</option>
+                      <option value="start">起点</option>
+                      <option value="center">居中</option>
+                      <option value="end">终点</option>
+                      <option value="stretch">拉伸</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <div id="component-section" class="property-section component-section" hidden>
+                <div class="section-label">组件</div>
+                <p id="component-status" class="component-status"></p>
+                <button id="make-component" class="wide-action" type="button">
+                  转换为主组件
+                  <span aria-hidden="true">◇</span>
+                </button>
+                <button id="create-instance" class="wide-action" type="button">
+                  创建组件实例
+                  <span aria-hidden="true">◆</span>
                 </button>
               </div>
 
@@ -519,8 +597,9 @@
               <span>复制 / 粘贴</span><span><kbd>⌘C</kbd> <kbd>⌘V</kbd></span>
             </div>
             <div><span>复制图层</span><kbd>⌘D</kbd></div>
+            <div><span>编组图层</span><kbd>⌘G</kbd></div>
             <div><span>装入新画板</span><kbd>⌥⌘G</kbd></div>
-            <div><span>解除画板</span><kbd>⇧⌘G</kbd></div>
+            <div><span>解除画板 / 编组</span><kbd>⇧⌘G</kbd></div>
             <div>
               <span>微移 / 10px 微移</span><span><kbd>↑</kbd> <kbd>⇧↑</kbd></span>
             </div>

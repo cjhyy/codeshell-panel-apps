@@ -1,4 +1,10 @@
 /* Geometry engine used only by the Design Studio Panel App. */
+const CONTAINER_NODE_TYPES = ["frame", "group", "component"];
+
+function isContainerNode(node) {
+  return Boolean(node && CONTAINER_NODE_TYPES.includes(node.type));
+}
+
 function round(value, precision = 2) {
   const factor = 10 ** precision;
   const rounded = Math.round(value * factor) / factor;
@@ -222,14 +228,15 @@ export function normalizeNodeTreeOrder(nodes) {
   }
   const ordered = [];
   const visited = new Set();
-  for (const node of nodes) {
-    if (node.parentId) continue;
+  const appendTree = (node) => {
+    if (visited.has(node.id)) return;
     ordered.push(node);
     visited.add(node.id);
-    for (const child of childrenByParent.get(node.id) ?? []) {
-      ordered.push(child);
-      visited.add(child.id);
-    }
+    for (const child of childrenByParent.get(node.id) ?? []) appendTree(child);
+  };
+  for (const node of nodes) {
+    if (node.parentId) continue;
+    appendTree(node);
   }
   for (const node of nodes) {
     if (visited.has(node.id)) continue;
@@ -255,7 +262,7 @@ export function wrapNodesInFrame(nodes, selectedIds, frame, padding = 24) {
     !(selectedIds instanceof Set) ||
     selectedIds.size === 0 ||
     !frame ||
-    frame.type !== "frame" ||
+    !isContainerNode(frame) ||
     typeof frame.id !== "string" ||
     nodes.some((node) => node.id === frame.id) ||
     !Number.isFinite(padding) ||
@@ -264,7 +271,7 @@ export function wrapNodesInFrame(nodes, selectedIds, frame, padding = 24) {
     return false;
   }
   const selected = nodes.filter((node) => selectedIds.has(node.id));
-  if (selected.length === 0 || selected.some((node) => node.type === "frame" || node.parentId)) {
+  if (selected.length === 0 || selected.some((node) => isContainerNode(node) || node.parentId)) {
     return false;
   }
   const bounds = selectionBounds(selected);
@@ -287,7 +294,7 @@ export function wrapNodesInFrame(nodes, selectedIds, frame, padding = 24) {
 export function releaseFrame(nodes, frameId) {
   if (!Array.isArray(nodes) || typeof frameId !== "string") return false;
   const frame = nodes.find((node) => node.id === frameId);
-  if (!frame || frame.type !== "frame") return false;
+  if (!frame || !["frame", "group"].includes(frame.type)) return false;
   const children = nodes.filter((node) => node.parentId === frameId);
   const insertionIndex = nodes
     .slice(0, nodes.indexOf(frame))
@@ -332,7 +339,7 @@ function selectedTreeRoots(nodes, selectedIds) {
 
 function visualBoundsForNode(nodes, node) {
   const parent = node.parentId
-    ? nodes.find((candidate) => candidate.id === node.parentId && candidate.type === "frame")
+    ? nodes.find((candidate) => candidate.id === node.parentId && isContainerNode(candidate))
     : null;
   return transformedNodeBounds(node, parent);
 }
@@ -340,12 +347,12 @@ function visualBoundsForNode(nodes, node) {
 function moveNodeTreeByVisualDelta(nodes, root, delta) {
   if (!Number.isFinite(delta?.x) || !Number.isFinite(delta?.y)) return false;
   const parent = root.parentId
-    ? nodes.find((candidate) => candidate.id === root.parentId && candidate.type === "frame")
+    ? nodes.find((candidate) => candidate.id === root.parentId && isContainerNode(candidate))
     : null;
   const localDelta = parent?.rotation ? rotateVector(delta, -parent.rotation) : delta;
   root.x = round(root.x + localDelta.x);
   root.y = round(root.y + localDelta.y);
-  if (root.type === "frame") {
+  if (isContainerNode(root)) {
     const descendants = descendantIds(nodes, new Set([root.id]));
     for (const node of nodes) {
       if (!descendants.has(node.id)) continue;
@@ -367,7 +374,7 @@ export function alignNodeTrees(nodes, selectedIds, alignment, canvas) {
   if (entries.some((entry) => !entry.bounds)) return false;
   const singleParent =
     roots.length === 1 && roots[0].parentId
-      ? nodes.find((candidate) => candidate.id === roots[0].parentId && candidate.type === "frame")
+      ? nodes.find((candidate) => candidate.id === roots[0].parentId && isContainerNode(candidate))
       : null;
   const target =
     roots.length === 1
@@ -461,7 +468,7 @@ export function setNodeTreePosition(nodes, nodeId, axis, value) {
   const delta = value - root[axis];
   if (delta === 0) return false;
   root[axis] = round(value);
-  if (root.type === "frame") {
+  if (isContainerNode(root)) {
     const descendants = descendantIds(nodes, new Set([root.id]));
     for (const node of nodes) {
       if (!descendants.has(node.id)) continue;
@@ -518,15 +525,21 @@ export function moveSelectedNodes(nodes, selectedIds, direction) {
 
 export function reparentNode(nodes, nodeId, parentId) {
   const node = nodes.find((candidate) => candidate.id === nodeId);
-  if (!node || node.type === "frame") return false;
+  if (!node) return false;
   const previousParent = node.parentId
-    ? nodes.find((candidate) => candidate.id === node.parentId && candidate.type === "frame")
+    ? nodes.find((candidate) => candidate.id === node.parentId && isContainerNode(candidate))
     : null;
   const parent =
     typeof parentId === "string"
-      ? nodes.find((candidate) => candidate.id === parentId && candidate.type === "frame")
+      ? nodes.find((candidate) => candidate.id === parentId && isContainerNode(candidate))
       : null;
   if (parentId && !parent) return false;
+  if (
+    parent &&
+    (parent.id === node.id || descendantIds(nodes, new Set([node.id])).has(parent.id))
+  ) {
+    return false;
+  }
   if (previousParent && !parent) detachNodeFromParent(node, previousParent);
   else transformNodeBetweenParents(node, previousParent, parent);
   const index = nodes.indexOf(node);
@@ -537,10 +550,13 @@ export function reparentNode(nodes, nodeId, parentId) {
     return true;
   }
   node.parentId = parent.id;
-  let insertionIndex = nodes.findIndex((candidate) => candidate.id === parent.id);
-  for (let cursor = insertionIndex + 1; cursor < nodes.length; cursor += 1) {
-    if (nodes[cursor].parentId === parent.id) insertionIndex = cursor;
-  }
+  const parentTreeIds = new Set([parent.id, ...descendantIds(nodes, new Set([parent.id]))]);
+  const insertionIndex = nodes.reduce(
+    (last, candidate, candidateIndex) =>
+      parentTreeIds.has(candidate.id) ? candidateIndex : last,
+    nodes.findIndex((candidate) => candidate.id === parent.id),
+  );
   nodes.splice(insertionIndex + 1, 0, node);
+  normalizeNodeTreeOrder(nodes);
   return true;
 }

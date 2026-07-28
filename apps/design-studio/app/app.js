@@ -28,11 +28,18 @@ import {
   isDesignNodeVisible,
   MAX_DESIGN_NODES,
   normalizeDesignDocument,
+  normalizeDesignState,
   replaceDesignColor,
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
 import { auditDesign, auditMarkdown } from "./audit.mjs";
+import {
+  applyAllAutoLayouts,
+  applyAutoLayout,
+  createComponentInstance,
+  isContainerNode,
+} from "./layout.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const TOOL_SHORTCUTS = {
@@ -43,7 +50,13 @@ const TOOL_SHORTCUTS = {
   t: "text",
   h: "hand",
 };
-const DEFAULT_PATH = "designs/product-home.codesign.json";
+const DEFAULT_PATH = "designs/design.codesign.json";
+const DEFAULT_COLOR_TOKENS = Object.freeze([
+  { name: "Ink", value: "#171717" },
+  { name: "Paper", value: "#f7f7f3" },
+  { name: "Accent", value: "#b7ff52" },
+  { name: "Blue", value: "#315fda" },
+]);
 
 const elements = {
   stage: document.querySelector("#stage"),
@@ -52,6 +65,7 @@ const elements = {
   stageWrap: document.querySelector("#stage-wrap"),
   workspace: document.querySelector(".workspace"),
   path: document.querySelector("#document-path"),
+  repoLinkState: document.querySelector("#repo-link-state"),
   saveState: document.querySelector("#save-state"),
   save: document.querySelector("#save"),
   runAudit: document.querySelector("#run-audit"),
@@ -86,13 +100,24 @@ const elements = {
   selectionProperties: document.querySelector("#selection-properties"),
   parentField: document.querySelector("#prop-parent-field"),
   frameSection: document.querySelector("#frame-section"),
+  containerSectionLabel: document.querySelector("#container-section-label"),
+  clipContentField: document.querySelector("#clip-content-field"),
+  releaseContainerLabel: document.querySelector("#release-container-label"),
+  layoutSection: document.querySelector("#layout-section"),
+  containerLayoutControls: document.querySelector("#container-layout-controls"),
+  childLayoutControls: document.querySelector("#child-layout-controls"),
+  componentSection: document.querySelector("#component-section"),
+  componentStatus: document.querySelector("#component-status"),
   textSection: document.querySelector("#text-section"),
   colorTokens: document.querySelector("#color-tokens"),
   addColorToken: document.querySelector("#add-color-token"),
   layersList: document.querySelector("#layers-list"),
   layerFilter: document.querySelector("#layer-filter"),
   duplicateLayer: document.querySelector("#duplicate-layer"),
+  makeComponent: document.querySelector("#make-component"),
+  createInstance: document.querySelector("#create-instance"),
   frameSelection: document.querySelector("#frame-selection"),
+  groupSelection: document.querySelector("#group-selection"),
   releaseFrame: document.querySelector("#release-frame"),
   toggleLock: document.querySelector("#toggle-lock"),
   toggleVisible: document.querySelector("#toggle-visible"),
@@ -121,6 +146,13 @@ const propertyInputs = {
   parent: document.querySelector("#prop-parent"),
   notes: document.querySelector("#prop-notes"),
   clipContent: document.querySelector("#prop-clip-content"),
+  layout: document.querySelector("#prop-layout"),
+  gap: document.querySelector("#prop-layout-gap"),
+  padding: document.querySelector("#prop-layout-padding"),
+  alignItems: document.querySelector("#prop-align-items"),
+  justifyContent: document.querySelector("#prop-justify-content"),
+  layoutGrow: document.querySelector("#prop-layout-grow"),
+  layoutAlign: document.querySelector("#prop-layout-align"),
 };
 
 const canvasInputs = {
@@ -131,7 +163,7 @@ const canvasInputs = {
   backgroundColor: document.querySelector("#prop-canvas-background-color"),
 };
 
-let design = createStarterDocument();
+let design = createBlankDocument();
 let selectedId = null;
 let selectedIds = new Set();
 let activeTool = "select";
@@ -168,6 +200,9 @@ let workspaceEpoch = 0;
 let contextInitialized = false;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
+let externalSyncTimer = null;
+let workspaceInfo = null;
+const collapsedLayerIds = new Set();
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
   let primary = 2_166_136_261;
@@ -199,16 +234,29 @@ function baseNode(type, overrides = {}) {
     name:
       type === "frame"
         ? "画板"
-        : type === "rectangle"
-          ? "矩形"
-          : type === "ellipse"
-            ? "椭圆"
-            : "文字",
+        : type === "group"
+          ? "图层组"
+          : type === "component"
+            ? "组件"
+            : type === "instance"
+              ? "组件实例"
+              : type === "rectangle"
+                ? "矩形"
+                : type === "ellipse"
+                  ? "椭圆"
+                  : "文字",
     x: 0,
     y: 0,
     width: type === "text" ? 240 : 160,
     height: type === "text" ? 54 : 120,
-    fill: type === "text" ? "#171717" : type === "frame" ? "#ffffff" : "#d7ff9d",
+    fill:
+      type === "text"
+        ? "#171717"
+        : type === "group" || type === "instance"
+          ? "transparent"
+          : type === "frame" || type === "component"
+            ? "#ffffff"
+            : "#d7ff9d",
     stroke: "transparent",
     strokeWidth: 0,
     opacity: 1,
@@ -225,194 +273,57 @@ function baseNode(type, overrides = {}) {
       lineHeight: 1.15,
       textAlign: "left",
     });
-  } else if (type === "frame") {
+  } else if (["frame", "component"].includes(type)) {
     defaults.clipContent = true;
+  }
+  if (isContainerNode({ type })) {
+    Object.assign(defaults, {
+      layout: "none",
+      gap: 16,
+      padding: 24,
+      alignItems: "start",
+      justifyContent: "start",
+    });
   }
   return { ...defaults, ...overrides };
 }
 
-function createStarterDocument() {
-  const starter = {
+function createBlankDocument(name = "Repo design") {
+  const nodes = [];
+  return {
     format: "codeshell.design",
-    version: 1,
-    name: "Product home",
+    version: 3,
+    name,
     canvas: {
       width: 1280,
       height: 820,
       background: "#e9e9e5",
     },
     tokens: {
-      colors: [
-        { name: "Ink", value: "#171717" },
-        { name: "Paper", value: "#f7f7f3" },
-        { name: "Acid", value: "#b7ff52" },
-        { name: "Blue", value: "#315fda" },
-        { name: "Mist", value: "#deded8" },
-      ],
+      colors: clone(DEFAULT_COLOR_TOKENS),
     },
-    nodes: [
-      baseNode("frame", {
-        id: "frame-home",
-        name: "Desktop · Home",
-        x: 80,
-        y: 60,
-        width: 1120,
-        height: 700,
-        cornerRadius: 24,
-        fill: "#f7f7f3",
-        stroke: "#d7d7d1",
-        strokeWidth: 1,
-      }),
-      baseNode("ellipse", {
-        id: "ellipse-logo",
-        name: "Brand mark",
-        x: 124,
-        y: 100,
-        width: 34,
-        height: 34,
-        fill: "#171717",
-      }),
-      baseNode("text", {
-        id: "text-brand",
-        name: "Brand",
-        x: 170,
-        y: 104,
-        width: 180,
-        height: 32,
-        text: "FOUND / FORM",
-        fontSize: 18,
-        fontWeight: 700,
-        fill: "#171717",
-      }),
-      baseNode("text", {
-        id: "text-nav",
-        name: "Navigation",
-        x: 846,
-        y: 108,
-        width: 300,
-        height: 30,
-        text: "WORK     NOTES     ABOUT",
-        fontSize: 12,
-        fontWeight: 600,
-        fill: "#5b5b56",
-      }),
-      baseNode("text", {
-        id: "text-eyebrow",
-        name: "Eyebrow",
-        x: 124,
-        y: 226,
-        width: 330,
-        height: 26,
-        text: "INDEPENDENT DIGITAL STUDIO · 2026",
-        fontSize: 12,
-        fontWeight: 700,
-        fill: "#315fda",
-      }),
-      baseNode("text", {
-        id: "text-hero",
-        name: "Hero headline",
-        x: 120,
-        y: 268,
-        width: 720,
-        height: 168,
-        text: "We shape useful\nideas into form.",
-        fontSize: 72,
-        fontWeight: 600,
-        lineHeight: 0.98,
-        fill: "#171717",
-      }),
-      baseNode("text", {
-        id: "text-body",
-        name: "Hero body",
-        x: 126,
-        y: 480,
-        width: 430,
-        height: 74,
-        text: "Product direction, interface systems, and prototypes\nfor small teams building ambitious software.",
-        fontSize: 17,
-        fontWeight: 400,
-        lineHeight: 1.45,
-        fill: "#5b5b56",
-      }),
-      baseNode("rectangle", {
-        id: "rectangle-cta",
-        name: "Primary CTA",
-        x: 126,
-        y: 588,
-        width: 166,
-        height: 52,
-        cornerRadius: 26,
-        fill: "#171717",
-      }),
-      baseNode("text", {
-        id: "text-cta",
-        name: "CTA label",
-        x: 159,
-        y: 604,
-        width: 108,
-        height: 24,
-        text: "START A PROJECT",
-        fontSize: 12,
-        fontWeight: 700,
-        fill: "#ffffff",
-      }),
-      baseNode("rectangle", {
-        id: "rectangle-feature",
-        name: "Feature card",
-        x: 740,
-        y: 220,
-        width: 400,
-        height: 430,
-        cornerRadius: 24,
-        fill: "#b7ff52",
-      }),
-      baseNode("text", {
-        id: "text-feature-number",
-        name: "Card number",
-        x: 778,
-        y: 258,
-        width: 70,
-        height: 42,
-        text: "01",
-        fontSize: 16,
-        fontWeight: 700,
-        fill: "#25300d",
-      }),
-      baseNode("text", {
-        id: "text-feature",
-        name: "Card title",
-        x: 778,
-        y: 446,
-        width: 304,
-        height: 106,
-        text: "Make the\ncomplex clear.",
-        fontSize: 46,
-        fontWeight: 600,
-        lineHeight: 1.02,
-        fill: "#171717",
-      }),
-      baseNode("text", {
-        id: "text-feature-note",
-        name: "Card note",
-        x: 780,
-        y: 584,
-        width: 290,
-        height: 34,
-        text: "Strategy → system → shipped interface",
-        fontSize: 13,
-        fontWeight: 500,
-        fill: "#354314",
-      }),
-    ],
+    activePageId: "page-1",
+    pages: [{ id: "page-1", name: "Page 1", nodes }],
+    nodes,
   };
-  for (const node of starter.nodes) {
-    if (node.id !== "frame-home") node.parentId = "frame-home";
-  }
-  return starter;
 }
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function ensureDesignV3() {
+  if (design.version !== 3) throw new Error("Design Studio 只支持 CodeShell Design v3");
+}
+
+function reflowLayouts() {
+  if (design.version !== 3) return false;
+  return applyAllAutoLayouts(design.nodes);
+}
+
+function reflowParent(node) {
+  if (design.version !== 3 || !node?.parentId) return false;
+  return applyAutoLayout(design.nodes, node.parentId);
 }
 
 function round(value, precision = 2) {
@@ -452,8 +363,16 @@ function isEffectivelyVisible(node) {
 
 function isEffectivelyLocked(node) {
   if (node.locked) return true;
-  const parent = node.parentId ? nodeById(node.parentId) : null;
-  return Boolean(parent?.locked);
+  const seen = new Set();
+  let parentId = node.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = nodeById(parentId);
+    if (!parent) break;
+    if (parent.locked) return true;
+    parentId = parent.parentId;
+  }
+  return false;
 }
 
 function nodeTransform(node) {
@@ -477,10 +396,10 @@ function selectedTransformNodes() {
   const transformIds = new Set(
     selected.filter((node) => !isEffectivelyLocked(node)).map((node) => node.id),
   );
-  const selectedFrameIds = new Set(
-    selected.filter((node) => node.type === "frame" && !node.locked).map((node) => node.id),
+  const selectedContainerIds = new Set(
+    selected.filter((node) => isContainerNode(node) && !node.locked).map((node) => node.id),
   );
-  for (const id of descendantIds(design.nodes, selectedFrameIds)) transformIds.add(id);
+  for (const id of descendantIds(design.nodes, selectedContainerIds)) transformIds.add(id);
   return design.nodes.filter((node) => transformIds.has(node.id));
 }
 
@@ -495,7 +414,7 @@ function containingFrame(point) {
       .reverse()
       .find(
         (node) =>
-          node.type === "frame" &&
+          isContainerNode(node) &&
           isEffectivelyVisible(node) &&
           !isEffectivelyLocked(node) &&
           pointInRotatedBounds(node, point),
@@ -507,6 +426,7 @@ function layerEntries() {
   const entries = [];
   const visit = (node, depth) => {
     entries.push({ node, depth });
+    if (collapsedLayerIds.has(node.id) && !layerFilter.trim()) return;
     for (const child of [...design.nodes].reverse()) {
       if (child.parentId === node.id) visit(child, depth + 1);
     }
@@ -556,6 +476,24 @@ function updateDirtyState() {
 function setSaveState(message, kind = "idle") {
   elements.saveState.textContent = message;
   elements.saveState.dataset.kind = kind;
+}
+
+function setRepoLinkState(message, kind = "idle") {
+  if (!elements.repoLinkState) return;
+  elements.repoLinkState.textContent = message;
+  elements.repoLinkState.dataset.kind = kind;
+  const root = context.cwd ?? workspaceInfo?.root;
+  elements.repoLinkState.title = root ? `当前 Repo：${root}` : "尚未连接 Repo";
+}
+
+function updateRepoLinkState() {
+  if (context.trusted !== true) {
+    setRepoLinkState("Repo 未连接", "error");
+    return;
+  }
+  const name = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
+  const branch = workspaceInfo?.gitBranch;
+  setRepoLinkState(branch ? `${name} · ${branch}` : name, "linked");
 }
 
 function notify(message, kind = "idle") {
@@ -699,7 +637,7 @@ function renderScene() {
   const clipIds = new Map();
   const clipDefs = svgElement("defs");
   design.nodes.forEach((node, index) => {
-    if (node.type !== "frame" || node.clipContent !== true) return;
+    if (!["frame", "component"].includes(node.type) || node.clipContent !== true) return;
     const id = `frame-clip-${index}`;
     clipIds.set(node.id, id);
     const clipPath = svgElement("clipPath", {
@@ -741,7 +679,77 @@ function renderScene() {
   renderSelectionSize(nodes);
 }
 
-function renderNode(node, clipIds) {
+function renderInstanceNode(node, clipIds) {
+  const component = design.nodes.find(
+    (candidate) => candidate.id === node.componentId && candidate.type === "component",
+  );
+  const group = svgElement("g");
+  group.dataset.nodeId = node.id;
+  group.dataset.componentId = node.componentId;
+  let content = group;
+  if (node.parentId && clipIds.has(node.parentId)) {
+    group.setAttribute("clip-path", `url(#${clipIds.get(node.parentId)})`);
+    content = svgElement("g");
+    group.append(content);
+  }
+  const transform = nodeTransform(node);
+  if (transform) content.setAttribute("transform", transform);
+  content.setAttribute("opacity", effectiveDesignNodeOpacity(design, node));
+  if (!component || component.width <= 0 || component.height <= 0) {
+    const missing = svgElement("rect", {
+      x: node.x,
+      y: node.y,
+      width: Math.max(1, node.width),
+      height: Math.max(1, node.height),
+      fill: "none",
+      stroke: "#ff5c78",
+      "stroke-width": 1.5 / zoom,
+      "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
+    });
+    missing.dataset.nodeId = node.id;
+    content.append(missing);
+    return group;
+  }
+
+  const mapped = svgElement("g", {
+    transform: `translate(${node.x} ${node.y}) scale(${node.width / component.width} ${
+      node.height / component.height
+    }) translate(${-component.x} ${-component.y})`,
+  });
+  const sourceNodes = [
+    component,
+    ...design.nodes.filter(
+      (candidate) => candidate.parentId === component.id && candidate.type !== "instance",
+    ),
+  ];
+  for (const sourceNode of sourceNodes) {
+    const source = renderNode(sourceNode, clipIds, { suppressLabel: true });
+    source.dataset.nodeId = node.id;
+    for (const target of source.querySelectorAll("[data-node-id]")) {
+      target.dataset.componentNodeId = target.dataset.nodeId;
+      target.dataset.nodeId = node.id;
+    }
+    mapped.append(source);
+  }
+  content.append(mapped);
+  if (zoom >= 0.35) {
+    const label = svgElement("text", {
+      x: node.x,
+      y: node.y - 18 / zoom,
+      fill: "#a78bfa",
+      "font-size": 11 / zoom,
+      "font-weight": 650,
+      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+    });
+    label.textContent = `◆ ${node.name}`;
+    label.dataset.nodeId = node.id;
+    content.append(label);
+  }
+  return group;
+}
+
+function renderNode(node, clipIds, options = {}) {
+  if (node.type === "instance") return renderInstanceNode(node, clipIds);
   const group = svgElement("g");
   group.dataset.nodeId = node.id;
   let content = group;
@@ -792,6 +800,16 @@ function renderNode(node, clipIds) {
       span.textContent = line || " ";
       visual.append(span);
     });
+  } else if (node.type === "group") {
+    visual = svgElement("rect", {
+      x: node.x,
+      y: node.y,
+      width: Math.max(1, node.width),
+      height: Math.max(1, node.height),
+      fill: "transparent",
+      stroke: "transparent",
+      "pointer-events": "all",
+    });
   } else {
     visual = svgElement("rect", {
       x: node.x,
@@ -808,7 +826,7 @@ function renderNode(node, clipIds) {
   visual.style.pointerEvents = isEffectivelyLocked(node) ? "visiblePainted" : "all";
   content.append(visual);
 
-  if (node.type === "frame" && zoom >= 0.35) {
+  if (isContainerNode(node) && zoom >= 0.35 && options.suppressLabel !== true) {
     const label = svgElement("text", {
       x: node.x,
       y: node.y - 18 / zoom,
@@ -817,7 +835,7 @@ function renderNode(node, clipIds) {
       "font-weight": 600,
       "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
     });
-    label.textContent = node.name;
+    label.textContent = `${node.type === "component" ? "◇ " : node.type === "group" ? "▣ " : ""}${node.name}`;
     label.dataset.nodeId = node.id;
     content.append(label);
   }
@@ -976,15 +994,60 @@ function renderProperties() {
   elements.toggleVisible.setAttribute("aria-pressed", String(single.visible));
   elements.toggleLock.textContent = single.locked ? "解" : "锁";
   elements.toggleVisible.textContent = single.visible ? "眼" : "隐";
-  elements.parentField.hidden = single.type === "frame";
-  elements.frameSection.hidden = single.type !== "frame";
+  const container = isContainerNode(single);
+  const parent = single.parentId ? nodeById(single.parentId) : null;
+  const autoLayoutChild = Boolean(parent) && ["horizontal", "vertical"].includes(parent.layout);
+  elements.parentField.hidden = false;
+  elements.frameSection.hidden = !["frame", "group", "component"].includes(single.type);
+  elements.containerSectionLabel.textContent =
+    single.type === "component" ? "主组件" : single.type === "group" ? "编组" : "画板";
+  elements.clipContentField.hidden = single.type === "group";
+  elements.releaseFrame.hidden = single.type === "component";
+  elements.releaseContainerLabel.textContent =
+    single.type === "group" ? "解除编组，保留内容" : "解除画板，保留内容";
   propertyInputs.clipContent.checked = single.clipContent === true;
+  elements.layoutSection.hidden = !container && !autoLayoutChild;
+  elements.containerLayoutControls.hidden = !container;
+  elements.childLayoutControls.hidden = !autoLayoutChild;
+  if (container) {
+    propertyInputs.layout.value = single.layout ?? "none";
+    propertyInputs.gap.value = String(round(single.gap ?? 0));
+    propertyInputs.padding.value = String(round(single.padding ?? 0));
+    propertyInputs.alignItems.value = single.alignItems ?? "start";
+    propertyInputs.justifyContent.value = single.justifyContent ?? "start";
+  }
+  if (autoLayoutChild) {
+    propertyInputs.layoutGrow.checked = single.layoutGrow === 1;
+    propertyInputs.layoutAlign.value = single.layoutAlign ?? "auto";
+  }
+  elements.componentSection.hidden = !["frame", "component", "instance"].includes(single.type);
+  elements.makeComponent.hidden = single.type !== "frame";
+  elements.createInstance.hidden = single.type !== "component";
+  if (single.type === "component") {
+    const instanceCount = design.nodes.filter(
+      (candidate) => candidate.type === "instance" && candidate.componentId === single.id,
+    ).length;
+    elements.componentStatus.textContent = `主组件 · ${instanceCount} 个实例`;
+  } else if (single.type === "instance") {
+    const source = nodeById(single.componentId);
+    elements.componentStatus.textContent = source
+      ? `实例来自 ${source.name}`
+      : "实例的主组件不存在";
+  } else {
+    elements.componentStatus.textContent = "将画板转换为可复用组件";
+  }
   propertyInputs.parent.replaceChildren();
   const canvasOption = document.createElement("option");
   canvasOption.value = "";
   canvasOption.textContent = "画布（根级）";
   propertyInputs.parent.append(canvasOption);
-  for (const frame of design.nodes.filter((candidate) => candidate.type === "frame")) {
+  const invalidParentIds = new Set([
+    single.id,
+    ...descendantIds(design.nodes, new Set([single.id])),
+  ]);
+  for (const frame of design.nodes.filter(
+    (candidate) => isContainerNode(candidate) && !invalidParentIds.has(candidate.id),
+  )) {
     const option = document.createElement("option");
     option.value = frame.id;
     option.textContent = frame.name;
@@ -1036,6 +1099,24 @@ function renderLayers() {
     row.style.setProperty("--layer-depth", String(depth));
     row.tabIndex = node.id === rovingId ? 0 : -1;
 
+    const hasChildren = design.nodes.some((candidate) => candidate.parentId === node.id);
+    const disclosure = document.createElement("button");
+    disclosure.className = "layer-disclosure";
+    disclosure.type = "button";
+    disclosure.tabIndex = -1;
+    disclosure.disabled = !hasChildren;
+    disclosure.style.visibility = hasChildren ? "visible" : "hidden";
+    disclosure.textContent = collapsedLayerIds.has(node.id) ? "›" : "⌄";
+    disclosure.title = collapsedLayerIds.has(node.id) ? "展开图层" : "折叠图层";
+    disclosure.setAttribute("aria-label", `${disclosure.title}：${node.name}`);
+    disclosure.setAttribute("aria-expanded", String(!collapsedLayerIds.has(node.id)));
+    disclosure.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (collapsedLayerIds.has(node.id)) collapsedLayerIds.delete(node.id);
+      else collapsedLayerIds.add(node.id);
+      renderLayers();
+      focusLayerRow(node.id);
+    });
     const kind = document.createElement("span");
     kind.className = "layer-kind";
     kind.textContent =
@@ -1045,7 +1126,13 @@ function renderLayers() {
           ? "○"
           : node.type === "text"
             ? "T"
-            : "F";
+            : node.type === "group"
+              ? "▣"
+              : node.type === "component"
+                ? "◇"
+                : node.type === "instance"
+                  ? "◆"
+                  : "F";
     const title = document.createElement("span");
     title.className = "layer-title";
     title.textContent = node.name;
@@ -1064,7 +1151,7 @@ function renderLayers() {
       commitHistory();
       markChanged();
     });
-    row.append(kind, title, visibility);
+    row.append(disclosure, kind, title, visibility);
     row.addEventListener("click", (event) => {
       if (event.shiftKey) toggleSelection(node.id);
       else selectOnly(node.id);
@@ -1077,6 +1164,14 @@ function renderLayers() {
         node.visible = !node.visible;
         commitHistory();
         markChanged();
+        focusLayerRow(node.id);
+        return;
+      }
+      if (hasChildren && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault();
+        if (event.key === "ArrowLeft") collapsedLayerIds.add(node.id);
+        else collapsedLayerIds.delete(node.id);
+        renderLayers();
         focusLayerRow(node.id);
         return;
       }
@@ -1345,6 +1440,7 @@ function pointerDown(event) {
     if (parent) normalizeNodeTreeOrder(design.nodes);
     if (activeTool === "text") {
       node.text = "输入文字";
+      reflowParent(node);
       selectOnly(node.id);
       setActiveTool("select");
       commitHistory();
@@ -1524,6 +1620,10 @@ function finishInteraction(pointerId = null) {
     finished.kind === "resize" ||
     (finished.kind === "move" && finished.moved);
   if (changed) {
+    if (node) {
+      reflowParent(node);
+      if (isContainerNode(node)) applyAutoLayout(design.nodes, node.id);
+    }
     commitHistory();
     markChanged(false);
   }
@@ -1543,7 +1643,7 @@ function duplicateSelected() {
       design.nodes,
       new Set(
         selectedNodes()
-          .filter((node) => node.type === "frame")
+          .filter((node) => isContainerNode(node))
           .map((node) => node.id),
       ),
     ),
@@ -1553,6 +1653,7 @@ function duplicateSelected() {
   const { copies, idMap } = cloneNodeSet(sources, selectedIds);
   design.nodes.push(...copies);
   normalizeNodeTreeOrder(design.nodes);
+  reflowLayouts();
   selectedIds = new Set([...selectedIds].map((id) => idMap.get(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   commitHistory();
@@ -1573,6 +1674,9 @@ function cloneNodeSet(sources, sourceSelectionIds) {
     copy.x += 18;
     copy.y += 18;
     if (copy.parentId && idMap.has(copy.parentId)) copy.parentId = idMap.get(copy.parentId);
+    if (copy.componentId && idMap.has(copy.componentId)) {
+      copy.componentId = idMap.get(copy.componentId);
+    }
     return copy;
   });
   return { copies, idMap };
@@ -1586,7 +1690,7 @@ function copySelected() {
       design.nodes,
       new Set(
         selectedNodes()
-          .filter((node) => node.type === "frame")
+          .filter((node) => isContainerNode(node))
           .map((node) => node.id),
       ),
     ),
@@ -1608,7 +1712,7 @@ function rememberClipboardParents(nodes) {
       continue;
     }
     const parent = nodeById(node.parentId);
-    if (parent?.type === "frame") copiedParentFrames.set(parent.id, clone(parent));
+    if (isContainerNode(parent)) copiedParentFrames.set(parent.id, clone(parent));
   }
 }
 
@@ -1617,10 +1721,10 @@ function pasteCopied() {
   if (!canAddNodes(copiedNodes.length)) return;
   const { copies, idMap } = cloneNodeSet(copiedNodes, copiedSelectionIds);
   const pastedFrameIds = new Set(
-    copies.filter((node) => node.type === "frame").map((node) => node.id),
+    copies.filter((node) => isContainerNode(node)).map((node) => node.id),
   );
   const availableFrameIds = new Set([
-    ...design.nodes.filter((node) => node.type === "frame").map((node) => node.id),
+    ...design.nodes.filter((node) => isContainerNode(node)).map((node) => node.id),
     ...pastedFrameIds,
   ]);
   const crossDocument = copiedDocumentEpoch !== documentEpoch;
@@ -1639,6 +1743,7 @@ function pasteCopied() {
   }
   design.nodes.push(...copies);
   normalizeNodeTreeOrder(design.nodes);
+  reflowLayouts();
   selectedIds = new Set([...copiedSelectionIds].map((id) => idMap.get(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   copiedNodes = clone(copies);
@@ -1660,8 +1765,24 @@ function deleteSelected() {
     ...deletableRootIds,
     ...descendantIds(design.nodes, deletableRootIds),
   ]);
+  const deletedComponentIds = new Set(
+    design.nodes
+      .filter((node) => deletableIds.has(node.id) && node.type === "component")
+      .map((node) => node.id),
+  );
+  for (const node of design.nodes) {
+    if (node.type === "instance" && deletedComponentIds.has(node.componentId)) {
+      deletableIds.add(node.id);
+    }
+  }
   if (deletableIds.size === 0) return;
+  const affectedParents = new Set(
+    design.nodes
+      .filter((candidate) => deletableIds.has(candidate.id) && candidate.parentId)
+      .map((candidate) => candidate.parentId),
+  );
   design.nodes = design.nodes.filter((candidate) => !deletableIds.has(candidate.id));
+  for (const parentId of affectedParents) applyAutoLayout(design.nodes, parentId);
   selectedIds = new Set([...selectedIds].filter((id) => !deletableIds.has(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   commitHistory();
@@ -1671,12 +1792,12 @@ function deleteSelected() {
 function frameSelectedNodes() {
   const nodes = selectedNodes();
   if (nodes.length === 0) return;
-  if (nodes.some((node) => node.type === "frame")) {
-    notify("v1 画板不能嵌套；请只选择普通图层", "error");
+  if (nodes.some((node) => isContainerNode(node))) {
+    notify("容器不能嵌套；请只选择普通图层", "error");
     return;
   }
   if (nodes.some((node) => node.parentId)) {
-    notify("v1 新画板必须位于根级；请先释放原画板或把图层移到画布", "error");
+    notify("新画板必须位于根级；请先释放原容器或把图层移到画布", "error");
     return;
   }
   if (nodes.some((node) => isEffectivelyLocked(node))) {
@@ -1684,6 +1805,7 @@ function frameSelectedNodes() {
     return;
   }
   if (!canAddNodes(1)) return;
+  ensureDesignV3();
   const frame = baseNode("frame", {
     name: "Selection frame",
     cornerRadius: 16,
@@ -1697,10 +1819,68 @@ function frameSelectedNodes() {
   markChanged();
 }
 
+function groupSelectedNodes() {
+  const nodes = selectedNodes();
+  if (nodes.length === 0) return;
+  if (nodes.some((node) => isContainerNode(node) || node.parentId)) {
+    notify("编组目前只支持画布上的普通图层", "error");
+    return;
+  }
+  if (nodes.some((node) => isEffectivelyLocked(node))) {
+    notify("请先解锁所选图层", "error");
+    return;
+  }
+  if (!canAddNodes(1)) return;
+  ensureDesignV3();
+  const group = baseNode("group", {
+    name: "图层组",
+    cornerRadius: 0,
+    fill: "transparent",
+    padding: 0,
+  });
+  if (!wrapNodesInFrame(design.nodes, selectedIds, group, 0)) return;
+  selectOnly(group.id);
+  commitHistory();
+  markChanged();
+}
+
+function makeSelectedComponent() {
+  const frame = selectedNode();
+  if (!frame || selectedIds.size !== 1 || frame.type !== "frame") {
+    return notify("请先选择一个画板");
+  }
+  if (frame.locked) return notify("请先解锁画板", "error");
+  ensureDesignV3();
+  frame.type = "component";
+  frame.name = frame.name.endsWith(" · 组件") ? frame.name : `${frame.name} · 组件`;
+  commitHistory();
+  markChanged();
+  notify("已创建主组件；修改它会同步到所有实例");
+}
+
+function createSelectedComponentInstance() {
+  const component = selectedNode();
+  if (!component || selectedIds.size !== 1 || component.type !== "component") {
+    return notify("请先选择一个主组件");
+  }
+  if (!canAddNodes(1)) return;
+  ensureDesignV3();
+  const id = `instance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const instance = createComponentInstance(component, id, 32, design.canvas);
+  if (!instance) return;
+  design.nodes.push(instance);
+  normalizeNodeTreeOrder(design.nodes);
+  selectOnly(instance.id);
+  commitHistory();
+  markChanged();
+  notify(`已创建 ${component.name} 的实例`);
+  requestAnimationFrame(fitSelection);
+}
+
 function releaseSelectedFrame() {
   const frame = selectedNode();
-  if (!frame || selectedIds.size !== 1 || frame.type !== "frame") return;
-  if (frame.locked) return notify("请先解锁画板", "error");
+  if (!frame || selectedIds.size !== 1 || !["frame", "group"].includes(frame.type)) return;
+  if (frame.locked) return notify("请先解锁容器", "error");
   const childIds = design.nodes.filter((node) => node.parentId === frame.id).map((node) => node.id);
   if (!releaseFrame(design.nodes, frame.id)) return;
   selectedIds = new Set(childIds);
@@ -1711,6 +1891,7 @@ function releaseSelectedFrame() {
 
 function setOrder(direction) {
   if (!moveSelectedNodes(design.nodes, selectedIds, direction)) return;
+  reflowLayouts();
   commitHistory();
   markChanged();
 }
@@ -1787,7 +1968,9 @@ function fitSelection() {
 }
 
 function normalizeDocument(input) {
-  return normalizeDesignDocument(input);
+  return Array.isArray(input?.nodes)
+    ? normalizeDesignState(input)
+    : normalizeDesignDocument(input);
 }
 
 function safeDesignPath(value) {
@@ -1960,6 +2143,7 @@ async function performSaveDocument({ quiet = false } = {}) {
     savedSnapshot = content;
     recoveryFailureWarned = false;
     updateDirtyState();
+    setRepoLinkState("Repo · 已保存", "linked");
     await hostCall("storage.set", {
       key: scopedStorageKey("lastPath", operationWorkspaceRoot),
       value: { workspaceRoot: operationWorkspaceIdentity, path },
@@ -2034,6 +2218,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     savedSnapshot = serializeDesign();
     resetHistory();
     updateDirtyState();
+    setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
     requestAnimationFrame(fitCanvas);
     await hostCall("storage.set", {
@@ -2071,7 +2256,7 @@ async function checkExternalChange({ force = false } = {}) {
   const sourceRevision = currentSourceRevision;
   const sourceModifiedAt = currentSourceModifiedAt;
   const now = Date.now();
-  if (!force && now - lastExternalCheckAt < 5_000) return false;
+  if (!force && now - lastExternalCheckAt < 1_500) return false;
   checkingExternalChange = true;
   lastExternalCheckAt = now;
   try {
@@ -2083,20 +2268,45 @@ async function checkExternalChange({ force = false } = {}) {
         ? sourceRevision !== disk.revision
         : sourceModifiedAt != null && Math.abs(sourceModifiedAt - disk.modifiedAt) > 0.001;
     if (!changed) {
-      if (warnedExternalVersion) updateDirtyState();
+      const hadExternalWarning = Boolean(warnedExternalVersion);
       warnedExternalVersion = null;
+      if (hadExternalWarning) updateDirtyState();
       return false;
     }
     const externalVersion = disk.revision ?? `mtime:${disk.modifiedAt}`;
+    if (!dirty) {
+      try {
+        const nextDesign = normalizeDocument(JSON.parse(disk.content));
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+        if (operationDocumentEpoch !== documentEpoch || currentSourcePath !== sourcePath) {
+          return false;
+        }
+        design = nextDesign;
+        documentEpoch += 1;
+        clearSelection();
+        currentModifiedAt = disk.modifiedAt;
+        currentRevision = disk.revision;
+        currentSourceModifiedAt = disk.modifiedAt;
+        currentSourceRevision = disk.revision;
+        warnedExternalVersion = null;
+        savedSnapshot = serializeDesign();
+        resetHistory();
+        updateDirtyState();
+        renderAll();
+        setRepoLinkState("Repo 已同步", "linked");
+        notify(`已同步 Agent 对 ${sourcePath} 的修改`);
+        return true;
+      } catch (error) {
+        warnedExternalVersion = externalVersion;
+        setSaveState("Repo 文件无效", "error");
+        notify(error instanceof Error ? error.message : "Repo 中的设计文件无效", "error");
+        return true;
+      }
+    }
     if (warnedExternalVersion === externalVersion) return true;
     warnedExternalVersion = externalVersion;
     setSaveState(dirty ? "外部变更 · 本地有修改" : "源文件已在外部变更", "error");
-    notify(
-      dirty
-        ? "源文件和本地画布都已变化。请从文件列表重新打开，或改名保存副本。"
-        : "源文件已在面板外更新，请从文件列表重新打开。",
-      "error",
-    );
+    notify("源文件和本地画布都已变化。请从文件列表重新打开，或改名保存副本。", "error");
     return true;
   } catch {
     // A later explicit open or save surfaces missing/unreadable source details.
@@ -2123,7 +2333,18 @@ async function discoverDesignFiles() {
     index < queue.length && index < maxDirectories && files.length < maxFiles;
     index += 1
   ) {
-    const listing = await hostCall("workspace.list", { path: queue[index] });
+    let listing;
+    try {
+      listing = await hostCall("workspace.list", { path: queue[index] });
+    } catch {
+      if (queue[index] === "designs") {
+        fileDiscoveryCache = { files: [], truncated: false };
+        fileDiscoveryCachedAt = Date.now();
+        return fileDiscoveryCache;
+      }
+      truncated = true;
+      continue;
+    }
     processedDirectories += 1;
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     if (listing?.truncated) truncated = true;
@@ -2278,29 +2499,10 @@ async function saveAuditReport() {
 
 function newDocument() {
   if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
-  design = {
-    format: "codeshell.design",
-    version: 1,
-    name: "Untitled",
-    canvas: { width: 1280, height: 820, background: "#e9e9e5" },
-    tokens: clone(createStarterDocument().tokens),
-    nodes: [
-      baseNode("frame", {
-        id: "frame-main",
-        name: "Desktop · Main",
-        x: 80,
-        y: 60,
-        width: 1120,
-        height: 700,
-        cornerRadius: 24,
-        fill: "#f7f7f3",
-        stroke: "#d7d7d1",
-        strokeWidth: 1,
-      }),
-    ],
-  };
+  design = createBlankDocument("Untitled");
   documentEpoch += 1;
-  selectOnly("frame-main");
+  clearSelection();
+  collapsedLayerIds.clear();
   currentModifiedAt = null;
   currentRevision = null;
   warnedExternalVersion = null;
@@ -2358,7 +2560,7 @@ async function submitToAgent() {
     const prompt = [
       "请使用 design-studio skill 处理当前仓库里的设计文件。",
       `设计源文件：${path}`,
-      "先读取并校验 codeshell.design v1 结构；保持稳定 node id、既有颜色变量和确定性 JSON 格式。",
+      `先读取并校验 codeshell.design v${design.version} 结构；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
       "不要把 SVG 当作源文件。修改后总结变更的图层、设计理由和实现影响。",
       "",
       `我的要求：${request}`,
@@ -2366,7 +2568,7 @@ async function submitToAgent() {
     await hostCall("agent.submitPrompt", { prompt });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     elements.aiDialog.close();
-    notify("已交给当前 Agent；完成后从文件列表重新打开设计");
+    notify("已交给当前 Agent；文件写入 Repo 后画布会自动同步");
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     notify(error instanceof Error ? error.message : "提交失败", "error");
@@ -2382,6 +2584,8 @@ function bindPropertyInput(input, update, eventName = "input") {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
     update(node, input.value);
+    if (isContainerNode(node)) applyAutoLayout(design.nodes, node.id);
+    else reflowParent(node);
     markChanged();
   });
   input.addEventListener("change", commitHistory);
@@ -2436,7 +2640,10 @@ bindPropertyInput(propertyInputs.height, (node, value) => {
 bindPropertyInput(
   propertyInputs.parent,
   (node, value) => {
+    const previousParentId = node.parentId ?? null;
     reparentNode(design.nodes, node.id, value || null);
+    if (previousParentId) applyAutoLayout(design.nodes, previousParentId);
+    reflowParent(node);
   },
   "change",
 );
@@ -2502,12 +2709,73 @@ bindPropertyInput(propertyInputs.rotation, (node, value) => {
 });
 propertyInputs.clipContent.addEventListener("change", () => {
   const node = selectedNode();
-  if (!node || node.type !== "frame" || isEffectivelyLocked(node)) return;
+  if (!node || !["frame", "component"].includes(node.type) || isEffectivelyLocked(node)) return;
   if (propertyInputs.clipContent.checked) node.clipContent = true;
   else delete node.clipContent;
   commitHistory();
   markChanged();
 });
+bindPropertyInput(
+  propertyInputs.layout,
+  (node, value) => {
+    if (!isContainerNode(node) || !["none", "horizontal", "vertical"].includes(value)) return;
+    ensureDesignV3();
+    node.layout = value;
+    applyAutoLayout(design.nodes, node.id);
+  },
+  "change",
+);
+bindPropertyInput(propertyInputs.gap, (node, value) => {
+  if (!isContainerNode(node)) return;
+  ensureDesignV3();
+  node.gap = clamp(finiteOr(value, 0), 0, 2000);
+  applyAutoLayout(design.nodes, node.id);
+});
+bindPropertyInput(propertyInputs.padding, (node, value) => {
+  if (!isContainerNode(node)) return;
+  ensureDesignV3();
+  node.padding = clamp(finiteOr(value, 0), 0, 2000);
+  applyAutoLayout(design.nodes, node.id);
+});
+bindPropertyInput(
+  propertyInputs.alignItems,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.alignItems = value;
+    applyAutoLayout(design.nodes, node.id);
+  },
+  "change",
+);
+bindPropertyInput(
+  propertyInputs.justifyContent,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.justifyContent = value;
+    applyAutoLayout(design.nodes, node.id);
+  },
+  "change",
+);
+propertyInputs.layoutGrow.addEventListener("change", () => {
+  const node = selectedNode();
+  if (!node || isContainerNode(node) || isEffectivelyLocked(node)) return;
+  ensureDesignV3();
+  node.layoutGrow = propertyInputs.layoutGrow.checked ? 1 : 0;
+  reflowParent(node);
+  commitHistory();
+  markChanged();
+});
+bindPropertyInput(
+  propertyInputs.layoutAlign,
+  (node, value) => {
+    if (isContainerNode(node)) return;
+    ensureDesignV3();
+    node.layoutAlign = value;
+    reflowParent(node);
+  },
+  "change",
+);
 bindPropertyInput(
   propertyInputs.fillColor,
   (node, value) => {
@@ -2622,7 +2890,10 @@ elements.addColorToken.addEventListener("click", () => {
 });
 elements.duplicateLayer.addEventListener("click", duplicateSelected);
 elements.frameSelection.addEventListener("click", frameSelectedNodes);
+elements.groupSelection.addEventListener("click", groupSelectedNodes);
 elements.releaseFrame.addEventListener("click", releaseSelectedFrame);
+elements.makeComponent.addEventListener("click", makeSelectedComponent);
+elements.createInstance.addEventListener("click", createSelectedComponentInstance);
 elements.layerFilter.addEventListener("input", () => {
   layerFilter = elements.layerFilter.value;
   renderLayers();
@@ -2738,6 +3009,11 @@ window.addEventListener("keydown", (event) => {
     duplicateSelected();
     return;
   }
+  if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "g" && !editing) {
+    event.preventDefault();
+    groupSelectedNodes();
+    return;
+  }
   if (command && event.altKey && event.key.toLowerCase() === "g" && !editing) {
     event.preventDefault();
     frameSelectedNodes();
@@ -2830,6 +3106,7 @@ window.addEventListener("blur", () => {
 window.addEventListener("resize", () => renderScene());
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
+  if (externalSyncTimer) window.clearInterval(externalSyncTimer);
   if (!dirty) return;
   clearTimeout(recoveryTimer);
   const workspaceRoot = context.cwd ?? null;
@@ -2866,6 +3143,7 @@ function updateContext(next) {
   context = nextContext;
   contextInitialized = true;
   applyContextTheme(context.theme);
+  updateRepoLinkState();
   const workspaceUnavailable = context.trusted !== true;
   elements.save.disabled = workspaceUnavailable;
   elements.exportSvg.disabled = workspaceUnavailable;
@@ -2879,9 +3157,18 @@ function updateContext(next) {
       ? "工作区尚未信任"
       : "会话可用";
   if (workspaceChanged) {
-    updateDirtyState();
-    queueRecovery();
-    notify("工作区已切换；当前画布已保留为未保存副本，请保存到新仓库或打开已有设计");
+    notify(
+      dirty
+        ? "工作区已切换；当前画布已保留为未保存副本，正在连接新 Repo"
+        : "工作区已切换，正在连接新 Repo 的设计文件",
+    );
+    const expectedWorkspaceEpoch = workspaceEpoch;
+    void initializeWorkspaceDocument(expectedWorkspaceEpoch).catch((error) => {
+      if (expectedWorkspaceEpoch !== workspaceEpoch) return;
+      resetToRepoBlankDocument();
+      setRepoLinkState("Repo 读取失败", "error");
+      notify(error instanceof Error ? error.message : "无法读取 Repo 设计文件", "error");
+    });
   }
   if (!wasVisible && context.visible === true) void checkExternalChange();
   if (wasVisible && context.visible === false && dirty) {
@@ -2982,6 +3269,364 @@ async function restoreRecovery(
   return true;
 }
 
+function chooseRepoDesignFile(files) {
+  return [...files].sort(
+    (left, right) =>
+      (Number(right.modifiedAt) || 0) - (Number(left.modifiedAt) || 0) ||
+      left.path.localeCompare(right.path),
+  )[0];
+}
+
+function resetToRepoBlankDocument() {
+  const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
+  design = createBlankDocument(`${repoName} design`);
+  documentEpoch += 1;
+  clearSelection();
+  collapsedLayerIds.clear();
+  currentModifiedAt = null;
+  currentRevision = null;
+  currentSourcePath = null;
+  currentSourceModifiedAt = null;
+  currentSourceRevision = null;
+  warnedExternalVersion = null;
+  elements.path.value = DEFAULT_PATH;
+  savedSnapshot = "";
+  resetHistory();
+  updateDirtyState();
+  renderAll();
+  requestAnimationFrame(fitCanvas);
+}
+
+async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpoch) {
+  const initializationWorkspaceIdentity = context.cwd ?? null;
+  const workspaceRoot = initializationWorkspaceIdentity ?? "preview";
+  if (context.trusted !== true) {
+    resetToRepoBlankDocument();
+    updateRepoLinkState();
+    return;
+  }
+  const [nextWorkspaceInfo, recovery, lastPath] = await Promise.all([
+    hostCall("workspace.info", {}).catch(() => null),
+    hostCall("storage.get", {
+      key: scopedStorageKey("recovery", workspaceRoot),
+    }).catch(() => null),
+    hostCall("storage.get", {
+      key: scopedStorageKey("lastPath", workspaceRoot),
+    }).catch(() => null),
+  ]);
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  workspaceInfo = nextWorkspaceInfo;
+  updateRepoLinkState();
+  try {
+    if (await restoreRecovery(recovery, expectedWorkspaceEpoch, initializationWorkspaceIdentity)) {
+      setRepoLinkState("Repo · 已恢复", "linked");
+      return;
+    }
+  } catch {
+    assertWorkspaceEpoch(expectedWorkspaceEpoch);
+    await hostCall("storage.delete", {
+      key: scopedStorageKey("recovery", workspaceRoot),
+    }).catch(() => undefined);
+  }
+  if (
+    lastPath &&
+    typeof lastPath === "object" &&
+    lastPath.workspaceRoot === initializationWorkspaceIdentity &&
+    typeof lastPath.path === "string" &&
+    safeDesignPath(lastPath.path)
+  ) {
+    try {
+      await openDocument(lastPath.path, { discardChanges: true });
+      setRepoLinkState("Repo · 已打开", "linked");
+      return;
+    } catch {
+      if (expectedWorkspaceEpoch !== workspaceEpoch) return;
+    }
+  }
+  const discovery = await discoverDesignFiles();
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  const initialFile = chooseRepoDesignFile(discovery.files);
+  if (initialFile) {
+    await openDocument(initialFile.path, { discardChanges: true });
+    setRepoLinkState("Repo · 自动打开", "linked");
+    return;
+  }
+  resetToRepoBlankDocument();
+  setRepoLinkState("Repo · 新设计", "linked");
+  notify("当前 Repo 还没有设计文件；保存后会创建 designs/design.codesign.json");
+}
+
+function startExternalSync() {
+  if (externalSyncTimer) window.clearInterval(externalSyncTimer);
+  externalSyncTimer = window.setInterval(() => {
+    if (context.trusted === true && context.visible !== false) {
+      void checkExternalChange();
+    }
+  }, 2_000);
+}
+
+function designLayerIndex() {
+  return design.nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    parentId: node.parentId ?? null,
+    visible: node.visible,
+    locked: node.locked,
+  }));
+}
+
+function designNodeSubtree(nodeId) {
+  const root = nodeById(nodeId);
+  if (!root) throw new Error(`图层不存在：${nodeId}`);
+  const build = (node, depth = 0) => {
+    if (depth > 32) throw new Error("图层嵌套超过 32 层");
+    const { parentId: _parentId, ...copy } = clone(node);
+    if (isContainerNode(node)) {
+      copy.children = design.nodes
+        .filter((candidate) => candidate.parentId === node.id)
+        .map((candidate) => build(candidate, depth + 1));
+    }
+    return copy;
+  };
+  return build(root);
+}
+
+const AGENT_NODE_PATCH_FIELDS = new Set([
+  "name",
+  "notes",
+  "x",
+  "y",
+  "width",
+  "height",
+  "fill",
+  "stroke",
+  "strokeWidth",
+  "opacity",
+  "rotation",
+  "cornerRadius",
+  "visible",
+  "locked",
+  "clipContent",
+  "text",
+  "fontSize",
+  "fontWeight",
+  "lineHeight",
+  "textAlign",
+  "layout",
+  "gap",
+  "padding",
+  "alignItems",
+  "justifyContent",
+  "layoutGrow",
+  "layoutAlign",
+  "componentId",
+]);
+
+function applyAgentNodePatch(node, changes) {
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+    throw new Error("changes 必须是对象");
+  }
+  for (const [key, value] of Object.entries(changes)) {
+    if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
+      throw new Error(`Agent 不可直接修改图层字段：${key}`);
+    }
+    if (value === null && ["notes", "clipContent", "layoutGrow", "layoutAlign"].includes(key)) {
+      delete node[key];
+    } else {
+      node[key] = value;
+    }
+  }
+}
+
+function removeAgentNode(nodeId) {
+  const node = nodeById(nodeId);
+  if (!node) throw new Error(`图层不存在：${nodeId}`);
+  const removedIds = new Set([
+    node.id,
+    ...descendantIds(design.nodes, new Set([node.id])),
+  ]);
+  if (node.type === "component") {
+    for (const candidate of design.nodes) {
+      if (candidate.type === "instance" && candidate.componentId === node.id) {
+        removedIds.add(candidate.id);
+      }
+    }
+  }
+  design.nodes = design.nodes.filter((candidate) => !removedIds.has(candidate.id));
+  return [...removedIds];
+}
+
+function moveAgentNode(nodeId, parentId, beforeId) {
+  const node = nodeById(nodeId);
+  if (!node) throw new Error(`图层不存在：${nodeId}`);
+  const targetParentId = typeof parentId === "string" && parentId ? parentId : null;
+  if (!reparentNode(design.nodes, node.id, targetParentId)) {
+    const currentParentId = node.parentId ?? null;
+    if (currentParentId !== targetParentId) {
+      throw new Error(`无法把图层 ${nodeId} 移到目标容器`);
+    }
+  }
+  if (typeof beforeId === "string" && beforeId) {
+    const before = nodeById(beforeId);
+    if (!before || (before.parentId ?? null) !== (node.parentId ?? null)) {
+      throw new Error("before_id 必须是同一父级中的图层");
+    }
+    const nodeIndex = design.nodes.indexOf(node);
+    design.nodes.splice(nodeIndex, 1);
+    design.nodes.splice(design.nodes.indexOf(before), 0, node);
+  }
+  normalizeNodeTreeOrder(design.nodes);
+}
+
+async function applyAgentDesignOperations(args) {
+  if (!Array.isArray(args?.operations) || args.operations.length === 0) {
+    throw new Error("operations 必须是非空数组");
+  }
+  if (args.operations.length > 50) throw new Error("一次最多执行 50 个设计操作");
+  const previous = clone(design);
+  const changedIds = new Set();
+  try {
+    ensureDesignV3();
+    for (const [index, operation] of args.operations.entries()) {
+      if (!operation || typeof operation !== "object" || Array.isArray(operation)) {
+        throw new Error(`操作 ${index + 1} 无效`);
+      }
+      if (operation.op === "create_node") {
+        if (!V3_AGENT_NODE_TYPES.has(operation.type)) {
+          throw new Error(`操作 ${index + 1} 的节点类型无效`);
+        }
+        if (!canAddNodes(1)) throw new Error(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`);
+        const requestedId =
+          typeof operation.id === "string" && operation.id
+            ? operation.id
+            : `${operation.type}-${Date.now().toString(36)}-${index}`;
+        if (nodeById(requestedId)) throw new Error(`图层 ID 已存在：${requestedId}`);
+        const node = baseNode(operation.type, { id: requestedId });
+        applyAgentNodePatch(node, operation.properties ?? {});
+        design.nodes.push(node);
+        if (operation.parent_id) moveAgentNode(node.id, operation.parent_id, operation.before_id);
+        else if (operation.before_id) moveAgentNode(node.id, null, operation.before_id);
+        changedIds.add(node.id);
+      } else if (operation.op === "update_node") {
+        const node = nodeById(operation.node_id);
+        if (!node) throw new Error(`图层不存在：${operation.node_id}`);
+        applyAgentNodePatch(node, operation.changes);
+        changedIds.add(node.id);
+      } else if (operation.op === "delete_node") {
+        for (const id of removeAgentNode(operation.node_id)) changedIds.add(id);
+      } else if (operation.op === "move_node") {
+        moveAgentNode(operation.node_id, operation.parent_id, operation.before_id);
+        changedIds.add(operation.node_id);
+      } else if (operation.op === "set_document") {
+        const changes = operation.changes;
+        if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
+          throw new Error("set_document.changes 必须是对象");
+        }
+        for (const key of Object.keys(changes)) {
+          if (!["name", "canvas", "tokens"].includes(key)) {
+            throw new Error(`不可修改文档字段：${key}`);
+          }
+        }
+        if (changes.name !== undefined) design.name = changes.name;
+        if (changes.canvas !== undefined) design.canvas = { ...design.canvas, ...changes.canvas };
+        if (changes.tokens !== undefined) design.tokens = clone(changes.tokens);
+      } else {
+        throw new Error(`不支持的设计操作：${String(operation.op)}`);
+      }
+    }
+    normalizeNodeTreeOrder(design.nodes);
+    reflowLayouts();
+    design = normalizeDesignState(design);
+  } catch (error) {
+    design = normalizeDesignState(previous);
+    throw error;
+  }
+  selectedIds = new Set([...changedIds].filter((id) => nodeById(id)));
+  selectedId = [...selectedIds].at(-1) ?? null;
+  commitHistory();
+  markChanged();
+  if (args.save !== false) await saveDocument({ quiet: true });
+  return {
+    path: elements.path.value.trim(),
+    saved: args.save !== false,
+    changedNodeIds: [...changedIds],
+    nodeCount: design.nodes.length,
+    revision: currentRevision,
+  };
+}
+
+const V3_AGENT_NODE_TYPES = new Set([
+  "frame",
+  "group",
+  "component",
+  "instance",
+  "rectangle",
+  "ellipse",
+  "text",
+]);
+
+function registerAgentTools(ready) {
+  const register = window.codeshellPanel?.registerTool;
+  if (!register) return;
+  register("get_design_metadata", async () => {
+    await ready;
+    return {
+      format: design.format,
+      version: design.version,
+      path: elements.path.value.trim(),
+      name: design.name,
+      activePageId: design.activePageId,
+      pages: design.pages.map((page) => ({ id: page.id, name: page.name })),
+      canvas: clone(design.canvas),
+      selection: [...selectedIds],
+      dirty,
+      revision: currentRevision,
+      layers: designLayerIndex(),
+    };
+  });
+  register("get_design_context", async (args) => {
+    await ready;
+    if (typeof args.node_id === "string" && args.node_id) {
+      return {
+        path: elements.path.value.trim(),
+        activePageId: design.activePageId,
+        node: designNodeSubtree(args.node_id),
+      };
+    }
+    return {
+      path: elements.path.value.trim(),
+      document: JSON.parse(serializeDesign()),
+    };
+  });
+  register("use_design", async (args) => {
+    await ready;
+    return applyAgentDesignOperations(args);
+  });
+  register("validate_design", async () => {
+    await ready;
+    normalizeDesignState(design);
+    const issues = auditDesign(design);
+    return {
+      valid: true,
+      path: elements.path.value.trim(),
+      nodeCount: design.nodes.length,
+      issueCount: issues.length,
+      issues,
+    };
+  });
+  register("save_design", async () => {
+    await ready;
+    const result = await saveDocument({ quiet: true });
+    renderAll();
+    return {
+      path: elements.path.value.trim(),
+      revision: result.revision,
+      nodeCount: result.design.nodes.length,
+    };
+  });
+}
+
 async function initialize() {
   resetHistory();
   renderAll();
@@ -2995,17 +3640,7 @@ async function initialize() {
   }
 
   const initializationWorkspaceEpoch = workspaceEpoch;
-  const initializationWorkspaceIdentity = context.cwd ?? null;
-  const initializationWorkspaceRoot = initializationWorkspaceIdentity ?? "preview";
-  const [recovery, lastPath, uiPreferences] = await Promise.all([
-    hostCall("storage.get", {
-      key: scopedStorageKey("recovery", initializationWorkspaceRoot),
-    }).catch(() => null),
-    hostCall("storage.get", {
-      key: scopedStorageKey("lastPath", initializationWorkspaceRoot),
-    }).catch(() => null),
-    hostCall("storage.get", { key: "uiPreferences" }).catch(() => null),
-  ]);
+  const uiPreferences = await hostCall("storage.get", { key: "uiPreferences" }).catch(() => null);
   if (initializationWorkspaceEpoch !== workspaceEpoch) return;
   if (uiPreferences && typeof uiPreferences === "object") {
     if (typeof uiPreferences.showGrid === "boolean") showGrid = uiPreferences.showGrid;
@@ -3013,36 +3648,16 @@ async function initialize() {
     renderAll();
   }
   try {
-    if (
-      await restoreRecovery(recovery, initializationWorkspaceEpoch, initializationWorkspaceIdentity)
-    ) {
-      return;
-    }
-  } catch {
+    await initializeWorkspaceDocument(initializationWorkspaceEpoch);
+  } catch (error) {
     if (initializationWorkspaceEpoch !== workspaceEpoch) return;
-    await hostCall("storage.delete", {
-      key: scopedStorageKey("recovery", initializationWorkspaceRoot),
-    }).catch(() => undefined);
+    resetToRepoBlankDocument();
+    setRepoLinkState("Repo 读取失败", "error");
+    notify(error instanceof Error ? error.message : "无法读取 Repo 设计文件", "error");
   }
-  if (
-    lastPath &&
-    typeof lastPath === "object" &&
-    lastPath.workspaceRoot === initializationWorkspaceIdentity &&
-    typeof lastPath.path === "string" &&
-    safeDesignPath(lastPath.path)
-  ) {
-    try {
-      await openDocument(lastPath.path, { discardChanges: true });
-      return;
-    } catch {
-      if (initializationWorkspaceEpoch !== workspaceEpoch) return;
-      // Keep the polished starter document when the remembered file no longer exists.
-    }
-  }
-  if (initializationWorkspaceEpoch !== workspaceEpoch) return;
-  elements.path.value = DEFAULT_PATH;
-  savedSnapshot = "";
-  updateDirtyState();
+  startExternalSync();
 }
 
-void initialize();
+const initialization = initialize();
+registerAgentTools(initialization);
+void initialization;

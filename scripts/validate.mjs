@@ -30,6 +30,14 @@ const allowedExtensions = new Set([
   ".woff2",
   ".ttf",
 ]);
+const allowedAgentExtensions = new Set([
+  ".md",
+  ".json",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".webp",
+]);
 
 async function walk(directory, root = directory) {
   const files = [];
@@ -39,7 +47,7 @@ async function walk(directory, root = directory) {
     const localPath = relative(root, absolute).split(sep).join("/");
     assert(!info.isSymbolicLink(), `${localPath}: symlinks are not allowed`);
     assert(
-      !forbiddenNames.has(entry.name),
+      localPath.includes("/") || !forbiddenNames.has(entry.name),
       `${localPath}: Agent Plugin content is not allowed`,
     );
     if (info.isDirectory()) files.push(...(await walk(absolute, root)));
@@ -57,10 +65,9 @@ async function validatePackage(packagePath) {
   const manifestPath = join(root, ".codeshell-panel", "panel.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
-  assert.equal(
-    manifest.schemaVersion,
-    1,
-    `${packagePath}: schemaVersion must be 1`,
+  assert(
+    manifest.schemaVersion === 1 || manifest.schemaVersion === 2,
+    `${packagePath}: schemaVersion must be 1 or 2`,
   );
   assert.match(
     manifest.id,
@@ -86,6 +93,31 @@ async function validatePackage(packagePath) {
     Array.isArray(manifest.permissions),
     `${packagePath}: permissions must be an array`,
   );
+  const declaredSkillRoots = new Set();
+  if (manifest.schemaVersion === 2 && manifest.agent) {
+    assert(Array.isArray(manifest.agent.tools), `${packagePath}: agent.tools must be an array`);
+    assert(Array.isArray(manifest.agent.skills), `${packagePath}: agent.skills must be an array`);
+    const toolNames = new Set();
+    for (const tool of manifest.agent.tools) {
+      assert.match(tool.name, /^[a-z][a-z0-9_]{0,63}$/, `${packagePath}: invalid tool name`);
+      assert(!toolNames.has(tool.name), `${packagePath}: duplicate tool ${tool.name}`);
+      toolNames.add(tool.name);
+      assert.equal(typeof tool.description, "string", `${packagePath}: tool description required`);
+      assert.equal(tool.inputSchema?.type, "object", `${packagePath}: tool schema must be object`);
+      assert.equal(typeof tool.readOnly, "boolean", `${packagePath}: tool readOnly required`);
+    }
+    for (const skill of manifest.agent.skills) {
+      assert.match(
+        skill,
+        /^agent\/skills\/[a-z][a-z0-9-]{0,63}\/SKILL\.md$/,
+        `${packagePath}: invalid Skill path`,
+      );
+      const skillInfo = await stat(join(root, ...skill.split("/")));
+      assert(skillInfo.isFile(), `${packagePath}: declared Skill is not a file`);
+      assert(skillInfo.size <= 256 * 1024, `${packagePath}: declared Skill exceeds 256 KiB`);
+      declaredSkillRoots.add(skill.slice(0, -"/SKILL.md".length));
+    }
+  }
 
   const entry = resolve(root, ...manifest.entry.split("/"));
   const entryRealPath = await realpath(entry);
@@ -107,12 +139,17 @@ async function validatePackage(packagePath) {
     ) {
       continue;
     }
-    assert(
-      file.startsWith("app/"),
-      `${packagePath}/${file}: assets must live under app/`,
+    const declaredAgentAsset = [...declaredSkillRoots].some(
+      (skillRoot) => file === skillRoot || file.startsWith(`${skillRoot}/`),
     );
     assert(
-      allowedExtensions.has(extname(file).toLowerCase()),
+      file.startsWith("app/") || declaredAgentAsset,
+      `${packagePath}/${file}: assets must live under app/ or a declared Skill`,
+    );
+    assert(
+      (declaredAgentAsset ? allowedAgentExtensions : allowedExtensions).has(
+        extname(file).toLowerCase(),
+      ),
       `${packagePath}/${file}: unsupported asset extension`,
     );
   }
@@ -140,6 +177,70 @@ assert.deepEqual(
   { x: 0, y: 0, width: 25, height: 15 },
 );
 
+const designCodec = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document.mjs"))
+);
+const baseNode = (id, type, name) => ({
+  id,
+  type,
+  name,
+  x: 0,
+  y: 0,
+  width: 100,
+  height: 100,
+  fill: "#ffffff",
+  stroke: "transparent",
+  strokeWidth: 0,
+  opacity: 1,
+  rotation: 0,
+  cornerRadius: 0,
+  visible: true,
+  locked: false,
+});
+const nestedDesign = {
+  format: "codeshell.design",
+  version: 3,
+  name: "Nested smoke",
+  canvas: { width: 1000, height: 800, background: "#eeeeee" },
+  tokens: { colors: [] },
+  activePageId: "page-1",
+  pages: [
+    {
+      id: "page-1",
+      name: "Page 1",
+      children: [
+        {
+          ...baseNode("frame", "frame", "Frame"),
+          layout: "none",
+          gap: 0,
+          padding: 0,
+          alignItems: "start",
+          justifyContent: "start",
+          children: [
+            {
+              ...baseNode("group", "group", "Group"),
+              layout: "none",
+              gap: 0,
+              padding: 0,
+              alignItems: "start",
+              justifyContent: "start",
+              children: [{ ...baseNode("rect", "rectangle", "Rectangle") }],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+};
+const designState = designCodec.normalizeDesignDocument(nestedDesign);
+assert.equal(designState.nodes.length, 3);
+assert.equal(designState.nodes[2].parentId, "group");
+const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designState));
+assert.equal(
+  designRoundTrip.pages[0].children[0].children[0].children[0].id,
+  "rect",
+);
+
 const quant = await import(
   pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/engine.mjs"))
 );
@@ -158,4 +259,5 @@ for (const result of results) {
   console.log(`✓ ${result.id}: ${result.files} files`);
 }
 console.log("✓ Design Studio geometry smoke test");
+console.log("✓ Design Studio v3 recursive document smoke test");
 console.log("✓ Quant Lab engine smoke test");
