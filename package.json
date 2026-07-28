@@ -1,0 +1,12 @@
+{
+  "name": "codeshell-panel-apps",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent desktop Panel Apps for CodeShell",
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/validate.mjs",
+    "test": "node scripts/validate.mjs"
+  },
+  "license": "MIT"
+}
