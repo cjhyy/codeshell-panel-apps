@@ -540,6 +540,7 @@ const elements = {
   workflowSelectionSummary: document.querySelector("#workflow-selection-summary"),
   runCustomWorkflow: document.querySelector("#run-custom-workflow"),
   runCompanyResearch: document.querySelector("#run-company-research"),
+  continueResearchSession: document.querySelector("#continue-research-session"),
   resumeVersionList: document.querySelector("#resume-version-list"),
   interviewSetCount: document.querySelector("#interview-set-count"),
   interviewSetList: document.querySelector("#interview-set-list"),
@@ -561,6 +562,17 @@ const elements = {
   interviewDebriefList: document.querySelector("#interview-debrief-list"),
   refreshPreparationPlan: document.querySelector("#refresh-preparation-plan"),
   startInterviewDebrief: document.querySelector("#start-interview-debrief"),
+  sessionBridge: document.querySelector("#session-bridge"),
+  sessionContextKind: document.querySelector("#session-context-kind"),
+  sessionContextTitle: document.querySelector("#session-context-title"),
+  sessionContextDetail: document.querySelector("#session-context-detail"),
+  sessionQuickActions: document.querySelector("#session-quick-actions"),
+  sessionInstruction: document.querySelector("#session-instruction"),
+  sessionBridgeState: document.querySelector("#session-bridge-state"),
+  sessionBridgeStateLabel: document.querySelector("#session-bridge-state-label"),
+  sendSessionInstruction: document.querySelector("#send-session-instruction"),
+  discussJobSession: document.querySelector("#discuss-job-session"),
+  continueResumeSession: document.querySelector("#continue-resume-session"),
   toast: document.querySelector("#toast"),
 };
 
@@ -575,6 +587,12 @@ let projectContext = {
 let resumeMode = "preview";
 let toastTimer = null;
 let saveTimer = null;
+let sessionBridgeContext = {
+  kind: "panel",
+  title: "当前求职面板",
+  detail: "Agent 会读取当前项目、岗位和面板中的最新结构化数据。",
+  payload: {},
+};
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -793,6 +811,11 @@ function updateContext(next) {
   elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
   elements.refreshPreparationPlan.disabled = Boolean(context.busy);
   elements.startInterviewDebrief.disabled = Boolean(context.busy);
+  elements.sendSessionInstruction.disabled = Boolean(context.busy);
+  elements.sessionBridgeState.classList.toggle("busy", Boolean(context.busy));
+  elements.sessionBridgeStateLabel.textContent = context.busy
+    ? " 当前 Session 正在处理任务"
+    : " 已绑定当前 Session";
   elements.projectSessionState.textContent = context.sessionId
     ? context.busy
       ? "当前 Session · Agent 执行中"
@@ -854,6 +877,195 @@ function notify(message, kind = "default") {
     },
     kind === "error" ? 5200 : 3200,
   );
+}
+
+function sessionActionsFor(target) {
+  const common = [
+    {
+      label: "帮我判断下一步",
+      prompt: "根据这个对象和当前求职目标，告诉我最值得优先做的下一步，并说明理由。",
+    },
+    {
+      label: "检查证据",
+      prompt: "检查相关结论是否都有真实材料支持，把事实、缺口和推断分开。",
+    },
+  ];
+  const byKind = {
+    panel: [
+      {
+        label: "整理当前进度",
+        prompt: "总结当前求职进度、阻塞和下一步，只基于面板已经保存的内容。",
+      },
+    ],
+    jobs: [
+      {
+        label: "对比这些岗位",
+        prompt: "对比这些岗位的匹配度、机会成本和准备投入，给出有证据的优先级。",
+      },
+    ],
+    job: [
+      {
+        label: "拆解 JD",
+        prompt: "拆解这个岗位最重要的要求，映射我已有的证据和真实缺口。",
+      },
+      {
+        label: "准备这个岗位",
+        prompt: "为这个岗位更新补强计划和下一步行动，不自动修改简历。",
+      },
+    ],
+    research: [
+      {
+        label: "继续核验",
+        prompt: "检查这份公司与面经调研中证据不足的结论，继续核验并写回报告。",
+      },
+    ],
+    resume: [
+      {
+        label: "审阅并修改",
+        prompt: "审阅当前简历，优先找出最影响筛选通过率的问题，并把完整修改版写回面板。",
+      },
+      {
+        label: "只给修改建议",
+        prompt: "审阅当前简历，只给具体修改建议，暂时不要覆盖当前版本。",
+      },
+    ],
+    question: [
+      {
+        label: "练这道题",
+        prompt: "从这道题开始模拟面试。先只提问，等我回答后再给反馈和追问。",
+      },
+      {
+        label: "补回答结构",
+        prompt: "结合我的真实材料，为这道题整理回答结构、证据和可能追问，不要编造事实。",
+      },
+    ],
+    gap: [
+      {
+        label: "补这个缺口",
+        prompt: "针对这个缺口，先告诉我需要补充哪些真实材料，再更新对应补强计划。",
+      },
+    ],
+    debrief: [
+      {
+        label: "继续复盘",
+        prompt: "继续分析这次真实面试，指出回答中最该改善的部分和下一轮练习重点。",
+      },
+      {
+        label: "迭代准备计划",
+        prompt: "只根据这次复盘更新对应岗位的补强计划，不自动修改其他材料。",
+      },
+    ],
+  };
+  return [...(byKind[target.kind] || []), ...common].slice(0, 4);
+}
+
+function currentSessionTarget() {
+  const job = selectedJob();
+  const report = selectedResearch();
+  if (state.activeView === "research" && report) {
+    return {
+      kind: "research",
+      title: `${report.company?.officialName || job?.company || "公司"}调研报告`,
+      detail: job ? `${job.company} · ${job.title}` : "公司与面经",
+      payload: { jobId: report.jobId, researchId: report.id },
+    };
+  }
+  const resumeMatchesSelection =
+    Boolean(state.resume.markdown) && state.resume.jobId === (job?.id || "");
+  if (
+    (state.activeView === "resumes" && state.resume.markdown) ||
+    (state.activeView === "dashboard" && resumeMatchesSelection)
+  ) {
+    return {
+      kind: "resume",
+      title: state.resume.title || "当前简历",
+      detail: job ? `${job.company} · ${job.title}` : "通用候选人简历",
+      payload: { jobId: state.resume.jobId || "", resumeVersionId: state.resume.versionId || "" },
+    };
+  }
+  if (state.workflowJobIds.length > 1) {
+    const jobs = selectedWorkflowJobs();
+    return {
+      kind: "jobs",
+      title: `${jobs.length} 个已选岗位`,
+      detail: jobs.map((item) => `${item.company} · ${item.title}`).join("；"),
+      payload: { jobIds: jobs.map((item) => item.id) },
+    };
+  }
+  if (job) {
+    return {
+      kind: "job",
+      title: `${job.company} · ${job.title}`,
+      detail: `${job.source || "来源待确认"} · ${JD_COMPLETENESS_LABELS[normalizeJdCompleteness(job.jdCompleteness, job.description, true)]}`,
+      payload: { jobId: job.id },
+    };
+  }
+  return {
+    kind: "panel",
+    title: "当前求职面板",
+    detail: "Agent 会读取当前项目、岗位和面板中的最新结构化数据。",
+    payload: {},
+  };
+}
+
+function renderSessionBridge() {
+  const target = sessionBridgeContext;
+  const kindLabels = {
+    panel: "当前面板",
+    jobs: "多个岗位",
+    job: "目标岗位",
+    research: "公司与面经",
+    resume: "简历版本",
+    question: "面试题",
+    gap: "能力缺口",
+    debrief: "真实复盘",
+  };
+  elements.sessionContextKind.textContent = kindLabels[target.kind] || "面板对象";
+  elements.sessionContextTitle.textContent = target.title;
+  elements.sessionContextDetail.textContent = target.detail;
+  const actions = sessionActionsFor(target);
+  elements.sessionQuickActions.replaceChildren(
+    ...actions.map((action, index) => {
+      const button = makeTextElement("button", "", action.label);
+      button.type = "button";
+      button.dataset.sessionQuickIndex = String(index);
+      return button;
+    }),
+  );
+  elements.sendSessionInstruction.disabled = Boolean(context.busy);
+}
+
+function openSessionBridge(target = currentSessionTarget(), suggestedPrompt = "") {
+  const previousTarget = JSON.stringify([
+    sessionBridgeContext.kind,
+    sessionBridgeContext.payload,
+  ]);
+  const nextTarget = JSON.stringify([target.kind, target.payload]);
+  sessionBridgeContext = target;
+  renderSessionBridge();
+  elements.sessionBridge.hidden = false;
+  if (suggestedPrompt) {
+    elements.sessionInstruction.value = suggestedPrompt;
+  } else if (previousTarget !== nextTarget || !elements.sessionInstruction.value.trim()) {
+    elements.sessionInstruction.value = sessionActionsFor(target)[0]?.prompt || "";
+  }
+  elements.sessionInstruction.focus();
+}
+
+function closeSessionBridge() {
+  elements.sessionBridge.hidden = true;
+}
+
+function buildSessionBridgePrompt(instruction) {
+  const target = sessionBridgeContext;
+  const payload = JSON.stringify(target.payload);
+  return [
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，继续处理我正在面板中查看的对象。",
+    "先调用 get_job_search_context，读取当前项目中适用的 CODESHELL.md，并通过下面的不透明 ID 定位对象。",
+    `对象类型：${target.kind}；对象标题：${target.title}；对象标识：${payload}`,
+    `我的指令：${instruction}`,
+    "只执行这条指令直接要求的任务，不自动扩展成固定全流程。需要结构化更新时用对应 Panel 工具写回；如果缺少真实事实，先在当前 Session 中向我询问，不要编造。",
+  ].join("\n");
 }
 
 function persist({ quiet = true } = {}) {
@@ -1163,6 +1375,8 @@ function renderJobs() {
   const jobs = jobsForCurrentFilter();
   elements.jobList.replaceChildren();
   for (const job of jobs) {
+    const shell = document.createElement("article");
+    shell.className = "job-card-shell";
     const card = document.createElement("button");
     card.type = "button";
     card.className = `job-card${job.id === state.selectedJobId ? " active" : ""}`;
@@ -1203,7 +1417,11 @@ function renderJobs() {
     badges.append(completeness, status);
     bottom.append(badges);
     card.append(top, title, meta, bottom);
-    elements.jobList.append(card);
+    const sessionButton = makeTextElement("button", "card-session-action", "问 Agent ↗");
+    sessionButton.type = "button";
+    sessionButton.dataset.sessionJobId = job.id;
+    shell.append(card, sessionButton);
+    elements.jobList.append(shell);
   }
   elements.emptyAddJob.hidden = jobs.length > 0;
 }
@@ -1326,6 +1544,7 @@ function renderResume() {
   });
   elements.saveResume.disabled = !bound;
   elements.generateResume.disabled = Boolean(context.busy);
+  elements.continueResumeSession.disabled = !bound || Boolean(context.busy);
 }
 
 function renderInsights() {
@@ -1337,6 +1556,7 @@ function renderInsights() {
   elements.coverageLabel.textContent = `${matches.length} / ${keywords.length}`;
   elements.keywordList.replaceChildren();
   elements.coverageList.replaceChildren();
+  elements.discussJobSession.disabled = !job || Boolean(context.busy);
 
   if (!job) {
     elements.keywordList.append(makeTextElement("span", "tag", "选择一个职位"));
@@ -1467,6 +1687,10 @@ function renderVersions() {
       makeTextElement("p", "", job ? `${job.company} · ${job.title}` : "职位信息待关联"),
       mini,
     );
+    const continueButton = makeTextElement("button", "card-session-action", "在 Session 继续 ↗");
+    continueButton.type = "button";
+    continueButton.dataset.sessionResumeVersionId = version.id;
+    card.append(continueButton);
     elements.resumeVersionList.append(card);
   }
 }
@@ -1490,7 +1714,7 @@ function renderInterviewLoop() {
   );
 
   elements.preparationGapList.replaceChildren();
-  for (const gap of plan?.gaps || []) {
+  for (const [gapIndex, gap] of (plan?.gaps || []).entries()) {
     const card = document.createElement("article");
     card.className = "preparation-gap";
     const header = document.createElement("header");
@@ -1500,7 +1724,13 @@ function renderInterviewLoop() {
       { high: "优先补", medium: "随后补", low: "观察" }[gap.priority] || "待安排",
     );
     priority.dataset.priority = gap.priority || "medium";
-    header.append(makeTextElement("strong", "", gap.area || "能力缺口"), priority);
+    const actions = document.createElement("div");
+    actions.className = "context-card-actions";
+    const sessionButton = makeTextElement("button", "inline-session-action", "补这个 ↗");
+    sessionButton.type = "button";
+    sessionButton.dataset.sessionGapIndex = String(gapIndex);
+    actions.append(priority, sessionButton);
+    header.append(makeTextElement("strong", "", gap.area || "能力缺口"), actions);
     const details = [gap.evidence, gap.impact].filter(Boolean).join(" ");
     card.append(
       header,
@@ -1554,7 +1784,13 @@ function renderInterviewLoop() {
       outcomeLabels[debrief.outcome] || "未知",
     );
     outcome.dataset.outcome = debrief.outcome || "unknown";
-    header.append(makeTextElement("strong", "", debrief.round || "面试记录"), outcome);
+    const actions = document.createElement("div");
+    actions.className = "context-card-actions";
+    const sessionButton = makeTextElement("button", "inline-session-action", "继续 ↗");
+    sessionButton.type = "button";
+    sessionButton.dataset.sessionDebriefId = debrief.id;
+    actions.append(outcome, sessionButton);
+    header.append(makeTextElement("strong", "", debrief.round || "面试记录"), actions);
     card.append(
       header,
       makeTextElement("p", "", debrief.summary || "暂无复盘摘要"),
@@ -1668,6 +1904,10 @@ function renderInterviews() {
       makeTextElement("span", "question-category", question.category || "岗位问题"),
       makeTextElement("span", "question-difficulty", question.difficulty || "进阶"),
     );
+    const practiceButton = makeTextElement("button", "inline-session-action", "练这道 ↗");
+    practiceButton.type = "button";
+    practiceButton.dataset.sessionQuestionId = question.id;
+    meta.append(practiceButton);
     top.append(
       makeTextElement("span", "question-index", `Q${String(index + 1).padStart(2, "0")}`),
       meta,
@@ -1725,6 +1965,8 @@ function renderTagItems(container, items, emptyLabel) {
 function renderResearch() {
   const latestRun = state.workflowRuns[0] ?? null;
   elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
+  elements.continueResearchSession.disabled =
+    Boolean(context.busy) || !selectedResearch();
   const workflowLabels = {
     running: "调研进行中",
     completed: "最近流程已完成",
@@ -1911,6 +2153,7 @@ function renderResearch() {
 }
 
 function renderAll() {
+  if (elements.sessionBridge.hidden) sessionBridgeContext = currentSessionTarget();
   renderView();
   renderWorkflowBuilder();
   renderCounts();
@@ -1922,6 +2165,7 @@ function renderAll() {
   renderResearch();
   renderVersions();
   renderInterviews();
+  renderSessionBridge();
 }
 
 function composeDraft(job) {
@@ -2364,7 +2608,10 @@ async function simulateInterviewSession() {
 }
 
 async function submitSessionTask(prompt, successMessage) {
-  if (context.busy) return notify("当前 Session 的 Agent 正在执行，请稍后再试", "error");
+  if (context.busy) {
+    notify("当前 Session 的 Agent 正在执行，请稍后再试", "error");
+    return false;
+  }
   try {
     await hostCall("agent.submitPrompt", { prompt });
     notify(
@@ -2372,8 +2619,10 @@ async function submitSessionTask(prompt, successMessage) {
         ? successMessage
         : "浏览器预览不会启动 Agent；安装到 CodeShell 后会发送到当前 Session",
     );
+    return true;
   } catch (error) {
     notify(error instanceof Error ? error.message : "发送到当前 Session 失败", "error");
+    return false;
   }
 }
 
@@ -3120,6 +3369,31 @@ function registerAgentTools(ready) {
 }
 
 function bindEvents() {
+  document.querySelector("#open-session-bridge").addEventListener("click", () => {
+    openSessionBridge(currentSessionTarget());
+  });
+  document.querySelector("#close-session-bridge").addEventListener("click", closeSessionBridge);
+  elements.sessionQuickActions.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-quick-index]");
+    if (!button) return;
+    const action = sessionActionsFor(sessionBridgeContext)[Number(button.dataset.sessionQuickIndex)];
+    if (!action) return;
+    elements.sessionInstruction.value = action.prompt;
+    elements.sessionInstruction.focus();
+  });
+  elements.sendSessionInstruction.addEventListener("click", async () => {
+    const instruction = elements.sessionInstruction.value.trim();
+    if (!instruction) return notify("先写一句希望 Agent 做什么", "error");
+    const sent = await submitSessionTask(
+      buildSessionBridgePrompt(instruction),
+      "已把当前对象和指令发送到 Session；结果会继续写回面板",
+    );
+    if (sent) {
+      elements.sessionInstruction.value = "";
+      elements.sessionBridgeStateLabel.textContent = "已发送，等待 Agent 回写";
+    }
+  });
+
   document.querySelectorAll("[data-view-target]").forEach((button) => {
     button.addEventListener("click", () => {
       state.activeView = button.dataset.viewTarget;
@@ -3155,6 +3429,21 @@ function bindEvents() {
   });
 
   elements.jobList.addEventListener("click", (event) => {
+    const sessionButton = event.target.closest("[data-session-job-id]");
+    if (sessionButton) {
+      const job = state.jobs.find((item) => item.id === sessionButton.dataset.sessionJobId);
+      if (!job) return;
+      openSessionBridge(
+        {
+          kind: "job",
+          title: `${job.company} · ${job.title}`,
+          detail: `${job.source || "来源待确认"} · ${JD_COMPLETENESS_LABELS[normalizeJdCompleteness(job.jdCompleteness, job.description, true)]}`,
+          payload: { jobId: job.id },
+        },
+        "拆解这个岗位最重要的要求，告诉我已有证据、真实缺口和最优先的准备动作。",
+      );
+      return;
+    }
     const card = event.target.closest("[data-job-id]");
     if (!card) return;
     if (resumeMode === "edit" && state.resume.jobId === state.selectedJobId) {
@@ -3208,6 +3497,17 @@ function bindEvents() {
   elements.runCompanyResearch.addEventListener("click", () =>
     void runCompanyResearchInSession(),
   );
+  elements.continueResearchSession.addEventListener("click", () => {
+    const report = selectedResearch();
+    const job = selectedJob();
+    if (!report) return notify("当前还没有可继续的调研报告", "error");
+    openSessionBridge({
+      kind: "research",
+      title: `${report.company?.officialName || job?.company || "公司"}调研报告`,
+      detail: job ? `${job.company} · ${job.title}` : "公司与面经",
+      payload: { jobId: report.jobId, researchId: report.id },
+    });
+  });
   for (const id of ["open-job-form", "compact-add-job", "empty-add-job"]) {
     document.querySelector(`#${id}`).addEventListener("click", () => openDialog("job-dialog"));
   }
@@ -3231,6 +3531,62 @@ function bindEvents() {
   elements.startInterviewDebrief.addEventListener("click", () => {
     const job = selectedJob();
     void runCustomWorkflowInSession(["debrief"], job ? [job] : []);
+  });
+  elements.preparationGapList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-gap-index]");
+    if (!button) return;
+    const plan = selectedPreparationPlan();
+    const gap = plan?.gaps?.[Number(button.dataset.sessionGapIndex)];
+    if (!plan || !gap) return;
+    openSessionBridge(
+      {
+        kind: "gap",
+        title: gap.area || "能力缺口",
+        detail: gap.impact || gap.evidence || "当前补强计划",
+        payload: {
+          jobId: plan.jobId || "",
+          preparationPlanId: plan.id,
+          gapIndex: Number(button.dataset.sessionGapIndex),
+        },
+      },
+      "针对这个缺口，先告诉我需要补充哪些真实材料，再把可执行的下一步写回补强计划。",
+    );
+  });
+  elements.interviewDebriefList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-debrief-id]");
+    if (!button) return;
+    const debrief = state.interviewDebriefs.find(
+      (item) => item.id === button.dataset.sessionDebriefId,
+    );
+    if (!debrief) return;
+    openSessionBridge({
+      kind: "debrief",
+      title: debrief.round || "真实面试复盘",
+      detail: debrief.summary || "继续分析这次面试",
+      payload: { jobId: debrief.jobId || "", interviewDebriefId: debrief.id },
+    });
+  });
+  elements.interviewQuestionList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-question-id]");
+    if (!button) return;
+    const set = selectedInterviewSet();
+    const question = set?.questions?.find(
+      (item) => item.id === button.dataset.sessionQuestionId,
+    );
+    if (!set || !question) return;
+    openSessionBridge(
+      {
+        kind: "question",
+        title: question.question,
+        detail: `${question.category || "岗位问题"} · ${question.difficulty || "进阶"}`,
+        payload: {
+          jobId: set.jobId,
+          interviewSetId: set.id,
+          questionId: question.id,
+        },
+      },
+      "从这道题开始模拟面试。先只问问题，等我回答后再给反馈和追问。",
+    );
   });
 
   elements.interviewSetList.addEventListener("click", (event) => {
@@ -3332,7 +3688,52 @@ function bindEvents() {
 
   elements.generateResume.addEventListener("click", () => void generateDraft());
   elements.saveResume.addEventListener("click", () => void saveResumeToRepo());
+  elements.continueResumeSession.addEventListener("click", () => {
+    if (!state.resume.markdown) return notify("当前还没有可继续的简历", "error");
+    openSessionBridge({
+      kind: "resume",
+      title: state.resume.title || "当前简历",
+      detail: selectedJob()
+        ? `${selectedJob().company} · ${selectedJob().title}`
+        : "通用候选人简历",
+      payload: {
+        jobId: state.resume.jobId || "",
+        resumeVersionId: state.resume.versionId || "",
+      },
+    });
+  });
+  elements.resumeVersionList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-resume-version-id]");
+    if (!button) return;
+    const versions = state.resume.versionId
+      ? [state.resume, ...state.versions]
+      : state.versions;
+    const version = versions.find(
+      (item) => (item.versionId || item.id) === button.dataset.sessionResumeVersionId,
+    );
+    if (!version) return;
+    const job = state.jobs.find((item) => item.id === version.jobId);
+    openSessionBridge({
+      kind: "resume",
+      title: version.title || "简历版本",
+      detail: job ? `${job.company} · ${job.title}` : "通用候选人简历",
+      payload: {
+        jobId: version.jobId || "",
+        resumeVersionId: version.versionId || version.id || "",
+      },
+    });
+  });
   elements.askAgent.addEventListener("click", () => openDialog("resume-agent-dialog"));
+  elements.discussJobSession.addEventListener("click", () => {
+    const job = selectedJob();
+    if (!job) return notify("先选择一个岗位", "error");
+    openSessionBridge({
+      kind: "job",
+      title: `${job.company} · ${job.title}`,
+      detail: `${job.source || "来源待确认"} · 匹配度 ${calculateMatch(job)}%`,
+      payload: { jobId: job.id },
+    });
+  });
   elements.openSourceJob.addEventListener("click", async () => {
     const job = selectedJob();
     if (!job?.url) return notify("这个职位没有保存原始链接", "error");
@@ -3353,6 +3754,15 @@ function bindEvents() {
   });
 
   document.addEventListener("keydown", (event) => {
+    if (
+      !elements.sessionBridge.hidden &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key === "Enter"
+    ) {
+      event.preventDefault();
+      elements.sendSessionInstruction.click();
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
       if (resumeMode === "edit") {
@@ -3366,6 +3776,7 @@ function bindEvents() {
       }
     }
     if (event.key === "Escape") {
+      closeSessionBridge();
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
     }
   });

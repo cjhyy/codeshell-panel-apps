@@ -31,6 +31,14 @@
         </div>
 
         <div class="top-actions">
+          <button
+            id="open-session-bridge"
+            class="button button-quiet session-trigger-button"
+            type="button"
+          >
+            <span aria-hidden="true">↗</span>
+            问当前 Session
+          </button>
           <button id="focus-workflow-builder" class="button button-primary" type="button">
             <span aria-hidden="true">✦</span>
             组合任务
@@ -252,6 +260,13 @@
                 <button id="save-resume" class="button button-quiet compact" type="button">
                   保存到当前项目
                 </button>
+                <button
+                  id="continue-resume-session"
+                  class="button button-quiet compact"
+                  type="button"
+                >
+                  问 Agent ↗
+                </button>
                 <button id="generate-resume" class="button button-primary compact" type="button">
                   <span aria-hidden="true">✦</span>
                   生成粗版
@@ -315,6 +330,9 @@
               </section>
 
               <div class="job-actions">
+                <button id="discuss-job-session" class="button button-quiet full" type="button">
+                  在 Session 讨论当前岗位
+                </button>
                 <button id="open-source-job" class="button button-quiet full" type="button">
                   打开职位原页 ↗
                 </button>
@@ -466,6 +484,9 @@
             </div>
             <div class="heading-meta">
               <span id="workflow-status" class="meta-chip"><i aria-hidden="true"></i> 尚未运行</span>
+              <button id="continue-research-session" class="button button-quiet" type="button">
+                问 Agent ↗
+              </button>
               <button id="run-company-research" class="button button-primary" type="button">
                 交给当前 Session 调研
               </button>
@@ -691,6 +712,52 @@
         </section>
       </section>
     </main>
+
+    <aside
+      id="session-bridge"
+      class="session-bridge"
+      role="dialog"
+      aria-modal="false"
+      hidden
+      aria-labelledby="session-bridge-title"
+    >
+      <header>
+        <div>
+          <span class="panel-kicker">CURRENT SESSION</span>
+          <h2 id="session-bridge-title">把当前面板内容交给 Agent</h2>
+        </div>
+        <button id="close-session-bridge" class="icon-button" type="button" aria-label="关闭">
+          ×
+        </button>
+      </header>
+
+      <div class="session-bridge-body">
+        <section id="session-context-card" class="session-context-card">
+          <span id="session-context-kind">当前面板</span>
+          <strong id="session-context-title">没有指定对象</strong>
+          <small id="session-context-detail">Agent 会读取当前项目和面板上下文。</small>
+        </section>
+
+        <div id="session-quick-actions" class="session-quick-actions" aria-label="快捷指令"></div>
+
+        <label for="session-instruction">告诉 Agent 接下来做什么</label>
+        <textarea
+          id="session-instruction"
+          rows="5"
+          placeholder="例如：对比这两个岗位，告诉我应该优先准备哪一个，并把结论写回补强计划。"
+        ></textarea>
+      </div>
+
+      <footer>
+        <span id="session-bridge-state">
+          <i aria-hidden="true"></i>
+          <span id="session-bridge-state-label">已绑定当前 Session</span>
+        </span>
+        <button id="send-session-instruction" class="button button-primary" type="button">
+          发送到 Session
+        </button>
+      </footer>
+    </aside>
 
     <dialog id="job-dialog" class="dialog">
       <form id="job-form" method="dialog" class="dialog-card">

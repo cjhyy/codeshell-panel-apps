@@ -861,13 +861,29 @@ select:focus-visible {
 .job-card {
   position: relative;
   width: 100%;
-  margin-bottom: 5px;
+  margin-bottom: 0;
   border: 1px solid transparent;
   border-radius: 8px;
   padding: 11px 10px;
   color: var(--text);
   background: transparent;
   text-align: left;
+}
+
+.job-card-shell {
+  position: relative;
+  margin-bottom: 5px;
+  border-radius: 8px;
+}
+
+.job-card-shell .job-card {
+  padding-bottom: 30px;
+}
+
+.job-card-shell .card-session-action {
+  position: absolute;
+  right: 9px;
+  bottom: 7px;
 }
 
 .job-card:hover {
@@ -1591,11 +1607,16 @@ textarea::placeholder {
 }
 
 .resume-version-card {
+  position: relative;
   min-height: 230px;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 16px;
   background: var(--surface);
+}
+
+.resume-version-card .card-session-action {
+  margin-top: 13px;
 }
 
 .resume-version-card.current {
@@ -2237,7 +2258,32 @@ textarea::placeholder {
 }
 
 .question-meta {
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.context-card-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-session-action,
+.inline-session-action {
+  border: 0;
+  padding: 3px 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 7.5px;
+  font-weight: 760;
+}
+
+.card-session-action:hover,
+.inline-session-action:hover {
+  color: #efff9a;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .question-category,
@@ -2490,6 +2536,138 @@ textarea::placeholder {
   line-height: 1.6;
 }
 
+.session-bridge {
+  position: fixed;
+  z-index: 80;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  width: min(410px, calc(100vw - 28px));
+  max-height: calc(100vh - 86px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid #4a4d3b;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(223 255 63 / 9%), transparent 24rem),
+    #191919;
+  box-shadow: 0 28px 90px rgb(0 0 0 / 58%);
+}
+
+.session-bridge > header,
+.session-bridge > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 14px;
+}
+
+.session-bridge > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.session-bridge > header h2 {
+  margin: 3px 0 0;
+  font-size: 12px;
+}
+
+.session-bridge > footer {
+  border-top: 1px solid var(--line);
+}
+
+.session-bridge-body {
+  display: grid;
+  min-height: 0;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.session-context-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid #393b30;
+  border-radius: 9px;
+  padding: 12px;
+  background: rgb(223 255 63 / 4%);
+}
+
+.session-context-card > span {
+  color: var(--accent);
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.session-context-card > strong {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-context-card > small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.session-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-quick-actions button {
+  min-height: 27px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0 9px;
+  color: #c4c4be;
+  background: #202020;
+  font-size: 8px;
+}
+
+.session-quick-actions button:hover {
+  border-color: rgb(223 255 63 / 38%);
+  color: var(--accent);
+  background: rgb(223 255 63 / 5%);
+}
+
+#session-instruction {
+  min-height: 112px;
+}
+
+#session-bridge-state {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+#session-bridge-state i {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgb(128 217 158 / 8%);
+}
+
+#session-bridge-state.busy i {
+  background: var(--orange);
+  box-shadow: 0 0 0 4px rgb(231 174 104 / 8%);
+}
+
 .single-field {
   margin-top: 6px;
 }
@@ -2575,6 +2753,10 @@ textarea::placeholder {
   .workspace-state,
   .top-actions .button-quiet {
     display: none;
+  }
+
+  .top-actions .session-trigger-button {
+    display: inline-flex;
   }
 
   .top-actions {
@@ -2817,5 +2999,21 @@ textarea::placeholder {
   .dialog-card footer {
     align-items: flex-end;
     flex-direction: column;
+  }
+
+  .session-bridge {
+    right: 8px;
+    bottom: 8px;
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 70px);
+  }
+
+  .session-bridge > footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .session-bridge > footer .button {
+    width: 100%;
   }
 }
