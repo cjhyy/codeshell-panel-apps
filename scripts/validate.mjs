@@ -178,7 +178,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.7.0", `${packagePath}: project model version mismatch`);
+    assert.equal(manifest.version, "0.8.0", `${packagePath}: project model version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -213,6 +213,26 @@ async function validatePackage(packagePath) {
       html,
       /id="view-chat"/,
       `${packagePath}: chat must stay in the CodeShell session`,
+    );
+    assert.match(
+      html,
+      /id="session-bridge"/,
+      `${packagePath}: contextual Session bridge is required`,
+    );
+    assert.match(
+      html,
+      /id="session-instruction"/,
+      `${packagePath}: Session instruction composer is required`,
+    );
+    assert.match(
+      appScript,
+      /function openSessionBridge/,
+      `${packagePath}: contextual Session actions are required`,
+    );
+    assert.match(
+      appScript,
+      /dataset\.sessionQuestionId/,
+      `${packagePath}: interview questions must be actionable in Session`,
     );
     assert.match(html, /id="jd-preview"/, `${packagePath}: full JD view is required`);
     assert.match(

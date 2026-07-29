@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Turn a project resume, candidate evidence, and optional JDs into iterative resume improvement, interview intelligence, preparation plans, question sets, and interview debriefs.",
+  "description": "Turn project evidence and optional JDs into job-search artifacts, then continue any job, resume, research report, gap, question, or debrief in the current Session.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
