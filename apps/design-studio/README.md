@@ -1,13 +1,24 @@
 # Design Studio Panel App
 
-Design Studio 0.16 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.17 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
-surface: ten declared design tools plus a repository-design Skill.
+surface: thirteen declared design/delivery tools plus a repository-design Skill.
 
 ## What it does
 
 - Vector canvas with selection, collapsible layer hierarchy, frames, alignment,
   distribution, snapping, rotation, zoom, pan, undo, and redo.
+- A Figma-like three-column workspace: persistent pages and layers on the left, canvas in the
+  center, and **设计 / 开发 / 文件** inspector tabs on the right.
+- A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, stable requirement
+  IDs, screens, acceptance criteria, and constraints before handing the structured brief to the
+  current Agent.
+- Deterministic Design v3 → HTML generation. Auto Layout becomes Flex/Grid/Wrap, dual-axis
+  Hug/Fill/Fixed stays responsive, absolute layout children retain Constraints, and every layer
+  keeps `data-codeshell-id` / `data-codeshell-source-id` traceability.
+- Same-viewport design/implementation comparison with pixel similarity, changed-pixel ratio,
+  stable-ID coverage, per-node geometry/style differences, a three-up preview, and a Markdown
+  report written beside the frontend implementation.
 - Figma-style horizontal, vertical, wrapped, and Grid layout with independent row/column gaps,
   asymmetric padding, line distribution, column/row spans, dual-axis Hug/Fill/Fixed sizing, and
   absolute children excluded from flow. Absolute children support start, center, end, stretch,
@@ -169,6 +180,18 @@ metrics, and audit codes. The varied suite gates initial SSIM at `0.94`, reflow 
 changed pixels over 24 channel levels at `8%`/`12%`, and blocking issues at zero. See
 `tests/fixtures/design-studio-html2figma-cases/README.md` in the collection repository for the
 source-to-case coverage matrix.
+
+The reverse delivery gate starts from the captured Design v3 file, generates editable HTML, renders
+that HTML, captures it back to Design v3, and measures both pixels and stable layer identities:
+
+```sh
+npm run test:fidelity:delivery -- --output artifacts/design-studio-delivery-fidelity
+```
+
+The realistic 960×640 fixture requires at least 88% pixel similarity, at most 18% of pixels
+changing by more than 24 channel levels, at least 90% stable-ID coverage, and no matched node
+drifting more than 24px. Artifacts include the design and frontend screenshots, amplified diff,
+side-by-side image, generated HTML, round-trip design, and JSON report.
 
 For manual validation against changing public pages, use the opt-in real-page probe:
 

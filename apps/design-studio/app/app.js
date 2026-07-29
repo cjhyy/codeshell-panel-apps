@@ -73,12 +73,19 @@ import {
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
+import { compareDesignDocuments, comparisonMarkdown } from "./design-compare.mjs";
+import { exportDesignFrontend, isSafeFrontendPath } from "./frontend-export.mjs";
 import {
   applyAutoLayouts,
   createComponentInstance,
   isAutoLayoutContainer,
   isContainerNode,
 } from "./layout.mjs";
+import {
+  isSafeProductBriefPath,
+  parseProductBrief,
+  productBriefPrompt,
+} from "./product-brief.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const MAX_AGENT_SCREENSHOT_BASE64 = 220_000;
@@ -116,6 +123,8 @@ const elements = {
   workspace: document.querySelector(".workspace"),
   activePage: document.querySelector("#active-page"),
   addPage: document.querySelector("#add-page"),
+  sidebarAddPage: document.querySelector("#sidebar-add-page"),
+  sidebarPagesList: document.querySelector("#sidebar-pages-list"),
   managePages: document.querySelector("#manage-pages"),
   pagesDialog: document.querySelector("#pages-dialog"),
   pagesList: document.querySelector("#pages-list"),
@@ -125,6 +134,7 @@ const elements = {
   saveState: document.querySelector("#save-state"),
   save: document.querySelector("#save"),
   runAudit: document.querySelector("#run-audit"),
+  openDelivery: document.querySelector("#open-delivery"),
   exportSvg: document.querySelector("#export-svg"),
   openFiles: document.querySelector("#open-files"),
   openHtmlImport: document.querySelector("#open-html-import"),
@@ -148,6 +158,26 @@ const elements = {
   htmlImportHeight: document.querySelector("#html-import-height"),
   htmlImportStatus: document.querySelector("#html-import-status"),
   runHtmlImport: document.querySelector("#run-html-import"),
+  productBriefPath: document.querySelector("#product-brief-path"),
+  productBriefStatus: document.querySelector("#product-brief-status"),
+  designFromPrd: document.querySelector("#design-from-prd"),
+  deliveryDesignState: document.querySelector("#delivery-design-state"),
+  deliveryRunAudit: document.querySelector("#delivery-run-audit"),
+  frontendOutputPath: document.querySelector("#frontend-output-path"),
+  frontendOutputStatus: document.querySelector("#frontend-output-status"),
+  generateFrontend: document.querySelector("#generate-frontend"),
+  implementationPath: document.querySelector("#implementation-path"),
+  compareImplementation: document.querySelector("#compare-implementation"),
+  comparisonSummary: document.querySelector("#comparison-summary"),
+  comparisonDialog: document.querySelector("#comparison-dialog"),
+  comparisonMetrics: document.querySelector("#comparison-metrics"),
+  comparisonDesignPreview: document.querySelector("#comparison-design-preview"),
+  comparisonImplementationPreview: document.querySelector(
+    "#comparison-implementation-preview",
+  ),
+  comparisonDiffPreview: document.querySelector("#comparison-diff-preview"),
+  comparisonDetails: document.querySelector("#comparison-details"),
+  comparisonReportPath: document.querySelector("#comparison-report-path"),
   aiDialog: document.querySelector("#ai-dialog"),
   auditDialog: document.querySelector("#audit-dialog"),
   auditSummary: document.querySelector("#audit-summary"),
@@ -2083,6 +2113,14 @@ function updateAuditStatus() {
       ? "设计检查通过：0 个问题"
       : `${summary.issueCount} 个问题 · ${summary.blockingIssueCount} 个阻塞 · ${summary.errorCount} 个错误 · ${summary.warningCount} 个警告`;
   elements.runAudit.setAttribute("aria-label", elements.runAudit.title);
+  elements.deliveryDesignState.dataset.kind =
+    summary.blockingIssueCount > 0 ? "error" : summary.issueCount === 0 ? "clean" : "warning";
+  elements.deliveryDesignState.textContent =
+    summary.issueCount === 0
+      ? `${activeDesignPage()?.name ?? "当前页"} · 0 个问题 · 可以生成前端`
+      : `${summary.blockingIssueCount} 个阻塞 · ${summary.warningCount} 个警告 · ${
+          summary.blockingIssueCount > 0 ? "先修正再交付" : "可以生成，但建议继续打磨"
+        }`;
 }
 
 function renderAuditStatus() {
@@ -2099,12 +2137,43 @@ function renderPages() {
     .join("\u0001")}`;
   if (signature !== renderedPagesSignature) {
     elements.activePage.replaceChildren();
+    elements.sidebarPagesList.replaceChildren();
     for (const page of design.pages) {
       const option = document.createElement("option");
       option.value = page.id;
       option.textContent = page.name;
       option.title = page.name;
       elements.activePage.append(option);
+
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "sidebar-page";
+      row.dataset.active = String(page.id === design.activePageId);
+      row.role = "option";
+      row.ariaSelected = String(page.id === design.activePageId);
+      row.title = page.name;
+      const dot = document.createElement("span");
+      dot.className = "sidebar-page-dot";
+      const name = document.createElement("span");
+      name.className = "sidebar-page-name";
+      name.textContent = page.name;
+      const count = document.createElement("span");
+      count.className = "sidebar-page-count";
+      count.textContent = String(page.nodeCount ?? page.nodes?.length ?? 0);
+      row.append(dot, name, count);
+      row.addEventListener("click", () => {
+        void activateDesignPage(page.id)
+          .then((changed) => {
+            if (!changed) return;
+            commitHistory();
+            markChanged();
+            requestAnimationFrame(fitCanvas);
+          })
+          .catch((error) =>
+            notify(error instanceof Error ? error.message : "无法切换页面", "error"),
+          );
+      });
+      elements.sidebarPagesList.append(row);
     }
     renderedPagesSignature = signature;
   }
@@ -3754,6 +3823,371 @@ function formatBytes(value) {
   return `${(value / 1024).toFixed(1)} KB`;
 }
 
+function safeComparisonReportPath(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !value.startsWith("/") &&
+    !value.includes("\\") &&
+    !value.includes(":") &&
+    !value.includes("?") &&
+    !value.includes("#") &&
+    !/[\u0000-\u001f\u007f]/u.test(value) &&
+    /\.md$/iu.test(value) &&
+    value.split("/").every((part) => part && part !== "." && part !== ".." && !part.startsWith("."))
+  );
+}
+
+function comparisonReportPath(implementationPath) {
+  return implementationPath.replace(/\.html?$/iu, ".design-compare.md");
+}
+
+async function repositoryDocumentSnapshot() {
+  await ensureAllDesignPagesLoaded();
+  syncActivePageNodes();
+  return JSON.parse(serializeDesign());
+}
+
+async function readProductBrief(sourcePath) {
+  if (!isSafeProductBriefPath(sourcePath)) {
+    throw new Error("PRD 路径必须是工作区内安全的 .md、.mdx 或 .txt 文件");
+  }
+  const source = await bundleHostCall("workspace.readText", { path: sourcePath });
+  return parseProductBrief(source.content, { path: sourcePath });
+}
+
+async function submitProductBriefToAgent() {
+  const sourcePath = elements.productBriefPath.value.trim();
+  if (context.busy) return notify("当前会话正在运行，请稍后再提交", "error");
+  elements.designFromPrd.disabled = true;
+  elements.productBriefStatus.dataset.kind = "idle";
+  elements.productBriefStatus.textContent = "正在读取 PRD 并整理需求…";
+  try {
+    const brief = await readProductBrief(sourcePath);
+    await saveDocument({ quiet: true });
+    const prompt = productBriefPrompt(brief, {
+      designPath: elements.path.value.trim(),
+    });
+    await hostCall("agent.submitPrompt", { prompt });
+    elements.productBriefStatus.dataset.kind = "success";
+    elements.productBriefStatus.textContent = `${brief.requirements.length} 条需求 · ${brief.screens.length} 个页面线索 · 已交给 Agent`;
+    notify("PRD 已结构化并交给当前 Agent");
+  } catch (error) {
+    elements.productBriefStatus.dataset.kind = "error";
+    elements.productBriefStatus.textContent =
+      error instanceof Error ? error.message : "无法读取 PRD";
+  } finally {
+    elements.designFromPrd.disabled = Boolean(context.busy) || context.trusted !== true;
+  }
+}
+
+async function generateFrontendFile({
+  outputPath,
+  pageId = design.activePageId,
+  expectedStateRevision,
+} = {}) {
+  if (!isSafeFrontendPath(outputPath)) {
+    throw new Error("前端输出路径必须是工作区内安全的 .html 文件");
+  }
+  if (
+    expectedStateRevision !== undefined &&
+    expectedStateRevision !== currentDesignStateRevision()
+  ) {
+    throw new Error("设计状态已变化；请重新读取元数据后再生成前端");
+  }
+  const operationStateRevision = currentDesignStateRevision();
+  const operationWorkspaceEpoch = workspaceEpoch;
+  await ensureAllDesignPagesLoaded();
+  await loadReferencedDesignResources();
+  const sourceDocument = await repositoryDocumentSnapshot();
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  if (operationStateRevision !== currentDesignStateRevision()) {
+    throw new Error("设计在前端生成期间发生变化；请基于最新状态重新生成");
+  }
+  if (!sourceDocument.pages.some((page) => page.id === pageId)) {
+    throw new Error(`设计页面不存在：${pageId}`);
+  }
+  const issues = auditDesignPages(normalizeDesignDocument(sourceDocument));
+  const audit = summarizeAudit(issues);
+  if (audit.blockingIssueCount > 0) {
+    throw new Error(`设计仍有 ${audit.blockingIssueCount} 个阻塞问题；请先检查并修正再生成前端`);
+  }
+  const html = exportDesignFrontend(sourceDocument, {
+    pageId,
+    resourceDataUrls,
+  });
+  if (operationStateRevision !== currentDesignStateRevision()) {
+    throw new Error("设计在前端生成期间发生变化；已取消旧版本输出");
+  }
+  const result = await writeRepoText(outputPath, html);
+  return {
+    path: outputPath,
+    designPath: elements.path.value.trim(),
+    pageId,
+    pageName: sourceDocument.pages.find((page) => page.id === pageId)?.name,
+    bytes: new TextEncoder().encode(html).length,
+    revision: result.revision ?? null,
+    stateRevision: currentDesignStateRevision(),
+    nodeCount: allDesignNodes(
+      normalizeDesignDocument({
+        ...sourceDocument,
+        activePageId: pageId,
+      }),
+    ).length,
+    mappingAttribute: "data-codeshell-id",
+    layoutMapping: {
+      horizontal: "flex-row",
+      vertical: "flex-column",
+      grid: "css-grid",
+      wrap: "flex-wrap",
+      absoluteChild: "position-absolute-with-constraints",
+      sizing: ["hug", "fill", "fixed"],
+    },
+  };
+}
+
+async function generateFrontendFromPanel() {
+  const outputPath = elements.frontendOutputPath.value.trim();
+  elements.generateFrontend.disabled = true;
+  elements.frontendOutputStatus.dataset.kind = "idle";
+  elements.frontendOutputStatus.textContent = "正在生成 HTML 与稳定图层映射…";
+  try {
+    const result = await generateFrontendFile({ outputPath });
+    elements.implementationPath.value = outputPath;
+    elements.frontendOutputStatus.dataset.kind = "success";
+    elements.frontendOutputStatus.textContent = `${formatBytes(result.bytes)} · ${result.pageName} · 已写入 ${outputPath}`;
+    notify(`前端已生成到 ${outputPath}`);
+  } catch (error) {
+    elements.frontendOutputStatus.dataset.kind = "error";
+    elements.frontendOutputStatus.textContent =
+      error instanceof Error ? error.message : "前端生成失败";
+  } finally {
+    elements.generateFrontend.disabled = context.trusted !== true;
+  }
+}
+
+function svgDataUrl(svg) {
+  return `data:image/svg+xml;base64,${utf8Base64(svg)}`;
+}
+
+async function svgImage(svg) {
+  const image = new window.Image();
+  await new Promise((resolve, reject) => {
+    image.addEventListener("load", resolve, { once: true });
+    image.addEventListener("error", () => reject(new Error("对比预览渲染失败")), {
+      once: true,
+    });
+    image.src = svgDataUrl(svg);
+  });
+  return image;
+}
+
+async function compareSvgPixels(expectedSvg, actualSvg, width, height) {
+  const maximumPixels = 1_600_000;
+  const scale = Math.min(1, Math.sqrt(maximumPixels / Math.max(1, width * height)));
+  const renderWidth = Math.max(1, Math.round(width * scale));
+  const renderHeight = Math.max(1, Math.round(height * scale));
+  const [expectedImage, actualImage] = await Promise.all([
+    svgImage(expectedSvg),
+    svgImage(actualSvg),
+  ]);
+  const expectedCanvas = document.createElement("canvas");
+  const actualCanvas = document.createElement("canvas");
+  expectedCanvas.width = actualCanvas.width = renderWidth;
+  expectedCanvas.height = actualCanvas.height = renderHeight;
+  const expectedContext = expectedCanvas.getContext("2d", { willReadFrequently: true });
+  const actualContext = actualCanvas.getContext("2d", { willReadFrequently: true });
+  if (!expectedContext || !actualContext) throw new Error("浏览器不支持像素对比");
+  expectedContext.drawImage(expectedImage, 0, 0, renderWidth, renderHeight);
+  actualContext.drawImage(actualImage, 0, 0, renderWidth, renderHeight);
+  const expected = expectedContext.getImageData(0, 0, renderWidth, renderHeight);
+  const actual = actualContext.getImageData(0, 0, renderWidth, renderHeight);
+  const diff = new ImageData(renderWidth, renderHeight);
+  const threshold = 24;
+  let absoluteDifference = 0;
+  let changedPixels = 0;
+  for (let offset = 0; offset < expected.data.length; offset += 4) {
+    const red = Math.abs(expected.data[offset] - actual.data[offset]);
+    const green = Math.abs(expected.data[offset + 1] - actual.data[offset + 1]);
+    const blue = Math.abs(expected.data[offset + 2] - actual.data[offset + 2]);
+    const delta = Math.max(red, green, blue);
+    absoluteDifference += red + green + blue;
+    if (delta > threshold) changedPixels += 1;
+    diff.data[offset] = delta > threshold ? Math.min(255, delta * 4) : 246;
+    diff.data[offset + 1] = delta > threshold ? 40 : 246;
+    diff.data[offset + 2] = delta > threshold ? Math.min(255, delta * 2) : 246;
+    diff.data[offset + 3] = 255;
+  }
+  elements.comparisonDiffPreview.width = renderWidth;
+  elements.comparisonDiffPreview.height = renderHeight;
+  elements.comparisonDiffPreview.getContext("2d")?.putImageData(diff, 0, 0);
+  const pixelCount = renderWidth * renderHeight;
+  return {
+    width: renderWidth,
+    height: renderHeight,
+    threshold,
+    meanAbsoluteChannelError: Math.round((absoluteDifference / pixelCount / 3) * 1000) / 1000,
+    changedRatio: Math.round((changedPixels / pixelCount) * 100_000) / 100_000,
+    similarity:
+      Math.round((1 - absoluteDifference / pixelCount / 3 / 255) * 100_000) / 100_000,
+  };
+}
+
+function renderComparisonResult({
+  comparison,
+  pixelMetrics,
+  expectedSvg,
+  actualSvg,
+  reportPath,
+}) {
+  const metrics = [
+    [`${(pixelMetrics.similarity * 100).toFixed(2)}%`, "像素相似度"],
+    [`${(pixelMetrics.changedRatio * 100).toFixed(2)}%`, "明显变化像素"],
+    [`${(comparison.coverage * 100).toFixed(1)}%`, "稳定 ID 覆盖"],
+    [`${comparison.maximumGeometryDelta}px`, "最大几何偏差"],
+    [`${comparison.missingNodeCount}`, "缺少图层"],
+  ];
+  elements.comparisonMetrics.replaceChildren(
+    ...metrics.map(([value, label]) => {
+      const item = document.createElement("div");
+      item.className = "comparison-metric";
+      const strong = document.createElement("strong");
+      strong.textContent = value;
+      const span = document.createElement("span");
+      span.textContent = label;
+      item.append(strong, span);
+      return item;
+    }),
+  );
+  elements.comparisonDesignPreview.src = svgDataUrl(expectedSvg);
+  elements.comparisonImplementationPreview.src = svgDataUrl(actualSvg);
+  elements.comparisonDetails.replaceChildren();
+  const differences = comparison.differences.slice(0, 20);
+  if (differences.length === 0) {
+    elements.comparisonDetails.textContent = "稳定 ID 层面没有结构或样式差异。";
+  } else {
+    for (const entry of differences) {
+      const row = document.createElement("div");
+      const id = document.createElement("code");
+      id.textContent = entry.id;
+      const details = [
+        entry.geometry.maximum > 0 ? `几何偏差 ${entry.geometry.maximum}px` : "",
+        entry.styles.length > 0 ? `${entry.styles.length} 项样式差异` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      row.append(id, document.createTextNode(` — ${details}`));
+      elements.comparisonDetails.append(row);
+    }
+  }
+  elements.comparisonReportPath.textContent = `报告：${reportPath}`;
+  elements.comparisonSummary.hidden = false;
+  elements.comparisonSummary.dataset.kind =
+    pixelMetrics.similarity >= 0.94 && comparison.coverage >= 0.95 ? "clean" : "error";
+  elements.comparisonSummary.textContent = `${(pixelMetrics.similarity * 100).toFixed(2)}% 相似 · ${(comparison.coverage * 100).toFixed(1)}% ID 覆盖 · ${comparison.differences.length} 个需修正图层`;
+}
+
+async function compareFrontendFile({
+  implementationPath,
+  reportPath = comparisonReportPath(implementationPath),
+  rootSelector = "body",
+  viewportWidth = design.canvas.width,
+  viewportHeight = design.canvas.height,
+  expectedStateRevision,
+  showDialog = false,
+} = {}) {
+  if (!isSafeFrontendPath(implementationPath)) {
+    throw new Error("实现路径必须是工作区内安全的 .html 文件");
+  }
+  if (!safeComparisonReportPath(reportPath)) {
+    throw new Error("对比报告路径必须是工作区内安全的 .md 文件");
+  }
+  if (
+    expectedStateRevision !== undefined &&
+    expectedStateRevision !== currentDesignStateRevision()
+  ) {
+    throw new Error("设计状态已变化；请重新读取元数据后再对比");
+  }
+  const operationStateRevision = currentDesignStateRevision();
+  const operationWorkspaceEpoch = workspaceEpoch;
+  await ensureAllDesignPagesLoaded();
+  await loadReferencedDesignResources();
+  const expectedDocument = await repositoryDocumentSnapshot();
+  const source = await bundleHostCall("workspace.readText", { path: implementationPath });
+  const capturedDocument = await captureWorkspaceHtml({
+    sourcePath: implementationPath,
+    html: source.content,
+    readText: async (path) => bundleHostCall("workspace.readText", { path }),
+    rootSelector,
+    viewportWidth,
+    viewportHeight,
+    name: `Implementation · ${implementationPath}`,
+  });
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  if (operationStateRevision !== currentDesignStateRevision()) {
+    throw new Error("设计在实现渲染期间发生变化；请基于最新状态重新对比");
+  }
+  const comparison = compareDesignDocuments(expectedDocument, capturedDocument, {
+    expectedPageId: design.activePageId,
+  });
+  const expectedRenderDocument = normalizeDesignDocument({
+    ...expectedDocument,
+    activePageId: design.activePageId,
+  });
+  const actualRenderDocument = normalizeDesignDocument(capturedDocument);
+  const expectedSvg = exportDesignSvg(expectedRenderDocument, { resourceDataUrls });
+  const actualSvg = exportDesignSvg(actualRenderDocument);
+  const pixelMetrics = await compareSvgPixels(
+    expectedSvg,
+    actualSvg,
+    viewportWidth,
+    viewportHeight,
+  );
+  const report = comparisonMarkdown(comparison, {
+    designPath: elements.path.value.trim(),
+    implementationPath,
+    pixelMetrics,
+  });
+  if (operationStateRevision !== currentDesignStateRevision()) {
+    throw new Error("设计在对比期间发生变化；已取消旧版本报告");
+  }
+  await writeRepoText(reportPath, report);
+  renderComparisonResult({
+    comparison,
+    pixelMetrics,
+    expectedSvg,
+    actualSvg,
+    reportPath,
+  });
+  if (showDialog) elements.comparisonDialog.showModal();
+  return {
+    implementationPath,
+    reportPath,
+    stateRevision: operationStateRevision,
+    comparison,
+    pixelMetrics,
+  };
+}
+
+async function compareFrontendFromPanel() {
+  const implementationPath = elements.implementationPath.value.trim();
+  elements.compareImplementation.disabled = true;
+  elements.comparisonSummary.hidden = false;
+  elements.comparisonSummary.dataset.kind = "idle";
+  elements.comparisonSummary.textContent = "正在同视口渲染并比较…";
+  try {
+    await compareFrontendFile({ implementationPath, showDialog: true });
+    notify("设计与实现的对比报告已写入 Repo");
+  } catch (error) {
+    elements.comparisonSummary.dataset.kind = "error";
+    elements.comparisonSummary.textContent =
+      error instanceof Error ? error.message : "设计与实现对比失败";
+  } finally {
+    elements.compareImplementation.disabled = context.trusted !== true;
+  }
+}
+
 function setHtmlImportStatus(message, kind = "idle") {
   elements.htmlImportStatus.textContent = message;
   elements.htmlImportStatus.dataset.kind = kind;
@@ -4688,7 +5122,7 @@ function activateInspectorTab(button, { focus = false } = {}) {
     tab.tabIndex = active ? 0 : -1;
   }
   document.querySelector("#design-tab").hidden = button.dataset.tab !== "design";
-  document.querySelector("#layers-tab").hidden = button.dataset.tab !== "layers";
+  document.querySelector("#delivery-tab").hidden = button.dataset.tab !== "delivery";
   elements.repoFilesTab.hidden = button.dataset.tab !== "files";
   if (button.dataset.tab === "files") void refreshRepoFilesPanel();
   if (focus) button.focus();
@@ -4805,6 +5239,7 @@ elements.activePage.addEventListener("change", () => {
     });
 });
 elements.addPage.addEventListener("click", () => void createDesignPage());
+elements.sidebarAddPage.addEventListener("click", () => void createDesignPage());
 elements.managePages.addEventListener("click", () => {
   renderPageManager();
   elements.pagesDialog.showModal();
@@ -4812,6 +5247,11 @@ elements.managePages.addEventListener("click", () => {
 elements.addPageDialog.addEventListener("click", () => void createDesignPage());
 elements.save.addEventListener("click", () => void saveDocument().catch(() => undefined));
 elements.runAudit.addEventListener("click", () => {
+  void showAudit().catch((error) =>
+    notify(error instanceof Error ? error.message : "无法检查设计", "error"),
+  );
+});
+elements.deliveryRunAudit.addEventListener("click", () => {
   void showAudit().catch((error) =>
     notify(error instanceof Error ? error.message : "无法检查设计", "error"),
   );
@@ -4833,6 +5273,15 @@ elements.runHtmlImport.addEventListener("click", () => void runHtmlImportFromDia
 elements.openShortcuts.addEventListener("click", () => elements.shortcutsDialog.showModal());
 elements.newDocument.addEventListener("click", newDocument);
 elements.openAi.addEventListener("click", () => elements.aiDialog.showModal());
+elements.openDelivery.addEventListener("click", () => {
+  const deliveryTab = document.querySelector('[data-tab="delivery"]');
+  activateInspectorTab(deliveryTab, { focus: true });
+  elements.workspace.classList.add("inspector-open");
+  elements.toggleInspector.setAttribute("aria-expanded", "true");
+});
+elements.designFromPrd.addEventListener("click", () => void submitProductBriefToAgent());
+elements.generateFrontend.addEventListener("click", () => void generateFrontendFromPanel());
+elements.compareImplementation.addEventListener("click", () => void compareFrontendFromPanel());
 elements.toggleInspector.addEventListener("click", () => {
   const open = elements.workspace.classList.toggle("inspector-open");
   elements.toggleInspector.setAttribute("aria-expanded", String(open));
@@ -5053,6 +5502,10 @@ function updateContext(next) {
   elements.repoNewDocument.disabled = workspaceUnavailable;
   elements.openHtmlImport.disabled = workspaceUnavailable;
   elements.runHtmlImport.disabled = workspaceUnavailable;
+  elements.openDelivery.disabled = workspaceUnavailable;
+  elements.designFromPrd.disabled = Boolean(context.busy) || workspaceUnavailable;
+  elements.generateFrontend.disabled = workspaceUnavailable;
+  elements.compareImplementation.disabled = workspaceUnavailable;
   elements.saveAuditReport.disabled = workspaceUnavailable;
   elements.openAi.disabled = Boolean(context.busy) || workspaceUnavailable;
   elements.submitAi.disabled = Boolean(context.busy) || workspaceUnavailable;
@@ -6510,6 +6963,22 @@ function registerAgentTools(ready) {
       layers: designLayerIndex(),
     };
   });
+  register("read_product_brief", async (args = {}) => {
+    await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(args, new Set(["path"]), "read_product_brief");
+    if (!isSafeProductBriefPath(args.path)) {
+      throw new Error(
+        "read_product_brief.path 必须是工作区内安全的 .md、.mdx 或 .txt 文件",
+      );
+    }
+    const brief = await readProductBrief(args.path);
+    return {
+      ...brief,
+      designPath: elements.path.value.trim(),
+      stateRevision: currentDesignStateRevision(),
+    };
+  });
   register("search_design_system", async (args = {}) => {
     await ready;
     await settleAgentReadState();
@@ -6752,6 +7221,105 @@ function registerAgentTools(ready) {
         recordAgentTransaction: true,
       }),
     );
+  });
+  register("generate_frontend", async (args = {}) => {
+    await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(
+      args,
+      new Set(["path", "page_id", "expected_state_revision"]),
+      "generate_frontend",
+    );
+    if (!isSafeFrontendPath(args.path)) {
+      throw new Error("generate_frontend.path 必须是工作区内安全的 .html 文件");
+    }
+    if (
+      args.page_id !== undefined &&
+      (typeof args.page_id !== "string" ||
+        !design.pages.some((page) => page.id === args.page_id))
+    ) {
+      throw new Error("generate_frontend.page_id 必须引用一个存在的页面");
+    }
+    if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
+      throw new Error(
+        "generate_frontend.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
+      );
+    }
+    return generateFrontendFile({
+      outputPath: args.path,
+      pageId: args.page_id ?? design.activePageId,
+      expectedStateRevision: args.expected_state_revision,
+    });
+  });
+  register("compare_frontend", async (args = {}) => {
+    await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(
+      args,
+      new Set([
+        "path",
+        "report_path",
+        "root_selector",
+        "viewport_width",
+        "viewport_height",
+        "expected_state_revision",
+      ]),
+      "compare_frontend",
+    );
+    if (!isSafeFrontendPath(args.path)) {
+      throw new Error("compare_frontend.path 必须是工作区内安全的 .html 文件");
+    }
+    if (
+      args.report_path !== undefined &&
+      !safeComparisonReportPath(args.report_path)
+    ) {
+      throw new Error("compare_frontend.report_path 必须是工作区内安全的 .md 文件");
+    }
+    if (
+      args.root_selector !== undefined &&
+      (typeof args.root_selector !== "string" ||
+        !args.root_selector.trim() ||
+        args.root_selector.length > 200 ||
+        /[\u0000-\u001f\u007f]/u.test(args.root_selector))
+    ) {
+      throw new Error("compare_frontend.root_selector 必须是 1–200 个安全字符");
+    }
+    for (const [property, value] of [
+      ["viewport_width", args.viewport_width],
+      ["viewport_height", args.viewport_height],
+    ]) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 100 || value > 10_000)) {
+        throw new Error(`compare_frontend.${property} 必须是 100 到 10000 的整数`);
+      }
+    }
+    if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
+      throw new Error(
+        "compare_frontend.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
+      );
+    }
+    const result = await compareFrontendFile({
+      implementationPath: args.path,
+      reportPath: args.report_path ?? comparisonReportPath(args.path),
+      rootSelector: args.root_selector ?? "body",
+      viewportWidth: args.viewport_width ?? design.canvas.width,
+      viewportHeight: args.viewport_height ?? design.canvas.height,
+      expectedStateRevision: args.expected_state_revision,
+    });
+    return {
+      implementationPath: result.implementationPath,
+      reportPath: result.reportPath,
+      stateRevision: result.stateRevision,
+      pixelMetrics: result.pixelMetrics,
+      comparison: {
+        ...result.comparison,
+        missing: result.comparison.missing.slice(0, 100),
+        unexpected: result.comparison.unexpected.slice(0, 100),
+        differences: result.comparison.differences.slice(0, 100),
+        truncatedMissingCount: Math.max(0, result.comparison.missing.length - 100),
+        truncatedUnexpectedCount: Math.max(0, result.comparison.unexpected.length - 100),
+        truncatedDifferenceCount: Math.max(0, result.comparison.differences.length - 100),
+      },
+    };
   });
   register("rollback_design", async (args = {}) => {
     await ready;

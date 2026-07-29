@@ -70,6 +70,14 @@
           </button>
           <button id="save" class="primary-button" type="button" title="保存 (⌘S)">保存</button>
           <button id="run-audit" class="button" type="button" title="检查设计质量">检查</button>
+          <button
+            id="open-delivery"
+            class="button delivery-button"
+            type="button"
+            title="打开 PRD、前端生成与对比工作流"
+          >
+            交付
+          </button>
           <button id="export-svg" class="button" type="button" title="导出 SVG">SVG</button>
           <button
             id="toggle-inspector"
@@ -165,6 +173,44 @@
           </button>
         </nav>
 
+        <aside class="layers-sidebar" aria-label="页面与图层">
+          <section class="sidebar-pages">
+            <div class="layers-heading">
+              <span>页面</span>
+              <button id="sidebar-add-page" type="button" title="新建设计页面">＋</button>
+            </div>
+            <div id="sidebar-pages-list" class="sidebar-pages-list" role="listbox"></div>
+          </section>
+          <section class="sidebar-layers">
+            <div class="layers-heading">
+              <span>图层</span>
+              <button
+                id="duplicate-layer"
+                type="button"
+                title="创建所选图层的副本 (⌘D)"
+                aria-label="创建所选图层的副本"
+              >
+                副本
+              </button>
+            </div>
+            <div class="layer-filter-wrap">
+              <input
+                id="layer-filter"
+                type="search"
+                placeholder="筛选名称、ID 或备注"
+                aria-label="筛选图层"
+              />
+            </div>
+            <div
+              id="layers-list"
+              class="layers-list"
+              role="listbox"
+              aria-label="设计图层"
+              aria-multiselectable="true"
+            ></div>
+          </section>
+        </aside>
+
         <section id="stage-wrap" class="stage-wrap" aria-label="设计画布">
           <svg id="stage" role="img" aria-label="Design canvas">
             <defs>
@@ -211,16 +257,16 @@
               设计
             </button>
             <button
-              id="layers-tab-button"
+              id="delivery-tab-button"
               class="inspector-tab"
-              data-tab="layers"
+              data-tab="delivery"
               type="button"
               role="tab"
               aria-selected="false"
-              aria-controls="layers-tab"
+              aria-controls="delivery-tab"
               tabindex="-1"
             >
-              图层
+              开发
             </button>
             <button
               id="repo-files-tab-button"
@@ -750,38 +796,79 @@
           </section>
 
           <section
-            id="layers-tab"
-            class="inspector-body"
+            id="delivery-tab"
+            class="inspector-body delivery-panel"
             role="tabpanel"
-            aria-labelledby="layers-tab-button"
+            aria-labelledby="delivery-tab-button"
             hidden
           >
-            <div class="layers-heading">
-              <span>图层</span>
-              <button
-                id="duplicate-layer"
-                type="button"
-                title="创建所选图层的副本 (⌘D)"
-                aria-label="创建所选图层的副本"
-              >
-                副本
+            <div class="delivery-intro">
+              <span class="dialog-kicker">DESIGN → CODE</span>
+              <strong>从需求到可核对的前端</strong>
+              <p>每一步都写回 Repo，设计与实现使用稳定图层 ID 对齐。</p>
+            </div>
+
+            <section class="delivery-step" data-step="1">
+              <div class="delivery-step-heading">
+                <span>1</span>
+                <div><strong>读取 PRD</strong><small>整理页面、需求与验收标准</small></div>
+              </div>
+              <label class="stacked-field">
+                <span>PRD 路径</span>
+                <input id="product-brief-path" value="docs/PRD.md" spellcheck="false" />
+              </label>
+              <button id="design-from-prd" class="wide-action delivery-action" type="button">
+                <span>交给 Agent 生成设计</span><span aria-hidden="true">✦</span>
               </button>
-            </div>
-            <div class="layer-filter-wrap">
-              <input
-                id="layer-filter"
-                type="search"
-                placeholder="筛选名称、ID 或备注"
-                aria-label="筛选图层"
-              />
-            </div>
-            <div
-              id="layers-list"
-              class="layers-list"
-              role="listbox"
-              aria-label="设计图层"
-              aria-multiselectable="true"
-            ></div>
+              <p id="product-brief-status" class="delivery-status">支持 Markdown、MDX 或纯文本。</p>
+            </section>
+
+            <section class="delivery-step" data-step="2">
+              <div class="delivery-step-heading">
+                <span>2</span>
+                <div><strong>确认设计</strong><small>阻塞问题必须先清零</small></div>
+              </div>
+              <div id="delivery-design-state" class="delivery-state">等待检查当前设计</div>
+              <button id="delivery-run-audit" class="wide-action delivery-action" type="button">
+                <span>检查设计</span><span aria-hidden="true">✓</span>
+              </button>
+            </section>
+
+            <section class="delivery-step" data-step="3">
+              <div class="delivery-step-heading">
+                <span>3</span>
+                <div><strong>生成前端</strong><small>Auto Layout 输出为 Flex / Grid</small></div>
+              </div>
+              <label class="stacked-field">
+                <span>输出 HTML</span>
+                <input id="frontend-output-path" value="design-output/index.html" spellcheck="false" />
+              </label>
+              <button id="generate-frontend" class="wide-action delivery-action" type="button">
+                <span>生成可编辑前端</span><span aria-hidden="true">→</span>
+              </button>
+              <p id="frontend-output-status" class="delivery-status">
+                默认生成单文件 HTML，保留 data-codeshell-id 映射。
+              </p>
+            </section>
+
+            <section class="delivery-step" data-step="4">
+              <div class="delivery-step-heading">
+                <span>4</span>
+                <div><strong>对比实现</strong><small>同视口截图、像素和结构差异</small></div>
+              </div>
+              <label class="stacked-field">
+                <span>实现 HTML</span>
+                <input
+                  id="implementation-path"
+                  value="design-output/index.html"
+                  spellcheck="false"
+                />
+              </label>
+              <button id="compare-implementation" class="primary-button delivery-primary" type="button">
+                对比设计与实现
+              </button>
+              <div id="comparison-summary" class="comparison-summary" hidden></div>
+            </section>
           </section>
 
           <section
@@ -1014,6 +1101,38 @@
             </button>
             <button class="button" value="cancel" type="submit">完成</button>
           </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="comparison-dialog" aria-labelledby="comparison-dialog-title">
+      <form method="dialog" class="dialog-card comparison-dialog-card">
+        <header>
+          <div>
+            <span class="dialog-kicker">VISUAL REVIEW</span>
+            <h2 id="comparison-dialog-title">设计与前端对比</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <div id="comparison-metrics" class="comparison-metrics"></div>
+        <div class="comparison-previews">
+          <figure>
+            <figcaption>设计稿</figcaption>
+            <img id="comparison-design-preview" alt="设计稿渲染" />
+          </figure>
+          <figure>
+            <figcaption>前端实现（测量重建）</figcaption>
+            <img id="comparison-implementation-preview" alt="前端实现的测量重建渲染" />
+          </figure>
+          <figure>
+            <figcaption>像素差异</figcaption>
+            <canvas id="comparison-diff-preview" aria-label="像素差异图"></canvas>
+          </figure>
+        </div>
+        <div id="comparison-details" class="comparison-details"></div>
+        <footer>
+          <p id="comparison-report-path">对比报告会保存到 Repo。</p>
+          <button class="button" value="cancel" type="submit">完成</button>
         </footer>
       </form>
     </dialog>

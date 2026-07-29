@@ -9,7 +9,7 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 
 | App           | Subdirectory         | Purpose                                                                                          |
 | ------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
-| Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with HTML capture, structured tools, and v3 JSON/SVG output |
+| Design Studio | `apps/design-studio` | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison |
 | Job Hunt HQ   | `apps/job-hunt-hq`   | Project/session-bound job discovery, company research, resume, and interview visualization          |
 | Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                      |
 | Starter       | `templates/starter`  | Minimal template for creating another Panel App                                                  |
@@ -33,10 +33,12 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.16 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+Design Studio 0.17 adds a complete PRD → responsive design → editable frontend → measured
+comparison loop while keeping one v3 layout model: Wrap, Grid, independent axis gaps,
 dual-axis Hug/Fill/Fixed sizing, per-item alignment/auto margin, and absolute children with
 Constraints inside Auto Layout. Guarded HTML import maps supported Flex/Grid semantics, form
-values, wrapping, ellipsis, and browser baselines. Logical designs have no whole-document byte
+values, wrapping, ellipsis, and browser baselines. Generated HTML keeps stable layer IDs and maps
+Auto Layout back to Flex/Grid so it can be refined as ordinary frontend code. Logical designs have no whole-document byte
 limit: larger sources become a small page index plus verified, content-addressed page objects;
 the runtime loads and caches only the active page and its component dependencies, then reuses
 unchanged pages on save. Images and fonts live in a deduplicated content-addressed resource
@@ -88,6 +90,7 @@ npm install
 npx playwright install chromium
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 npm run test:fidelity:cases -- --output artifacts/design-studio-html2figma-cases
+npm run test:fidelity:delivery -- --output artifacts/design-studio-delivery-fidelity
 ```
 
 The gate checks both the exact browser-measured conversion and a second render after resolving all
@@ -100,6 +103,8 @@ The second command runs 19 offline use cases adapted from html2figma's 64-templa
 including Hug/Fill/Fixed, Wrap, Grid spans, Constraints, forms, tables, inline text, SVG, shadows,
 and responsive widgets. It compares both initial and 760→520 px reflow screenshots and requires
 zero blocking audit issues.
+The third command reverses the direction: it generates HTML from a realistic design, renders and
+recaptures it, then gates pixel similarity, stable-ID coverage, and maximum geometry drift.
 
 For an opt-in network check against curated public pages, run:
 

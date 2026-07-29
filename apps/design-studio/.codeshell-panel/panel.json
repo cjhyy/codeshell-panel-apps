@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
     "zh-CN": "设计工作台"
   },
-  "description": "A repo-native visual design workspace with auto layout, components, and live JSON sync.",
+  "description": "A repo-native product design workspace with PRD handoff, responsive Auto Layout, frontend generation, and visual implementation comparison.",
   "entry": "app/index.html",
   "icon": "palette",
   "placement": "right-dock",
@@ -82,6 +82,25 @@
         "inputSchema": {
           "type": "object",
           "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "read_product_brief",
+        "description": "Read a workspace-local Markdown, MDX, or text PRD and return a structured product brief with goals, audience, stable requirement IDs, screens, acceptance criteria, and constraints for design planning.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.(?:md|mdx|txt)$",
+              "description": "Workspace-relative PRD path."
+            }
+          },
+          "required": ["path"],
           "additionalProperties": false
         },
         "readOnly": true
@@ -724,6 +743,85 @@
               "type": "string",
               "minLength": 1,
               "description": "Required exact live stateRevision from get_design_metadata. Import fails if the canvas changes while HTML is rendering."
+            }
+          },
+          "required": ["path", "expected_state_revision"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "generate_frontend",
+        "description": "Generate a standalone editable HTML implementation for one Design v3 page. Auto Layout maps to Flex/Grid/Wrap, Hug/Fill/Fixed stays responsive, absolute layout children retain constraints, and every output layer carries a stable data-codeshell-id for comparison.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html?$",
+              "description": "Workspace-relative HTML output path."
+            },
+            "page_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "description": "Optional page id from metadata. Defaults to the active page."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact stateRevision returned by get_design_metadata."
+            }
+          },
+          "required": ["path", "expected_state_revision"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "compare_frontend",
+        "description": "Render a workspace HTML implementation at the design viewport, recapture it into Design v3, compare stable layer IDs, geometry, styles, and pixels against the active design page, and save a Markdown report for the next refinement pass.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html?$",
+              "description": "Workspace-relative implementation HTML path."
+            },
+            "report_path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.md$",
+              "description": "Optional workspace-relative report path. Defaults beside the HTML implementation."
+            },
+            "root_selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
+              "description": "Optional CSS selector for the implementation region. Defaults to body."
+            },
+            "viewport_width": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Comparison viewport width. Defaults to the design canvas width."
+            },
+            "viewport_height": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Comparison viewport height. Defaults to the design canvas height."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact stateRevision returned by get_design_metadata."
             }
           },
           "required": ["path", "expected_state_revision"],

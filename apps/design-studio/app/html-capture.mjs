@@ -824,9 +824,12 @@ function svgShapeNode(element, style, rect, nextId) {
           pixelValue(element.getAttribute("ry") ?? "0"),
         )
       : 0;
+  const explicitId = element.getAttribute("data-codeshell-id");
   return {
     ...baseNode(
-      nextId(element.getAttribute("data-codeshell-id") || element.id || element.localName),
+      nextId(explicitId || element.id || element.localName, {
+        preserve: Boolean(explicitId),
+      }),
       type,
       element.getAttribute("data-codeshell-name") ||
         element.getAttribute("aria-label") ||
@@ -1152,7 +1155,27 @@ export async function captureHtmlToDesign(root, options = {}) {
     throw new Error("captureHtmlToDesign root does not intersect captureBounds");
   }
   let sequence = 0;
-  const nextId = (hint) => `${semanticSlug(hint)}-${++sequence}`;
+  const usedIds = new Set();
+  const nextId = (hint, { preserve = false } = {}) => {
+    const requested = String(hint ?? "").trim();
+    if (
+      preserve &&
+      requested.length >= 1 &&
+      requested.length <= 160 &&
+      !/[\u0000-\u001f\u007f]/u.test(requested) &&
+      !usedIds.has(requested)
+    ) {
+      usedIds.add(requested);
+      return requested;
+    }
+    const base = semanticSlug(requested);
+    let candidate;
+    do {
+      candidate = `${base}-${++sequence}`;
+    } while (usedIds.has(candidate));
+    usedIds.add(candidate);
+    return candidate;
+  };
 
   const captureElement = (
     element,
@@ -1176,8 +1199,14 @@ export async function captureHtmlToDesign(root, options = {}) {
       element.id ||
       element.classList[0] ||
       fallbackName;
-    const intrinsicNeedsFrame = elementNeedsFrame(element, style, forceFrame);
-    const needsFrame = intrinsicNeedsFrame || Boolean(parentLayout);
+    const explicitId = element.getAttribute("data-codeshell-id");
+    const directTextLayer =
+      Boolean(explicitId) &&
+      element.getAttribute("data-codeshell-node-type") === "text" &&
+      element.children.length === 0;
+    const intrinsicNeedsFrame =
+      !directTextLayer && elementNeedsFrame(element, style, forceFrame);
+    const needsFrame = directTextLayer ? false : intrinsicNeedsFrame || Boolean(parentLayout);
     const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && Boolean(parentLayout);
     const ownLayout = layoutProperties(element, style, ownerWindow);
     const measuredInsets = layoutInsets(style);
@@ -1186,7 +1215,7 @@ export async function captureHtmlToDesign(root, options = {}) {
       ["hidden", "clip"].includes(style.overflowY) ||
       Boolean(requestedCaptureBounds && element === root);
     const holder = needsFrame
-      ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
+      ? frameNode(nextId(explicitId || name, { preserve: Boolean(explicitId) }), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
           cornerRadius: representativeCornerRadius(style),
           padding: 0,
@@ -1210,6 +1239,16 @@ export async function captureHtmlToDesign(root, options = {}) {
       holder.layout = "none";
     }
     const ownsLayout = needsFrame && holder.layout !== "none";
+    let usedDirectTextId = false;
+    const textId = directTextLayer
+      ? (hint) => {
+          if (!usedDirectTextId) {
+            usedDirectTextId = true;
+            return nextId(explicitId, { preserve: true });
+          }
+          return nextId(hint);
+        }
+      : nextId;
 
     for (const child of element.childNodes) {
       if (child.nodeType === TEXT_NODE) {
@@ -1218,7 +1257,7 @@ export async function captureHtmlToDesign(root, options = {}) {
           child,
           style,
           rootRect,
-          nextId,
+          textId,
           requestedCaptureBounds ? rootRect : null,
         );
       } else if (child.nodeType === ELEMENT_NODE) {
@@ -1233,6 +1272,10 @@ export async function captureHtmlToDesign(root, options = {}) {
       }
     }
     appendFormControlTextLayer(holder, element, style, rect, nextId);
+    if (directTextLayer && parentLayout) {
+      const layoutItem = layoutItemProperties(element, style, parentLayout);
+      for (const child of holder.children) Object.assign(child, layoutItem);
+    }
     if (
       transparentLayoutWrapper &&
       holder.children.length > 0 &&

@@ -1,6 +1,6 @@
 {
   "name": "codeshell-panel-apps",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "private": true,
   "description": "Agent-native desktop Panel Apps for CodeShell",
   "type": "module",
@@ -8,6 +8,7 @@
     "check": "node scripts/validate.mjs",
     "test": "node scripts/validate.mjs",
     "test:fidelity": "node scripts/design-studio-html-fidelity.mjs",
+    "test:fidelity:delivery": "node scripts/design-studio-delivery-fidelity.mjs",
     "test:fidelity:cases": "node scripts/design-studio-html2figma-cases.mjs",
     "test:fidelity:real": "node scripts/design-studio-real-html-fidelity.mjs",
     "test:large-doc": "node scripts/design-studio-large-document.mjs"
