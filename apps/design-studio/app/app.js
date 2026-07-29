@@ -102,6 +102,11 @@ const elements = {
   filesList: document.querySelector("#files-list"),
   workspaceSummary: document.querySelector("#workspace-summary"),
   newDocument: document.querySelector("#new-document"),
+  repoFilesTab: document.querySelector("#repo-files-tab"),
+  repoFilesList: document.querySelector("#repo-files-list"),
+  repoFilesSummary: document.querySelector("#repo-files-summary"),
+  refreshRepoFiles: document.querySelector("#refresh-repo-files"),
+  repoNewDocument: document.querySelector("#repo-new-document"),
   htmlImportDialog: document.querySelector("#html-import-dialog"),
   htmlImportPath: document.querySelector("#html-import-path"),
   htmlImportRoot: document.querySelector("#html-import-root"),
@@ -2703,6 +2708,7 @@ async function performSaveDocument(request) {
       setSaveState(dirty ? "有修改" : "另存为", dirty ? "dirty" : "idle");
     }
     if (!quiet) notify(`已保存到 ${path}`);
+    void refreshRepoFilesPanel({ force: true });
     return { ...result, design: savedDesign };
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
@@ -2812,6 +2818,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     }).catch(() => undefined);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     notify(`已打开 ${path}`);
+    void refreshRepoFilesPanel();
     return true;
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
@@ -2963,52 +2970,102 @@ async function discoverDesignFiles() {
   return fileDiscoveryCache;
 }
 
+function repoFilesSummary(workspace, discovery) {
+  const count = discovery.files.length;
+  const repository = workspace?.name || "当前工作区";
+  const branch = workspace?.gitBranch ? ` · ${workspace.gitBranch}` : "";
+  const trust = workspace?.trusted === false ? " · 只读" : "";
+  const truncated = discovery.truncated ? " · 仅显示部分文件" : "";
+  return `${repository}${branch}${trust} · ${count} 个设计${truncated}`;
+}
+
+function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
+  container.replaceChildren();
+  if (!files.length) {
+    const empty = document.createElement("div");
+    empty.className = "files-empty";
+    empty.textContent = "还没有设计文件。保存当前画布即可创建第一个。";
+    container.append(empty);
+    return;
+  }
+  const activePath = elements.path.value.trim();
+  for (const file of files) {
+    const active = file.path === activePath;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "file-row";
+    button.dataset.active = String(active);
+    button.role = "option";
+    button.ariaSelected = String(active);
+    if (active) button.setAttribute("aria-current", "page");
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = active ? "✓" : "D";
+    const copy = document.createElement("span");
+    copy.className = "file-copy";
+    const name = document.createElement("strong");
+    name.textContent = (file.name || file.path.split("/").at(-1)).replace(/\.codesign\.json$/u, "");
+    const path = document.createElement("span");
+    path.textContent = file.path;
+    copy.append(name, path);
+    const size = document.createElement("span");
+    size.className = "file-size";
+    size.textContent = formatBytes(Number(file.size) || 0);
+    button.append(icon, copy, size);
+    button.addEventListener("click", () => {
+      if (active) return;
+      if (closeDialog && elements.filesDialog.open) elements.filesDialog.close();
+      void openDocument(file.path)
+        .then(() => refreshRepoFilesPanel())
+        .catch(() => undefined);
+    });
+    container.append(button);
+  }
+}
+
+async function loadDesignFileInventory({ force = false } = {}) {
+  if (force) {
+    fileDiscoveryCache = null;
+    fileDiscoveryCachedAt = 0;
+  }
+  const operationWorkspaceEpoch = workspaceEpoch;
+  const [workspace, discovery] = await Promise.all([
+    hostCall("workspace.info", {}),
+    discoverDesignFiles(),
+  ]);
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  return { workspace, discovery, summary: repoFilesSummary(workspace, discovery) };
+}
+
+async function refreshRepoFilesPanel({ force = false } = {}) {
+  const operationWorkspaceEpoch = workspaceEpoch;
+  elements.repoFilesSummary.textContent = "正在读取 Repo…";
+  elements.repoFilesList.replaceChildren();
+  try {
+    const inventory = await loadDesignFileInventory({ force });
+    if (workspaceEpoch !== operationWorkspaceEpoch) return;
+    elements.repoFilesSummary.textContent = inventory.summary;
+    renderDesignFileRows(elements.repoFilesList, inventory.discovery.files);
+  } catch (error) {
+    if (workspaceEpoch !== operationWorkspaceEpoch) return;
+    elements.repoFilesSummary.textContent = "无法读取 Repo 设计文件";
+    const empty = document.createElement("div");
+    empty.className = "files-empty";
+    empty.textContent = error instanceof Error ? error.message : "读取失败";
+    elements.repoFilesList.replaceChildren(empty);
+  }
+}
+
 async function showFiles() {
   const operationWorkspaceEpoch = workspaceEpoch;
   elements.filesList.replaceChildren();
   elements.workspaceSummary.textContent = "正在读取工作区…";
   elements.filesDialog.showModal();
   try {
-    const [workspace, discovery] = await Promise.all([
-      hostCall("workspace.info", {}),
-      discoverDesignFiles(),
-    ]);
+    const inventory = await loadDesignFileInventory();
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    elements.workspaceSummary.textContent = workspace?.name
-      ? `${workspace.name} · ${workspace.gitBranch ?? "无 Git 分支"} · ${workspace.trusted ? "已信任" : "只读"}${discovery.truncated ? " · 仅显示部分文件" : ""}`
-      : "当前工作区";
-    const files = discovery.files;
-    if (!files.length) {
-      const empty = document.createElement("div");
-      empty.className = "files-empty";
-      empty.textContent = "还没有设计文件。保存当前画布即可创建第一个。";
-      elements.filesList.append(empty);
-      return;
-    }
-    for (const file of files) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "file-row";
-      const icon = document.createElement("span");
-      icon.className = "file-icon";
-      icon.textContent = "D";
-      const copy = document.createElement("span");
-      copy.className = "file-copy";
-      const name = document.createElement("strong");
-      name.textContent = file.name.replace(/\.codesign\.json$/, "");
-      const path = document.createElement("span");
-      path.textContent = file.path;
-      copy.append(name, path);
-      const size = document.createElement("span");
-      size.className = "file-size";
-      size.textContent = formatBytes(file.size);
-      button.append(icon, copy, size);
-      button.addEventListener("click", () => {
-        elements.filesDialog.close();
-        void openDocument(file.path).catch(() => undefined);
-      });
-      elements.filesList.append(button);
-    }
+    elements.workspaceSummary.textContent = inventory.summary;
+    renderDesignFileRows(elements.filesList, inventory.discovery.files, { closeDialog: true });
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) {
       if (elements.filesDialog.open) elements.filesDialog.close();
@@ -3018,7 +3075,7 @@ async function showFiles() {
     const empty = document.createElement("div");
     empty.className = "files-empty";
     empty.textContent = error instanceof Error ? error.message : "读取失败";
-    elements.filesList.append(empty);
+    elements.filesList.replaceChildren(empty);
   }
 }
 
@@ -3326,6 +3383,7 @@ function newDocument() {
   resetHistory();
   markChanged();
   elements.filesDialog.close();
+  void refreshRepoFilesPanel();
   requestAnimationFrame(fitCanvas);
 }
 
@@ -3828,6 +3886,8 @@ function activateInspectorTab(button, { focus = false } = {}) {
   }
   document.querySelector("#design-tab").hidden = button.dataset.tab !== "design";
   document.querySelector("#layers-tab").hidden = button.dataset.tab !== "layers";
+  elements.repoFilesTab.hidden = button.dataset.tab !== "files";
+  if (button.dataset.tab === "files") void refreshRepoFilesPanel();
   if (focus) button.focus();
 }
 for (const [index, button] of inspectorTabs.entries()) {
@@ -3950,6 +4010,11 @@ elements.runAudit.addEventListener("click", showAudit);
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
+elements.refreshRepoFiles.addEventListener(
+  "click",
+  () => void refreshRepoFilesPanel({ force: true }),
+);
+elements.repoNewDocument.addEventListener("click", newDocument);
 elements.openHtmlImport.addEventListener("click", () => {
   setHtmlImportStatus("支持本地 CSS、文字、填充、边框、圆角、裁切和单个外投影。");
   elements.htmlImportDialog.showModal();
@@ -3973,6 +4038,7 @@ elements.path.addEventListener("change", () => {
   currentRevision = path === currentSourcePath ? currentSourceRevision : null;
   if (dirty) queueRecovery();
   setSaveState(dirty ? "有修改" : "另存为", dirty ? "dirty" : "idle");
+  void refreshRepoFilesPanel();
 });
 
 window.addEventListener("keydown", (event) => {
@@ -4166,6 +4232,8 @@ function updateContext(next) {
   elements.save.disabled = workspaceUnavailable;
   elements.exportSvg.disabled = workspaceUnavailable;
   elements.openFiles.disabled = workspaceUnavailable;
+  elements.refreshRepoFiles.disabled = workspaceUnavailable;
+  elements.repoNewDocument.disabled = workspaceUnavailable;
   elements.openHtmlImport.disabled = workspaceUnavailable;
   elements.runHtmlImport.disabled = workspaceUnavailable;
   elements.saveAuditReport.disabled = workspaceUnavailable;
@@ -5654,6 +5722,7 @@ async function initialize() {
     setRepoLinkState("Repo 读取失败", "error");
     notify(error instanceof Error ? error.message : "无法读取 Repo 设计文件", "error");
   }
+  await refreshRepoFilesPanel({ force: true });
   startExternalSync();
 }
 

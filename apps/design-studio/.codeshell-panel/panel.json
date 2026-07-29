@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
