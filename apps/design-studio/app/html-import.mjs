@@ -201,7 +201,7 @@ export async function captureWorkspaceHtml({
   sourcePath,
   html,
   readText,
-  rootSelector = "body",
+  rootSelector = "html",
   viewportWidth = 1440,
   viewportHeight = 900,
   name,
@@ -251,6 +251,12 @@ export async function captureWorkspaceHtml({
     if (!root) throw new Error(`HTML 中找不到根节点：${rootSelector}`);
     return await captureHtmlToDesign(root, {
       name: String(name || prepared.title || "HTML import").slice(0, 120),
+      captureBounds: {
+        left: 0,
+        top: 0,
+        right: viewportWidth,
+        bottom: viewportHeight,
+      },
     });
   } finally {
     frame.remove();

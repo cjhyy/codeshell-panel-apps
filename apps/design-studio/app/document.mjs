@@ -8,7 +8,9 @@ import {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_NODES = 500;
-export const MAX_DESIGN_DOCUMENT_BYTES = 512 * 1024;
+// CodeShell's workspace.writeText bridge accepts at most 384 KiB. Keep the
+// document limit aligned so a design accepted by the editor is always savable.
+export const MAX_DESIGN_DOCUMENT_BYTES = 384 * 1024;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;

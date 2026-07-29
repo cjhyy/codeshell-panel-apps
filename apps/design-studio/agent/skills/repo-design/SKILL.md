@@ -20,7 +20,9 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    Before creating new visual primitives, call `search_design_system` with the intended semantic
    role, then use the layer index and `get_design_context` to inspect likely component matches.
    Metadata's `tokens` is the complete color-token inventory. Read the full document only for a
-   whole-document structural decision. Reuse an existing component or color token when it
+   whole-document structural decision and only when `documentBytes` leaves ample room below the
+   Agent result budget; oversized reads fail with instructions to use a bounded subtree. Reuse an
+   existing component or color token when it
    expresses the intended role; do not create a visually duplicate local substitute.
 3. Call `use_design` with a short transaction of operations. It refreshes the live canvas and
    saves the active repo source by default. Its compact `audit` summary is an immediate regression
@@ -64,7 +66,11 @@ screen. Do not replace a detailed screen with empty frames merely to make warnin
 When HTML is the visual source, do not reconstruct it from markup or hand-copy relative offsets.
 Read metadata, then call `import_html` with the workspace-relative `.html` path, exact viewport,
 optional root selector, current `expected_state_revision`, and current `expected_revision` when
-non-null. The tool reads up to 20 relative local CSS files, removes scripts and network resources,
+non-null. The default root is `html`. The importer converts only the root's visible intersection
+with the first viewport: fully offscreen descendants are omitted, while partially visible content
+keeps its measured geometry behind an intentional root clip. Use a tighter selector when the
+desired design is one visible region. The tool reads up to 20 relative local CSS files, removes
+scripts and network resources,
 waits for fonts and two animation frames, then replaces the canvas with computed geometry,
 typography, paint, borders, clipping, and one non-inset shadow. Supported CSS Flex and Grid
 containers become v3 Auto Layout with independent row/column gaps, Wrap, column/span
@@ -74,8 +80,9 @@ Constraints with four measured insets. Browser-measured `x/y` remain in the save
 initial geometry and fallback data; Auto Layout owns only flow-child positions after a reflow.
 Form values, browser text baselines, and wrappable text source are preserved. Reverse directions,
 unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy controls fall back to
-measured manual geometry instead of silently changing the screenshot. It saves by default, returns an immediate
-audit and rollback `transactionId`, and fails if the live design changes while HTML is rendering.
+measured manual geometry instead of silently changing the screenshot. It saves by default, returns
+canonical `documentBytes` and `documentLimitBytes`, an immediate audit and rollback
+`transactionId`, and fails if the live design changes while HTML is rendering.
 Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
 when later Agent edits need durable layer identities.
 

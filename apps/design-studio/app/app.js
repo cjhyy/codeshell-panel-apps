@@ -30,6 +30,7 @@ import {
   exportDesignSvg,
   isSafeDesignPath,
   isDesignNodeVisible,
+  MAX_DESIGN_DOCUMENT_BYTES,
   MAX_DESIGN_NODES,
   normalizeDesignDocument,
   normalizeDesignState,
@@ -56,6 +57,7 @@ const MAX_AGENT_SCREENSHOT_PIXELS = 2_000_000;
 const MAX_AGENT_SCREENSHOT_HEIGHT = 4_096;
 const MAX_AGENT_SCREENSHOT_RENDER_MS = 5_000;
 const MAX_AGENT_AUDIT_ISSUES = 400;
+const MAX_AGENT_CONTEXT_RESULT_BYTES = 220 * 1024;
 const MAX_DESIGN_PAGES = 20;
 const TOOL_SHORTCUTS = {
   v: "select",
@@ -3139,6 +3141,7 @@ async function replaceDesignWithHtmlImport(
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
   const nextSnapshot = serializeDocument(nextDesign);
+  const documentBytes = assertDesignDocumentSize(nextDesign);
   if (nextSnapshot === previousSnapshot) {
     let savedResult = null;
     if (save) savedResult = await saveDocument({ quiet: true });
@@ -3152,6 +3155,8 @@ async function replaceDesignWithHtmlImport(
       documentChanged: false,
       nodeCount: allDesignNodes().length,
       activePageNodeCount: design.nodes.length,
+      documentBytes,
+      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
       revision: savedResult?.revision ?? currentRevision,
       stateRevision: currentDesignStateRevision(),
       audit: summarizeAudit(auditDocument()),
@@ -3224,6 +3229,8 @@ async function replaceDesignWithHtmlImport(
     documentChanged: true,
     nodeCount: allDesignNodes().length,
     activePageNodeCount: design.nodes.length,
+    documentBytes,
+    documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
     revision: savedResult?.revision ?? currentRevision,
     stateRevision: currentDesignStateRevision(),
     audit: summarizeAudit(auditDocument()),
@@ -3303,7 +3310,7 @@ async function runHtmlImportFromDialog() {
     const issueLabel =
       result.audit.issueCount > 0 ? `；检查发现 ${result.audit.issueCount} 个问题` : "";
     notify(
-      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层${issueLabel}；请检查后保存`,
+      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层 · ${formatBytes(result.documentBytes)} / ${formatBytes(result.documentLimitBytes)}${issueLabel}；请检查后保存`,
       result.audit.renderSafe ? "idle" : "error",
     );
   } catch (error) {
@@ -5393,6 +5400,16 @@ function assertAgentToolArguments(args, allowedKeys, toolName) {
   }
 }
 
+function boundedAgentContextResult(result) {
+  const bytes = new TextEncoder().encode(JSON.stringify(result)).length;
+  if (bytes > MAX_AGENT_CONTEXT_RESULT_BYTES) {
+    throw new Error(
+      `设计上下文约 ${(bytes / 1024).toFixed(1)} KiB，超过 Agent 单次安全返回预算 ${MAX_AGENT_CONTEXT_RESULT_BYTES / 1024} KiB；请先读取 get_design_metadata，再传 node_id，并从 max_depth: 1 或 2 开始分段读取`,
+    );
+  }
+  return result;
+}
+
 function enqueueAgentMutation(operation) {
   const run = async () => {
     agentMutationActive = true;
@@ -5544,6 +5561,8 @@ function registerAgentTools(ready) {
       dirty,
       revision: currentRevision,
       stateRevision: currentDesignStateRevision(),
+      documentBytes: new TextEncoder().encode(serializeDesign()).length,
+      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
       layers: designLayerIndex(),
     };
   });
@@ -5628,7 +5647,7 @@ function registerAgentTools(ready) {
     if (typeof args.node_id === "string" && args.node_id) {
       const maxDepth = args.max_depth ?? 32;
       const subtree = designNodeSubtree(args.node_id, maxDepth);
-      return {
+      return boundedAgentContextResult({
         path: elements.path.value.trim(),
         activePageId: design.activePageId,
         pageId: subtree.pageId,
@@ -5638,14 +5657,14 @@ function registerAgentTools(ready) {
         maxDepth,
         descendantsTruncated: subtree.descendantsTruncated,
         node: subtree.node,
-      };
+      });
     }
-    return {
+    return boundedAgentContextResult({
       path: elements.path.value.trim(),
       coordinateSpace: "absolute-canvas",
       stateRevision: currentDesignStateRevision(),
       document: JSON.parse(serializeDesign()),
-    };
+    });
   });
   register("use_design", async (args = {}) => {
     await ready;
@@ -5724,7 +5743,7 @@ function registerAgentTools(ready) {
     return enqueueAgentMutation(() =>
       importHtmlFromWorkspace({
         sourcePath: args.path,
-        rootSelector: args.root_selector ?? "body",
+        rootSelector: args.root_selector ?? "html",
         viewportWidth: args.viewport_width ?? 1_440,
         viewportHeight: args.viewport_height ?? 900,
         save: args.save !== false,
