@@ -178,7 +178,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.5.0", `${packagePath}: project model version mismatch`);
+    assert.equal(manifest.version, "0.6.0", `${packagePath}: project model version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -227,7 +227,22 @@ async function validatePackage(packagePath) {
       /async function writeProjectSnapshot/,
       `${packagePath}: project snapshot writer is required`,
     );
-    assert.match(skill, /CODESHELL\.md/, `${packagePath}: Skill must read CODESHELL.md`);
+    assert.match(skill, /CODESHELL\.md/, `${packagePath}: Skill must inspect CODESHELL.md`);
+    assert.match(
+      skill,
+      /absence is not a\s+blocker/,
+      `${packagePath}: missing project instructions must not block the workflow`,
+    );
+    assert.match(
+      skill,
+      /Never request, reveal, export, or reuse session cookies/,
+      `${packagePath}: Skill must forbid credential replay`,
+    );
+    assert.match(
+      skill,
+      /first useful panel write early/,
+      `${packagePath}: Skill must save progressive results`,
+    );
     assert.match(
       skill,
       /panel-app:job-hunt-hq/,
@@ -236,6 +251,43 @@ async function validatePackage(packagePath) {
     assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
     assert(snapshotSchema.required.includes("jobResearch"));
     assert(snapshotSchema.required.includes("workflowRuns"));
+
+    const { upsertJobOpportunities } = await import(
+      pathToFileURL(join(root, "app", "job-opportunities.mjs"))
+    );
+    const listing = {
+      id: "job-existing",
+      company: "Example",
+      title: "Frontend Engineer",
+      location: "Shanghai",
+      sourceId: "boss",
+      url: "https://example.test/jobs/1",
+      description: "Short listing",
+      jdCompleteness: "partial",
+      status: "saved",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const fullJd = {
+      ...listing,
+      id: "job-incoming",
+      description: "Complete role responsibilities and requirements",
+      jdCompleteness: "full",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const keyByUrl = (job) => job.url;
+    const keyByMetadata = (job) =>
+      [job.sourceId, job.company, job.title, job.location].join("|");
+    const progressiveResult = upsertJobOpportunities([listing], [fullJd], {
+      dedupeKey: keyByUrl,
+      metadataKey: keyByMetadata,
+    });
+    assert.equal(progressiveResult.jobs.length, 1);
+    assert.equal(progressiveResult.inserted.length, 0);
+    assert.equal(progressiveResult.updated, 1);
+    assert.equal(progressiveResult.jobs[0].id, "job-existing");
+    assert.equal(progressiveResult.jobs[0].jdCompleteness, "full");
+    assert.equal(progressiveResult.jobs[0].description, fullJd.description);
   }
   return { id: manifest.id, files: files.length };
 }

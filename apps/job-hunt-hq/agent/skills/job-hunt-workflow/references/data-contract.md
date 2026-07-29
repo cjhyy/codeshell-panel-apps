@@ -38,15 +38,21 @@ Store one normalized record for every role:
   "url": "https://canonical-job-url",
   "publishedAt": "Source date or empty",
   "employmentType": "Full-time or source text",
-  "description": "Full available JD text",
+  "description": "Available JD text or listing excerpt",
+  "jdCompleteness": "full | partial | listing_only",
+  "verificationNotes": "Missing fields or access limitation",
+  "fetchedAt": "ISO-8601",
   "match": 82,
   "status": "saved",
-  "createdAt": "ISO-8601"
+  "createdAt": "ISO-8601",
+  "updatedAt": "ISO-8601"
 }
 ```
 
 Deduplicate by canonical URL first, then
-`sourceId + company + title + location`.
+`sourceId + company + title + location`. Save partial records early and update
+the same record as stronger evidence becomes available. Never call a listing
+excerpt a full JD.
 
 ## Job research
 

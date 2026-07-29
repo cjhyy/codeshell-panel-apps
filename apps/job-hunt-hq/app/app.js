@@ -1,3 +1,9 @@
+import {
+  JD_COMPLETENESS_LABELS,
+  normalizeJdCompleteness,
+  upsertJobOpportunities,
+} from "./job-opportunities.mjs";
+
 const STORAGE_KEY = "job-hunt-state-v1";
 const PREVIEW_PREFIX = "codeshell-job-hunt-hq:";
 const PROJECT_STATE_PATH = "job-hunt-panel.json";
@@ -505,6 +511,10 @@ function normalizeJobUrl(value) {
 function jobDedupeKey(job) {
   const url = normalizeJobUrl(job.url);
   if (url) return `url:${url}`;
+  return jobMetadataKey(job);
+}
+
+function jobMetadataKey(job) {
   return [normalizeSourceId(job.sourceId, job.source), job.company, job.title, job.location]
     .map((value) =>
       String(value || "")
@@ -556,6 +566,13 @@ function mergeState(input) {
   next.jobs = next.jobs.map((job) => ({
     ...job,
     sourceId: normalizeSourceId(job.sourceId, job.source),
+    jdCompleteness: normalizeJdCompleteness(
+      job.jdCompleteness,
+      job.description,
+      true,
+    ),
+    verificationNotes: cleanText(job.verificationNotes, 2000),
+    fetchedAt: cleanText(job.fetchedAt, 80),
   }));
   if (!next.jobs.some((job) => job.id === next.selectedJobId)) {
     next.selectedJobId = next.jobs[0]?.id ?? "";
@@ -987,9 +1004,22 @@ function renderJobs() {
     const bottom = document.createElement("div");
     bottom.className = "job-card-bottom";
     bottom.append(makeTextElement("span", "source-badge", job.source || "手动添加"));
+    const badges = document.createElement("div");
+    badges.className = "job-card-badges";
+    const completeness = makeTextElement(
+      "span",
+      "jd-completeness-badge",
+      JD_COMPLETENESS_LABELS[normalizeJdCompleteness(job.jdCompleteness, job.description, true)],
+    );
+    completeness.dataset.completeness = normalizeJdCompleteness(
+      job.jdCompleteness,
+      job.description,
+      true,
+    );
     const status = makeTextElement("span", "status-badge", STATUS_LABELS[job.status] || "已收藏");
     status.dataset.status = job.status;
-    bottom.append(status);
+    badges.append(completeness, status);
+    bottom.append(badges);
     card.append(top, title, meta, bottom);
     elements.jobList.append(card);
   }
@@ -1070,9 +1100,18 @@ function renderJobDescription(job) {
   );
   elements.jdPreview.append(
     heading,
-    makeTextElement("h2", "", "职位描述"),
+    makeTextElement(
+      "h2",
+      "",
+      `职位描述 · ${JD_COMPLETENESS_LABELS[normalizeJdCompleteness(job.jdCompleteness, job.description, true)]}`,
+    ),
     makeTextElement("p", "jd-description", job.description || "暂无完整 JD"),
   );
+  if (job.verificationNotes) {
+    elements.jdPreview.append(
+      makeTextElement("p", "jd-verification-note", `核验说明：${job.verificationNotes}`),
+    );
+  }
 }
 
 function renderResume() {
@@ -1676,8 +1715,8 @@ async function generateDraft() {
   const prompt = [
     "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
     `目标职位 ID：${job.id}`,
-    "先读取当前项目根目录的 CODESHELL.md，并按其中规则检查与求职有关的工作经历、项目说明、代码和其他资料。",
-    "再调用 get_job_search_context 读取完整 JD。若识别到候选人资料，先调用 save_candidate_context 更新面板中的项目上下文。",
+    "先调用 get_job_search_context 读取 JD 与项目上下文；项目中有 CODESHELL.md 时按它检查工作经历、项目说明、代码和其他候选人资料。",
+    "若识别到候选人资料变化，调用 save_candidate_context 更新面板中的项目上下文。",
     "仅使用当前项目中能核实的事实；不要编造公司、日期、职责、技术或数字。对无法确认的信息放进 notes。",
     "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
   ].join("\n");
@@ -1744,15 +1783,11 @@ async function submitJobSearch(form) {
     .map((provider) => `${provider.label}（${provider.domain}）`)
     .join("、");
   const prompt = [
-    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具处理这次职位搜索。",
-    "先读取当前项目根目录的 CODESHELL.md 和与求职有关的项目资料，并严格遵循其中规则。",
-    `在以下渠道查找合计最多 ${count} 个当前有效的职位：${providerSummary}。`,
-    `搜索条件：关键词「${keyword}」，城市「${city || "不限"}」，经验「${seniority || "不限"}」。`,
-    "逐站搜索公开页面；不要绕过登录、验证码、访问频率、robots 或其他限制。受限渠道直接跳过并记录原因。",
-    "把不同网站的结果统一为相同字段，并按规范化 URL 优先、公司 + 职位 + 地点 + 来源其次去重。",
-    "调用 get_job_search_context 读取面板状态；若识别到候选人资料，先调用 save_candidate_context 更新面板，再给每个职位一个有依据的初步匹配度。",
-    "最后必须调用 save_job_opportunities，把 company、title、location、salary、source、source_id、url、published_at、employment_type、description 和 match 写回面板。",
-    "source_id 必须使用本次选择中的短 ID。若某个渠道不可访问，请明确说明，并提醒我把对应 JD 手动粘贴到面板；不要编造职位。",
+    "请使用 job-hunt-hq:job-hunt-workflow Skill，在当前 Session 里完成一次轻量岗位发现。",
+    `帮我从 ${providerSummary} 找最多 ${count} 个当前岗位。`,
+    `条件：关键词「${keyword || "从项目资料和面板推断"}」，城市「${city || "不限"}」，经验「${seniority || "不限"}」。`,
+    "先读取面板和当前项目上下文，再开始搜索。先把能核实的岗位保存到面板；JD 不完整时标为 listing_only 或 partial，后续在同一条记录上补全。",
+    "只做岗位发现，不自动扩展到公司调研、简历或面试题。不要编造，也不要导出或在浏览器外复用招聘网站的登录凭据。",
   ].join("\n");
 
   try {
@@ -1774,7 +1809,7 @@ async function submitResumeRevision(request) {
   const prompt = [
     "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
     `目标职位 ID：${job.id}`,
-    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条核对完整 JD 与项目证据。",
+    "先调用 get_job_search_context；项目中有 CODESHELL.md 时按它读取相关资料，再逐条核对 JD 与项目证据。",
     "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。只使用能核实的真实信息，不要编造公司、日期、技术、职责或数据。",
     "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
     `我的调整要求：${request}`,
@@ -1991,7 +2026,7 @@ async function generateInterviewSet(form) {
     `题单模式：${options.mode}（${INTERVIEW_MODE_LABELS[options.mode] || "综合面试"}）`,
     `难度：${options.difficulty}；数量：${options.count}；回答语言：${options.language}。`,
     options.focus ? `特别关注：${options.focus}` : "特别关注：根据 JD 与候选人证据自动判断。",
-    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条交叉核对完整 JD、工作经历、代码项目和当前简历。",
+    "先调用 get_job_search_context；项目中有 CODESHELL.md 时按它读取相关资料，再交叉核对 JD、工作经历、代码项目和当前简历。",
     "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。",
     "每道题都要说明为什么问、关联哪些真实证据、回答要点和可能追问；同时覆盖最明显的材料缺口。不要编造项目、技术、职责或数字。",
     "完成后必须调用 save_interview_question_set 写回面板。",
@@ -2014,7 +2049,7 @@ async function simulateInterviewSession() {
   const prompt = [
     "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，开始一场互动模拟面试。",
     `目标职位 ID：${job.id}；面试题单 ID：${set.id}；题单标题：${set.title}。`,
-    "先读取当前项目根目录的 CODESHELL.md，再调用 get_job_search_context 读取完整题单。每次只问一道题，在我回答前不要展示回答要点。",
+    "先调用 get_job_search_context 读取完整题单；项目中有 CODESHELL.md 时再按它补充候选人上下文。每次只问一道题，在我回答前不要展示回答要点。",
     "收到回答后，从事实证据、结构清晰度、技术深度和岗位相关性四方面给简短反馈，再选择一个追问或进入下一题。",
     "若我的回答超出已有材料，提醒我核实，不要替我补造事实。全部结束后给出优势、风险和下一轮练习建议。",
   ].join("\n");
@@ -2044,10 +2079,10 @@ function runFullWorkflowInSession() {
   return submitSessionTask(
     [
       "请使用 job-hunt-hq:job-hunt-workflow skill，在当前 CodeShell 项目中运行一次完整求职流程。",
-      "先读取项目根目录的 CODESHELL.md 和其中指定的候选人材料，再调用 panel-app:job-hunt-hq 的工具读取面板上下文。",
+      "先读取 panel-app:job-hunt-hq 的工具与面板上下文；项目中有 CODESHELL.md 时再按它读取候选人材料。",
       "按项目里的目标岗位与来源要求：发现并核验少量当前岗位、保存完整 JD、调研公司官网与公开评价、整理公开面试情报。",
       "对合适岗位生成可编辑简历草稿和有证据的面试题，并把所有结构化结果与流程进度写回面板。",
-      "不要绕过登录、验证码、robots、付费墙或访问频率限制；受限来源要明确记录为部分完成。",
+      "先保存阶段性结果，再继续补全。不要绕过访问限制，也不要导出或在浏览器外复用招聘网站的登录凭据；受限来源标为部分完成。",
     ].join("\n"),
     "任务已发送到当前 Session；过程和结果会继续出现在原对话与本面板中",
   );
@@ -2112,9 +2147,9 @@ function registerAgentTools(ready) {
       interviewSets: clone(state.interviewSets),
       providerCatalog: clone(JOB_PROVIDERS),
       evidencePolicy:
-        "Read the current project's CODESHELL.md and relevant files first. Use only verifiable project evidence; never invent facts or metrics.",
+        "Read panel context first. Check the current project's CODESHELL.md once and follow it when present; its absence is not a blocker. Use only verifiable project evidence; never invent facts or metrics.",
       collectionPolicy:
-        "Use public pages only, preserve source attribution, and never bypass login, CAPTCHA, robots, or rate limits.",
+        "Use public pages or the connected visible browser, preserve source attribution, and never bypass access controls. Never export cookies or replay authenticated recruiting-site requests outside the browser.",
     };
   });
 
@@ -2191,14 +2226,18 @@ function registerAgentTools(ready) {
         typeof job.company !== "string" ||
         !job.company.trim() ||
         typeof job.title !== "string" ||
-        !job.title.trim() ||
-        typeof job.description !== "string" ||
-        !job.description.trim()
+        !job.title.trim()
       ) {
-        throw new Error(`jobs[${index}] 缺少 company、title 或 description`);
+        throw new Error(`jobs[${index}] 缺少 company 或 title`);
       }
       const url = normalizeJobUrl(job.url);
       const sourceId = normalizeSourceId(job.source_id, job.source);
+      const description = cleanText(job.description, 20000);
+      const jdCompleteness = normalizeJdCompleteness(job.jd_completeness, description);
+      if (jdCompleteness === "full" && !description) {
+        throw new Error(`jobs[${index}] 标为 full 时必须提供 description`);
+      }
+      const now = new Date().toISOString();
       return {
         id: uid("agent-job"),
         company: job.company.trim().slice(0, 80),
@@ -2220,22 +2259,23 @@ function registerAgentTools(ready) {
         employmentType: String(job.employment_type || "")
           .trim()
           .slice(0, 80),
-        description: job.description.trim().slice(0, 20000),
-        match: Number.isInteger(job.match) ? Math.min(100, Math.max(0, job.match)) : 70,
+        description,
+        jdCompleteness,
+        verificationNotes: cleanText(job.verification_notes, 2000),
+        fetchedAt: cleanText(job.fetched_at, 80) || now,
+        match: Number.isInteger(job.match) ? Math.min(100, Math.max(0, job.match)) : null,
         status: "saved",
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
         sample: false,
       };
     });
-    const existingKeys = new Set(state.jobs.map(jobDedupeKey));
-    const unique = incoming.filter((job) => {
-      const key = jobDedupeKey(job);
-      if (existingKeys.has(key)) return false;
-      existingKeys.add(key);
-      return true;
+    const upserted = upsertJobOpportunities(state.jobs, incoming, {
+      dedupeKey: jobDedupeKey,
+      metadataKey: jobMetadataKey,
     });
-    state.jobs = [...unique, ...state.jobs].slice(0, 80);
-    if (unique[0]) state.selectedJobId = unique[0].id;
+    state.jobs = upserted.jobs.slice(0, 80);
+    if (upserted.inserted[0]) state.selectedJobId = upserted.inserted[0].id;
     state.jobSourceFilter = "all";
     state.activeView = "dashboard";
     persist();
@@ -2243,8 +2283,9 @@ function registerAgentTools(ready) {
     const projectSaved = await writeProjectSnapshot();
     renderMaterials();
     return {
-      saved: unique.length,
-      skippedDuplicates: incoming.length - unique.length,
+      saved: upserted.inserted.length,
+      updated: upserted.updated,
+      unchanged: upserted.unchanged,
       selectedJobId: state.selectedJobId,
       totalJobs: state.jobs.length,
       projectSaved,
