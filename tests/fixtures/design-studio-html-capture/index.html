@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Design Studio HTML capture QA</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="fixture" data-codeshell-id="codeshell-shell" data-codeshell-name="CodeShell shell">
+      <header class="topbar" data-codeshell-id="topbar">
+        <div class="brand">
+          <span class="brand-mark">C</span>
+          <strong>CodeShell</strong>
+          <span class="workspace-chip">design-studio</span>
+        </div>
+        <div class="top-actions">
+          <span class="status-dot"></span>
+          <span>Local workspace</span>
+          <button type="button">Share</button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="sidebar" data-codeshell-id="sidebar">
+          <div class="sidebar-heading">
+            <span>Tasks</span>
+            <button class="icon-button" type="button">+</button>
+          </div>
+          <nav>
+            <a class="nav-item active" href="#">
+              <span class="nav-icon">D</span>
+              <span>
+                <strong>Design Studio</strong>
+                <small>HTML fidelity pass</small>
+              </span>
+              <span class="count">3</span>
+            </a>
+            <a class="nav-item" href="#">
+              <span class="nav-icon violet">Q</span>
+              <span>
+                <strong>Quant Lab</strong>
+                <small>Strategy review</small>
+              </span>
+            </a>
+            <a class="nav-item" href="#">
+              <span class="nav-icon amber">A</span>
+              <span>
+                <strong>Agent runtime</strong>
+                <small>All systems ready</small>
+              </span>
+            </a>
+          </nav>
+          <div class="repo-card">
+            <span class="eyebrow">CURRENT REPOSITORY</span>
+            <strong>cjhyy/codeshell</strong>
+            <span class="branch">main · 51 changes</span>
+          </div>
+        </aside>
+
+        <section class="chat" data-codeshell-id="chat">
+          <div class="chat-heading">
+            <div>
+              <span class="eyebrow">DESIGN REVIEW</span>
+              <h1>Make the panel match the product</h1>
+            </div>
+            <span class="run-state"><span></span> Running</span>
+          </div>
+
+          <div class="messages">
+            <article class="message user-message">
+              <div class="avatar user-avatar">M</div>
+              <div class="message-content">
+                <div class="message-meta"><strong>You</strong><span>10:42</span></div>
+                <div class="bubble user-bubble">
+                  Compare the rendered HTML with the converted design and keep iterating until the
+                  visual difference is no longer obvious.
+                </div>
+              </div>
+            </article>
+
+            <article class="message assistant-message">
+              <div class="avatar assistant-avatar">C</div>
+              <div class="message-content">
+                <div class="message-meta"><strong>Codex</strong><span>10:43</span></div>
+                <div class="bubble assistant-bubble">
+                  <p>
+                    I measured the real browser layout, captured computed typography, borders,
+                    shadows, and clipping, then rebuilt the page as editable design layers.
+                  </p>
+                  <div class="result-card">
+                    <div>
+                      <span class="eyebrow">VISUAL REGRESSION</span>
+                      <strong>HTML capture baseline</strong>
+                    </div>
+                    <span class="quality">High fidelity</span>
+                  </div>
+                  <div class="metric-row">
+                    <span><strong>146</strong> layers</span>
+                    <span><strong>0</strong> audit issues</span>
+                    <span><strong>0.98+</strong> target SSIM</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <form class="composer">
+            <div class="composer-input">Ask Codex to refine the current design…</div>
+            <div class="composer-actions">
+              <span>⌘ ↵ to send</span>
+              <button type="button">Send</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="inspector" data-codeshell-id="inspector">
+          <div class="inspector-heading">
+            <span>Properties</span>
+            <span class="selection-pill">Frame</span>
+          </div>
+          <section class="property-group">
+            <span class="eyebrow">LAYOUT</span>
+            <div class="field-grid">
+              <label><span>X</span><strong>244</strong></label>
+              <label><span>Y</span><strong>64</strong></label>
+              <label><span>W</span><strong>476</strong></label>
+              <label><span>H</span><strong>576</strong></label>
+            </div>
+          </section>
+          <section class="property-group">
+            <span class="eyebrow">APPEARANCE</span>
+            <div class="color-field"><span class="swatch"></span><strong>#FAFAFA</strong></div>
+            <div class="slider"><span></span></div>
+          </section>
+          <section class="property-group">
+            <span class="eyebrow">AUDIT</span>
+            <div class="audit-card">
+              <span class="check">✓</span>
+              <div><strong>No layout issues</strong><small>Ready for visual comparison</small></div>
+            </div>
+          </section>
+          <div class="inspector-footer">
+            <button type="button">Validate</button>
+            <button class="primary" type="button">Capture</button>
+          </div>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="./qa.mjs?v=11"></script>
+  </body>
+</html>

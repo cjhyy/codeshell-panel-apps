@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.3.0",
+  "version": "0.7.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -25,72 +25,613 @@
     "tools": [
       {
         "name": "get_design_metadata",
-        "description": "Read the active repository design's file, page, canvas, selection, and compact layer index.",
+        "description": "Read the active design's file, page, canvas, color tokens, selection, compact layer index, and machine-readable absolute-coordinate/layout contract.",
         "inputSchema": {
           "type": "object",
-          "properties": {}
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "search_design_system",
+        "description": "Search the current document's reusable color tokens and component masters by semantic name, id, notes, or color value before creating duplicate local design primitives.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "description": "Case-insensitive semantic name, stable id, note text, or color value to search."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "description": "Maximum matches returned for each result kind. Defaults to 20."
+            }
+          },
+          "required": ["query"],
+          "additionalProperties": false
         },
         "readOnly": true
       },
       {
         "name": "get_design_context",
-        "description": "Read the complete active CodeShell Design v3 document, or one node subtree by stable node id.",
+        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are absolute canvas coordinates.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "node_id": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
               "description": "Optional stable node id. Omit to return the full repository document."
+            },
+            "max_depth": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 32,
+              "description": "Maximum descendant depth for a node subtree. Defaults to 32 and is ignored when node_id is omitted."
             }
-          }
+          },
+          "additionalProperties": false
         },
         "readOnly": true
       },
       {
         "name": "use_design",
-        "description": "Apply a transaction of create_node, update_node, delete_node, move_node, or set_document operations and refresh the live canvas.",
+        "description": "Apply a guarded design transaction, refresh the canvas, and return an immediate audit summary. Pass the latest metadata stateRevision; manual coordinates are preserved and only affected auto-layout containers reflow. A net-zero request returns noOp=true and no transaction id, preserving the latest real rollback token.",
         "inputSchema": {
           "type": "object",
+          "$defs": {
+            "color": {
+              "anyOf": [
+                { "const": "transparent" },
+                { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+              ]
+            },
+            "shadow": {
+              "type": "object",
+              "properties": {
+                "color": {
+                  "type": "string",
+                  "pattern": "^#[0-9a-fA-F]{6}$"
+                },
+                "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+                "x": { "type": "number", "minimum": -500, "maximum": 500 },
+                "y": { "type": "number", "minimum": -500, "maximum": 500 },
+                "blur": { "type": "number", "minimum": 0, "maximum": 200 }
+              },
+              "required": ["color", "opacity", "x", "y", "blur"],
+              "additionalProperties": false
+            },
+            "nodePatch": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                },
+                "notes": { "type": ["string", "null"], "maxLength": 2000 },
+                "effectClipping": {
+                  "type": "string",
+                  "enum": ["intentional"],
+                  "description": "Marks a deliberately clipped visual effect measured from imported HTML."
+                },
+                "shadow": {
+                  "oneOf": [{ "$ref": "#/$defs/shadow" }, { "type": "null" }]
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -20000,
+                  "maximum": 20000,
+                  "description": "Absolute canvas X for a root/manual-layout node. Never make it parent-relative; omit it for a direct auto-layout child."
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -20000,
+                  "maximum": 20000,
+                  "description": "Absolute canvas Y for a root/manual-layout node. Never make it parent-relative; omit it for a direct auto-layout child."
+                },
+                "width": { "type": "number", "minimum": 1, "maximum": 20000 },
+                "height": { "type": "number", "minimum": 1, "maximum": 20000 },
+                "fill": { "$ref": "#/$defs/color" },
+                "stroke": { "$ref": "#/$defs/color" },
+                "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
+                "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+                "rotation": { "type": "number", "minimum": -360, "maximum": 360 },
+                "cornerRadius": { "type": "number", "minimum": 0, "maximum": 9999 },
+                "visible": { "type": "boolean" },
+                "locked": { "type": "boolean" },
+                "clipContent": { "type": ["boolean", "null"] },
+                "text": { "type": "string", "maxLength": 4000 },
+                "fontSize": { "type": "number", "minimum": 6, "maximum": 240 },
+                "fontWeight": {
+                  "type": "number",
+                  "enum": [100, 200, 300, 400, 500, 600, 700, 800, 900]
+                },
+                "fontFamily": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }]
+                },
+                "fontStyle": { "type": "string", "enum": ["normal", "italic"] },
+                "lineHeight": { "type": "number", "minimum": 0.7, "maximum": 3 },
+                "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
+                "textDecoration": {
+                  "type": "string",
+                  "enum": ["none", "underline", "line-through"]
+                },
+                "textMeasurement": {
+                  "type": "string",
+                  "enum": ["browser"],
+                  "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
+                },
+                "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
+                "layout": {
+                  "type": "string",
+                  "enum": ["none", "horizontal", "vertical"],
+                  "description": "Container layout. Defaults to none; only horizontal/vertical owns direct-child positions."
+                },
+                "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "paddingBottom": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "paddingLeft": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "alignItems": {
+                  "type": "string",
+                  "enum": ["start", "center", "end", "stretch"]
+                },
+                "justifyContent": {
+                  "type": "string",
+                  "enum": ["start", "center", "end", "space-between"]
+                },
+                "layoutGrow": { "type": ["number", "null"], "enum": [0, 1, null] },
+                "layoutAlign": {
+                  "type": ["string", "null"],
+                  "enum": ["auto", "start", "center", "end", "stretch", null]
+                },
+                "componentId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "documentPatch": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }]
+                },
+                "canvas": {
+                  "type": "object",
+                  "properties": {
+                    "width": { "type": "number", "minimum": 100, "maximum": 10000 },
+                    "height": { "type": "number", "minimum": 100, "maximum": 10000 },
+                    "background": {
+                      "type": "string",
+                      "pattern": "^#[0-9a-fA-F]{6}$"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "tokens": {
+                  "type": "object",
+                  "description": "Complete replacement color-token set. Preserve every token you still need; changing a value under the same token name propagates that color through the design.",
+                  "properties": {
+                    "colors": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80,
+                            "allOf": [
+                              { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
+                              { "pattern": "\\S" }
+                            ]
+                          },
+                          "value": {
+                            "type": "string",
+                            "pattern": "^#[0-9a-fA-F]{6}$"
+                          }
+                        },
+                        "required": ["name", "value"],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": ["colors"],
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
           "properties": {
             "operations": {
               "type": "array",
               "minItems": 1,
               "maxItems": 50,
               "items": {
-                "type": "object",
-                "additionalProperties": true
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "create_node"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "frame",
+                          "group",
+                          "component",
+                          "instance",
+                          "rectangle",
+                          "ellipse",
+                          "text"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                        "description": "Required stable semantic id. Use lowercase letters, numbers, and single-purpose hyphen-separated words so later operations can reference the node deterministically."
+                      },
+                      "parent_id": {
+                        "type": ["string", "null"],
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "description": "Parent container id, or null/omitted for the canvas root. Parenting never changes x/y into relative coordinates."
+                      },
+                      "before_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "description": "Optional sibling id used to place the new node before that sibling."
+                      },
+                      "properties": {
+                        "description": "Node fields. Root/manual nodes must include absolute canvas x and y; direct children of auto-layout containers must omit x and y.",
+                        "$ref": "#/$defs/nodePatch"
+                      }
+                    },
+                    "required": ["op", "type", "id", "properties"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "update_node"
+                      },
+                      "node_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                      },
+                      "changes": {
+                        "description": "Fields to change. Updating a container x/y moves its complete subtree. Do not set x/y on an auto-layout child.",
+                        "$ref": "#/$defs/nodePatch"
+                      }
+                    },
+                    "required": ["op", "node_id", "changes"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "move_node"
+                      },
+                      "node_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                      },
+                      "parent_id": {
+                        "type": ["string", "null"],
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "description": "Destination container id, or null for the canvas root. Manual geometry stays in absolute canvas coordinates."
+                      },
+                      "before_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                        "description": "Optional sibling id in the destination."
+                      }
+                    },
+                    "required": ["op", "node_id", "parent_id"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "delete_node"
+                      },
+                      "node_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160,
+                        "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                      }
+                    },
+                    "required": ["op", "node_id"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "set_document"
+                      },
+                      "changes": {
+                        "description": "Document name, field-wise canvas patch, or complete token-set replacement. Preserve unchanged tokens.",
+                        "$ref": "#/$defs/documentPatch"
+                      }
+                    },
+                    "required": ["op", "changes"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "create_page"
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120,
+                        "allOf": [
+                          { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
+                          { "pattern": "\\S" }
+                        ]
+                      },
+                      "switch": {
+                        "type": "boolean",
+                        "description": "Switch to the new page. Defaults to true."
+                      }
+                    },
+                    "required": ["op", "id", "name"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "rename_page"
+                      },
+                      "page_id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      },
+                      "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 120,
+                        "allOf": [
+                          { "pattern": "^[^\\u0000-\\u001F\\u007F]+$" },
+                          { "pattern": "\\S" }
+                        ]
+                      }
+                    },
+                    "required": ["op", "page_id", "name"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "set_active_page"
+                      },
+                      "page_id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      }
+                    },
+                    "required": ["op", "page_id"],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "const": "delete_page"
+                      },
+                      "page_id": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                      }
+                    },
+                    "required": ["op", "page_id"],
+                    "additionalProperties": false
+                  }
+                ]
               }
             },
             "save": {
               "type": "boolean",
               "description": "Save to the active repo file after applying. Defaults to true."
+            },
+            "expected_revision": {
+              "type": ["string", "null"],
+              "description": "Optional exact revision returned by get_design_metadata. The transaction fails before mutation if the active revision changed."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact in-memory stateRevision returned by get_design_metadata. The transaction fails before mutation if a human, Agent, undo/redo, page switch, workspace switch, or unsaved edit changed the live design."
             }
           },
-          "required": ["operations"]
+          "required": ["operations", "expected_state_revision"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "import_html",
+        "description": "Render a workspace-local HTML file and its local CSS in an isolated browser viewport, replace the current canvas with editable v3 layers, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "anyOf": [
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.htm$"
+                }
+              ],
+              "description": "Workspace-relative .html or .htm path. The importer may read up to 20 relative local CSS files referenced by this document."
+            },
+            "root_selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
+              "description": "CSS selector for the region to convert. Defaults to body."
+            },
+            "viewport_width": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Browser viewport width in CSS pixels. Defaults to 1440."
+            },
+            "viewport_height": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Browser viewport height in CSS pixels. Defaults to 900."
+            },
+            "save": {
+              "type": "boolean",
+              "description": "Save the converted design to the active .codesign.json file. Defaults to true."
+            },
+            "expected_revision": {
+              "type": ["string", "null"],
+              "description": "Optional exact design-file revision from get_design_metadata."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact live stateRevision from get_design_metadata. Import fails if the canvas changes while HTML is rendering."
+            }
+          },
+          "required": ["path", "expected_state_revision"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "rollback_design",
+        "description": "Safely roll back the most recent use_design or import_html transaction when no design or repository revision has changed since it completed.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "transaction_id": {
+              "type": "string",
+              "description": "Exact transactionId returned by the most recent use_design call."
+            },
+            "save": {
+              "type": "boolean",
+              "description": "Save the restored design to the active repo file. Defaults to true."
+            }
+          },
+          "required": ["transaction_id"],
+          "additionalProperties": false
         },
         "readOnly": false
       },
       {
         "name": "validate_design",
-        "description": "Validate the active v3 source model and return deterministic accessibility and layout audit issues.",
+        "description": "Validate every page in the v3 model. Any issue makes valid=false; renderSafe identifies blocking failures. Counts cover all issues and truncatedIssueCount reports details omitted beyond the first 400.",
         "inputSchema": {
           "type": "object",
-          "properties": {}
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "get_design_screenshot",
+        "description": "Render a complete page or one node region from any page as an image so the Agent can visually inspect layout, hierarchy, clipping, and polish after edits. The call fails if the source state changes while the image is rendering.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "node_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "description": "Optional globally unique node id to crop and enlarge. Its page is resolved automatically."
+            },
+            "page_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "description": "Optional page id for a complete-page image or to assert the page that contains node_id. Defaults to the active page."
+            },
+            "max_width": {
+              "type": "number",
+              "minimum": 320,
+              "maximum": 1600,
+              "description": "Maximum screenshot width in pixels. Defaults to 1200."
+            }
+          },
+          "additionalProperties": false
         },
         "readOnly": true
       },
       {
         "name": "save_design",
-        "description": "Save the current live canvas to its active .codesign.json repository source.",
+        "description": "Save the current live canvas to its active .codesign.json repository source, guarded by the latest metadata stateRevision.",
         "inputSchema": {
           "type": "object",
-          "properties": {}
+          "properties": {
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact in-memory stateRevision returned by get_design_metadata."
+            }
+          },
+          "required": ["expected_state_revision"],
+          "additionalProperties": false
         },
         "readOnly": false
       }
     ],
-    "skills": [
-      "agent/skills/repo-design/SKILL.md"
-    ]
+    "skills": ["agent/skills/repo-design/SKILL.md"]
   }
 }
