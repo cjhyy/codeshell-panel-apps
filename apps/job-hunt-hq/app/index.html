@@ -9,7 +9,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="把职位 JD、代码仓库和工作经历整理成可编辑的定制简历与岗位面试题库。"
+      content="选择一个或多个岗位，自由组合简历优化、岗位匹配、公司面经、面试准备与真实复盘任务。"
     />
     <title>Job Hunt HQ · 求职作战室</title>
     <link rel="stylesheet" href="./style.css" />
@@ -31,9 +31,9 @@
         </div>
 
         <div class="top-actions">
-          <button id="run-full-workflow" class="button button-primary" type="button">
+          <button id="focus-workflow-builder" class="button button-primary" type="button">
             <span aria-hidden="true">✦</span>
-            在 Session 运行
+            组合任务
           </button>
           <button id="open-search" class="button button-quiet" type="button">
             <span aria-hidden="true">⌕</span>
@@ -61,7 +61,7 @@
           </button>
           <button class="nav-item" type="button" data-view-target="research">
             <span class="nav-icon" aria-hidden="true">◎</span>
-            <span>公司调研</span>
+            <span>公司与面经</span>
             <span id="research-nav-count" class="nav-count">1</span>
           </button>
           <button class="nav-item" type="button" data-view-target="resumes">
@@ -71,7 +71,7 @@
           </button>
           <button class="nav-item" type="button" data-view-target="interviews">
             <span class="nav-icon" aria-hidden="true">?</span>
-            <span>面试题库</span>
+            <span>面试准备</span>
             <span id="interview-nav-count" class="nav-count">1</span>
           </button>
 
@@ -119,15 +119,71 @@
         <section id="view-dashboard" class="view active" aria-labelledby="dashboard-title">
           <header class="page-heading">
             <div>
-              <span class="eyebrow">JOB SEARCH / 2026</span>
-              <h1 id="dashboard-title">把每个机会，变成一份有针对性的简历。</h1>
-              <p>集中管理职位要求、项目证据和工作经历，让 Agent 先给你一版能继续改的草稿。</p>
+              <span class="eyebrow">CAREER WORKBENCH / 2026</span>
+              <h1 id="dashboard-title">选岗位，组合任务，让 Agent 按你这次的需要工作。</h1>
+              <p>同一批岗位可以分别做简历、匹配分析、面经、题库、补强、模拟面试和真实复盘，不强制进入固定流程。</p>
             </div>
             <div class="heading-meta">
               <span class="meta-chip"><i aria-hidden="true"></i> 本地优先</span>
               <span id="last-saved" class="muted-copy">刚刚保存</span>
             </div>
           </header>
+
+          <section id="workflow-builder" class="workflow-builder" aria-labelledby="workflow-builder-title">
+            <header>
+              <div>
+                <span class="panel-kicker">TASK COMPOSER</span>
+                <h2 id="workflow-builder-title">这次想让 Agent 做什么？</h2>
+                <p>先选一个预设，再按需要增减任务。岗位可以多选；不选岗位时只处理通用简历和候选人材料。</p>
+              </div>
+              <div class="workflow-presets" aria-label="任务预设">
+                <button type="button" data-workflow-preset="resume">简历优化</button>
+                <button type="button" data-workflow-preset="interview">面试准备</button>
+                <button type="button" data-workflow-preset="debrief">面试复盘</button>
+                <button type="button" data-workflow-preset="full">完整岗位包</button>
+              </div>
+            </header>
+
+            <div class="workflow-builder-grid">
+              <section class="workflow-picker-section">
+                <div class="workflow-section-title">
+                  <span>01</span>
+                  <div>
+                    <strong>选择岗位</strong>
+                    <small>可多选，也可以暂时不选</small>
+                  </div>
+                </div>
+                <div id="workflow-job-picker" class="workflow-job-picker"></div>
+              </section>
+
+              <section class="workflow-picker-section">
+                <div class="workflow-section-title">
+                  <span>02</span>
+                  <div>
+                    <strong>组合任务</strong>
+                    <small>点击启用或取消</small>
+                  </div>
+                </div>
+                <div id="workflow-task-picker" class="workflow-task-picker">
+                  <button type="button" data-workflow-task="resume">简历优化<small>结构、表述、关键词</small></button>
+                  <button type="button" data-workflow-task="match">JD 匹配<small>要求、证据、真实缺口</small></button>
+                  <button type="button" data-workflow-task="intel">公司与面经<small>流程、评价、公开问题</small></button>
+                  <button type="button" data-workflow-task="questions">定制题库<small>问题、回答点、追问</small></button>
+                  <button type="button" data-workflow-task="prepare">补强计划<small>缺什么、为什么、怎么补</small></button>
+                  <button type="button" data-workflow-task="mock">模拟面试<small>逐题练习和反馈</small></button>
+                  <button type="button" data-workflow-task="debrief">真实复盘<small>记录结果并迭代材料</small></button>
+                </div>
+              </section>
+            </div>
+
+            <footer>
+              <span id="workflow-selection-summary">尚未选择任务</span>
+              <button id="run-custom-workflow" class="button button-primary" type="button">
+                <span aria-hidden="true">✦</span>
+                发送到当前 Session
+              </button>
+            </footer>
+          </section>
 
           <section class="stat-grid" aria-label="求职进度">
             <article class="stat-card">
@@ -405,8 +461,8 @@
           <header class="page-heading compact-heading">
             <div>
               <span class="eyebrow">COMPANY & INTERVIEW INTELLIGENCE</span>
-              <h1 id="research-page-title">公司调研与面试情报</h1>
-              <p>公司事实、公开评价和面试经验分开保存，每条结论都保留来源。</p>
+              <h1 id="research-page-title">公司、岗位与公开面经</h1>
+              <p>公司事实、公开评价、面试经验和预测问题分开保存，每条结论都保留来源。</p>
             </div>
             <div class="heading-meta">
               <span id="workflow-status" class="meta-chip"><i aria-hidden="true"></i> 尚未运行</span>
@@ -525,7 +581,7 @@
             <div>
               <span class="eyebrow">VERSIONS</span>
               <h1 id="resumes-title">简历版本</h1>
-              <p>每份简历都绑定一个职位，不再用同一份材料海投。</p>
+              <p>既可以维护一份通用基线，也可以为选中的岗位生成不同版本。</p>
             </div>
             <button class="button button-primary" type="button" data-view-target="dashboard">
               新建定制简历
@@ -538,8 +594,8 @@
           <header class="page-heading compact-heading">
             <div>
               <span class="eyebrow">INTERVIEW LAB</span>
-              <h1 id="interviews-title">岗位定制面试题库</h1>
-              <p>每道题都从 JD、工作经历和 Repo 交叉生成，并标注考察目的与回答证据。</p>
+              <h1 id="interviews-title">面试准备与复盘</h1>
+              <p>把 JD、工作经历、Repo 和真实面试反馈连起来，持续更新题库与补强计划。</p>
             </div>
             <button id="open-interview-form" class="button button-primary" type="button">
               <span aria-hidden="true">✦</span>
@@ -569,6 +625,9 @@
                   <button id="simulate-interview" class="button button-quiet" type="button">
                     模拟面试
                   </button>
+                  <button id="start-interview-debrief" class="button button-quiet" type="button">
+                    记录真实面试
+                  </button>
                   <button id="regenerate-interview" class="button button-primary" type="button">
                     重新生成
                   </button>
@@ -587,6 +646,41 @@
                 <article>
                   <span>能力覆盖</span>
                   <strong id="interview-category-count">0 类</strong>
+                </article>
+              </section>
+
+              <section class="interview-loop-grid" aria-label="准备计划与真实面试复盘">
+                <article class="preparation-card">
+                  <header>
+                    <div>
+                      <span class="panel-kicker">PREPARATION PLAN</span>
+                      <h3 id="preparation-title">等待生成补强计划</h3>
+                    </div>
+                    <button
+                      id="refresh-preparation-plan"
+                      class="button button-quiet compact"
+                      type="button"
+                    >
+                      更新计划
+                    </button>
+                  </header>
+                  <p id="preparation-summary" class="preparation-summary">
+                    选择岗位后，可让 Agent 对照真实经历识别优势、证据缺口和下一步行动。
+                  </p>
+                  <div id="preparation-strengths" class="tag-cloud"></div>
+                  <div id="preparation-gap-list" class="preparation-gap-list"></div>
+                  <div id="preparation-action-list" class="preparation-action-list"></div>
+                </article>
+
+                <article class="debrief-card">
+                  <header>
+                    <div>
+                      <span class="panel-kicker">REAL INTERVIEWS</span>
+                      <h3>真实面试记录</h3>
+                    </div>
+                    <span id="debrief-count" class="tiny-badge">0 次</span>
+                  </header>
+                  <div id="interview-debrief-list" class="interview-debrief-list"></div>
                 </article>
               </section>
 

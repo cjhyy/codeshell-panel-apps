@@ -520,6 +520,207 @@ select:focus-visible {
   font-size: 9px;
 }
 
+.workflow-builder {
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #414538;
+  border-radius: 11px;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(223 255 63 / 10%), transparent 28rem),
+    var(--surface);
+}
+
+.workflow-builder > header,
+.workflow-builder > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+}
+
+.workflow-builder > header {
+  border-bottom: 1px solid var(--line);
+}
+
+.workflow-builder h2,
+.workflow-picker-section h3 {
+  margin: 3px 0 0;
+  font-size: 13px;
+}
+
+.workflow-builder header p {
+  max-width: 620px;
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.workflow-presets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.workflow-presets button,
+.workflow-job-picker button,
+.workflow-task-picker button {
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  color: #b7b7b1;
+  background: #1b1b1b;
+}
+
+.workflow-presets button {
+  min-height: 27px;
+  padding: 0 9px;
+  font-size: 8px;
+}
+
+.workflow-presets button:hover,
+.workflow-job-picker button:hover,
+.workflow-task-picker button:hover {
+  border-color: #606553;
+  background: #24251f;
+}
+
+.workflow-builder-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(480px, 1.4fr);
+}
+
+.workflow-picker-section {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.workflow-picker-section + .workflow-picker-section {
+  border-left: 1px solid var(--line);
+}
+
+.workflow-section-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+
+.workflow-section-title > span {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: none;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--accent);
+  background: rgb(223 255 63 / 7%);
+  font-size: 8px;
+}
+
+.workflow-section-title div {
+  display: grid;
+  gap: 2px;
+}
+
+.workflow-section-title strong {
+  font-size: 9px;
+}
+
+.workflow-section-title small,
+.workflow-picker-empty {
+  color: var(--faint);
+  font-size: 8px;
+}
+
+.workflow-job-picker {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.workflow-job-picker button {
+  display: grid;
+  min-width: 155px;
+  gap: 3px;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.workflow-job-picker button strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-job-picker button small {
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 7.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-job-picker button.active,
+.workflow-task-picker button.active {
+  border-color: rgb(223 255 63 / 42%);
+  color: var(--accent);
+  background: rgb(223 255 63 / 6%);
+}
+
+.workflow-job-picker button.active::before,
+.workflow-task-picker button.active::before {
+  color: var(--accent);
+  content: "✓";
+}
+
+.workflow-job-picker button.active {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workflow-job-picker button.active strong,
+.workflow-job-picker button.active small {
+  grid-column: 2;
+}
+
+.workflow-task-picker {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.workflow-task-picker button {
+  display: grid;
+  min-height: 53px;
+  align-content: center;
+  gap: 3px;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.workflow-task-picker button.active {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.workflow-task-picker button small {
+  color: var(--faint);
+  font-size: 7px;
+}
+
+.workflow-task-picker button.active small {
+  grid-column: 2;
+}
+
+.workflow-builder > footer {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 8.5px;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1848,6 +2049,116 @@ textarea::placeholder {
   font-weight: 580;
 }
 
+.interview-loop-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(250px, 0.65fr);
+  gap: 9px;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 12px;
+}
+
+.preparation-card,
+.debrief-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px;
+  background: #151515;
+}
+
+.preparation-card > header,
+.debrief-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.preparation-card h3,
+.debrief-card h3 {
+  margin: 3px 0 0;
+  font-size: 11px;
+}
+
+.preparation-summary {
+  margin: 9px 0;
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.6;
+}
+
+.preparation-gap-list,
+.preparation-action-list,
+.interview-debrief-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.preparation-gap,
+.preparation-action,
+.interview-debrief-item,
+.interview-loop-empty {
+  border: 1px solid #2f2f2f;
+  border-radius: 7px;
+  padding: 9px;
+  background: #191919;
+}
+
+.preparation-gap header,
+.preparation-action header,
+.interview-debrief-item header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preparation-gap strong,
+.preparation-action strong,
+.interview-debrief-item strong {
+  font-size: 8.5px;
+}
+
+.preparation-gap p,
+.preparation-action p,
+.interview-debrief-item p,
+.interview-loop-empty {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 7.5px;
+  line-height: 1.55;
+}
+
+.preparation-priority,
+.debrief-outcome {
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: var(--orange);
+  background: rgb(231 174 104 / 8%);
+  font-size: 7px;
+}
+
+.preparation-priority[data-priority="high"],
+.debrief-outcome[data-outcome="reject"] {
+  color: var(--danger);
+  background: rgb(241 120 120 / 8%);
+}
+
+.debrief-outcome[data-outcome="pass"] {
+  color: var(--green);
+  background: rgb(128 217 158 / 8%);
+}
+
+.preparation-action-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.interview-debrief-list {
+  max-height: 260px;
+  overflow: auto;
+}
+
 .interview-filters {
   display: flex;
   gap: 5px;
@@ -2217,6 +2528,14 @@ textarea::placeholder {
     grid-template-columns: minmax(225px, 0.8fr) minmax(400px, 1.45fr);
   }
 
+  .workflow-builder-grid {
+    grid-template-columns: minmax(250px, 0.75fr) minmax(400px, 1.25fr);
+  }
+
+  .workflow-task-picker {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .insight-panel {
     display: none;
   }
@@ -2310,6 +2629,33 @@ textarea::placeholder {
 
   .heading-meta {
     margin-top: 13px;
+  }
+
+  .workflow-builder > header,
+  .workflow-builder > footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .workflow-presets {
+    justify-content: flex-start;
+  }
+
+  .workflow-builder-grid {
+    display: block;
+  }
+
+  .workflow-picker-section + .workflow-picker-section {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .workflow-task-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workflow-builder > footer .button {
+    width: 100%;
   }
 
   .stat-grid {
@@ -2435,6 +2781,15 @@ textarea::placeholder {
     flex-direction: column;
     padding-top: 12px;
     padding-bottom: 12px;
+  }
+
+  .interview-toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  .interview-loop-grid,
+  .preparation-action-list {
+    grid-template-columns: 1fr;
   }
 
   .interview-question-list {
