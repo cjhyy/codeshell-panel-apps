@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -179,6 +179,19 @@
                   "enum": ["browser"],
                   "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
                 },
+                "textSource": { "type": ["string", "null"], "maxLength": 4000 },
+                "textFlow": { "type": ["string", "null"], "enum": ["wrap", null] },
+                "textOverflow": { "type": ["string", "null"], "enum": ["ellipsis", null] },
+                "textFlowWidth": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "layoutBaselineOffset": {
+                  "type": ["number", "null"],
+                  "minimum": -100,
+                  "maximum": 100
+                },
                 "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
                 "layout": {
                   "type": "string",
@@ -239,6 +252,10 @@
                   "type": ["string", "null"],
                   "enum": ["auto", "start", "center", "end", "stretch", null]
                 },
+                "layoutMarginBefore": {
+                  "type": ["string", "null"],
+                  "enum": ["auto", null]
+                },
                 "gridColumnSpan": {
                   "type": ["integer", "null"],
                   "minimum": 1,
@@ -248,6 +265,44 @@
                   "type": ["integer", "null"],
                   "minimum": 1,
                   "maximum": 24
+                },
+                "constraintHorizontal": {
+                  "type": ["string", "null"],
+                  "enum": ["start", "center", "end", "stretch", "scale", null]
+                },
+                "constraintVertical": {
+                  "type": ["string", "null"],
+                  "enum": ["start", "center", "end", "stretch", "scale", null]
+                },
+                "constraintBaseWidth": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "constraintBaseHeight": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "constraintLeft": {
+                  "type": ["number", "null"],
+                  "minimum": -20000,
+                  "maximum": 20000
+                },
+                "constraintRight": {
+                  "type": ["number", "null"],
+                  "minimum": -20000,
+                  "maximum": 20000
+                },
+                "constraintTop": {
+                  "type": ["number", "null"],
+                  "minimum": -20000,
+                  "maximum": 20000
+                },
+                "constraintBottom": {
+                  "type": ["number", "null"],
+                  "minimum": -20000,
+                  "maximum": 20000
                 },
                 "componentId": {
                   "type": "string",

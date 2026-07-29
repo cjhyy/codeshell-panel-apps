@@ -337,6 +337,71 @@ function layoutInsets(style) {
   };
 }
 
+function typedCssValue(element, property) {
+  try {
+    return element.computedStyleMap?.().get(property)?.toString?.() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function cssSizeMode(element, property) {
+  const value = typedCssValue(element, property).trim().toLowerCase();
+  if (value === "auto" || value === "max-content" || value === "min-content") return "hug";
+  const percentage = value.match(/^([-\d.]+)%$/u);
+  if (percentage && Number.parseFloat(percentage[1]) >= 99) return "fill";
+  return "fixed";
+}
+
+function insetIsSpecified(element, property) {
+  const value = typedCssValue(element, property).trim().toLowerCase();
+  return Boolean(value && value !== "auto");
+}
+
+function absoluteConstraintProperties(element) {
+  const parentRect = element.parentElement?.getBoundingClientRect?.();
+  if (!parentRect) return {};
+  const childRect = element.getBoundingClientRect();
+  const hasLeft = insetIsSpecified(element, "left");
+  const hasRight = insetIsSpecified(element, "right");
+  const hasTop = insetIsSpecified(element, "top");
+  const hasBottom = insetIsSpecified(element, "bottom");
+  const left = childRect.left - parentRect.left;
+  const right = parentRect.right - childRect.right;
+  const top = childRect.top - parentRect.top;
+  const bottom = parentRect.bottom - childRect.bottom;
+  const horizontallyCentered =
+    !(hasLeft && hasRight) &&
+    Math.abs(left - right) <= 3 &&
+    left >= parentRect.width * 0.2;
+  const verticallyCentered =
+    !(hasTop && hasBottom) &&
+    Math.abs(top - bottom) <= 3 &&
+    top >= parentRect.height * 0.2;
+  return {
+    constraintHorizontal: hasLeft && hasRight
+      ? "stretch"
+      : horizontallyCentered
+        ? "center"
+        : hasRight
+          ? "end"
+          : "start",
+    constraintVertical: hasTop && hasBottom
+      ? "stretch"
+      : verticallyCentered
+        ? "center"
+        : hasBottom
+          ? "end"
+          : "start",
+    constraintBaseWidth: round(parentRect.width),
+    constraintBaseHeight: round(parentRect.height),
+    constraintLeft: round(left),
+    constraintRight: round(right),
+    constraintTop: round(top),
+    constraintBottom: round(bottom),
+  };
+}
+
 function flexLayoutProperties(element, style, ownerWindow) {
   if (!["flex", "inline-flex"].includes(style.display)) return null;
   const layout = flexAxis(style.flexDirection);
@@ -464,8 +529,16 @@ function gridSpan(start, end) {
     : 1;
 }
 
-function layoutItemProperties(style, parentLayout) {
+function layoutItemProperties(element, style, parentLayout) {
   const grow = Number.parseFloat(style.flexGrow || "0");
+  const flexBasis = typedCssValue(element, "flex-basis").trim().toLowerCase();
+  const hasFixedFlexBasis = Boolean(
+    flexBasis &&
+      flexBasis !== "auto" &&
+      flexBasis !== "content" &&
+      flexBasis !== "max-content" &&
+      flexBasis !== "min-content",
+  );
   const alignment = style.alignSelf === "auto" ? "auto" : flexAlignment(style.alignSelf);
   const absolute = ["absolute", "fixed"].includes(style.position);
   const properties = {
@@ -474,7 +547,14 @@ function layoutItemProperties(style, parentLayout) {
     ...(absolute ? { layoutPositioning: "absolute" } : {}),
     ...(alignment ? { layoutAlignSelf: alignment } : {}),
   };
-  if (absolute) return properties;
+  if (absolute) return { ...properties, ...absoluteConstraintProperties(element) };
+  const autoMarginBefore =
+    parentLayout.layout === "horizontal"
+      ? typedCssValue(element, "margin-left").trim().toLowerCase() === "auto"
+      : parentLayout.layout === "vertical"
+        ? typedCssValue(element, "margin-top").trim().toLowerCase() === "auto"
+        : false;
+  if (autoMarginBefore) properties.layoutMarginBefore = "auto";
   if (parentLayout.layout === "horizontal") {
     if (Number.isFinite(grow) && grow > 0) properties.layoutSizingHorizontal = "fill";
     if (
@@ -501,70 +581,25 @@ function layoutItemProperties(style, parentLayout) {
     properties.gridColumnSpan = gridSpan(style.gridColumnStart, style.gridColumnEnd);
     properties.gridRowSpan = gridSpan(style.gridRowStart, style.gridRowEnd);
   }
+  if (
+    properties.layoutSizingHorizontal === "fixed" &&
+    !(parentLayout.layout === "horizontal" && hasFixedFlexBasis) &&
+    cssSizeMode(element, "width") === "hug"
+  ) {
+    properties.layoutSizingHorizontal = "hug";
+  } else if (cssSizeMode(element, "width") === "fill") {
+    properties.layoutSizingHorizontal = "fill";
+  }
+  if (
+    properties.layoutSizingVertical === "fixed" &&
+    !(parentLayout.layout === "vertical" && hasFixedFlexBasis) &&
+    cssSizeMode(element, "height") === "hug"
+  ) {
+    properties.layoutSizingVertical = "hug";
+  } else if (cssSizeMode(element, "height") === "fill") {
+    properties.layoutSizingVertical = "fill";
+  }
   return properties;
-}
-
-function fitTransparentWrapperToChildren(frame) {
-  if (
-    !frame ||
-    frame.fill !== "transparent" ||
-    frame.stroke !== "transparent" ||
-    frame.shadow ||
-    frame.clipContent === true
-  ) {
-    return;
-  }
-  const children = frame.children.filter(
-    (child) =>
-      child.visible !== false &&
-      [child.x, child.y, child.width, child.height].every(Number.isFinite),
-  );
-  if (children.length === 0) return;
-  const left = Math.min(frame.x, ...children.map((child) => child.x));
-  const top = Math.min(frame.y, ...children.map((child) => child.y));
-  const right = Math.max(
-    frame.x + frame.width,
-    ...children.map((child) => child.x + child.width),
-  );
-  const bottom = Math.max(
-    frame.y + frame.height,
-    ...children.map((child) => child.y + child.height),
-  );
-  frame.x = round(left);
-  frame.y = round(top);
-  frame.width = round(Math.max(1, right - left));
-  frame.height = round(Math.max(1, bottom - top));
-}
-
-function ensureAutoLayoutFrameFitsChildren(frame) {
-  if (
-    !frame ||
-    !["horizontal", "vertical"].includes(frame.layout) ||
-    frame.layoutWrap === "wrap"
-  ) {
-    return;
-  }
-  const children = frame.children.filter(
-    (child) => child.visible !== false && child.layoutPositioning !== "absolute",
-  );
-  if (children.length === 0) return;
-  const horizontal = frame.layout === "horizontal";
-  const mainSize = horizontal ? "width" : "height";
-  const crossSize = horizontal ? "height" : "width";
-  const mainPadding =
-    (horizontal ? frame.paddingLeft : frame.paddingTop) +
-    (horizontal ? frame.paddingRight : frame.paddingBottom);
-  const crossPadding =
-    (horizontal ? frame.paddingTop : frame.paddingLeft) +
-    (horizontal ? frame.paddingBottom : frame.paddingRight);
-  const requiredMain =
-    mainPadding +
-    children.reduce((total, child) => total + child[mainSize], 0) +
-    frame.gap * Math.max(0, children.length - 1);
-  const requiredCross =
-    crossPadding + Math.max(...children.map((child) => child[crossSize]));
-  frame[mainSize] = round(Math.max(frame[mainSize], requiredMain));
-  frame[crossSize] = round(Math.max(frame[crossSize], requiredCross));
 }
 
 function elementNeedsFrame(element, style, forceFrame = false) {
@@ -605,6 +640,14 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
         opacity: fill?.alpha > 0 ? round(fill.alpha, 4) : 1,
         cornerRadius: radius,
         layoutPositioning: "absolute",
+        constraintHorizontal: "stretch",
+        constraintVertical: "stretch",
+        constraintBaseWidth: round(rect.width),
+        constraintBaseHeight: round(rect.height),
+        constraintLeft: 0,
+        constraintRight: 0,
+        constraintTop: 0,
+        constraintBottom: 0,
         ...(shadow ? { shadow, effectClipping: "intentional" } : {}),
       }),
     );
@@ -621,7 +664,6 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
     );
   if (uniform) {
     const border = borders[0];
-    hasManualLayers = true;
     frame.children.push(
       rectangleNode(
         nextId("border"),
@@ -638,9 +680,19 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
           opacity: round(border.color.alpha, 4),
           cornerRadius: round(Math.max(0, radius - border.width / 2)),
           layoutPositioning: "absolute",
+          constraintHorizontal: "stretch",
+          constraintVertical: "stretch",
+          constraintBaseWidth: round(rect.width),
+          constraintBaseHeight: round(rect.height),
+          constraintLeft: round(border.width / 2),
+          constraintRight: round(border.width / 2),
+          constraintTop: round(border.width / 2),
+          constraintBottom: round(border.width / 2),
         },
       ),
     );
+    // A uniform border is a safe absolute decoration: it does not need to participate in
+    // flow and therefore must not downgrade an otherwise editable Flex/Grid container.
     return hasManualLayers;
   }
 
@@ -673,6 +725,22 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
           fill: border.color.hex,
           opacity: round(border.color.alpha, 4),
           layoutPositioning: "absolute",
+          constraintHorizontal: ["top", "bottom"].includes(border.side)
+            ? "stretch"
+            : border.side === "right"
+              ? "end"
+              : "start",
+          constraintVertical: ["left", "right"].includes(border.side)
+            ? "stretch"
+            : border.side === "bottom"
+              ? "end"
+              : "start",
+          constraintBaseWidth: round(rect.width),
+          constraintBaseHeight: round(rect.height),
+          constraintLeft: round(borderRect.x - rect.x),
+          constraintRight: round(rect.x + rect.width - borderRect.x - borderRect.width),
+          constraintTop: round(borderRect.y - rect.y),
+          constraintBottom: round(rect.y + rect.height - borderRect.y - borderRect.height),
         },
       ),
     );
@@ -732,7 +800,90 @@ function appendTextLayers(frame, node, style, rootRect, nextId) {
     style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
   const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);
   const baselineOffset = hangingBaselineOffset(style, size, spacing, node.ownerDocument);
-  for (const [index, line] of textLineRects(node, rootRect).entries()) {
+  const lines = textLineRects(node, rootRect);
+  const rawText = transformedText(
+    String(node.textContent ?? "")
+      .replace(/\s+/gu, " ")
+      .trim(),
+    style.textTransform,
+  );
+  const hasInlineElementSibling = [...(node.parentElement?.children ?? [])].some((child) =>
+    ["inline", "inline-block", "inline-flex", "inline-grid"].includes(
+      node.ownerDocument.defaultView.getComputedStyle(child).display,
+    ),
+  );
+  const adaptive =
+    rawText &&
+    lines.length > 0 &&
+    !["nowrap", "pre"].includes(style.whiteSpace) &&
+    !hasInlineElementSibling &&
+    lines.every((line) => Math.abs(line.rect.x - lines[0].rect.x) < 1);
+  const commonProperties = {
+    fill: color.hex,
+    opacity: round(color.alpha, 4),
+    fontSize: round(size),
+    fontWeight: fontWeight(style.fontWeight),
+    fontFamily: String(style.fontFamily || "Arial, sans-serif").slice(0, 120),
+    fontStyle: style.fontStyle === "italic" ? "italic" : "normal",
+    lineHeight: round(clamp(lineHeightPixels / size, 0.7, 3), 4),
+    letterSpacing: round(clamp(spacing, -20, 100)),
+    textDecoration: textDecoration(style.textDecorationLine || style.textDecoration),
+    textAlign: "left",
+    textMeasurement: "browser",
+    layoutBaselineOffset: round(baselineOffset, 4),
+  };
+  const ellipsis =
+    rawText &&
+    lines.length > 0 &&
+    style.textOverflow === "ellipsis" &&
+    ["hidden", "clip"].includes(style.overflowX) &&
+    ["nowrap", "pre"].includes(style.whiteSpace);
+  if (ellipsis) {
+    const parentRect = node.parentElement.getBoundingClientRect();
+    const inset = layoutInsets(style);
+    const lineLeft = rootRect.left + lines[0].rect.x;
+    const flowWidth = Math.max(1, parentRect.right - inset.right - lineLeft);
+    frame.children.push({
+      ...baseNode(nextId("text-ellipsis"), "text", `${frame.name} text`, {
+        x: lines[0].rect.x,
+        y: round(lines[0].rect.y + baselineOffset),
+        width: round(flowWidth),
+        height: round(Math.max(lines[0].rect.height, lineHeightPixels)),
+      }),
+      ...commonProperties,
+      text: ellipsizedText(node.ownerDocument, style, rawText, flowWidth),
+      textSource: rawText,
+      textOverflow: "ellipsis",
+      textFlowWidth: round(flowWidth),
+    });
+    return;
+  }
+  if (adaptive) {
+    const parentRect = node.parentElement.getBoundingClientRect();
+    const inset = layoutInsets(style);
+    const lineLeft = rootRect.left + lines[0].rect.x;
+    const flowWidth = Math.max(1, parentRect.right - inset.right - lineLeft);
+    frame.children.push({
+      ...baseNode(nextId("text-flow"), "text", `${frame.name} text`, {
+        x: lines[0].rect.x,
+        y: round(lines[0].rect.y + baselineOffset),
+        width: round(Math.max(...lines.map((line) => line.rect.width))),
+        height: round(
+          Math.max(
+            1,
+            lines.at(-1).rect.y + lines.at(-1).rect.height - lines[0].rect.y,
+          ),
+        ),
+      }),
+      ...commonProperties,
+      text: lines.map((line) => transformedText(line.text, style.textTransform)).join("\n"),
+      textSource: rawText,
+      textFlow: "wrap",
+      textFlowWidth: round(flowWidth),
+    });
+    return;
+  }
+  for (const [index, line] of lines.entries()) {
     frame.children.push({
       ...baseNode(nextId(`text-${index + 1}`), "text", `${frame.name} text`, {
         ...line.rect,
@@ -742,22 +893,185 @@ function appendTextLayers(frame, node, style, rootRect, nextId) {
         y: round(line.rect.y + baselineOffset),
         height: round(Math.max(line.rect.height, lineHeightPixels)),
       }),
-      fill: color.hex,
-      opacity: round(color.alpha, 4),
+      ...commonProperties,
       text: transformedText(line.text, style.textTransform),
-      fontSize: round(size),
-      fontWeight: fontWeight(style.fontWeight),
-      fontFamily: String(style.fontFamily || "Arial, sans-serif").slice(0, 120),
-      fontStyle: style.fontStyle === "italic" ? "italic" : "normal",
-      lineHeight: round(clamp(lineHeightPixels / size, 0.7, 3), 4),
-      letterSpacing: round(clamp(spacing, -20, 100)),
-      textDecoration: textDecoration(style.textDecorationLine || style.textDecoration),
-      textAlign: "left",
-      // Width is a browser Range measurement for the exact rendered glyphs.
-      // The audit must not replace it with its cross-font fallback estimator.
-      textMeasurement: "browser",
     });
   }
+}
+
+function formControlValue(element) {
+  const tag = element.tagName.toLowerCase();
+  if (tag === "textarea") return element.value || element.placeholder || "";
+  if (tag === "select") return element.selectedOptions?.[0]?.textContent?.trim() ?? "";
+  if (tag !== "input") return "";
+  const type = String(element.type || "text").toLowerCase();
+  if (
+    [
+      "button",
+      "checkbox",
+      "color",
+      "file",
+      "hidden",
+      "image",
+      "radio",
+      "range",
+      "reset",
+      "submit",
+    ].includes(type)
+  ) {
+    return "";
+  }
+  return element.value || element.placeholder || "";
+}
+
+function measuredStyledTextWidth(ownerDocument, style, value) {
+  const canvas = ownerDocument.createElement("canvas");
+  const context = canvas.getContext("2d");
+  if (!context) return Math.max(1, value.length * pixelValue(style.fontSize, 16) * 0.56);
+  context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);
+  return Math.max(1, context.measureText(value).width + Math.max(0, value.length - 1) * spacing);
+}
+
+function ellipsizedText(ownerDocument, style, value, available) {
+  if (measuredStyledTextWidth(ownerDocument, style, value) <= available) return value;
+  const characters = [...value];
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (
+      measuredStyledTextWidth(ownerDocument, style, `${characters.slice(0, middle).join("")}…`) <=
+      available
+    ) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return `${characters.slice(0, low).join("").trimEnd()}…`;
+}
+
+function measuredControlTextWidth(element, style, value) {
+  return measuredStyledTextWidth(element.ownerDocument, style, value);
+}
+
+function appendFormControlTextLayer(frame, element, style, rect, nextId) {
+  const value = formControlValue(element).replace(/\s+/gu, " ").trim();
+  if (!value) return;
+  const color = parseCssColor(style.color) ?? { hex: "#000000", alpha: 1 };
+  const size = clamp(pixelValue(style.fontSize, 16), 6, 240);
+  const lineHeightPixels =
+    style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
+  const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);
+  const borderLeft = Math.max(0, pixelValue(style.borderLeftWidth));
+  const borderTop = Math.max(0, pixelValue(style.borderTopWidth));
+  const paddingLeft = Math.max(0, pixelValue(style.paddingLeft));
+  const paddingTop = Math.max(0, pixelValue(style.paddingTop));
+  const multiline = element.tagName.toLowerCase() === "textarea";
+  const lineTop = multiline
+    ? rect.y + borderTop + paddingTop
+    : rect.y + Math.max(0, (rect.height - lineHeightPixels) / 2);
+  const baselineOffset = hangingBaselineOffset(
+    style,
+    size,
+    spacing,
+    element.ownerDocument,
+  );
+  frame.children.push({
+    ...baseNode(nextId("control-value"), "text", `${frame.name} value`, {
+      x: round(rect.x + borderLeft + paddingLeft),
+      y: round(lineTop + baselineOffset),
+      width: round(
+        Math.min(
+          measuredControlTextWidth(element, style, value),
+          Math.max(1, rect.width - borderLeft * 2 - paddingLeft * 2),
+        ),
+      ),
+      height: round(lineHeightPixels),
+    }),
+    fill: color.hex,
+    opacity: round(color.alpha, 4),
+    text: transformedText(value, style.textTransform),
+    fontSize: round(size),
+    fontWeight: fontWeight(style.fontWeight),
+    fontFamily: String(style.fontFamily || "Arial, sans-serif").slice(0, 120),
+    fontStyle: style.fontStyle === "italic" ? "italic" : "normal",
+    lineHeight: round(clamp(lineHeightPixels / size, 0.7, 3), 4),
+    letterSpacing: round(clamp(spacing, -20, 100)),
+    textDecoration: textDecoration(style.textDecorationLine || style.textDecoration),
+    textAlign: "left",
+    textMeasurement: "browser",
+    layoutBaselineOffset: round(baselineOffset, 4),
+  });
+}
+
+function promoteMeasuredBlockLayout(holder, style, hasManualLayers) {
+  if (
+    holder.layout !== "none" ||
+    hasManualLayers ||
+    !["block", "flow-root", "list-item"].includes(style.display)
+  ) {
+    return;
+  }
+  const children = holder.children.filter(
+    (child) => child.visible !== false && child.layoutPositioning !== "absolute",
+  );
+  const absoluteDecorations = holder.children.filter(
+    (child) => child.visible !== false && child.layoutPositioning === "absolute",
+  );
+  if (
+    children.length === 0 ||
+    absoluteDecorations.some(
+      (child) => child.type !== "rectangle" || !/\bborder\b/u.test(child.name),
+    )
+  ) {
+    return;
+  }
+  const inset = layoutInsets(style);
+  const contentWidth = Math.max(1, holder.width - inset.left - inset.right);
+  if (
+    children.some(
+      (child) => child.type !== "text" && child.width < contentWidth - 1,
+    )
+  ) {
+    return;
+  }
+  const top = (child) => child.y - (child.type === "text" ? finiteBaseline(child) : 0);
+  const gaps = [];
+  for (let index = 1; index < children.length; index += 1) {
+    const previous = children[index - 1];
+    const gap = top(children[index]) - (top(previous) + previous.height);
+    if (gap < -1) return;
+    gaps.push(Math.max(0, gap));
+  }
+  if (
+    gaps.length > 1 &&
+    gaps.some((gap) => Math.abs(gap - gaps[0]) > 2)
+  ) {
+    return;
+  }
+  holder.layout = "vertical";
+  holder.layoutWrap = "none";
+  holder.gap = round(gaps[0] ?? 0);
+  holder.rowGap = holder.gap;
+  holder.columnGap = 0;
+  holder.padding = 0;
+  holder.paddingTop = round(inset.top);
+  holder.paddingRight = round(inset.right);
+  holder.paddingBottom = round(inset.bottom);
+  holder.paddingLeft = round(inset.left);
+  holder.alignItems = "stretch";
+  holder.justifyContent = "start";
+  holder.alignContent = "start";
+  for (const child of children) {
+    child.layoutSizingHorizontal = child.textFlow === "wrap" ? "fill" : "hug";
+    child.layoutSizingVertical = "hug";
+  }
+}
+
+function finiteBaseline(node) {
+  return Number.isFinite(node?.layoutBaselineOffset) ? node.layoutBaselineOffset : 0;
 }
 
 export async function captureHtmlToDesign(root, options = {}) {
@@ -801,6 +1115,7 @@ export async function captureHtmlToDesign(root, options = {}) {
     const needsFrame = intrinsicNeedsFrame || Boolean(parentLayout);
     const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && Boolean(parentLayout);
     const ownLayout = layoutProperties(element, style, ownerWindow);
+    const measuredInsets = layoutInsets(style);
     const clipsContent =
       ["hidden", "clip"].includes(style.overflowX) ||
       ["hidden", "clip"].includes(style.overflowY);
@@ -808,8 +1123,13 @@ export async function captureHtmlToDesign(root, options = {}) {
       ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
           cornerRadius: representativeCornerRadius(style),
+          padding: 0,
+          paddingTop: round(measuredInsets.top),
+          paddingRight: round(measuredInsets.right),
+          paddingBottom: round(measuredInsets.bottom),
+          paddingLeft: round(measuredInsets.left),
           ...(ownLayout ?? {}),
-          ...(parentLayout ? layoutItemProperties(style, parentLayout) : {}),
+          ...(parentLayout ? layoutItemProperties(element, style, parentLayout) : {}),
           clipContent: clipsContent,
           ...(clipsContent ? { contentClipping: "intentional" } : {}),
         })
@@ -839,8 +1159,59 @@ export async function captureHtmlToDesign(root, options = {}) {
         );
       }
     }
-    if (transparentLayoutWrapper || ownsLayout) fitTransparentWrapperToChildren(holder);
-    if (ownsLayout) ensureAutoLayoutFrameFitsChildren(holder);
+    appendFormControlTextLayer(holder, element, style, rect, nextId);
+    if (
+      transparentLayoutWrapper &&
+      holder.children.length > 0 &&
+      holder.children.every((child) => child.type === "text")
+    ) {
+      const sameLine =
+        holder.children.length > 1 &&
+        holder.children.every(
+          (child) =>
+            Math.abs(
+              child.y -
+                finiteBaseline(child) -
+                (holder.children[0].y - finiteBaseline(holder.children[0])),
+            ) < 1.5,
+        );
+      holder.layout = sameLine ? "horizontal" : "vertical";
+      holder.layoutWrap = "none";
+      const measuredGap =
+        holder.children.length > 1
+          ? sameLine
+            ? Math.max(
+                0,
+                holder.children[1].x -
+                  (holder.children[0].x + holder.children[0].width),
+              )
+            : Math.max(
+                0,
+                holder.children[1].y -
+                  finiteBaseline(holder.children[1]) -
+                  (holder.children[0].y -
+                    finiteBaseline(holder.children[0]) +
+                    holder.children[0].height),
+              )
+          : 0;
+      holder.gap = round(measuredGap);
+      holder.rowGap = sameLine ? 0 : holder.gap;
+      holder.columnGap = sameLine ? holder.gap : 0;
+      holder.padding = 0;
+      holder.paddingTop = 0;
+      holder.paddingRight = 0;
+      holder.paddingBottom = 0;
+      holder.paddingLeft = 0;
+      holder.alignItems = "stretch";
+      holder.justifyContent = "start";
+      holder.alignContent = "start";
+      for (const child of holder.children) {
+        child.layoutSizingHorizontal =
+          !sameLine && child.textFlow === "wrap" ? "fill" : "hug";
+        child.layoutSizingVertical = "hug";
+      }
+    }
+    promoteMeasuredBlockLayout(holder, style, hasManualLayers);
     return needsFrame ? [holder] : holder.children;
   };
 

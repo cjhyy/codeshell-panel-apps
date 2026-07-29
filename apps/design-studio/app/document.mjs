@@ -140,6 +140,13 @@ function normalizedNode(candidate, parentId) {
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
     if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
+    if (candidate.textSource !== undefined) node.textSource = candidate.textSource;
+    if (candidate.textFlow !== undefined) node.textFlow = candidate.textFlow;
+    if (candidate.textOverflow !== undefined) node.textOverflow = candidate.textOverflow;
+    if (candidate.textFlowWidth !== undefined) node.textFlowWidth = candidate.textFlowWidth;
+    if (candidate.layoutBaselineOffset !== undefined) {
+      node.layoutBaselineOffset = candidate.layoutBaselineOffset;
+    }
   } else if (
     ["frame", "component"].includes(candidate.type) &&
     candidate.clipContent !== undefined
@@ -167,8 +174,17 @@ function normalizedNode(candidate, parentId) {
     "layoutSizingVertical",
     "layoutPositioning",
     "layoutAlignSelf",
+    "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    "constraintHorizontal",
+    "constraintVertical",
+    "constraintBaseWidth",
+    "constraintBaseHeight",
+    "constraintLeft",
+    "constraintRight",
+    "constraintTop",
+    "constraintBottom",
   ]) {
     if (candidate[property] !== undefined) node[property] = candidate[property];
   }
@@ -239,6 +255,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "letterSpacing",
     "textDecoration",
     "textMeasurement",
+    "textSource",
+    "textFlow",
+    "textOverflow",
+    "textFlowWidth",
+    "layoutBaselineOffset",
     "layout",
     "layoutWrap",
     "gap",
@@ -257,8 +278,17 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "layoutSizingVertical",
     "layoutPositioning",
     "layoutAlignSelf",
+    "layoutMarginBefore",
     "gridColumnSpan",
     "gridRowSpan",
+    "constraintHorizontal",
+    "constraintVertical",
+    "constraintBaseWidth",
+    "constraintBaseHeight",
+    "constraintLeft",
+    "constraintRight",
+    "constraintTop",
+    "constraintBottom",
     "componentId",
     ...(container ? ["children"] : []),
   ];
@@ -362,6 +392,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "letterSpacing",
       "textDecoration",
       "textMeasurement",
+      "textSource",
+      "textFlow",
+      "textOverflow",
+      "textFlowWidth",
+      "layoutBaselineOffset",
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
     throw new Error(`非文字图层 ${candidate.id} 包含文字专属字段`);
@@ -393,7 +428,25 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
           candidate.letterSpacing > 100)) ||
       (candidate.textDecoration !== undefined &&
         !["none", "underline", "line-through"].includes(candidate.textDecoration)) ||
-      (candidate.textMeasurement !== undefined && candidate.textMeasurement !== "browser"))
+      (candidate.textMeasurement !== undefined && candidate.textMeasurement !== "browser") ||
+      (candidate.textSource !== undefined &&
+        (typeof candidate.textSource !== "string" || candidate.textSource.length > 4000)) ||
+      (candidate.textFlow !== undefined && candidate.textFlow !== "wrap") ||
+      (candidate.textOverflow !== undefined && candidate.textOverflow !== "ellipsis") ||
+      (candidate.textFlow === "wrap" &&
+        (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
+      (candidate.textOverflow === "ellipsis" &&
+        (typeof candidate.textSource !== "string" || !candidate.textSource.trim())) ||
+      (candidate.textFlowWidth !== undefined &&
+        (typeof candidate.textFlowWidth !== "number" ||
+          !Number.isFinite(candidate.textFlowWidth) ||
+          candidate.textFlowWidth < 1 ||
+          candidate.textFlowWidth > 20000)) ||
+      (candidate.layoutBaselineOffset !== undefined &&
+        (typeof candidate.layoutBaselineOffset !== "number" ||
+          !Number.isFinite(candidate.layoutBaselineOffset) ||
+          candidate.layoutBaselineOffset < -100 ||
+          candidate.layoutBaselineOffset > 100)))
   ) {
     throw new Error(`文字图层 ${candidate.id} 的文字属性无效`);
   }
@@ -492,6 +545,12 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutAlignSelf 无效`);
   }
+  if (
+    candidate.layoutMarginBefore !== undefined &&
+    candidate.layoutMarginBefore !== "auto"
+  ) {
+    throw new Error(`图层 ${candidate.id} 的 layoutMarginBefore 无效`);
+  }
   for (const property of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
     if (
       candidate[property] !== undefined &&
@@ -505,6 +564,44 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     !["auto", "absolute"].includes(candidate.layoutPositioning)
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutPositioning 无效`);
+  }
+  for (const property of ["constraintHorizontal", "constraintVertical"]) {
+    if (
+      candidate[property] !== undefined &&
+      !["start", "center", "end", "stretch", "scale"].includes(candidate[property])
+    ) {
+      throw new Error(`图层 ${candidate.id} 的 ${property} 无效`);
+    }
+  }
+  for (const property of ["constraintBaseWidth", "constraintBaseHeight"]) {
+    if (candidate[property] !== undefined) {
+      assertFiniteRange(candidate[property], 1, 20000, `图层 ${candidate.id}.${property}`);
+    }
+  }
+  for (const property of [
+    "constraintLeft",
+    "constraintRight",
+    "constraintTop",
+    "constraintBottom",
+  ]) {
+    if (candidate[property] !== undefined) {
+      assertFiniteRange(candidate[property], -20000, 20000, `图层 ${candidate.id}.${property}`);
+    }
+  }
+  if (
+    candidate.layoutPositioning !== "absolute" &&
+    [
+      "constraintHorizontal",
+      "constraintVertical",
+      "constraintBaseWidth",
+      "constraintBaseHeight",
+      "constraintLeft",
+      "constraintRight",
+      "constraintTop",
+      "constraintBottom",
+    ].some((property) => candidate[property] !== undefined)
+  ) {
+    throw new Error(`非绝对定位图层 ${candidate.id} 包含 Constraints 字段`);
   }
   for (const property of ["gridColumnSpan", "gridRowSpan"]) {
     if (

@@ -20,6 +20,76 @@ function assignNumber(node, property, value) {
   return true;
 }
 
+function glyphWidthFactor(character) {
+  if (/\s/u.test(character)) return 0.33;
+  if (/[ilI1.,:;'|!•·…]/u.test(character)) return 0.28;
+  if (/[mwMW@#%&]/u.test(character)) return 0.9;
+  if (/[\u0000-\u00ff]/u.test(character)) return 0.56;
+  return 1;
+}
+
+function estimatedTextWidth(node, value) {
+  const characters = Array.from(String(value));
+  return (
+    characters.reduce(
+      (width, character) => width + glyphWidthFactor(character) * finite(node.fontSize, 16),
+      0,
+    ) +
+    Math.max(0, characters.length - 1) * finite(node.letterSpacing)
+  );
+}
+
+function wrapTextValue(node, source, maximumWidth) {
+  const tokens = String(source)
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (tokens.length === 0) return [""];
+  const lines = [];
+  let line = "";
+  const pushLongToken = (token) => {
+    let segment = "";
+    for (const character of Array.from(token)) {
+      const candidate = `${segment}${character}`;
+      if (segment && estimatedTextWidth(node, candidate) > maximumWidth) {
+        lines.push(segment);
+        segment = character;
+      } else {
+        segment = candidate;
+      }
+    }
+    return segment;
+  };
+  for (const token of tokens) {
+    const candidate = line ? `${line} ${token}` : token;
+    if (!line || estimatedTextWidth(node, candidate) <= maximumWidth) {
+      line = candidate;
+      continue;
+    }
+    lines.push(line);
+    line =
+      estimatedTextWidth(node, token) > maximumWidth ? pushLongToken(token) : token;
+  }
+  if (line) lines.push(line);
+  return lines.length > 0 ? lines : [""];
+}
+
+function ellipsizeTextValue(node, source, maximumWidth) {
+  if (estimatedTextWidth(node, source) <= maximumWidth) return source;
+  const characters = [...source];
+  let low = 0;
+  let high = characters.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimatedTextWidth(node, `${characters.slice(0, middle).join("")}…`) <= maximumWidth) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return `${characters.slice(0, low).join("").trimEnd()}…`;
+}
+
 function containerPadding(container, side) {
   const override = container[`padding${side}`];
   return Math.max(0, finite(override, Math.max(0, finite(container.padding))));
@@ -270,6 +340,12 @@ function childAlignment(child, container) {
     : (container.alignItems ?? "start");
 }
 
+function layoutPosition(child, property, value) {
+  return property === "y" && child.type === "text"
+    ? value + finite(child.layoutBaselineOffset)
+    : value;
+}
+
 function applyFlexLayout(nodes, container, children) {
   const horizontal = container.layout === "horizontal";
   const mainAxis = horizontal ? "horizontal" : "vertical";
@@ -332,14 +408,30 @@ function applyFlexLayout(nodes, container, children) {
   for (const [lineIndex, line] of lines.entries()) {
     const lineCrossSize = Math.max(0, lineCrossSizes[lineIndex] ?? 0);
     const mainValues = line.map((child) => Math.max(1, finite(child[mainSize], 1)));
-    const mainTrack = distributedTrack(
-      mainValues,
-      innerMain,
-      mainGap,
-      container.justifyContent ?? "start",
-    );
+    const autoMargins = line.filter((child) => child.layoutMarginBefore === "auto");
+    const mainTrack =
+      autoMargins.length > 0
+        ? {
+            gap: mainGap,
+            offset: 0,
+            free: Math.max(
+              0,
+              innerMain -
+                mainValues.reduce((total, value) => total + value, 0) -
+                mainGap * Math.max(0, line.length - 1),
+            ),
+          }
+        : distributedTrack(
+            mainValues,
+            innerMain,
+            mainGap,
+            container.justifyContent ?? "start",
+          );
     let mainCursor = finite(container[mainPosition]) + mainPadding.start + mainTrack.offset;
     for (const child of line) {
+      if (child.layoutMarginBefore === "auto" && autoMargins.length > 0) {
+        mainCursor += mainTrack.free / autoMargins.length;
+      }
       const sizing = axisSizing(child, crossAxis);
       const alignment = childAlignment(child, container);
       if (sizing === "fill" || alignment === "stretch") {
@@ -349,13 +441,19 @@ function applyFlexLayout(nodes, container, children) {
       let crossOffset = 0;
       if (alignment === "center") crossOffset = (lineCrossSize - childCrossSize) / 2;
       else if (alignment === "end") crossOffset = lineCrossSize - childCrossSize;
-      changed = setNodeTreePosition(nodes, child.id, mainPosition, round(mainCursor)) || changed;
+      changed =
+        setNodeTreePosition(
+          nodes,
+          child.id,
+          mainPosition,
+          round(layoutPosition(child, mainPosition, mainCursor)),
+        ) || changed;
       changed =
         setNodeTreePosition(
           nodes,
           child.id,
           crossPosition,
-          round(lineCrossCursor + crossOffset),
+          round(layoutPosition(child, crossPosition, lineCrossCursor + crossOffset)),
         ) || changed;
       mainCursor += Math.max(1, finite(child[mainSize], 1)) + mainTrack.gap;
     }
@@ -439,10 +537,188 @@ function applyGridLayout(nodes, container, children) {
           ? cellHeight - placement.child.height
           : 0;
     changed =
-      setNodeTreePosition(nodes, placement.child.id, "x", round(cellX + horizontalOffset)) ||
+      setNodeTreePosition(
+        nodes,
+        placement.child.id,
+        "x",
+        round(layoutPosition(placement.child, "x", cellX + horizontalOffset)),
+      ) ||
       changed;
     changed =
-      setNodeTreePosition(nodes, placement.child.id, "y", round(cellY + verticalOffset)) || changed;
+      setNodeTreePosition(
+        nodes,
+        placement.child.id,
+        "y",
+        round(layoutPosition(placement.child, "y", cellY + verticalOffset)),
+      ) || changed;
+  }
+  return changed;
+}
+
+function constraintInset(node, property, fallback) {
+  return Number.isFinite(node[property]) ? node[property] : fallback;
+}
+
+function applyAbsoluteConstraints(nodes, container) {
+  const children = childNodes(nodes, container.id, { visibleOnly: true }).filter(
+    (node) => node.layoutPositioning === "absolute",
+  );
+  let changed = false;
+  for (const child of children) {
+    const horizontal = child.constraintHorizontal;
+    if (horizontal) {
+      const left = constraintInset(child, "constraintLeft", child.x - container.x);
+      const right = constraintInset(
+        child,
+        "constraintRight",
+        container.x + container.width - child.x - child.width,
+      );
+      if (horizontal === "stretch") {
+        changed = assignNumber(child, "width", Math.max(1, container.width - left - right)) || changed;
+        changed = setNodeTreePosition(nodes, child.id, "x", round(container.x + left)) || changed;
+      } else if (horizontal === "end") {
+        changed =
+          setNodeTreePosition(
+            nodes,
+            child.id,
+            "x",
+            round(container.x + container.width - right - child.width),
+          ) || changed;
+      } else if (horizontal === "center") {
+        const baseWidth = Math.max(
+          1,
+          constraintInset(child, "constraintBaseWidth", left + child.width + right),
+        );
+        const baseChildWidth = Math.max(1, baseWidth - left - right);
+        const centerOffset = left + baseChildWidth / 2 - baseWidth / 2;
+        changed =
+          setNodeTreePosition(
+            nodes,
+            child.id,
+            "x",
+            round(container.x + container.width / 2 + centerOffset - child.width / 2),
+          ) || changed;
+      } else if (horizontal === "scale") {
+        const baseWidth = Math.max(
+          1,
+          constraintInset(child, "constraintBaseWidth", left + child.width + right),
+        );
+        const baseChildWidth = Math.max(1, baseWidth - left - right);
+        const scale = container.width / baseWidth;
+        changed = assignNumber(child, "width", Math.max(1, baseChildWidth * scale)) || changed;
+        changed =
+          setNodeTreePosition(nodes, child.id, "x", round(container.x + left * scale)) || changed;
+      } else {
+        changed = setNodeTreePosition(nodes, child.id, "x", round(container.x + left)) || changed;
+      }
+    }
+
+    const vertical = child.constraintVertical;
+    if (vertical) {
+      const top = constraintInset(child, "constraintTop", child.y - container.y);
+      const bottom = constraintInset(
+        child,
+        "constraintBottom",
+        container.y + container.height - child.y - child.height,
+      );
+      if (vertical === "stretch") {
+        changed =
+          assignNumber(child, "height", Math.max(1, container.height - top - bottom)) || changed;
+        changed = setNodeTreePosition(nodes, child.id, "y", round(container.y + top)) || changed;
+      } else if (vertical === "end") {
+        changed =
+          setNodeTreePosition(
+            nodes,
+            child.id,
+            "y",
+            round(container.y + container.height - bottom - child.height),
+          ) || changed;
+      } else if (vertical === "center") {
+        const baseHeight = Math.max(
+          1,
+          constraintInset(child, "constraintBaseHeight", top + child.height + bottom),
+        );
+        const baseChildHeight = Math.max(1, baseHeight - top - bottom);
+        const centerOffset = top + baseChildHeight / 2 - baseHeight / 2;
+        changed =
+          setNodeTreePosition(
+            nodes,
+            child.id,
+            "y",
+            round(container.y + container.height / 2 + centerOffset - child.height / 2),
+          ) || changed;
+      } else if (vertical === "scale") {
+        const baseHeight = Math.max(
+          1,
+          constraintInset(child, "constraintBaseHeight", top + child.height + bottom),
+        );
+        const baseChildHeight = Math.max(1, baseHeight - top - bottom);
+        const scale = container.height / baseHeight;
+        changed = assignNumber(child, "height", Math.max(1, baseChildHeight * scale)) || changed;
+        changed =
+          setNodeTreePosition(nodes, child.id, "y", round(container.y + top * scale)) || changed;
+      } else {
+        changed = setNodeTreePosition(nodes, child.id, "y", round(container.y + top)) || changed;
+      }
+    }
+  }
+  return changed;
+}
+
+function applyResponsiveText(nodes, containerIds) {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const eligibleContainers = containerIds instanceof Set ? containerIds : new Set(containerIds);
+  let changed = false;
+  for (const node of nodes) {
+    if (
+      node.type !== "text" ||
+      (node.textFlow !== "wrap" && node.textOverflow !== "ellipsis") ||
+      !node.textSource
+    ) {
+      continue;
+    }
+    const parent = byId.get(node.parentId);
+    if (
+      !parent ||
+      !eligibleContainers.has(parent.id) ||
+      !isAutoLayoutContainer(parent)
+    ) {
+      continue;
+    }
+    const contentLeft = parent.x + containerPadding(parent, "Left");
+    const contentRight = parent.x + parent.width - containerPadding(parent, "Right");
+    const leftOffset = Math.max(0, node.x - contentLeft);
+    const available = Math.max(1, contentRight - contentLeft - leftOffset);
+    if (
+      Number.isFinite(node.textFlowWidth) &&
+      Math.abs(available - node.textFlowWidth) < 0.5
+    ) {
+      continue;
+    }
+    const lines =
+      node.textOverflow === "ellipsis"
+        ? [ellipsizeTextValue(node, node.textSource, available)]
+        : wrapTextValue(node, node.textSource, available);
+    const nextText = lines.join("\n");
+    if (node.text !== nextText) {
+      node.text = nextText;
+      changed = true;
+    }
+    const widest = Math.max(1, ...lines.map((line) => estimatedTextWidth(node, line)));
+    const nextWidth =
+      axisSizing(node, "horizontal") === "fill" ? available : Math.min(available, widest);
+    changed = assignNumber(node, "width", nextWidth) || changed;
+    changed =
+      assignNumber(
+        node,
+        "height",
+        Math.max(1, lines.length * finite(node.fontSize, 16) * finite(node.lineHeight, 1.2)),
+      ) || changed;
+    changed = assignNumber(node, "textFlowWidth", available) || changed;
+    if (node.textMeasurement !== undefined) {
+      delete node.textMeasurement;
+      changed = true;
+    }
   }
   return changed;
 }
@@ -453,11 +729,14 @@ export function applyAutoLayout(nodes, containerId) {
   if (!isAutoLayoutContainer(container)) return false;
   const children = layoutChildren(nodes, container);
   let changed = applyHugSize(nodes, container);
-  if (children.length === 0) return changed;
-  changed =
-    (container.layout === "grid"
-      ? applyGridLayout(nodes, container, children)
-      : applyFlexLayout(nodes, container, children)) || changed;
+  if (children.length > 0) {
+    changed =
+      (container.layout === "grid"
+        ? applyGridLayout(nodes, container, children)
+        : applyFlexLayout(nodes, container, children)) || changed;
+  }
+  changed = applyAbsoluteConstraints(nodes, container) || changed;
+  changed = applyResponsiveText(nodes, new Set([container.id])) || changed;
   return changed;
 }
 
@@ -493,6 +772,7 @@ export function applyAutoLayouts(nodes, containerIds) {
   const containers = nodes
     .filter((candidate) => requested.has(candidate.id) && isAutoLayoutContainer(candidate))
     .sort((left, right) => nodeDepth(nodes, left) - nodeDepth(nodes, right));
+  const containerIdSet = new Set(containers.map((container) => container.id));
   let changed = false;
   for (let iteration = 0; iteration < 8; iteration += 1) {
     let iterationChanged = false;
@@ -501,12 +781,15 @@ export function applyAutoLayouts(nodes, containerIds) {
     }
     for (const node of containers) {
       const children = layoutChildren(nodes, node);
-      if (children.length === 0) continue;
-      iterationChanged =
-        (node.layout === "grid"
-          ? applyGridLayout(nodes, node, children)
-          : applyFlexLayout(nodes, node, children)) || iterationChanged;
+      if (children.length > 0) {
+        iterationChanged =
+          (node.layout === "grid"
+            ? applyGridLayout(nodes, node, children)
+            : applyFlexLayout(nodes, node, children)) || iterationChanged;
+      }
+      iterationChanged = applyAbsoluteConstraints(nodes, node) || iterationChanged;
     }
+    iterationChanged = applyResponsiveText(nodes, containerIdSet) || iterationChanged;
     changed = iterationChanged || changed;
     if (!iterationChanged) break;
   }

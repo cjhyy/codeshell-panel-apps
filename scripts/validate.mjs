@@ -226,6 +226,34 @@ const nestedDesign = {
               justifyContent: "start",
               children: [{ ...baseNode("rect", "rectangle", "Rectangle") }],
             },
+            {
+              ...baseNode("adaptive-copy", "text", "Adaptive copy"),
+              text: "Compact adaptive copy…",
+              fontSize: 16,
+              fontWeight: 400,
+              lineHeight: 1.2,
+              textAlign: "left",
+              textSource: "Compact adaptive copy that can be shortened",
+              textOverflow: "ellipsis",
+              textFlowWidth: 100,
+              layoutBaselineOffset: 2.5,
+            },
+            {
+              ...baseNode("absolute-badge", "rectangle", "Absolute badge"),
+              x: 70,
+              y: 10,
+              width: 20,
+              height: 20,
+              layoutPositioning: "absolute",
+              constraintHorizontal: "end",
+              constraintVertical: "start",
+              constraintBaseWidth: 100,
+              constraintBaseHeight: 100,
+              constraintLeft: 70,
+              constraintRight: 10,
+              constraintTop: 10,
+              constraintBottom: 70,
+            },
           ],
         },
       ],
@@ -234,7 +262,7 @@ const nestedDesign = {
 };
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
 assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 512 * 1024);
-assert.equal(designState.nodes.length, 3);
+assert.equal(designState.nodes.length, 5);
 assert.equal(designState.nodes[2].parentId, "group");
 assert.equal(designState.nodes[0].layout, "grid");
 assert.equal(designState.nodes[0].columnGap, 16);
@@ -243,6 +271,8 @@ const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designSta
 assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
 assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
+assert.equal(designRoundTrip.pages[0].children[0].children[1].textOverflow, "ellipsis");
+assert.equal(designRoundTrip.pages[0].children[0].children[2].constraintBaseWidth, 100);
 const intentionalClipDesign = structuredClone(nestedDesign);
 intentionalClipDesign.pages[0].children[0].clipContent = true;
 intentionalClipDesign.pages[0].children[0].contentClipping = "intentional";
@@ -314,6 +344,162 @@ assert.equal(responsiveLayoutNodes[2].width, 220);
 assert.equal(responsiveLayoutNodes[2].height, 80);
 assert.equal(responsiveLayoutNodes[3].x, 360);
 assert.equal(responsiveLayoutNodes[3].y, 55);
+
+const constraintLayoutNodes = [
+  {
+    ...baseNode("constraint-frame", "frame", "Constraint frame"),
+    width: 200,
+    height: 100,
+    layout: "horizontal",
+    gap: 0,
+    padding: 0,
+    alignItems: "start",
+    justifyContent: "start",
+  },
+  {
+    ...baseNode("constraint-end", "rectangle", "End"),
+    parentId: "constraint-frame",
+    x: 160,
+    y: 10,
+    width: 30,
+    height: 20,
+    layoutPositioning: "absolute",
+    constraintHorizontal: "end",
+    constraintVertical: "start",
+    constraintBaseWidth: 200,
+    constraintBaseHeight: 100,
+    constraintLeft: 160,
+    constraintRight: 10,
+    constraintTop: 10,
+    constraintBottom: 70,
+  },
+  {
+    ...baseNode("constraint-stretch", "rectangle", "Stretch"),
+    parentId: "constraint-frame",
+    x: 10,
+    y: 70,
+    width: 180,
+    height: 10,
+    layoutPositioning: "absolute",
+    constraintHorizontal: "stretch",
+    constraintVertical: "end",
+    constraintBaseWidth: 200,
+    constraintBaseHeight: 100,
+    constraintLeft: 10,
+    constraintRight: 10,
+    constraintTop: 70,
+    constraintBottom: 20,
+  },
+  {
+    ...baseNode("constraint-scale", "rectangle", "Scale"),
+    parentId: "constraint-frame",
+    x: 20,
+    y: 40,
+    width: 40,
+    height: 20,
+    layoutPositioning: "absolute",
+    constraintHorizontal: "scale",
+    constraintVertical: "start",
+    constraintBaseWidth: 200,
+    constraintBaseHeight: 100,
+    constraintLeft: 20,
+    constraintRight: 140,
+    constraintTop: 40,
+    constraintBottom: 40,
+  },
+  {
+    ...baseNode("constraint-center", "rectangle", "Center"),
+    parentId: "constraint-frame",
+    x: 80,
+    y: 10,
+    width: 40,
+    height: 20,
+    layoutPositioning: "absolute",
+    constraintHorizontal: "center",
+    constraintVertical: "start",
+    constraintBaseWidth: 200,
+    constraintBaseHeight: 100,
+    constraintLeft: 80,
+    constraintRight: 80,
+    constraintTop: 10,
+    constraintBottom: 70,
+  },
+];
+constraintLayoutNodes[0].width = 300;
+designLayout.applyAllAutoLayouts(constraintLayoutNodes);
+assert.equal(constraintLayoutNodes[1].x, 260);
+assert.equal(constraintLayoutNodes[2].width, 280);
+assert.equal(constraintLayoutNodes[3].x, 30);
+assert.equal(constraintLayoutNodes[3].width, 60);
+assert.equal(constraintLayoutNodes[4].x, 130);
+designLayout.applyAllAutoLayouts(constraintLayoutNodes);
+assert.equal(constraintLayoutNodes[3].x, 30);
+assert.equal(constraintLayoutNodes[3].width, 60);
+
+const autoMarginNodes = [
+  {
+    ...baseNode("auto-margin-row", "frame", "Auto margin row"),
+    width: 300,
+    height: 60,
+    layout: "horizontal",
+    gap: 10,
+    padding: 10,
+    alignItems: "start",
+    justifyContent: "start",
+  },
+  {
+    ...baseNode("auto-margin-leading", "rectangle", "Leading"),
+    parentId: "auto-margin-row",
+    width: 50,
+    height: 20,
+  },
+  {
+    ...baseNode("auto-margin-trailing", "rectangle", "Trailing"),
+    parentId: "auto-margin-row",
+    width: 40,
+    height: 20,
+    layoutMarginBefore: "auto",
+  },
+];
+designLayout.applyAllAutoLayouts(autoMarginNodes);
+assert.equal(autoMarginNodes[2].x, 250);
+
+const ellipsisLayoutNodes = [
+  {
+    ...baseNode("ellipsis-column", "frame", "Ellipsis column"),
+    width: 120,
+    height: 60,
+    layout: "vertical",
+    gap: 0,
+    padding: 10,
+    alignItems: "stretch",
+    justifyContent: "start",
+  },
+  {
+    ...baseNode("ellipsis-copy", "text", "Ellipsis copy"),
+    parentId: "ellipsis-column",
+    width: 240,
+    height: 20,
+    text: "A long filename that needs truncation",
+    textSource: "A long filename that needs truncation",
+    textOverflow: "ellipsis",
+    textFlowWidth: 240,
+    fontSize: 16,
+    fontWeight: 400,
+    lineHeight: 1.2,
+    textAlign: "left",
+    layoutSizingHorizontal: "fill",
+    layoutSizingVertical: "hug",
+  },
+];
+designLayout.applyAllAutoLayouts(ellipsisLayoutNodes);
+assert.equal(ellipsisLayoutNodes[1].width, 100);
+assert.equal(ellipsisLayoutNodes[1].textFlowWidth, 100);
+assert.match(ellipsisLayoutNodes[1].text, /…$/u);
+ellipsisLayoutNodes[0].width = 300;
+designLayout.applyAllAutoLayouts(ellipsisLayoutNodes);
+assert.equal(ellipsisLayoutNodes[1].width, 280);
+assert.equal(ellipsisLayoutNodes[1].textFlowWidth, 280);
 
 const wrapLayoutNodes = [
   {
