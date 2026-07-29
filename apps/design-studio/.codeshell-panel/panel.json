@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -123,6 +123,11 @@
                   "type": "string",
                   "enum": ["intentional"],
                   "description": "Marks a deliberately clipped visual effect measured from imported HTML."
+                },
+                "contentClipping": {
+                  "type": ["string", "null"],
+                  "enum": ["intentional", null],
+                  "description": "Marks child overflow clipping as deliberate, typically when measured from imported HTML."
                 },
                 "shadow": {
                   "oneOf": [{ "$ref": "#/$defs/shadow" }, { "type": "null" }]

@@ -90,6 +90,9 @@ In the `codeshell-panel-apps` collection repository, run the maintained baseline
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
+For public-page diagnostics, run `npm run test:fidelity:real -- --output
+artifacts/design-studio-real-html-fidelity`; it is not a CI gate because pages are external.
+
 Treat it as a regression gate: the measured conversion needs windowed SSIM of at least 0.99, at
 most 1% of pixels changing by more than 8 channel levels, and at most 0.6% changing by more than 24
 levels. The fixture must also preserve at least 20 Auto Layout containers. After resolving every
@@ -101,8 +104,9 @@ browser-measured text and deliberately clipped effects carry explicit document m
 validation does not turn exact browser geometry into false layout blockers.
 
 Treat unsupported CSS as an explicit fidelity gap. v3 currently approximates four unequal corner
-radii with one representative radius and does not capture raster images, SVG/vector paths,
-gradients, pseudo-elements, multiple backgrounds, multiple shadows, filters, or rich text runs.
+radii with one representative radius. Basic inline SVG rectangles, circles, ellipses, and text
+paint are measured; raster images, SVG paths/references, gradients, pseudo-elements, multiple
+backgrounds, multiple shadows, filters, and rich text runs are not.
 Extend the format/capture path or disclose the limitation; never silently call those cases
 pixel-perfect. After conversion, normalize the document, keep it below repository size limits,
 call `validate_design`, and inspect a Design Studio screenshot before editing it further. Use the
@@ -139,9 +143,8 @@ content or verify the exact rendered clip with validation and a node screenshot.
 When placing a child manually, calculate `left=x`, `top=y`, `right=x+width`, and
 `bottom=y+height`.
 
-Compare them with the parent's absolute left/top/right/bottom. If `clipContent` is true, any child
-edge outside the parent is a blocking defect and will not merely be an invisible organizational
-detail.
+If `clipContent` is true, an out-of-parent child edge blocks validation unless imported browser
+geometry carries `contentClipping: "intentional"`. Never add that marker to hand-authored layouts.
 
 ## Manual layout versus auto layout
 

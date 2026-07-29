@@ -233,6 +233,7 @@ const nestedDesign = {
   ],
 };
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
+assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 512 * 1024);
 assert.equal(designState.nodes.length, 3);
 assert.equal(designState.nodes[2].parentId, "group");
 assert.equal(designState.nodes[0].layout, "grid");
@@ -242,6 +243,18 @@ const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designSta
 assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
 assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
+const intentionalClipDesign = structuredClone(nestedDesign);
+intentionalClipDesign.pages[0].children[0].clipContent = true;
+intentionalClipDesign.pages[0].children[0].contentClipping = "intentional";
+assert.equal(
+  designCodec.normalizeDesignDocument(intentionalClipDesign).nodes[0].contentClipping,
+  "intentional",
+);
+intentionalClipDesign.pages[0].children[0].clipContent = false;
+assert.throws(
+  () => designCodec.normalizeDesignDocument(intentionalClipDesign),
+  /contentClipping 无效/,
+);
 for (const legacyField of ["layoutGrow", "layoutAlign"]) {
   const legacyDesign = structuredClone(nestedDesign);
   legacyDesign.pages[0].children[0].children[0][legacyField] =
@@ -444,6 +457,38 @@ assert(
       ),
     })
     .some((issue) => issue.code === "layout.manual-only-ui"),
+);
+const clippedParent = {
+  ...baseNode("clipped-parent", "frame", "Clipped parent"),
+  width: 50,
+  height: 50,
+  clipContent: true,
+  layout: "none",
+  gap: 0,
+  padding: 0,
+  alignItems: "start",
+  justifyContent: "start",
+};
+const clippedChild = {
+  ...baseNode("clipped-child", "rectangle", "Clipped child"),
+  parentId: clippedParent.id,
+  x: 40,
+  y: 10,
+  width: 30,
+  height: 30,
+};
+assert(
+  designAudit
+    .auditDesign({ ...manualOnlyDocument, nodes: [clippedParent, clippedChild] })
+    .some((issue) => issue.code === "layout.parent-overflow" && issue.blocking),
+);
+assert(
+  !designAudit
+    .auditDesign({
+      ...manualOnlyDocument,
+      nodes: [{ ...clippedParent, contentClipping: "intentional" }, clippedChild],
+    })
+    .some((issue) => issue.code === "layout.parent-overflow"),
 );
 const defaultDesignEntry = {
   path: designRepository.DEFAULT_DESIGN_PATH,

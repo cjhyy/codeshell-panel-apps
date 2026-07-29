@@ -31,10 +31,10 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.10 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+Design Studio 0.11 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
 dual-axis Hug/Fill/Fixed sizing, per-item `layoutAlignSelf`, and absolute children inside Auto
-Layout. Guarded HTML import maps supported Flex/Grid semantics, while the same-browser gate verifies
-measured and reflowed output.
+Layout. Guarded HTML import maps supported Flex/Grid semantics, while local and opt-in real-page
+fidelity probes verify measured and reflowed output.
 
 ## Repository layout
 
@@ -81,6 +81,17 @@ imported Auto Layout containers. The measured render requires windowed SSIM ≥ 
 reflowed render requires ≥ 0.97; both enforce changed-pixel limits and zero blocking audit issues.
 The fixture must retain at least 20 semantic Auto Layout containers plus verified Grid, Wrap, and
 an absolute child inside Auto Layout.
+
+For an opt-in network check against curated public pages, run:
+
+```sh
+npm run test:fidelity:real -- --output artifacts/design-studio-real-html-fidelity
+```
+
+This probe currently covers Bootstrap Blog, Hacker News, and the W3C fixed-menu example. It records
+the live page, measured/reflowed Design renders, pixel differences, editable design sources, audit
+summaries, and per-page metrics. It is intentionally excluded from CI so external availability and
+changing page content cannot make repository validation flaky.
 
 For local iteration, clone this repository and use **Choose source folder**.
 For remote iteration, push a commit and use **Update from source**.

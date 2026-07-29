@@ -776,6 +776,23 @@ export function auditDesign(document) {
     }
     return true;
   };
+  const hasIntentionalClippingAncestor = (node) => {
+    const seen = new Set();
+    let ancestorId = node.parentId;
+    while (ancestorId && !seen.has(ancestorId)) {
+      seen.add(ancestorId);
+      const ancestor = byId.get(ancestorId);
+      if (!ancestor) break;
+      if (
+        ancestor.clipContent === true &&
+        ancestor.contentClipping === "intentional"
+      ) {
+        return true;
+      }
+      ancestorId = ancestor.parentId;
+    }
+    return false;
+  };
   document.nodes.forEach((node, index) => {
     let parent = null;
     if (node.parentId) {
@@ -792,7 +809,10 @@ export function auditDesign(document) {
     }
     if (!effectivelyVisible(node)) return;
     const visualBounds = transformedNodeBoundsInTree(document.nodes, node, byId);
-    if (!visualBounds || !contains(canvas, visualBounds)) {
+    if (
+      !visualBounds ||
+      (!contains(canvas, visualBounds) && !hasIntentionalClippingAncestor(node))
+    ) {
       issues.push({
         code: "layout.canvas-overflow",
         severity: "error",
@@ -825,7 +845,11 @@ export function auditDesign(document) {
         !contains(parent, localVisualBounds) ||
         (parent.clipContent === true &&
           exceedsClippingAncestor(document.nodes, node, parent, byId));
-      if (exceedsParent) {
+      const intentionallyClippedByParent =
+        exceedsParent &&
+        parent.clipContent === true &&
+        parent.contentClipping === "intentional";
+      if (exceedsParent && !intentionallyClippedByParent) {
         issues.push({
           code: "layout.parent-overflow",
           severity: parent.clipContent === true ? "error" : "warning",
@@ -837,26 +861,30 @@ export function auditDesign(document) {
               : `图层超出所属容器「${parent.name}」`,
         });
       }
-      const seenAncestors = new Set();
-      let ancestorId = parent.parentId;
-      while (ancestorId && !seenAncestors.has(ancestorId)) {
-        seenAncestors.add(ancestorId);
-        const ancestor = byId.get(ancestorId);
-        if (!ancestor) break;
-        if (
-          ancestor.clipContent === true &&
-          exceedsClippingAncestor(document.nodes, node, ancestor, byId)
-        ) {
-          issues.push({
-            code: "layout.ancestor-clip-overflow",
-            severity: "error",
-            blocking: true,
-            nodeId: node.id,
-            message: `图层超出祖先裁切容器「${ancestor.name}」并会被裁切`,
-          });
-          break;
+      if (!intentionallyClippedByParent) {
+        const seenAncestors = new Set();
+        let ancestorId = parent.parentId;
+        while (ancestorId && !seenAncestors.has(ancestorId)) {
+          seenAncestors.add(ancestorId);
+          const ancestor = byId.get(ancestorId);
+          if (!ancestor) break;
+          if (
+            ancestor.clipContent === true &&
+            exceedsClippingAncestor(document.nodes, node, ancestor, byId)
+          ) {
+            if (ancestor.contentClipping !== "intentional") {
+              issues.push({
+                code: "layout.ancestor-clip-overflow",
+                severity: "error",
+                blocking: true,
+                nodeId: node.id,
+                message: `图层超出祖先裁切容器「${ancestor.name}」并会被裁切`,
+              });
+            }
+            break;
+          }
+          ancestorId = ancestor.parentId;
         }
-        ancestorId = ancestor.parentId;
       }
     }
     if (effectCorners && node.parentId) {
@@ -868,6 +896,7 @@ export function auditDesign(document) {
         if (!clippingAncestor) break;
         if (
           clippingAncestor.clipContent === true &&
+          clippingAncestor.contentClipping !== "intentional" &&
           node.effectClipping !== "intentional" &&
           !exceedsClippingAncestor(document.nodes, node, clippingAncestor, byId) &&
           !isIntentionalClippedEdgeSurface(node, clippingAncestor) &&

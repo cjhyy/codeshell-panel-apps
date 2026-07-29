@@ -114,6 +114,7 @@
         },
         "notes": { "type": "string", "maxLength": 2000 },
         "effectClipping": { "enum": ["intentional"] },
+        "contentClipping": { "enum": ["intentional"] },
         "shadow": {
           "type": "object",
           "additionalProperties": false,
@@ -253,7 +254,19 @@
             "properties": { "type": { "enum": ["frame", "component"] } },
             "required": ["type"]
           },
-          "else": { "not": { "required": ["clipContent"] } }
+          "else": {
+            "allOf": [
+              { "not": { "required": ["clipContent"] } },
+              { "not": { "required": ["contentClipping"] } }
+            ]
+          }
+        },
+        {
+          "if": { "required": ["contentClipping"] },
+          "then": {
+            "properties": { "clipContent": { "const": true } },
+            "required": ["clipContent"]
+          }
         },
         {
           "if": {
