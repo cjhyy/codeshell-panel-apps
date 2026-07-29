@@ -10,7 +10,7 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 | App           | Subdirectory         | Purpose                                                                                          |
 | ------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
 | Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with HTML capture, structured tools, and v3 JSON/SVG output |
-| Job Hunt HQ   | `apps/job-hunt-hq`   | Current-project job, full-JD, resume, and interview-preparation visualization                      |
+| Job Hunt HQ   | `apps/job-hunt-hq`   | Project/session-bound job discovery, company research, resume, and interview visualization          |
 | Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                      |
 | Starter       | `templates/starter`  | Minimal template for creating another Panel App                                                  |
 

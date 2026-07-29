@@ -46,6 +46,8 @@ const INTERVIEW_MODE_LABELS = {
   "system-design": "系统设计",
 };
 
+const PANEL_VIEWS = new Set(["dashboard", "materials", "research", "resumes", "interviews"]);
+
 const seedState = {
   selectedJobId: "job-aurora",
   selectedInterviewSetId: "iset-aurora",
@@ -152,6 +154,99 @@ const seedState = {
       ],
     },
   ],
+  jobResearch: [
+    {
+      id: "research-aurora",
+      jobId: "job-aurora",
+      updatedAt: "2026-07-29T09:10:00.000Z",
+      sample: true,
+      company: {
+        officialName: "Aurora Labs",
+        website: "https://example.com/",
+        careersUrl: "https://example.com/careers",
+        summary:
+          "示例调研数据：一家面向企业团队提供 AI 工作流产品的技术公司，当前招聘信号集中在 Agent 产品体验和开发者工具。",
+        industry: "AI 软件",
+        stage: "信息待核验",
+        size: "信息待核验",
+        locations: ["上海"],
+        products: ["企业 AI 工作台", "Agent 工作流"],
+        techSignals: ["React", "TypeScript", "Electron"],
+        hiringSignals: ["AI 产品前端", "开发者工具"],
+      },
+      reviews: [
+        {
+          source: "示例公开评价",
+          title: "协作与成长",
+          url: "https://example.com/reviews",
+          publishedAt: "",
+          sentiment: "mixed",
+          summary: "示例摘要：部分公开讨论认可产品探索空间，同时提到跨团队协作节奏较快。",
+          pros: ["产品方向新", "工程影响面大"],
+          cons: ["需求变化可能较快"],
+          confidence: "low",
+        },
+      ],
+      interviewIntel: {
+        summary: "示例情报：公开讨论中常见项目深挖、React 性能和 AI 产品边界判断。",
+        process: ["招聘沟通", "技术面试", "项目与业务面试"],
+        themes: ["React 性能", "Agent 产品", "项目决策"],
+        questions: [
+          {
+            question: "如何设计支持流式输出和工具调用的前端状态模型？",
+            category: "系统设计",
+            origin: "predicted",
+            sourceUrl: "",
+          },
+          {
+            question: "介绍一次复杂产品需求中的方案取舍。",
+            category: "项目深挖",
+            origin: "reported",
+            sourceUrl: "https://example.com/interviews",
+          },
+        ],
+      },
+      risks: ["公司规模与融资阶段仍需从可靠来源核验", "匿名评价样本不足"],
+      sources: [
+        {
+          kind: "official",
+          title: "Aurora Labs 示例官网",
+          publisher: "Aurora Labs",
+          url: "https://example.com/",
+          publishedAt: "",
+          accessedAt: "2026-07-29T09:10:00.000Z",
+          notes: "浏览器预览示例，不代表真实公司信息。",
+        },
+        {
+          kind: "interview",
+          title: "示例面试讨论",
+          publisher: "示例来源",
+          url: "https://example.com/interviews",
+          publishedAt: "",
+          accessedAt: "2026-07-29T09:10:00.000Z",
+          notes: "低置信度示例。",
+        },
+      ],
+    },
+  ],
+  workflowRuns: [
+    {
+      id: "workflow-preview",
+      status: "completed",
+      currentStep: "artifacts",
+      message: "示例工作流已完成",
+      createdAt: "2026-07-29T08:30:00.000Z",
+      updatedAt: "2026-07-29T09:20:00.000Z",
+      steps: [
+        { id: "discover", status: "completed", message: "找到 3 个示例岗位" },
+        { id: "verify-jd", status: "completed", message: "保存完整 JD" },
+        { id: "company", status: "completed", message: "完成 1 份示例调研" },
+        { id: "reviews", status: "completed", message: "汇总公开评价" },
+        { id: "interviews", status: "completed", message: "汇总面试情报" },
+        { id: "artifacts", status: "completed", message: "生成准备材料" },
+      ],
+    },
+  ],
   resume: {
     jobId: "",
     title: "",
@@ -252,6 +347,8 @@ function emptyProjectState() {
     jobs: [],
     repos: [],
     experiences: [],
+    jobResearch: [],
+    workflowRuns: [],
     resume: {
       jobId: "",
       title: "",
@@ -271,6 +368,7 @@ const elements = {
   sideProfileRole: document.querySelector("#side-profile-role"),
   jobNavCount: document.querySelector("#job-nav-count"),
   sourceNavCount: document.querySelector("#source-nav-count"),
+  researchNavCount: document.querySelector("#research-nav-count"),
   resumeNavCount: document.querySelector("#resume-nav-count"),
   interviewNavCount: document.querySelector("#interview-nav-count"),
   allCount: document.querySelector("#all-count"),
@@ -313,8 +411,32 @@ const elements = {
   experienceCount: document.querySelector("#experience-count"),
   projectContextName: document.querySelector("#project-context-name"),
   projectContextState: document.querySelector("#project-context-state"),
+  projectSessionState: document.querySelector("#project-session-state"),
   codeshellFileState: document.querySelector("#codeshell-file-state"),
   projectSnapshotState: document.querySelector("#project-snapshot-state"),
+  workflowStatus: document.querySelector("#workflow-status"),
+  researchReportCount: document.querySelector("#research-report-count"),
+  researchReportList: document.querySelector("#research-report-list"),
+  researchJobLabel: document.querySelector("#research-job-label"),
+  researchTitle: document.querySelector("#research-title"),
+  researchUpdated: document.querySelector("#research-updated"),
+  researchEmpty: document.querySelector("#research-empty"),
+  researchContent: document.querySelector("#research-content"),
+  researchCompanySite: document.querySelector("#research-company-site"),
+  researchCareersSite: document.querySelector("#research-careers-site"),
+  companySummary: document.querySelector("#company-summary"),
+  companyFacts: document.querySelector("#company-facts"),
+  companyProducts: document.querySelector("#company-products"),
+  companyTech: document.querySelector("#company-tech"),
+  companyReviews: document.querySelector("#company-reviews"),
+  interviewIntelSummary: document.querySelector("#interview-intel-summary"),
+  interviewProcess: document.querySelector("#interview-process"),
+  interviewThemes: document.querySelector("#interview-themes"),
+  reportedQuestions: document.querySelector("#reported-questions"),
+  researchRisks: document.querySelector("#research-risks"),
+  researchSources: document.querySelector("#research-sources"),
+  runFullWorkflow: document.querySelector("#run-full-workflow"),
+  runCompanyResearch: document.querySelector("#run-company-research"),
   resumeVersionList: document.querySelector("#resume-version-list"),
   interviewSetCount: document.querySelector("#interview-set-count"),
   interviewSetList: document.querySelector("#interview-set-list"),
@@ -398,7 +520,15 @@ function mergeState(input) {
   if (input.profile && typeof input.profile === "object") {
     next.profile = { ...next.profile, ...input.profile };
   }
-  for (const field of ["jobs", "repos", "experiences", "versions", "interviewSets"]) {
+  for (const field of [
+    "jobs",
+    "repos",
+    "experiences",
+    "jobResearch",
+    "workflowRuns",
+    "versions",
+    "interviewSets",
+  ]) {
     if (Array.isArray(input[field])) next[field] = input[field];
   }
   if (input.resume && typeof input.resume === "object") {
@@ -408,7 +538,9 @@ function mergeState(input) {
   if (typeof input.selectedInterviewSetId === "string") {
     next.selectedInterviewSetId = input.selectedInterviewSetId;
   }
-  if (typeof input.activeView === "string") next.activeView = input.activeView;
+  if (typeof input.activeView === "string" && PANEL_VIEWS.has(input.activeView)) {
+    next.activeView = input.activeView;
+  }
   if (typeof input.statusFilter === "string") next.statusFilter = input.statusFilter;
   if (typeof input.jobFilter === "string") next.jobFilter = input.jobFilter;
   if (typeof input.jobSourceFilter === "string") {
@@ -504,6 +636,7 @@ function hostCall(method, params) {
 function getContext() {
   if (window.codeshellPanel?.getContext) return window.codeshellPanel.getContext();
   return Promise.resolve({
+    sessionId: "preview-session",
     cwd: "/preview/codeshell",
     trusted: true,
     busy: false,
@@ -519,6 +652,13 @@ function updateContext(next) {
   elements.askAgent.disabled = Boolean(context.busy);
   elements.simulateInterview.disabled = Boolean(context.busy) || !selectedInterviewSet();
   elements.regenerateInterview.disabled = Boolean(context.busy) || !selectedJob();
+  elements.runFullWorkflow.disabled = Boolean(context.busy);
+  elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
+  elements.projectSessionState.textContent = context.sessionId
+    ? context.busy
+      ? "当前 Session · Agent 执行中"
+      : "已绑定当前 Session"
+    : "浏览器预览";
 }
 
 function uid(prefix) {
@@ -582,7 +722,7 @@ function persist({ quiet = true } = {}) {
 
 function projectSnapshotPayload() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     updatedAt: new Date().toISOString(),
     selectedJobId: state.selectedJobId,
     selectedInterviewSetId: state.selectedInterviewSetId,
@@ -590,6 +730,8 @@ function projectSnapshotPayload() {
     jobs: clone(state.jobs),
     repos: clone(state.repos),
     experiences: clone(state.experiences),
+    jobResearch: clone(state.jobResearch),
+    workflowRuns: clone(state.workflowRuns),
     resume: clone(state.resume),
     versions: clone(state.versions),
     interviewSets: clone(state.interviewSets),
@@ -637,8 +779,11 @@ async function syncProjectContext({ quiet = true } = {}) {
     try {
       const snapshot = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
       const parsed = JSON.parse(snapshot.content);
-      if (parsed?.schemaVersion === 1) {
-        state = mergeState(parsed);
+      if (parsed?.schemaVersion === 1 || parsed?.schemaVersion === 2) {
+        const migrated = mergeState(parsed);
+        if (!Array.isArray(parsed.jobResearch)) migrated.jobResearch = [];
+        if (!Array.isArray(parsed.workflowRuns)) migrated.workflowRuns = [];
+        state = migrated;
         projectContext.hasSnapshot = true;
         projectContext.lastSyncedAt = parsed.updatedAt || "";
         projectContext.snapshotRevision = snapshot.revision || "";
@@ -724,6 +869,7 @@ function renderCounts() {
   };
   elements.jobNavCount.textContent = String(state.jobs.length);
   elements.sourceNavCount.textContent = context.cwd ? "1" : "0";
+  elements.researchNavCount.textContent = String(state.jobResearch.length);
   elements.resumeNavCount.textContent = String(
     Math.max(state.versions.length, state.resume.markdown ? 1 : 0),
   );
@@ -1229,6 +1375,207 @@ function renderInterviews() {
   }
 }
 
+function selectedResearch() {
+  return state.jobResearch.find((report) => report.jobId === state.selectedJobId) ?? null;
+}
+
+function renderTagItems(container, items, emptyLabel) {
+  const values = Array.isArray(items) ? items.filter(Boolean) : [];
+  container.replaceChildren(
+    ...(values.length ? values : [emptyLabel]).map((item) =>
+      makeTextElement("span", `tag${values.length ? " matched" : ""}`, item),
+    ),
+  );
+}
+
+function renderResearch() {
+  const latestRun = state.workflowRuns[0] ?? null;
+  elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
+  const workflowLabels = {
+    running: "调研进行中",
+    completed: "最近流程已完成",
+    partial: "部分完成",
+    failed: "最近流程失败",
+  };
+  elements.workflowStatus.textContent = latestRun
+    ? workflowLabels[latestRun.status] || latestRun.status
+    : "尚未运行";
+  elements.workflowStatus.classList.toggle("running", latestRun?.status === "running");
+  elements.researchReportCount.textContent = `${state.jobResearch.length} 份`;
+  elements.researchReportList.replaceChildren();
+
+  for (const report of state.jobResearch) {
+    const job = state.jobs.find((item) => item.id === report.jobId);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `research-report-card${report.jobId === state.selectedJobId ? " active" : ""}`;
+    card.dataset.researchJobId = report.jobId;
+    card.append(
+      makeTextElement("span", "panel-kicker", report.sample ? "SAMPLE RESEARCH" : "SOURCED REPORT"),
+      makeTextElement("strong", "", report.company?.officialName || job?.company || "公司待确认"),
+      makeTextElement("span", "", job?.title || "岗位待关联"),
+      makeTextElement(
+        "small",
+        "",
+        `${report.reviews?.length || 0} 条评价 · ${report.sources?.length || 0} 个来源`,
+      ),
+    );
+    elements.researchReportList.append(card);
+  }
+
+  if (!state.jobResearch.length) {
+    const empty = document.createElement("div");
+    empty.className = "research-list-empty";
+    empty.append(
+      makeTextElement("strong", "", "还没有调研报告"),
+      makeTextElement("span", "", "在当前 Session 里说“调研当前公司”即可。"),
+    );
+    elements.researchReportList.append(empty);
+  }
+
+  const report = selectedResearch();
+  const job = selectedJob();
+  elements.researchEmpty.hidden = Boolean(report);
+  elements.researchContent.hidden = !report;
+  elements.researchCompanySite.disabled = !report?.company?.website;
+  elements.researchCareersSite.disabled = !report?.company?.careersUrl;
+  elements.researchCompanySite.dataset.externalUrl = report?.company?.website || "";
+  elements.researchCareersSite.dataset.externalUrl = report?.company?.careersUrl || "";
+  elements.researchJobLabel.textContent = job
+    ? `${job.company} / ${job.title}${job.sample ? " · 示例" : ""}`
+    : "尚未绑定岗位";
+  elements.researchTitle.textContent = report
+    ? `${report.company?.officialName || job?.company || "公司"} 调研报告`
+    : "等待 Agent 完成公司调研";
+  elements.researchUpdated.textContent = report ? formatDate(report.updatedAt) : "未生成";
+  if (!report) return;
+
+  const company = report.company ?? {};
+  elements.companySummary.textContent = company.summary || "暂无可核验的公司简介。";
+  const facts = [
+    ["行业", company.industry],
+    ["阶段", company.stage],
+    ["规模", company.size],
+    ["地点", company.locations?.join("、")],
+  ].filter(([, value]) => value);
+  elements.companyFacts.replaceChildren(
+    ...facts.map(([label, value]) => {
+      const row = document.createElement("div");
+      row.append(makeTextElement("span", "", label), makeTextElement("strong", "", value));
+      return row;
+    }),
+  );
+  renderTagItems(elements.companyProducts, company.products, "产品信息待补充");
+  renderTagItems(
+    elements.companyTech,
+    [...(company.techSignals || []), ...(company.hiringSignals || [])],
+    "技术信号待补充",
+  );
+
+  elements.companyReviews.replaceChildren();
+  for (const review of report.reviews || []) {
+    const card = document.createElement("article");
+    card.className = "review-card";
+    const header = document.createElement("header");
+    header.append(
+      makeTextElement("strong", "", review.title || review.source || "公开评价"),
+      makeTextElement("span", `sentiment ${review.sentiment || "unknown"}`, review.sentiment || "unknown"),
+    );
+    const pros = document.createElement("div");
+    pros.className = "review-points";
+    if (review.pros?.length) {
+      pros.append(
+        makeTextElement("b", "", "正向"),
+        makeTextElement("span", "", review.pros.join("；")),
+      );
+    }
+    if (review.cons?.length) {
+      pros.append(
+        makeTextElement("b", "", "风险"),
+        makeTextElement("span", "", review.cons.join("；")),
+      );
+    }
+    const footer = document.createElement("footer");
+    footer.append(
+      makeTextElement(
+        "span",
+        "",
+        `${review.source || "来源待确认"} · 可信度 ${review.confidence || "low"}`,
+      ),
+    );
+    if (review.url) {
+      const sourceButton = makeTextElement("button", "source-link-button", "查看来源 ↗");
+      sourceButton.type = "button";
+      sourceButton.dataset.externalUrl = review.url;
+      footer.append(sourceButton);
+    }
+    card.append(header, makeTextElement("p", "", review.summary || "暂无摘要"), pros, footer);
+    elements.companyReviews.append(card);
+  }
+  if (!report.reviews?.length) {
+    elements.companyReviews.append(makeTextElement("p", "research-muted", "未找到可公开访问的评价。"));
+  }
+
+  const intel = report.interviewIntel ?? {};
+  elements.interviewIntelSummary.textContent =
+    intel.summary || "暂未找到可核验的公开面试情报。";
+  elements.interviewProcess.replaceChildren(
+    ...(intel.process?.length ? intel.process : ["流程待核验"]).map((item) =>
+      makeTextElement("li", "", item),
+    ),
+  );
+  renderTagItems(elements.interviewThemes, intel.themes, "主题待补充");
+  elements.reportedQuestions.replaceChildren();
+  for (const question of intel.questions || []) {
+    const card = document.createElement("article");
+    const origin = question.origin === "reported" ? "公开面经" : "根据 JD 预测";
+    card.append(
+      makeTextElement("span", "question-category", question.category || "岗位问题"),
+      makeTextElement("h4", "", question.question),
+      makeTextElement("small", "", origin),
+    );
+    if (question.sourceUrl) {
+      const sourceButton = makeTextElement("button", "source-link-button", "来源 ↗");
+      sourceButton.type = "button";
+      sourceButton.dataset.externalUrl = question.sourceUrl;
+      card.append(sourceButton);
+    }
+    elements.reportedQuestions.append(card);
+  }
+  if (!intel.questions?.length) {
+    elements.reportedQuestions.append(
+      makeTextElement("p", "research-muted", "没有保存公开问题或预测题。"),
+    );
+  }
+
+  elements.researchRisks.replaceChildren(
+    ...(report.risks?.length ? report.risks : ["暂无已记录风险"]).map((item) =>
+      makeTextElement("li", "", item),
+    ),
+  );
+  elements.researchSources.replaceChildren();
+  for (const source of report.sources || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "research-source-card";
+    button.dataset.externalUrl = source.url;
+    button.disabled = !source.url;
+    button.append(
+      makeTextElement("span", "source-kind", source.kind || "other"),
+      makeTextElement("strong", "", source.title || source.publisher || "来源"),
+      makeTextElement(
+        "small",
+        "",
+        `${source.publisher || "发布者待确认"}${source.publishedAt ? ` · ${source.publishedAt}` : ""}`,
+      ),
+    );
+    elements.researchSources.append(button);
+  }
+  if (!report.sources?.length) {
+    elements.researchSources.append(makeTextElement("p", "research-muted", "暂无来源记录。"));
+  }
+}
+
 function renderAll() {
   renderView();
   renderCounts();
@@ -1237,6 +1584,7 @@ function renderAll() {
   renderResume();
   renderInsights();
   renderMaterials();
+  renderResearch();
   renderVersions();
   renderInterviews();
 }
@@ -1326,7 +1674,7 @@ async function generateDraft() {
     return;
   }
   const prompt = [
-    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
     `目标职位 ID：${job.id}`,
     "先读取当前项目根目录的 CODESHELL.md，并按其中规则检查与求职有关的工作经历、项目说明、代码和其他资料。",
     "再调用 get_job_search_context 读取完整 JD。若识别到候选人资料，先调用 save_candidate_context 更新面板中的项目上下文。",
@@ -1396,7 +1744,7 @@ async function submitJobSearch(form) {
     .map((provider) => `${provider.label}（${provider.domain}）`)
     .join("、");
   const prompt = [
-    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具处理这次职位搜索。",
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具处理这次职位搜索。",
     "先读取当前项目根目录的 CODESHELL.md 和与求职有关的项目资料，并严格遵循其中规则。",
     `在以下渠道查找合计最多 ${count} 个当前有效的职位：${providerSummary}。`,
     `搜索条件：关键词「${keyword}」，城市「${city || "不限"}」，经验「${seniority || "不限"}」。`,
@@ -1424,7 +1772,7 @@ async function submitResumeRevision(request) {
   const job = selectedJob();
   if (!job) return notify("先选择一个职位", "error");
   const prompt = [
-    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
     `目标职位 ID：${job.id}`,
     "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条核对完整 JD 与项目证据。",
     "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。只使用能核实的真实信息，不要编造公司、日期、技术、职责或数据。",
@@ -1638,7 +1986,7 @@ async function generateInterviewSet(form) {
   }
 
   const prompt = [
-    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具生成岗位定制面试题。",
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具生成岗位定制面试题。",
     `目标职位 ID：${job.id}`,
     `题单模式：${options.mode}（${INTERVIEW_MODE_LABELS[options.mode] || "综合面试"}）`,
     `难度：${options.difficulty}；数量：${options.count}；回答语言：${options.language}。`,
@@ -1664,7 +2012,7 @@ async function simulateInterviewSession() {
     return notify("安装到 CodeShell 后可开始一题一题的模拟面试");
   }
   const prompt = [
-    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，开始一场互动模拟面试。",
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，开始一场互动模拟面试。",
     `目标职位 ID：${job.id}；面试题单 ID：${set.id}；题单标题：${set.title}。`,
     "先读取当前项目根目录的 CODESHELL.md，再调用 get_job_search_context 读取完整题单。每次只问一道题，在我回答前不要展示回答要点。",
     "收到回答后，从事实证据、结构清晰度、技术深度和岗位相关性四方面给简短反馈，再选择一个追问或进入下一题。",
@@ -1678,10 +2026,67 @@ async function simulateInterviewSession() {
   }
 }
 
+async function submitSessionTask(prompt, successMessage) {
+  if (context.busy) return notify("当前 Session 的 Agent 正在执行，请稍后再试", "error");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    notify(
+      window.codeshellPanel?.call
+        ? successMessage
+        : "浏览器预览不会启动 Agent；安装到 CodeShell 后会发送到当前 Session",
+    );
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "发送到当前 Session 失败", "error");
+  }
+}
+
+function runFullWorkflowInSession() {
+  return submitSessionTask(
+    [
+      "请使用 job-hunt-hq:job-hunt-workflow skill，在当前 CodeShell 项目中运行一次完整求职流程。",
+      "先读取项目根目录的 CODESHELL.md 和其中指定的候选人材料，再调用 panel-app:job-hunt-hq 的工具读取面板上下文。",
+      "按项目里的目标岗位与来源要求：发现并核验少量当前岗位、保存完整 JD、调研公司官网与公开评价、整理公开面试情报。",
+      "对合适岗位生成可编辑简历草稿和有证据的面试题，并把所有结构化结果与流程进度写回面板。",
+      "不要绕过登录、验证码、robots、付费墙或访问频率限制；受限来源要明确记录为部分完成。",
+    ].join("\n"),
+    "任务已发送到当前 Session；过程和结果会继续出现在原对话与本面板中",
+  );
+}
+
+function runCompanyResearchInSession() {
+  const job = selectedJob();
+  if (!job) return notify("先选择一个职位", "error");
+  return submitSessionTask(
+    [
+      "请使用 job-hunt-hq:job-hunt-workflow skill，继续调研当前求职面板里选中的岗位。",
+      `目标职位 ID：${job.id}；公司：${job.company}；岗位：${job.title}。`,
+      "先调用 panel-app:job-hunt-hq 的 get_job_search_context 取得完整 JD，再查公司官网、招聘官网、产品与可靠公开信息。",
+      "汇总公开员工或候选人评价与面试情报，严格区分事实、主观观点、公开报道的问题和根据 JD 推测的问题。",
+      "保存来源、时间、置信度与核验缺口，并通过 save_job_research 写回面板。",
+    ].join("\n"),
+    "公司调研已发送到当前 Session；结果会写回调研页",
+  );
+}
+
 function assertPlainObject(value, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${name} 参数格式不正确`);
   }
+}
+
+function cleanText(value, maxLength) {
+  return String(value || "")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function cleanTextList(value, maxItems, maxLength) {
+  return Array.isArray(value)
+    ? value
+        .map((item) => cleanText(item, maxLength))
+        .filter(Boolean)
+        .slice(0, maxItems)
+    : [];
 }
 
 function registerAgentTools(ready) {
@@ -1701,6 +2106,8 @@ function registerAgentTools(ready) {
       profile: clone(state.profile),
       repositories: clone(state.repos),
       workHistory: clone(state.experiences),
+      jobResearch: clone(state.jobResearch),
+      workflowRuns: clone(state.workflowRuns),
       resume: clone(state.resume),
       interviewSets: clone(state.interviewSets),
       providerCatalog: clone(JOB_PROVIDERS),
@@ -1840,6 +2247,194 @@ function registerAgentTools(ready) {
       skippedDuplicates: incoming.length - unique.length,
       selectedJobId: state.selectedJobId,
       totalJobs: state.jobs.length,
+      projectSaved,
+    };
+  });
+
+  register("save_workflow_progress", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_workflow_progress");
+    const statuses = ["running", "completed", "partial", "failed"];
+    const stepIds = ["discover", "verify-jd", "company", "reviews", "interviews", "artifacts"];
+    const stepStatuses = ["pending", "running", "completed", "skipped", "failed"];
+    if (!statuses.includes(args.status) || !stepIds.includes(args.current_step)) {
+      throw new Error("status 或 current_step 无效");
+    }
+    const requestedId = cleanText(args.workflow_id, 100);
+    const existing = requestedId
+      ? state.workflowRuns.find((run) => run.id === requestedId)
+      : null;
+    if (requestedId && !existing) {
+      throw new Error("workflow_id 不存在；首次调用时请省略 workflow_id");
+    }
+    const now = new Date().toISOString();
+    const steps = Array.isArray(args.steps)
+      ? args.steps.slice(0, 12).map((step, index) => {
+          assertPlainObject(step, `steps[${index}]`);
+          const id = cleanText(step.id, 80);
+          if (!id || !stepStatuses.includes(step.status)) {
+            throw new Error(`steps[${index}] 缺少有效 id 或 status`);
+          }
+          return {
+            id,
+            status: step.status,
+            message: cleanText(step.message, 500),
+          };
+        })
+      : existing?.steps || [];
+    const run = {
+      id: existing?.id || uid("workflow"),
+      status: args.status,
+      currentStep: args.current_step,
+      message: cleanText(args.message, 1000),
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      steps,
+    };
+    state.workflowRuns = [
+      run,
+      ...state.workflowRuns.filter((item) => item.id !== run.id),
+    ].slice(0, 30);
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    return {
+      saved: true,
+      workflowId: run.id,
+      status: run.status,
+      currentStep: run.currentStep,
+      projectSaved,
+    };
+  });
+
+  register("save_job_research", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_job_research");
+    const job = state.jobs.find((item) => item.id === args.job_id);
+    if (!job) throw new Error("job_id 不存在，请先保存或读取岗位");
+    assertPlainObject(args.company, "company");
+    assertPlainObject(args.interview_intel, "interview_intel");
+    if (!cleanText(args.company.official_name, 100) || !cleanText(args.company.summary, 5000)) {
+      throw new Error("company 缺少 official_name 或 summary");
+    }
+    if (
+      !Array.isArray(args.reviews) ||
+      !Array.isArray(args.risks) ||
+      !Array.isArray(args.sources)
+    ) {
+      throw new Error("reviews、risks 和 sources 必须是数组");
+    }
+    const sentimentValues = ["positive", "mixed", "negative", "unknown"];
+    const confidenceValues = ["high", "medium", "low"];
+    const sourceKinds = ["official", "job", "review", "interview", "news", "other"];
+    const questionOrigins = ["reported", "predicted"];
+    const reviews = args.reviews.slice(0, 50).map((review, index) => {
+      assertPlainObject(review, `reviews[${index}]`);
+      if (
+        !cleanText(review.source, 120) ||
+        !cleanText(review.summary, 3000) ||
+        !sentimentValues.includes(review.sentiment) ||
+        !confidenceValues.includes(review.confidence)
+      ) {
+        throw new Error(`reviews[${index}] 缺少来源、摘要、情绪或可信度`);
+      }
+      return {
+        source: cleanText(review.source, 120),
+        title: cleanText(review.title, 200),
+        url: cleanText(review.url, 1000),
+        publishedAt: cleanText(review.published_at, 80),
+        sentiment: review.sentiment,
+        summary: cleanText(review.summary, 3000),
+        pros: cleanTextList(review.pros, 15, 500),
+        cons: cleanTextList(review.cons, 15, 500),
+        confidence: review.confidence,
+      };
+    });
+    const questions = Array.isArray(args.interview_intel.questions)
+      ? args.interview_intel.questions.slice(0, 30).map((question, index) => {
+          assertPlainObject(question, `interview_intel.questions[${index}]`);
+          const prompt = cleanText(question.question, 1000);
+          const sourceUrl = cleanText(question.source_url, 1000);
+          if (
+            prompt.length < 8 ||
+            !questionOrigins.includes(question.origin) ||
+            (question.origin === "reported" && !sourceUrl)
+          ) {
+            throw new Error(`interview_intel.questions[${index}] 缺少问题或有效 origin`);
+          }
+          return {
+            question: prompt,
+            category: cleanText(question.category, 100),
+            origin: question.origin,
+            sourceUrl,
+          };
+        })
+      : [];
+    const sources = args.sources.slice(0, 60).map((source, index) => {
+      assertPlainObject(source, `sources[${index}]`);
+      if (
+        !sourceKinds.includes(source.kind) ||
+        !cleanText(source.title, 300) ||
+        !cleanText(source.url, 1000) ||
+        !cleanText(source.accessed_at, 80)
+      ) {
+        throw new Error(`sources[${index}] 缺少类型、标题、URL 或访问时间`);
+      }
+      return {
+        kind: source.kind,
+        title: cleanText(source.title, 300),
+        publisher: cleanText(source.publisher, 200),
+        url: cleanText(source.url, 1000),
+        publishedAt: cleanText(source.published_at, 80),
+        accessedAt: cleanText(source.accessed_at, 80),
+        notes: cleanText(source.notes, 1000),
+      };
+    });
+    const existing = state.jobResearch.find((report) => report.jobId === job.id);
+    const report = {
+      id: existing?.id || uid("research"),
+      jobId: job.id,
+      updatedAt: new Date().toISOString(),
+      sample: false,
+      company: {
+        officialName: cleanText(args.company.official_name, 100),
+        website: cleanText(args.company.website, 1000),
+        careersUrl: cleanText(args.company.careers_url, 1000),
+        summary: cleanText(args.company.summary, 5000),
+        industry: cleanText(args.company.industry, 200),
+        stage: cleanText(args.company.stage, 200),
+        size: cleanText(args.company.size, 200),
+        locations: cleanTextList(args.company.locations, 20, 300),
+        products: cleanTextList(args.company.products, 30, 500),
+        techSignals: cleanTextList(args.company.tech_signals, 30, 300),
+        hiringSignals: cleanTextList(args.company.hiring_signals, 30, 500),
+      },
+      reviews,
+      interviewIntel: {
+        summary: cleanText(args.interview_intel.summary, 5000),
+        process: cleanTextList(args.interview_intel.process, 20, 500),
+        themes: cleanTextList(args.interview_intel.themes, 30, 300),
+        questions,
+      },
+      risks: cleanTextList(args.risks, 30, 1000),
+      sources,
+    };
+    state.jobResearch = [
+      report,
+      ...state.jobResearch.filter((item) => item.jobId !== job.id),
+    ].slice(0, 80);
+    state.selectedJobId = job.id;
+    state.activeView = "research";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: true,
+      jobId: job.id,
+      researchId: report.id,
+      reviewCount: reviews.length,
+      sourceCount: sources.length,
       projectSaved,
     };
   });
@@ -2019,6 +2614,10 @@ function bindEvents() {
   document
     .querySelector("#open-search")
     .addEventListener("click", () => openDialog("agent-dialog"));
+  elements.runFullWorkflow.addEventListener("click", () => void runFullWorkflowInSession());
+  elements.runCompanyResearch.addEventListener("click", () =>
+    void runCompanyResearchInSession(),
+  );
   for (const id of ["open-job-form", "compact-add-job", "empty-add-job"]) {
     document.querySelector(`#${id}`).addEventListener("click", () => openDialog("job-dialog"));
   }

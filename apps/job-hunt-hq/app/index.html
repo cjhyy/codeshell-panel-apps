@@ -31,11 +31,15 @@
         </div>
 
         <div class="top-actions">
+          <button id="run-full-workflow" class="button button-primary" type="button">
+            <span aria-hidden="true">✦</span>
+            在 Session 运行
+          </button>
           <button id="open-search" class="button button-quiet" type="button">
             <span aria-hidden="true">⌕</span>
-            跨平台拉取 JD
+            只找岗位
           </button>
-          <button id="open-job-form" class="button button-primary" type="button">
+          <button id="open-job-form" class="button button-quiet" type="button">
             <span aria-hidden="true">＋</span>
             添加职位
           </button>
@@ -54,6 +58,11 @@
             <span class="nav-icon" aria-hidden="true">◇</span>
             <span>当前项目</span>
             <span id="source-nav-count" class="nav-count">1</span>
+          </button>
+          <button class="nav-item" type="button" data-view-target="research">
+            <span class="nav-icon" aria-hidden="true">◎</span>
+            <span>公司调研</span>
+            <span id="research-nav-count" class="nav-count">1</span>
           </button>
           <button class="nav-item" type="button" data-view-target="resumes">
             <span class="nav-icon" aria-hidden="true">▤</span>
@@ -287,6 +296,14 @@
                 <strong>仅当前项目</strong>
               </div>
               <div class="project-context-row">
+                <span>Session</span>
+                <strong id="project-session-state">正在绑定</strong>
+              </div>
+              <div class="project-context-row">
+                <span>项目开关</span>
+                <strong>面板、Skill 与工具一起启用</strong>
+              </div>
+              <div class="project-context-row">
                 <span>CODESHELL.md</span>
                 <strong id="codeshell-file-state">正在检测</strong>
               </div>
@@ -297,6 +314,9 @@
               <p>
                 Agent 负责读取项目资料、优化内容并写回面板；面板只展示岗位、JD、Resume
                 和面试题。
+              </p>
+              <p class="project-readonly-note">
+                直接在当前 Session 里说“找岗位”“调研公司”“生成简历”即可，面板不会创建另一套聊天记录。
               </p>
               <button id="sync-project-context" class="button button-quiet" type="button">
                 重新读取当前项目
@@ -378,6 +398,125 @@
                 <li>内容优化规则来自 CODESHELL.md</li>
               </ul>
             </article>
+          </section>
+        </section>
+
+        <section id="view-research" class="view" aria-labelledby="research-page-title" hidden>
+          <header class="page-heading compact-heading">
+            <div>
+              <span class="eyebrow">COMPANY & INTERVIEW INTELLIGENCE</span>
+              <h1 id="research-page-title">公司调研与面试情报</h1>
+              <p>公司事实、公开评价和面试经验分开保存，每条结论都保留来源。</p>
+            </div>
+            <div class="heading-meta">
+              <span id="workflow-status" class="meta-chip"><i aria-hidden="true"></i> 尚未运行</span>
+              <button id="run-company-research" class="button button-primary" type="button">
+                交给当前 Session 调研
+              </button>
+            </div>
+          </header>
+
+          <section class="research-shell">
+            <aside class="research-list-panel">
+              <header>
+                <div>
+                  <span class="panel-kicker">RESEARCH REPORTS</span>
+                  <h2>岗位调研报告</h2>
+                </div>
+                <span id="research-report-count" class="tiny-badge">0 份</span>
+              </header>
+              <div id="research-report-list" class="research-report-list"></div>
+            </aside>
+
+            <section class="research-main">
+              <header class="research-toolbar">
+                <div>
+                  <span id="research-job-label" class="panel-kicker">尚未绑定岗位</span>
+                  <h2 id="research-title">等待 Agent 完成公司调研</h2>
+                </div>
+                <div class="research-toolbar-meta">
+                  <span id="research-updated">未生成</span>
+                  <button id="research-company-site" class="button button-quiet" type="button">
+                    公司官网 ↗
+                  </button>
+                  <button id="research-careers-site" class="button button-quiet" type="button">
+                    招聘官网 ↗
+                  </button>
+                </div>
+              </header>
+
+              <div id="research-empty" class="research-empty">
+                <strong>还没有调研报告</strong>
+                <p>运行完整调研后，这里会展示公司官网、评价、风险、面试流程和公开面经。</p>
+              </div>
+
+              <div id="research-content" class="research-content" hidden>
+                <section class="research-section company-section">
+                  <div class="research-section-heading">
+                    <div>
+                      <span class="panel-kicker">OFFICIAL PROFILE</span>
+                      <h3>公司档案</h3>
+                    </div>
+                    <span class="source-type-badge">优先官方来源</span>
+                  </div>
+                  <p id="company-summary" class="research-summary"></p>
+                  <div id="company-facts" class="company-facts"></div>
+                  <div class="research-tags-block">
+                    <span>产品与业务</span>
+                    <div id="company-products" class="tag-cloud"></div>
+                  </div>
+                  <div class="research-tags-block">
+                    <span>技术与招聘信号</span>
+                    <div id="company-tech" class="tag-cloud"></div>
+                  </div>
+                </section>
+
+                <section class="research-section">
+                  <div class="research-section-heading">
+                    <div>
+                      <span class="panel-kicker">PUBLIC REVIEWS</span>
+                      <h3>公开评价</h3>
+                    </div>
+                    <span class="source-type-badge subjective">主观信息</span>
+                  </div>
+                  <div id="company-reviews" class="review-grid"></div>
+                </section>
+
+                <section class="research-section">
+                  <div class="research-section-heading">
+                    <div>
+                      <span class="panel-kicker">INTERVIEW INTELLIGENCE</span>
+                      <h3>面试流程与公开问题</h3>
+                    </div>
+                  </div>
+                  <p id="interview-intel-summary" class="research-summary"></p>
+                  <div class="intel-grid">
+                    <article>
+                      <h4>流程</h4>
+                      <ol id="interview-process"></ol>
+                    </article>
+                    <article>
+                      <h4>高频主题</h4>
+                      <div id="interview-themes" class="tag-cloud"></div>
+                    </article>
+                  </div>
+                  <div id="reported-questions" class="reported-question-list"></div>
+                </section>
+
+                <section class="research-section split-research-section">
+                  <article>
+                    <span class="panel-kicker">RISKS & GAPS</span>
+                    <h3>风险与待核验项</h3>
+                    <ul id="research-risks" class="research-risk-list"></ul>
+                  </article>
+                  <article>
+                    <span class="panel-kicker">SOURCES</span>
+                    <h3>来源记录</h3>
+                    <div id="research-sources" class="research-source-list"></div>
+                  </article>
+                </section>
+              </div>
+            </section>
           </section>
         </section>
 

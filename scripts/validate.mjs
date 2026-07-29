@@ -162,19 +162,50 @@ async function validatePackage(packagePath) {
   if (manifest.id === "job-hunt-hq") {
     const appScript = await readFile(join(root, "app", "app.js"), "utf8");
     const skill = await readFile(
-      join(root, "agent", "skills", "job-tailor", "SKILL.md"),
+      join(root, "agent", "skills", "job-hunt-workflow", "SKILL.md"),
       "utf8",
     );
     const snapshotSchema = JSON.parse(
       await readFile(
-        join(root, "app", "formats", "job-hunt-panel-v1.schema.json"),
+        join(root, "app", "formats", "job-hunt-panel-v2.schema.json"),
         "utf8",
       ),
     );
     const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
-    assert.equal(manifest.version, "0.4.0", `${packagePath}: project model version mismatch`);
+    const registeredToolNames = new Set(
+      [...appScript.matchAll(/register\("([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
+    );
+    const queriedIds = [
+      ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
+    ].map((match) => match[1]);
+    assert.equal(manifest.version, "0.5.0", `${packagePath}: project model version mismatch`);
+    assert.deepEqual(
+      [...registeredToolNames].sort(),
+      [...toolNames].sort(),
+      `${packagePath}: manifest tools and registered handlers must match`,
+    );
+    for (const id of queriedIds) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
     assert(toolNames.has("save_candidate_context"), `${packagePath}: context tool is required`);
+    assert(toolNames.has("save_job_research"), `${packagePath}: research tool is required`);
+    assert(toolNames.has("save_workflow_progress"), `${packagePath}: workflow tool is required`);
+    assert.deepEqual(
+      manifest.agent.skills,
+      ["agent/skills/job-hunt-workflow/SKILL.md"],
+      `${packagePath}: one bundled workflow Skill is required`,
+    );
     assert.match(html, /id="project-context-name"/, `${packagePath}: project status is required`);
+    assert.match(
+      html,
+      /id="project-session-state"/,
+      `${packagePath}: session binding status is required`,
+    );
+    assert.doesNotMatch(
+      html,
+      /id="view-chat"/,
+      `${packagePath}: chat must stay in the CodeShell session`,
+    );
     assert.match(html, /id="jd-preview"/, `${packagePath}: full JD view is required`);
     assert.match(
       html,
@@ -197,7 +228,14 @@ async function validatePackage(packagePath) {
       `${packagePath}: project snapshot writer is required`,
     );
     assert.match(skill, /CODESHELL\.md/, `${packagePath}: Skill must read CODESHELL.md`);
-    assert.equal(snapshotSchema.properties.schemaVersion.const, 1);
+    assert.match(
+      skill,
+      /panel-app:job-hunt-hq/,
+      `${packagePath}: Skill must explain how to invoke its panel tools`,
+    );
+    assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
+    assert(snapshotSchema.required.includes("jobResearch"));
+    assert(snapshotSchema.required.includes("workflowRuns"));
   }
   return { id: manifest.id, files: files.length };
 }
