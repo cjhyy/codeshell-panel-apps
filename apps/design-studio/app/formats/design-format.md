@@ -83,8 +83,9 @@ hex `color`, 0–1 `opacity`, X/Y offset, and blur radius. Shadows are source da
 consistently in the live canvas, Agent screenshots, and SVG exports. The audit treats a visible
 shadow crossing the canvas or an ancestor clipping boundary as a blocking render defect even when
 the node's own geometry still fits.
-HTML capture may add `effectClipping: "intentional"` when that clipping is part of the measured
-browser result; this suppresses only the corresponding false-positive effect-boundary issue.
+HTML capture may add `effectClipping: "intentional"` for deliberately clipped shadows and
+`contentClipping: "intentional"` when the browser itself clips child overflow. These markers
+suppress only their corresponding false-positive clipping issues.
 Visible stroke width is audited the same way, because half of an SVG stroke extends outside the
 node geometry.
 Shadow filter regions are derived from the rendered node, stroke, and instance-content bounds, so a
@@ -149,6 +150,6 @@ page name so an inactive page cannot hide clipping, overflow, effect clipping, t
 multi-point text-contrast defects.
 
 Limits are 20 pages, 500 source nodes total, 16 nested instance levels, 10,000 expanded render
-layers per page, 32 color tokens, and 256 KiB per source. Use
+layers per page, 32 color tokens, and 512 KiB per source. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.

@@ -612,7 +612,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
 
   const borders = borderSides(style);
   const uniform =
-    borders.length === 4 &&
+    (borders.length === 4 || (radius > 0 && borders.length >= 3)) &&
     borders.every(
       (border) =>
         Math.abs(border.width - borders[0].width) < 0.1 &&
@@ -680,8 +680,53 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
   return hasManualLayers;
 }
 
+function svgShapeNode(element, style, rect, nextId) {
+  if (
+    element.namespaceURI !== SVG_NS ||
+    !["rect", "circle", "ellipse"].includes(element.localName)
+  ) {
+    return null;
+  }
+  const fill = parseCssColor(style.fill) ?? { hex: "#000000", alpha: 0 };
+  const stroke = parseCssColor(style.stroke) ?? { hex: "#000000", alpha: 0 };
+  const rawFillOpacity = Number.parseFloat(style.fillOpacity || "1");
+  const rawOpacity = Number.parseFloat(style.opacity || "1");
+  const fillOpacity = clamp(Number.isFinite(rawFillOpacity) ? rawFillOpacity : 1, 0, 1);
+  const opacity = clamp(Number.isFinite(rawOpacity) ? rawOpacity : 1, 0, 1);
+  const type = ["circle", "ellipse"].includes(element.localName) ? "ellipse" : "rectangle";
+  const radius =
+    type === "rectangle"
+      ? Math.max(
+          0,
+          pixelValue(element.getAttribute("rx") ?? "0"),
+          pixelValue(element.getAttribute("ry") ?? "0"),
+        )
+      : 0;
+  return {
+    ...baseNode(
+      nextId(element.getAttribute("data-codeshell-id") || element.id || element.localName),
+      type,
+      element.getAttribute("data-codeshell-name") ||
+        element.getAttribute("aria-label") ||
+        element.id ||
+        element.localName,
+      rect,
+    ),
+    fill: fill.alpha > 0 ? fill.hex : "transparent",
+    stroke: stroke.alpha > 0 ? stroke.hex : "transparent",
+    strokeWidth: stroke.alpha > 0 ? round(Math.max(0, pixelValue(style.strokeWidth))) : 0,
+    opacity: round(
+      opacity * (fill.alpha > 0 ? fill.alpha * fillOpacity : (stroke.alpha > 0 ? stroke.alpha : 1)),
+      4,
+    ),
+    cornerRadius: round(radius),
+  };
+}
+
 function appendTextLayers(frame, node, style, rootRect, nextId) {
-  const color = parseCssColor(style.color) ?? { hex: "#000000", alpha: 1 };
+  const color =
+    parseCssColor(node.parentElement?.namespaceURI === SVG_NS ? style.fill : style.color) ??
+    { hex: "#000000", alpha: 1 };
   const size = clamp(pixelValue(style.fontSize, 16), 6, 240);
   const lineHeightPixels =
     style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
@@ -744,6 +789,8 @@ export async function captureHtmlToDesign(root, options = {}) {
     const browserRect = element.getBoundingClientRect();
     if (!isVisibleElement(element, style, browserRect)) return [];
     const rect = relativeRect(browserRect, rootRect);
+    const svgShape = svgShapeNode(element, style, rect, nextId);
+    if (svgShape) return [svgShape];
     const name =
       element.getAttribute("data-codeshell-name") ||
       element.getAttribute("aria-label") ||
@@ -754,15 +801,17 @@ export async function captureHtmlToDesign(root, options = {}) {
     const needsFrame = intrinsicNeedsFrame || Boolean(parentLayout);
     const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && Boolean(parentLayout);
     const ownLayout = layoutProperties(element, style, ownerWindow);
+    const clipsContent =
+      ["hidden", "clip"].includes(style.overflowX) ||
+      ["hidden", "clip"].includes(style.overflowY);
     const holder = needsFrame
       ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
           cornerRadius: representativeCornerRadius(style),
           ...(ownLayout ?? {}),
           ...(parentLayout ? layoutItemProperties(style, parentLayout) : {}),
-          clipContent:
-            ["hidden", "clip"].includes(style.overflowX) ||
-            ["hidden", "clip"].includes(style.overflowY),
+          clipContent: clipsContent,
+          ...(clipsContent ? { contentClipping: "intentional" } : {}),
         })
       : { name, children: [] };
     const hasManualLayers = needsFrame

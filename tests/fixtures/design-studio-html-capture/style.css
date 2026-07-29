@@ -395,6 +395,9 @@ nav {
 }
 
 .quality {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 5px 8px;
   color: #166534;
   background: #dcfce7;

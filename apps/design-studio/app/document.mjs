@@ -8,7 +8,7 @@ import {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_NODES = 500;
-export const MAX_DESIGN_DOCUMENT_BYTES = 256 * 1024;
+export const MAX_DESIGN_DOCUMENT_BYTES = 512 * 1024;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
@@ -114,6 +114,9 @@ function normalizedNode(candidate, parentId) {
     ...(parentId ? { parentId } : {}),
     ...(candidate.notes !== undefined ? { notes: candidate.notes } : {}),
     ...(candidate.effectClipping !== undefined ? { effectClipping: candidate.effectClipping } : {}),
+    ...(candidate.contentClipping !== undefined
+      ? { contentClipping: candidate.contentClipping }
+      : {}),
     ...(candidate.shadow !== undefined
       ? {
           shadow: {
@@ -211,6 +214,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "name",
     "notes",
     "effectClipping",
+    "contentClipping",
     "shadow",
     "x",
     "y",
@@ -395,6 +399,14 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   if (candidate.effectClipping !== undefined && candidate.effectClipping !== "intentional") {
     throw new Error(`图层 ${candidate.id} 的 effectClipping 无效`);
+  }
+  if (
+    candidate.contentClipping !== undefined &&
+    (candidate.contentClipping !== "intentional" ||
+      !["frame", "component"].includes(candidate.type) ||
+      candidate.clipContent !== true)
+  ) {
+    throw new Error(`图层 ${candidate.id} 的 contentClipping 无效`);
   }
   if (
     (!["frame", "component"].includes(candidate.type) && candidate.clipContent !== undefined) ||

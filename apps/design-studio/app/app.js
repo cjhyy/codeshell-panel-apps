@@ -3776,7 +3776,10 @@ propertyInputs.clipContent.addEventListener("change", () => {
   const node = selectedNode();
   if (!node || !["frame", "component"].includes(node.type) || isEffectivelyLocked(node)) return;
   if (propertyInputs.clipContent.checked) node.clipContent = true;
-  else delete node.clipContent;
+  else {
+    delete node.clipContent;
+    delete node.contentClipping;
+  }
   commitHistory();
   markChanged();
 });
@@ -4777,6 +4780,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "notes",
   "shadow",
   "effectClipping",
+  "contentClipping",
   "x",
   "y",
   "width",
@@ -4858,6 +4862,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       [
         "notes",
         "shadow",
+        "contentClipping",
         "clipContent",
         "layoutWrap",
         "rowGap",
@@ -4877,6 +4882,7 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       node[key] = value;
     }
   }
+  if (node.clipContent !== true) delete node.contentClipping;
 }
 
 function applyAgentDocumentTokens(nextTokens) {
