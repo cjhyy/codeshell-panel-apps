@@ -126,6 +126,22 @@ async function validatePackage(packagePath) {
     !/<script(?![^>]*\bsrc=)[^>]*>/i.test(html),
     `${packagePath}: inline scripts are not allowed`,
   );
+  if (manifest.id === "design-studio") {
+    const appScript = await readFile(join(root, "app", "app.js"), "utf8");
+    assert.match(html, /id="repo-files-tab-button"/, `${packagePath}: file tab is required`);
+    assert.match(html, /id="repo-files-list"/, `${packagePath}: file list is required`);
+    assert.match(html, /id="refresh-repo-files"/, `${packagePath}: file refresh is required`);
+    assert.match(
+      appScript,
+      /refreshRepoFilesPanel/,
+      `${packagePath}: file inventory refresh is required`,
+    );
+    assert.match(
+      appScript,
+      /renderDesignFileRows/,
+      `${packagePath}: shared file rendering is required`,
+    );
+  }
   return { id: manifest.id, files: files.length };
 }
 

@@ -222,6 +222,18 @@
             >
               图层
             </button>
+            <button
+              id="repo-files-tab-button"
+              class="inspector-tab"
+              data-tab="files"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="repo-files-tab"
+              tabindex="-1"
+            >
+              文件
+            </button>
           </div>
 
           <section
@@ -688,6 +700,33 @@
               aria-label="设计图层"
               aria-multiselectable="true"
             ></div>
+          </section>
+
+          <section
+            id="repo-files-tab"
+            class="inspector-body repo-files-panel"
+            role="tabpanel"
+            aria-labelledby="repo-files-tab-button"
+            hidden
+          >
+            <div class="repo-files-heading">
+              <div>
+                <strong>Repo 设计文件</strong>
+                <span>designs/**/*.codesign.json</span>
+              </div>
+              <button id="refresh-repo-files" type="button" title="刷新 Repo 设计文件">刷新</button>
+            </div>
+            <div id="repo-files-summary" class="repo-files-summary">正在读取 Repo…</div>
+            <div
+              id="repo-files-list"
+              class="files-list repo-files-list"
+              role="listbox"
+              aria-label="Repo 设计文件"
+            ></div>
+            <div class="repo-files-footer">
+              <button id="repo-new-document" class="button" type="button">＋ 新建设计</button>
+              <span>点击文件即可切换，当前文件会高亮显示。</span>
+            </div>
           </section>
         </aside>
       </section>

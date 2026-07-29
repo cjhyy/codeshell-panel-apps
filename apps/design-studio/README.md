@@ -26,6 +26,9 @@ surface: nine declared design tools plus a repository-design Skill.
   deeply nested layers.
 - Automatic binding to the current repository: recovery first, then the
   repository's last-opened or newest design, otherwise a blank repo document.
+- A repository file tab that lists every `designs/**/*.codesign.json` document, shows the active
+  file and file count, and supports one-click switching or explicit refresh without leaving the
+  editor.
 - Live reload when an Agent or editor changes the active source file and the
   canvas has no conflicting local edits; stale file-open or sync reads cannot overwrite a newer
   in-memory transaction, and an external check started before a local save cannot mistake that
@@ -77,8 +80,10 @@ review the new package digest and permissions, then confirm the update.
 
 Design files belong to the repository that is currently open in CodeShell and
 live below `designs/`. They are not shared globally between projects. The panel
-header shows the connected repository, and the file picker lets you switch
-among that repository's `.codesign.json` files.
+header shows the connected repository, and the inspector's **文件** tab keeps
+that repository's `.codesign.json` files visible with the current document
+highlighted. The top-bar file picker remains available for keyboard-driven
+switching.
 
 The optional repository checker is bundled at `app/tools/check-design.mjs`. Run it from the
 repository root to make canonical JSON and a zero-warning audit a CI-style gate:
