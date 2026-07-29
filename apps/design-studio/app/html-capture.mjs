@@ -307,12 +307,34 @@ function flexAlignment(value) {
   return null;
 }
 
+function contentAlignment(value) {
+  if (["normal", "start", "flex-start"].includes(value)) return "start";
+  if (["end", "flex-end"].includes(value)) return "end";
+  if (["center", "space-between", "stretch"].includes(value)) return value;
+  return null;
+}
+
 function visibleElementChildren(element, ownerWindow) {
   return [...element.children].filter((child) => {
     const style = ownerWindow.getComputedStyle(child);
     const rect = child.getBoundingClientRect();
     return isVisibleElement(child, style, rect);
   });
+}
+
+function layoutInsets(style) {
+  const border = (side) => {
+    const borderStyle = style[`border${side}Style`];
+    return ["none", "hidden"].includes(borderStyle)
+      ? 0
+      : Math.max(0, pixelValue(style[`border${side}Width`]));
+  };
+  return {
+    top: Math.max(0, pixelValue(style.paddingTop)) + border("Top"),
+    right: Math.max(0, pixelValue(style.paddingRight)) + border("Right"),
+    bottom: Math.max(0, pixelValue(style.paddingBottom)) + border("Bottom"),
+    left: Math.max(0, pixelValue(style.paddingLeft)) + border("Left"),
+  };
 }
 
 function flexLayoutProperties(element, style, ownerWindow) {
@@ -324,7 +346,7 @@ function flexLayoutProperties(element, style, ownerWindow) {
     !layout ||
     !justifyContent ||
     !alignItems ||
-    !["nowrap", "none"].includes(style.flexWrap)
+    !["nowrap", "wrap", "none"].includes(style.flexWrap)
   ) {
     return null;
   }
@@ -335,7 +357,6 @@ function flexLayoutProperties(element, style, ownerWindow) {
   if (
     childStyles.some(
       (childStyle) =>
-        ["absolute", "fixed"].includes(childStyle.position) ||
         childStyle.float !== "none" ||
         (childStyle.alignSelf !== "auto" && flexAlignment(childStyle.alignSelf) === null),
     )
@@ -356,26 +377,131 @@ function flexLayoutProperties(element, style, ownerWindow) {
 
   const rowGap = Math.max(0, pixelValue(style.rowGap));
   const columnGap = Math.max(0, pixelValue(style.columnGap));
+  const inset = layoutInsets(style);
   return {
     layout,
     gap: round(layout === "horizontal" ? columnGap : rowGap),
+    rowGap: round(rowGap),
+    columnGap: round(columnGap),
+    layoutWrap: style.flexWrap === "wrap" ? "wrap" : "none",
     padding: 0,
-    paddingTop: round(Math.max(0, pixelValue(style.paddingTop))),
-    paddingRight: round(Math.max(0, pixelValue(style.paddingRight))),
-    paddingBottom: round(Math.max(0, pixelValue(style.paddingBottom))),
-    paddingLeft: round(Math.max(0, pixelValue(style.paddingLeft))),
+    paddingTop: round(inset.top),
+    paddingRight: round(inset.right),
+    paddingBottom: round(inset.bottom),
+    paddingLeft: round(inset.left),
     alignItems,
     justifyContent,
+    alignContent: contentAlignment(style.alignContent) ?? "start",
   };
 }
 
-function flexItemProperties(style) {
+function splitCssTrackList(value) {
+  const tracks = [];
+  let token = "";
+  let depth = 0;
+  for (const character of String(value ?? "").trim()) {
+    if (character === "(") depth += 1;
+    else if (character === ")") depth = Math.max(0, depth - 1);
+    if (/\s/u.test(character) && depth === 0) {
+      if (token) tracks.push(token);
+      token = "";
+    } else {
+      token += character;
+    }
+  }
+  if (token) tracks.push(token);
+  return tracks;
+}
+
+function gridLayoutProperties(style) {
+  if (!["grid", "inline-grid"].includes(style.display)) return null;
+  const tracks = splitCssTrackList(style.gridTemplateColumns);
+  if (
+    tracks.length === 0 ||
+    tracks.some((track) => ["none", "subgrid", "masonry"].includes(track))
+  ) {
+    return null;
+  }
+  const alignItems = flexAlignment(style.alignItems);
+  const justifyContent = flexJustification(style.justifyContent);
+  if (!alignItems || !justifyContent) return null;
+  const rowGap = Math.max(0, pixelValue(style.rowGap));
+  const columnGap = Math.max(0, pixelValue(style.columnGap));
+  const inset = layoutInsets(style);
+  return {
+    layout: "grid",
+    gridColumns: Math.min(24, tracks.length),
+    gap: round(columnGap),
+    rowGap: round(rowGap),
+    columnGap: round(columnGap),
+    padding: 0,
+    paddingTop: round(inset.top),
+    paddingRight: round(inset.right),
+    paddingBottom: round(inset.bottom),
+    paddingLeft: round(inset.left),
+    alignItems,
+    justifyContent,
+    alignContent: contentAlignment(style.alignContent) ?? "start",
+  };
+}
+
+function layoutProperties(element, style, ownerWindow) {
+  return (
+    flexLayoutProperties(element, style, ownerWindow) ??
+    gridLayoutProperties(style)
+  );
+}
+
+function gridSpan(start, end) {
+  const explicitSpan = [start, end]
+    .map((value) => String(value ?? "").match(/^span\s+(\d+)$/u))
+    .find(Boolean);
+  if (explicitSpan) return clamp(Number(explicitSpan[1]), 1, 24);
+  const startLine = Number.parseInt(start, 10);
+  const endLine = Number.parseInt(end, 10);
+  return Number.isInteger(startLine) && Number.isInteger(endLine) && endLine > startLine
+    ? clamp(endLine - startLine, 1, 24)
+    : 1;
+}
+
+function layoutItemProperties(style, parentLayout) {
   const grow = Number.parseFloat(style.flexGrow || "0");
   const alignment = style.alignSelf === "auto" ? "auto" : flexAlignment(style.alignSelf);
-  return {
-    ...(Number.isFinite(grow) && grow > 0 ? { layoutGrow: 1 } : {}),
+  const absolute = ["absolute", "fixed"].includes(style.position);
+  const properties = {
+    layoutSizingHorizontal: "fixed",
+    layoutSizingVertical: "fixed",
+    ...(absolute ? { layoutPositioning: "absolute" } : {}),
     ...(alignment ? { layoutAlign: alignment } : {}),
   };
+  if (absolute) return properties;
+  if (parentLayout.layout === "horizontal") {
+    if (Number.isFinite(grow) && grow > 0) properties.layoutSizingHorizontal = "fill";
+    if (
+      alignment === "stretch" ||
+      (alignment === "auto" && parentLayout.alignItems === "stretch")
+    ) {
+      properties.layoutSizingVertical = "fill";
+    }
+  } else if (parentLayout.layout === "vertical") {
+    if (Number.isFinite(grow) && grow > 0) properties.layoutSizingVertical = "fill";
+    if (
+      alignment === "stretch" ||
+      (alignment === "auto" && parentLayout.alignItems === "stretch")
+    ) {
+      properties.layoutSizingHorizontal = "fill";
+    }
+  } else if (parentLayout.layout === "grid") {
+    const justifySelf =
+      style.justifySelf === "auto" ? parentLayout.alignItems : flexAlignment(style.justifySelf);
+    const alignSelf =
+      style.alignSelf === "auto" ? parentLayout.alignItems : flexAlignment(style.alignSelf);
+    if (justifySelf === "stretch") properties.layoutSizingHorizontal = "fill";
+    if (alignSelf === "stretch") properties.layoutSizingVertical = "fill";
+    properties.gridColumnSpan = gridSpan(style.gridColumnStart, style.gridColumnEnd);
+    properties.gridRowSpan = gridSpan(style.gridRowStart, style.gridRowEnd);
+  }
+  return properties;
 }
 
 function fitTransparentWrapperToChildren(frame) {
@@ -411,8 +537,16 @@ function fitTransparentWrapperToChildren(frame) {
 }
 
 function ensureAutoLayoutFrameFitsChildren(frame) {
-  if (!frame || !["horizontal", "vertical"].includes(frame.layout)) return;
-  const children = frame.children.filter((child) => child.visible !== false);
+  if (
+    !frame ||
+    !["horizontal", "vertical"].includes(frame.layout) ||
+    frame.layoutWrap === "wrap"
+  ) {
+    return;
+  }
+  const children = frame.children.filter(
+    (child) => child.visible !== false && child.layoutPositioning !== "absolute",
+  );
   if (children.length === 0) return;
   const horizontal = frame.layout === "horizontal";
   const mainSize = horizontal ? "width" : "height";
@@ -438,7 +572,7 @@ function elementNeedsFrame(element, style, forceFrame = false) {
   const opacity = Number.parseFloat(style.opacity || "1");
   return (
     forceFrame ||
-    ["flex", "inline-flex"].includes(style.display) ||
+    ["flex", "inline-flex", "grid", "inline-grid"].includes(style.display) ||
     Number.parseFloat(style.flexGrow || "0") > 0 ||
     style.alignSelf !== "auto" ||
     element.hasAttribute("data-codeshell-id") ||
@@ -470,6 +604,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
         fill: fill?.alpha > 0 ? fill.hex : "transparent",
         opacity: fill?.alpha > 0 ? round(fill.alpha, 4) : 1,
         cornerRadius: radius,
+        layoutPositioning: "absolute",
         ...(shadow ? { shadow, effectClipping: "intentional" } : {}),
       }),
     );
@@ -502,6 +637,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
           strokeWidth: round(border.width),
           opacity: round(border.color.alpha, 4),
           cornerRadius: round(Math.max(0, radius - border.width / 2)),
+          layoutPositioning: "absolute",
         },
       ),
     );
@@ -536,6 +672,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
         {
           fill: border.color.hex,
           opacity: round(border.color.alpha, 4),
+          layoutPositioning: "absolute",
         },
       ),
     );
@@ -601,7 +738,7 @@ export async function captureHtmlToDesign(root, options = {}) {
     element,
     fallbackName = element.tagName.toLowerCase(),
     forceFrame = false,
-    parentOwnsLayout = false,
+    parentLayout = null,
   ) => {
     const style = ownerWindow.getComputedStyle(element);
     const browserRect = element.getBoundingClientRect();
@@ -614,15 +751,15 @@ export async function captureHtmlToDesign(root, options = {}) {
       element.classList[0] ||
       fallbackName;
     const intrinsicNeedsFrame = elementNeedsFrame(element, style, forceFrame);
-    const needsFrame = intrinsicNeedsFrame || parentOwnsLayout;
-    const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && parentOwnsLayout;
-    const layoutProperties = flexLayoutProperties(element, style, ownerWindow);
+    const needsFrame = intrinsicNeedsFrame || Boolean(parentLayout);
+    const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && Boolean(parentLayout);
+    const ownLayout = layoutProperties(element, style, ownerWindow);
     const holder = needsFrame
       ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
           cornerRadius: representativeCornerRadius(style),
-          ...(layoutProperties ?? {}),
-          ...(parentOwnsLayout ? flexItemProperties(style) : {}),
+          ...(ownLayout ?? {}),
+          ...(parentLayout ? layoutItemProperties(style, parentLayout) : {}),
           clipContent:
             ["hidden", "clip"].includes(style.overflowX) ||
             ["hidden", "clip"].includes(style.overflowY),
@@ -632,8 +769,9 @@ export async function captureHtmlToDesign(root, options = {}) {
       ? appendSurfaceLayers(holder, style, rect, nextId)
       : false;
     if (hasManualLayers && holder.layout !== "none") {
-      // v3 cannot exclude a decoration child from Auto Layout. Keep exact pixels for this
-      // container while allowing eligible descendants to retain their own layout semantics.
+      // Multiple paint layers still fall back conservatively: they are represented as
+      // absolute children, but preserving the measured DOM child grouping is more faithful
+      // than promoting decoration-heavy controls to editable flow in this capture pass.
       holder.layout = "none";
     }
     const ownsLayout = needsFrame && holder.layout !== "none";
@@ -642,7 +780,14 @@ export async function captureHtmlToDesign(root, options = {}) {
       if (child.nodeType === TEXT_NODE) {
         appendTextLayers(holder, child, style, rootRect, nextId);
       } else if (child.nodeType === ELEMENT_NODE) {
-        holder.children.push(...captureElement(child, child.tagName.toLowerCase(), false, ownsLayout));
+        holder.children.push(
+          ...captureElement(
+            child,
+            child.tagName.toLowerCase(),
+            false,
+            ownsLayout && !hasManualLayers ? ownLayout : null,
+          ),
+        );
       }
     }
     if (transparentLayoutWrapper || ownsLayout) fitTransparentWrapperToChildren(holder);

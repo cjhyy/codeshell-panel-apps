@@ -965,7 +965,7 @@ export function auditDesign(document) {
   );
   if (
     containers.length >= 12 &&
-    !containers.some((node) => ["horizontal", "vertical"].includes(node.layout))
+    !containers.some((node) => ["horizontal", "vertical", "grid"].includes(node.layout))
   ) {
     const root =
       containers.find((node) => !node.parentId) ??
@@ -977,7 +977,7 @@ export function auditDesign(document) {
       severity: "warning",
       blocking: false,
       nodeId: root.id,
-      message: `文档包含 ${containers.length} 个容器但没有使用 Auto Layout；界面类设计应优先用 horizontal/vertical、gap、padding、grow 和 stretch，让 x/y 只承担手工布局与降级定位`,
+      message: `文档包含 ${containers.length} 个容器但没有使用 Auto Layout；界面类设计应优先用 horizontal/vertical/grid、wrap、gap、padding 和双轴 Hug/Fill/Fixed，让 x/y 只承担手工布局、绝对子节点与降级定位`,
     });
   }
   issues.push(...auditInstanceTextContrast(document, byId));

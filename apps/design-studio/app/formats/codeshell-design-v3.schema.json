@@ -157,8 +157,11 @@
         "textDecoration": { "enum": ["none", "underline", "line-through"] },
         "textMeasurement": { "enum": ["browser"] },
         "textAlign": { "enum": ["left", "center", "right"] },
-        "layout": { "enum": ["none", "horizontal", "vertical"] },
+        "layout": { "enum": ["none", "horizontal", "vertical", "grid"] },
+        "layoutWrap": { "enum": ["none", "wrap"] },
         "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "rowGap": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "columnGap": { "type": "number", "minimum": 0, "maximum": 2000 },
         "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
         "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
         "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
@@ -166,6 +169,13 @@
         "paddingLeft": { "type": "number", "minimum": 0, "maximum": 2000 },
         "alignItems": { "enum": ["start", "center", "end", "stretch"] },
         "justifyContent": { "enum": ["start", "center", "end", "space-between"] },
+        "alignContent": { "enum": ["start", "center", "end", "space-between", "stretch"] },
+        "gridColumns": { "type": "integer", "minimum": 1, "maximum": 24 },
+        "layoutSizingHorizontal": { "enum": ["fixed", "hug", "fill"] },
+        "layoutSizingVertical": { "enum": ["fixed", "hug", "fill"] },
+        "layoutPositioning": { "enum": ["auto", "absolute"] },
+        "gridColumnSpan": { "type": "integer", "minimum": 1, "maximum": 24 },
+        "gridRowSpan": { "type": "integer", "minimum": 1, "maximum": 24 },
         "layoutGrow": { "enum": [0, 1] },
         "layoutAlign": { "enum": ["auto", "start", "center", "end", "stretch"] },
         "componentId": { "$ref": "#/$defs/nodeId" },
@@ -188,14 +198,19 @@
               "anyOf": [
                 { "required": ["children"] },
                 { "required": ["layout"] },
+                { "required": ["layoutWrap"] },
                 { "required": ["gap"] },
+                { "required": ["rowGap"] },
+                { "required": ["columnGap"] },
                 { "required": ["padding"] },
                 { "required": ["paddingTop"] },
                 { "required": ["paddingRight"] },
                 { "required": ["paddingBottom"] },
                 { "required": ["paddingLeft"] },
                 { "required": ["alignItems"] },
-                { "required": ["justifyContent"] }
+                { "required": ["justifyContent"] },
+                { "required": ["alignContent"] },
+                { "required": ["gridColumns"] }
               ]
             }
           }

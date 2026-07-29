@@ -31,10 +31,9 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.8 keeps the absolute-canvas, targeted auto-layout, blocking validation, screenshot,
-file-list, and design-system improvements, then makes guarded HTML import layout-aware: supported
-CSS Flex becomes editable v3 Auto Layout and the same-browser gate verifies both measured and
-reflowed output.
+Design Studio 0.9 adds Wrap, Grid, independent axis gaps, dual-axis Hug/Fill/Fixed sizing, and
+absolute children inside Auto Layout without changing the v3 file version. Guarded HTML import maps
+supported Flex/Grid semantics, while the same-browser gate verifies measured and reflowed output.
 
 ## Repository layout
 
@@ -79,7 +78,8 @@ npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 The gate checks both the exact browser-measured conversion and a second render after resolving all
 imported Auto Layout containers. The measured render requires windowed SSIM ≥ 0.99, while the
 reflowed render requires ≥ 0.97; both enforce changed-pixel limits and zero blocking audit issues.
-The fixture must retain at least 20 semantic Auto Layout containers.
+The fixture must retain at least 20 semantic Auto Layout containers plus verified Grid, Wrap, and
+an absolute child inside Auto Layout.
 
 For local iteration, clone this repository and use **Choose source folder**.
 For remote iteration, push a commit and use **Update from source**.

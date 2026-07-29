@@ -145,7 +145,10 @@ function normalizedNode(candidate, parentId) {
   }
   if (isContainerType(candidate.type)) {
     node.layout = candidate.layout ?? "none";
+    if (candidate.layoutWrap !== undefined) node.layoutWrap = candidate.layoutWrap;
     node.gap = candidate.gap ?? 0;
+    if (candidate.rowGap !== undefined) node.rowGap = candidate.rowGap;
+    if (candidate.columnGap !== undefined) node.columnGap = candidate.columnGap;
     node.padding = candidate.padding ?? 0;
     for (const side of ["Top", "Right", "Bottom", "Left"]) {
       const property = `padding${side}`;
@@ -153,6 +156,17 @@ function normalizedNode(candidate, parentId) {
     }
     node.alignItems = candidate.alignItems ?? "start";
     node.justifyContent = candidate.justifyContent ?? "start";
+    if (candidate.alignContent !== undefined) node.alignContent = candidate.alignContent;
+    if (candidate.gridColumns !== undefined) node.gridColumns = candidate.gridColumns;
+  }
+  for (const property of [
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "layoutPositioning",
+    "gridColumnSpan",
+    "gridRowSpan",
+  ]) {
+    if (candidate[property] !== undefined) node[property] = candidate[property];
   }
   if (candidate.layoutGrow !== undefined) node.layoutGrow = candidate.layoutGrow;
   if (candidate.layoutAlign !== undefined) node.layoutAlign = candidate.layoutAlign;
@@ -223,7 +237,10 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "textDecoration",
     "textMeasurement",
     "layout",
+    "layoutWrap",
     "gap",
+    "rowGap",
+    "columnGap",
     "padding",
     "paddingTop",
     "paddingRight",
@@ -231,6 +248,13 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "paddingLeft",
     "alignItems",
     "justifyContent",
+    "alignContent",
+    "gridColumns",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "layoutPositioning",
+    "gridColumnSpan",
+    "gridRowSpan",
     "layoutGrow",
     "layoutAlign",
     "componentId",
@@ -387,11 +411,19 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       (property) => !Object.prototype.hasOwnProperty.call(candidate, property),
     );
     if (missingLayoutField) throw new Error(`容器 ${candidate.id} 缺少 ${missingLayoutField}`);
-    if (!["none", "horizontal", "vertical"].includes(candidate.layout)) {
+    if (!["none", "horizontal", "vertical", "grid"].includes(candidate.layout)) {
       throw new Error(`容器 ${candidate.id} 的 layout 无效`);
+    }
+    if (
+      candidate.layoutWrap !== undefined &&
+      !["none", "wrap"].includes(candidate.layoutWrap)
+    ) {
+      throw new Error(`容器 ${candidate.id} 的 layoutWrap 无效`);
     }
     for (const property of [
       "gap",
+      "rowGap",
+      "columnGap",
       "padding",
       "paddingTop",
       "paddingRight",
@@ -407,13 +439,30 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     if (!["start", "center", "end", "space-between"].includes(candidate.justifyContent)) {
       throw new Error(`容器 ${candidate.id} 的 justifyContent 无效`);
     }
+    if (
+      candidate.alignContent !== undefined &&
+      !["start", "center", "end", "space-between", "stretch"].includes(candidate.alignContent)
+    ) {
+      throw new Error(`容器 ${candidate.id} 的 alignContent 无效`);
+    }
+    if (
+      candidate.gridColumns !== undefined &&
+      (!Number.isInteger(candidate.gridColumns) ||
+        candidate.gridColumns < 1 ||
+        candidate.gridColumns > 24)
+    ) {
+      throw new Error(`容器 ${candidate.id} 的 gridColumns 无效`);
+    }
     if (!Array.isArray(candidate.children)) {
       throw new Error(`容器 ${candidate.id}.children 必须是数组`);
     }
   } else if (
     [
       "layout",
+      "layoutWrap",
       "gap",
+      "rowGap",
+      "columnGap",
       "padding",
       "paddingTop",
       "paddingRight",
@@ -421,6 +470,8 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "paddingLeft",
       "alignItems",
       "justifyContent",
+      "alignContent",
+      "gridColumns",
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
     throw new Error(`图层 ${candidate.id} 包含容器专属布局字段`);
@@ -433,6 +484,30 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     !["auto", "start", "center", "end", "stretch"].includes(candidate.layoutAlign)
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutAlign 无效`);
+  }
+  for (const property of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
+    if (
+      candidate[property] !== undefined &&
+      !["fixed", "hug", "fill"].includes(candidate[property])
+    ) {
+      throw new Error(`图层 ${candidate.id} 的 ${property} 无效`);
+    }
+  }
+  if (
+    candidate.layoutPositioning !== undefined &&
+    !["auto", "absolute"].includes(candidate.layoutPositioning)
+  ) {
+    throw new Error(`图层 ${candidate.id} 的 layoutPositioning 无效`);
+  }
+  for (const property of ["gridColumnSpan", "gridRowSpan"]) {
+    if (
+      candidate[property] !== undefined &&
+      (!Number.isInteger(candidate[property]) ||
+        candidate[property] < 1 ||
+        candidate[property] > 24)
+    ) {
+      throw new Error(`图层 ${candidate.id} 的 ${property} 无效`);
+    }
   }
   if (
     candidate.type === "instance" &&
