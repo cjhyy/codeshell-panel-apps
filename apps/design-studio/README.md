@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.13 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.14 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 
@@ -30,7 +30,10 @@ surface: nine declared design tools plus a repository-design Skill.
 - Document color tokens whose UI or Agent edits propagate simultaneously through matching canvas,
   fill, stroke, and shadow colors without corrupting color swaps.
 - Deterministic v3 `.codesign.json` documents with a compact page switcher, multi-page editing, and
-  deeply nested layers.
+  deeply nested layers. A logical document may reach 8 MiB: small designs stay in one JSON source,
+  while larger designs keep the same primary path as a checked manifest and use immutable,
+  content-addressed parts under `designs/codesign-data/`. Existing monolithic documents between
+  the Host write and read budgets are migrated to this storage automatically on their next save.
 - Automatic binding to the current repository: recovery first, then the repository's last-opened
   design, then `designs/design.codesign.json`, then the newest remaining design, otherwise a blank
   repo document at the default path.
@@ -104,6 +107,11 @@ node examples/panel-apps/design-studio/app/tools/check-design.mjs \
 
 Add `--check-svg` when the repository also keeps a sibling generated SVG preview and it must match
 the current active page exactly.
+
+The checker resolves large-document manifests automatically and verifies every part's declared
+UTF-8 byte length plus the complete SHA-256 before normalizing or auditing the reconstructed v3
+source. Do not edit `designs/codesign-data/` parts directly; save through Design Studio so the
+primary manifest changes only after every immutable part is available.
 
 ## HTML fidelity fixture
 

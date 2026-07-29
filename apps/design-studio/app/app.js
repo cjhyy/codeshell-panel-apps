@@ -41,6 +41,11 @@ import {
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
+import {
+  createDesignPersistencePlan,
+  MAX_WORKSPACE_DESIGN_TEXT_BYTES,
+  resolveDesignPersistenceSource,
+} from "./document-bundle.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
@@ -2615,6 +2620,21 @@ function mockHostCall(method, params = {}) {
     });
   }
   if (method === "workspace.writeText") {
+    const existing = localStorage.getItem(`${prefix}file:${params.path}`);
+    const existingModifiedAt =
+      existing == null
+        ? null
+        : Number(localStorage.getItem(`${prefix}mtime:${params.path}`)) || null;
+    const existingRevision =
+      existingModifiedAt == null ? null : `preview:${existingModifiedAt}`;
+    const conflicts =
+      params.expectedRevision !== undefined
+        ? params.expectedRevision !== existingRevision
+        : params.expectedModifiedAt === null
+          ? existing != null
+          : typeof params.expectedModifiedAt === "number" &&
+            params.expectedModifiedAt !== existingModifiedAt;
+    if (conflicts) return Promise.reject(new Error("workspace file changed since it was opened"));
     const modifiedAt = Date.now();
     localStorage.setItem(`${prefix}file:${params.path}`, params.content);
     localStorage.setItem(`${prefix}mtime:${params.path}`, String(modifiedAt));
@@ -2636,10 +2656,53 @@ function hostCall(method, params) {
   return mockHostCall(method, params);
 }
 
+async function bundleHostCall(method, params) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      return await hostCall(method, params);
+    } catch (error) {
+      if (
+        attempt === 11 ||
+        !(error instanceof Error) ||
+        !error.message.includes("rate limit")
+      ) {
+        throw error;
+      }
+      await new Promise((resolveWait) => window.setTimeout(resolveWait, 1_000));
+    }
+  }
+  throw new Error("设计分片请求重试失败");
+}
+
 function assertWorkspaceEpoch(expectedEpoch) {
   if (workspaceEpoch !== expectedEpoch) {
     throw new Error("工作区已在操作期间切换；旧操作已取消，请在当前仓库重试");
   }
+}
+
+async function sha256Text(value) {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function resolveWorkspaceDesignSource(
+  primaryResult,
+  expectedWorkspaceEpoch = workspaceEpoch,
+) {
+  return resolveDesignPersistenceSource({
+    primarySource: primaryResult.content,
+    readText: async (path) => {
+      const result = await bundleHostCall("workspace.readText", { path });
+      assertWorkspaceEpoch(expectedWorkspaceEpoch);
+      return result;
+    },
+    sha256: sha256Text,
+  });
 }
 
 async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEpoch) {
@@ -2683,7 +2746,7 @@ function captureSaveDocument({ quiet = false } = {}) {
     content = serializeDesign();
   } catch (error) {
     const message = error instanceof Error ? error.message : "设计文件无效";
-    setSaveState(message.includes("KiB") ? "文件过大" : "设计无效", "error");
+    setSaveState(/KiB|MiB/u.test(message) ? "文件过大" : "设计无效", "error");
     notify(message, "error");
     throw error;
   }
@@ -2715,10 +2778,37 @@ async function performSaveDocument(request) {
   elements.path.disabled = true;
   setSaveState("保存中…", "idle");
   try {
+    const contentBytes = new TextEncoder().encode(content).length;
+    const persistence = createDesignPersistencePlan({
+      source: content,
+      name: savedDesign.name,
+      ...(contentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES
+        ? { sha256: await sha256Text(content) }
+        : {}),
+    });
+    if (persistence.mode === "bundle") {
+      for (const part of persistence.parts) {
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
+        try {
+          await bundleHostCall("workspace.writeText", {
+            path: part.path,
+            content: part.content,
+            expectedModifiedAt: null,
+          });
+          assertWorkspaceEpoch(operationWorkspaceEpoch);
+        } catch {
+          const existing = await bundleHostCall("workspace.readText", { path: part.path });
+          assertWorkspaceEpoch(operationWorkspaceEpoch);
+          if (existing.content !== part.content) {
+            throw new Error(`设计分片写入冲突：${part.path}`);
+          }
+        }
+      }
+    }
     const replacesCurrentSource = path === currentSourcePath;
-    const result = await hostCall("workspace.writeText", {
+    const result = await bundleHostCall("workspace.writeText", {
       path,
-      content,
+      content: persistence.primarySource,
       expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
       ...(replacesCurrentSource && currentRevision ? { expectedRevision: currentRevision } : {}),
     });
@@ -2751,9 +2841,21 @@ async function performSaveDocument(request) {
       updateDirtyState();
       setSaveState(dirty ? "有修改" : "另存为", dirty ? "dirty" : "idle");
     }
-    if (!quiet) notify(`已保存到 ${path}`);
+    if (!quiet) {
+      notify(
+        persistence.mode === "bundle"
+          ? `已保存到 ${path} · ${(persistence.bytes / 1024 / 1024).toFixed(2)} MiB · ${persistence.parts.length} 个分片`
+          : `已保存到 ${path}`,
+      );
+    }
     void refreshRepoFilesPanel({ force: true });
-    return { ...result, design: savedDesign };
+    return {
+      ...result,
+      design: savedDesign,
+      documentBytes: persistence.bytes,
+      storageMode: persistence.mode,
+      partCount: persistence.parts.length,
+    };
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
     const message = error instanceof Error ? error.message : "保存失败";
@@ -2836,7 +2938,9 @@ async function openDocument(path, { discardChanges = false } = {}) {
     if (currentDesignStateRevision() !== operationStateRevision) {
       throw new Error("画布在打开文件期间发生了变化；已保留较新的本地状态");
     }
-    design = normalizeDocument(JSON.parse(result.content));
+    const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
+    design = normalizeDocument(JSON.parse(resolved.source));
     documentEpoch += 1;
     clearSelection();
     currentModifiedAt = result.modifiedAt;
@@ -2917,7 +3021,8 @@ async function checkExternalChange({ force = false } = {}) {
     const externalVersion = disk.revision ?? `mtime:${disk.modifiedAt}`;
     if (!dirty) {
       try {
-        const nextDesign = normalizeDocument(JSON.parse(disk.content));
+        const resolved = await resolveWorkspaceDesignSource(disk, operationWorkspaceEpoch);
+        const nextDesign = normalizeDocument(JSON.parse(resolved.source));
         assertWorkspaceEpoch(operationWorkspaceEpoch);
         if (
           operationDocumentEpoch !== documentEpoch ||
@@ -2999,7 +3104,11 @@ async function discoverDesignFiles() {
       if (entry.kind === "file" && entry.path.endsWith(".codesign.json")) {
         if (files.length < maxFiles) files.push(entry);
         else truncated = true;
-      } else if (entry.kind === "directory" && !queue.includes(entry.path)) {
+      } else if (
+        entry.kind === "directory" &&
+        entry.path !== "designs/codesign-data" &&
+        !queue.includes(entry.path)
+      ) {
         queue.push(entry.path);
       }
     }
@@ -3054,7 +3163,14 @@ function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
     copy.append(name, path);
     const size = document.createElement("span");
     size.className = "file-size";
-    size.textContent = `${file.path === DEFAULT_PATH ? "默认 · " : ""}${formatBytes(Number(file.size) || 0)}`;
+    const logicalBytes = active
+      ? new TextEncoder().encode(serializeDesign()).length
+      : Number(file.size) || 0;
+    const storageLabel =
+      active && logicalBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES ? " · 分片文档" : "";
+    size.textContent =
+      `${file.path === DEFAULT_PATH ? "默认 · " : ""}` +
+      `${formatBytes(logicalBytes)}${storageLabel}`;
     button.append(icon, copy, size);
     button.addEventListener("click", () => {
       if (active) return;
@@ -3125,6 +3241,7 @@ async function showFiles() {
 
 function formatBytes(value) {
   if (value < 1024) return `${value} B`;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MiB`;
   return `${(value / 1024).toFixed(1)} KB`;
 }
 
@@ -4438,7 +4555,8 @@ async function restoreRecovery(
     diskFound = true;
     diskModifiedAt = disk.modifiedAt;
     diskRevision = disk.revision;
-    diskSnapshot = serializeDocument(normalizeDocument(JSON.parse(disk.content)));
+    const resolved = await resolveWorkspaceDesignSource(disk, expectedWorkspaceEpoch);
+    diskSnapshot = serializeDocument(normalizeDocument(JSON.parse(resolved.source)));
   } catch {
     // A new unsaved document has no disk baseline yet.
   }
@@ -5530,6 +5648,7 @@ function registerAgentTools(ready) {
     await ready;
     await settleAgentReadState();
     assertAgentToolArguments(args, new Set(), "get_design_metadata");
+    const documentBytes = new TextEncoder().encode(serializeDesign()).length;
     return {
       format: design.format,
       version: design.version,
@@ -5561,8 +5680,10 @@ function registerAgentTools(ready) {
       dirty,
       revision: currentRevision,
       stateRevision: currentDesignStateRevision(),
-      documentBytes: new TextEncoder().encode(serializeDesign()).length,
+      documentBytes,
       documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+      storageMode:
+        documentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES ? "bundle" : "single",
       layers: designLayerIndex(),
     };
   });
@@ -5915,6 +6036,10 @@ function registerAgentTools(ready) {
         stateRevision: currentDesignStateRevision(),
         nodeCount: allDesignNodes(result.design).length,
         activePageNodeCount: result.design.nodes.length,
+        documentBytes: result.documentBytes,
+        documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+        storageMode: result.storageMode,
+        partCount: result.partCount,
         audit: summarizeAudit(auditDocument(result.design)),
       };
     });

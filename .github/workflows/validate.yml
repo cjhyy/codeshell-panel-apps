@@ -19,5 +19,6 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - run: npm run test:large-doc
       - run: npm run test:fidelity
       - run: npm run test:fidelity:cases

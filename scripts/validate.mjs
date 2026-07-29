@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
-import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -207,6 +219,9 @@ assert.deepEqual(
 const designCodec = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document.mjs"))
 );
+const designBundle = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document-bundle.mjs"))
+);
 const designAudit = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/audit.mjs"))
 );
@@ -215,6 +230,9 @@ const designRepository = await import(
 );
 const designLayout = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/layout.mjs"))
+);
+const designChecker = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/tools/check-design.mjs"))
 );
 const baseNode = (id, type, name) => ({
   id,
@@ -306,7 +324,11 @@ const nestedDesign = {
   ],
 };
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
-assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 384 * 1024);
+assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 8 * 1024 * 1024);
+assert(
+  designCodec.MAX_DESIGN_DOCUMENT_BYTES <=
+    designBundle.MAX_DESIGN_BUNDLE_PART_BYTES * designBundle.MAX_DESIGN_BUNDLE_PARTS,
+);
 assert.equal(designState.nodes.length, 5);
 assert.equal(designState.nodes[2].parentId, "group");
 assert.equal(designState.nodes[0].layout, "grid");
@@ -318,6 +340,57 @@ assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[1].textOverflow, "ellipsis");
 assert.equal(designRoundTrip.pages[0].children[0].children[2].constraintBaseWidth, 100);
+const largeDesignSource = `${"界面🙂".repeat(180_000)}\n`;
+const largeDesignSha256 = createHash("sha256").update(largeDesignSource).digest("hex");
+const largeDesignPlan = designBundle.createDesignPersistencePlan({
+  source: largeDesignSource,
+  name: "Large design",
+  sha256: largeDesignSha256,
+});
+assert.equal(largeDesignPlan.mode, "bundle");
+assert(largeDesignPlan.parts.length >= 2);
+assert(
+  largeDesignPlan.parts.every(
+    (part) =>
+      part.bytes <= designBundle.MAX_DESIGN_BUNDLE_PART_BYTES &&
+      new TextEncoder().encode(part.content).length === part.bytes,
+  ),
+);
+assert.equal(
+  largeDesignPlan.parts.map((part) => part.content).join(""),
+  largeDesignSource,
+);
+const resolvedLargeDesign = await designBundle.resolveDesignPersistenceSource({
+  primarySource: largeDesignPlan.primarySource,
+  readText: async (path) => largeDesignPlan.parts.find((part) => part.path === path)?.content,
+  sha256: async () => largeDesignSha256,
+});
+assert.equal(resolvedLargeDesign.mode, "bundle");
+assert.equal(resolvedLargeDesign.source, largeDesignSource);
+const checkerWorkspace = await mkdtemp(join(tmpdir(), "codeshell-design-bundle-"));
+try {
+  const primaryPath = join(checkerWorkspace, "designs", "large.codesign.json");
+  await mkdir(dirname(primaryPath), { recursive: true });
+  await writeFile(primaryPath, largeDesignPlan.primarySource);
+  for (const part of largeDesignPlan.parts) {
+    const partPath = join(checkerWorkspace, ...part.path.split("/"));
+    await mkdir(dirname(partPath), { recursive: true });
+    await writeFile(partPath, part.content);
+  }
+  const checkerResolved = await designChecker.readDesignSourcePath(primaryPath, {
+    workspaceRoot: checkerWorkspace,
+  });
+  assert.equal(checkerResolved.source, largeDesignSource);
+  assert.equal(checkerResolved.primaryCanonical, true);
+} finally {
+  await rm(checkerWorkspace, { recursive: true, force: true });
+}
+const unsafeLargeManifest = structuredClone(largeDesignPlan.manifest);
+unsafeLargeManifest.parts[0].path = "designs/other.txt";
+assert.throws(
+  () => designBundle.normalizeDesignBundleManifest(unsafeLargeManifest),
+  /路径无效/,
+);
 const intentionalClipDesign = structuredClone(nestedDesign);
 intentionalClipDesign.pages[0].children[0].clipContent = true;
 intentionalClipDesign.pages[0].children[0].contentClipping = "intentional";
