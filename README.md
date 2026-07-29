@@ -10,6 +10,7 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 | App           | Subdirectory         | Purpose                                                                                          |
 | ------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
 | Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with HTML capture, structured tools, and v3 JSON/SVG output |
+| Job Hunt HQ   | `apps/job-hunt-hq`   | Multi-source JD tracking, evidence-grounded resume tailoring, and interview preparation          |
 | Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                      |
 | Starter       | `templates/starter`  | Minimal template for creating another Panel App                                                  |
 
@@ -19,11 +20,12 @@ In CodeShell, open **Extensions → Panel Apps → From GitHub**, then enter:
 
 - Repository: `https://github.com/cjhyy/codeshell-panel-apps`
 - Branch or tag: `main`
-- App subdirectory: `apps/design-studio` or `apps/quant-lab`
+- App subdirectory: `apps/design-studio`, `apps/job-hunt-hq`, or `apps/quant-lab`
 
 You can also paste a complete tree URL and leave the other two fields empty:
 
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/design-studio`
+- `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/job-hunt-hq`
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/quant-lab`
 
 CodeShell clones the source into a temporary directory, validates the package,
@@ -41,6 +43,10 @@ fidelity probes verify measured and reflowed output.
 ```text
 apps/
   design-studio/
+    .codeshell-panel/panel.json
+    app/
+    agent/skills/
+  job-hunt-hq/
     .codeshell-panel/panel.json
     app/
     agent/skills/

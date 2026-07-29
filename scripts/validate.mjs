@@ -4,7 +4,12 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const packages = ["apps/design-studio", "apps/quant-lab", "templates/starter"];
+const packages = [
+  "apps/design-studio",
+  "apps/job-hunt-hq",
+  "apps/quant-lab",
+  "templates/starter",
+];
 const forbiddenNames = new Set([
   ".claude-plugin",
   ".codex-plugin",
