@@ -174,10 +174,9 @@
         "layoutSizingHorizontal": { "enum": ["fixed", "hug", "fill"] },
         "layoutSizingVertical": { "enum": ["fixed", "hug", "fill"] },
         "layoutPositioning": { "enum": ["auto", "absolute"] },
+        "layoutAlignSelf": { "enum": ["auto", "start", "center", "end", "stretch"] },
         "gridColumnSpan": { "type": "integer", "minimum": 1, "maximum": 24 },
         "gridRowSpan": { "type": "integer", "minimum": 1, "maximum": 24 },
-        "layoutGrow": { "enum": [0, 1] },
-        "layoutAlign": { "enum": ["auto", "start", "center", "end", "stretch"] },
         "componentId": { "$ref": "#/$defs/nodeId" },
         "children": {
           "type": "array",

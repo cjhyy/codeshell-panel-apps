@@ -55,21 +55,9 @@ function layoutChildren(nodes, container) {
   );
 }
 
-function axisSizing(node, axis, parent = null) {
+function axisSizing(node, axis) {
   const explicit = node?.[axis === "horizontal" ? "layoutSizingHorizontal" : "layoutSizingVertical"];
   if (["fixed", "hug", "fill"].includes(explicit)) return explicit;
-  if (!parent || !isAutoLayoutContainer(parent)) return "fixed";
-  const horizontalParent = parent.layout === "horizontal";
-  const mainAxis = horizontalParent ? "horizontal" : "vertical";
-  if (node.layoutGrow === 1 && axis === mainAxis) return "fill";
-  const crossAxis = horizontalParent ? "vertical" : "horizontal";
-  if (
-    axis === crossAxis &&
-    (node.layoutAlign === "stretch" ||
-      (["auto", undefined].includes(node.layoutAlign) && parent.alignItems === "stretch"))
-  ) {
-    return "fill";
-  }
   return "fixed";
 }
 
@@ -277,8 +265,8 @@ function distributedTrack(values, available, baseGap, alignment) {
 }
 
 function childAlignment(child, container) {
-  return child.layoutAlign && child.layoutAlign !== "auto"
-    ? child.layoutAlign
+  return child.layoutAlignSelf && child.layoutAlignSelf !== "auto"
+    ? child.layoutAlignSelf
     : (container.alignItems ?? "start");
 }
 
@@ -307,10 +295,10 @@ function applyFlexLayout(nodes, container, children) {
   let changed = false;
 
   for (const line of lines) {
-    const fills = line.filter((child) => axisSizing(child, mainAxis, container) === "fill");
+    const fills = line.filter((child) => axisSizing(child, mainAxis) === "fill");
     if (fills.length === 0) continue;
     const fixed = line
-      .filter((child) => axisSizing(child, mainAxis, container) !== "fill")
+      .filter((child) => axisSizing(child, mainAxis) !== "fill")
       .reduce((total, child) => total + Math.max(1, finite(child[mainSize], 1)), 0);
     const available =
       innerMain - fixed - mainGap * Math.max(0, line.length - 1);
@@ -352,7 +340,7 @@ function applyFlexLayout(nodes, container, children) {
     );
     let mainCursor = finite(container[mainPosition]) + mainPadding.start + mainTrack.offset;
     for (const child of line) {
-      const sizing = axisSizing(child, crossAxis, container);
+      const sizing = axisSizing(child, crossAxis);
       const alignment = childAlignment(child, container);
       if (sizing === "fill" || alignment === "stretch") {
         changed = assignNumber(child, crossSize, Math.max(1, lineCrossSize)) || changed;
@@ -427,13 +415,13 @@ function applyGridLayout(nodes, container, children) {
       rowTrack.gap * Math.max(0, placement.rowSpan - 1);
     const alignment = childAlignment(placement.child, container);
     if (
-      axisSizing(placement.child, "horizontal", container) === "fill" ||
+      axisSizing(placement.child, "horizontal") === "fill" ||
       alignment === "stretch"
     ) {
       changed = assignNumber(placement.child, "width", Math.max(1, cellWidth)) || changed;
     }
     if (
-      axisSizing(placement.child, "vertical", container) === "fill" ||
+      axisSizing(placement.child, "vertical") === "fill" ||
       alignment === "stretch"
     ) {
       changed = assignNumber(placement.child, "height", Math.max(1, cellHeight)) || changed;

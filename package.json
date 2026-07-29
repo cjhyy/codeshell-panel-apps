@@ -1,6 +1,6 @@
 {
   "name": "codeshell-panel-apps",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Agent-native desktop Panel Apps for CodeShell",
   "type": "module",

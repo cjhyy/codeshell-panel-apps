@@ -109,8 +109,8 @@ Every node may independently set `layoutSizingHorizontal` and `layoutSizingVerti
 `hug`, or `fill`. Fixed preserves the materialized size, Hug sizes an Auto Layout container to its
 visible flow content, and Fill consumes available parent space on that axis. A Fill child under a
 Hug parent on the same axis uses its current intrinsic size so the circular request stays
-deterministic. `layoutGrow` and `layoutAlign` remain backward-compatible aliases; explicit
-dual-axis sizing wins.
+deterministic. Optional `layoutAlignSelf` overrides the parent's cross-axis alignment for one flow
+child.
 
 An Auto Layout child with `layoutPositioning: "absolute"` is excluded from flow and preserves its
 absolute-canvas `x/y`. Other visible direct children participate in flow; hidden and absolute
