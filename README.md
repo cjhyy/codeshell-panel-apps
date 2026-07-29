@@ -31,6 +31,10 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
+Design Studio 0.7 keeps the 0.6 absolute-canvas, targeted auto-layout, blocking validation,
+screenshot, and design-system improvements, then adds guarded workspace HTML import and a
+same-browser fidelity gate.
+
 ## Repository layout
 
 ```text

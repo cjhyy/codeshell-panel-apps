@@ -154,7 +154,7 @@ const baseNode = (id, type, name) => ({
   y: 0,
   width: 100,
   height: 100,
-  fill: "#ffffff",
+  fill: type === "group" ? "transparent" : "#ffffff",
   stroke: "transparent",
   strokeWidth: 0,
   opacity: 1,
