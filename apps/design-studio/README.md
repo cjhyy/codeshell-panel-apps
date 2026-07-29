@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.9 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.10 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 

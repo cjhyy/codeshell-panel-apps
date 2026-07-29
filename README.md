@@ -31,9 +31,10 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.9 adds Wrap, Grid, independent axis gaps, dual-axis Hug/Fill/Fixed sizing, and
-absolute children inside Auto Layout without changing the v3 file version. Guarded HTML import maps
-supported Flex/Grid semantics, while the same-browser gate verifies measured and reflowed output.
+Design Studio 0.10 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+dual-axis Hug/Fill/Fixed sizing, per-item `layoutAlignSelf`, and absolute children inside Auto
+Layout. Guarded HTML import maps supported Flex/Grid semantics, while the same-browser gate verifies
+measured and reflowed output.
 
 ## Repository layout
 

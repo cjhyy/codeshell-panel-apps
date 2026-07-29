@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -230,6 +230,10 @@
                   "enum": ["auto", "absolute", null],
                   "description": "Absolute children keep absolute canvas x/y and are excluded from their parent's flow."
                 },
+                "layoutAlignSelf": {
+                  "type": ["string", "null"],
+                  "enum": ["auto", "start", "center", "end", "stretch", null]
+                },
                 "gridColumnSpan": {
                   "type": ["integer", "null"],
                   "minimum": 1,
@@ -239,11 +243,6 @@
                   "type": ["integer", "null"],
                   "minimum": 1,
                   "maximum": 24
-                },
-                "layoutGrow": { "type": ["number", "null"], "enum": [0, 1, null] },
-                "layoutAlign": {
-                  "type": ["string", "null"],
-                  "enum": ["auto", "start", "center", "end", "stretch", null]
                 },
                 "componentId": {
                   "type": "string",

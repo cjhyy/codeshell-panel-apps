@@ -163,13 +163,12 @@ function normalizedNode(candidate, parentId) {
     "layoutSizingHorizontal",
     "layoutSizingVertical",
     "layoutPositioning",
+    "layoutAlignSelf",
     "gridColumnSpan",
     "gridRowSpan",
   ]) {
     if (candidate[property] !== undefined) node[property] = candidate[property];
   }
-  if (candidate.layoutGrow !== undefined) node.layoutGrow = candidate.layoutGrow;
-  if (candidate.layoutAlign !== undefined) node.layoutAlign = candidate.layoutAlign;
   if (candidate.type === "instance") {
     node.componentId = candidate.componentId;
   }
@@ -253,10 +252,9 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "layoutSizingHorizontal",
     "layoutSizingVertical",
     "layoutPositioning",
+    "layoutAlignSelf",
     "gridColumnSpan",
     "gridRowSpan",
-    "layoutGrow",
-    "layoutAlign",
     "componentId",
     ...(container ? ["children"] : []),
   ];
@@ -476,14 +474,11 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   ) {
     throw new Error(`图层 ${candidate.id} 包含容器专属布局字段`);
   }
-  if (candidate.layoutGrow !== undefined && ![0, 1].includes(candidate.layoutGrow)) {
-    throw new Error(`图层 ${candidate.id} 的 layoutGrow 无效`);
-  }
   if (
-    candidate.layoutAlign !== undefined &&
-    !["auto", "start", "center", "end", "stretch"].includes(candidate.layoutAlign)
+    candidate.layoutAlignSelf !== undefined &&
+    !["auto", "start", "center", "end", "stretch"].includes(candidate.layoutAlignSelf)
   ) {
-    throw new Error(`图层 ${candidate.id} 的 layoutAlign 无效`);
+    throw new Error(`图层 ${candidate.id} 的 layoutAlignSelf 无效`);
   }
   for (const property of ["layoutSizingHorizontal", "layoutSizingVertical"]) {
     if (

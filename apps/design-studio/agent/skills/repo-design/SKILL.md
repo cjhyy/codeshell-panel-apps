@@ -157,7 +157,7 @@ Set each child's `layoutSizingHorizontal` and `layoutSizingVertical` independent
 `hug`, or `fill`. Hug resizes an Auto Layout container to visible flow content; Fill consumes its
 available parent axis. A Fill child under a Hug parent on the same axis uses its current intrinsic
 size to break the circular dependency.
-Legacy `layoutGrow` and `layoutAlign` remain readable, but new work must use the dual-axis fields.
+Use `layoutAlignSelf` only when one flow child must override the parent's cross-axis alignment.
 Structural, visibility, sizing, or layout-property changes reflow only affected containers.
 When an outer layout moves a nested container, Design Studio moves its complete subtree and then
 resolves nested sizing and layout to convergence.
@@ -373,7 +373,7 @@ layout:
         "justifyContent": "start",
         "layoutSizingHorizontal": "fill",
         "layoutSizingVertical": "fill",
-        "layoutAlign": "stretch"
+        "layoutAlignSelf": "stretch"
       }
     },
     {

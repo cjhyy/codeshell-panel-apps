@@ -472,7 +472,7 @@ function layoutItemProperties(style, parentLayout) {
     layoutSizingHorizontal: "fixed",
     layoutSizingVertical: "fixed",
     ...(absolute ? { layoutPositioning: "absolute" } : {}),
-    ...(alignment ? { layoutAlign: alignment } : {}),
+    ...(alignment ? { layoutAlignSelf: alignment } : {}),
   };
   if (absolute) return properties;
   if (parentLayout.layout === "horizontal") {

@@ -211,7 +211,7 @@ const propertyInputs = {
   layoutPositioning: document.querySelector("#prop-layout-positioning"),
   gridColumnSpan: document.querySelector("#prop-grid-column-span"),
   gridRowSpan: document.querySelector("#prop-grid-row-span"),
-  layoutAlign: document.querySelector("#prop-layout-align"),
+  layoutAlignSelf: document.querySelector("#prop-layout-align-self"),
   shadowEnabled: document.querySelector("#prop-shadow-enabled"),
   shadowColor: document.querySelector("#prop-shadow-color"),
   shadowColorPicker: document.querySelector("#prop-shadow-color-picker"),
@@ -1371,29 +1371,18 @@ function renderProperties() {
     propertyInputs.gridColumns.value = String(single.gridColumns ?? 2);
   }
   if (autoLayoutChild) {
-    const horizontalParent = parent.layout === "horizontal";
     propertyInputs.layoutSizingHorizontal.value =
-      single.layoutSizingHorizontal ??
-      (single.layoutGrow === 1 && horizontalParent
-        ? "fill"
-        : single.layoutAlign === "stretch" && !horizontalParent
-          ? "fill"
-          : "fixed");
+      single.layoutSizingHorizontal ?? "fixed";
     propertyInputs.layoutSizingVertical.value =
-      single.layoutSizingVertical ??
-      (single.layoutGrow === 1 && parent.layout === "vertical"
-        ? "fill"
-        : single.layoutAlign === "stretch" && horizontalParent
-          ? "fill"
-          : "fixed");
+      single.layoutSizingVertical ?? "fixed";
     propertyInputs.layoutPositioning.value = single.layoutPositioning ?? "auto";
     propertyInputs.gridColumnSpan.value = String(single.gridColumnSpan ?? 1);
     propertyInputs.gridRowSpan.value = String(single.gridRowSpan ?? 1);
-    propertyInputs.layoutAlign.value = single.layoutAlign ?? "auto";
+    propertyInputs.layoutAlignSelf.value = single.layoutAlignSelf ?? "auto";
     const absoluteLayoutChild = single.layoutPositioning === "absolute";
     propertyInputs.layoutSizingHorizontal.disabled = absoluteLayoutChild;
     propertyInputs.layoutSizingVertical.disabled = absoluteLayoutChild;
-    propertyInputs.layoutAlign.disabled = absoluteLayoutChild;
+    propertyInputs.layoutAlignSelf.disabled = absoluteLayoutChild;
     propertyInputs.gridColumnSpan.closest(".property-grid").hidden =
       parent.layout !== "grid" || absoluteLayoutChild;
   }
@@ -3919,7 +3908,6 @@ for (const [input, property] of [
     (node, value) => {
       ensureDesignV3();
       node[property] = value;
-      delete node.layoutGrow;
       reflowParent(node);
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
     },
@@ -3950,10 +3938,10 @@ for (const [input, property] of [
   );
 }
 bindPropertyInput(
-  propertyInputs.layoutAlign,
+  propertyInputs.layoutAlignSelf,
   (node, value) => {
     ensureDesignV3();
-    node.layoutAlign = value;
+    node.layoutAlignSelf = value;
     reflowParent(node);
   },
   "change",
@@ -4829,10 +4817,9 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "layoutSizingHorizontal",
   "layoutSizingVertical",
   "layoutPositioning",
+  "layoutAlignSelf",
   "gridColumnSpan",
   "gridRowSpan",
-  "layoutGrow",
-  "layoutAlign",
   "componentId",
 ]);
 
@@ -4880,10 +4867,9 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "layoutSizingHorizontal",
         "layoutSizingVertical",
         "layoutPositioning",
+        "layoutAlignSelf",
         "gridColumnSpan",
         "gridRowSpan",
-        "layoutGrow",
-        "layoutAlign",
       ].includes(key)
     ) {
       delete node[key];
@@ -5144,10 +5130,9 @@ async function applyAgentDesignOperations(args) {
               "layoutSizingHorizontal",
               "layoutSizingVertical",
               "layoutPositioning",
+              "layoutAlignSelf",
               "gridColumnSpan",
               "gridRowSpan",
-              "layoutGrow",
-              "layoutAlign",
             ].includes(field),
           )
         ) {

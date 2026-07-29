@@ -242,6 +242,15 @@ const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designSta
 assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
 assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
+for (const legacyField of ["layoutGrow", "layoutAlign"]) {
+  const legacyDesign = structuredClone(nestedDesign);
+  legacyDesign.pages[0].children[0].children[0][legacyField] =
+    legacyField === "layoutGrow" ? 1 : "stretch";
+  assert.throws(
+    () => designCodec.normalizeDesignDocument(legacyDesign),
+    new RegExp(`未知字段：${legacyField}`),
+  );
+}
 const responsiveLayoutNodes = [
   {
     ...baseNode("responsive-row", "frame", "Responsive row"),
@@ -264,6 +273,7 @@ const responsiveLayoutNodes = [
     parentId: "responsive-row",
     width: 50,
     height: 30,
+    layoutAlignSelf: "end",
   },
   {
     ...baseNode("responsive-fill", "rectangle", "Fill"),
@@ -285,6 +295,7 @@ const responsiveLayoutNodes = [
 ];
 designLayout.applyAllAutoLayouts(responsiveLayoutNodes);
 assert.equal(responsiveLayoutNodes[1].x, 110);
+assert.equal(responsiveLayoutNodes[1].y, 110);
 assert.equal(responsiveLayoutNodes[2].x, 170);
 assert.equal(responsiveLayoutNodes[2].width, 220);
 assert.equal(responsiveLayoutNodes[2].height, 80);
