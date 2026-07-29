@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -25,7 +25,7 @@
     "tools": [
       {
         "name": "get_design_metadata",
-        "description": "Read the active design's file, logical byte budget, single-or-bundle storage mode, page, canvas, color tokens, selection, compact layer index, and machine-readable absolute-coordinate/layout contract.",
+        "description": "Read the active design's indexed-pages capacity model, persistence mode, page catalog, canvas, color tokens, selection, compact active-page layer index, and machine-readable layout contract.",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -60,7 +60,7 @@
       },
       {
         "name": "get_design_context",
-        "description": "Read the complete CodeShell Design v3 document when it fits the Agent result budget, or one bounded node subtree from any page by stable node id. Oversized reads fail with guidance to use metadata, node_id, and a shallow max_depth. Nested x/y values are materialized absolute-canvas geometry; flow children are owned by parent layout while layoutPositioning:absolute children retain x/y ownership.",
+        "description": "Read the complete CodeShell Design v3 document when it fits the Agent result budget, one indexed page by page_id, or one bounded node subtree by stable node id. Oversized reads fail with guidance to narrow by page or subtree. Nested x/y values are materialized absolute-canvas geometry; flow children are owned by parent layout while layoutPositioning:absolute children retain x/y ownership.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -70,6 +70,11 @@
               "maxLength": 160,
               "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
               "description": "Optional stable node id. Omit to return the full repository document."
+            },
+            "page_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "description": "Optional page id from metadata. When node_id is omitted, returns only this page; when both are present, verifies that the subtree belongs to the page."
             },
             "max_depth": {
               "type": "integer",

@@ -23,17 +23,18 @@ import {
   wrapNodesInFrame,
 } from "./geometry.mjs";
 import {
-  assertDesignDocumentSize,
   designNodeRemovalIds,
   effectiveDesignNodeOpacity,
   externalComponentInstancesForPage,
   exportDesignSvg,
   isSafeDesignPath,
   isDesignNodeVisible,
-  MAX_DESIGN_DOCUMENT_BYTES,
-  MAX_DESIGN_NODES,
+  MAX_DESIGN_NODES_PER_PAGE,
+  MAX_DESIGN_PAGES,
+  measureDesignDocumentBytes,
   normalizeDesignDocument,
   normalizeDesignState,
+  repositoryDesignPage,
   replaceDesignColor,
   replaceDesignColors,
   renderedDesignInstanceEffectOutsets,
@@ -46,6 +47,10 @@ import {
   MAX_WORKSPACE_DESIGN_TEXT_BYTES,
   resolveDesignPersistenceSource,
 } from "./document-bundle.mjs";
+import {
+  createDesignIndexPersistencePlan,
+  resolveDesignIndexDocument,
+} from "./document-index.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
@@ -63,7 +68,6 @@ const MAX_AGENT_SCREENSHOT_HEIGHT = 4_096;
 const MAX_AGENT_SCREENSHOT_RENDER_MS = 5_000;
 const MAX_AGENT_AUDIT_ISSUES = 400;
 const MAX_AGENT_CONTEXT_RESULT_BYTES = 220 * 1024;
-const MAX_DESIGN_PAGES = 20;
 const TOOL_SHORTCUTS = {
   v: "select",
   f: "frame",
@@ -252,6 +256,8 @@ let currentRevision = null;
 let currentSourcePath = null;
 let currentSourceModifiedAt = null;
 let currentSourceRevision = null;
+let currentDesignIndexManifest = null;
+let currentPersistenceMode = "single";
 let savedSnapshot = "";
 let history = [];
 let historyIndex = -1;
@@ -713,9 +719,9 @@ function canAddNodes(count) {
   if (
     !Number.isSafeInteger(count) ||
     count < 0 ||
-    allDesignNodes().length + count > MAX_DESIGN_NODES
+    design.nodes.length + count > MAX_DESIGN_NODES_PER_PAGE
   ) {
-    notify(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`, "error");
+    notify(`当前页面最多包含 ${MAX_DESIGN_NODES_PER_PAGE} 个源图层`, "error");
     return false;
   }
   return true;
@@ -2694,13 +2700,20 @@ async function resolveWorkspaceDesignSource(
   primaryResult,
   expectedWorkspaceEpoch = workspaceEpoch,
 ) {
+  const readText = async (path) => {
+    const result = await bundleHostCall("workspace.readText", { path });
+    assertWorkspaceEpoch(expectedWorkspaceEpoch);
+    return result;
+  };
+  const indexed = await resolveDesignIndexDocument({
+    primarySource: primaryResult.content,
+    readText,
+    sha256: sha256Text,
+  });
+  if (indexed) return indexed;
   return resolveDesignPersistenceSource({
     primarySource: primaryResult.content,
-    readText: async (path) => {
-      const result = await bundleHostCall("workspace.readText", { path });
-      assertWorkspaceEpoch(expectedWorkspaceEpoch);
-      return result;
-    },
+    readText,
     sha256: sha256Text,
   });
 }
@@ -2741,7 +2754,6 @@ function captureSaveDocument({ quiet = false } = {}) {
   let savedDesign;
   try {
     design = normalizeDocument(design);
-    assertDesignDocumentSize(design);
     savedDesign = clone(design);
     content = serializeDesign();
   } catch (error) {
@@ -2757,6 +2769,9 @@ function captureSaveDocument({ quiet = false } = {}) {
     path,
     content,
     savedDesign,
+    previousIndexManifest: currentDesignIndexManifest
+      ? clone(currentDesignIndexManifest)
+      : null,
     stateRevision: currentDesignStateRevision(),
     quiet,
   };
@@ -2770,6 +2785,7 @@ async function performSaveDocument(request) {
     path,
     content,
     savedDesign,
+    previousIndexManifest,
     quiet,
   } = request;
   assertWorkspaceEpoch(operationWorkspaceEpoch);
@@ -2779,14 +2795,18 @@ async function performSaveDocument(request) {
   setSaveState("保存中…", "idle");
   try {
     const contentBytes = new TextEncoder().encode(content).length;
-    const persistence = createDesignPersistencePlan({
-      source: content,
-      name: savedDesign.name,
-      ...(contentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES
-        ? { sha256: await sha256Text(content) }
-        : {}),
-    });
-    if (persistence.mode === "bundle") {
+    const persistence =
+      contentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES || previousIndexManifest
+        ? await createDesignIndexPersistencePlan({
+            document: savedDesign,
+            sha256: sha256Text,
+            previousManifest: previousIndexManifest,
+          })
+        : createDesignPersistencePlan({
+            source: content,
+            name: savedDesign.name,
+          });
+    if (persistence.mode !== "single") {
       for (const part of persistence.parts) {
         assertWorkspaceEpoch(operationWorkspaceEpoch);
         try {
@@ -2823,6 +2843,9 @@ async function performSaveDocument(request) {
       currentSourcePath = path;
       currentSourceModifiedAt = result.modifiedAt;
       currentSourceRevision = result.revision;
+      currentDesignIndexManifest =
+        persistence.mode === "indexed" ? persistence.manifest : null;
+      currentPersistenceMode = persistence.mode;
       savedSnapshot = content;
       updateDirtyState();
       setRepoLinkState("Repo · 已保存", "linked");
@@ -2843,8 +2866,10 @@ async function performSaveDocument(request) {
     }
     if (!quiet) {
       notify(
-        persistence.mode === "bundle"
-          ? `已保存到 ${path} · ${(persistence.bytes / 1024 / 1024).toFixed(2)} MiB · ${persistence.parts.length} 个分片`
+        persistence.mode === "indexed"
+          ? `已保存到 ${path} · 索引文档 · 更新 ${persistence.changedPageCount} 页`
+          : persistence.mode === "bundle"
+            ? `已保存到 ${path} · 兼容分片文档`
           : `已保存到 ${path}`,
       );
     }
@@ -2854,7 +2879,9 @@ async function performSaveDocument(request) {
       design: savedDesign,
       documentBytes: persistence.bytes,
       storageMode: persistence.mode,
-      partCount: persistence.parts.length,
+      partCount: persistence.partCount ?? persistence.parts.length,
+      changedPartCount: persistence.parts.length,
+      changedPageCount: persistence.changedPageCount ?? 0,
     };
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) throw error;
@@ -2940,7 +2967,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     }
     const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    design = normalizeDocument(JSON.parse(resolved.source));
+    design = normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
     documentEpoch += 1;
     clearSelection();
     currentModifiedAt = result.modifiedAt;
@@ -2949,6 +2976,8 @@ async function openDocument(path, { discardChanges = false } = {}) {
     currentSourcePath = path;
     currentSourceModifiedAt = result.modifiedAt;
     currentSourceRevision = result.revision;
+    currentDesignIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+    currentPersistenceMode = resolved.mode;
     elements.path.value = path;
     savedSnapshot = serializeDesign();
     resetHistory();
@@ -3022,7 +3051,7 @@ async function checkExternalChange({ force = false } = {}) {
     if (!dirty) {
       try {
         const resolved = await resolveWorkspaceDesignSource(disk, operationWorkspaceEpoch);
-        const nextDesign = normalizeDocument(JSON.parse(resolved.source));
+        const nextDesign = normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
         assertWorkspaceEpoch(operationWorkspaceEpoch);
         if (
           operationDocumentEpoch !== documentEpoch ||
@@ -3040,6 +3069,8 @@ async function checkExternalChange({ force = false } = {}) {
         currentRevision = disk.revision;
         currentSourceModifiedAt = disk.modifiedAt;
         currentSourceRevision = disk.revision;
+        currentDesignIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+        currentPersistenceMode = resolved.mode;
         warnedExternalVersion = null;
         savedSnapshot = serializeDesign();
         resetHistory();
@@ -3166,8 +3197,13 @@ function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
     const logicalBytes = active
       ? new TextEncoder().encode(serializeDesign()).length
       : Number(file.size) || 0;
-    const storageLabel =
-      active && logicalBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES ? " · 分片文档" : "";
+    const storageLabel = active
+      ? currentPersistenceMode === "indexed"
+        ? " · 索引文档"
+        : currentPersistenceMode === "bundle"
+          ? " · 兼容分片"
+          : ""
+      : "";
     size.textContent =
       `${file.path === DEFAULT_PATH ? "默认 · " : ""}` +
       `${formatBytes(logicalBytes)}${storageLabel}`;
@@ -3258,7 +3294,7 @@ async function replaceDesignWithHtmlImport(
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
   const nextSnapshot = serializeDocument(nextDesign);
-  const documentBytes = assertDesignDocumentSize(nextDesign);
+  const documentBytes = measureDesignDocumentBytes(nextDesign);
   if (nextSnapshot === previousSnapshot) {
     let savedResult = null;
     if (save) savedResult = await saveDocument({ quiet: true });
@@ -3273,7 +3309,7 @@ async function replaceDesignWithHtmlImport(
       nodeCount: allDesignNodes().length,
       activePageNodeCount: design.nodes.length,
       documentBytes,
-      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+      capacityModel: "indexed-pages",
       revision: savedResult?.revision ?? currentRevision,
       stateRevision: currentDesignStateRevision(),
       audit: summarizeAudit(auditDocument()),
@@ -3347,7 +3383,7 @@ async function replaceDesignWithHtmlImport(
     nodeCount: allDesignNodes().length,
     activePageNodeCount: design.nodes.length,
     documentBytes,
-    documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+    capacityModel: "indexed-pages",
     revision: savedResult?.revision ?? currentRevision,
     stateRevision: currentDesignStateRevision(),
     audit: summarizeAudit(auditDocument()),
@@ -3427,7 +3463,7 @@ async function runHtmlImportFromDialog() {
     const issueLabel =
       result.audit.issueCount > 0 ? `；检查发现 ${result.audit.issueCount} 个问题` : "";
     notify(
-      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层 · ${formatBytes(result.documentBytes)} / ${formatBytes(result.documentLimitBytes)}${issueLabel}；请检查后保存`,
+      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层 · ${formatBytes(result.documentBytes)}${issueLabel}；请检查后保存`,
       result.audit.renderSafe ? "idle" : "error",
     );
   } catch (error) {
@@ -3544,6 +3580,8 @@ function newDocument() {
   currentSourcePath = null;
   currentSourceModifiedAt = null;
   currentSourceRevision = null;
+  currentDesignIndexManifest = null;
+  currentPersistenceMode = "single";
   elements.path.value = "designs/untitled.codesign.json";
   savedSnapshot = "";
   resetHistory();
@@ -4465,6 +4503,8 @@ function updateContext(next) {
     currentSourcePath = null;
     currentSourceModifiedAt = null;
     currentSourceRevision = null;
+    currentDesignIndexManifest = null;
+    currentPersistenceMode = "single";
     warnedExternalVersion = null;
     fileDiscoveryCache = null;
     fileDiscoveryCachedAt = 0;
@@ -4549,6 +4589,8 @@ async function restoreRecovery(
   let diskModifiedAt = null;
   let diskRevision = null;
   let diskFound = false;
+  let diskIndexManifest = null;
+  let diskPersistenceMode = "single";
   try {
     const disk = await hostCall("workspace.readText", { path: recovery.path });
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
@@ -4556,7 +4598,11 @@ async function restoreRecovery(
     diskModifiedAt = disk.modifiedAt;
     diskRevision = disk.revision;
     const resolved = await resolveWorkspaceDesignSource(disk, expectedWorkspaceEpoch);
-    diskSnapshot = serializeDocument(normalizeDocument(JSON.parse(resolved.source)));
+    diskIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+    diskPersistenceMode = resolved.mode;
+    diskSnapshot = serializeDocument(
+      normalizeDocument(resolved.document ?? JSON.parse(resolved.source)),
+    );
   } catch {
     // A new unsaved document has no disk baseline yet.
   }
@@ -4580,6 +4626,8 @@ async function restoreRecovery(
   currentSourcePath = recovery.path;
   currentSourceModifiedAt = currentModifiedAt;
   currentSourceRevision = currentRevision;
+  currentDesignIndexManifest = diskIndexManifest;
+  currentPersistenceMode = diskPersistenceMode;
   elements.path.value = recovery.path;
   savedSnapshot = diskSnapshot;
   resetHistory();
@@ -4619,6 +4667,8 @@ function resetToRepoBlankDocument() {
   currentSourcePath = null;
   currentSourceModifiedAt = null;
   currentSourceRevision = null;
+  currentDesignIndexManifest = null;
+  currentPersistenceMode = "single";
   warnedExternalVersion = null;
   elements.path.value = DEFAULT_PATH;
   savedSnapshot = "";
@@ -4697,18 +4747,18 @@ function startExternalSync() {
 }
 
 function designLayerIndex() {
-  return readableDesignPages().flatMap((page) =>
-    page.nodes.map((node) => ({
-      id: node.id,
-      type: node.type,
-      name: node.name,
-      parentId: node.parentId ?? null,
-      pageId: page.id,
-      pageName: page.name,
-      visible: node.visible,
-      locked: node.locked,
-    })),
-  );
+  const page = activeDesignPage();
+  if (!page) return [];
+  return design.nodes.map((node) => ({
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    parentId: node.parentId ?? null,
+    pageId: page.id,
+    pageName: page.name,
+    visible: node.visible,
+    locked: node.locked,
+  }));
 }
 
 function designNodeSubtree(nodeId, maxDepth = 32) {
@@ -5192,7 +5242,9 @@ async function applyAgentDesignOperations(args) {
         if (!Object.hasOwn(operation, "properties")) {
           throw new Error(`操作 ${index + 1} 缺少 properties`);
         }
-        if (!canAddNodes(1)) throw new Error(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`);
+        if (!canAddNodes(1)) {
+          throw new Error(`当前页面最多包含 ${MAX_DESIGN_NODES_PER_PAGE} 个源图层`);
+        }
         const requestedId = operation.id;
         if (allDesignNodes().some((candidate) => candidate.id === requestedId)) {
           throw new Error(`图层 ID 已存在：${requestedId}`);
@@ -5522,7 +5574,7 @@ function boundedAgentContextResult(result) {
   const bytes = new TextEncoder().encode(JSON.stringify(result)).length;
   if (bytes > MAX_AGENT_CONTEXT_RESULT_BYTES) {
     throw new Error(
-      `设计上下文约 ${(bytes / 1024).toFixed(1)} KiB，超过 Agent 单次安全返回预算 ${MAX_AGENT_CONTEXT_RESULT_BYTES / 1024} KiB；请先读取 get_design_metadata，再传 node_id，并从 max_depth: 1 或 2 开始分段读取`,
+      `设计上下文约 ${(bytes / 1024).toFixed(1)} KiB，超过 Agent 单次安全返回预算 ${MAX_AGENT_CONTEXT_RESULT_BYTES / 1024} KiB；请先读取 get_design_metadata，再用 page_id 读取单页，或传 node_id 并从 max_depth: 1 或 2 开始分段读取`,
     );
   }
   return result;
@@ -5681,9 +5733,8 @@ function registerAgentTools(ready) {
       revision: currentRevision,
       stateRevision: currentDesignStateRevision(),
       documentBytes,
-      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
-      storageMode:
-        documentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES ? "bundle" : "single",
+      capacityModel: "indexed-pages",
+      storageMode: currentPersistenceMode,
       layers: designLayerIndex(),
     };
   });
@@ -5755,9 +5806,21 @@ function registerAgentTools(ready) {
   register("get_design_context", async (args = {}) => {
     await ready;
     await settleAgentReadState();
-    assertAgentToolArguments(args, new Set(["node_id", "max_depth"]), "get_design_context");
+    assertAgentToolArguments(
+      args,
+      new Set(["node_id", "page_id", "max_depth"]),
+      "get_design_context",
+    );
     if (args.node_id !== undefined && !isAgentNodeReference(args.node_id)) {
       throw new Error("get_design_context.node_id 必须是 1–160 个安全字符");
+    }
+    if (
+      args.page_id !== undefined &&
+      (typeof args.page_id !== "string" ||
+        !/^[a-z][a-z0-9-]{0,63}$/u.test(args.page_id) ||
+        !design.pages.some((page) => page.id === args.page_id))
+    ) {
+      throw new Error("get_design_context.page_id 必须引用一个存在的页面");
     }
     if (
       args.max_depth !== undefined &&
@@ -5768,6 +5831,9 @@ function registerAgentTools(ready) {
     if (typeof args.node_id === "string" && args.node_id) {
       const maxDepth = args.max_depth ?? 32;
       const subtree = designNodeSubtree(args.node_id, maxDepth);
+      if (args.page_id && subtree.pageId !== args.page_id) {
+        throw new Error(`图层 ${args.node_id} 不在页面 ${args.page_id} 中`);
+      }
       return boundedAgentContextResult({
         path: elements.path.value.trim(),
         activePageId: design.activePageId,
@@ -5778,6 +5844,23 @@ function registerAgentTools(ready) {
         maxDepth,
         descendantsTruncated: subtree.descendantsTruncated,
         node: subtree.node,
+      });
+    }
+    if (typeof args.page_id === "string" && args.page_id) {
+      const page = repositoryDesignPage(design, args.page_id);
+      return boundedAgentContextResult({
+        path: elements.path.value.trim(),
+        coordinateSpace: "absolute-canvas",
+        stateRevision: currentDesignStateRevision(),
+        document: {
+          format: design.format,
+          version: design.version,
+          name: design.name,
+          canvas: clone(design.canvas),
+          tokens: clone(design.tokens),
+          activePageId: page.id,
+          pages: [page],
+        },
       });
     }
     return boundedAgentContextResult({
@@ -6037,9 +6120,11 @@ function registerAgentTools(ready) {
         nodeCount: allDesignNodes(result.design).length,
         activePageNodeCount: result.design.nodes.length,
         documentBytes: result.documentBytes,
-        documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+        capacityModel: "indexed-pages",
         storageMode: result.storageMode,
         partCount: result.partCount,
+        changedPartCount: result.changedPartCount,
+        changedPageCount: result.changedPageCount,
         audit: summarizeAudit(auditDocument(result.design)),
       };
     });

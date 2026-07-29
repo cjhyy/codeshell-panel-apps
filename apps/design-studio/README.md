@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.14 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.15 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 
@@ -25,15 +25,16 @@ surface: nine declared design tools plus a repository-design Skill.
 - A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
   and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
   fully offscreen descendants are omitted from the first-screen capture, and the converted document
-  remains undoable and revision-guarded. Import results report canonical document bytes against the
-  save budget so capacity regressions are visible before a later save.
+  remains undoable and revision-guarded. Import results report canonical document bytes for
+  performance tracking without treating a Host request budget as a document limit.
 - Document color tokens whose UI or Agent edits propagate simultaneously through matching canvas,
   fill, stroke, and shadow colors without corrupting color swaps.
 - Deterministic v3 `.codesign.json` documents with a compact page switcher, multi-page editing, and
-  deeply nested layers. A logical document may reach 8 MiB: small designs stay in one JSON source,
-  while larger designs keep the same primary path as a checked manifest and use immutable,
-  content-addressed parts under `designs/codesign-data/`. Existing monolithic documents between
-  the Host write and read budgets are migrated to this storage automatically on their next save.
+  deeply nested layers. A logical document has no whole-file byte cap: small designs stay in one
+  JSON source, while larger designs keep the same primary path as a checked page index and store
+  immutable, content-addressed page objects under `designs/codesign-data/`. Saving reuses unchanged
+  pages and commits the primary index only after every changed page object is available. Legacy
+  monolithic and `codeshell.design.bundle` documents migrate to the page index on their next save.
 - Automatic binding to the current repository: recovery first, then the repository's last-opened
   design, then `designs/design.codesign.json`, then the newest remaining design, otherwise a blank
   repo document at the default path.
@@ -108,10 +109,10 @@ node examples/panel-apps/design-studio/app/tools/check-design.mjs \
 Add `--check-svg` when the repository also keeps a sibling generated SVG preview and it must match
 the current active page exactly.
 
-The checker resolves large-document manifests automatically and verifies every part's declared
-UTF-8 byte length plus the complete SHA-256 before normalizing or auditing the reconstructed v3
-source. Do not edit `designs/codesign-data/` parts directly; save through Design Studio so the
-primary manifest changes only after every immutable part is available.
+The checker resolves indexed and legacy large-document manifests automatically and verifies every
+page object's UTF-8 byte length plus complete SHA-256 before normalizing or auditing the
+reconstructed v3 document. Do not edit `designs/codesign-data/` objects directly; save through
+Design Studio so the primary index changes only after every changed immutable page is available.
 
 ## HTML fidelity fixture
 

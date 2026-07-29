@@ -1,5 +1,3 @@
-import { MAX_DESIGN_DOCUMENT_BYTES } from "./document.mjs";
-
 export const MAX_WORKSPACE_DESIGN_TEXT_BYTES = 384 * 1024;
 export const MAX_DESIGN_BUNDLE_PART_BYTES = 360 * 1024;
 export const MAX_DESIGN_BUNDLE_PARTS = 24;
@@ -99,8 +97,7 @@ export function normalizeDesignBundleManifest(value) {
   }
   if (
     !Number.isInteger(value.bytes) ||
-    value.bytes <= MAX_WORKSPACE_DESIGN_TEXT_BYTES ||
-    value.bytes > MAX_DESIGN_DOCUMENT_BYTES
+    value.bytes <= MAX_WORKSPACE_DESIGN_TEXT_BYTES
   ) {
     throw new Error("设计分片清单总字节数无效");
   }
@@ -151,11 +148,6 @@ export function normalizeDesignBundleManifest(value) {
 export function createDesignPersistencePlan({ source, name, sha256 }) {
   if (typeof source !== "string") throw new Error("设计源必须是 UTF-8 文本");
   const bytes = byteLength(source);
-  if (bytes > MAX_DESIGN_DOCUMENT_BYTES) {
-    throw new Error(
-      `设计文件为 ${(bytes / 1024 / 1024).toFixed(2)} MiB，超过 ${MAX_DESIGN_DOCUMENT_BYTES / 1024 / 1024} MiB 逻辑文档上限`,
-    );
-  }
   if (bytes <= MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
     return {
       mode: "single",

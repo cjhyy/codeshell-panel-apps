@@ -7,10 +7,8 @@ import {
 } from "./geometry.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-export const MAX_DESIGN_NODES = 500;
-// This is the complete logical document budget. Sources above the Host's
-// per-text-file budget are persisted through a content-addressed bundle.
-export const MAX_DESIGN_DOCUMENT_BYTES = 8 * 1024 * 1024;
+export const MAX_DESIGN_PAGES = 1_000;
+export const MAX_DESIGN_NODES_PER_PAGE = 10_000;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
@@ -632,8 +630,8 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   state.ids.add(candidate.id);
   state.nodes.push(normalizedNode(candidate, parentId));
-  if (state.ids.size > MAX_DESIGN_NODES) {
-    throw new Error(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`);
+  if (state.nodes.length > MAX_DESIGN_NODES_PER_PAGE) {
+    throw new Error(`页面最多包含 ${MAX_DESIGN_NODES_PER_PAGE} 个源图层`);
   }
   for (const [index, child] of (candidate.children ?? []).entries()) {
     validateAndFlattenNode(child, candidate.id, depth + 1, state, `${label}.children[${index}]`);
@@ -715,6 +713,18 @@ function nestFlatNodes(nodes) {
   return output;
 }
 
+export function repositoryDesignPage(value, pageId) {
+  const page = value.pages?.find((candidate) => candidate.id === pageId);
+  if (!page) throw new Error(`页面不存在：${pageId}`);
+  return {
+    id: page.id,
+    name: page.name,
+    children: nestFlatNodes(
+      page.id === value.activePageId ? (value.nodes ?? []) : (page.nodes ?? []),
+    ),
+  };
+}
+
 export function normalizeDesignDocument(input) {
   assertObject(input, "设计文档", [
     "format",
@@ -730,7 +740,7 @@ export function normalizeDesignDocument(input) {
     input.version !== 3 ||
     !Array.isArray(input.pages) ||
     input.pages.length === 0 ||
-    input.pages.length > 20
+    input.pages.length > MAX_DESIGN_PAGES
   ) {
     throw new Error("不是有效的 CodeShell Design v3 文件");
   }
@@ -779,12 +789,11 @@ export function normalizeDesignDocument(input) {
   if (typeof input.activePageId !== "string" || !pageIds.has(input.activePageId)) {
     throw new Error("activePageId 必须引用一个存在的页面");
   }
+  const nodesById = new Map(allNodes.map((node) => [node.id, node]));
   for (const node of allNodes) {
     if (
       node.type === "instance" &&
-      !allNodes.some(
-        (candidate) => candidate.id === node.componentId && candidate.type === "component",
-      )
+      nodesById.get(node.componentId)?.type !== "component"
     ) {
       throw new Error(`实例 ${node.id} 引用了不存在的组件：${node.componentId}`);
     }
@@ -881,7 +890,6 @@ export function normalizeDesignDocument(input) {
     pages: pageStates,
     nodes: activePage.nodes,
   };
-  assertDesignDocumentSize(normalized);
   return normalized;
 }
 
@@ -1355,14 +1363,8 @@ export function replaceDesignColor(document, previousValue, nextValue) {
   return replaceDesignColors(document, [[previousValue, nextValue]]);
 }
 
-export function assertDesignDocumentSize(value) {
-  const bytes = new TextEncoder().encode(serializeDesignDocument(value)).length;
-  if (bytes > MAX_DESIGN_DOCUMENT_BYTES) {
-    throw new Error(
-      `设计文件为 ${(bytes / 1024 / 1024).toFixed(2)} MiB，超过 ${MAX_DESIGN_DOCUMENT_BYTES / 1024 / 1024} MiB 逻辑文档上限`,
-    );
-  }
-  return bytes;
+export function measureDesignDocumentBytes(value) {
+  return new TextEncoder().encode(serializeDesignDocument(value)).length;
 }
 
 export function exportDesignSvg(document) {
