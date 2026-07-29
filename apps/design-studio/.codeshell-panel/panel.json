@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -119,6 +119,11 @@
                   "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
                 },
                 "notes": { "type": ["string", "null"], "maxLength": 2000 },
+                "effectClipping": {
+                  "type": "string",
+                  "enum": ["intentional"],
+                  "description": "Marks a deliberately clipped visual effect measured from imported HTML."
+                },
                 "shadow": {
                   "oneOf": [{ "$ref": "#/$defs/shadow" }, { "type": "null" }]
                 },
@@ -163,6 +168,11 @@
                 "textDecoration": {
                   "type": "string",
                   "enum": ["none", "underline", "line-through"]
+                },
+                "textMeasurement": {
+                  "type": "string",
+                  "enum": ["browser"],
+                  "description": "Marks exact browser-measured text bounds so validation does not substitute estimated glyph metrics."
                 },
                 "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
                 "layout": {
@@ -488,8 +498,66 @@
         "readOnly": false
       },
       {
+        "name": "import_html",
+        "description": "Render a workspace-local HTML file and its local CSS in an isolated browser viewport, replace the current canvas with editable v3 layers, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512,
+              "anyOf": [
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.htm$"
+                }
+              ],
+              "description": "Workspace-relative .html or .htm path. The importer may read up to 20 relative local CSS files referenced by this document."
+            },
+            "root_selector": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
+              "description": "CSS selector for the region to convert. Defaults to body."
+            },
+            "viewport_width": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Browser viewport width in CSS pixels. Defaults to 1440."
+            },
+            "viewport_height": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 10000,
+              "description": "Browser viewport height in CSS pixels. Defaults to 900."
+            },
+            "save": {
+              "type": "boolean",
+              "description": "Save the converted design to the active .codesign.json file. Defaults to true."
+            },
+            "expected_revision": {
+              "type": ["string", "null"],
+              "description": "Optional exact design-file revision from get_design_metadata."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact live stateRevision from get_design_metadata. Import fails if the canvas changes while HTML is rendering."
+            }
+          },
+          "required": ["path", "expected_state_revision"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
         "name": "rollback_design",
-        "description": "Safely roll back the most recent use_design transaction when no design or repository revision has changed since it completed.",
+        "description": "Safely roll back the most recent use_design or import_html transaction when no design or repository revision has changed since it completed.",
         "inputSchema": {
           "type": "object",
           "properties": {

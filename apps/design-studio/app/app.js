@@ -41,6 +41,7 @@ import {
   workspaceVersionChanged,
 } from "./document.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
+import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
 import {
   applyAutoLayouts,
   createComponentInstance,
@@ -92,6 +93,7 @@ const elements = {
   runAudit: document.querySelector("#run-audit"),
   exportSvg: document.querySelector("#export-svg"),
   openFiles: document.querySelector("#open-files"),
+  openHtmlImport: document.querySelector("#open-html-import"),
   openShortcuts: document.querySelector("#open-shortcuts"),
   openAi: document.querySelector("#open-ai"),
   toggleInspector: document.querySelector("#toggle-inspector"),
@@ -100,6 +102,13 @@ const elements = {
   filesList: document.querySelector("#files-list"),
   workspaceSummary: document.querySelector("#workspace-summary"),
   newDocument: document.querySelector("#new-document"),
+  htmlImportDialog: document.querySelector("#html-import-dialog"),
+  htmlImportPath: document.querySelector("#html-import-path"),
+  htmlImportRoot: document.querySelector("#html-import-root"),
+  htmlImportWidth: document.querySelector("#html-import-width"),
+  htmlImportHeight: document.querySelector("#html-import-height"),
+  htmlImportStatus: document.querySelector("#html-import-status"),
+  runHtmlImport: document.querySelector("#run-html-import"),
   aiDialog: document.querySelector("#ai-dialog"),
   auditDialog: document.querySelector("#audit-dialog"),
   auditSummary: document.querySelector("#audit-summary"),
@@ -3018,6 +3027,194 @@ function formatBytes(value) {
   return `${(value / 1024).toFixed(1)} KB`;
 }
 
+function setHtmlImportStatus(message, kind = "idle") {
+  elements.htmlImportStatus.textContent = message;
+  elements.htmlImportStatus.dataset.kind = kind;
+}
+
+async function replaceDesignWithHtmlImport(
+  imported,
+  { save = false, recordAgentTransaction = false, sourcePath } = {},
+) {
+  const nextDesign = normalizeDocument(imported);
+  const previous = clone(design);
+  const previousSnapshot = serializeDesign();
+  const nextSnapshot = serializeDocument(nextDesign);
+  if (nextSnapshot === previousSnapshot) {
+    let savedResult = null;
+    if (save) savedResult = await saveDocument({ quiet: true });
+    return {
+      path: elements.path.value.trim(),
+      sourcePath,
+      saved: save,
+      noOp: true,
+      transactionId: null,
+      changedNodeIds: [],
+      documentChanged: false,
+      nodeCount: allDesignNodes().length,
+      activePageNodeCount: design.nodes.length,
+      revision: savedResult?.revision ?? currentRevision,
+      stateRevision: currentDesignStateRevision(),
+      audit: summarizeAudit(auditDocument()),
+    };
+  }
+
+  const previousHistory = [...history];
+  const previousHistoryIndex = historyIndex;
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
+  const previousCollapsedLayerIds = new Set(collapsedLayerIds);
+  const previousDocumentEpoch = documentEpoch;
+  const previousDesignStateSequence = designStateSequence;
+  const previousAgentTransaction = lastAgentTransaction;
+  const changedNodeIds = new Set([
+    ...allDesignNodes(previous).map((node) => node.id),
+    ...allDesignNodes(nextDesign).map((node) => node.id),
+  ]);
+
+  design = nextDesign;
+  documentEpoch += 1;
+  clearSelection();
+  collapsedLayerIds.clear();
+  commitHistory();
+  markChanged();
+  let savedResult = null;
+  if (save) {
+    try {
+      savedResult = await saveDocument({ quiet: true });
+    } catch (error) {
+      design = normalizeDesignState(previous);
+      history = previousHistory;
+      historyIndex = previousHistoryIndex;
+      selectedId = previousSelectedId;
+      selectedIds = previousSelectedIds;
+      collapsedLayerIds.clear();
+      for (const id of previousCollapsedLayerIds) collapsedLayerIds.add(id);
+      documentEpoch = previousDocumentEpoch;
+      designStateSequence = previousDesignStateSequence;
+      lastAgentTransaction = previousAgentTransaction;
+      markChanged();
+      throw error;
+    }
+  }
+
+  let transactionId = null;
+  if (recordAgentTransaction) {
+    transactionId = `design-tx-${Date.now().toString(36)}-${++agentTransactionSequence}`;
+    lastAgentTransaction = {
+      id: transactionId,
+      previousSnapshot,
+      previousSelectedId,
+      previousSelectedIds: [...previousSelectedIds],
+      resultSelectedId: null,
+      resultSelectedIds: [],
+      historyIndex,
+      revision: currentRevision,
+      stateRevision: currentDesignStateRevision(),
+      changedNodeIds: [...changedNodeIds],
+    };
+  }
+  requestAnimationFrame(fitCanvas);
+  return {
+    path: elements.path.value.trim(),
+    sourcePath,
+    saved: save,
+    noOp: false,
+    transactionId,
+    changedNodeIds: [...changedNodeIds],
+    documentChanged: true,
+    nodeCount: allDesignNodes().length,
+    activePageNodeCount: design.nodes.length,
+    revision: savedResult?.revision ?? currentRevision,
+    stateRevision: currentDesignStateRevision(),
+    audit: summarizeAudit(auditDocument()),
+  };
+}
+
+async function importHtmlFromWorkspace({
+  sourcePath,
+  rootSelector,
+  viewportWidth,
+  viewportHeight,
+  save = false,
+  expectedRevision,
+  expectedStateRevision,
+  recordAgentTransaction = false,
+}) {
+  if (!isSafeHtmlImportPath(sourcePath)) {
+    throw new Error("HTML 路径必须是工作区内安全的相对 .html 文件");
+  }
+  if (typeof expectedStateRevision !== "string" || !expectedStateRevision) {
+    throw new Error("HTML 导入必须基于当前设计状态");
+  }
+  if (expectedStateRevision !== currentDesignStateRevision()) {
+    throw new Error("设计状态已变化；请重新读取后再导入 HTML");
+  }
+  if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+    throw new Error("设计 revision 已变化；请重新读取后再导入 HTML");
+  }
+  const operationWorkspaceEpoch = workspaceEpoch;
+  const operationStateRevision = currentDesignStateRevision();
+  const source = await hostCall("workspace.readText", { path: sourcePath });
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  const captured = await captureWorkspaceHtml({
+    sourcePath,
+    html: source.content,
+    readText: async (path) => {
+      const result = await hostCall("workspace.readText", { path });
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      return result;
+    },
+    rootSelector,
+    viewportWidth,
+    viewportHeight,
+  });
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
+  if (currentDesignStateRevision() !== operationStateRevision) {
+    throw new Error("画布在 HTML 转换期间发生了变化；已保留较新的本地状态");
+  }
+  return replaceDesignWithHtmlImport(captured, {
+    save,
+    recordAgentTransaction,
+    sourcePath,
+  });
+}
+
+async function runHtmlImportFromDialog() {
+  const sourcePath = elements.htmlImportPath.value.trim();
+  const rootSelector = elements.htmlImportRoot.value.trim();
+  const viewportWidth = Number(elements.htmlImportWidth.value);
+  const viewportHeight = Number(elements.htmlImportHeight.value);
+  if (dirty && !window.confirm("HTML 转换会替换当前画布。确定要保留撤销记录并继续吗？")) {
+    return;
+  }
+  elements.runHtmlImport.disabled = true;
+  elements.htmlImportDialog.setAttribute("aria-busy", "true");
+  setHtmlImportStatus("正在读取 HTML、等待字体与布局稳定…");
+  try {
+    const result = await importHtmlFromWorkspace({
+      sourcePath,
+      rootSelector,
+      viewportWidth,
+      viewportHeight,
+      save: false,
+      expectedStateRevision: currentDesignStateRevision(),
+    });
+    elements.htmlImportDialog.close();
+    const issueLabel =
+      result.audit.issueCount > 0 ? `；检查发现 ${result.audit.issueCount} 个问题` : "";
+    notify(
+      `已从 ${sourcePath} 转换 ${result.nodeCount} 个图层${issueLabel}；请检查后保存`,
+      result.audit.renderSafe ? "idle" : "error",
+    );
+  } catch (error) {
+    setHtmlImportStatus(error instanceof Error ? error.message : "HTML 转换失败", "error");
+  } finally {
+    elements.runHtmlImport.disabled = context.trusted !== true;
+    elements.htmlImportDialog.removeAttribute("aria-busy");
+  }
+}
+
 function showAudit() {
   const issues = auditDocument();
   const summary = summarizeAudit(issues);
@@ -3753,6 +3950,12 @@ elements.runAudit.addEventListener("click", showAudit);
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
+elements.openHtmlImport.addEventListener("click", () => {
+  setHtmlImportStatus("支持本地 CSS、文字、填充、边框、圆角、裁切和单个外投影。");
+  elements.htmlImportDialog.showModal();
+  elements.htmlImportPath.focus();
+});
+elements.runHtmlImport.addEventListener("click", () => void runHtmlImportFromDialog());
 elements.openShortcuts.addEventListener("click", () => elements.shortcutsDialog.showModal());
 elements.newDocument.addEventListener("click", newDocument);
 elements.openAi.addEventListener("click", () => elements.aiDialog.showModal());
@@ -3963,6 +4166,8 @@ function updateContext(next) {
   elements.save.disabled = workspaceUnavailable;
   elements.exportSvg.disabled = workspaceUnavailable;
   elements.openFiles.disabled = workspaceUnavailable;
+  elements.openHtmlImport.disabled = workspaceUnavailable;
+  elements.runHtmlImport.disabled = workspaceUnavailable;
   elements.saveAuditReport.disabled = workspaceUnavailable;
   elements.openAi.disabled = Boolean(context.busy) || workspaceUnavailable;
   elements.submitAi.disabled = Boolean(context.busy) || workspaceUnavailable;
@@ -4389,6 +4594,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "name",
   "notes",
   "shadow",
+  "effectClipping",
   "x",
   "y",
   "width",
@@ -4410,6 +4616,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "lineHeight",
   "letterSpacing",
   "textDecoration",
+  "textMeasurement",
   "textAlign",
   "layout",
   "gap",
@@ -4965,7 +5172,7 @@ async function rollbackAgentDesign(args) {
   }
   const transaction = lastAgentTransaction;
   if (!transaction || transaction.id !== args.transaction_id) {
-    throw new Error("只能回滚最近一次 use_design 返回的 transactionId");
+    throw new Error("只能回滚最近一次 use_design 或 import_html 返回的 transactionId");
   }
   if (
     historyIndex !== transaction.historyIndex ||
@@ -5187,6 +5394,71 @@ function registerAgentTools(ready) {
       );
     }
     return enqueueAgentMutation(() => applyAgentDesignOperations(args));
+  });
+  register("import_html", async (args = {}) => {
+    await ready;
+    assertAgentToolArguments(
+      args,
+      new Set([
+        "path",
+        "root_selector",
+        "viewport_width",
+        "viewport_height",
+        "save",
+        "expected_revision",
+        "expected_state_revision",
+      ]),
+      "import_html",
+    );
+    if (!isSafeHtmlImportPath(args.path)) {
+      throw new Error("import_html.path 必须是工作区内安全的相对 .html 文件");
+    }
+    if (
+      args.root_selector !== undefined &&
+      (typeof args.root_selector !== "string" ||
+        !args.root_selector.trim() ||
+        args.root_selector.length > 200 ||
+        /[\u0000-\u001f\u007f]/u.test(args.root_selector))
+    ) {
+      throw new Error("import_html.root_selector 必须是 1–200 个安全字符");
+    }
+    for (const [property, value] of [
+      ["viewport_width", args.viewport_width],
+      ["viewport_height", args.viewport_height],
+    ]) {
+      if (value !== undefined && (!Number.isInteger(value) || value < 100 || value > 10_000)) {
+        throw new Error(`import_html.${property} 必须是 100 到 10000 的整数`);
+      }
+    }
+    if (args.save !== undefined && typeof args.save !== "boolean") {
+      throw new Error("import_html.save 必须是布尔值");
+    }
+    if (
+      args.expected_revision !== undefined &&
+      args.expected_revision !== null &&
+      typeof args.expected_revision !== "string"
+    ) {
+      throw new Error("import_html.expected_revision 必须是字符串或 null");
+    }
+    if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
+      throw new Error(
+        "import_html.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
+      );
+    }
+    return enqueueAgentMutation(() =>
+      importHtmlFromWorkspace({
+        sourcePath: args.path,
+        rootSelector: args.root_selector ?? "body",
+        viewportWidth: args.viewport_width ?? 1_440,
+        viewportHeight: args.viewport_height ?? 900,
+        save: args.save !== false,
+        expectedRevision: Object.hasOwn(args, "expected_revision")
+          ? args.expected_revision
+          : undefined,
+        expectedStateRevision: args.expected_state_revision,
+        recordAgentTransaction: true,
+      }),
+    );
   });
   register("rollback_design", async (args = {}) => {
     await ready;

@@ -65,6 +65,9 @@
           >
             <span aria-hidden="true">⌘</span>
           </button>
+          <button id="open-html-import" class="button" type="button" title="从 Repo HTML 转换">
+            HTML
+          </button>
           <button id="save" class="primary-button" type="button" title="保存 (⌘S)">保存</button>
           <button id="run-audit" class="button" type="button" title="检查设计质量">检查</button>
           <button id="export-svg" class="button" type="button" title="导出 SVG">SVG</button>
@@ -755,6 +758,59 @@
             <span class="ai-spark">✦</span>
             提交给 Agent
           </button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="html-import-dialog" aria-labelledby="html-import-dialog-title">
+      <form method="dialog" class="dialog-card html-import-dialog-card">
+        <header>
+          <div>
+            <span class="dialog-kicker">BROWSER CAPTURE</span>
+            <h2 id="html-import-dialog-title">从 Repo HTML 转换</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <p class="dialog-description">
+          在隔离浏览器视口中排版工作区 HTML，再转换成可编辑图层。脚本和网络资源不会执行。
+        </p>
+        <div class="html-import-fields">
+          <label class="stacked-field">
+            <span>HTML 文件路径</span>
+            <input id="html-import-path" value="index.html" spellcheck="false" autocomplete="off" />
+          </label>
+          <label class="stacked-field">
+            <span>根节点选择器</span>
+            <input
+              id="html-import-root"
+              value="#fixture"
+              maxlength="200"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <div class="property-grid">
+            <label
+              ><span>W</span
+              ><input id="html-import-width" type="number" min="100" max="10000" value="960"
+            /></label>
+            <label
+              ><span>H</span
+              ><input id="html-import-height" type="number" min="100" max="10000" value="640"
+            /></label>
+          </div>
+          <p id="html-import-status" class="html-import-status" role="status" aria-live="polite">
+            支持本地 CSS、文字、填充、边框、圆角、裁切和单个外投影。
+          </p>
+        </div>
+        <footer>
+          <p>转换会替换当前画布但不会自动保存；可先检查，再决定是否写入 Repo。</p>
+          <div class="dialog-footer-actions">
+            <button class="button" value="cancel" type="submit">取消</button>
+            <button id="run-html-import" class="primary-button" value="cancel" type="button">
+              转换为设计
+            </button>
+          </div>
         </footer>
       </form>
     </dialog>

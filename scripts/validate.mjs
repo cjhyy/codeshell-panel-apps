@@ -185,6 +185,7 @@ const nestedDesign = {
           children: [
             {
               ...baseNode("group", "group", "Group"),
+              fill: "transparent",
               layout: "none",
               gap: 0,
               padding: 0,

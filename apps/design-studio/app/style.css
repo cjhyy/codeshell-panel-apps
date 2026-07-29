@@ -1384,6 +1384,38 @@ dialog::backdrop {
   grid-template-rows: auto auto auto auto;
 }
 
+.html-import-dialog-card {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.html-import-fields {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.html-import-status {
+  min-height: 34px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.html-import-status[data-kind="error"] {
+  border-color: color-mix(in srgb, var(--danger), transparent 45%);
+  color: var(--danger);
+}
+
+.html-import-status[data-kind="success"] {
+  border-color: color-mix(in srgb, var(--success), transparent 55%);
+  color: var(--success);
+}
+
 .ai-dialog-card #ai-request {
   width: calc(100% - 28px);
   margin: 14px;
@@ -1426,6 +1458,7 @@ dialog::backdrop {
   .brand-name,
   .save-state,
   #export-svg,
+  #open-html-import,
   #document-path {
     display: none;
   }

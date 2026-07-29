@@ -70,6 +70,8 @@ Supported node types:
 Text nodes require content, size, weight, line height, and alignment. Optional `fontFamily`,
 `fontStyle`, `letterSpacing`, and `textDecoration` provide repository-stable typography controls;
 when omitted they render with the editor's system sans-serif defaults.
+HTML imports may add `textMeasurement: "browser"` after measuring the exact rendered Range bounds.
+The audit then trusts the stored width instead of substituting its portable cross-font estimate.
 Newline-delimited text renders as explicit, independently positioned SVG lines so native preview
 renderers preserve the live canvas layout. Text fill and optional stroke render consistently in the
 live canvas and SVG preview.
@@ -80,6 +82,8 @@ hex `color`, 0–1 `opacity`, X/Y offset, and blur radius. Shadows are source da
 consistently in the live canvas, Agent screenshots, and SVG exports. The audit treats a visible
 shadow crossing the canvas or an ancestor clipping boundary as a blocking render defect even when
 the node's own geometry still fits.
+HTML capture may add `effectClipping: "intentional"` when that clipping is part of the measured
+browser result; this suppresses only the corresponding false-positive effect-boundary issue.
 Visible stroke width is audited the same way, because half of an SVG stroke extends outside the
 node geometry.
 Shadow filter regions are derived from the rendered node, stroke, and instance-content bounds, so a

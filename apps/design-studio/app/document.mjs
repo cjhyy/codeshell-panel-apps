@@ -113,6 +113,7 @@ function normalizedNode(candidate, parentId) {
     locked: candidate.locked,
     ...(parentId ? { parentId } : {}),
     ...(candidate.notes !== undefined ? { notes: candidate.notes } : {}),
+    ...(candidate.effectClipping !== undefined ? { effectClipping: candidate.effectClipping } : {}),
     ...(candidate.shadow !== undefined
       ? {
           shadow: {
@@ -135,6 +136,7 @@ function normalizedNode(candidate, parentId) {
     if (candidate.fontStyle !== undefined) node.fontStyle = candidate.fontStyle;
     if (candidate.letterSpacing !== undefined) node.letterSpacing = candidate.letterSpacing;
     if (candidate.textDecoration !== undefined) node.textDecoration = candidate.textDecoration;
+    if (candidate.textMeasurement !== undefined) node.textMeasurement = candidate.textMeasurement;
   } else if (
     ["frame", "component"].includes(candidate.type) &&
     candidate.clipContent !== undefined
@@ -195,6 +197,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "type",
     "name",
     "notes",
+    "effectClipping",
     "shadow",
     "x",
     "y",
@@ -218,6 +221,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "fontStyle",
     "letterSpacing",
     "textDecoration",
+    "textMeasurement",
     "layout",
     "gap",
     "padding",
@@ -331,6 +335,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       "fontStyle",
       "letterSpacing",
       "textDecoration",
+      "textMeasurement",
     ].some((property) => Object.prototype.hasOwnProperty.call(candidate, property))
   ) {
     throw new Error(`非文字图层 ${candidate.id} 包含文字专属字段`);
@@ -361,9 +366,13 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
           candidate.letterSpacing < -20 ||
           candidate.letterSpacing > 100)) ||
       (candidate.textDecoration !== undefined &&
-        !["none", "underline", "line-through"].includes(candidate.textDecoration)))
+        !["none", "underline", "line-through"].includes(candidate.textDecoration)) ||
+      (candidate.textMeasurement !== undefined && candidate.textMeasurement !== "browser"))
   ) {
     throw new Error(`文字图层 ${candidate.id} 的文字属性无效`);
+  }
+  if (candidate.effectClipping !== undefined && candidate.effectClipping !== "intentional") {
+    throw new Error(`图层 ${candidate.id} 的 effectClipping 无效`);
   }
   if (
     (!["frame", "component"].includes(candidate.type) && candidate.clipContent !== undefined) ||

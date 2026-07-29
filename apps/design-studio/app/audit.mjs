@@ -136,10 +136,10 @@ function nodeOutlinePointsInTree(nodes, node, nodeIndex) {
   } else if (node.type === "text") {
     const lines = String(node.text).split("\n");
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const width = Math.min(
-        node.width,
-        Math.max(1, estimateTextLineWidth(node, lines[lineIndex])),
-      );
+      const width =
+        node.textMeasurement === "browser"
+          ? node.width
+          : Math.min(node.width, Math.max(1, estimateTextLineWidth(node, lines[lineIndex])));
       const left =
         node.textAlign === "center"
           ? node.x + (node.width - width) / 2
@@ -807,6 +807,7 @@ export function auditDesign(document) {
       effectBounds &&
       visualBounds &&
       contains(canvas, visualBounds) &&
+      node.effectClipping !== "intentional" &&
       !contains(canvas, effectBounds)
     ) {
       issues.push({
@@ -867,6 +868,7 @@ export function auditDesign(document) {
         if (!clippingAncestor) break;
         if (
           clippingAncestor.clipContent === true &&
+          node.effectClipping !== "intentional" &&
           !exceedsClippingAncestor(document.nodes, node, clippingAncestor, byId) &&
           !isIntentionalClippedEdgeSurface(node, clippingAncestor) &&
           effectCorners.some(
@@ -910,7 +912,7 @@ export function auditDesign(document) {
       });
     }
     const widestLine = Math.max(0, ...lines.map((line) => estimateTextLineWidth(node, line)));
-    if (node.width + 0.5 < widestLine) {
+    if (node.textMeasurement !== "browser" && node.width + 0.5 < widestLine) {
       issues.push({
         code: "layout.text-width-overflow",
         severity: "error",

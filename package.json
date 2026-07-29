@@ -1,12 +1,17 @@
 {
   "name": "codeshell-panel-apps",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Agent-native desktop Panel Apps for CodeShell",
   "type": "module",
   "scripts": {
     "check": "node scripts/validate.mjs",
-    "test": "node scripts/validate.mjs"
+    "test": "node scripts/validate.mjs",
+    "test:fidelity": "node scripts/design-studio-html-fidelity.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.60.0",
+    "pngjs": "5.0.0"
   },
   "license": "MIT"
 }

@@ -1,6 +1,6 @@
 ---
 name: repo-design
-description: Create, inspect, refine, and visually verify the active repository's CodeShell Design v3 source through Design Studio's structured Agent tools.
+description: Create, import from rendered HTML, inspect, refine, and visually verify the active repository's CodeShell Design v3 source through Design Studio's structured Agent tools. Use for repository design files, HTML-to-design reconstruction, Figma-like layout work, and screenshot-driven fidelity checks.
 ---
 
 # Repository design workflow
@@ -53,6 +53,46 @@ Use the installed Design Studio Panel App as the authoritative structured editor
 Keep transactions small enough to diagnose. A useful iteration normally changes one coherent
 region (for example the top bar or one message card), validates it, and then looks at the complete
 screen. Do not replace a detailed screen with empty frames merely to make warnings disappear.
+
+## HTML fidelity workflow
+
+When HTML is the visual source, do not reconstruct it from markup or hand-copy relative offsets.
+Read metadata, then call `import_html` with the workspace-relative `.html` path, exact viewport,
+optional root selector, current `expected_state_revision`, and current `expected_revision` when
+non-null. The tool reads up to 20 relative local CSS files, removes scripts and network resources,
+waits for fonts and two animation frames, then replaces the canvas with computed geometry,
+typography, paint, borders, clipping, and one non-inset shadow. It saves by default, returns an
+immediate audit and rollback `transactionId`, and fails if the live design changes while HTML is
+rendering. Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source
+elements when later Agent edits need durable layer identities.
+
+Compare the rendered HTML and exported Design SVG in the same browser, viewport, device scale, and
+font environment. Save the source, converted, and amplified pixel-difference screenshots. Report
+the measured error rather than claiming a subjective match; use mean absolute channel error,
+changed-pixel percentages at explicit thresholds, and a local/windowed SSIM. Iterate on the largest
+cluster in the difference image before polishing isolated pixels.
+
+In the `codeshell-panel-apps` collection repository, run the maintained baseline with:
+
+```sh
+npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
+```
+
+Treat it as a regression gate: windowed SSIM must be at least 0.99, the ratio of pixels changing by
+more than 8 channel levels must be at most 1%, and the ratio changing by more than 24 levels must be
+at most 0.6%, with zero blocking audit issues. The JSON report and four PNG artifacts are evidence
+for the comparison. Imported
+browser-measured text and deliberately clipped effects carry explicit document metadata so
+validation does not turn exact browser geometry into false layout blockers.
+
+Treat unsupported CSS as an explicit fidelity gap. v3 currently approximates four unequal corner
+radii with one representative radius and does not capture raster images, SVG/vector paths,
+gradients, pseudo-elements, multiple backgrounds, multiple shadows, filters, or rich text runs.
+Extend the format/capture path or disclose the limitation; never silently call those cases
+pixel-perfect. After conversion, normalize the document, keep it below repository size limits,
+call `validate_design`, and inspect a Design Studio screenshot before editing it further. Use the
+bundled `app/html-capture.mjs` helper directly only when developing the importer or running its
+browser regression fixture.
 
 ## Coordinate contract
 
@@ -165,7 +205,8 @@ For an auto-layout region:
 3. Set child width/height, `layoutGrow`, and `layoutAlign` as needed, including on nested containers.
 4. Read the subtree again after the transaction because the resolved geometry is explicit.
 
-`use_design` is atomic. If one operation is invalid, the transaction rolls back. Prefer one
+`use_design` and `import_html` are atomic. If an operation, conversion, or save is invalid, the
+canvas rolls back. Prefer one
 transaction when several operations must stay consistent, such as creating a frame and its first
 children; use separate transactions when visual inspection should decide the next edit.
 If all operations produce no net document change, the result reports `noOp: true`,
@@ -205,6 +246,10 @@ node deterministically.
 - `{"op":"delete_page","page_id":"draft"}` (the last remaining page cannot be deleted; a
   component-library page cannot be deleted while another page still contains instances of its
   components)
+
+HTML conversion is a separate whole-document transaction, not a `use_design` operation:
+
+- `{"path":"references/chat/index.html","root_selector":"#app","viewport_width":1440,"viewport_height":900,"expected_state_revision":"…","expected_revision":"…"}`
 
 ### Multi-page workflow
 
@@ -327,7 +372,7 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
 
 ## Failure recovery
 
-- If `use_design` cannot save, it restores the pre-transaction canvas and returns no
+- If `use_design` or `import_html` cannot save, it restores the pre-transaction canvas and returns no
   `transactionId`. Fix the reported trust, path, or revision problem before creating a fresh
   transaction.
 - If `expected_revision` fails, discard assumptions based on the stale read, fetch metadata and

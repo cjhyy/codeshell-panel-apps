@@ -1,8 +1,8 @@
 # Design Studio Panel App
 
-Design Studio 0.6 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.7 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
-surface: eight declared design tools plus a repository-design Skill.
+surface: nine declared design tools plus a repository-design Skill.
 
 ## What it does
 
@@ -15,6 +15,11 @@ surface: eight declared design tools plus a repository-design Skill.
 - Repository-stable font family, 100–900 weights, italic, letter spacing, text decoration, and
   portable multiline SVG text that does not collapse in native preview renderers.
 - Repository-stable drop shadows rendered consistently in canvas screenshots and SVG exports.
+- Browser-rendered HTML capture that measures computed layout, typography, borders, clipping, and
+  shadows before rebuilding the page as editable v3 layers instead of guessing from markup.
+- A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
+  and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
+  and the converted document remains undoable and revision-guarded.
 - Document color tokens whose UI or Agent edits propagate simultaneously through matching canvas,
   fill, stroke, and shadow colors without corrupting color swaps.
 - Deterministic v3 `.codesign.json` documents with a compact page switcher, multi-page editing, and
@@ -85,6 +90,35 @@ node examples/panel-apps/design-studio/app/tools/check-design.mjs \
 
 Add `--check-svg` when the repository also keeps a sibling generated SVG preview and it must match
 the current active page exactly.
+
+## HTML fidelity fixture
+
+Use the top-bar **HTML** action to convert a workspace-relative `.html` file, or call the
+revision-guarded `import_html` Agent tool. The reusable browser capture helper lives at
+`app/html-capture.mjs`. The fixture at
+`tests/fixtures/design-studio-html-capture/` renders a representative product UI in `mode=source`
+and the captured Design SVG in `mode=converted`. Capture both at the same 960×640 viewport and
+compare their pixels; the source, converted, and amplified difference images make baseline,
+shadow, clipping, and corner errors visible before they reach a real design.
+
+Run the same-browser regression from this collection repository:
+
+```sh
+npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
+```
+
+The command writes source, converted, side-by-side, amplified pixel-difference, and JSON report
+artifacts. It fails unless windowed SSIM is at least `0.99`, pixels changing by more than 8 channel
+levels stay at or below `1%`, and pixels changing by more than 24 levels stay at or below `0.6%`.
+The converted document must also have zero blocking audit issues.
+Browser-measured text bounds and explicitly clipped imported effects remain tagged in the editable
+document so the audit does not replace exact geometry with fallback estimates; real contrast,
+layout, and clipping issues still fail validation normally.
+
+This path deliberately captures the browser's computed result after fonts and layout settle. It is
+not an HTML parser and does not promise fidelity for unsupported v3 features such as raster images,
+SVG paths, gradients, pseudo-elements, multiple shadows, or four independently editable corner
+radii.
 
 ## Package boundary
 

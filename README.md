@@ -7,11 +7,11 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 
 ## Included apps
 
-| App               | Subdirectory         | Purpose                                                                                                   |
-| ----------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
-| Design Studio 0.6 | `apps/design-studio` | Agent-native, Figma-like repo design with eight structured tools, a bundled Skill, and v3 JSON/SVG output |
-| Quant Lab         | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                               |
-| Starter           | `templates/starter`  | Minimal template for creating another Panel App                                                           |
+| App           | Subdirectory         | Purpose                                                                                          |
+| ------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
+| Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with HTML capture, structured tools, and v3 JSON/SVG output |
+| Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                      |
+| Starter       | `templates/starter`  | Minimal template for creating another Panel App                                                  |
 
 ## Install from GitHub
 
@@ -31,9 +31,9 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.6 fixes nested absolute-canvas geometry, limits auto-layout
-reflow to containers that own layout, makes every audit issue fail validation,
-and adds visual screenshots plus design-system search to the Agent workflow.
+Design Studio 0.7 keeps the 0.6 absolute-canvas, targeted auto-layout, blocking validation,
+screenshot, and design-system improvements, then adds guarded workspace HTML import and a
+same-browser fidelity gate.
 
 ## Repository layout
 
@@ -59,12 +59,24 @@ while tool handlers register through the sandboxed panel bridge.
 
 ## Develop
 
-The apps intentionally use browser-native HTML, CSS, and JavaScript, so there is
-no dependency installation or bundling step.
+The apps intentionally use browser-native HTML, CSS, and JavaScript, so installing them has no
+runtime dependency or bundling step.
 
 ```sh
 node scripts/validate.mjs
 ```
+
+Design Studio also has a same-browser HTML fidelity gate. Install development dependencies once,
+then generate source, converted, side-by-side, amplified difference, and JSON metric artifacts:
+
+```sh
+npm install
+npx playwright install chromium
+npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
+```
+
+The gate requires windowed SSIM ≥ 0.99, at most 1% of pixels changing by more than 8 channel
+levels, at most 0.6% changing by more than 24 levels, and zero blocking audit issues.
 
 For local iteration, clone this repository and use **Choose source folder**.
 For remote iteration, push a commit and use **Update from source**.
