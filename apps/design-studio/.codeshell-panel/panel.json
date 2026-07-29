@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -23,6 +23,59 @@
   ],
   "agent": {
     "tools": [
+      {
+        "name": "put_design_resource",
+        "description": "Store an image or font once in the repo-native content-addressed resource library from small inline Base64 or workspace Base64 chunk files, then return its stable descriptor for imageRef or fontRef.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]{0,63}$"
+            },
+            "kind": { "type": "string", "enum": ["image", "font"] },
+            "mime": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "base64": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 49152,
+              "description": "Inline Base64 for small resources. For larger resources, omit this and provide source_paths."
+            },
+            "source_paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 12,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "^designs/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000-\\u001F\\u007F]+\\.txt$"
+              },
+              "description": "Ordered workspace-relative .txt files containing consecutive Base64 chunks for a larger resource."
+            },
+            "family": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "weight": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "style": { "type": "string", "enum": ["normal", "italic", "oblique"] },
+            "save": {
+              "type": "boolean",
+              "description": "Save the updated design descriptor after storing the content. Defaults to true."
+            },
+            "expected_state_revision": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Required exact in-memory stateRevision returned by get_design_metadata."
+            }
+          },
+          "required": ["id", "kind", "mime", "expected_state_revision"],
+          "oneOf": [
+            { "required": ["base64"], "not": { "required": ["source_paths"] } },
+            { "required": ["source_paths"], "not": { "required": ["base64"] } }
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
       {
         "name": "get_design_metadata",
         "description": "Read the active design's indexed-pages capacity model, persistence mode, page catalog, canvas, color tokens, selection, compact active-page layer index, and machine-readable layout contract.",
@@ -197,7 +250,19 @@
                   "minimum": -100,
                   "maximum": 100
                 },
+                "fontRef": {
+                  "type": ["string", "null"],
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
                 "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
+                "imageRef": {
+                  "type": ["string", "null"],
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                },
+                "objectFit": {
+                  "type": ["string", "null"],
+                  "enum": ["fill", "contain", "cover", null]
+                },
                 "layout": {
                   "type": "string",
                   "enum": ["none", "horizontal", "vertical", "grid"],
@@ -397,7 +462,8 @@
                           "instance",
                           "rectangle",
                           "ellipse",
-                          "text"
+                          "text",
+                          "image"
                         ]
                       },
                       "id": {

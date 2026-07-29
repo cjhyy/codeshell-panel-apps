@@ -17,6 +17,7 @@ being preserved.
   "tokens": {
     "colors": [{ "name": "Ink", "value": "#171717" }]
   },
+  "resources": [],
   "activePageId": "page-1",
   "pages": [
     {
@@ -64,7 +65,7 @@ a relative coordinate origin.
 
 Supported node types:
 
-- primitives: `rectangle`, `ellipse`, `text`;
+- primitives: `rectangle`, `ellipse`, `text`, `image`;
 - containers: `frame`, `group`, `component`;
 - reusable references: `instance`, linked with `componentId`.
 
@@ -82,6 +83,23 @@ Newline-delimited text renders as explicit, independently positioned SVG lines s
 renderers preserve the live canvas layout. Text fill and optional stroke render consistently in the
 live canvas and SVG preview.
 Text does not paint a containing box, so its required `cornerRadius` remains `0`.
+
+## Images and fonts
+
+Large binary payloads never live inside the document or page objects. Top-level `resources`
+contains stable descriptors with an id, kind, MIME type, binary byte length, SHA-256, and part
+count. Font descriptors also carry family, weight, and style. Image nodes reference an image
+descriptor with `imageRef` and choose `fill`, `contain`, or `cover` through `objectFit`; text nodes
+may reference a font descriptor with `fontRef`.
+
+The bytes are Base64-encoded into independently bounded, content-addressed objects below
+`designs/codesign-data/images/` or `designs/codesign-data/fonts/`. Two resource ids with identical
+bytes reuse the same physical objects. Design Studio loads only resources referenced by currently
+materialized pages, verifies their byte count and SHA-256 before use, and embeds referenced images
+in SVG previews. Use the `put_design_resource` Agent tool or the editor save path; do not edit
+resource objects directly. Small Agent uploads may use inline Base64. Larger ones use ordered
+Base64 `.txt` source chunks below `designs/`, keeping each tool invocation below its argument
+budget; only the verified content-addressed result becomes part of the design library.
 
 Any painted node except a transparent organizational group may carry one optional `shadow` with
 hex `color`, 0–1 `opacity`, X/Y offset, and blur radius. Shadows are source data and render
@@ -161,11 +179,17 @@ page name so an inactive page cannot hide clipping, overflow, effect clipping, t
 multi-point text-contrast defects.
 
 Operational safety limits are 1,000 pages, 10,000 source nodes per page, 16 nested instance
-levels, 10,000 expanded render layers per page, and 32 color tokens. There is no whole-document
-byte limit. Canonical sources within the CodeShell Host's per-file write budget remain one
+levels, 10,000 expanded render layers per page, 32 color tokens, 2,048 resource descriptors, and
+64 MiB per resource. There is no whole-document byte limit. Canonical sources within the
+CodeShell Host's per-file write budget remain one
 ordinary `.codesign.json`. Larger sources use a canonical `codeshell.design.index` at that path;
 each page is an independently checksummed, content-addressed object below
 `designs/codesign-data/pages/`. Saving writes only changed page objects and commits the index last.
+Opening an index loads the active page and its transitive component dependencies, then keeps clean
+pages in a bounded cache; page reads, switching, and global operations materialize more pages only
+when required. Undo/redo records structural operations, and crash recovery persists the operation
+delta from the last saved state. Large recovery logs use verified content-addressed chunks rather
+than app-storage copies of the whole document.
 The older `codeshell.design.bundle` format remains readable and migrates on the next save. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.

@@ -49,8 +49,27 @@ import {
 } from "./document-bundle.mjs";
 import {
   createDesignIndexPersistencePlan,
-  resolveDesignIndexDocument,
+  createIncrementalDesignIndexPersistencePlan,
+  parseDesignIndexSource,
 } from "./document-index.mjs";
+import {
+  IndexedPageCache,
+  materializeIndexedDesignState,
+} from "./page-runtime.mjs";
+import {
+  createDesignResourcePersistencePlan,
+  DesignResourceCache,
+} from "./resource-store.mjs";
+import {
+  createRecoveryPersistencePlan,
+  resolveRecoveryPersistence,
+} from "./recovery-store.mjs";
+import {
+  applyDesignOperationRecord,
+  captureDesignOperationState,
+  createDesignOperationRecord,
+  isEmptyDesignOperationRecord,
+} from "./operation-log.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
@@ -68,6 +87,9 @@ const MAX_AGENT_SCREENSHOT_HEIGHT = 4_096;
 const MAX_AGENT_SCREENSHOT_RENDER_MS = 5_000;
 const MAX_AGENT_AUDIT_ISSUES = 400;
 const MAX_AGENT_CONTEXT_RESULT_BYTES = 220 * 1024;
+const MAX_INLINE_AGENT_RESOURCE_BASE64 = 48 * 1024;
+const MAX_AGENT_RESOURCE_SOURCE_FILES = 12;
+const RECOVERY_FORMAT = "codeshell.design.recovery";
 const TOOL_SHORTCUTS = {
   v: "select",
   f: "frame",
@@ -257,10 +279,15 @@ let currentSourcePath = null;
 let currentSourceModifiedAt = null;
 let currentSourceRevision = null;
 let currentDesignIndexManifest = null;
+let currentPageCache = null;
+let currentResourceCache = null;
 let currentPersistenceMode = "single";
 let savedSnapshot = "";
 let history = [];
 let historyIndex = -1;
+let historyState = null;
+let savedOperationState = null;
+let recoveryBaseDocument = null;
 let lastAgentTransaction = null;
 let agentTransactionSequence = 0;
 let agentMutationQueue = Promise.resolve();
@@ -290,6 +317,8 @@ let recoveryFailureWarned = false;
 let externalSyncTimer = null;
 let workspaceInfo = null;
 const collapsedLayerIds = new Set();
+const resourceDataUrls = new Map();
+const loadedFontResourceIds = new Set();
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
   let primary = 2_166_136_261;
@@ -327,6 +356,8 @@ function baseNode(type, overrides = {}) {
             ? "组件"
             : type === "instance"
               ? "组件实例"
+              : type === "image"
+                ? "图片"
               : type === "rectangle"
                 ? "矩形"
                 : type === "ellipse"
@@ -364,6 +395,12 @@ function baseNode(type, overrides = {}) {
       textDecoration: "none",
       textAlign: "left",
     });
+  } else if (type === "image") {
+    Object.assign(defaults, {
+      fill: "transparent",
+      imageRef: "",
+      objectFit: "cover",
+    });
   } else if (["frame", "component"].includes(type)) {
     defaults.clipContent = true;
   }
@@ -396,6 +433,7 @@ function createBlankDocument(name = "Repo design") {
     tokens: {
       colors: clone(DEFAULT_COLOR_TOKENS),
     },
+    resources: [],
     activePageId: "page-1",
     pages: [{ id: "page-1", name: "Page 1", nodes }],
     nodes,
@@ -423,9 +461,28 @@ function activeDesignPage(value = design) {
   return value.pages.find((page) => page.id === value.activePageId) ?? null;
 }
 
+function isDesignPageLoaded(page) {
+  return Array.isArray(page?.nodes);
+}
+
 function syncActivePageNodes(value = design) {
   const page = activeDesignPage(value);
-  if (page) page.nodes = value.nodes;
+  if (!page) return;
+  page.nodes = value.nodes;
+  page.nodeCount = value.nodes.length;
+  page.loaded = true;
+  if (value === design && currentPageCache?.has(page.id)) {
+    currentPageCache.set(page.id, repositoryDesignPage(value, page.id));
+  }
+}
+
+function syncLoadedPageRecords() {
+  if (!currentPageCache) return;
+  syncActivePageNodes();
+  for (const page of design.pages) {
+    if (!isDesignPageLoaded(page) || !currentPageCache.has(page.id)) continue;
+    currentPageCache.set(page.id, repositoryDesignPage(design, page.id));
+  }
 }
 
 function allDesignNodes(value = design) {
@@ -437,9 +494,11 @@ function allDesignNodes(value = design) {
 }
 
 function readableDesignPages(value = design) {
-  return (value.pages ?? []).map((page) =>
-    page.id === value.activePageId ? { ...page, nodes: value.nodes ?? [] } : page,
-  );
+  return (value.pages ?? [])
+    .filter((page) => isDesignPageLoaded(page))
+    .map((page) =>
+      page.id === value.activePageId ? { ...page, nodes: value.nodes ?? [] } : page,
+    );
 }
 
 function detachedComponentRenderDocument(documentValue, componentId) {
@@ -454,13 +513,157 @@ function detachedComponentRenderDocument(documentValue, componentId) {
 }
 
 function auditDocument(value = design) {
-  return auditDesignPages(value);
+  const loadedPages = readableDesignPages(value);
+  return auditDesignPages({
+    ...value,
+    pages: loadedPages,
+    nodes:
+      loadedPages.find((page) => page.id === value.activePageId)?.nodes ??
+      value.nodes ??
+      [],
+  });
 }
 
-function activateDesignPage(pageId) {
-  const target = design.pages.find((page) => page.id === pageId);
+function referencedDesignResourceIds(value = design) {
+  const referencedIds = new Set();
+  for (const node of allDesignNodes(value)) {
+    if (node.type === "image" && node.imageRef) referencedIds.add(node.imageRef);
+    if (node.type === "text" && node.fontRef) referencedIds.add(node.fontRef);
+  }
+  return referencedIds;
+}
+
+async function loadReferencedDesignResources() {
+  if (!currentResourceCache) return;
+  const referencedIds = referencedDesignResourceIds();
+  await Promise.all(
+    [...referencedIds].map(async (resourceId) => {
+      const resource = await currentResourceCache.load(resourceId);
+      resourceDataUrls.set(resourceId, resource.dataUrl);
+      if (
+        resource.descriptor.kind === "font" &&
+        !loadedFontResourceIds.has(resourceId) &&
+        typeof globalThis.FontFace === "function"
+      ) {
+        const fontFace = new FontFace(
+          resource.descriptor.family,
+          `url(${resource.dataUrl})`,
+          {
+            weight: String(resource.descriptor.weight),
+            style: resource.descriptor.style,
+          },
+        );
+        await fontFace.load();
+        document.fonts.add(fontFace);
+        loadedFontResourceIds.add(resourceId);
+      }
+    }),
+  );
+}
+
+async function ensureDesignPageLoaded(pageId) {
+  let target = design.pages.find((page) => page.id === pageId);
+  if (!target) throw new Error(`页面不存在：${pageId}`);
+  if (!currentPageCache || isDesignPageLoaded(target)) return target;
+  syncActivePageNodes();
+  syncLoadedPageRecords();
+  await currentPageCache.ensure(
+    pageId === design.activePageId
+      ? [pageId]
+      : [design.activePageId, pageId],
+  );
+  const records = new Map(
+    currentPageCache.loadedPageIds().map((loadedPageId) => [
+      loadedPageId,
+      currentPageCache.get(loadedPageId),
+    ]),
+  );
+  design = materializeIndexedDesignState({
+    manifest: currentPageCache.manifest,
+    records,
+    activePageId: design.activePageId,
+    metadata: design,
+  });
+  renderedPagesSignature = "";
+  if (historyState) historyState = captureDesignOperationState(design);
+  if (savedOperationState) {
+    const currentState = captureDesignOperationState(design);
+    const savedPages = new Map(savedOperationState.pages.map((page) => [page.id, page]));
+    for (const currentPage of currentState.pages) {
+      const savedPage = savedPages.get(currentPage.id);
+      if (savedPage && savedPage.nodes === null && Array.isArray(currentPage.nodes)) {
+        savedPage.nodes = clone(currentPage.nodes);
+        savedPage.nodeCount = currentPage.nodeCount;
+      }
+    }
+  }
+  await loadReferencedDesignResources();
+  return design.pages.find((page) => page.id === pageId);
+}
+
+async function ensureAllDesignPagesLoaded() {
+  if (!currentPageCache) return;
+  syncLoadedPageRecords();
+  const pageIds = design.pages.map((page) => page.id);
+  await currentPageCache.ensure(pageIds);
+  const records = new Map(
+    currentPageCache.loadedPageIds().map((pageId) => [
+      pageId,
+      currentPageCache.get(pageId),
+    ]),
+  );
+  design = materializeIndexedDesignState({
+    manifest: currentPageCache.manifest,
+    records,
+    activePageId: design.activePageId,
+    metadata: design,
+  });
+  if (historyState) historyState = captureDesignOperationState(design);
+  if (savedOperationState) {
+    const currentState = captureDesignOperationState(design);
+    const savedPages = new Map(savedOperationState.pages.map((page) => [page.id, page]));
+    for (const currentPage of currentState.pages) {
+      const savedPage = savedPages.get(currentPage.id);
+      if (savedPage && savedPage.nodes === null && Array.isArray(currentPage.nodes)) {
+        savedPage.nodes = clone(currentPage.nodes);
+        savedPage.nodeCount = currentPage.nodeCount;
+      }
+    }
+  }
+}
+
+async function compactIndexedPageRuntime() {
+  if (!currentPageCache) return;
+  syncLoadedPageRecords();
+  await currentPageCache.ensure([design.activePageId]);
+  const records = new Map(
+    currentPageCache.loadedPageIds().map((pageId) => [
+      pageId,
+      currentPageCache.get(pageId),
+    ]),
+  );
+  design = materializeIndexedDesignState({
+    manifest: currentPageCache.manifest,
+    records,
+    activePageId: design.activePageId,
+    metadata: design,
+  });
+  renderedPagesSignature = "";
+  if (historyState) historyState = captureDesignOperationState(design);
+  const retainedResourceIds = referencedDesignResourceIds();
+  currentResourceCache?.retain(retainedResourceIds);
+  for (const resourceId of resourceDataUrls.keys()) {
+    if (!retainedResourceIds.has(resourceId)) resourceDataUrls.delete(resourceId);
+  }
+}
+
+async function activateDesignPage(pageId) {
+  let target = design.pages.find((page) => page.id === pageId);
   if (!target) throw new Error(`页面不存在：${pageId}`);
   if (pageId === design.activePageId) return false;
+  await ensureDesignPageLoaded(pageId);
+  await loadReferencedDesignResources();
+  target = design.pages.find((page) => page.id === pageId);
   syncActivePageNodes();
   design.activePageId = pageId;
   design.nodes = target.nodes;
@@ -644,8 +847,32 @@ function serializeDesign() {
   return serializeDocument(design);
 }
 
+function serializeEditorState() {
+  const state = captureDesignOperationState(design);
+  if (currentPageCache) {
+    const descriptors = new Map(
+      currentPageCache.manifest.pages.map((page) => [page.id, page]),
+    );
+    const dirtyPageIds = new Set(currentPageCache.dirtyPageIds());
+    for (const page of state.pages) {
+      if (dirtyPageIds.has(page.id)) continue;
+      page.nodes = null;
+      page.sourceSha256 = descriptors.get(page.id)?.sha256 ?? null;
+    }
+  }
+  return JSON.stringify(state);
+}
+
+function estimatedDesignDocumentBytes() {
+  if (!currentPageCache) return new TextEncoder().encode(serializeDesign()).length;
+  return currentPageCache.manifest.pages.reduce(
+    (total, page) => total + page.bytes,
+    0,
+  );
+}
+
 function currentDesignStateRevision() {
-  const snapshot = `${workspaceEpoch}\u0000${context.cwd ?? ""}\u0000${elements.path.value}\u0000${serializeDesign()}`;
+  const snapshot = `${workspaceEpoch}\u0000${context.cwd ?? ""}\u0000${elements.path.value}\u0000${serializeEditorState()}`;
   let primary = 2_166_136_261;
   let secondary = 2_654_435_769;
   for (let index = 0; index < snapshot.length; index += 1) {
@@ -669,7 +896,7 @@ async function settleWorkspaceTransition() {
 }
 
 function updateDirtyState() {
-  dirty = serializeDesign() !== savedSnapshot;
+  dirty = serializeEditorState() !== savedSnapshot;
   if (warnedExternalVersion) {
     setSaveState(dirty ? "外部变更 · 本地有修改" : "源文件已在外部变更", "error");
   } else if (dirty) setSaveState("有修改", "dirty");
@@ -729,10 +956,10 @@ function canAddNodes(count) {
 
 function keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds) {
   try {
-    normalizeDesignState(design);
+    normalizeCurrentDesignState(design);
     return true;
   } catch (error) {
-    design = normalizeDesignState(previousDesign);
+    design = currentPageCache ? previousDesign : normalizeDesignState(previousDesign);
     selectedId = previousSelectedId;
     selectedIds = new Set(previousSelectedIds);
     notify(error instanceof Error ? error.message : "该操作会产生无法安全渲染的设计", "error");
@@ -748,10 +975,18 @@ function recoverySnapshot(workspaceRoot) {
       ? currentSourcePath
       : DEFAULT_PATH;
   const tracksCurrentSource = recoveryPath === currentSourcePath;
+  const currentState = captureDesignOperationState(design);
+  const record = createDesignOperationRecord(
+    savedOperationState ?? currentState,
+    currentState,
+  );
   return {
+    format: RECOVERY_FORMAT,
+    version: 1,
     workspaceRoot,
     path: recoveryPath,
-    design: clone(design),
+    record,
+    baseDocument: tracksCurrentSource ? null : clone(recoveryBaseDocument ?? createBlankDocument()),
     baseModifiedAt: tracksCurrentSource ? currentModifiedAt : null,
     baseRevision: tracksCurrentSource ? currentRevision : null,
   };
@@ -766,7 +1001,29 @@ function storeRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspace
 
 async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspaceRoot)) {
   try {
-    await storeRecovery(workspaceRoot, recoveryValue);
+    const plan = await createRecoveryPersistencePlan({
+      snapshot: recoveryValue,
+      sha256: sha256Text,
+    });
+    if (plan.mode === "external") {
+      for (const part of plan.parts) {
+        try {
+          await bundleHostCall("workspace.writeText", {
+            path: part.path,
+            content: part.content,
+            expectedModifiedAt: null,
+          });
+        } catch {
+          const existing = await bundleHostCall("workspace.readText", {
+            path: part.path,
+          });
+          if (existing.content !== part.content) {
+            throw new Error(`恢复日志分片写入冲突：${part.path}`);
+          }
+        }
+      }
+    }
+    await storeRecovery(workspaceRoot, plan.value);
     if ((context.cwd ?? null) === workspaceRoot) recoveryFailureWarned = false;
     return true;
   } catch {
@@ -776,6 +1033,14 @@ async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(w
     }
     return false;
   }
+}
+
+async function resolveRecoverySnapshot(recovery) {
+  return resolveRecoveryPersistence({
+    value: recovery,
+    readText: (path) => bundleHostCall("workspace.readText", { path }),
+    sha256: sha256Text,
+  });
 }
 
 function queueRecovery() {
@@ -801,26 +1066,73 @@ function saveUiPreferences() {
 }
 
 function resetHistory() {
-  history = [serializeDesign()];
+  history = [];
   historyIndex = 0;
+  historyState = captureDesignOperationState(design);
+  savedOperationState = clone(historyState);
   designStateSequence += 1;
   lastAgentTransaction = null;
 }
 
 function commitHistory() {
-  const snapshot = serializeDesign();
-  if (history[historyIndex] === snapshot) return;
-  history = history.slice(0, historyIndex + 1);
-  history.push(snapshot);
-  if (history.length > 60) history.shift();
-  historyIndex = history.length - 1;
+  const nextState = captureDesignOperationState(design);
+  const record = createDesignOperationRecord(historyState, nextState);
+  if (isEmptyDesignOperationRecord(record)) return;
+  if (currentPageCache) {
+    syncLoadedPageRecords();
+    for (const operation of record.operations) {
+      if (operation.type === "add-page") {
+        const page = design.pages.find((candidate) => candidate.id === operation.page.id);
+        if (page && !currentPageCache.descriptor(page.id)) {
+          currentPageCache.register(repositoryDesignPage(design, page.id), operation.index);
+        }
+        continue;
+      }
+      if (operation.type === "remove-page") {
+        currentPageCache.remove(operation.page.id);
+        continue;
+      }
+      const pageId = operation.pageId;
+      if (pageId && currentPageCache.has(pageId)) currentPageCache.markDirty(pageId);
+    }
+  }
+  history = history.slice(0, historyIndex);
+  history.push(record);
+  if (history.length > 200) history.shift();
+  historyIndex = history.length;
+  historyState = nextState;
   designStateSequence += 1;
 }
 
 function restoreHistory(nextIndex) {
-  if (nextIndex < 0 || nextIndex >= history.length) return;
-  historyIndex = nextIndex;
-  design = normalizeDocument(JSON.parse(history[historyIndex]));
+  if (nextIndex < 0 || nextIndex > history.length || nextIndex === historyIndex) return;
+  while (historyIndex > nextIndex) {
+    applyDesignOperationRecord(design, history[historyIndex - 1], "reverse");
+    historyIndex -= 1;
+  }
+  while (historyIndex < nextIndex) {
+    applyDesignOperationRecord(design, history[historyIndex], "forward");
+    historyIndex += 1;
+  }
+  if (currentPageCache) {
+    const pageIds = new Set(design.pages.map((page) => page.id));
+    for (const descriptor of [...currentPageCache.manifest.pages]) {
+      if (!pageIds.has(descriptor.id)) currentPageCache.remove(descriptor.id);
+    }
+    for (const [index, page] of design.pages.entries()) {
+      if (!isDesignPageLoaded(page)) continue;
+      const record = repositoryDesignPage(design, page.id);
+      if (!currentPageCache.descriptor(page.id)) {
+        currentPageCache.register(record, index);
+      } else {
+        currentPageCache.set(page.id, record, { dirty: true });
+      }
+    }
+    design = normalizeCurrentDesignState(design);
+  } else {
+    design = normalizeDocument(design);
+  }
+  historyState = captureDesignOperationState(design);
   designStateSequence += 1;
   selectedIds = new Set(
     [...selectedIds].filter((id) => design.nodes.some((node) => node.id === id)),
@@ -1101,6 +1413,9 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       "stroke-width": node.strokeWidth,
     });
   } else if (node.type === "text") {
+    const fontResource = node.fontRef
+      ? design.resources?.find((resource) => resource.id === node.fontRef)
+      : null;
     const textX =
       node.textAlign === "center"
         ? node.x + node.width / 2
@@ -1115,7 +1430,10 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       "stroke-width": node.strokeWidth,
       "font-size": node.fontSize,
       "font-weight": node.fontWeight,
-      "font-family": node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      "font-family":
+        fontResource?.family ??
+        node.fontFamily ??
+        "Inter, ui-sans-serif, system-ui, sans-serif",
       "font-style": node.fontStyle ?? "normal",
       "letter-spacing": node.letterSpacing ?? 0,
       "text-decoration": node.textDecoration ?? "none",
@@ -1132,6 +1450,32 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       span.textContent = line || " ";
       visual.append(span);
     });
+  } else if (node.type === "image") {
+    const source = resourceDataUrls.get(node.imageRef);
+    visual = source
+      ? svgElement("image", {
+          x: node.x,
+          y: node.y,
+          width: Math.max(1, node.width),
+          height: Math.max(1, node.height),
+          href: source,
+          preserveAspectRatio:
+            node.objectFit === "fill"
+              ? "none"
+              : node.objectFit === "contain"
+                ? "xMidYMid meet"
+                : "xMidYMid slice",
+        })
+      : svgElement("rect", {
+          x: node.x,
+          y: node.y,
+          width: Math.max(1, node.width),
+          height: Math.max(1, node.height),
+          fill: "#fff0f3",
+          stroke: "#ff5c78",
+          "stroke-width": 1.5 / zoom,
+          "stroke-dasharray": `${6 / zoom} ${4 / zoom}`,
+        });
   } else if (node.type === "group") {
     visual = svgElement("rect", {
       x: node.x,
@@ -1538,6 +1882,8 @@ function renderLayers() {
           ? "○"
           : node.type === "text"
             ? "T"
+            : node.type === "image"
+              ? "▧"
             : node.type === "group"
               ? "▣"
               : node.type === "component"
@@ -1796,8 +2142,8 @@ function renderPageManager() {
     name.value = page.name;
     name.maxLength = 120;
     name.setAttribute("aria-label", `${page.name} 页面名称`);
-    name.title = `${page.nodes.length} 个图层`;
-    name.addEventListener("change", () => {
+    name.title = `${page.nodeCount ?? page.nodes?.length ?? 0} 个图层`;
+    name.addEventListener("change", async () => {
       const nextName = name.value.trim();
       if (!validPageName(nextName)) {
         name.value = page.name;
@@ -1805,10 +2151,16 @@ function renderPageManager() {
         return;
       }
       if (nextName === page.name) return;
-      page.name = nextName;
-      commitHistory();
-      markChanged();
-      renderPageManager();
+      try {
+        const loadedPage = await ensureDesignPageLoaded(page.id);
+        loadedPage.name = nextName;
+        commitHistory();
+        markChanged();
+        renderPageManager();
+      } catch (error) {
+        name.value = page.name;
+        notify(error instanceof Error ? error.message : "无法重命名页面", "error");
+      }
     });
     name.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
@@ -1818,7 +2170,7 @@ function renderPageManager() {
 
     const count = document.createElement("span");
     count.className = "page-row-count";
-    count.textContent = `${page.nodes.length} 层`;
+    count.textContent = `${page.nodeCount ?? page.nodes?.length ?? 0} 层`;
 
     const open = document.createElement("button");
     open.type = "button";
@@ -1826,11 +2178,17 @@ function renderPageManager() {
     open.textContent = page.id === design.activePageId ? "当前" : "打开";
     open.disabled = page.id === design.activePageId;
     open.addEventListener("click", () => {
-      if (!activateDesignPage(page.id)) return;
-      commitHistory();
-      markChanged();
-      renderPageManager();
-      requestAnimationFrame(fitCanvas);
+      void activateDesignPage(page.id)
+        .then((changed) => {
+          if (!changed) return;
+          commitHistory();
+          markChanged();
+          renderPageManager();
+          requestAnimationFrame(fitCanvas);
+        })
+        .catch((error) =>
+          notify(error instanceof Error ? error.message : "无法切换页面", "error"),
+        );
     });
 
     const remove = document.createElement("button");
@@ -1840,7 +2198,11 @@ function renderPageManager() {
     remove.textContent = "删除";
     remove.disabled = design.pages.length === 1;
     remove.title = design.pages.length === 1 ? "设计文件必须保留至少一页" : `删除 ${page.name}`;
-    remove.addEventListener("click", () => deleteDesignPage(page.id));
+    remove.addEventListener("click", () => {
+      void deleteDesignPage(page.id).catch((error) =>
+        notify(error instanceof Error ? error.message : "无法删除页面", "error"),
+      );
+    });
 
     row.append(dot, name, count, open, remove);
     elements.pagesList.append(row);
@@ -2329,7 +2691,8 @@ function pasteCopied() {
   if (detached > 0) notify(`${detached} 个图层已脱离原文件中的画板`);
 }
 
-function deleteSelected() {
+async function deleteSelected() {
+  await ensureAllDesignPagesLoaded();
   const deletableRootIds = new Set(
     selectedNodes()
       .filter((node) => !isEffectivelyLocked(node))
@@ -2337,7 +2700,10 @@ function deleteSelected() {
   );
   syncActivePageNodes();
   const deletableIds = new Set(designNodeRemovalIds(design, design.activePageId, deletableRootIds));
-  if (deletableIds.size === 0) return;
+  if (deletableIds.size === 0) {
+    await compactIndexedPageRuntime();
+    return;
+  }
   for (const page of design.pages) {
     const affectedParents = new Set(
       page.nodes
@@ -2352,6 +2718,7 @@ function deleteSelected() {
   selectedId = [...selectedIds].at(-1) ?? null;
   commitHistory();
   markChanged();
+  await compactIndexedPageRuntime();
 }
 
 function frameSelectedNodes() {
@@ -2551,8 +2918,37 @@ function normalizeDocument(input) {
   return Array.isArray(input?.nodes) ? normalizeDesignState(input) : normalizeDesignDocument(input);
 }
 
+function normalizeCurrentDesignState(value = design) {
+  if (!currentPageCache) return normalizeDesignState(value);
+  const records = new Map();
+  for (const page of value.pages) {
+    if (!isDesignPageLoaded(page)) continue;
+    records.set(page.id, repositoryDesignPage(value, page.id));
+  }
+  return materializeIndexedDesignState({
+    manifest: currentPageCache.manifest,
+    records,
+    activePageId: value.activePageId,
+    metadata: value,
+  });
+}
+
 function safeDesignPath(value) {
   return isSafeDesignPath(value);
+}
+
+function safeDesignResourceSourcePath(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 512 &&
+    value.startsWith("designs/") &&
+    value.endsWith(".txt") &&
+    !value.includes("\\") &&
+    !value.includes(":") &&
+    !value.split("/").includes("..") &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
 }
 
 function mockHostCall(method, params = {}) {
@@ -2614,6 +3010,8 @@ function mockHostCall(method, params = {}) {
     });
   }
   if (method === "workspace.readText") {
+    globalThis.__designStudioMockReads ??= [];
+    globalThis.__designStudioMockReads.push(params.path);
     const content = localStorage.getItem(`${prefix}file:${params.path}`);
     if (content == null) return Promise.reject(new Error("file not found"));
     const modifiedAt = Number(localStorage.getItem(`${prefix}mtime:${params.path}`)) || Date.now();
@@ -2696,6 +3094,14 @@ async function sha256Text(value) {
     .join("");
 }
 
+async function sha256Bytes(value) {
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 async function resolveWorkspaceDesignSource(
   primaryResult,
   expectedWorkspaceEpoch = workspaceEpoch,
@@ -2705,17 +3111,44 @@ async function resolveWorkspaceDesignSource(
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
     return result;
   };
-  const indexed = await resolveDesignIndexDocument({
+  const manifest = parseDesignIndexSource(primaryResult.content);
+  if (manifest) {
+    const pageCache = new IndexedPageCache({
+      manifest,
+      readText,
+      sha256: sha256Text,
+    });
+    const records = await pageCache.ensure([manifest.activePageId]);
+    return {
+      mode: "indexed",
+      manifest,
+      pageCache,
+      resourceCache: new DesignResourceCache({
+        resources: manifest.resources,
+        readText,
+        sha256Bytes,
+      }),
+      document: materializeIndexedDesignState({
+        manifest,
+        records,
+        activePageId: manifest.activePageId,
+      }),
+    };
+  }
+  const resolved = await resolveDesignPersistenceSource({
     primarySource: primaryResult.content,
     readText,
     sha256: sha256Text,
   });
-  if (indexed) return indexed;
-  return resolveDesignPersistenceSource({
-    primarySource: primaryResult.content,
-    readText,
-    sha256: sha256Text,
-  });
+  const repository = resolved.document ?? JSON.parse(resolved.source);
+  return {
+    ...resolved,
+    resourceCache: new DesignResourceCache({
+      resources: repository.resources ?? [],
+      readText,
+      sha256Bytes,
+    }),
+  };
 }
 
 async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEpoch) {
@@ -2752,10 +3185,23 @@ function captureSaveDocument({ quiet = false } = {}) {
   }
   let content;
   let savedDesign;
+  let pageRecords = null;
   try {
-    design = normalizeDocument(design);
-    savedDesign = clone(design);
-    content = serializeDesign();
+    if (currentPageCache) {
+      syncLoadedPageRecords();
+      savedDesign = clone(design);
+      content = serializeEditorState();
+      pageRecords = new Map(
+        currentPageCache.loadedPageIds().map((pageId) => [
+          pageId,
+          clone(currentPageCache.get(pageId)),
+        ]),
+      );
+    } else {
+      design = normalizeDocument(design);
+      savedDesign = clone(design);
+      content = serializeDesign();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "设计文件无效";
     setSaveState(/KiB|MiB/u.test(message) ? "文件过大" : "设计无效", "error");
@@ -2769,6 +3215,7 @@ function captureSaveDocument({ quiet = false } = {}) {
     path,
     content,
     savedDesign,
+    pageRecords,
     previousIndexManifest: currentDesignIndexManifest
       ? clone(currentDesignIndexManifest)
       : null,
@@ -2785,6 +3232,7 @@ async function performSaveDocument(request) {
     path,
     content,
     savedDesign,
+    pageRecords,
     previousIndexManifest,
     quiet,
   } = request;
@@ -2795,8 +3243,14 @@ async function performSaveDocument(request) {
   setSaveState("保存中…", "idle");
   try {
     const contentBytes = new TextEncoder().encode(content).length;
-    const persistence =
-      contentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES || previousIndexManifest
+    const persistence = pageRecords
+      ? await createIncrementalDesignIndexPersistencePlan({
+          document: savedDesign,
+          pageRecords,
+          sha256: sha256Text,
+          previousManifest: previousIndexManifest,
+        })
+      : contentBytes > MAX_WORKSPACE_DESIGN_TEXT_BYTES || previousIndexManifest
         ? await createDesignIndexPersistencePlan({
             document: savedDesign,
             sha256: sha256Text,
@@ -2845,8 +3299,13 @@ async function performSaveDocument(request) {
       currentSourceRevision = result.revision;
       currentDesignIndexManifest =
         persistence.mode === "indexed" ? persistence.manifest : null;
+      if (currentPageCache && persistence.mode === "indexed") {
+        currentPageCache.updateManifest(persistence.manifest);
+      }
       currentPersistenceMode = persistence.mode;
-      savedSnapshot = content;
+      savedSnapshot = serializeEditorState();
+      savedOperationState = captureDesignOperationState(design);
+      recoveryBaseDocument = null;
       updateDirtyState();
       setRepoLinkState("Repo · 已保存", "linked");
       await hostCall("storage.set", {
@@ -2967,7 +3426,9 @@ async function openDocument(path, { discardChanges = false } = {}) {
     }
     const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    design = normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
+    design = resolved.pageCache
+      ? resolved.document
+      : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
     documentEpoch += 1;
     clearSelection();
     currentModifiedAt = result.modifiedAt;
@@ -2977,11 +3438,17 @@ async function openDocument(path, { discardChanges = false } = {}) {
     currentSourceModifiedAt = result.modifiedAt;
     currentSourceRevision = result.revision;
     currentDesignIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+    currentPageCache = resolved.pageCache ?? null;
+    currentResourceCache = resolved.resourceCache ?? null;
+    resourceDataUrls.clear();
+    loadedFontResourceIds.clear();
+    recoveryBaseDocument = null;
     currentPersistenceMode = resolved.mode;
     elements.path.value = path;
-    savedSnapshot = serializeDesign();
+    savedSnapshot = serializeEditorState();
     resetHistory();
     updateDirtyState();
+    await loadReferencedDesignResources();
     setRepoLinkState("Repo · 已打开", "linked");
     renderAll();
     requestAnimationFrame(fitCanvas);
@@ -3051,7 +3518,9 @@ async function checkExternalChange({ force = false } = {}) {
     if (!dirty) {
       try {
         const resolved = await resolveWorkspaceDesignSource(disk, operationWorkspaceEpoch);
-        const nextDesign = normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
+        const nextDesign = resolved.pageCache
+          ? resolved.document
+          : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
         assertWorkspaceEpoch(operationWorkspaceEpoch);
         if (
           operationDocumentEpoch !== documentEpoch ||
@@ -3070,11 +3539,17 @@ async function checkExternalChange({ force = false } = {}) {
         currentSourceModifiedAt = disk.modifiedAt;
         currentSourceRevision = disk.revision;
         currentDesignIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+        currentPageCache = resolved.pageCache ?? null;
+        currentResourceCache = resolved.resourceCache ?? null;
+        resourceDataUrls.clear();
+        loadedFontResourceIds.clear();
+        recoveryBaseDocument = null;
         currentPersistenceMode = resolved.mode;
         warnedExternalVersion = null;
-        savedSnapshot = serializeDesign();
+        savedSnapshot = serializeEditorState();
         resetHistory();
         updateDirtyState();
+        await loadReferencedDesignResources();
         renderAll();
         setRepoLinkState("Repo 已同步", "linked");
         notify(`已同步 Agent 对 ${sourcePath} 的修改`);
@@ -3194,9 +3669,7 @@ function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
     copy.append(name, path);
     const size = document.createElement("span");
     size.className = "file-size";
-    const logicalBytes = active
-      ? new TextEncoder().encode(serializeDesign()).length
-      : Number(file.size) || 0;
+    const logicalBytes = active ? estimatedDesignDocumentBytes() : Number(file.size) || 0;
     const storageLabel = active
       ? currentPersistenceMode === "indexed"
         ? " · 索引文档"
@@ -3290,6 +3763,7 @@ async function replaceDesignWithHtmlImport(
   imported,
   { save = false, recordAgentTransaction = false, sourcePath } = {},
 ) {
+  await ensureAllDesignPagesLoaded();
   const nextDesign = normalizeDocument(imported);
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
@@ -3318,18 +3792,31 @@ async function replaceDesignWithHtmlImport(
 
   const previousHistory = [...history];
   const previousHistoryIndex = historyIndex;
+  const previousHistoryState = clone(historyState);
   const previousSelectedId = selectedId;
   const previousSelectedIds = new Set(selectedIds);
   const previousCollapsedLayerIds = new Set(collapsedLayerIds);
   const previousDocumentEpoch = documentEpoch;
   const previousDesignStateSequence = designStateSequence;
   const previousAgentTransaction = lastAgentTransaction;
+  const previousPageCache = currentPageCache;
+  const previousResourceCache = currentResourceCache;
+  const previousResourceDataUrls = new Map(resourceDataUrls);
+  const previousLoadedFontResourceIds = new Set(loadedFontResourceIds);
   const changedNodeIds = new Set([
     ...allDesignNodes(previous).map((node) => node.id),
     ...allDesignNodes(nextDesign).map((node) => node.id),
   ]);
 
   design = nextDesign;
+  currentPageCache = null;
+  currentResourceCache = new DesignResourceCache({
+    resources: nextDesign.resources ?? [],
+    readText: (path) => bundleHostCall("workspace.readText", { path }),
+    sha256Bytes,
+  });
+  resourceDataUrls.clear();
+  loadedFontResourceIds.clear();
   documentEpoch += 1;
   clearSelection();
   collapsedLayerIds.clear();
@@ -3343,6 +3830,7 @@ async function replaceDesignWithHtmlImport(
       design = normalizeDesignState(previous);
       history = previousHistory;
       historyIndex = previousHistoryIndex;
+      historyState = previousHistoryState;
       selectedId = previousSelectedId;
       selectedIds = previousSelectedIds;
       collapsedLayerIds.clear();
@@ -3350,6 +3838,12 @@ async function replaceDesignWithHtmlImport(
       documentEpoch = previousDocumentEpoch;
       designStateSequence = previousDesignStateSequence;
       lastAgentTransaction = previousAgentTransaction;
+      currentPageCache = previousPageCache;
+      currentResourceCache = previousResourceCache;
+      resourceDataUrls.clear();
+      for (const [id, dataUrl] of previousResourceDataUrls) resourceDataUrls.set(id, dataUrl);
+      loadedFontResourceIds.clear();
+      for (const id of previousLoadedFontResourceIds) loadedFontResourceIds.add(id);
       markChanged();
       throw error;
     }
@@ -3360,7 +3854,7 @@ async function replaceDesignWithHtmlImport(
     transactionId = `design-tx-${Date.now().toString(36)}-${++agentTransactionSequence}`;
     lastAgentTransaction = {
       id: transactionId,
-      previousSnapshot,
+      previousHistoryIndex,
       previousSelectedId,
       previousSelectedIds: [...previousSelectedIds],
       resultSelectedId: null,
@@ -3474,7 +3968,8 @@ async function runHtmlImportFromDialog() {
   }
 }
 
-function showAudit() {
+async function showAudit() {
+  await ensureAllDesignPagesLoaded();
   const issues = auditDocument();
   const summary = summarizeAudit(issues);
   const totalNodeCount = allDesignNodes().length;
@@ -3515,19 +4010,23 @@ function showAudit() {
       copy.append(name, message, meta);
       item.append(dot, copy);
       item.addEventListener("click", () => {
-        const pageChanged =
-          issue.pageId && issue.pageId !== design.activePageId
-            ? activateDesignPage(issue.pageId)
-            : false;
-        selectOnly(issue.nodeId);
-        elements.auditDialog.close();
-        if (pageChanged) {
-          commitHistory();
-          markChanged();
-          requestAnimationFrame(fitSelection);
-        } else {
-          renderAll();
-        }
+        void (async () => {
+          const pageChanged =
+            issue.pageId && issue.pageId !== design.activePageId
+              ? await activateDesignPage(issue.pageId)
+              : false;
+          selectOnly(issue.nodeId);
+          elements.auditDialog.close();
+          if (pageChanged) {
+            commitHistory();
+            markChanged();
+            requestAnimationFrame(fitSelection);
+          } else {
+            renderAll();
+          }
+        })().catch((error) =>
+          notify(error instanceof Error ? error.message : "无法定位问题图层", "error"),
+        );
       });
       elements.auditResults.append(item);
     }
@@ -3538,10 +4037,12 @@ function showAudit() {
       elements.auditResults.append(truncated);
     }
   }
+  await compactIndexedPageRuntime();
   elements.auditDialog.showModal();
 }
 
 async function saveAuditReport() {
+  await ensureAllDesignPagesLoaded();
   const operationWorkspaceEpoch = workspaceEpoch;
   const sourcePath = elements.path.value.trim();
   if (!safeDesignPath(sourcePath)) return notify("先设置有效的设计文件路径", "error");
@@ -3562,6 +4063,7 @@ async function saveAuditReport() {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     notify(error instanceof Error ? error.message : "检查报告保存失败", "error");
   } finally {
+    await compactIndexedPageRuntime();
     if (workspaceEpoch === operationWorkspaceEpoch) {
       elements.saveAuditReport.disabled = context.trusted !== true;
     }
@@ -3571,6 +4073,7 @@ async function saveAuditReport() {
 function newDocument() {
   if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
   design = createBlankDocument("Untitled");
+  recoveryBaseDocument = clone(design);
   documentEpoch += 1;
   clearSelection();
   collapsedLayerIds.clear();
@@ -3581,6 +4084,10 @@ function newDocument() {
   currentSourceModifiedAt = null;
   currentSourceRevision = null;
   currentDesignIndexManifest = null;
+  currentPageCache = null;
+  currentResourceCache = null;
+  resourceDataUrls.clear();
+  loadedFontResourceIds.clear();
   currentPersistenceMode = "single";
   elements.path.value = "designs/untitled.codesign.json";
   savedSnapshot = "";
@@ -3599,7 +4106,7 @@ function nextPageIdentity() {
   return { id: `page-${number}`, name: `Page ${number}` };
 }
 
-function createDesignPage() {
+async function createDesignPage() {
   if (design.pages.length >= MAX_DESIGN_PAGES) {
     notify(`设计文件最多 ${MAX_DESIGN_PAGES} 页`, "error");
     return;
@@ -3607,7 +4114,7 @@ function createDesignPage() {
   syncActivePageNodes();
   const page = { ...nextPageIdentity(), nodes: [] };
   design.pages.push(page);
-  activateDesignPage(page.id);
+  await activateDesignPage(page.id);
   commitHistory();
   markChanged();
   if (elements.pagesDialog.open) renderPageManager();
@@ -3615,11 +4122,12 @@ function createDesignPage() {
   requestAnimationFrame(fitCanvas);
 }
 
-function deleteDesignPage(pageId) {
+async function deleteDesignPage(pageId) {
   if (design.pages.length === 1) {
     notify("设计文件必须保留至少一页", "error");
     return;
   }
+  await ensureAllDesignPagesLoaded();
   syncActivePageNodes();
   const pageIndex = design.pages.findIndex((page) => page.id === pageId);
   const page = design.pages[pageIndex];
@@ -3644,11 +4152,14 @@ function deleteDesignPage(pageId) {
   commitHistory();
   markChanged();
   renderPageManager();
+  await compactIndexedPageRuntime();
   notify(`已删除 ${page.name}`);
   if (deletingActivePage) requestAnimationFrame(fitCanvas);
 }
 
 async function exportSvg() {
+  await ensureAllDesignPagesLoaded();
+  await loadReferencedDesignResources();
   const operationWorkspaceEpoch = workspaceEpoch;
   const sourcePath = elements.path.value.trim();
   if (!safeDesignPath(sourcePath)) {
@@ -3660,7 +4171,11 @@ async function exportSvg() {
   try {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    await writeRepoText(path, exportDesignSvg(saved.design), operationWorkspaceEpoch);
+    await writeRepoText(
+      path,
+      exportDesignSvg(saved.design, { resourceDataUrls }),
+      operationWorkspaceEpoch,
+    );
     notify(`SVG 已导出到 ${path}`);
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
@@ -3672,6 +4187,7 @@ async function exportSvg() {
       "error",
     );
   } finally {
+    await compactIndexedPageRuntime();
     if (workspaceEpoch === operationWorkspaceEpoch) {
       elements.exportSvg.disabled = context.trusted !== true;
     }
@@ -4276,24 +4792,30 @@ elements.toggleSnap.addEventListener("click", () => {
   renderAll();
 });
 elements.activePage.addEventListener("change", () => {
-  try {
-    if (!activateDesignPage(elements.activePage.value)) return;
-    commitHistory();
-    markChanged();
-    requestAnimationFrame(fitCanvas);
-  } catch (error) {
-    renderPages();
-    notify(error instanceof Error ? error.message : "无法切换页面", "error");
-  }
+  void activateDesignPage(elements.activePage.value)
+    .then((changed) => {
+      if (!changed) return;
+      commitHistory();
+      markChanged();
+      requestAnimationFrame(fitCanvas);
+    })
+    .catch((error) => {
+      renderPages();
+      notify(error instanceof Error ? error.message : "无法切换页面", "error");
+    });
 });
-elements.addPage.addEventListener("click", createDesignPage);
+elements.addPage.addEventListener("click", () => void createDesignPage());
 elements.managePages.addEventListener("click", () => {
   renderPageManager();
   elements.pagesDialog.showModal();
 });
-elements.addPageDialog.addEventListener("click", createDesignPage);
+elements.addPageDialog.addEventListener("click", () => void createDesignPage());
 elements.save.addEventListener("click", () => void saveDocument().catch(() => undefined));
-elements.runAudit.addEventListener("click", showAudit);
+elements.runAudit.addEventListener("click", () => {
+  void showAudit().catch((error) =>
+    notify(error instanceof Error ? error.message : "无法检查设计", "error"),
+  );
+});
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
 elements.exportSvg.addEventListener("click", () => void exportSvg());
 elements.openFiles.addEventListener("click", () => void showFiles());
@@ -4430,7 +4952,9 @@ window.addEventListener("keydown", (event) => {
   const nodes = selectedNodes();
   if ((event.key === "Delete" || event.key === "Backspace") && nodes.length > 0) {
     event.preventDefault();
-    deleteSelected();
+    void deleteSelected().catch((error) =>
+      notify(error instanceof Error ? error.message : "无法删除图层", "error"),
+    );
     return;
   }
   const transformNodes = selectedTransformNodes();
@@ -4504,6 +5028,10 @@ function updateContext(next) {
     currentSourceModifiedAt = null;
     currentSourceRevision = null;
     currentDesignIndexManifest = null;
+    currentPageCache = null;
+    currentResourceCache = null;
+    resourceDataUrls.clear();
+    loadedFontResourceIds.clear();
     currentPersistenceMode = "single";
     warnedExternalVersion = null;
     fileDiscoveryCache = null;
@@ -4557,23 +5085,28 @@ function updateContext(next) {
 }
 
 async function restoreRecovery(
-  recovery,
+  recoveryInput,
   expectedWorkspaceEpoch = workspaceEpoch,
   workspaceRoot = context.cwd ?? null,
 ) {
+  const recovery = await resolveRecoverySnapshot(recoveryInput);
   if (
     !recovery ||
     typeof recovery !== "object" ||
+    recovery.format !== RECOVERY_FORMAT ||
+    recovery.version !== 1 ||
     recovery.workspaceRoot !== workspaceRoot ||
     typeof recovery.path !== "string" ||
     !safeDesignPath(recovery.path)
   ) {
     return false;
   }
-  const recoveredDesign = normalizeDocument(recovery.design);
-  const hasRecoveryBase = Object.prototype.hasOwnProperty.call(recovery, "baseModifiedAt");
-  const hasRecoveryRevision = Object.prototype.hasOwnProperty.call(recovery, "baseRevision");
-  if (!hasRecoveryBase || !hasRecoveryRevision) {
+  if (
+    !Object.prototype.hasOwnProperty.call(recovery, "baseModifiedAt") ||
+    !Object.prototype.hasOwnProperty.call(recovery, "baseRevision") ||
+    !recovery.record ||
+    typeof recovery.record !== "object"
+  ) {
     throw new Error("恢复快照缺少文件版本守卫");
   }
   if (
@@ -4590,7 +5123,10 @@ async function restoreRecovery(
   let diskRevision = null;
   let diskFound = false;
   let diskIndexManifest = null;
+  let diskPageCache = null;
+  let diskResourceCache = null;
   let diskPersistenceMode = "single";
+  let baseDesign = null;
   try {
     const disk = await hostCall("workspace.readText", { path: recovery.path });
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
@@ -4599,27 +5135,39 @@ async function restoreRecovery(
     diskRevision = disk.revision;
     const resolved = await resolveWorkspaceDesignSource(disk, expectedWorkspaceEpoch);
     diskIndexManifest = resolved.mode === "indexed" ? resolved.manifest : null;
+    diskPageCache = resolved.pageCache ?? null;
+    diskResourceCache = resolved.resourceCache ?? null;
     diskPersistenceMode = resolved.mode;
-    diskSnapshot = serializeDocument(
-      normalizeDocument(resolved.document ?? JSON.parse(resolved.source)),
-    );
+    baseDesign = resolved.pageCache
+      ? resolved.document
+      : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
   } catch {
     // A new unsaved document has no disk baseline yet.
+  }
+  if (!baseDesign) {
+    if (!recovery.baseDocument) throw new Error("恢复日志找不到可重放的基础设计");
+    baseDesign = normalizeDocument(recovery.baseDocument);
   }
   assertWorkspaceEpoch(expectedWorkspaceEpoch);
   const recoveryBaseChanged = workspaceVersionChanged(
     { modifiedAt: recovery.baseModifiedAt, revision: recovery.baseRevision },
     { found: diskFound, modifiedAt: diskModifiedAt, revision: diskRevision },
   );
-  design = recoveredDesign;
+  design = baseDesign;
+  currentPageCache = diskPageCache;
+  currentResourceCache =
+    diskResourceCache ??
+    new DesignResourceCache({
+      resources: baseDesign.resources ?? [],
+      readText: (path) => bundleHostCall("workspace.readText", { path }),
+      sha256Bytes,
+    });
+  resourceDataUrls.clear();
+  loadedFontResourceIds.clear();
   documentEpoch += 1;
   clearSelection();
-  currentModifiedAt = hasRecoveryBase ? recovery.baseModifiedAt : diskModifiedAt;
-  currentRevision = hasRecoveryRevision
-    ? recovery.baseRevision
-    : hasRecoveryBase
-      ? null
-      : diskRevision;
+  currentModifiedAt = recovery.baseModifiedAt;
+  currentRevision = recovery.baseRevision;
   warnedExternalVersion = recoveryBaseChanged
     ? (diskRevision ?? (diskFound ? `mtime:${diskModifiedAt}` : "missing"))
     : null;
@@ -4628,9 +5176,46 @@ async function restoreRecovery(
   currentSourceRevision = currentRevision;
   currentDesignIndexManifest = diskIndexManifest;
   currentPersistenceMode = diskPersistenceMode;
+  recoveryBaseDocument = diskFound ? null : clone(baseDesign);
   elements.path.value = recovery.path;
-  savedSnapshot = diskSnapshot;
   resetHistory();
+  await ensureAllDesignPagesLoaded();
+  await loadReferencedDesignResources();
+  savedSnapshot = serializeEditorState();
+  savedOperationState = captureDesignOperationState(design);
+  const replayBefore = captureDesignOperationState(design);
+  applyDesignOperationRecord(design, recovery.record, "forward");
+  if (currentPageCache) {
+    const recoveryDirtyPageIds = new Set(
+      recovery.record.operations
+        .map((operation) => operation.pageId ?? operation.page?.id ?? null)
+        .filter(Boolean),
+    );
+    const pageIds = new Set(design.pages.map((page) => page.id));
+    for (const descriptor of [...currentPageCache.manifest.pages]) {
+      if (!pageIds.has(descriptor.id)) currentPageCache.remove(descriptor.id);
+    }
+    for (const [index, page] of design.pages.entries()) {
+      if (!isDesignPageLoaded(page)) continue;
+      const record = repositoryDesignPage(design, page.id);
+      if (!currentPageCache.descriptor(page.id)) {
+        currentPageCache.register(record, index);
+      } else {
+        currentPageCache.set(page.id, record, {
+          dirty: recoveryDirtyPageIds.has(page.id),
+        });
+      }
+    }
+    design = normalizeCurrentDesignState(design);
+  } else {
+    design = normalizeDocument(design);
+  }
+  const replayAfter = captureDesignOperationState(design);
+  const replayRecord = createDesignOperationRecord(replayBefore, replayAfter);
+  history = isEmptyDesignOperationRecord(replayRecord) ? [] : [replayRecord];
+  historyIndex = history.length;
+  historyState = replayAfter;
+  designStateSequence += 1;
   updateDirtyState();
   renderAll();
   requestAnimationFrame(fitCanvas);
@@ -4647,18 +5232,22 @@ async function restoreRecovery(
     currentSourceModifiedAt = diskModifiedAt;
     currentSourceRevision = diskRevision;
     warnedExternalVersion = null;
+    savedSnapshot = serializeEditorState();
+    savedOperationState = captureDesignOperationState(design);
     updateDirtyState();
     await hostCall("storage.delete", {
       key: scopedStorageKey("recovery", workspaceRoot ?? "preview"),
     }).catch(() => undefined);
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
   }
+  await compactIndexedPageRuntime();
   return true;
 }
 
 function resetToRepoBlankDocument() {
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
+  recoveryBaseDocument = clone(design);
   documentEpoch += 1;
   clearSelection();
   collapsedLayerIds.clear();
@@ -4668,6 +5257,10 @@ function resetToRepoBlankDocument() {
   currentSourceModifiedAt = null;
   currentSourceRevision = null;
   currentDesignIndexManifest = null;
+  currentPageCache = null;
+  currentResourceCache = null;
+  resourceDataUrls.clear();
+  loadedFontResourceIds.clear();
   currentPersistenceMode = "single";
   warnedExternalVersion = null;
   elements.path.value = DEFAULT_PATH;
@@ -4983,7 +5576,10 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "textOverflow",
   "textFlowWidth",
   "layoutBaselineOffset",
+  "fontRef",
   "textAlign",
+  "imageRef",
+  "objectFit",
   "layout",
   "layoutWrap",
   "gap",
@@ -5057,6 +5653,9 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "textOverflow",
         "textFlowWidth",
         "layoutBaselineOffset",
+        "fontRef",
+        "imageRef",
+        "objectFit",
         "clipContent",
         "layoutWrap",
         "rowGap",
@@ -5175,10 +5774,19 @@ async function applyAgentDesignOperations(args) {
   if (containsPageOperation && containsNonPageOperation) {
     throw new Error("页面操作必须使用独立事务，不能与节点或文档属性操作混合");
   }
+  if (
+    args.operations.some(
+      (operation) =>
+        operation?.op === "delete_node" || operation?.op === "delete_page",
+    )
+  ) {
+    await ensureAllDesignPagesLoaded();
+  }
   const previous = clone(design);
-  const previousSnapshot = serializeDocument(previous);
+  const previousSnapshot = serializeEditorState();
   const previousHistory = [...history];
   const previousHistoryIndex = historyIndex;
+  const previousHistoryState = clone(historyState);
   const previousSelectedId = selectedId;
   const previousSelectedIds = new Set(selectedIds);
   const previousAgentTransaction = lastAgentTransaction;
@@ -5399,9 +6007,15 @@ async function applyAgentDesignOperations(args) {
         }
         syncActivePageNodes();
         design.pages.push({ id: operation.id, name: operation.name, nodes: [] });
-        if (operation.switch !== false) activateDesignPage(operation.id);
+        if (currentPageCache) {
+          currentPageCache.register(
+            repositoryDesignPage(design, operation.id),
+            design.pages.length - 1,
+          );
+        }
+        if (operation.switch !== false) await activateDesignPage(operation.id);
       } else if (operation.op === "rename_page") {
-        const page = design.pages.find((candidate) => candidate.id === operation.page_id);
+        const page = await ensureDesignPageLoaded(operation.page_id);
         if (!page) throw new Error(`页面不存在：${operation.page_id}`);
         if (
           typeof operation.name !== "string" ||
@@ -5413,8 +6027,9 @@ async function applyAgentDesignOperations(args) {
         }
         page.name = operation.name;
       } else if (operation.op === "set_active_page") {
-        activateDesignPage(operation.page_id);
+        await activateDesignPage(operation.page_id);
       } else if (operation.op === "delete_page") {
+        await ensureAllDesignPagesLoaded();
         if (design.pages.length === 1) throw new Error("不能删除设计文件中的最后一页");
         const pageIndex = design.pages.findIndex((page) => page.id === operation.page_id);
         if (pageIndex < 0) throw new Error(`页面不存在：${operation.page_id}`);
@@ -5430,6 +6045,7 @@ async function applyAgentDesignOperations(args) {
         }
         const deletingActivePage = operation.page_id === design.activePageId;
         design.pages.splice(pageIndex, 1);
+        currentPageCache?.remove(operation.page_id);
         if (deletingActivePage) {
           const nextPage = design.pages[Math.min(pageIndex, design.pages.length - 1)];
           design.activePageId = nextPage.id;
@@ -5440,21 +6056,22 @@ async function applyAgentDesignOperations(args) {
     }
     normalizeNodeTreeOrder(design.nodes);
     applyAutoLayouts(design.nodes, layoutContainerIds);
-    design = normalizeDesignState(design);
+    design = normalizeCurrentDesignState(design);
   } catch (error) {
-    design = normalizeDesignState(previous);
+    design = currentPageCache ? previous : normalizeDesignState(previous);
     selectedId = previousSelectedId;
     selectedIds = previousSelectedIds;
     lastAgentTransaction = previousAgentTransaction;
+    await compactIndexedPageRuntime();
     throw error;
   }
-  if (serializeDesign() === previousSnapshot) {
+  if (serializeEditorState() === previousSnapshot) {
     selectedId = previousSelectedId;
     selectedIds = previousSelectedIds;
     lastAgentTransaction = previousAgentTransaction;
     let result = null;
     if (args.save !== false) result = await saveDocument({ quiet: true });
-    return {
+    const noOpResult = {
       path: elements.path.value.trim(),
       saved: args.save !== false,
       noOp: true,
@@ -5467,6 +6084,8 @@ async function applyAgentDesignOperations(args) {
       stateRevision: currentDesignStateRevision(),
       audit: summarizeAudit(auditDocument()),
     };
+    await compactIndexedPageRuntime();
+    return noOpResult;
   }
   if (containsNodeOperation) {
     selectedIds = new Set([...changedIds].filter((id) => nodeById(id)));
@@ -5483,14 +6102,16 @@ async function applyAgentDesignOperations(args) {
     try {
       await saveDocument({ quiet: true });
     } catch (error) {
-      design = normalizeDesignState(previous);
+      design = currentPageCache ? previous : normalizeDesignState(previous);
       history = previousHistory;
       historyIndex = previousHistoryIndex;
+      historyState = previousHistoryState;
       selectedId = previousSelectedId;
       selectedIds = previousSelectedIds;
       lastAgentTransaction = previousAgentTransaction;
       designStateSequence = previousDesignStateSequence;
       markChanged();
+      await compactIndexedPageRuntime();
       throw error;
     }
   }
@@ -5516,7 +6137,7 @@ async function applyAgentDesignOperations(args) {
   const transactionId = `design-tx-${Date.now().toString(36)}-${++agentTransactionSequence}`;
   lastAgentTransaction = {
     id: transactionId,
-    previousSnapshot,
+    previousHistoryIndex,
     previousSelectedId,
     previousSelectedIds: [...previousSelectedIds],
     resultSelectedId: selectedId,
@@ -5526,7 +6147,7 @@ async function applyAgentDesignOperations(args) {
     stateRevision: currentDesignStateRevision(),
     changedNodeIds: [...actualChangedIds],
   };
-  return {
+  const mutationResult = {
     path: elements.path.value.trim(),
     saved: args.save !== false,
     noOp: false,
@@ -5539,6 +6160,9 @@ async function applyAgentDesignOperations(args) {
     stateRevision: currentDesignStateRevision(),
     audit,
   };
+  await compactIndexedPageRuntime();
+  mutationResult.stateRevision = currentDesignStateRevision();
+  return mutationResult;
 }
 
 const V3_AGENT_NODE_TYPES = new Set([
@@ -5549,6 +6173,7 @@ const V3_AGENT_NODE_TYPES = new Set([
   "rectangle",
   "ellipse",
   "text",
+  "image",
 ]);
 const AGENT_NODE_REFERENCE_PATTERN = /^[^\u0000-\u001f\u007f]{1,160}$/u;
 const AGENT_STABLE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
@@ -5632,7 +6257,6 @@ async function rollbackAgentDesign(args) {
   }
   if (
     historyIndex !== transaction.historyIndex ||
-    history[historyIndex] !== serializeDesign() ||
     currentRevision !== transaction.revision ||
     currentDesignStateRevision() !== transaction.stateRevision
   ) {
@@ -5646,16 +6270,14 @@ async function rollbackAgentDesign(args) {
     selectedId === transaction.resultSelectedId &&
     selectedIds.size === transaction.resultSelectedIds.length &&
     transaction.resultSelectedIds.every((id) => selectedIds.has(id));
-  if (transaction.previousSnapshot !== history[historyIndex]) {
-    const previousIndex = history.lastIndexOf(
-      transaction.previousSnapshot,
-      Math.max(0, historyIndex - 1),
-    );
-    if (previousIndex < 0) {
-      throw new Error("回滚快照已不在本地历史中；为避免覆盖新修改，拒绝回滚");
-    }
-    restoreHistory(previousIndex);
+  if (
+    !Number.isInteger(transaction.previousHistoryIndex) ||
+    transaction.previousHistoryIndex < 0 ||
+    transaction.previousHistoryIndex >= historyIndex
+  ) {
+    throw new Error("回滚操作已不在本地日志中；为避免覆盖新修改，拒绝回滚");
   }
+  restoreHistory(transaction.previousHistoryIndex);
   if (selectionUnchangedSinceTransaction) {
     selectedIds = new Set(transaction.previousSelectedIds.filter((id) => nodeById(id)));
     selectedId = selectedIds.has(transaction.previousSelectedId)
@@ -5696,11 +6318,151 @@ async function rollbackAgentDesign(args) {
 function registerAgentTools(ready) {
   const register = window.codeshellPanel?.registerTool;
   if (!register) return;
+  register("put_design_resource", async (args = {}) => {
+    await ready;
+    assertAgentToolArguments(
+      args,
+      new Set([
+        "id",
+        "kind",
+        "mime",
+        "base64",
+        "source_paths",
+        "family",
+        "weight",
+        "style",
+        "save",
+        "expected_state_revision",
+      ]),
+      "put_design_resource",
+    );
+    if (
+      typeof args.expected_state_revision !== "string" ||
+      args.expected_state_revision !== currentDesignStateRevision()
+    ) {
+      throw new Error("设计状态已变化；请重新读取元数据后再写入资源");
+    }
+    const hasInlineBase64 = typeof args.base64 === "string";
+    const hasSourcePaths = Array.isArray(args.source_paths);
+    if (hasInlineBase64 === hasSourcePaths) {
+      throw new Error("put_design_resource 必须且只能提供 base64 或 source_paths");
+    }
+    if (
+      hasInlineBase64 &&
+      (args.base64.length < 1 || args.base64.length > MAX_INLINE_AGENT_RESOURCE_BASE64)
+    ) {
+      throw new Error("put_design_resource.base64 必须是不超过 48 KiB 的 Base64 字符串");
+    }
+    if (
+      hasSourcePaths &&
+      (args.source_paths.length < 1 ||
+        args.source_paths.length > MAX_AGENT_RESOURCE_SOURCE_FILES ||
+        new Set(args.source_paths).size !== args.source_paths.length ||
+        args.source_paths.some((path) => !safeDesignResourceSourcePath(path)))
+    ) {
+      throw new Error(
+        `put_design_resource.source_paths 必须是 1–${MAX_AGENT_RESOURCE_SOURCE_FILES} 个 designs/ 下的安全 .txt Base64 分片路径`,
+      );
+    }
+    if (args.save !== undefined && typeof args.save !== "boolean") {
+      throw new Error("put_design_resource.save 必须是布尔值");
+    }
+    return enqueueAgentMutation(async () => {
+      if (args.expected_state_revision !== currentDesignStateRevision()) {
+        throw new Error("设计状态已变化；请重新读取元数据后再写入资源");
+      }
+      const base64 = hasInlineBase64
+        ? args.base64
+        : (
+            await Promise.all(
+              args.source_paths.map(async (path) => {
+                const result = await bundleHostCall("workspace.readText", { path });
+                return result.content;
+              }),
+            )
+          ).join("");
+      if (args.expected_state_revision !== currentDesignStateRevision()) {
+        throw new Error("设计状态已变化；请重新读取元数据后再写入资源");
+      }
+      const plan = await createDesignResourcePersistencePlan({
+        id: args.id,
+        kind: args.kind,
+        mime: args.mime,
+        base64,
+        family: args.family,
+        weight: args.weight,
+        style: args.style,
+        sha256Bytes,
+      });
+      const existing = (design.resources ?? []).find(
+        (resource) => resource.id === plan.descriptor.id,
+      );
+      if (existing) {
+        if (JSON.stringify(existing) !== JSON.stringify(plan.descriptor)) {
+          throw new Error(`资源 ID 已存在且内容不同：${plan.descriptor.id}`);
+        }
+        return {
+          resource: clone(existing),
+          noOp: true,
+          saved: false,
+          stateRevision: currentDesignStateRevision(),
+        };
+      }
+      for (const part of plan.parts) {
+        try {
+          await bundleHostCall("workspace.writeText", {
+            path: part.path,
+            content: part.content,
+            expectedModifiedAt: null,
+          });
+        } catch {
+          const stored = await bundleHostCall("workspace.readText", {
+            path: part.path,
+          });
+          if (stored.content !== part.content) {
+            throw new Error(`资源分片写入冲突：${part.path}`);
+          }
+        }
+      }
+      const previousHistoryIndex = historyIndex;
+      design.resources ??= [];
+      design.resources.push(plan.descriptor);
+      currentResourceCache = new DesignResourceCache({
+        resources: design.resources,
+        readText: (path) => bundleHostCall("workspace.readText", { path }),
+        sha256Bytes,
+      });
+      commitHistory();
+      markChanged();
+      let savedResult = null;
+      if (args.save !== false) {
+        try {
+          savedResult = await saveDocument({ quiet: true });
+        } catch (error) {
+          restoreHistory(previousHistoryIndex);
+          currentResourceCache = new DesignResourceCache({
+            resources: design.resources ?? [],
+            readText: (path) => bundleHostCall("workspace.readText", { path }),
+            sha256Bytes,
+          });
+          throw error;
+        }
+      }
+      return {
+        resource: clone(plan.descriptor),
+        noOp: false,
+        saved: args.save !== false,
+        changedPartCount: plan.parts.length,
+        revision: savedResult?.revision ?? currentRevision,
+        stateRevision: currentDesignStateRevision(),
+      };
+    });
+  });
   register("get_design_metadata", async (args = {}) => {
     await ready;
     await settleAgentReadState();
     assertAgentToolArguments(args, new Set(), "get_design_metadata");
-    const documentBytes = new TextEncoder().encode(serializeDesign()).length;
+    const documentBytes = estimatedDesignDocumentBytes();
     return {
       format: design.format,
       version: design.version,
@@ -5710,10 +6472,15 @@ function registerAgentTools(ready) {
       pages: design.pages.map((page) => ({
         id: page.id,
         name: page.name,
-        nodeCount: page.id === design.activePageId ? design.nodes.length : page.nodes.length,
+        loaded: isDesignPageLoaded(page),
+        nodeCount:
+          page.id === design.activePageId
+            ? design.nodes.length
+            : (page.nodeCount ?? page.nodes?.length ?? 0),
       })),
       canvas: clone(design.canvas),
       tokens: clone(design.tokens),
+      resources: clone(design.resources ?? []),
       geometryContract: {
         coordinateSpace: "absolute-canvas",
         manualLayoutPreservesGeometry: true,
@@ -5735,6 +6502,11 @@ function registerAgentTools(ready) {
       documentBytes,
       capacityModel: "indexed-pages",
       storageMode: currentPersistenceMode,
+      runtime: {
+        loadedPageCount: readableDesignPages().length,
+        pageCacheCapacity: currentPageCache?.maximumLoadedPages ?? null,
+        loadedResourceCount: resourceDataUrls.size,
+      },
       layers: designLayerIndex(),
     };
   });
@@ -5756,6 +6528,7 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("search_design_system.limit 必须是 1 到 50 的整数");
     }
+    await ensureAllDesignPagesLoaded();
     const query = args.query.trim().toLowerCase();
     const limit = args.limit ?? 20;
     const compareText = (left, right) => (left === right ? 0 : left < right ? -1 : 1);
@@ -5795,12 +6568,16 @@ function registerAgentTools(ready) {
       )
       .slice(0, limit)
       .map(({ score: _score, ...component }) => component);
-    return {
+    const result = {
       query: args.query.trim(),
       limit,
-      stateRevision: currentDesignStateRevision(),
       tokens,
       components,
+    };
+    await compactIndexedPageRuntime();
+    return {
+      ...result,
+      stateRevision: currentDesignStateRevision(),
     };
   });
   register("get_design_context", async (args = {}) => {
@@ -5827,6 +6604,18 @@ function registerAgentTools(ready) {
       (!Number.isInteger(args.max_depth) || args.max_depth < 0 || args.max_depth > 32)
     ) {
       throw new Error("get_design_context.max_depth 必须是 0 到 32 的整数");
+    }
+    if (typeof args.page_id === "string" && args.page_id) {
+      await ensureDesignPageLoaded(args.page_id);
+    }
+    let materializedAllPages = false;
+    if (
+      typeof args.node_id === "string" &&
+      args.node_id &&
+      !allDesignNodes().some((node) => node.id === args.node_id)
+    ) {
+      await ensureAllDesignPagesLoaded();
+      materializedAllPages = true;
     }
     if (typeof args.node_id === "string" && args.node_id) {
       const maxDepth = args.max_depth ?? 32;
@@ -5863,12 +6652,17 @@ function registerAgentTools(ready) {
         },
       });
     }
-    return boundedAgentContextResult({
-      path: elements.path.value.trim(),
-      coordinateSpace: "absolute-canvas",
-      stateRevision: currentDesignStateRevision(),
-      document: JSON.parse(serializeDesign()),
-    });
+    await ensureAllDesignPagesLoaded();
+    try {
+      return boundedAgentContextResult({
+        path: elements.path.value.trim(),
+        coordinateSpace: "absolute-canvas",
+        stateRevision: currentDesignStateRevision(),
+        document: JSON.parse(serializeDesign()),
+      });
+    } finally {
+      await compactIndexedPageRuntime();
+    }
   });
   register("use_design", async (args = {}) => {
     await ready;
@@ -5967,19 +6761,25 @@ function registerAgentTools(ready) {
     await ready;
     await settleAgentReadState();
     assertAgentToolArguments(args, new Set(), "validate_design");
-    const inspectedDesign = normalizeDesignState(design);
-    const issues = auditDocument(inspectedDesign);
-    const visibleIssues = issues.slice(0, MAX_AGENT_AUDIT_ISSUES);
-    return {
-      ...summarizeAudit(issues),
-      path: elements.path.value.trim(),
-      nodeCount: allDesignNodes(inspectedDesign).length,
-      activePageNodeCount: inspectedDesign.nodes.length,
-      pageCount: inspectedDesign.pages.length,
-      stateRevision: currentDesignStateRevision(),
-      issues: visibleIssues,
-      truncatedIssueCount: issues.length - visibleIssues.length,
-    };
+    await ensureAllDesignPagesLoaded();
+    try {
+      await loadReferencedDesignResources();
+      const inspectedDesign = normalizeCurrentDesignState(design);
+      const issues = auditDocument(inspectedDesign);
+      const visibleIssues = issues.slice(0, MAX_AGENT_AUDIT_ISSUES);
+      return {
+        ...summarizeAudit(issues),
+        path: elements.path.value.trim(),
+        nodeCount: allDesignNodes(inspectedDesign).length,
+        activePageNodeCount: inspectedDesign.nodes.length,
+        pageCount: inspectedDesign.pages.length,
+        stateRevision: currentDesignStateRevision(),
+        issues: visibleIssues,
+        truncatedIssueCount: issues.length - visibleIssues.length,
+      };
+    } finally {
+      await compactIndexedPageRuntime();
+    }
   });
   register("get_design_screenshot", async (args = {}) => {
     await ready;
@@ -6004,6 +6804,16 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("get_design_screenshot.max_width 必须是 320 到 1600 的有限数字");
     }
+    if (typeof args.page_id === "string" && args.page_id) {
+      await ensureDesignPageLoaded(args.page_id);
+    }
+    if (
+      typeof args.node_id === "string" &&
+      args.node_id &&
+      !allDesignNodes().some((node) => node.id === args.node_id)
+    ) {
+      await ensureAllDesignPagesLoaded();
+    }
     const screenshotStateRevision = currentDesignStateRevision();
     const screenshotRevision = currentRevision;
     const source = designScreenshotSource(args?.node_id, args?.page_id);
@@ -6018,7 +6828,8 @@ function registerAgentTools(ready) {
     );
     let width = Math.max(1, Math.round(source.width * scale));
     let height = Math.max(1, Math.round(source.height * scale));
-    const svg = exportDesignSvg(source.document);
+    await loadReferencedDesignResources();
+    const svg = exportDesignSvg(source.document, { resourceDataUrls });
     const image = new window.Image();
     await new Promise((resolve, reject) => {
       const timer = window.setTimeout(
@@ -6082,7 +6893,7 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("设计在预览生成期间发生变化；请重新生成截图");
     }
-    return {
+    const screenshotResult = {
       kind: "image",
       mediaType,
       data: dataUrl.slice(dataUrl.indexOf(",") + 1),
@@ -6098,6 +6909,8 @@ function registerAgentTools(ready) {
         ? `Design preview for ${source.nodeId} on ${source.pageName} · ${width}×${height}`
         : `Design preview for ${source.pageName} · ${width}×${height}`,
     };
+    if (materializedAllPages) await compactIndexedPageRuntime();
+    return screenshotResult;
   });
   register("save_design", async (args = {}) => {
     await ready;

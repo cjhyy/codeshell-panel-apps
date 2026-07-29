@@ -14,8 +14,8 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    relevant subtree with `get_design_context`. For a large top-level screen, begin with
    `max_depth: 1` or `2`, then deepen only the branch you will change. If
    `descendantsTruncated` is true, the returned empty child list is a context boundary—not proof
-   that the source node has no children. Metadata lists every page, its node count, and a compact
-   page catalog plus the active page's layer index, whose entries carry `pageId` and `pageName`.
+   that the source node has no children. Metadata lists every page, its node count and `loaded`
+   state, plus the active page's compact layer index, whose entries carry `pageId` and `pageName`.
    Use `get_design_context.page_id` to read one indexed page without loading the complete logical
    document into an Agent result; a subtree read may target a stable node id and returns its page
    identity.
@@ -29,9 +29,10 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    A large logical design is stored as a `codeshell.design.index` plus immutable,
    content-addressed page objects under `designs/codesign-data/pages/`. Treat those files as one
    document and never edit the objects directly. Design Studio verifies pages independently and
-   reuses unchanged pages on save; Agent work remains metadata → bounded subtree → transaction
-   regardless of the repository storage mode. `codeshell.design.bundle` is a read-only legacy
-   migration format.
+   initially loads only the active page and its transitive component-provider pages. Clean pages
+   use a bounded cache; dirty pages and their dependencies stay pinned until save. Agent work
+   remains metadata → bounded page/subtree → transaction regardless of repository storage mode.
+   `codeshell.design.bundle` is a read-only legacy migration format.
 3. Call `use_design` with a short transaction of operations. It refreshes the live canvas and
    saves the active repo source by default. Its compact `audit` summary is an immediate regression
    signal, but call `validate_design` to read the actual issue records. `changedNodeIds` includes
@@ -135,8 +136,8 @@ so validation does not turn exact browser geometry into false layout blockers.
 
 Treat unsupported CSS as an explicit fidelity gap. v3 currently approximates four unequal corner
 radii with one representative radius. Basic inline SVG rectangles, circles, ellipses, and text
-paint are measured; raster images, SVG paths/references, gradients, pseudo-elements, multiple
-backgrounds, multiple shadows, filters, and rich text runs are not.
+paint are measured; HTML capture does not yet import raster images, SVG paths/references,
+gradients, pseudo-elements, multiple backgrounds, multiple shadows, filters, or rich text runs.
 Extend the format/capture path or disclose the limitation; never silently call those cases
 pixel-perfect. After conversion, normalize the document, keep it below repository size limits,
 call `validate_design`, and inspect a Design Studio screenshot before editing it further. Use the
@@ -224,6 +225,22 @@ review machine. Validate text-box height after changing type metrics and inspect
 unexpected fallback, density, or clipping. Text fill and stroke render, but text has no containing
 box, so keep `cornerRadius` at `0`.
 
+## Repository images and fonts
+
+Never put Base64 image/font payloads in a design document or node operation. For a small resource,
+call `put_design_resource` with inline `base64`. For a larger one, write consecutive Base64 chunks
+to at most 12 `.txt` files below `designs/` and pass their ordered `source_paths`; this avoids the
+Agent-call argument budget without raising it. Also pass a stable resource id, `kind`, MIME type,
+the latest `expected_state_revision`, and font metadata when `kind` is `font`. The tool verifies
+the reconstructed bytes, writes content-addressed objects, and adds only a compact descriptor to
+the document. Re-read metadata afterward because the state revision changes.
+
+Create an `image` node with `imageRef` set to an image resource id and `objectFit` set to `fill`,
+`contain`, or `cover`. Set a text node's `fontRef` to a font resource id; keep its visible
+`fontFamily`, weight, and style consistent with the descriptor. Reusing identical bytes does not
+duplicate physical files. Missing, mismatched, or corrupted resource references fail validation
+or loading instead of silently falling back.
+
 ## Effects
 
 Painted nodes support one repository-stable drop shadow:
@@ -297,7 +314,7 @@ Every `create_node` must include a stable semantic `id` matching
 transaction so later operations, screenshots, audit findings, and code review can refer to the same
 node deterministically.
 
-- `{"op":"create_node","type":"frame|group|component|instance|rectangle|ellipse|text","id":"stable-id","parent_id":"optional-container","before_id":"optional-sibling","properties":{...}}`
+- `{"op":"create_node","type":"frame|group|component|instance|rectangle|ellipse|text|image","id":"stable-id","parent_id":"optional-container","before_id":"optional-sibling","properties":{...}}`
 - `{"op":"update_node","node_id":"stable-id","changes":{...}}`
 - `{"op":"move_node","node_id":"stable-id","parent_id":"container-or-null","before_id":"optional-sibling"}`
 - `{"op":"delete_node","node_id":"stable-id"}`
@@ -436,6 +453,9 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
   geometry/render problem or clearly report the blocker instead of claiming the design looks good.
   If it reports that the design changed during rendering, read metadata again and regenerate from
   the new snapshot.
+- If recovery is offered after a restart, treat it as an operation log replayed onto the last
+  saved baseline. If the repository baseline also changed, review the conflict before saving;
+  recovery does not overwrite the newer file automatically.
 
 ## Audit result contract
 
@@ -449,31 +469,9 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
   audit, so fix the returned records and validate again while truncation is nonzero;
 - stable issue `code`, `pageId`, `pageName`, `nodeId`, severity, blocking state, and message.
 
-Handle the current audit codes as follows:
-
-- `layout.canvas-overflow`: move or resize the node inside the canvas.
-- `layout.parent-overflow`: compare absolute child and parent edges; when blocking, the child is
-  clipped.
-- `layout.ancestor-clip-overflow`: a higher frame/component clips through an intermediate group;
-  move the node or resize the complete ancestor chain.
-- `layout.effect-canvas-overflow`: reduce/move the shadow or move the node inward so the visible
-  stroke, shadow, or instance content stays on the canvas.
-- `layout.effect-clip-overflow`: a node fits but its stroke, shadow, or instance content crosses a
-  clipping ancestor; reduce the effect, add inset, enlarge that ancestor, or deliberately disable
-  clipping.
-- `layout.text-overflow`: increase the text box height or reduce/rewrite the text.
-- `layout.text-width-overflow`: widen the text box, insert an intentional line break, or shorten the
-  copy; Design Studio does not silently auto-wrap fixed text nodes.
-- `layout.manual-only-ui`: a container-heavy screen has no Auto Layout. Rebuild normal rows,
-  columns, Wrap, and repeated regions with horizontal/vertical/Grid containers; retain manual
-  coordinates only where canvas artwork or unsupported CSS requires a fallback.
-- `a11y.text-contrast`: change foreground/background colors; do not dismiss it as cosmetic.
-- `a11y.instance-text-contrast`: the component master may be readable in its library context, but
-  this instance is not; fix the master's own surface, the target background, the instance opacity,
-  or the rendered text size. The issue `nodeId` is the instance and `sourceNodeId` is its master
-  text layer.
-- `content.empty-text`: add intentional copy or remove the placeholder layer.
-- `content.invisible-text`: use a visible fill or remove the unnecessary text layer.
+When an audit returns an unfamiliar code or clipping/contrast diagnosis, read
+[references/audit-codes.md](references/audit-codes.md) before editing. It maps each current code to
+the intended repair and distinguishes component-instance context from master context.
 
 After each coherent region reaches zero issues, call `get_design_screenshot` with its `node_id` and
 `max_width: 1200` to inspect that region at a readable scale. Before finishing, call it with each
@@ -487,13 +485,6 @@ components for reusable masters, and instances for reuse. Put repeated spacing i
 containers instead of manually positioning every child. For precise screen mockups, manual layout
 is appropriate when every child has verified absolute bounds. Do not edit generated SVG or audit
 Markdown as if they were source.
-
-Component instances render the master's complete nested subtree, including instances of other
-components and masters stored on another page. Component dependency cycles and self-references are
-invalid; reuse a lower-level component instead of creating a circular reference.
-
-The v3 repository format is a recursive page/node tree. `parentId` is an editor-internal field and
-must not be written into repo JSON; nested source nodes use `children`.
 
 ## Completion gate
 

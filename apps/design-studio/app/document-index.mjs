@@ -8,9 +8,12 @@ import {
   MAX_WORKSPACE_DESIGN_TEXT_BYTES,
   splitDesignSource,
 } from "./document-bundle.mjs";
+import { normalizeDesignResources } from "./resource-store.mjs";
 
 export const DESIGN_INDEX_FORMAT = "codeshell.design.index";
-export const DESIGN_INDEX_VERSION = 1;
+export const DESIGN_INDEX_VERSION = 3;
+export const DEPENDENCY_CATALOG_INDEX_VERSION = 2;
+export const LEGACY_DESIGN_INDEX_VERSION = 1;
 export const DESIGN_PAGE_FORMAT = "codeshell.design.page";
 export const DESIGN_PAGE_VERSION = 1;
 export const MAX_INDEXED_PAGE_PARTS = 4_096;
@@ -59,9 +62,21 @@ export function indexedPagePartPath(sha256, index) {
 }
 
 function normalizePageDescriptor(value, index, pageIds) {
+  const dependencyKeys =
+    value.componentIds === undefined && value.instanceComponentIds === undefined
+      ? []
+      : ["componentIds", "instanceComponentIds"];
   assertExactKeys(
     value,
-    new Set(["id", "name", "nodeCount", "bytes", "sha256", "partCount"]),
+    new Set([
+      "id",
+      "name",
+      "nodeCount",
+      "bytes",
+      "sha256",
+      "partCount",
+      ...dependencyKeys,
+    ]),
     `页面索引 ${index + 1}`,
   );
   if (
@@ -95,6 +110,24 @@ function normalizePageDescriptor(value, index, pageIds) {
   ) {
     throw new Error(`页面索引 ${index + 1} 的分片数无效`);
   }
+  const normalizeComponentIds = (ids, label) => {
+    if (dependencyKeys.length === 0) return [];
+    if (
+      !Array.isArray(ids) ||
+      ids.length > value.nodeCount ||
+      ids.some(
+        (id) =>
+          typeof id !== "string" ||
+          !id ||
+          id.length > 160 ||
+          /[\u0000-\u001f\u007f]/u.test(id),
+      ) ||
+      new Set(ids).size !== ids.length
+    ) {
+      throw new Error(`页面索引 ${index + 1} 的${label}无效`);
+    }
+    return [...ids].sort();
+  };
   pageIds.add(value.id);
   return {
     id: value.id,
@@ -103,10 +136,16 @@ function normalizePageDescriptor(value, index, pageIds) {
     bytes: value.bytes,
     sha256: value.sha256,
     partCount: value.partCount,
+    componentIds: normalizeComponentIds(value.componentIds, "组件目录"),
+    instanceComponentIds: normalizeComponentIds(
+      value.instanceComponentIds,
+      "实例依赖目录",
+    ),
   };
 }
 
 export function normalizeDesignIndexManifest(value) {
+  const resourceKeys = value.resources === undefined ? [] : ["resources"];
   assertExactKeys(
     value,
     new Set([
@@ -117,12 +156,20 @@ export function normalizeDesignIndexManifest(value) {
       "name",
       "canvas",
       "tokens",
+      ...resourceKeys,
       "activePageId",
       "pages",
     ]),
     "设计索引",
   );
-  if (value.format !== DESIGN_INDEX_FORMAT || value.indexVersion !== DESIGN_INDEX_VERSION) {
+  if (
+    value.format !== DESIGN_INDEX_FORMAT ||
+    ![
+      LEGACY_DESIGN_INDEX_VERSION,
+      DEPENDENCY_CATALOG_INDEX_VERSION,
+      DESIGN_INDEX_VERSION,
+    ].includes(value.indexVersion)
+  ) {
     throw new Error("设计索引格式或版本无效");
   }
   if (value.documentFormat !== "codeshell.design" || value.documentVersion !== 3) {
@@ -184,7 +231,7 @@ export function normalizeDesignIndexManifest(value) {
   }
   const manifest = {
     format: DESIGN_INDEX_FORMAT,
-    indexVersion: DESIGN_INDEX_VERSION,
+    indexVersion: value.indexVersion,
     documentFormat: "codeshell.design",
     documentVersion: 3,
     name: value.name,
@@ -194,14 +241,82 @@ export function normalizeDesignIndexManifest(value) {
       background: value.canvas.background.toLowerCase(),
     },
     tokens: { colors },
+    resources: normalizeDesignResources(value.resources ?? []),
     activePageId: value.activePageId,
     pages,
+    dependencyCatalogComplete:
+      value.indexVersion >= DEPENDENCY_CATALOG_INDEX_VERSION,
   };
-  const source = `${JSON.stringify(manifest, null, 2)}\n`;
+  const canonicalManifest = {
+    format: manifest.format,
+    indexVersion: manifest.indexVersion,
+    documentFormat: manifest.documentFormat,
+    documentVersion: manifest.documentVersion,
+    name: manifest.name,
+    canvas: manifest.canvas,
+    tokens: manifest.tokens,
+    ...(manifest.indexVersion >= DESIGN_INDEX_VERSION
+      ? { resources: manifest.resources }
+      : {}),
+    activePageId: manifest.activePageId,
+    pages: manifest.pages.map((page) => ({
+      id: page.id,
+      name: page.name,
+      nodeCount: page.nodeCount,
+      bytes: page.bytes,
+      sha256: page.sha256,
+      partCount: page.partCount,
+      ...(manifest.dependencyCatalogComplete
+        ? {
+            componentIds: page.componentIds,
+            instanceComponentIds: page.instanceComponentIds,
+          }
+        : {}),
+    })),
+  };
+  const source = `${JSON.stringify(canonicalManifest, null, 2)}\n`;
   if (byteLength(source) > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
     throw new Error("设计索引目录超过 Host 单文件预算；需要升级目录分页格式");
   }
   return manifest;
+}
+
+function persistentDesignIndexManifest(manifest) {
+  return {
+    format: manifest.format,
+    indexVersion: manifest.indexVersion,
+    documentFormat: manifest.documentFormat,
+    documentVersion: manifest.documentVersion,
+    name: manifest.name,
+    canvas: manifest.canvas,
+    tokens: manifest.tokens,
+    ...(manifest.indexVersion >= DESIGN_INDEX_VERSION
+      ? { resources: manifest.resources }
+      : {}),
+    activePageId: manifest.activePageId,
+    pages: manifest.pages.map((page) => ({
+      id: page.id,
+      name: page.name,
+      nodeCount: page.nodeCount,
+      bytes: page.bytes,
+      sha256: page.sha256,
+      partCount: page.partCount,
+      ...(manifest.dependencyCatalogComplete
+        ? {
+            componentIds: page.componentIds,
+            instanceComponentIds: page.instanceComponentIds,
+          }
+        : {}),
+    })),
+  };
+}
+
+export function serializeDesignIndexManifest(manifest) {
+  const source = `${JSON.stringify(persistentDesignIndexManifest(manifest), null, 2)}\n`;
+  if (byteLength(source) > MAX_WORKSPACE_DESIGN_TEXT_BYTES) {
+    throw new Error("设计索引目录超过 Host 单文件预算；需要升级目录分页格式");
+  }
+  return source;
 }
 
 function canonicalPageSource(page) {
@@ -218,8 +333,10 @@ function canonicalPageSource(page) {
   )}\n`;
 }
 
-function countPageNodes(children) {
+function summarizePageNodes(children) {
   let count = 0;
+  const componentIds = new Set();
+  const instanceComponentIds = new Set();
   const pending = [...children];
   while (pending.length > 0) {
     const node = pending.pop();
@@ -227,9 +344,19 @@ function countPageNodes(children) {
     if (count > MAX_DESIGN_NODES_PER_PAGE) {
       throw new Error(`页面最多包含 ${MAX_DESIGN_NODES_PER_PAGE} 个源图层`);
     }
+    if (node?.type === "component" && typeof node.id === "string") {
+      componentIds.add(node.id);
+    }
+    if (node?.type === "instance" && typeof node.componentId === "string") {
+      instanceComponentIds.add(node.componentId);
+    }
     if (Array.isArray(node?.children)) pending.push(...node.children);
   }
-  return count;
+  return {
+    nodeCount: count,
+    componentIds: [...componentIds].sort(),
+    instanceComponentIds: [...instanceComponentIds].sort(),
+  };
 }
 
 export async function createDesignIndexPersistencePlan({
@@ -242,7 +369,7 @@ export async function createDesignIndexPersistencePlan({
   const repository = JSON.parse(logicalSource);
   const previous =
     previousManifest?.format === DESIGN_INDEX_FORMAT
-      ? normalizeDesignIndexManifest(previousManifest)
+      ? normalizeDesignIndexManifest(persistentDesignIndexManifest(previousManifest))
       : null;
   const previousPages = new Map((previous?.pages ?? []).map((page) => [page.id, page]));
   const pages = [];
@@ -260,13 +387,16 @@ export async function createDesignIndexPersistencePlan({
     if (split.length > MAX_INDEXED_PAGE_PARTS) {
       throw new Error(`页面 ${page.id} 的单页操作预算过大；请拆分页面`);
     }
+    const summary = summarizePageNodes(page.children);
     const descriptor = {
       id: page.id,
       name: page.name,
-      nodeCount: countPageNodes(page.children),
+      nodeCount: summary.nodeCount,
       bytes,
       sha256: digest,
       partCount: split.length,
+      componentIds: summary.componentIds,
+      instanceComponentIds: summary.instanceComponentIds,
     };
     pages.push(descriptor);
     indexedObjectBytes += bytes;
@@ -289,6 +419,7 @@ export async function createDesignIndexPersistencePlan({
     name: repository.name,
     canvas: repository.canvas,
     tokens: repository.tokens,
+    resources: repository.resources ?? [],
     activePageId: repository.activePageId,
     pages,
   });
@@ -296,7 +427,113 @@ export async function createDesignIndexPersistencePlan({
     mode: "indexed",
     bytes: byteLength(logicalSource),
     indexedObjectBytes,
-    primarySource: `${JSON.stringify(manifest, null, 2)}\n`,
+    primarySource: serializeDesignIndexManifest(manifest),
+    manifest,
+    parts,
+    partCount: pages.reduce((sum, page) => sum + page.partCount, 0),
+    changedPageCount,
+  };
+}
+
+export async function createIncrementalDesignIndexPersistencePlan({
+  document,
+  pageRecords,
+  sha256,
+  previousManifest,
+}) {
+  if (typeof sha256 !== "function") throw new Error("设计索引需要 SHA-256 能力");
+  if (!(pageRecords instanceof Map)) throw new Error("增量索引需要已加载页面记录");
+  const previous =
+    previousManifest?.format === DESIGN_INDEX_FORMAT
+      ? normalizeDesignIndexManifest(persistentDesignIndexManifest(previousManifest))
+      : null;
+  if (!previous) throw new Error("增量索引保存缺少上一版页面目录");
+  if (
+    !document ||
+    typeof document !== "object" ||
+    !Array.isArray(document.pages) ||
+    document.pages.length < 1 ||
+    document.pages.length > MAX_DESIGN_PAGES
+  ) {
+    throw new Error("增量索引文档无效");
+  }
+  const previousPages = new Map(previous.pages.map((page) => [page.id, page]));
+  const pages = [];
+  const parts = [];
+  let indexedObjectBytes = 0;
+  let changedPageCount = 0;
+  for (const pageMetadata of document.pages) {
+    const record = pageRecords.get(pageMetadata.id);
+    if (!record) {
+      const descriptor = previousPages.get(pageMetadata.id);
+      if (!descriptor) {
+        throw new Error(`新页面 ${pageMetadata.id} 尚未加载，无法保存`);
+      }
+      if (descriptor.name !== pageMetadata.name) {
+        throw new Error(`页面 ${pageMetadata.id} 改名后需要先加载再保存`);
+      }
+      pages.push(descriptor);
+      indexedObjectBytes += descriptor.bytes;
+      continue;
+    }
+    if (
+      record.id !== pageMetadata.id ||
+      record.name !== pageMetadata.name ||
+      !Array.isArray(record.children)
+    ) {
+      throw new Error(`已加载页面 ${pageMetadata.id} 与页面目录不一致`);
+    }
+    const source = canonicalPageSource(record);
+    const bytes = byteLength(source);
+    const digest = await sha256(source);
+    if (typeof digest !== "string" || !SHA256.test(digest)) {
+      throw new Error(`页面 ${record.id} 的 SHA-256 摘要无效`);
+    }
+    const split = splitDesignSource(source);
+    if (split.length > MAX_INDEXED_PAGE_PARTS) {
+      throw new Error(`页面 ${record.id} 的单页操作预算过大；请拆分页面`);
+    }
+    const summary = summarizePageNodes(record.children);
+    const descriptor = {
+      id: record.id,
+      name: record.name,
+      nodeCount: summary.nodeCount,
+      bytes,
+      sha256: digest,
+      partCount: split.length,
+      componentIds: summary.componentIds,
+      instanceComponentIds: summary.instanceComponentIds,
+    };
+    pages.push(descriptor);
+    indexedObjectBytes += bytes;
+    if (previousPages.get(record.id)?.sha256 === digest) continue;
+    changedPageCount += 1;
+    for (const [index, part] of split.entries()) {
+      parts.push({
+        path: pagePartPath(digest, index),
+        bytes: part.bytes,
+        content: part.content,
+        pageId: record.id,
+      });
+    }
+  }
+  const manifest = normalizeDesignIndexManifest({
+    format: DESIGN_INDEX_FORMAT,
+    indexVersion: DESIGN_INDEX_VERSION,
+    documentFormat: "codeshell.design",
+    documentVersion: 3,
+    name: document.name,
+    canvas: document.canvas,
+    tokens: document.tokens,
+    resources: document.resources ?? [],
+    activePageId: document.activePageId,
+    pages,
+  });
+  return {
+    mode: "indexed",
+    bytes: indexedObjectBytes,
+    indexedObjectBytes,
+    primarySource: serializeDesignIndexManifest(manifest),
     manifest,
     parts,
     partCount: pages.reduce((sum, page) => sum + page.partCount, 0),
@@ -316,7 +553,7 @@ function normalizePageRecord(value, descriptor) {
     value.id !== descriptor.id ||
     value.name !== descriptor.name ||
     !Array.isArray(value.children) ||
-    countPageNodes(value.children) !== descriptor.nodeCount
+    summarizePageNodes(value.children).nodeCount !== descriptor.nodeCount
   ) {
     throw new Error(`页面对象 ${descriptor.id} 与索引不一致`);
   }
@@ -327,7 +564,7 @@ function normalizePageRecord(value, descriptor) {
   };
 }
 
-export async function resolveDesignIndexDocument({ primarySource, readText, sha256 }) {
+export function parseDesignIndexSource(primarySource) {
   if (typeof primarySource !== "string") throw new Error("设计索引必须是 UTF-8 文本");
   let parsed;
   try {
@@ -336,12 +573,28 @@ export async function resolveDesignIndexDocument({ primarySource, readText, sha2
     return null;
   }
   if (parsed?.format !== DESIGN_INDEX_FORMAT) return null;
+  return normalizeDesignIndexManifest(parsed);
+}
+
+export async function resolveDesignIndexPages({ manifest, pageIds, readText, sha256 }) {
   if (typeof readText !== "function" || typeof sha256 !== "function") {
     throw new Error("读取索引设计缺少页面读取或摘要能力");
   }
-  const manifest = normalizeDesignIndexManifest(parsed);
-  const pages = [];
-  for (const descriptor of manifest.pages) {
+  const normalizedManifest = normalizeDesignIndexManifest(
+    manifest?.dependencyCatalogComplete === true ||
+      manifest?.dependencyCatalogComplete === false
+      ? persistentDesignIndexManifest(manifest)
+      : manifest,
+  );
+  const requestedIds = new Set(pageIds ?? normalizedManifest.pages.map((page) => page.id));
+  for (const pageId of requestedIds) {
+    if (!normalizedManifest.pages.some((page) => page.id === pageId)) {
+      throw new Error(`设计索引不存在页面：${pageId}`);
+    }
+  }
+  const pages = new Map();
+  for (const descriptor of normalizedManifest.pages) {
+    if (!requestedIds.has(descriptor.id)) continue;
     const contents = [];
     for (let index = 0; index < descriptor.partCount; index += 1) {
       const result = await readText(pagePartPath(descriptor.sha256, index));
@@ -369,14 +622,27 @@ export async function resolveDesignIndexDocument({ primarySource, readText, sha2
       if (error instanceof SyntaxError) throw new Error(`页面 ${descriptor.id} 不是有效 JSON`);
       throw error;
     }
-    pages.push(page);
+    pages.set(page.id, page);
   }
+  return pages;
+}
+
+export async function resolveDesignIndexDocument({ primarySource, readText, sha256 }) {
+  const manifest = parseDesignIndexSource(primarySource);
+  if (!manifest) return null;
+  const pageRecords = await resolveDesignIndexPages({
+    manifest,
+    readText,
+    sha256,
+  });
+  const pages = manifest.pages.map((descriptor) => pageRecords.get(descriptor.id));
   const document = {
     format: "codeshell.design",
     version: 3,
     name: manifest.name,
     canvas: manifest.canvas,
     tokens: manifest.tokens,
+    resources: manifest.resources,
     activePageId: manifest.activePageId,
     pages,
   };
