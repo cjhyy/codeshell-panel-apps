@@ -3,12 +3,14 @@
 
 import {
   alignNodeTrees,
-  detachNodeFromParent,
+  clipBoundsToClippingAncestors,
+  clipNodeBoundsToClippingAncestors,
   descendantIds,
   distributeNodeTrees,
+  inheritedNodeRotation,
   moveSelectedNodes,
   normalizeNodeTreeOrder,
-  pointInRotatedBounds,
+  pointInNodeTree,
   pointToParentSpace,
   releaseFrame,
   reparentNode,
@@ -16,13 +18,15 @@ import {
   snapBoundsToNodes,
   setNodeTreePosition,
   snapValue,
-  transformedNodeBounds,
+  transformedNodeBoundsInTree,
   visualSelectionBounds,
   wrapNodesInFrame,
 } from "./geometry.mjs";
 import {
   assertDesignDocumentSize,
+  designNodeRemovalIds,
   effectiveDesignNodeOpacity,
+  externalComponentInstancesForPage,
   exportDesignSvg,
   isSafeDesignPath,
   isDesignNodeVisible,
@@ -30,18 +34,27 @@ import {
   normalizeDesignDocument,
   normalizeDesignState,
   replaceDesignColor,
+  replaceDesignColors,
+  renderedDesignInstanceEffectOutsets,
+  renderedDesignNodeShadowFilterBounds,
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
-import { auditDesign, auditMarkdown } from "./audit.mjs";
+import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import {
-  applyAllAutoLayouts,
-  applyAutoLayout,
+  applyAutoLayouts,
   createComponentInstance,
+  isAutoLayoutContainer,
   isContainerNode,
 } from "./layout.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MAX_AGENT_SCREENSHOT_BASE64 = 220_000;
+const MAX_AGENT_SCREENSHOT_PIXELS = 2_000_000;
+const MAX_AGENT_SCREENSHOT_HEIGHT = 4_096;
+const MAX_AGENT_SCREENSHOT_RENDER_MS = 5_000;
+const MAX_AGENT_AUDIT_ISSUES = 400;
+const MAX_DESIGN_PAGES = 20;
 const TOOL_SHORTCUTS = {
   v: "select",
   f: "frame",
@@ -54,16 +67,24 @@ const DEFAULT_PATH = "designs/design.codesign.json";
 const DEFAULT_COLOR_TOKENS = Object.freeze([
   { name: "Ink", value: "#171717" },
   { name: "Paper", value: "#f7f7f3" },
+  { name: "Card", value: "#ffffff" },
   { name: "Accent", value: "#b7ff52" },
   { name: "Blue", value: "#315fda" },
 ]);
 
 const elements = {
+  appShell: document.querySelector(".app-shell"),
   stage: document.querySelector("#stage"),
   scene: document.querySelector("#scene"),
   grid: document.querySelector("#grid"),
   stageWrap: document.querySelector("#stage-wrap"),
   workspace: document.querySelector(".workspace"),
+  activePage: document.querySelector("#active-page"),
+  addPage: document.querySelector("#add-page"),
+  managePages: document.querySelector("#manage-pages"),
+  pagesDialog: document.querySelector("#pages-dialog"),
+  pagesList: document.querySelector("#pages-list"),
+  addPageDialog: document.querySelector("#add-page-dialog"),
   path: document.querySelector("#document-path"),
   repoLinkState: document.querySelector("#repo-link-state"),
   saveState: document.querySelector("#save-state"),
@@ -102,13 +123,19 @@ const elements = {
   frameSection: document.querySelector("#frame-section"),
   containerSectionLabel: document.querySelector("#container-section-label"),
   clipContentField: document.querySelector("#clip-content-field"),
+  clipContentLabel: document.querySelector("#clip-content-label"),
   releaseContainerLabel: document.querySelector("#release-container-label"),
   layoutSection: document.querySelector("#layout-section"),
   containerLayoutControls: document.querySelector("#container-layout-controls"),
   childLayoutControls: document.querySelector("#child-layout-controls"),
   componentSection: document.querySelector("#component-section"),
   componentStatus: document.querySelector("#component-status"),
+  paintControls: document.querySelector("#paint-controls"),
+  paintlessLayerHint: document.querySelector("#paintless-layer-hint"),
+  radiusField: document.querySelector("#radius-field"),
   textSection: document.querySelector("#text-section"),
+  shadowSection: document.querySelector("#shadow-section"),
+  shadowControls: document.querySelector("#shadow-controls"),
   colorTokens: document.querySelector("#color-tokens"),
   addColorToken: document.querySelector("#add-color-token"),
   layersList: document.querySelector("#layers-list"),
@@ -133,7 +160,11 @@ const propertyInputs = {
   text: document.querySelector("#prop-text"),
   fontSize: document.querySelector("#prop-font-size"),
   fontWeight: document.querySelector("#prop-font-weight"),
+  fontFamily: document.querySelector("#prop-font-family"),
+  fontStyle: document.querySelector("#prop-font-style"),
   lineHeight: document.querySelector("#prop-line-height"),
+  letterSpacing: document.querySelector("#prop-letter-spacing"),
+  textDecoration: document.querySelector("#prop-text-decoration"),
   textAlign: document.querySelector("#prop-text-align"),
   fill: document.querySelector("#prop-fill"),
   fillColor: document.querySelector("#prop-fill-color"),
@@ -149,10 +180,21 @@ const propertyInputs = {
   layout: document.querySelector("#prop-layout"),
   gap: document.querySelector("#prop-layout-gap"),
   padding: document.querySelector("#prop-layout-padding"),
+  paddingTop: document.querySelector("#prop-layout-padding-top"),
+  paddingRight: document.querySelector("#prop-layout-padding-right"),
+  paddingBottom: document.querySelector("#prop-layout-padding-bottom"),
+  paddingLeft: document.querySelector("#prop-layout-padding-left"),
   alignItems: document.querySelector("#prop-align-items"),
   justifyContent: document.querySelector("#prop-justify-content"),
   layoutGrow: document.querySelector("#prop-layout-grow"),
   layoutAlign: document.querySelector("#prop-layout-align"),
+  shadowEnabled: document.querySelector("#prop-shadow-enabled"),
+  shadowColor: document.querySelector("#prop-shadow-color"),
+  shadowColorPicker: document.querySelector("#prop-shadow-color-picker"),
+  shadowX: document.querySelector("#prop-shadow-x"),
+  shadowY: document.querySelector("#prop-shadow-y"),
+  shadowBlur: document.querySelector("#prop-shadow-blur"),
+  shadowOpacity: document.querySelector("#prop-shadow-opacity"),
 };
 
 const canvasInputs = {
@@ -182,14 +224,22 @@ let currentSourceRevision = null;
 let savedSnapshot = "";
 let history = [];
 let historyIndex = -1;
+let lastAgentTransaction = null;
+let agentTransactionSequence = 0;
+let agentMutationQueue = Promise.resolve();
+let agentMutationActive = false;
+let workspaceTransition = Promise.resolve();
 let context = { busy: false, trusted: false };
 let toastTimer;
 let recoveryTimer;
+let auditStatusTimer;
+let renderedPagesSignature = "";
 let copiedNodes = [];
 let copiedSelectionIds = new Set();
 let copiedDocumentEpoch = null;
 let copiedParentFrames = new Map();
 let documentEpoch = 0;
+let designStateSequence = 0;
 let layerFilter = "";
 let checkingExternalChange = false;
 let lastExternalCheckAt = 0;
@@ -256,12 +306,12 @@ function baseNode(type, overrides = {}) {
           ? "transparent"
           : type === "frame" || type === "component"
             ? "#ffffff"
-            : "#d7ff9d",
+            : "#b7ff52",
     stroke: "transparent",
     strokeWidth: 0,
     opacity: 1,
     rotation: 0,
-    cornerRadius: type === "ellipse" ? 999 : 12,
+    cornerRadius: type === "ellipse" ? 999 : ["text", "group", "instance"].includes(type) ? 0 : 12,
     visible: true,
     locked: false,
   };
@@ -270,7 +320,11 @@ function baseNode(type, overrides = {}) {
       text: "输入文字",
       fontSize: 32,
       fontWeight: 600,
+      fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+      fontStyle: "normal",
       lineHeight: 1.15,
+      letterSpacing: 0,
+      textDecoration: "none",
       textAlign: "left",
     });
   } else if (["frame", "component"].includes(type)) {
@@ -279,8 +333,8 @@ function baseNode(type, overrides = {}) {
   if (isContainerNode({ type })) {
     Object.assign(defaults, {
       layout: "none",
-      gap: 16,
-      padding: 24,
+      gap: 0,
+      padding: 0,
       alignItems: "start",
       justifyContent: "start",
     });
@@ -297,7 +351,7 @@ function createBlankDocument(name = "Repo design") {
     canvas: {
       width: 1280,
       height: 820,
-      background: "#e9e9e5",
+      background: "#f7f7f3",
     },
     tokens: {
       colors: clone(DEFAULT_COLOR_TOKENS),
@@ -312,18 +366,72 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function utf8Base64(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 16_384) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 16_384));
+  }
+  return window.btoa(binary);
+}
+
 function ensureDesignV3() {
   if (design.version !== 3) throw new Error("Design Studio 只支持 CodeShell Design v3");
 }
 
-function reflowLayouts() {
-  if (design.version !== 3) return false;
-  return applyAllAutoLayouts(design.nodes);
+function activeDesignPage(value = design) {
+  return value.pages.find((page) => page.id === value.activePageId) ?? null;
+}
+
+function syncActivePageNodes(value = design) {
+  const page = activeDesignPage(value);
+  if (page) page.nodes = value.nodes;
+}
+
+function allDesignNodes(value = design) {
+  const nodes = [];
+  for (const page of value.pages ?? []) {
+    nodes.push(...(page.id === value.activePageId ? (value.nodes ?? []) : (page.nodes ?? [])));
+  }
+  return nodes;
+}
+
+function readableDesignPages(value = design) {
+  return (value.pages ?? []).map((page) =>
+    page.id === value.activePageId ? { ...page, nodes: value.nodes ?? [] } : page,
+  );
+}
+
+function detachedComponentRenderDocument(documentValue, componentId) {
+  return {
+    ...documentValue,
+    nodes: documentValue.nodes.map((node) => {
+      if (node.id !== componentId || !node.parentId) return node;
+      const { parentId: _parentId, ...detached } = node;
+      return detached;
+    }),
+  };
+}
+
+function auditDocument(value = design) {
+  return auditDesignPages(value);
+}
+
+function activateDesignPage(pageId) {
+  const target = design.pages.find((page) => page.id === pageId);
+  if (!target) throw new Error(`页面不存在：${pageId}`);
+  if (pageId === design.activePageId) return false;
+  syncActivePageNodes();
+  design.activePageId = pageId;
+  design.nodes = target.nodes;
+  clearSelection();
+  interaction = null;
+  return true;
 }
 
 function reflowParent(node) {
   if (design.version !== 3 || !node?.parentId) return false;
-  return applyAutoLayout(design.nodes, node.parentId);
+  return applyAutoLayouts(design.nodes, new Set([node.parentId]));
 }
 
 function round(value, precision = 2) {
@@ -361,13 +469,14 @@ function isEffectivelyVisible(node) {
   return isDesignNodeVisible(design, node);
 }
 
-function isEffectivelyLocked(node) {
+function isNodeEffectivelyLocked(node, nodes) {
   if (node.locked) return true;
+  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
   const seen = new Set();
   let parentId = node.parentId;
   while (parentId && !seen.has(parentId)) {
     seen.add(parentId);
-    const parent = nodeById(parentId);
+    const parent = byId.get(parentId);
     if (!parent) break;
     if (parent.locked) return true;
     parentId = parent.parentId;
@@ -375,10 +484,25 @@ function isEffectivelyLocked(node) {
   return false;
 }
 
-function nodeTransform(node) {
+function isEffectivelyLocked(node) {
+  return isNodeEffectivelyLocked(node, design.nodes);
+}
+
+function nodeTransform(node, nodes = design.nodes) {
   const transforms = [];
-  const parent = node.parentId ? nodeById(node.parentId) : null;
-  if (parent?.rotation) {
+  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const ancestors = [];
+  const seen = new Set();
+  let parentId = node.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    ancestors.unshift(parent);
+    parentId = parent.parentId;
+  }
+  for (const parent of ancestors) {
+    if (!parent.rotation) continue;
     transforms.push(
       `rotate(${parent.rotation} ${parent.x + parent.width / 2} ${parent.y + parent.height / 2})`,
     );
@@ -391,11 +515,23 @@ function nodeTransform(node) {
   return transforms.join(" ");
 }
 
-function selectedTransformNodes() {
+function isAutoLayoutPositionOwned(node) {
+  if (!node?.parentId) return false;
+  return isAutoLayoutContainer(nodeById(node.parentId));
+}
+
+function selectedPositionMutableNodes() {
   const selected = selectedNodes();
-  const transformIds = new Set(
-    selected.filter((node) => !isEffectivelyLocked(node)).map((node) => node.id),
+  const ownedRoots = new Set(
+    selected.filter((node) => isAutoLayoutPositionOwned(node)).map((node) => node.id),
   );
+  const ownedTreeIds = new Set([...ownedRoots, ...descendantIds(design.nodes, ownedRoots)]);
+  return selected.filter((node) => !isEffectivelyLocked(node) && !ownedTreeIds.has(node.id));
+}
+
+function selectedTransformNodes() {
+  const selected = selectedPositionMutableNodes();
+  const transformIds = new Set(selected.map((node) => node.id));
   const selectedContainerIds = new Set(
     selected.filter((node) => isContainerNode(node) && !node.locked).map((node) => node.id),
   );
@@ -404,8 +540,8 @@ function selectedTransformNodes() {
 }
 
 function visualDeltaForNode(node, delta, movingIds) {
-  const parent = node.parentId && !movingIds.has(node.parentId) ? nodeById(node.parentId) : null;
-  return parent?.rotation ? rotateVector(delta, -parent.rotation) : delta;
+  const inheritedRotation = inheritedNodeRotation(design.nodes, node, movingIds);
+  return inheritedRotation ? rotateVector(delta, -inheritedRotation) : delta;
 }
 
 function containingFrame(point) {
@@ -417,7 +553,7 @@ function containingFrame(point) {
           isContainerNode(node) &&
           isEffectivelyVisible(node) &&
           !isEffectivelyLocked(node) &&
-          pointInRotatedBounds(node, point),
+          pointInNodeTree(design.nodes, node, point),
       ) ?? null
   );
 }
@@ -465,6 +601,30 @@ function serializeDesign() {
   return serializeDocument(design);
 }
 
+function currentDesignStateRevision() {
+  const snapshot = `${workspaceEpoch}\u0000${context.cwd ?? ""}\u0000${elements.path.value}\u0000${serializeDesign()}`;
+  let primary = 2_166_136_261;
+  let secondary = 2_654_435_769;
+  for (let index = 0; index < snapshot.length; index += 1) {
+    const code = snapshot.charCodeAt(index);
+    primary = Math.imul(primary ^ code, 16_777_619);
+    secondary = Math.imul(secondary ^ code, 2_246_822_519);
+    secondary ^= secondary >>> 13;
+  }
+  const digest = [primary, secondary]
+    .map((value) => (value >>> 0).toString(16).padStart(8, "0"))
+    .join("");
+  return `design-state-${workspaceEpoch}-${documentEpoch}-${designStateSequence}-${digest}`;
+}
+
+async function settleWorkspaceTransition() {
+  let pending;
+  do {
+    pending = workspaceTransition;
+    await pending;
+  } while (pending !== workspaceTransition);
+}
+
 function updateDirtyState() {
   dirty = serializeDesign() !== savedSnapshot;
   if (warnedExternalVersion) {
@@ -498,6 +658,9 @@ function updateRepoLinkState() {
 
 function notify(message, kind = "idle") {
   clearTimeout(toastTimer);
+  const urgent = kind === "error";
+  elements.toast.setAttribute("role", urgent ? "alert" : "status");
+  elements.toast.setAttribute("aria-live", urgent ? "assertive" : "polite");
   elements.toast.textContent = message;
   elements.toast.dataset.kind = kind;
   elements.toast.hidden = false;
@@ -510,11 +673,28 @@ function notify(message, kind = "idle") {
 }
 
 function canAddNodes(count) {
-  if (!Number.isSafeInteger(count) || count < 0 || design.nodes.length + count > MAX_DESIGN_NODES) {
+  if (
+    !Number.isSafeInteger(count) ||
+    count < 0 ||
+    allDesignNodes().length + count > MAX_DESIGN_NODES
+  ) {
     notify(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`, "error");
     return false;
   }
   return true;
+}
+
+function keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds) {
+  try {
+    normalizeDesignState(design);
+    return true;
+  } catch (error) {
+    design = normalizeDesignState(previousDesign);
+    selectedId = previousSelectedId;
+    selectedIds = new Set(previousSelectedIds);
+    notify(error instanceof Error ? error.message : "该操作会产生无法安全渲染的设计", "error");
+    return false;
+  }
 }
 
 function recoverySnapshot(workspaceRoot) {
@@ -580,6 +760,8 @@ function saveUiPreferences() {
 function resetHistory() {
   history = [serializeDesign()];
   historyIndex = 0;
+  designStateSequence += 1;
+  lastAgentTransaction = null;
 }
 
 function commitHistory() {
@@ -589,12 +771,14 @@ function commitHistory() {
   history.push(snapshot);
   if (history.length > 60) history.shift();
   historyIndex = history.length - 1;
+  designStateSequence += 1;
 }
 
 function restoreHistory(nextIndex) {
   if (nextIndex < 0 || nextIndex >= history.length) return;
   historyIndex = nextIndex;
   design = normalizeDocument(JSON.parse(history[historyIndex]));
+  designStateSequence += 1;
   selectedIds = new Set(
     [...selectedIds].filter((id) => design.nodes.some((node) => node.id === id)),
   );
@@ -618,6 +802,32 @@ function svgElement(name, attributes = {}) {
   return element;
 }
 
+function shouldRenderCanvasLabel(node, options = {}) {
+  return (
+    options.suppressLabel !== true && zoom >= 0.65 && (!node.parentId || selectedIds.has(node.id))
+  );
+}
+
+function appendAncestorClipChain(root, node, clipIds, nodes = design.nodes) {
+  let content = root;
+  const byId = new Map(nodes.map((candidate) => [candidate.id, candidate]));
+  const seen = new Set();
+  let parentId = node.parentId;
+  while (parentId && !seen.has(parentId)) {
+    seen.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    const clipId = clipIds.get(parent.id);
+    if (clipId) {
+      const clipped = svgElement("g", { "clip-path": `url(#${clipId})` });
+      content.append(clipped);
+      content = clipped;
+    }
+    parentId = parent.parentId;
+  }
+  return content;
+}
+
 function renderScene() {
   elements.scene.replaceChildren();
   elements.scene.setAttribute("transform", `translate(${pan.x} ${pan.y}) scale(${zoom})`);
@@ -635,35 +845,96 @@ function renderScene() {
   elements.scene.append(artboard);
 
   const clipIds = new Map();
-  const clipDefs = svgElement("defs");
-  design.nodes.forEach((node, index) => {
-    if (!["frame", "component"].includes(node.type) || node.clipContent !== true) return;
-    const id = `frame-clip-${index}`;
-    clipIds.set(node.id, id);
-    const clipPath = svgElement("clipPath", {
-      id,
-      clipPathUnits: "userSpaceOnUse",
-    });
-    const clipRect = svgElement("rect", {
-      x: node.x,
-      y: node.y,
-      width: node.width,
-      height: node.height,
-      rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
-    });
-    if (node.rotation) {
-      clipRect.setAttribute(
-        "transform",
-        `rotate(${node.rotation} ${node.x + node.width / 2} ${node.y + node.height / 2})`,
-      );
+  const componentClipIds = new Map();
+  const shadowIds = new Map();
+  const sceneDefs = svgElement("defs");
+  const renderNodes = allDesignNodes();
+  const renderDocument = { ...design, nodes: renderNodes };
+  renderNodes.forEach((node, index) => {
+    if (["frame", "component"].includes(node.type) && node.clipContent === true) {
+      const id = `frame-clip-${index}`;
+      clipIds.set(node.id, id);
+      const clipPath = svgElement("clipPath", {
+        id,
+        clipPathUnits: "userSpaceOnUse",
+      });
+      const clipRect = svgElement("rect", {
+        x: node.x,
+        y: node.y,
+        width: node.width,
+        height: node.height,
+        rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
+      });
+      const transform = nodeTransform(node, renderNodes);
+      if (transform) clipRect.setAttribute("transform", transform);
+      clipPath.append(clipRect);
+      sceneDefs.append(clipPath);
     }
-    clipPath.append(clipRect);
-    clipDefs.append(clipPath);
+    if (node.shadow && node.shadow.opacity > 0 && node.type !== "group") {
+      const id = `node-shadow-${index}`;
+      const bounds = renderedDesignNodeShadowFilterBounds(renderDocument, node, renderNodes);
+      shadowIds.set(node.id, id);
+      const filter = svgElement("filter", {
+        id,
+        filterUnits: "userSpaceOnUse",
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+      });
+      filter.append(
+        svgElement("feDropShadow", {
+          dx: node.shadow.x,
+          dy: node.shadow.y,
+          stdDeviation: node.shadow.blur / 2,
+          "flood-color": node.shadow.color,
+          "flood-opacity": node.shadow.opacity,
+        }),
+      );
+      sceneDefs.append(filter);
+    }
   });
-  if (clipIds.size > 0) elements.scene.append(clipDefs);
+  renderNodes
+    .filter((node) => node.type === "component")
+    .forEach((component, componentIndex) => {
+      const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
+      const sourceIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
+      sourceIds.add(component.id);
+      const sourceClipIds = new Map();
+      sourceDocument.nodes.forEach((node, nodeIndex) => {
+        if (
+          !sourceIds.has(node.id) ||
+          !["frame", "component"].includes(node.type) ||
+          node.clipContent !== true
+        ) {
+          return;
+        }
+        const id = `component-${componentIndex}-clip-${nodeIndex}`;
+        sourceClipIds.set(node.id, id);
+        const clipPath = svgElement("clipPath", {
+          id,
+          clipPathUnits: "userSpaceOnUse",
+        });
+        const clipRect = svgElement("rect", {
+          x: node.x,
+          y: node.y,
+          width: node.width,
+          height: node.height,
+          rx: Math.min(node.cornerRadius, node.width / 2, node.height / 2),
+        });
+        const transform = nodeTransform(node, sourceDocument.nodes);
+        if (transform) clipRect.setAttribute("transform", transform);
+        clipPath.append(clipRect);
+        sceneDefs.append(clipPath);
+      });
+      componentClipIds.set(component.id, sourceClipIds);
+    });
+  if (clipIds.size + shadowIds.size > 0) elements.scene.append(sceneDefs);
   for (const node of design.nodes) {
     if (!isEffectivelyVisible(node)) continue;
-    elements.scene.append(renderNode(node, clipIds));
+    elements.scene.append(
+      renderNode(node, clipIds, shadowIds, { renderDocument, componentClipIds }),
+    );
   }
   const nodes = selectedNodes().filter((node) => isEffectivelyVisible(node));
   if (nodes.length === 1) {
@@ -679,23 +950,28 @@ function renderScene() {
   renderSelectionSize(nodes);
 }
 
-function renderInstanceNode(node, clipIds) {
-  const component = design.nodes.find(
+function renderInstanceNode(node, clipIds, shadowIds, options = {}) {
+  const renderDocument = options.renderDocument ?? design;
+  const renderNodes = renderDocument.nodes;
+  const component = renderNodes.find(
     (candidate) => candidate.id === node.componentId && candidate.type === "component",
   );
   const group = svgElement("g");
   group.dataset.nodeId = node.id;
   group.dataset.componentId = node.componentId;
-  let content = group;
-  if (node.parentId && clipIds.has(node.parentId)) {
-    group.setAttribute("clip-path", `url(#${clipIds.get(node.parentId)})`);
-    content = svgElement("g");
-    group.append(content);
-  }
-  const transform = nodeTransform(node);
+  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
+  const shadowId = shadowIds.get(node.id);
+  if (shadowId) content.setAttribute("filter", `url(#${shadowId})`);
+  const transform = nodeTransform(node, renderNodes);
   if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(design, node));
-  if (!component || component.width <= 0 || component.height <= 0) {
+  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
+  const instanceStack = options.instanceStack ?? new Set();
+  if (
+    !component ||
+    component.width <= 0 ||
+    component.height <= 0 ||
+    instanceStack.has(component.id)
+  ) {
     const missing = svgElement("rect", {
       x: node.x,
       y: node.y,
@@ -710,20 +986,31 @@ function renderInstanceNode(node, clipIds) {
     content.append(missing);
     return group;
   }
+  const nextInstanceStack = new Set(instanceStack);
+  nextInstanceStack.add(component.id);
+  const sourceDocument = detachedComponentRenderDocument(renderDocument, component.id);
+  const sourceComponent = sourceDocument.nodes.find((candidate) => candidate.id === component.id);
+  const componentClipIds = options.componentClipIds ?? new Map();
+  const sourceClipIds = componentClipIds.get(component.id) ?? clipIds;
 
   const mapped = svgElement("g", {
     transform: `translate(${node.x} ${node.y}) scale(${node.width / component.width} ${
       node.height / component.height
     }) translate(${-component.x} ${-component.y})`,
   });
+  const componentDescendantIds = descendantIds(sourceDocument.nodes, new Set([component.id]));
   const sourceNodes = [
-    component,
-    ...design.nodes.filter(
-      (candidate) => candidate.parentId === component.id && candidate.type !== "instance",
-    ),
-  ];
+    sourceComponent,
+    ...sourceDocument.nodes.filter((candidate) => componentDescendantIds.has(candidate.id)),
+  ].filter(Boolean);
   for (const sourceNode of sourceNodes) {
-    const source = renderNode(sourceNode, clipIds, { suppressLabel: true });
+    if (!isDesignNodeVisible(sourceDocument, sourceNode)) continue;
+    const source = renderNode(sourceNode, sourceClipIds, shadowIds, {
+      suppressLabel: true,
+      instanceStack: nextInstanceStack,
+      renderDocument: sourceDocument,
+      componentClipIds,
+    });
     source.dataset.nodeId = node.id;
     for (const target of source.querySelectorAll("[data-node-id]")) {
       target.dataset.componentNodeId = target.dataset.nodeId;
@@ -732,7 +1019,7 @@ function renderInstanceNode(node, clipIds) {
     mapped.append(source);
   }
   content.append(mapped);
-  if (zoom >= 0.35) {
+  if (shouldRenderCanvasLabel(node)) {
     const label = svgElement("text", {
       x: node.x,
       y: node.y - 18 / zoom,
@@ -748,19 +1035,16 @@ function renderInstanceNode(node, clipIds) {
   return group;
 }
 
-function renderNode(node, clipIds, options = {}) {
-  if (node.type === "instance") return renderInstanceNode(node, clipIds);
+function renderNode(node, clipIds, shadowIds, options = {}) {
+  if (node.type === "instance") return renderInstanceNode(node, clipIds, shadowIds, options);
+  const renderDocument = options.renderDocument ?? design;
+  const renderNodes = renderDocument.nodes;
   const group = svgElement("g");
   group.dataset.nodeId = node.id;
-  let content = group;
-  if (node.parentId && clipIds.has(node.parentId)) {
-    group.setAttribute("clip-path", `url(#${clipIds.get(node.parentId)})`);
-    content = svgElement("g");
-    group.append(content);
-  }
-  const transform = nodeTransform(node);
+  const content = appendAncestorClipChain(group, node, clipIds, renderNodes);
+  const transform = nodeTransform(node, renderNodes);
   if (transform) content.setAttribute("transform", transform);
-  content.setAttribute("opacity", effectiveDesignNodeOpacity(design, node));
+  content.setAttribute("opacity", effectiveDesignNodeOpacity(renderDocument, node));
 
   let visual;
   if (node.type === "ellipse") {
@@ -784,9 +1068,14 @@ function renderNode(node, clipIds, options = {}) {
       x: textX,
       y: node.y,
       fill: node.fill,
+      stroke: node.stroke,
+      "stroke-width": node.strokeWidth,
       "font-size": node.fontSize,
       "font-weight": node.fontWeight,
-      "font-family": "Inter, ui-sans-serif, system-ui, sans-serif",
+      "font-family": node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+      "font-style": node.fontStyle ?? "normal",
+      "letter-spacing": node.letterSpacing ?? 0,
+      "text-decoration": node.textDecoration ?? "none",
       "dominant-baseline": "hanging",
       "text-anchor":
         node.textAlign === "center" ? "middle" : node.textAlign === "right" ? "end" : "start",
@@ -795,7 +1084,7 @@ function renderNode(node, clipIds, options = {}) {
     lines.forEach((line, index) => {
       const span = svgElement("tspan", {
         x: textX,
-        dy: index === 0 ? 0 : node.fontSize * node.lineHeight,
+        y: node.y + index * node.fontSize * node.lineHeight,
       });
       span.textContent = line || " ";
       visual.append(span);
@@ -823,10 +1112,14 @@ function renderNode(node, clipIds, options = {}) {
     });
   }
   visual.dataset.nodeId = node.id;
-  visual.style.pointerEvents = isEffectivelyLocked(node) ? "visiblePainted" : "all";
+  const shadowId = shadowIds.get(node.id);
+  if (shadowId) visual.setAttribute("filter", `url(#${shadowId})`);
+  visual.style.pointerEvents = isNodeEffectivelyLocked(node, renderNodes)
+    ? "visiblePainted"
+    : "all";
   content.append(visual);
 
-  if (isContainerNode(node) && zoom >= 0.35 && options.suppressLabel !== true) {
+  if (isContainerNode(node) && shouldRenderCanvasLabel(node, options)) {
     const label = svgElement("text", {
       x: node.x,
       y: node.y - 18 / zoom,
@@ -997,10 +1290,19 @@ function renderProperties() {
   const container = isContainerNode(single);
   const parent = single.parentId ? nodeById(single.parentId) : null;
   const autoLayoutChild = Boolean(parent) && ["horizontal", "vertical"].includes(parent.layout);
+  propertyInputs.x.disabled = autoLayoutChild;
+  propertyInputs.y.disabled = autoLayoutChild;
+  const positionHint = autoLayoutChild
+    ? `位置由自动布局容器「${parent.name}」管理`
+    : "绝对画布坐标";
+  propertyInputs.x.title = positionHint;
+  propertyInputs.y.title = positionHint;
   elements.parentField.hidden = false;
   elements.frameSection.hidden = !["frame", "group", "component"].includes(single.type);
   elements.containerSectionLabel.textContent =
     single.type === "component" ? "主组件" : single.type === "group" ? "编组" : "画板";
+  elements.clipContentLabel.textContent =
+    single.type === "component" ? "裁剪超出组件的内容" : "裁剪超出画板的内容";
   elements.clipContentField.hidden = single.type === "group";
   elements.releaseFrame.hidden = single.type === "component";
   elements.releaseContainerLabel.textContent =
@@ -1013,6 +1315,14 @@ function renderProperties() {
     propertyInputs.layout.value = single.layout ?? "none";
     propertyInputs.gap.value = String(round(single.gap ?? 0));
     propertyInputs.padding.value = String(round(single.padding ?? 0));
+    propertyInputs.paddingTop.value =
+      single.paddingTop === undefined ? "" : String(round(single.paddingTop));
+    propertyInputs.paddingRight.value =
+      single.paddingRight === undefined ? "" : String(round(single.paddingRight));
+    propertyInputs.paddingBottom.value =
+      single.paddingBottom === undefined ? "" : String(round(single.paddingBottom));
+    propertyInputs.paddingLeft.value =
+      single.paddingLeft === undefined ? "" : String(round(single.paddingLeft));
     propertyInputs.alignItems.value = single.alignItems ?? "start";
     propertyInputs.justifyContent.value = single.justifyContent ?? "start";
   }
@@ -1024,18 +1334,26 @@ function renderProperties() {
   elements.makeComponent.hidden = single.type !== "frame";
   elements.createInstance.hidden = single.type !== "component";
   if (single.type === "component") {
-    const instanceCount = design.nodes.filter(
+    const instanceCount = allDesignNodes().filter(
       (candidate) => candidate.type === "instance" && candidate.componentId === single.id,
     ).length;
     elements.componentStatus.textContent = `主组件 · ${instanceCount} 个实例`;
   } else if (single.type === "instance") {
-    const source = nodeById(single.componentId);
+    const source = allDesignNodes().find((candidate) => candidate.id === single.componentId);
     elements.componentStatus.textContent = source
       ? `实例来自 ${source.name}`
       : "实例的主组件不存在";
   } else {
     elements.componentStatus.textContent = "将画板转换为可复用组件";
   }
+  const paintlessLayer = ["group", "instance"].includes(single.type);
+  elements.paintControls.hidden = paintlessLayer;
+  elements.paintlessLayerHint.hidden = !paintlessLayer;
+  elements.radiusField.hidden = ["text", "ellipse"].includes(single.type);
+  elements.paintlessLayerHint.textContent =
+    single.type === "instance"
+      ? "实例外观来自主组件；此处可调整整体透明度、旋转与投影。"
+      : "编组不绘制自身外观；此处可调整整体透明度与旋转。";
   propertyInputs.parent.replaceChildren();
   const canvasOption = document.createElement("option");
   canvasOption.value = "";
@@ -1055,6 +1373,18 @@ function renderProperties() {
   }
   propertyInputs.parent.value = single.parentId ?? "";
   propertyInputs.notes.value = single.notes ?? "";
+  const shadowSupported = single.type !== "group";
+  elements.shadowSection.hidden = !shadowSupported;
+  propertyInputs.shadowEnabled.checked = Boolean(single.shadow);
+  elements.shadowControls.hidden = !single.shadow;
+  if (single.shadow) {
+    propertyInputs.shadowColor.value = single.shadow.color;
+    propertyInputs.shadowColorPicker.value = single.shadow.color;
+    propertyInputs.shadowX.value = String(round(single.shadow.x));
+    propertyInputs.shadowY.value = String(round(single.shadow.y));
+    propertyInputs.shadowBlur.value = String(round(single.shadow.blur));
+    propertyInputs.shadowOpacity.value = String(Math.round(single.shadow.opacity * 100));
+  }
 
   const isText = single.type === "text";
   elements.textSection.hidden = !isText;
@@ -1062,7 +1392,12 @@ function renderProperties() {
     propertyInputs.text.value = single.text;
     propertyInputs.fontSize.value = String(single.fontSize);
     propertyInputs.fontWeight.value = String(single.fontWeight);
+    propertyInputs.fontFamily.value =
+      single.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif";
+    propertyInputs.fontStyle.value = single.fontStyle ?? "normal";
     propertyInputs.lineHeight.value = String(single.lineHeight);
+    propertyInputs.letterSpacing.value = String(single.letterSpacing ?? 0);
+    propertyInputs.textDecoration.value = single.textDecoration ?? "none";
     propertyInputs.textAlign.value = single.textAlign;
   }
 }
@@ -1074,6 +1409,14 @@ function focusLayerRow(id) {
     );
     row?.focus();
   });
+}
+
+function toggleNodeVisibility(node) {
+  if (!node) return;
+  node.visible = !node.visible;
+  reflowParent(node);
+  commitHistory();
+  markChanged();
 }
 
 function renderLayers() {
@@ -1147,9 +1490,7 @@ function renderLayers() {
     visibility.textContent = node.visible ? "◉" : "○";
     visibility.addEventListener("click", (event) => {
       event.stopPropagation();
-      node.visible = !node.visible;
-      commitHistory();
-      markChanged();
+      toggleNodeVisibility(node);
     });
     row.append(disclosure, kind, title, visibility);
     row.addEventListener("click", (event) => {
@@ -1161,9 +1502,7 @@ function renderLayers() {
     row.addEventListener("keydown", (event) => {
       if (event.key.toLowerCase() === "v") {
         event.preventDefault();
-        node.visible = !node.visible;
-        commitHistory();
-        markChanged();
+        toggleNodeVisibility(node);
         focusLayerRow(node.id);
         return;
       }
@@ -1313,11 +1652,140 @@ function renderTokens() {
   }
 }
 
+function updateAuditStatus() {
+  const summary = summarizeAudit(auditDocument());
+  const kind =
+    summary.blockingIssueCount > 0 ? "blocking" : summary.warningCount > 0 ? "warning" : "clean";
+  elements.runAudit.dataset.kind = kind;
+  elements.runAudit.textContent =
+    summary.issueCount === 0
+      ? "检查 ✓"
+      : summary.blockingIssueCount > 0
+        ? `检查 · ${summary.blockingIssueCount} 阻塞`
+        : `检查 · ${summary.warningCount}`;
+  elements.runAudit.title =
+    summary.issueCount === 0
+      ? "设计检查通过：0 个问题"
+      : `${summary.issueCount} 个问题 · ${summary.blockingIssueCount} 个阻塞 · ${summary.errorCount} 个错误 · ${summary.warningCount} 个警告`;
+  elements.runAudit.setAttribute("aria-label", elements.runAudit.title);
+}
+
+function renderAuditStatus() {
+  if (auditStatusTimer !== undefined) return;
+  auditStatusTimer = window.setTimeout(() => {
+    auditStatusTimer = undefined;
+    updateAuditStatus();
+  }, 100);
+}
+
+function renderPages() {
+  const signature = `${design.activePageId}\u0000${design.pages
+    .map((page) => `${page.id}\u0000${page.name}`)
+    .join("\u0001")}`;
+  if (signature !== renderedPagesSignature) {
+    elements.activePage.replaceChildren();
+    for (const page of design.pages) {
+      const option = document.createElement("option");
+      option.value = page.id;
+      option.textContent = page.name;
+      option.title = page.name;
+      elements.activePage.append(option);
+    }
+    renderedPagesSignature = signature;
+  }
+  elements.activePage.value = design.activePageId;
+  elements.activePage.title = `${activeDesignPage()?.name ?? "页面"} · ${design.pages.length} 页`;
+  elements.addPage.disabled = design.pages.length >= MAX_DESIGN_PAGES;
+  elements.addPage.title =
+    design.pages.length >= MAX_DESIGN_PAGES
+      ? `设计文件最多 ${MAX_DESIGN_PAGES} 页`
+      : "新建设计页面";
+}
+
+function validPageName(value) {
+  return (
+    typeof value === "string" &&
+    Boolean(value.trim()) &&
+    value.length <= 120 &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function renderPageManager() {
+  elements.pagesList.replaceChildren();
+  syncActivePageNodes();
+  for (const page of design.pages) {
+    const row = document.createElement("div");
+    row.className = "page-row";
+    row.dataset.active = String(page.id === design.activePageId);
+
+    const dot = document.createElement("span");
+    dot.className = "page-row-dot";
+    dot.setAttribute("aria-hidden", "true");
+
+    const name = document.createElement("input");
+    name.value = page.name;
+    name.maxLength = 120;
+    name.setAttribute("aria-label", `${page.name} 页面名称`);
+    name.title = `${page.nodes.length} 个图层`;
+    name.addEventListener("change", () => {
+      const nextName = name.value.trim();
+      if (!validPageName(nextName)) {
+        name.value = page.name;
+        notify("页面名称必须是 1–120 个安全字符", "error");
+        return;
+      }
+      if (nextName === page.name) return;
+      page.name = nextName;
+      commitHistory();
+      markChanged();
+      renderPageManager();
+    });
+    name.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      name.blur();
+    });
+
+    const count = document.createElement("span");
+    count.className = "page-row-count";
+    count.textContent = `${page.nodes.length} 层`;
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "page-row-action";
+    open.textContent = page.id === design.activePageId ? "当前" : "打开";
+    open.disabled = page.id === design.activePageId;
+    open.addEventListener("click", () => {
+      if (!activateDesignPage(page.id)) return;
+      commitHistory();
+      markChanged();
+      renderPageManager();
+      requestAnimationFrame(fitCanvas);
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "page-row-action";
+    remove.dataset.danger = "true";
+    remove.textContent = "删除";
+    remove.disabled = design.pages.length === 1;
+    remove.title = design.pages.length === 1 ? "设计文件必须保留至少一页" : `删除 ${page.name}`;
+    remove.addEventListener("click", () => deleteDesignPage(page.id));
+
+    row.append(dot, name, count, open, remove);
+    elements.pagesList.append(row);
+  }
+  elements.addPageDialog.disabled = design.pages.length >= MAX_DESIGN_PAGES;
+}
+
 function renderAll() {
+  renderPages();
   renderScene();
   renderProperties();
   renderLayers();
   renderTokens();
+  renderAuditStatus();
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
   elements.grid.style.display = showGrid ? "" : "none";
   elements.toggleGrid.classList.toggle("active", showGrid);
@@ -1411,13 +1879,9 @@ function pointerDown(event) {
             movableNodes.map((candidate) => [candidate.id, { x: candidate.x, y: candidate.y }]),
           ),
           movingIds,
-          inheritsRotation: movableNodes.some((candidate) => {
-            const parent =
-              candidate.parentId && !movingIds.has(candidate.parentId)
-                ? nodeById(candidate.parentId)
-                : null;
-            return Boolean(parent?.rotation);
-          }),
+          inheritsRotation: movableNodes.some(
+            (candidate) => inheritedNodeRotation(design.nodes, candidate, movingIds) !== 0,
+          ),
           moved: false,
           guides: [],
         };
@@ -1482,7 +1946,7 @@ function pointerMove(event) {
     const enclosed = design.nodes
       .filter((node) => {
         if (!isEffectivelyVisible(node)) return false;
-        const bounds = transformedNodeBounds(node, node.parentId ? nodeById(node.parentId) : null);
+        const bounds = transformedNodeBoundsInTree(design.nodes, node);
         return (
           bounds &&
           bounds.x >= left &&
@@ -1511,7 +1975,7 @@ function pointerMove(event) {
         (node) => !interaction.origins.has(node.id) && isEffectivelyVisible(node),
       );
       const stationaryBounds = stationaryNodes.map((node) => ({
-        ...transformedNodeBounds(node, node.parentId ? nodeById(node.parentId) : null),
+        ...transformedNodeBoundsInTree(design.nodes, node),
         id: node.id,
       }));
       const snapped = snapBoundsToNodes(
@@ -1622,7 +2086,7 @@ function finishInteraction(pointerId = null) {
   if (changed) {
     if (node) {
       reflowParent(node);
-      if (isContainerNode(node)) applyAutoLayout(design.nodes, node.id);
+      if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
     }
     commitHistory();
     markChanged(false);
@@ -1650,10 +2114,17 @@ function duplicateSelected() {
   ]);
   const sources = design.nodes.filter((node) => sourceIds.has(node.id));
   if (!canAddNodes(sources.length)) return;
+  const previousDesign = clone(design);
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
   const { copies, idMap } = cloneNodeSet(sources, selectedIds);
   design.nodes.push(...copies);
   normalizeNodeTreeOrder(design.nodes);
-  reflowLayouts();
+  applyAutoLayouts(design.nodes, new Set(copies.map((node) => node.parentId).filter(Boolean)));
+  if (!keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds)) {
+    renderAll();
+    return;
+  }
   selectedIds = new Set([...selectedIds].map((id) => idMap.get(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   commitHistory();
@@ -1708,11 +2179,15 @@ function rememberClipboardParents(nodes) {
   const copiedIds = new Set(nodes.map((node) => node.id));
   copiedParentFrames = new Map();
   for (const node of nodes) {
-    if (!node.parentId || copiedIds.has(node.parentId) || copiedParentFrames.has(node.parentId)) {
-      continue;
+    let parentId = node.parentId;
+    while (parentId && !copiedIds.has(parentId)) {
+      const parent = nodeById(parentId);
+      if (!isContainerNode(parent)) break;
+      if (!copiedParentFrames.has(parent.id)) {
+        copiedParentFrames.set(parent.id, clone(parent));
+      }
+      parentId = parent.parentId;
     }
-    const parent = nodeById(node.parentId);
-    if (isContainerNode(parent)) copiedParentFrames.set(parent.id, clone(parent));
   }
 }
 
@@ -1720,6 +2195,29 @@ function pasteCopied() {
   if (copiedNodes.length === 0) return;
   if (!canAddNodes(copiedNodes.length)) return;
   const { copies, idMap } = cloneNodeSet(copiedNodes, copiedSelectionIds);
+  const availableComponentIds = new Set([
+    ...allDesignNodes()
+      .filter((node) => node.type === "component")
+      .map((node) => node.id),
+    ...copies.filter((node) => node.type === "component").map((node) => node.id),
+  ]);
+  const missingComponentIds = [
+    ...new Set(
+      copies
+        .filter((node) => node.type === "instance" && !availableComponentIds.has(node.componentId))
+        .map((node) => node.componentId),
+    ),
+  ];
+  if (missingComponentIds.length > 0) {
+    notify(
+      `无法粘贴：目标设计缺少主组件 ${missingComponentIds.join("、")}；请先复制主组件`,
+      "error",
+    );
+    return;
+  }
+  const previousDesign = clone(design);
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
   const pastedFrameIds = new Set(
     copies.filter((node) => isContainerNode(node)).map((node) => node.id),
   );
@@ -1728,6 +2226,7 @@ function pasteCopied() {
     ...pastedFrameIds,
   ]);
   const crossDocument = copiedDocumentEpoch !== documentEpoch;
+  const clipboardHierarchy = [...copiedParentFrames.values(), ...copies];
   let detached = 0;
   for (const copy of copies) {
     if (
@@ -1735,15 +2234,21 @@ function pasteCopied() {
       (!availableFrameIds.has(copy.parentId) ||
         (crossDocument && !pastedFrameIds.has(copy.parentId)))
     ) {
-      const previousParent = copiedParentFrames.get(copy.parentId) ?? null;
-      if (previousParent) detachNodeFromParent(copy, previousParent);
-      else delete copy.parentId;
+      if (copiedParentFrames.has(copy.parentId)) {
+        if (!reparentNode(clipboardHierarchy, copy.id, null)) delete copy.parentId;
+      } else {
+        delete copy.parentId;
+      }
       detached += 1;
     }
   }
   design.nodes.push(...copies);
   normalizeNodeTreeOrder(design.nodes);
-  reflowLayouts();
+  applyAutoLayouts(design.nodes, new Set(copies.map((node) => node.parentId).filter(Boolean)));
+  if (!keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds)) {
+    renderAll();
+    return;
+  }
   selectedIds = new Set([...copiedSelectionIds].map((id) => idMap.get(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   copiedNodes = clone(copies);
@@ -1761,28 +2266,19 @@ function deleteSelected() {
       .filter((node) => !isEffectivelyLocked(node))
       .map((node) => node.id),
   );
-  const deletableIds = new Set([
-    ...deletableRootIds,
-    ...descendantIds(design.nodes, deletableRootIds),
-  ]);
-  const deletedComponentIds = new Set(
-    design.nodes
-      .filter((node) => deletableIds.has(node.id) && node.type === "component")
-      .map((node) => node.id),
-  );
-  for (const node of design.nodes) {
-    if (node.type === "instance" && deletedComponentIds.has(node.componentId)) {
-      deletableIds.add(node.id);
-    }
-  }
+  syncActivePageNodes();
+  const deletableIds = new Set(designNodeRemovalIds(design, design.activePageId, deletableRootIds));
   if (deletableIds.size === 0) return;
-  const affectedParents = new Set(
-    design.nodes
-      .filter((candidate) => deletableIds.has(candidate.id) && candidate.parentId)
-      .map((candidate) => candidate.parentId),
-  );
-  design.nodes = design.nodes.filter((candidate) => !deletableIds.has(candidate.id));
-  for (const parentId of affectedParents) applyAutoLayout(design.nodes, parentId);
+  for (const page of design.pages) {
+    const affectedParents = new Set(
+      page.nodes
+        .filter((candidate) => deletableIds.has(candidate.id) && candidate.parentId)
+        .map((candidate) => candidate.parentId),
+    );
+    page.nodes = page.nodes.filter((candidate) => !deletableIds.has(candidate.id));
+    applyAutoLayouts(page.nodes, affectedParents);
+  }
+  design.nodes = activeDesignPage()?.nodes ?? [];
   selectedIds = new Set([...selectedIds].filter((id) => !deletableIds.has(id)));
   selectedId = [...selectedIds].at(-1) ?? null;
   commitHistory();
@@ -1793,7 +2289,7 @@ function frameSelectedNodes() {
   const nodes = selectedNodes();
   if (nodes.length === 0) return;
   if (nodes.some((node) => isContainerNode(node))) {
-    notify("容器不能嵌套；请只选择普通图层", "error");
+    notify("装入新画板目前只支持普通图层", "error");
     return;
   }
   if (nodes.some((node) => node.parentId)) {
@@ -1851,8 +2347,15 @@ function makeSelectedComponent() {
   }
   if (frame.locked) return notify("请先解锁画板", "error");
   ensureDesignV3();
+  const previousDesign = clone(design);
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
   frame.type = "component";
   frame.name = frame.name.endsWith(" · 组件") ? frame.name : `${frame.name} · 组件`;
+  if (!keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds)) {
+    renderAll();
+    return;
+  }
   commitHistory();
   markChanged();
   notify("已创建主组件；修改它会同步到所有实例");
@@ -1865,11 +2368,18 @@ function createSelectedComponentInstance() {
   }
   if (!canAddNodes(1)) return;
   ensureDesignV3();
+  const previousDesign = clone(design);
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
   const id = `instance-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const instance = createComponentInstance(component, id, 32, design.canvas);
   if (!instance) return;
   design.nodes.push(instance);
   normalizeNodeTreeOrder(design.nodes);
+  if (!keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds)) {
+    renderAll();
+    return;
+  }
   selectOnly(instance.id);
   commitHistory();
   markChanged();
@@ -1881,8 +2391,10 @@ function releaseSelectedFrame() {
   const frame = selectedNode();
   if (!frame || selectedIds.size !== 1 || !["frame", "group"].includes(frame.type)) return;
   if (frame.locked) return notify("请先解锁容器", "error");
+  const parentId = frame.parentId ?? null;
   const childIds = design.nodes.filter((node) => node.parentId === frame.id).map((node) => node.id);
   if (!releaseFrame(design.nodes, frame.id)) return;
+  if (parentId) applyAutoLayouts(design.nodes, new Set([parentId]));
   selectedIds = new Set(childIds);
   selectedId = childIds.at(-1) ?? null;
   commitHistory();
@@ -1891,28 +2403,27 @@ function releaseSelectedFrame() {
 
 function setOrder(direction) {
   if (!moveSelectedNodes(design.nodes, selectedIds, direction)) return;
-  reflowLayouts();
+  applyAutoLayouts(
+    design.nodes,
+    new Set(
+      selectedNodes()
+        .map((node) => node.parentId)
+        .filter(Boolean),
+    ),
+  );
   commitHistory();
   markChanged();
 }
 
 function alignSelected(alignment) {
-  const ids = new Set(
-    selectedNodes()
-      .filter((node) => !isEffectivelyLocked(node))
-      .map((node) => node.id),
-  );
+  const ids = new Set(selectedPositionMutableNodes().map((node) => node.id));
   if (!alignNodeTrees(design.nodes, ids, alignment, design.canvas)) return;
   commitHistory();
   markChanged();
 }
 
 function distributeSelected(axis) {
-  const ids = new Set(
-    selectedNodes()
-      .filter((node) => !isEffectivelyLocked(node))
-      .map((node) => node.id),
-  );
+  const ids = new Set(selectedPositionMutableNodes().map((node) => node.id));
   const rootCount = [...ids].filter((id) => {
     const node = nodeById(id);
     return node && (!node.parentId || !ids.has(node.parentId));
@@ -1968,9 +2479,7 @@ function fitSelection() {
 }
 
 function normalizeDocument(input) {
-  return Array.isArray(input?.nodes)
-    ? normalizeDesignState(input)
-    : normalizeDesignDocument(input);
+  return Array.isArray(input?.nodes) ? normalizeDesignState(input) : normalizeDesignDocument(input);
 }
 
 function safeDesignPath(value) {
@@ -2096,7 +2605,7 @@ async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEp
   return result;
 }
 
-async function performSaveDocument({ quiet = false } = {}) {
+function captureSaveDocument({ quiet = false } = {}) {
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationWorkspaceIdentity = context.cwd ?? null;
   const operationWorkspaceRoot = operationWorkspaceIdentity ?? "preview";
@@ -2120,6 +2629,29 @@ async function performSaveDocument({ quiet = false } = {}) {
     notify(message, "error");
     throw error;
   }
+  return {
+    workspaceEpoch: operationWorkspaceEpoch,
+    workspaceIdentity: operationWorkspaceIdentity,
+    workspaceRoot: operationWorkspaceRoot,
+    path,
+    content,
+    savedDesign,
+    stateRevision: currentDesignStateRevision(),
+    quiet,
+  };
+}
+
+async function performSaveDocument(request) {
+  const {
+    workspaceEpoch: operationWorkspaceEpoch,
+    workspaceIdentity: operationWorkspaceIdentity,
+    workspaceRoot: operationWorkspaceRoot,
+    path,
+    content,
+    savedDesign,
+    quiet,
+  } = request;
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
   clearTimeout(recoveryTimer);
   elements.save.disabled = true;
   elements.path.disabled = true;
@@ -2133,28 +2665,34 @@ async function performSaveDocument({ quiet = false } = {}) {
       ...(replacesCurrentSource && currentRevision ? { expectedRevision: currentRevision } : {}),
     });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    currentModifiedAt = result.modifiedAt;
-    currentRevision = result.revision;
-    warnedExternalVersion = null;
-    currentSourcePath = path;
-    currentSourceModifiedAt = result.modifiedAt;
-    currentSourceRevision = result.revision;
     fileDiscoveryCache = null;
-    savedSnapshot = content;
     recoveryFailureWarned = false;
-    updateDirtyState();
-    setRepoLinkState("Repo · 已保存", "linked");
-    await hostCall("storage.set", {
-      key: scopedStorageKey("lastPath", operationWorkspaceRoot),
-      value: { workspaceRoot: operationWorkspaceIdentity, path },
-    }).catch(() => undefined);
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
-    if (dirty) queueRecovery();
-    else
-      await hostCall("storage.delete", {
-        key: scopedStorageKey("recovery", operationWorkspaceRoot),
+    const stillTargetsSavedPath = elements.path.value.trim() === path;
+    if (stillTargetsSavedPath) {
+      currentModifiedAt = result.modifiedAt;
+      currentRevision = result.revision;
+      warnedExternalVersion = null;
+      currentSourcePath = path;
+      currentSourceModifiedAt = result.modifiedAt;
+      currentSourceRevision = result.revision;
+      savedSnapshot = content;
+      updateDirtyState();
+      setRepoLinkState("Repo · 已保存", "linked");
+      await hostCall("storage.set", {
+        key: scopedStorageKey("lastPath", operationWorkspaceRoot),
+        value: { workspaceRoot: operationWorkspaceIdentity, path },
       }).catch(() => undefined);
-    assertWorkspaceEpoch(operationWorkspaceEpoch);
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (dirty) queueRecovery();
+      else
+        await hostCall("storage.delete", {
+          key: scopedStorageKey("recovery", operationWorkspaceRoot),
+        }).catch(() => undefined);
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+    } else {
+      updateDirtyState();
+      setSaveState(dirty ? "有修改" : "另存为", dirty ? "dirty" : "idle");
+    }
     if (!quiet) notify(`已保存到 ${path}`);
     return { ...result, design: savedDesign };
   } catch (error) {
@@ -2178,9 +2716,26 @@ async function performSaveDocument({ quiet = false } = {}) {
 }
 
 function saveDocument(options = {}) {
-  if (saveInFlight?.workspaceEpoch === workspaceEpoch) return saveInFlight.operation;
-  const operation = performSaveDocument(options);
-  const entry = { workspaceEpoch, operation };
+  let request;
+  try {
+    request = captureSaveDocument(options);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const pending = saveInFlight?.workspaceEpoch === workspaceEpoch ? saveInFlight : null;
+  if (pending && pending.path === request.path && pending.stateRevision === request.stateRevision) {
+    return pending.operation;
+  }
+  const performCapturedSave = () => performSaveDocument(request);
+  const operation = pending
+    ? pending.operation.then(performCapturedSave, performCapturedSave)
+    : performCapturedSave();
+  const entry = {
+    workspaceEpoch: request.workspaceEpoch,
+    path: request.path,
+    stateRevision: request.stateRevision,
+    operation,
+  };
   saveInFlight = entry;
   const clearInFlight = () => {
     if (saveInFlight === entry) saveInFlight = null;
@@ -2189,8 +2744,21 @@ function saveDocument(options = {}) {
   return operation;
 }
 
+async function settlePendingSaves() {
+  let settledOperation = null;
+  while (
+    saveInFlight?.workspaceEpoch === workspaceEpoch &&
+    saveInFlight.operation !== settledOperation
+  ) {
+    settledOperation = saveInFlight.operation;
+    await settledOperation;
+  }
+}
+
 async function openDocument(path, { discardChanges = false } = {}) {
   const operationWorkspaceEpoch = workspaceEpoch;
+  await settlePendingSaves().catch(() => undefined);
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
   const operationWorkspaceIdentity = context.cwd ?? null;
   const operationWorkspaceRoot = operationWorkspaceIdentity ?? "preview";
   if (
@@ -2200,11 +2768,15 @@ async function openDocument(path, { discardChanges = false } = {}) {
   ) {
     return false;
   }
+  const operationStateRevision = currentDesignStateRevision();
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
   try {
     const result = await hostCall("workspace.readText", { path });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    if (currentDesignStateRevision() !== operationStateRevision) {
+      throw new Error("画布在打开文件期间发生了变化；已保留较新的本地状态");
+    }
     design = normalizeDocument(JSON.parse(result.content));
     documentEpoch += 1;
     clearSelection();
@@ -2252,6 +2824,7 @@ async function checkExternalChange({ force = false } = {}) {
   }
   const operationWorkspaceEpoch = workspaceEpoch;
   const operationDocumentEpoch = documentEpoch;
+  const operationStateRevision = currentDesignStateRevision();
   const sourcePath = currentSourcePath;
   const sourceRevision = currentSourceRevision;
   const sourceModifiedAt = currentSourceModifiedAt;
@@ -2262,7 +2835,15 @@ async function checkExternalChange({ force = false } = {}) {
   try {
     const disk = await hostCall("workspace.readText", { path: sourcePath });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    if (operationDocumentEpoch !== documentEpoch || currentSourcePath !== sourcePath) return false;
+    if (
+      operationDocumentEpoch !== documentEpoch ||
+      currentSourcePath !== sourcePath ||
+      currentSourceRevision !== sourceRevision ||
+      currentSourceModifiedAt !== sourceModifiedAt ||
+      currentDesignStateRevision() !== operationStateRevision
+    ) {
+      return false;
+    }
     const changed =
       sourceRevision && disk.revision
         ? sourceRevision !== disk.revision
@@ -2278,7 +2859,13 @@ async function checkExternalChange({ force = false } = {}) {
       try {
         const nextDesign = normalizeDocument(JSON.parse(disk.content));
         assertWorkspaceEpoch(operationWorkspaceEpoch);
-        if (operationDocumentEpoch !== documentEpoch || currentSourcePath !== sourcePath) {
+        if (
+          operationDocumentEpoch !== documentEpoch ||
+          currentSourcePath !== sourcePath ||
+          currentSourceRevision !== sourceRevision ||
+          currentSourceModifiedAt !== sourceModifiedAt ||
+          currentDesignStateRevision() !== operationStateRevision
+        ) {
           return false;
         }
         design = nextDesign;
@@ -2432,12 +3019,13 @@ function formatBytes(value) {
 }
 
 function showAudit() {
-  const issues = auditDesign(design);
-  const errors = issues.filter((issue) => issue.severity === "error").length;
+  const issues = auditDocument();
+  const summary = summarizeAudit(issues);
+  const totalNodeCount = allDesignNodes().length;
   elements.auditSummary.textContent =
     issues.length === 0
-      ? `未发现问题 · ${design.nodes.length} 个图层`
-      : `${issues.length} 个问题 · ${errors} 个错误 · ${issues.length - errors} 个建议`;
+      ? `未发现问题 · ${design.pages.length} 页 · ${totalNodeCount} 个图层`
+      : `${summary.issueCount} 个问题 · ${summary.blockingIssueCount} 个阻塞 · ${summary.errorCount} 个错误 · ${summary.warningCount} 个警告`;
   elements.auditResults.replaceChildren();
   if (issues.length === 0) {
     const clean = document.createElement("div");
@@ -2445,7 +3033,7 @@ function showAudit() {
     clean.textContent = "✓ 结构与基础可访问性检查通过";
     elements.auditResults.append(clean);
   } else {
-    for (const issue of issues) {
+    for (const issue of issues.slice(0, MAX_AGENT_AUDIT_ISSUES)) {
       const item = document.createElement("button");
       item.type = "button";
       item.className = "audit-issue";
@@ -2453,18 +3041,45 @@ function showAudit() {
       const dot = document.createElement("span");
       dot.className = "audit-issue-dot";
       const copy = document.createElement("span");
+      copy.className = "audit-issue-copy";
       const name = document.createElement("strong");
-      name.textContent = nodeById(issue.nodeId)?.name ?? issue.nodeId;
+      const issueNode = allDesignNodes().find((node) => node.id === issue.nodeId);
+      name.textContent = `${issue.pageName ?? issue.pageId ?? "当前页"} · ${issueNode?.name ?? issue.nodeId}`;
       const message = document.createElement("span");
+      message.className = "audit-issue-message";
       message.textContent = issue.message;
-      copy.append(name, message);
+      const meta = document.createElement("span");
+      meta.className = "audit-issue-meta";
+      const code = document.createElement("code");
+      code.textContent = issue.code;
+      const status = document.createElement("span");
+      status.className = "audit-issue-status";
+      status.textContent = issue.blocking ? "阻塞渲染" : "需修复";
+      meta.append(code, status);
+      copy.append(name, message, meta);
       item.append(dot, copy);
       item.addEventListener("click", () => {
+        const pageChanged =
+          issue.pageId && issue.pageId !== design.activePageId
+            ? activateDesignPage(issue.pageId)
+            : false;
         selectOnly(issue.nodeId);
         elements.auditDialog.close();
-        renderAll();
+        if (pageChanged) {
+          commitHistory();
+          markChanged();
+          requestAnimationFrame(fitSelection);
+        } else {
+          renderAll();
+        }
       });
       elements.auditResults.append(item);
+    }
+    if (issues.length > MAX_AGENT_AUDIT_ISSUES) {
+      const truncated = document.createElement("div");
+      truncated.className = "audit-truncated";
+      truncated.textContent = `还有 ${issues.length - MAX_AGENT_AUDIT_ISSUES} 个问题未在本次列表中展开；修复后再次检查。`;
+      elements.auditResults.append(truncated);
     }
   }
   elements.auditDialog.showModal();
@@ -2478,7 +3093,7 @@ async function saveAuditReport() {
   try {
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    const issues = auditDesign(saved.design);
+    const issues = auditDocument(saved.design);
     const path = sourcePath.replace(/\.codesign\.json$/, ".audit.md");
     await writeRepoText(
       path,
@@ -2515,6 +3130,63 @@ function newDocument() {
   markChanged();
   elements.filesDialog.close();
   requestAnimationFrame(fitCanvas);
+}
+
+function nextPageIdentity() {
+  const pageIds = new Set(design.pages.map((page) => page.id));
+  const pageNames = new Set(design.pages.map((page) => page.name.toLocaleLowerCase()));
+  let number = design.pages.length + 1;
+  while (pageIds.has(`page-${number}`) || pageNames.has(`page ${number}`)) number += 1;
+  return { id: `page-${number}`, name: `Page ${number}` };
+}
+
+function createDesignPage() {
+  if (design.pages.length >= MAX_DESIGN_PAGES) {
+    notify(`设计文件最多 ${MAX_DESIGN_PAGES} 页`, "error");
+    return;
+  }
+  syncActivePageNodes();
+  const page = { ...nextPageIdentity(), nodes: [] };
+  design.pages.push(page);
+  activateDesignPage(page.id);
+  commitHistory();
+  markChanged();
+  if (elements.pagesDialog.open) renderPageManager();
+  notify(`已新建 ${page.name}`);
+  requestAnimationFrame(fitCanvas);
+}
+
+function deleteDesignPage(pageId) {
+  if (design.pages.length === 1) {
+    notify("设计文件必须保留至少一页", "error");
+    return;
+  }
+  syncActivePageNodes();
+  const pageIndex = design.pages.findIndex((page) => page.id === pageId);
+  const page = design.pages[pageIndex];
+  if (!page) {
+    notify(`页面不存在：${pageId}`, "error");
+    return;
+  }
+  const externalInstanceCount = externalComponentInstancesForPage(design, pageId).length;
+  if (externalInstanceCount > 0) {
+    notify(`该页面的组件仍有 ${externalInstanceCount} 个跨页实例；请先替换或删除实例`, "error");
+    return;
+  }
+  if (!window.confirm(`确定删除「${page.name}」及其 ${page.nodes.length} 个图层吗？`)) return;
+  const deletingActivePage = page.id === design.activePageId;
+  design.pages.splice(pageIndex, 1);
+  if (deletingActivePage) {
+    const nextPage = design.pages[Math.min(pageIndex, design.pages.length - 1)];
+    design.activePageId = nextPage.id;
+    design.nodes = nextPage.nodes;
+    clearSelection();
+  }
+  commitHistory();
+  markChanged();
+  renderPageManager();
+  notify(`已删除 ${page.name}`);
+  if (deletingActivePage) requestAnimationFrame(fitCanvas);
 }
 
 async function exportSvg() {
@@ -2558,10 +3230,11 @@ async function submitToAgent() {
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     const path = elements.path.value.trim();
     const prompt = [
-      "请使用 design-studio skill 处理当前仓库里的设计文件。",
+      "请使用 design-studio:repo-design skill 和 panel-app:design-studio 的结构化工具处理当前仓库设计。",
       `设计源文件：${path}`,
-      `先读取并校验 codeshell.design v${design.version} 结构；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
-      "不要把 SVG 当作源文件。修改后总结变更的图层、设计理由和实现影响。",
+      `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${design.version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
+      "所有嵌套节点的 x/y 都是画布绝对坐标；仅自动布局容器的直接子节点省略 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
+      "不要把 SVG 当作源文件。完成前必须达到零校验问题并实际检查完整画布截图；最后总结变更图层、设计理由和实现影响。",
       "",
       `我的要求：${request}`,
     ].join("\n");
@@ -2579,13 +3252,18 @@ async function submitToAgent() {
   }
 }
 
-function bindPropertyInput(input, update, eventName = "input") {
+function bindPropertyInput(input, update, eventName = "input", layoutEffect = "none") {
   input.addEventListener(eventName, () => {
     const node = selectedNode();
     if (!node || isEffectivelyLocked(node)) return;
     update(node, input.value);
-    if (isContainerNode(node)) applyAutoLayout(design.nodes, node.id);
-    else reflowParent(node);
+    if (layoutEffect === "size" && isContainerNode(node)) {
+      applyAutoLayouts(design.nodes, new Set([node.id, ...(node.parentId ? [node.parentId] : [])]));
+    } else if (layoutEffect === "size") {
+      reflowParent(node);
+    } else if (layoutEffect === "container" && isContainerNode(node)) {
+      applyAutoLayouts(design.nodes, new Set([node.id]));
+    }
     markChanged();
   });
   input.addEventListener("change", commitHistory);
@@ -2622,6 +3300,20 @@ function bindColorTextInput(input, currentValue, update, allowTransparent = fals
   });
 }
 
+function ensureNodeShadow(node) {
+  if (!node || node.type === "group") return null;
+  if (!node.shadow) {
+    node.shadow = {
+      color: "#000000",
+      opacity: 0.18,
+      x: 0,
+      y: 12,
+      blur: 32,
+    };
+  }
+  return node.shadow;
+}
+
 bindPropertyInput(propertyInputs.name, (node, value) => {
   node.name = value.slice(0, 120) || node.type;
 });
@@ -2631,19 +3323,33 @@ bindPropertyInput(propertyInputs.x, (node, value) => {
 bindPropertyInput(propertyInputs.y, (node, value) => {
   setNodeTreePosition(design.nodes, node.id, "y", round(Number(value) || 0));
 });
-bindPropertyInput(propertyInputs.width, (node, value) => {
-  node.width = clamp(Number(value) || 1, 1, 20000);
-});
-bindPropertyInput(propertyInputs.height, (node, value) => {
-  node.height = clamp(Number(value) || 1, 1, 20000);
-});
+bindPropertyInput(
+  propertyInputs.width,
+  (node, value) => {
+    node.width = clamp(Number(value) || 1, 1, 20000);
+  },
+  "input",
+  "size",
+);
+bindPropertyInput(
+  propertyInputs.height,
+  (node, value) => {
+    node.height = clamp(Number(value) || 1, 1, 20000);
+  },
+  "input",
+  "size",
+);
 bindPropertyInput(
   propertyInputs.parent,
   (node, value) => {
+    const previousDesign = clone(design);
+    const previousSelectedId = selectedId;
+    const previousSelectedIds = new Set(selectedIds);
     const previousParentId = node.parentId ?? null;
     reparentNode(design.nodes, node.id, value || null);
-    if (previousParentId) applyAutoLayout(design.nodes, previousParentId);
+    if (previousParentId) applyAutoLayouts(design.nodes, new Set([previousParentId]));
     reflowParent(node);
+    keepValidStructuralMutation(previousDesign, previousSelectedId, previousSelectedIds);
   },
   "change",
 );
@@ -2665,9 +3371,33 @@ bindPropertyInput(
   },
   "change",
 );
+bindPropertyInput(propertyInputs.fontFamily, (node, value) => {
+  if (node.type !== "text") return;
+  const family = value.trim().slice(0, 120);
+  if (family) node.fontFamily = family;
+});
+bindPropertyInput(
+  propertyInputs.fontStyle,
+  (node, value) => {
+    if (node.type === "text" && ["normal", "italic"].includes(value)) node.fontStyle = value;
+  },
+  "change",
+);
 bindPropertyInput(propertyInputs.lineHeight, (node, value) => {
   if (node.type === "text") node.lineHeight = clamp(finiteOr(value, 1.2), 0.7, 3);
 });
+bindPropertyInput(propertyInputs.letterSpacing, (node, value) => {
+  if (node.type === "text") node.letterSpacing = clamp(finiteOr(value, 0), -20, 100);
+});
+bindPropertyInput(
+  propertyInputs.textDecoration,
+  (node, value) => {
+    if (node.type === "text" && ["none", "underline", "line-through"].includes(value)) {
+      node.textDecoration = value;
+    }
+  },
+  "change",
+);
 bindPropertyInput(
   propertyInputs.textAlign,
   (node, value) => {
@@ -2707,6 +3437,44 @@ bindPropertyInput(propertyInputs.opacity, (node, value) => {
 bindPropertyInput(propertyInputs.rotation, (node, value) => {
   node.rotation = clamp(finiteOr(value, 0), -360, 360);
 });
+propertyInputs.shadowEnabled.addEventListener("change", () => {
+  const node = selectedNode();
+  if (!node || node.type === "group" || isEffectivelyLocked(node)) return;
+  if (propertyInputs.shadowEnabled.checked) ensureNodeShadow(node);
+  else delete node.shadow;
+  commitHistory();
+  markChanged();
+});
+bindColorTextInput(
+  propertyInputs.shadowColor,
+  () => selectedNode()?.shadow?.color ?? "#000000",
+  (value) => {
+    const node = selectedNode();
+    if (!node || isEffectivelyLocked(node)) return;
+    const shadow = ensureNodeShadow(node);
+    if (shadow) shadow.color = value;
+  },
+);
+bindPropertyInput(propertyInputs.shadowColorPicker, (node, value) => {
+  const shadow = ensureNodeShadow(node);
+  if (shadow) shadow.color = value;
+});
+bindPropertyInput(propertyInputs.shadowX, (node, value) => {
+  const shadow = ensureNodeShadow(node);
+  if (shadow) shadow.x = clamp(finiteOr(value, 0), -500, 500);
+});
+bindPropertyInput(propertyInputs.shadowY, (node, value) => {
+  const shadow = ensureNodeShadow(node);
+  if (shadow) shadow.y = clamp(finiteOr(value, 0), -500, 500);
+});
+bindPropertyInput(propertyInputs.shadowBlur, (node, value) => {
+  const shadow = ensureNodeShadow(node);
+  if (shadow) shadow.blur = clamp(finiteOr(value, 0), 0, 200);
+});
+bindPropertyInput(propertyInputs.shadowOpacity, (node, value) => {
+  const shadow = ensureNodeShadow(node);
+  if (shadow) shadow.opacity = clamp(finiteOr(value, 0) / 100, 0, 1);
+});
 propertyInputs.clipContent.addEventListener("change", () => {
   const node = selectedNode();
   if (!node || !["frame", "component"].includes(node.type) || isEffectivelyLocked(node)) return;
@@ -2721,31 +3489,57 @@ bindPropertyInput(
     if (!isContainerNode(node) || !["none", "horizontal", "vertical"].includes(value)) return;
     ensureDesignV3();
     node.layout = value;
-    applyAutoLayout(design.nodes, node.id);
   },
   "change",
+  "container",
 );
-bindPropertyInput(propertyInputs.gap, (node, value) => {
-  if (!isContainerNode(node)) return;
-  ensureDesignV3();
-  node.gap = clamp(finiteOr(value, 0), 0, 2000);
-  applyAutoLayout(design.nodes, node.id);
-});
-bindPropertyInput(propertyInputs.padding, (node, value) => {
-  if (!isContainerNode(node)) return;
-  ensureDesignV3();
-  node.padding = clamp(finiteOr(value, 0), 0, 2000);
-  applyAutoLayout(design.nodes, node.id);
-});
+bindPropertyInput(
+  propertyInputs.gap,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.gap = clamp(finiteOr(value, 0), 0, 2000);
+  },
+  "input",
+  "container",
+);
+bindPropertyInput(
+  propertyInputs.padding,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.padding = clamp(finiteOr(value, 0), 0, 2000);
+  },
+  "input",
+  "container",
+);
+for (const [input, property] of [
+  [propertyInputs.paddingTop, "paddingTop"],
+  [propertyInputs.paddingRight, "paddingRight"],
+  [propertyInputs.paddingBottom, "paddingBottom"],
+  [propertyInputs.paddingLeft, "paddingLeft"],
+]) {
+  bindPropertyInput(
+    input,
+    (node, value) => {
+      if (!isContainerNode(node)) return;
+      ensureDesignV3();
+      if (value === "") delete node[property];
+      else node[property] = clamp(finiteOr(value, node.padding ?? 0), 0, 2000);
+    },
+    "input",
+    "container",
+  );
+}
 bindPropertyInput(
   propertyInputs.alignItems,
   (node, value) => {
     if (!isContainerNode(node)) return;
     ensureDesignV3();
     node.alignItems = value;
-    applyAutoLayout(design.nodes, node.id);
   },
   "change",
+  "container",
 );
 bindPropertyInput(
   propertyInputs.justifyContent,
@@ -2753,13 +3547,13 @@ bindPropertyInput(
     if (!isContainerNode(node)) return;
     ensureDesignV3();
     node.justifyContent = value;
-    applyAutoLayout(design.nodes, node.id);
   },
   "change",
+  "container",
 );
 propertyInputs.layoutGrow.addEventListener("change", () => {
   const node = selectedNode();
-  if (!node || isContainerNode(node) || isEffectivelyLocked(node)) return;
+  if (!node || isEffectivelyLocked(node)) return;
   ensureDesignV3();
   node.layoutGrow = propertyInputs.layoutGrow.checked ? 1 : 0;
   reflowParent(node);
@@ -2769,7 +3563,6 @@ propertyInputs.layoutGrow.addEventListener("change", () => {
 bindPropertyInput(
   propertyInputs.layoutAlign,
   (node, value) => {
-    if (isContainerNode(node)) return;
     ensureDesignV3();
     node.layoutAlign = value;
     reflowParent(node);
@@ -2867,10 +3660,7 @@ elements.toggleLock.addEventListener("click", () => {
 });
 elements.toggleVisible.addEventListener("click", () => {
   const node = selectedNode();
-  if (!node) return;
-  node.visible = !node.visible;
-  commitHistory();
-  markChanged();
+  toggleNodeVisibility(node);
 });
 elements.addColorToken.addEventListener("click", () => {
   if (design.tokens.colors.length >= 32) {
@@ -2941,6 +3731,23 @@ elements.toggleSnap.addEventListener("click", () => {
   saveUiPreferences();
   renderAll();
 });
+elements.activePage.addEventListener("change", () => {
+  try {
+    if (!activateDesignPage(elements.activePage.value)) return;
+    commitHistory();
+    markChanged();
+    requestAnimationFrame(fitCanvas);
+  } catch (error) {
+    renderPages();
+    notify(error instanceof Error ? error.message : "无法切换页面", "error");
+  }
+});
+elements.addPage.addEventListener("click", createDesignPage);
+elements.managePages.addEventListener("click", () => {
+  renderPageManager();
+  elements.pagesDialog.showModal();
+});
+elements.addPageDialog.addEventListener("click", createDesignPage);
 elements.save.addEventListener("click", () => void saveDocument().catch(() => undefined));
 elements.runAudit.addEventListener("click", showAudit);
 elements.saveAuditReport.addEventListener("click", () => void saveAuditReport());
@@ -2967,6 +3774,10 @@ elements.path.addEventListener("change", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
+  if (agentMutationActive) {
+    event.preventDefault();
+    return;
+  }
   const activeTag = document.activeElement?.tagName;
   const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(activeTag);
   const interactive = editing || activeTag === "BUTTON" || activeTag === "A";
@@ -3107,6 +3918,7 @@ window.addEventListener("resize", () => renderScene());
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   if (externalSyncTimer) window.clearInterval(externalSyncTimer);
+  if (auditStatusTimer !== undefined) window.clearTimeout(auditStatusTimer);
   if (!dirty) return;
   clearTimeout(recoveryTimer);
   const workspaceRoot = context.cwd ?? null;
@@ -3118,7 +3930,10 @@ window.addEventListener("beforeunload", (event) => {
 function updateContext(next) {
   const wasVisible = context.visible === true;
   const previousWorkspaceRoot = typeof context.cwd === "string" ? context.cwd : null;
-  const nextContext = { ...context, ...(next ?? {}) };
+  const nextContext =
+    next && typeof next === "object" && !Array.isArray(next)
+      ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
+      : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
   const workspaceChanged = contextInitialized && previousWorkspaceRoot !== nextWorkspaceRoot;
   if (workspaceChanged) {
@@ -3163,12 +3978,13 @@ function updateContext(next) {
         : "工作区已切换，正在连接新 Repo 的设计文件",
     );
     const expectedWorkspaceEpoch = workspaceEpoch;
-    void initializeWorkspaceDocument(expectedWorkspaceEpoch).catch((error) => {
+    workspaceTransition = initializeWorkspaceDocument(expectedWorkspaceEpoch).catch((error) => {
       if (expectedWorkspaceEpoch !== workspaceEpoch) return;
       resetToRepoBlankDocument();
       setRepoLinkState("Repo 读取失败", "error");
       notify(error instanceof Error ? error.message : "无法读取 Repo 设计文件", "error");
     });
+    void workspaceTransition;
   }
   if (!wasVisible && context.visible === true) void checkExternalChange();
   if (wasVisible && context.visible === false && dirty) {
@@ -3366,35 +4182,213 @@ function startExternalSync() {
 }
 
 function designLayerIndex() {
-  return design.nodes.map((node) => ({
-    id: node.id,
-    type: node.type,
-    name: node.name,
-    parentId: node.parentId ?? null,
-    visible: node.visible,
-    locked: node.locked,
-  }));
+  return readableDesignPages().flatMap((page) =>
+    page.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      name: node.name,
+      parentId: node.parentId ?? null,
+      pageId: page.id,
+      pageName: page.name,
+      visible: node.visible,
+      locked: node.locked,
+    })),
+  );
 }
 
-function designNodeSubtree(nodeId) {
-  const root = nodeById(nodeId);
+function designNodeSubtree(nodeId, maxDepth = 32) {
+  const page = readableDesignPages().find((candidate) =>
+    candidate.nodes.some((node) => node.id === nodeId),
+  );
+  const pageNodes = page?.nodes ?? [];
+  const root = pageNodes.find((node) => node.id === nodeId);
   if (!root) throw new Error(`图层不存在：${nodeId}`);
+  let descendantsTruncated = false;
   const build = (node, depth = 0) => {
     if (depth > 32) throw new Error("图层嵌套超过 32 层");
     const { parentId: _parentId, ...copy } = clone(node);
     if (isContainerNode(node)) {
-      copy.children = design.nodes
-        .filter((candidate) => candidate.parentId === node.id)
-        .map((candidate) => build(candidate, depth + 1));
+      const children = pageNodes.filter((candidate) => candidate.parentId === node.id);
+      if (depth >= maxDepth) {
+        copy.children = [];
+        descendantsTruncated = descendantsTruncated || children.length > 0;
+      } else {
+        copy.children = children.map((candidate) => build(candidate, depth + 1));
+      }
     }
     return copy;
   };
-  return build(root);
+  return {
+    pageId: page.id,
+    pageName: page.name,
+    node: build(root),
+    descendantsTruncated,
+  };
+}
+
+function zeroEffectOutsets() {
+  return { left: 0, top: 0, right: 0, bottom: 0 };
+}
+
+function renderedNodeEffectBounds(
+  documentValue,
+  nodes,
+  node,
+  instanceStack = new Set(),
+  availableNodes = allDesignNodes(documentValue),
+) {
+  const bounds = transformedNodeBoundsInTree(nodes, node);
+  if (!bounds) return null;
+  const instanceEffectOutsets =
+    node.type === "instance"
+      ? renderedDesignInstanceEffectOutsets(documentValue, node, instanceStack, availableNodes)
+      : zeroEffectOutsets();
+  const hasInstanceEffect = Object.values(instanceEffectOutsets).some((value) => value > 0);
+  const strokeOutset =
+    !["group", "instance"].includes(node.type) &&
+    node.stroke !== "transparent" &&
+    node.strokeWidth > 0
+      ? node.strokeWidth / 2
+      : 0;
+  const visibleShadow = node.shadow?.opacity > 0 ? node.shadow : null;
+  if (!visibleShadow && !hasInstanceEffect && strokeOutset <= 0) {
+    return clipNodeBoundsToClippingAncestors(nodes, node);
+  }
+  const shadowOutset = visibleShadow?.blur * 1.5 || 0;
+  const shadowX = visibleShadow?.x || 0;
+  const shadowY = visibleShadow?.y || 0;
+  const totalRotation = (node.rotation ?? 0) + inheritedNodeRotation(nodes, node);
+  const rotatedShadowOffset = totalRotation % 360 === 0 ? 0 : Math.hypot(shadowX, shadowY);
+  const rotatedInstanceOutset =
+    totalRotation % 360 === 0 ? 0 : Math.max(...Object.values(instanceEffectOutsets));
+  const leftOutset = Math.max(
+    rotatedInstanceOutset || instanceEffectOutsets.left,
+    strokeOutset,
+    visibleShadow
+      ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, -shadowX))
+      : 0,
+  );
+  const topOutset = Math.max(
+    rotatedInstanceOutset || instanceEffectOutsets.top,
+    strokeOutset,
+    visibleShadow
+      ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, -shadowY))
+      : 0,
+  );
+  const rightOutset = Math.max(
+    rotatedInstanceOutset || instanceEffectOutsets.right,
+    strokeOutset,
+    visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowX)) : 0,
+  );
+  const bottomOutset = Math.max(
+    rotatedInstanceOutset || instanceEffectOutsets.bottom,
+    strokeOutset,
+    visibleShadow ? strokeOutset + shadowOutset + (rotatedShadowOffset || Math.max(0, shadowY)) : 0,
+  );
+  return clipBoundsToClippingAncestors(nodes, node, {
+    x: bounds.x - leftOutset,
+    y: bounds.y - topOutset,
+    width: bounds.width + leftOutset + rightOutset,
+    height: bounds.height + topOutset + bottomOutset,
+  });
+}
+
+function designScreenshotSource(nodeId, pageId) {
+  const readablePages = readableDesignPages();
+  const requestedPage =
+    typeof pageId === "string" && pageId ? readablePages.find((page) => page.id === pageId) : null;
+  if (pageId && !requestedPage) throw new Error(`页面不存在：${pageId}`);
+  const nodePage =
+    typeof nodeId === "string" && nodeId
+      ? readablePages.find((page) => page.nodes.some((node) => node.id === nodeId))
+      : null;
+  if (nodeId && !nodePage) throw new Error(`图层不存在：${nodeId}`);
+  if (requestedPage && nodePage && requestedPage.id !== nodePage.id) {
+    throw new Error(`图层 ${nodeId} 不在页面 ${pageId} 中`);
+  }
+  const page =
+    requestedPage ??
+    nodePage ??
+    readablePages.find((candidate) => candidate.id === design.activePageId);
+  if (!page) throw new Error("设计文件没有可截图的活动页面");
+  const screenshotDesign = {
+    ...design,
+    activePageId: page.id,
+    nodes: page.nodes,
+  };
+  if (typeof nodeId !== "string" || !nodeId) {
+    return {
+      x: 0,
+      y: 0,
+      width: screenshotDesign.canvas.width,
+      height: screenshotDesign.canvas.height,
+      nodeId: null,
+      pageId: page.id,
+      pageName: page.name,
+      document: screenshotDesign,
+    };
+  }
+  const node = page.nodes.find((candidate) => candidate.id === nodeId);
+  if (!isDesignNodeVisible(screenshotDesign, node)) {
+    throw new Error(`图层不可见，无法生成有效截图：${nodeId}`);
+  }
+  const screenshotNodeIds = new Set([node.id]);
+  if (isContainerNode(node) && node.clipContent !== true) {
+    for (const id of descendantIds(page.nodes, new Set([node.id]))) screenshotNodeIds.add(id);
+  }
+  const effectBoundsList = page.nodes
+    .filter(
+      (candidate) =>
+        screenshotNodeIds.has(candidate.id) &&
+        candidate.type !== "group" &&
+        isDesignNodeVisible(screenshotDesign, candidate),
+    )
+    .map((candidate) => renderedNodeEffectBounds(screenshotDesign, page.nodes, candidate))
+    .filter(Boolean);
+  if (effectBoundsList.length === 0) throw new Error(`图层几何无效：${nodeId}`);
+  const effectLeft = Math.min(...effectBoundsList.map((bounds) => bounds.x));
+  const effectTop = Math.min(...effectBoundsList.map((bounds) => bounds.y));
+  const effectRight = Math.max(...effectBoundsList.map((bounds) => bounds.x + bounds.width));
+  const effectBottom = Math.max(...effectBoundsList.map((bounds) => bounds.y + bounds.height));
+  const effectBounds = {
+    x: effectLeft,
+    y: effectTop,
+    width: effectRight - effectLeft,
+    height: effectBottom - effectTop,
+  };
+  const padding = Math.min(
+    24,
+    Math.max(8, Math.min(effectBounds.width, effectBounds.height) * 0.04),
+  );
+  const left = Math.max(0, effectBounds.x - padding);
+  const top = Math.max(0, effectBounds.y - padding);
+  const right = Math.min(
+    screenshotDesign.canvas.width,
+    effectBounds.x + effectBounds.width + padding,
+  );
+  const bottom = Math.min(
+    screenshotDesign.canvas.height,
+    effectBounds.y + effectBounds.height + padding,
+  );
+  if (right <= left || bottom <= top) {
+    throw new Error(`图层位于画布之外，无法截图：${nodeId}`);
+  }
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+    nodeId,
+    pageId: page.id,
+    pageName: page.name,
+    document: screenshotDesign,
+  };
 }
 
 const AGENT_NODE_PATCH_FIELDS = new Set([
   "name",
   "notes",
+  "shadow",
   "x",
   "y",
   "width",
@@ -3411,11 +4405,19 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "text",
   "fontSize",
   "fontWeight",
+  "fontFamily",
+  "fontStyle",
   "lineHeight",
+  "letterSpacing",
+  "textDecoration",
   "textAlign",
   "layout",
   "gap",
   "padding",
+  "paddingTop",
+  "paddingRight",
+  "paddingBottom",
+  "paddingLeft",
   "alignItems",
   "justifyContent",
   "layoutGrow",
@@ -3423,7 +4425,27 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "componentId",
 ]);
 
-function applyAgentNodePatch(node, changes) {
+const AGENT_OPERATION_FIELDS = new Map([
+  ["create_node", new Set(["op", "type", "id", "parent_id", "before_id", "properties"])],
+  ["update_node", new Set(["op", "node_id", "changes"])],
+  ["move_node", new Set(["op", "node_id", "parent_id", "before_id"])],
+  ["delete_node", new Set(["op", "node_id"])],
+  ["set_document", new Set(["op", "changes"])],
+  ["create_page", new Set(["op", "id", "name", "switch"])],
+  ["rename_page", new Set(["op", "page_id", "name"])],
+  ["set_active_page", new Set(["op", "page_id"])],
+  ["delete_page", new Set(["op", "page_id"])],
+]);
+
+const AGENT_PAGE_OPERATIONS = new Set([
+  "create_page",
+  "rename_page",
+  "set_active_page",
+  "delete_page",
+]);
+const AGENT_NODE_OPERATIONS = new Set(["create_node", "update_node", "move_node", "delete_node"]);
+
+function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
   if (!changes || typeof changes !== "object" || Array.isArray(changes)) {
     throw new Error("changes 必须是对象");
   }
@@ -3431,7 +4453,12 @@ function applyAgentNodePatch(node, changes) {
     if (!AGENT_NODE_PATCH_FIELDS.has(key)) {
       throw new Error(`Agent 不可直接修改图层字段：${key}`);
     }
-    if (value === null && ["notes", "clipContent", "layoutGrow", "layoutAlign"].includes(key)) {
+    if (moveTree && ["x", "y"].includes(key) && Number.isFinite(value)) {
+      setNodeTreePosition(design.nodes, node.id, key, value);
+    } else if (
+      value === null &&
+      ["notes", "shadow", "clipContent", "layoutGrow", "layoutAlign"].includes(key)
+    ) {
       delete node[key];
     } else {
       node[key] = value;
@@ -3439,21 +4466,44 @@ function applyAgentNodePatch(node, changes) {
   }
 }
 
+function applyAgentDocumentTokens(nextTokens) {
+  const previousByName = new Map(
+    (design.tokens?.colors ?? []).map((token) => [token.name.toLocaleLowerCase(), token]),
+  );
+  const colorReplacements = new Map();
+  for (const token of nextTokens?.colors ?? []) {
+    if (typeof token?.name !== "string" || typeof token.value !== "string") continue;
+    const previous = previousByName.get(token.name.toLocaleLowerCase());
+    if (!previous || !validHex(previous.value) || !validHex(token.value)) continue;
+    const previousValue = previous.value.toLowerCase();
+    const nextValue = token.value.toLowerCase();
+    const existing = colorReplacements.get(previousValue);
+    if (existing && existing !== nextValue) {
+      throw new Error(
+        `颜色变量共享旧色值 ${previousValue}，但目标值不一致；请先拆分图层颜色再重试`,
+      );
+    }
+    colorReplacements.set(previousValue, nextValue);
+  }
+  replaceDesignColors(design, colorReplacements);
+  design.tokens = clone(nextTokens);
+}
+
 function removeAgentNode(nodeId) {
   const node = nodeById(nodeId);
   if (!node) throw new Error(`图层不存在：${nodeId}`);
-  const removedIds = new Set([
-    node.id,
-    ...descendantIds(design.nodes, new Set([node.id])),
-  ]);
-  if (node.type === "component") {
-    for (const candidate of design.nodes) {
-      if (candidate.type === "instance" && candidate.componentId === node.id) {
-        removedIds.add(candidate.id);
-      }
-    }
+  syncActivePageNodes();
+  const removedIds = new Set(designNodeRemovalIds(design, design.activePageId, new Set([node.id])));
+  for (const page of design.pages) {
+    const affectedParents = new Set(
+      page.nodes
+        .filter((candidate) => removedIds.has(candidate.id) && candidate.parentId)
+        .map((candidate) => candidate.parentId),
+    );
+    page.nodes = page.nodes.filter((candidate) => !removedIds.has(candidate.id));
+    applyAutoLayouts(page.nodes, affectedParents);
   }
-  design.nodes = design.nodes.filter((candidate) => !removedIds.has(candidate.id));
+  design.nodes = activeDesignPage()?.nodes ?? [];
   return [...removedIds];
 }
 
@@ -3468,6 +4518,7 @@ function moveAgentNode(nodeId, parentId, beforeId) {
     }
   }
   if (typeof beforeId === "string" && beforeId) {
+    if (beforeId === node.id) throw new Error("before_id 不能引用正在移动的图层自身");
     const before = nodeById(beforeId);
     if (!before || (before.parentId ?? null) !== (node.parentId ?? null)) {
       throw new Error("before_id 必须是同一父级中的图层");
@@ -3480,43 +4531,184 @@ function moveAgentNode(nodeId, parentId, beforeId) {
 }
 
 async function applyAgentDesignOperations(args) {
+  if (args.expected_state_revision !== currentDesignStateRevision()) {
+    throw new Error("设计状态已变化；请重新读取元数据后再创建事务");
+  }
+  if (Object.hasOwn(args, "expected_revision") && args.expected_revision !== currentRevision) {
+    throw new Error("设计 revision 已变化；请重新读取元数据后再创建事务");
+  }
   if (!Array.isArray(args?.operations) || args.operations.length === 0) {
     throw new Error("operations 必须是非空数组");
   }
   if (args.operations.length > 50) throw new Error("一次最多执行 50 个设计操作");
+  const containsPageOperation = args.operations.some((operation) =>
+    AGENT_PAGE_OPERATIONS.has(operation?.op),
+  );
+  const containsNonPageOperation = args.operations.some(
+    (operation) => !AGENT_PAGE_OPERATIONS.has(operation?.op),
+  );
+  const containsNodeOperation = args.operations.some((operation) =>
+    AGENT_NODE_OPERATIONS.has(operation?.op),
+  );
+  if (containsPageOperation && containsNonPageOperation) {
+    throw new Error("页面操作必须使用独立事务，不能与节点或文档属性操作混合");
+  }
   const previous = clone(design);
+  const previousSnapshot = serializeDocument(previous);
+  const previousHistory = [...history];
+  const previousHistoryIndex = historyIndex;
+  const previousSelectedId = selectedId;
+  const previousSelectedIds = new Set(selectedIds);
+  const previousAgentTransaction = lastAgentTransaction;
+  const previousDesignStateSequence = designStateSequence;
+  const previousDocumentMetadata = JSON.stringify({
+    name: previous.name,
+    activePageId: previous.activePageId,
+    pages: previous.pages.map((page) => ({ id: page.id, name: page.name })),
+    canvas: previous.canvas,
+    tokens: previous.tokens,
+  });
   const changedIds = new Set();
+  const layoutContainerIds = new Set();
+  const requestParentReflow = (parentId) => {
+    if (typeof parentId === "string" && parentId) layoutContainerIds.add(parentId);
+  };
   try {
     ensureDesignV3();
     for (const [index, operation] of args.operations.entries()) {
       if (!operation || typeof operation !== "object" || Array.isArray(operation)) {
         throw new Error(`操作 ${index + 1} 无效`);
       }
+      const allowedFields = AGENT_OPERATION_FIELDS.get(operation.op);
+      if (!allowedFields) throw new Error(`不支持的设计操作：${String(operation.op)}`);
+      for (const key of Object.keys(operation)) {
+        if (!allowedFields.has(key)) {
+          throw new Error(`操作 ${index + 1} 不支持字段：${key}`);
+        }
+      }
+      if (
+        ["update_node", "move_node", "delete_node"].includes(operation.op) &&
+        !isAgentNodeReference(operation.node_id)
+      ) {
+        throw new Error(`操作 ${index + 1} 的 node_id 必须是 1–160 个安全字符`);
+      }
+      if (operation.id !== undefined && (typeof operation.id !== "string" || !operation.id)) {
+        throw new Error(`操作 ${index + 1} 的 id 必须是非空字符串`);
+      }
+      if (
+        operation.parent_id !== undefined &&
+        operation.parent_id !== null &&
+        !isAgentNodeReference(operation.parent_id)
+      ) {
+        throw new Error(`操作 ${index + 1} 的 parent_id 必须是 1–160 个安全字符或 null`);
+      }
+      if (operation.before_id !== undefined && !isAgentNodeReference(operation.before_id)) {
+        throw new Error(`操作 ${index + 1} 的 before_id 必须是 1–160 个安全字符`);
+      }
+      if (operation.page_id !== undefined && !isAgentStableId(operation.page_id)) {
+        throw new Error(`操作 ${index + 1} 的 page_id 必须是有效页面标识符`);
+      }
       if (operation.op === "create_node") {
+        if (!isAgentStableId(operation.id)) {
+          throw new Error(
+            `操作 ${index + 1} 的 create_node.id 必须是小写字母开头、最长 64 字符的稳定短横线标识符`,
+          );
+        }
         if (!V3_AGENT_NODE_TYPES.has(operation.type)) {
           throw new Error(`操作 ${index + 1} 的节点类型无效`);
         }
+        if (!Object.hasOwn(operation, "properties")) {
+          throw new Error(`操作 ${index + 1} 缺少 properties`);
+        }
         if (!canAddNodes(1)) throw new Error(`设计文件最多包含 ${MAX_DESIGN_NODES} 个图层`);
-        const requestedId =
-          typeof operation.id === "string" && operation.id
-            ? operation.id
-            : `${operation.type}-${Date.now().toString(36)}-${index}`;
-        if (nodeById(requestedId)) throw new Error(`图层 ID 已存在：${requestedId}`);
+        const requestedId = operation.id;
+        if (allDesignNodes().some((candidate) => candidate.id === requestedId)) {
+          throw new Error(`图层 ID 已存在：${requestedId}`);
+        }
         const node = baseNode(operation.type, { id: requestedId });
-        applyAgentNodePatch(node, operation.properties ?? {});
+        const properties = operation.properties;
+        applyAgentNodePatch(node, properties);
         design.nodes.push(node);
         if (operation.parent_id) moveAgentNode(node.id, operation.parent_id, operation.before_id);
         else if (operation.before_id) moveAgentNode(node.id, null, operation.before_id);
+        const parent = node.parentId ? nodeById(node.parentId) : null;
+        if (
+          isAutoLayoutContainer(parent) &&
+          (Object.hasOwn(properties, "x") || Object.hasOwn(properties, "y"))
+        ) {
+          throw new Error(`图层 ${node.id} 将由自动布局容器 ${parent.id} 定位；创建时不要提供 x/y`);
+        }
+        if (
+          !isAutoLayoutContainer(parent) &&
+          (!Object.hasOwn(properties, "x") || !Object.hasOwn(properties, "y"))
+        ) {
+          const owner = parent ? `手工布局容器 ${parent.id}` : "画布根级";
+          throw new Error(`${owner}中的新图层必须同时提供绝对画布坐标 x 和 y`);
+        }
+        requestParentReflow(node.parentId);
+        if (isAutoLayoutContainer(node)) layoutContainerIds.add(node.id);
         changedIds.add(node.id);
       } else if (operation.op === "update_node") {
         const node = nodeById(operation.node_id);
         if (!node) throw new Error(`图层不存在：${operation.node_id}`);
-        applyAgentNodePatch(node, operation.changes);
+        const changes = operation.changes;
+        const parent = node.parentId ? nodeById(node.parentId) : null;
+        if (
+          isAutoLayoutContainer(parent) &&
+          changes &&
+          typeof changes === "object" &&
+          !Array.isArray(changes) &&
+          ("x" in changes || "y" in changes)
+        ) {
+          throw new Error(
+            `图层 ${node.id} 位于自动布局容器 ${parent.id} 中，x/y 由父容器管理；请修改顺序、尺寸或父容器布局属性`,
+          );
+        }
+        applyAgentNodePatch(node, operation.changes, { moveTree: true });
+        const changedFields = new Set(Object.keys(changes ?? {}));
+        if (
+          isContainerNode(node) &&
+          [...changedFields].some((field) =>
+            [
+              "x",
+              "y",
+              "width",
+              "height",
+              "layout",
+              "gap",
+              "padding",
+              "paddingTop",
+              "paddingRight",
+              "paddingBottom",
+              "paddingLeft",
+              "alignItems",
+              "justifyContent",
+            ].includes(field),
+          )
+        ) {
+          layoutContainerIds.add(node.id);
+        }
+        if (
+          isAutoLayoutContainer(parent) &&
+          [...changedFields].some((field) =>
+            ["width", "height", "visible", "layoutGrow", "layoutAlign"].includes(field),
+          )
+        ) {
+          requestParentReflow(parent.id);
+        }
         changedIds.add(node.id);
       } else if (operation.op === "delete_node") {
+        const node = nodeById(operation.node_id);
+        requestParentReflow(node?.parentId);
         for (const id of removeAgentNode(operation.node_id)) changedIds.add(id);
       } else if (operation.op === "move_node") {
+        if (!Object.hasOwn(operation, "parent_id")) {
+          throw new Error(`操作 ${index + 1} 缺少 parent_id；移动到画布根级时请显式使用 null`);
+        }
+        const node = nodeById(operation.node_id);
+        requestParentReflow(node?.parentId);
         moveAgentNode(operation.node_id, operation.parent_id, operation.before_id);
+        requestParentReflow(nodeById(operation.node_id)?.parentId);
         changedIds.add(operation.node_id);
       } else if (operation.op === "set_document") {
         const changes = operation.changes;
@@ -3530,29 +4722,169 @@ async function applyAgentDesignOperations(args) {
         }
         if (changes.name !== undefined) design.name = changes.name;
         if (changes.canvas !== undefined) design.canvas = { ...design.canvas, ...changes.canvas };
-        if (changes.tokens !== undefined) design.tokens = clone(changes.tokens);
-      } else {
-        throw new Error(`不支持的设计操作：${String(operation.op)}`);
+        if (changes.tokens !== undefined) applyAgentDocumentTokens(changes.tokens);
+      } else if (operation.op === "create_page") {
+        if (!isAgentStableId(operation.id)) {
+          throw new Error("create_page.id 必须是小写字母开头的短横线标识符");
+        }
+        if (design.pages.some((page) => page.id === operation.id)) {
+          throw new Error(`页面 ID 已存在：${operation.id}`);
+        }
+        if (
+          typeof operation.name !== "string" ||
+          !operation.name.trim() ||
+          operation.name.length > 120 ||
+          /[\u0000-\u001f\u007f]/u.test(operation.name)
+        ) {
+          throw new Error("create_page.name 必须是 1–120 个安全字符");
+        }
+        if (operation.switch !== undefined && typeof operation.switch !== "boolean") {
+          throw new Error("create_page.switch 必须是布尔值");
+        }
+        if (design.pages.length >= MAX_DESIGN_PAGES) {
+          throw new Error(`设计文件最多 ${MAX_DESIGN_PAGES} 页`);
+        }
+        syncActivePageNodes();
+        design.pages.push({ id: operation.id, name: operation.name, nodes: [] });
+        if (operation.switch !== false) activateDesignPage(operation.id);
+      } else if (operation.op === "rename_page") {
+        const page = design.pages.find((candidate) => candidate.id === operation.page_id);
+        if (!page) throw new Error(`页面不存在：${operation.page_id}`);
+        if (
+          typeof operation.name !== "string" ||
+          !operation.name.trim() ||
+          operation.name.length > 120 ||
+          /[\u0000-\u001f\u007f]/u.test(operation.name)
+        ) {
+          throw new Error("rename_page.name 必须是 1–120 个安全字符");
+        }
+        page.name = operation.name;
+      } else if (operation.op === "set_active_page") {
+        activateDesignPage(operation.page_id);
+      } else if (operation.op === "delete_page") {
+        if (design.pages.length === 1) throw new Error("不能删除设计文件中的最后一页");
+        const pageIndex = design.pages.findIndex((page) => page.id === operation.page_id);
+        if (pageIndex < 0) throw new Error(`页面不存在：${operation.page_id}`);
+        syncActivePageNodes();
+        const externalInstanceCount = externalComponentInstancesForPage(
+          design,
+          operation.page_id,
+        ).length;
+        if (externalInstanceCount > 0) {
+          throw new Error(
+            `该页面的组件仍有 ${externalInstanceCount} 个跨页实例；请先替换或删除实例`,
+          );
+        }
+        const deletingActivePage = operation.page_id === design.activePageId;
+        design.pages.splice(pageIndex, 1);
+        if (deletingActivePage) {
+          const nextPage = design.pages[Math.min(pageIndex, design.pages.length - 1)];
+          design.activePageId = nextPage.id;
+          design.nodes = nextPage.nodes;
+          clearSelection();
+        }
       }
     }
     normalizeNodeTreeOrder(design.nodes);
-    reflowLayouts();
+    applyAutoLayouts(design.nodes, layoutContainerIds);
     design = normalizeDesignState(design);
   } catch (error) {
     design = normalizeDesignState(previous);
+    selectedId = previousSelectedId;
+    selectedIds = previousSelectedIds;
+    lastAgentTransaction = previousAgentTransaction;
     throw error;
   }
-  selectedIds = new Set([...changedIds].filter((id) => nodeById(id)));
-  selectedId = [...selectedIds].at(-1) ?? null;
+  if (serializeDesign() === previousSnapshot) {
+    selectedId = previousSelectedId;
+    selectedIds = previousSelectedIds;
+    lastAgentTransaction = previousAgentTransaction;
+    let result = null;
+    if (args.save !== false) result = await saveDocument({ quiet: true });
+    return {
+      path: elements.path.value.trim(),
+      saved: args.save !== false,
+      noOp: true,
+      transactionId: null,
+      changedNodeIds: [],
+      documentChanged: false,
+      nodeCount: allDesignNodes().length,
+      activePageNodeCount: design.nodes.length,
+      revision: result?.revision ?? currentRevision,
+      stateRevision: currentDesignStateRevision(),
+      audit: summarizeAudit(auditDocument()),
+    };
+  }
+  if (containsNodeOperation) {
+    selectedIds = new Set([...changedIds].filter((id) => nodeById(id)));
+    selectedId = [...selectedIds].at(-1) ?? null;
+  } else if (design.activePageId === previous.activePageId) {
+    selectedIds = new Set([...previousSelectedIds].filter((id) => nodeById(id)));
+    selectedId = selectedIds.has(previousSelectedId)
+      ? previousSelectedId
+      : ([...selectedIds].at(-1) ?? null);
+  }
   commitHistory();
   markChanged();
-  if (args.save !== false) await saveDocument({ quiet: true });
+  if (args.save !== false) {
+    try {
+      await saveDocument({ quiet: true });
+    } catch (error) {
+      design = normalizeDesignState(previous);
+      history = previousHistory;
+      historyIndex = previousHistoryIndex;
+      selectedId = previousSelectedId;
+      selectedIds = previousSelectedIds;
+      lastAgentTransaction = previousAgentTransaction;
+      designStateSequence = previousDesignStateSequence;
+      markChanged();
+      throw error;
+    }
+  }
+  const audit = summarizeAudit(auditDocument());
+  const previousNodes = new Map(
+    allDesignNodes(previous).map((node) => [node.id, JSON.stringify(node)]),
+  );
+  const actualChangedIds = new Set();
+  for (const node of allDesignNodes()) {
+    if (previousNodes.get(node.id) !== JSON.stringify(node)) actualChangedIds.add(node.id);
+    previousNodes.delete(node.id);
+  }
+  for (const deletedId of previousNodes.keys()) actualChangedIds.add(deletedId);
+  const documentChanged =
+    previousDocumentMetadata !==
+    JSON.stringify({
+      name: design.name,
+      activePageId: design.activePageId,
+      pages: design.pages.map((page) => ({ id: page.id, name: page.name })),
+      canvas: design.canvas,
+      tokens: design.tokens,
+    });
+  const transactionId = `design-tx-${Date.now().toString(36)}-${++agentTransactionSequence}`;
+  lastAgentTransaction = {
+    id: transactionId,
+    previousSnapshot,
+    previousSelectedId,
+    previousSelectedIds: [...previousSelectedIds],
+    resultSelectedId: selectedId,
+    resultSelectedIds: [...selectedIds],
+    historyIndex,
+    revision: currentRevision,
+    stateRevision: currentDesignStateRevision(),
+    changedNodeIds: [...actualChangedIds],
+  };
   return {
     path: elements.path.value.trim(),
     saved: args.save !== false,
-    changedNodeIds: [...changedIds],
-    nodeCount: design.nodes.length,
+    noOp: false,
+    transactionId,
+    changedNodeIds: [...actualChangedIds],
+    documentChanged,
+    nodeCount: allDesignNodes().length,
+    activePageNodeCount: design.nodes.length,
     revision: currentRevision,
+    stateRevision: currentDesignStateRevision(),
+    audit,
   };
 }
 
@@ -3565,65 +4897,460 @@ const V3_AGENT_NODE_TYPES = new Set([
   "ellipse",
   "text",
 ]);
+const AGENT_NODE_REFERENCE_PATTERN = /^[^\u0000-\u001f\u007f]{1,160}$/u;
+const AGENT_STABLE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+
+function isAgentNodeReference(value) {
+  return typeof value === "string" && AGENT_NODE_REFERENCE_PATTERN.test(value);
+}
+
+function isAgentStableId(value) {
+  return typeof value === "string" && AGENT_STABLE_ID_PATTERN.test(value);
+}
+
+function assertAgentToolArguments(args, allowedKeys, toolName) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error(`${toolName} 参数必须是对象`);
+  }
+  for (const key of Object.keys(args)) {
+    if (!allowedKeys.has(key)) throw new Error(`${toolName} 不支持参数：${key}`);
+  }
+}
+
+function enqueueAgentMutation(operation) {
+  const run = async () => {
+    agentMutationActive = true;
+    const activeEditor = document.activeElement;
+    if (
+      ["INPUT", "TEXTAREA", "SELECT"].includes(activeEditor?.tagName) &&
+      typeof activeEditor.blur === "function"
+    ) {
+      activeEditor.blur();
+    }
+    finishInteraction();
+    const previouslyInert = document.body.inert;
+    document.body.inert = true;
+    elements.appShell.setAttribute("aria-busy", "true");
+    try {
+      await settleWorkspaceTransition();
+      await settlePendingSaves();
+      return await operation();
+    } finally {
+      agentMutationActive = false;
+      document.body.inert = previouslyInert;
+      elements.appShell.removeAttribute("aria-busy");
+    }
+  };
+  const result = agentMutationQueue.then(run, run);
+  agentMutationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+async function settleAgentReadState() {
+  await settleWorkspaceTransition();
+  await agentMutationQueue;
+  await settlePendingSaves().catch(() => undefined);
+}
+
+async function rollbackAgentDesign(args) {
+  assertAgentToolArguments(args, new Set(["transaction_id", "save"]), "rollback_design");
+  if (typeof args.transaction_id !== "string" || !args.transaction_id) {
+    throw new Error("rollback_design.transaction_id 必须是非空字符串");
+  }
+  if (args.save !== undefined && typeof args.save !== "boolean") {
+    throw new Error("rollback_design.save 必须是布尔值");
+  }
+  const transaction = lastAgentTransaction;
+  if (!transaction || transaction.id !== args.transaction_id) {
+    throw new Error("只能回滚最近一次 use_design 返回的 transactionId");
+  }
+  if (
+    historyIndex !== transaction.historyIndex ||
+    history[historyIndex] !== serializeDesign() ||
+    currentRevision !== transaction.revision ||
+    currentDesignStateRevision() !== transaction.stateRevision
+  ) {
+    throw new Error("设计已在该事务后发生变化；为避免覆盖新修改，拒绝回滚");
+  }
+  const transactionHistoryIndex = historyIndex;
+  const transactionSelectedId = selectedId;
+  const transactionSelectedIds = new Set(selectedIds);
+  const transactionDesignStateSequence = designStateSequence;
+  const selectionUnchangedSinceTransaction =
+    selectedId === transaction.resultSelectedId &&
+    selectedIds.size === transaction.resultSelectedIds.length &&
+    transaction.resultSelectedIds.every((id) => selectedIds.has(id));
+  if (transaction.previousSnapshot !== history[historyIndex]) {
+    const previousIndex = history.lastIndexOf(
+      transaction.previousSnapshot,
+      Math.max(0, historyIndex - 1),
+    );
+    if (previousIndex < 0) {
+      throw new Error("回滚快照已不在本地历史中；为避免覆盖新修改，拒绝回滚");
+    }
+    restoreHistory(previousIndex);
+  }
+  if (selectionUnchangedSinceTransaction) {
+    selectedIds = new Set(transaction.previousSelectedIds.filter((id) => nodeById(id)));
+    selectedId = selectedIds.has(transaction.previousSelectedId)
+      ? transaction.previousSelectedId
+      : ([...selectedIds].at(-1) ?? null);
+    renderAll();
+  }
+  const rolledBackTransactionId = transaction.id;
+  lastAgentTransaction = null;
+  let result = null;
+  if (args.save !== false) {
+    try {
+      result = await saveDocument({ quiet: true });
+    } catch (error) {
+      restoreHistory(transactionHistoryIndex);
+      designStateSequence = transactionDesignStateSequence;
+      selectedId = transactionSelectedId;
+      selectedIds = transactionSelectedIds;
+      lastAgentTransaction = transaction;
+      renderAll();
+      throw error;
+    }
+  }
+  const rollbackAudit = summarizeAudit(auditDocument());
+  return {
+    path: elements.path.value.trim(),
+    rolledBackTransactionId,
+    saved: args.save !== false,
+    revision: result?.revision ?? currentRevision,
+    stateRevision: currentDesignStateRevision(),
+    changedNodeIds: transaction.changedNodeIds,
+    nodeCount: allDesignNodes().length,
+    activePageNodeCount: design.nodes.length,
+    audit: rollbackAudit,
+  };
+}
 
 function registerAgentTools(ready) {
   const register = window.codeshellPanel?.registerTool;
   if (!register) return;
-  register("get_design_metadata", async () => {
+  register("get_design_metadata", async (args = {}) => {
     await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(args, new Set(), "get_design_metadata");
     return {
       format: design.format,
       version: design.version,
       path: elements.path.value.trim(),
       name: design.name,
       activePageId: design.activePageId,
-      pages: design.pages.map((page) => ({ id: page.id, name: page.name })),
+      pages: design.pages.map((page) => ({
+        id: page.id,
+        name: page.name,
+        nodeCount: page.id === design.activePageId ? design.nodes.length : page.nodes.length,
+      })),
       canvas: clone(design.canvas),
+      tokens: clone(design.tokens),
+      geometryContract: {
+        coordinateSpace: "absolute-canvas",
+        manualLayoutPreservesGeometry: true,
+        autoLayoutOwnsDirectChildPositions: true,
+        autoLayoutChildSizingAppliesToContainers: true,
+        asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
+      },
       selection: [...selectedIds],
       dirty,
       revision: currentRevision,
+      stateRevision: currentDesignStateRevision(),
       layers: designLayerIndex(),
     };
   });
-  register("get_design_context", async (args) => {
+  register("search_design_system", async (args = {}) => {
     await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(args, new Set(["query", "limit"]), "search_design_system");
+    if (
+      typeof args.query !== "string" ||
+      !args.query.trim() ||
+      args.query.length > 120 ||
+      /[\u0000-\u001f\u007f]/u.test(args.query)
+    ) {
+      throw new Error("search_design_system.query 必须是 1–120 个安全字符");
+    }
+    if (
+      args.limit !== undefined &&
+      (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > 50)
+    ) {
+      throw new Error("search_design_system.limit 必须是 1 到 50 的整数");
+    }
+    const query = args.query.trim().toLowerCase();
+    const limit = args.limit ?? 20;
+    const compareText = (left, right) => (left === right ? 0 : left < right ? -1 : 1);
+    const rank = (values) => {
+      const normalized = values.map((value) => String(value ?? "").toLowerCase());
+      if (normalized.some((value) => value === query)) return 3;
+      if (normalized.some((value) => value.startsWith(query))) return 2;
+      return normalized.some((value) => value.includes(query)) ? 1 : 0;
+    };
+    const tokens = design.tokens.colors
+      .map((token) => ({ ...clone(token), score: rank([token.name, token.value]) }))
+      .filter((token) => token.score > 0)
+      .sort((left, right) => right.score - left.score || compareText(left.name, right.name))
+      .slice(0, limit)
+      .map(({ score: _score, ...token }) => token);
+    const components = readableDesignPages()
+      .flatMap((page) =>
+        page.nodes
+          .filter((node) => node.type === "component")
+          .map((node) => ({
+            id: node.id,
+            name: node.name,
+            notes: node.notes ?? null,
+            pageId: page.id,
+            pageName: page.name,
+            width: node.width,
+            height: node.height,
+            score: rank([node.id, node.name, node.notes]),
+          })),
+      )
+      .filter((component) => component.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          compareText(left.name, right.name) ||
+          compareText(left.id, right.id),
+      )
+      .slice(0, limit)
+      .map(({ score: _score, ...component }) => component);
+    return {
+      query: args.query.trim(),
+      limit,
+      stateRevision: currentDesignStateRevision(),
+      tokens,
+      components,
+    };
+  });
+  register("get_design_context", async (args = {}) => {
+    await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(args, new Set(["node_id", "max_depth"]), "get_design_context");
+    if (args.node_id !== undefined && !isAgentNodeReference(args.node_id)) {
+      throw new Error("get_design_context.node_id 必须是 1–160 个安全字符");
+    }
+    if (
+      args.max_depth !== undefined &&
+      (!Number.isInteger(args.max_depth) || args.max_depth < 0 || args.max_depth > 32)
+    ) {
+      throw new Error("get_design_context.max_depth 必须是 0 到 32 的整数");
+    }
     if (typeof args.node_id === "string" && args.node_id) {
+      const maxDepth = args.max_depth ?? 32;
+      const subtree = designNodeSubtree(args.node_id, maxDepth);
       return {
         path: elements.path.value.trim(),
         activePageId: design.activePageId,
-        node: designNodeSubtree(args.node_id),
+        pageId: subtree.pageId,
+        pageName: subtree.pageName,
+        coordinateSpace: "absolute-canvas",
+        stateRevision: currentDesignStateRevision(),
+        maxDepth,
+        descendantsTruncated: subtree.descendantsTruncated,
+        node: subtree.node,
       };
     }
     return {
       path: elements.path.value.trim(),
+      coordinateSpace: "absolute-canvas",
+      stateRevision: currentDesignStateRevision(),
       document: JSON.parse(serializeDesign()),
     };
   });
-  register("use_design", async (args) => {
+  register("use_design", async (args = {}) => {
     await ready;
-    return applyAgentDesignOperations(args);
+    assertAgentToolArguments(
+      args,
+      new Set(["operations", "save", "expected_revision", "expected_state_revision"]),
+      "use_design",
+    );
+    if (args.save !== undefined && typeof args.save !== "boolean") {
+      throw new Error("use_design.save 必须是布尔值");
+    }
+    if (
+      args.expected_revision !== undefined &&
+      args.expected_revision !== null &&
+      typeof args.expected_revision !== "string"
+    ) {
+      throw new Error("use_design.expected_revision 必须是字符串或 null");
+    }
+    if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
+      throw new Error(
+        "use_design.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
+      );
+    }
+    return enqueueAgentMutation(() => applyAgentDesignOperations(args));
   });
-  register("validate_design", async () => {
+  register("rollback_design", async (args = {}) => {
     await ready;
-    normalizeDesignState(design);
-    const issues = auditDesign(design);
+    return enqueueAgentMutation(() => rollbackAgentDesign(args));
+  });
+  register("validate_design", async (args = {}) => {
+    await ready;
+    await settleAgentReadState();
+    assertAgentToolArguments(args, new Set(), "validate_design");
+    const inspectedDesign = normalizeDesignState(design);
+    const issues = auditDocument(inspectedDesign);
+    const visibleIssues = issues.slice(0, MAX_AGENT_AUDIT_ISSUES);
     return {
-      valid: true,
+      ...summarizeAudit(issues),
       path: elements.path.value.trim(),
-      nodeCount: design.nodes.length,
-      issueCount: issues.length,
-      issues,
+      nodeCount: allDesignNodes(inspectedDesign).length,
+      activePageNodeCount: inspectedDesign.nodes.length,
+      pageCount: inspectedDesign.pages.length,
+      stateRevision: currentDesignStateRevision(),
+      issues: visibleIssues,
+      truncatedIssueCount: issues.length - visibleIssues.length,
     };
   });
-  register("save_design", async () => {
+  register("get_design_screenshot", async (args = {}) => {
     await ready;
-    const result = await saveDocument({ quiet: true });
-    renderAll();
+    await settleAgentReadState();
+    assertAgentToolArguments(
+      args,
+      new Set(["node_id", "page_id", "max_width"]),
+      "get_design_screenshot",
+    );
+    if (args.node_id !== undefined && !isAgentNodeReference(args.node_id)) {
+      throw new Error("get_design_screenshot.node_id 必须是 1–160 个安全字符");
+    }
+    if (args.page_id !== undefined && !isAgentStableId(args.page_id)) {
+      throw new Error("get_design_screenshot.page_id 必须是有效页面标识符");
+    }
+    if (
+      args.max_width !== undefined &&
+      (typeof args.max_width !== "number" ||
+        !Number.isFinite(args.max_width) ||
+        args.max_width < 320 ||
+        args.max_width > 1_600)
+    ) {
+      throw new Error("get_design_screenshot.max_width 必须是 320 到 1600 的有限数字");
+    }
+    const screenshotStateRevision = currentDesignStateRevision();
+    const screenshotRevision = currentRevision;
+    const source = designScreenshotSource(args?.node_id, args?.page_id);
+    const requestedWidth = Number(args?.max_width);
+    const maxWidth = Number.isFinite(requestedWidth) ? Math.round(requestedWidth) : 1_200;
+    const maximumScale = source.nodeId ? 8 : 1;
+    const scale = Math.min(
+      maximumScale,
+      maxWidth / source.width,
+      MAX_AGENT_SCREENSHOT_HEIGHT / source.height,
+      Math.sqrt(MAX_AGENT_SCREENSHOT_PIXELS / (source.width * source.height)),
+    );
+    let width = Math.max(1, Math.round(source.width * scale));
+    let height = Math.max(1, Math.round(source.height * scale));
+    const svg = exportDesignSvg(source.document);
+    const image = new window.Image();
+    await new Promise((resolve, reject) => {
+      const timer = window.setTimeout(
+        () => reject(new Error("设计预览渲染超时")),
+        MAX_AGENT_SCREENSHOT_RENDER_MS,
+      );
+      image.addEventListener(
+        "load",
+        () => {
+          window.clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+      image.addEventListener(
+        "error",
+        () => {
+          window.clearTimeout(timer);
+          reject(new Error("设计预览渲染失败"));
+        },
+        { once: true },
+      );
+      image.src = `data:image/svg+xml;base64,${utf8Base64(svg)}`;
+    });
+    const canvas = document.createElement("canvas");
+    let dataUrl;
+    let screenshotAttempts = 0;
+    do {
+      screenshotAttempts += 1;
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("浏览器不支持设计预览");
+      context.drawImage(
+        image,
+        source.x,
+        source.y,
+        source.width,
+        source.height,
+        0,
+        0,
+        width,
+        height,
+      );
+      dataUrl = canvas.toDataURL("image/webp", 0.9);
+      if (dataUrl.length > MAX_AGENT_SCREENSHOT_BASE64) {
+        if (screenshotAttempts >= 12) {
+          throw new Error("设计预览图片无法压缩到 Agent 传输上限");
+        }
+        width = Math.max(1, Math.round(width * 0.8));
+        height = Math.max(1, Math.round(height * 0.8));
+      }
+    } while (dataUrl.length > MAX_AGENT_SCREENSHOT_BASE64);
+    const mediaType = dataUrl.slice(5, dataUrl.indexOf(";"));
+    if (!["image/png", "image/webp"].includes(mediaType)) {
+      throw new Error("浏览器未能生成设计预览图片");
+    }
+    if (
+      currentDesignStateRevision() !== screenshotStateRevision ||
+      currentRevision !== screenshotRevision
+    ) {
+      throw new Error("设计在预览生成期间发生变化；请重新生成截图");
+    }
     return {
+      kind: "image",
+      mediaType,
+      data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      width,
+      height,
+      nodeId: source.nodeId,
+      pageId: source.pageId,
+      pageName: source.pageName,
       path: elements.path.value.trim(),
-      revision: result.revision,
-      nodeCount: result.design.nodes.length,
+      revision: screenshotRevision,
+      stateRevision: screenshotStateRevision,
+      summary: source.nodeId
+        ? `Design preview for ${source.nodeId} on ${source.pageName} · ${width}×${height}`
+        : `Design preview for ${source.pageName} · ${width}×${height}`,
     };
+  });
+  register("save_design", async (args = {}) => {
+    await ready;
+    assertAgentToolArguments(args, new Set(["expected_state_revision"]), "save_design");
+    if (typeof args.expected_state_revision !== "string" || !args.expected_state_revision) {
+      throw new Error(
+        "save_design.expected_state_revision 必须是 get_design_metadata 返回的非空字符串",
+      );
+    }
+    return enqueueAgentMutation(async () => {
+      if (args.expected_state_revision !== currentDesignStateRevision()) {
+        throw new Error("设计状态已变化；请重新读取元数据后再保存");
+      }
+      const result = await saveDocument({ quiet: true });
+      renderAll();
+      return {
+        path: elements.path.value.trim(),
+        revision: result.revision,
+        stateRevision: currentDesignStateRevision(),
+        nodeCount: allDesignNodes(result.design).length,
+        activePageNodeCount: result.design.nodes.length,
+        audit: summarizeAudit(auditDocument(result.design)),
+      };
+    });
   });
 }
 

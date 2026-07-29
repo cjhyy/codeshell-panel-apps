@@ -2,13 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://codeshell.dev/schemas/codeshell-design-v3.schema.json",
   "title": "CodeShell Design v3",
+  "description": "Repository source schema. Runtime semantic validation additionally enforces globally unique node ids, valid acyclic component references, at most 16 nested instance levels, and at most 10,000 expanded render layers per page.",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "version", "name", "canvas", "tokens", "activePageId", "pages"],
   "properties": {
     "format": { "const": "codeshell.design" },
     "version": { "const": 3 },
-    "name": { "type": "string", "maxLength": 120 },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
+    },
     "canvas": { "$ref": "#/$defs/canvas" },
     "tokens": { "$ref": "#/$defs/tokens" },
     "activePageId": { "$ref": "#/$defs/pageId" },
@@ -27,7 +33,8 @@
     "nodeId": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 160
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
     },
     "color": {
       "type": "string",
@@ -48,6 +55,7 @@
     },
     "tokens": {
       "type": "object",
+      "description": "Named document color literals. Design Studio propagates same-name token value edits through matching painted colors.",
       "additionalProperties": false,
       "required": ["colors"],
       "properties": {
@@ -59,7 +67,12 @@
             "additionalProperties": false,
             "required": ["name", "value"],
             "properties": {
-              "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
+              },
               "value": {
                 "type": "string",
                 "pattern": "^#[0-9a-fA-F]{6}$"
@@ -92,22 +105,33 @@
       "properties": {
         "id": { "$ref": "#/$defs/nodeId" },
         "type": {
-          "enum": [
-            "frame",
-            "group",
-            "component",
-            "instance",
-            "rectangle",
-            "ellipse",
-            "text"
-          ]
+          "enum": ["frame", "group", "component", "instance", "rectangle", "ellipse", "text"]
         },
-        "name": { "type": "string", "maxLength": 120 },
+        "name": {
+          "type": "string",
+          "maxLength": 120,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]*$"
+        },
         "notes": { "type": "string", "maxLength": 2000 },
+        "shadow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["color", "opacity", "x", "y", "blur"],
+          "properties": {
+            "color": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$"
+            },
+            "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+            "x": { "type": "number", "minimum": -500, "maximum": 500 },
+            "y": { "type": "number", "minimum": -500, "maximum": 500 },
+            "blur": { "type": "number", "minimum": 0, "maximum": 200 }
+          }
+        },
         "x": { "type": "number", "minimum": -20000, "maximum": 20000 },
         "y": { "type": "number", "minimum": -20000, "maximum": 20000 },
-        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 20000 },
-        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 20000 },
+        "width": { "type": "number", "minimum": 1, "maximum": 20000 },
+        "height": { "type": "number", "minimum": 1, "maximum": 20000 },
         "fill": { "$ref": "#/$defs/color" },
         "stroke": { "$ref": "#/$defs/color" },
         "strokeWidth": { "type": "number", "minimum": 0, "maximum": 100 },
@@ -119,12 +143,25 @@
         "clipContent": { "type": "boolean" },
         "text": { "type": "string", "maxLength": 4000 },
         "fontSize": { "type": "number", "minimum": 6, "maximum": 240 },
-        "fontWeight": { "enum": [400, 500, 600, 700] },
+        "fontWeight": { "enum": [100, 200, 300, 400, 500, 600, 700, 800, 900] },
+        "fontFamily": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
+        },
+        "fontStyle": { "enum": ["normal", "italic"] },
         "lineHeight": { "type": "number", "minimum": 0.7, "maximum": 3 },
+        "letterSpacing": { "type": "number", "minimum": -20, "maximum": 100 },
+        "textDecoration": { "enum": ["none", "underline", "line-through"] },
         "textAlign": { "enum": ["left", "center", "right"] },
         "layout": { "enum": ["none", "horizontal", "vertical"] },
         "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
         "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "paddingBottom": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "paddingLeft": { "type": "number", "minimum": 0, "maximum": 2000 },
         "alignItems": { "enum": ["start", "center", "end", "stretch"] },
         "justifyContent": { "enum": ["start", "center", "end", "space-between"] },
         "layoutGrow": { "enum": [0, 1] },
@@ -142,16 +179,24 @@
             "required": ["type"]
           },
           "then": {
-            "required": [
-              "layout",
-              "gap",
-              "padding",
-              "alignItems",
-              "justifyContent",
-              "children"
-            ]
+            "required": ["layout", "gap", "padding", "alignItems", "justifyContent", "children"]
           },
-          "else": { "not": { "required": ["children"] } }
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["children"] },
+                { "required": ["layout"] },
+                { "required": ["gap"] },
+                { "required": ["padding"] },
+                { "required": ["paddingTop"] },
+                { "required": ["paddingRight"] },
+                { "required": ["paddingBottom"] },
+                { "required": ["paddingLeft"] },
+                { "required": ["alignItems"] },
+                { "required": ["justifyContent"] }
+              ]
+            }
+          }
         },
         {
           "if": {
@@ -159,7 +204,23 @@
             "required": ["type"]
           },
           "then": {
-            "required": ["text", "fontSize", "fontWeight", "lineHeight", "textAlign"]
+            "required": ["text", "fontSize", "fontWeight", "lineHeight", "textAlign"],
+            "properties": { "cornerRadius": { "const": 0 } }
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                { "required": ["text"] },
+                { "required": ["fontSize"] },
+                { "required": ["fontWeight"] },
+                { "required": ["fontFamily"] },
+                { "required": ["fontStyle"] },
+                { "required": ["lineHeight"] },
+                { "required": ["letterSpacing"] },
+                { "required": ["textDecoration"] },
+                { "required": ["textAlign"] }
+              ]
+            }
           }
         },
         {
@@ -167,7 +228,36 @@
             "properties": { "type": { "const": "instance" } },
             "required": ["type"]
           },
-          "then": { "required": ["componentId"] }
+          "then": { "required": ["componentId"] },
+          "else": { "not": { "required": ["componentId"] } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "enum": ["frame", "component"] } },
+            "required": ["type"]
+          },
+          "else": { "not": { "required": ["clipContent"] } }
+        },
+        {
+          "if": {
+            "properties": { "type": { "enum": ["group", "instance"] } },
+            "required": ["type"]
+          },
+          "then": {
+            "properties": {
+              "fill": { "const": "transparent" },
+              "stroke": { "const": "transparent" },
+              "strokeWidth": { "const": 0 },
+              "cornerRadius": { "const": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "group" } },
+            "required": ["type"]
+          },
+          "then": { "not": { "required": ["shadow"] } }
         }
       ]
     },
@@ -177,7 +267,12 @@
       "required": ["id", "name", "children"],
       "properties": {
         "id": { "$ref": "#/$defs/pageId" },
-        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
+        },
         "children": {
           "type": "array",
           "items": { "$ref": "#/$defs/node" }

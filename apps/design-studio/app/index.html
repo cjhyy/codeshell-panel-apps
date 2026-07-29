@@ -15,6 +15,28 @@
           <span class="brand-name">Studio</span>
         </div>
         <div class="document-control">
+          <div class="page-control">
+            <label class="sr-only" for="active-page">当前页面</label>
+            <select id="active-page" aria-label="当前设计页面"></select>
+            <button
+              id="add-page"
+              class="page-add"
+              type="button"
+              title="新建设计页面"
+              aria-label="新建设计页面"
+            >
+              +
+            </button>
+            <button
+              id="manage-pages"
+              class="page-add page-manage"
+              type="button"
+              title="管理设计页面"
+              aria-label="管理设计页面"
+            >
+              ⋯
+            </button>
+          </div>
           <input
             id="document-path"
             aria-label="设计文件路径"
@@ -263,18 +285,32 @@
                 <div class="property-grid">
                   <label
                     ><span>W</span
-                    ><input id="prop-canvas-width" type="number" min="100" max="10000"
+                    ><input
+                      id="prop-canvas-width"
+                      type="number"
+                      min="100"
+                      max="10000"
+                      aria-label="画布宽度"
                   /></label>
                   <label
                     ><span>H</span
-                    ><input id="prop-canvas-height" type="number" min="100" max="10000"
+                    ><input
+                      id="prop-canvas-height"
+                      type="number"
+                      min="100"
+                      max="10000"
+                      aria-label="画布高度"
                   /></label>
                 </div>
-                <label class="color-field">
+                <div class="color-field">
                   <span>背景</span>
-                  <input id="prop-canvas-background-color" type="color" />
-                  <input id="prop-canvas-background" spellcheck="false" />
-                </label>
+                  <input
+                    id="prop-canvas-background-color"
+                    type="color"
+                    aria-label="选择画布背景色"
+                  />
+                  <input id="prop-canvas-background" spellcheck="false" aria-label="画布背景色值" />
+                </div>
               </div>
             </div>
 
@@ -290,17 +326,25 @@
               <div class="property-section">
                 <div class="section-label">位置与尺寸</div>
                 <div class="property-grid">
-                  <label><span>X</span><input id="prop-x" type="number" step="1" /></label>
-                  <label><span>Y</span><input id="prop-y" type="number" step="1" /></label>
                   <label
-                    ><span>W</span><input id="prop-width" type="number" min="1" step="1"
+                    ><span>X</span
+                    ><input id="prop-x" type="number" step="1" aria-label="图层 X 坐标"
                   /></label>
                   <label
-                    ><span>H</span><input id="prop-height" type="number" min="1" step="1"
+                    ><span>Y</span
+                    ><input id="prop-y" type="number" step="1" aria-label="图层 Y 坐标"
+                  /></label>
+                  <label
+                    ><span>W</span
+                    ><input id="prop-width" type="number" min="1" step="1" aria-label="图层宽度"
+                  /></label>
+                  <label
+                    ><span>H</span
+                    ><input id="prop-height" type="number" min="1" step="1" aria-label="图层高度"
                   /></label>
                 </div>
                 <label id="prop-parent-field" class="stacked-field">
-                  <span>所属画板</span>
+                  <span>所属容器</span>
                   <select id="prop-parent"></select>
                 </label>
                 <div class="align-row">
@@ -320,6 +364,15 @@
               <div id="text-section" class="property-section" hidden>
                 <div class="section-label">文字</div>
                 <textarea id="prop-text" rows="3" aria-label="文字内容"></textarea>
+                <label class="stacked-field">
+                  <span>字体族</span>
+                  <input
+                    id="prop-font-family"
+                    type="text"
+                    maxlength="120"
+                    placeholder="Inter, system-ui, sans-serif"
+                  />
+                </label>
                 <div class="property-grid">
                   <label
                     ><span>字号</span><input id="prop-font-size" type="number" min="6" max="240"
@@ -327,16 +380,40 @@
                   <label>
                     <span>字重</span>
                     <select id="prop-font-weight">
+                      <option value="100">纤细 100</option>
+                      <option value="200">特细 200</option>
+                      <option value="300">细体 300</option>
                       <option value="400">常规</option>
                       <option value="500">中等</option>
                       <option value="600">半粗</option>
                       <option value="700">粗体</option>
+                      <option value="800">特粗 800</option>
+                      <option value="900">黑体 900</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>字形</span>
+                    <select id="prop-font-style">
+                      <option value="normal">常规</option>
+                      <option value="italic">斜体</option>
                     </select>
                   </label>
                   <label
                     ><span>行高</span
                     ><input id="prop-line-height" type="number" min="0.7" max="3" step="0.05"
                   /></label>
+                  <label
+                    ><span>字距</span
+                    ><input id="prop-letter-spacing" type="number" min="-20" max="100" step="0.1"
+                  /></label>
+                  <label>
+                    <span>装饰</span>
+                    <select id="prop-text-decoration">
+                      <option value="none">无</option>
+                      <option value="underline">下划线</option>
+                      <option value="line-through">删除线</option>
+                    </select>
+                  </label>
                   <label>
                     <span>对齐</span>
                     <select id="prop-text-align">
@@ -352,7 +429,7 @@
                 <div id="container-section-label" class="section-label">画板</div>
                 <label id="clip-content-field" class="checkbox-field">
                   <input id="prop-clip-content" type="checkbox" />
-                  <span>裁剪超出画板的内容</span>
+                  <span id="clip-content-label">裁剪超出画板的内容</span>
                 </label>
                 <button id="release-frame" class="wide-action" type="button">
                   <span id="release-container-label">解除画板，保留内容</span>
@@ -379,6 +456,48 @@
                     <label
                       ><span>内边距</span
                       ><input id="prop-layout-padding" type="number" min="0" max="2000"
+                    /></label>
+                  </div>
+                  <div class="property-grid" aria-label="独立内边距">
+                    <label
+                      ><span>上</span
+                      ><input
+                        id="prop-layout-padding-top"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                        title="留空时使用统一内边距"
+                    /></label>
+                    <label
+                      ><span>右</span
+                      ><input
+                        id="prop-layout-padding-right"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                        title="留空时使用统一内边距"
+                    /></label>
+                    <label
+                      ><span>下</span
+                      ><input
+                        id="prop-layout-padding-bottom"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                        title="留空时使用统一内边距"
+                    /></label>
+                    <label
+                      ><span>左</span
+                      ><input
+                        id="prop-layout-padding-left"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                        title="留空时使用统一内边距"
                     /></label>
                   </div>
                   <div class="property-grid">
@@ -435,27 +554,80 @@
 
               <div class="property-section">
                 <div class="section-label">外观</div>
-                <label class="color-field">
-                  <span>填充</span>
-                  <input id="prop-fill-color" type="color" />
-                  <input id="prop-fill" spellcheck="false" />
-                </label>
-                <label class="color-field">
-                  <span>描边</span>
-                  <input id="prop-stroke-color" type="color" />
-                  <input id="prop-stroke" spellcheck="false" />
-                </label>
+                <div id="paint-controls" class="layout-controls">
+                  <div class="color-field">
+                    <span>填充</span>
+                    <input id="prop-fill-color" type="color" aria-label="选择图层填充色" />
+                    <input id="prop-fill" spellcheck="false" aria-label="图层填充色值" />
+                  </div>
+                  <div class="color-field">
+                    <span>描边</span>
+                    <input id="prop-stroke-color" type="color" aria-label="选择图层描边色" />
+                    <input id="prop-stroke" spellcheck="false" aria-label="图层描边色值" />
+                  </div>
+                  <div class="property-grid">
+                    <label id="radius-field"
+                      ><span>圆角</span><input id="prop-radius" type="number" min="0"
+                    /></label>
+                    <label
+                      ><span>描边</span
+                      ><input id="prop-stroke-width" type="number" min="0" max="100"
+                    /></label>
+                  </div>
+                </div>
+                <p id="paintless-layer-hint" class="component-status" hidden></p>
                 <div class="property-grid">
-                  <label><span>圆角</span><input id="prop-radius" type="number" min="0" /></label>
-                  <label
-                    ><span>描边</span><input id="prop-stroke-width" type="number" min="0" max="100"
-                  /></label>
                   <label
                     ><span>透明</span><input id="prop-opacity" type="number" min="0" max="100"
                   /></label>
                   <label
                     ><span>旋转</span><input id="prop-rotation" type="number" min="-360" max="360"
                   /></label>
+                </div>
+              </div>
+
+              <div id="shadow-section" class="property-section">
+                <div class="section-label">效果</div>
+                <label class="checkbox-field">
+                  <input id="prop-shadow-enabled" type="checkbox" />
+                  <span>投影</span>
+                </label>
+                <div id="shadow-controls" class="layout-controls" hidden>
+                  <div class="color-field">
+                    <span>颜色</span>
+                    <input id="prop-shadow-color-picker" type="color" aria-label="选择投影颜色" />
+                    <input id="prop-shadow-color" spellcheck="false" aria-label="投影颜色值" />
+                  </div>
+                  <div class="property-grid">
+                    <label
+                      ><span>X</span
+                      ><input
+                        id="prop-shadow-x"
+                        type="number"
+                        min="-500"
+                        max="500"
+                        step="1"
+                        aria-label="投影 X 偏移"
+                    /></label>
+                    <label
+                      ><span>Y</span
+                      ><input
+                        id="prop-shadow-y"
+                        type="number"
+                        min="-500"
+                        max="500"
+                        step="1"
+                        aria-label="投影 Y 偏移"
+                    /></label>
+                    <label
+                      ><span>模糊</span
+                      ><input id="prop-shadow-blur" type="number" min="0" max="200" step="1"
+                    /></label>
+                    <label
+                      ><span>透明</span
+                      ><input id="prop-shadow-opacity" type="number" min="0" max="100" step="1"
+                    /></label>
+                  </div>
                 </div>
               </div>
 
@@ -489,7 +661,14 @@
           >
             <div class="layers-heading">
               <span>图层</span>
-              <button id="duplicate-layer" type="button">复制</button>
+              <button
+                id="duplicate-layer"
+                type="button"
+                title="创建所选图层的副本 (⌘D)"
+                aria-label="创建所选图层的副本"
+              >
+                副本
+              </button>
             </div>
             <div class="layer-filter-wrap">
               <input
@@ -511,12 +690,35 @@
       </section>
     </main>
 
-    <dialog id="files-dialog">
+    <dialog id="pages-dialog" aria-labelledby="pages-dialog-title">
+      <form method="dialog" class="dialog-card pages-dialog-card">
+        <header>
+          <div>
+            <span class="dialog-kicker">DOCUMENT PAGES</span>
+            <h2 id="pages-dialog-title">页面管理</h2>
+          </div>
+          <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
+        </header>
+        <p class="dialog-description">页面共享画布尺寸与颜色变量；每个页面保留独立图层。</p>
+        <div id="pages-list" class="pages-list"></div>
+        <footer>
+          <p>组件可放在独立页面，并在其他页面中创建实例。</p>
+          <div class="dialog-footer-actions">
+            <button id="add-page-dialog" class="button" value="cancel" type="button">
+              ＋ 新建页面
+            </button>
+            <button class="button" value="cancel" type="submit">完成</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="files-dialog" aria-labelledby="files-dialog-title">
       <form method="dialog" class="dialog-card">
         <header>
           <div>
             <span class="dialog-kicker">REPOSITORY DESIGNS</span>
-            <h2>设计文件</h2>
+            <h2 id="files-dialog-title">设计文件</h2>
           </div>
           <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
         </header>
@@ -529,12 +731,12 @@
       </form>
     </dialog>
 
-    <dialog id="ai-dialog">
+    <dialog id="ai-dialog" aria-labelledby="ai-dialog-title">
       <form method="dialog" class="dialog-card ai-dialog-card">
         <header>
           <div>
             <span class="dialog-kicker">AGENT HANDOFF</span>
-            <h2>让 Agent 继续设计</h2>
+            <h2 id="ai-dialog-title">让 Agent 继续设计</h2>
           </div>
           <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
         </header>
@@ -545,6 +747,7 @@
           id="ai-request"
           rows="6"
           placeholder="例如：检查这个首页的信息层级，优化首屏 CTA，并保持现有颜色变量。"
+          aria-label="交给 Agent 的设计要求"
         ></textarea>
         <footer class="ai-footer">
           <span id="ai-context-state">会话可用</span>
@@ -556,12 +759,12 @@
       </form>
     </dialog>
 
-    <dialog id="shortcuts-dialog">
+    <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-dialog-title">
       <form method="dialog" class="dialog-card shortcuts-dialog-card">
         <header>
           <div>
             <span class="dialog-kicker">KEYBOARD MAP</span>
-            <h2>快捷键</h2>
+            <h2 id="shortcuts-dialog-title">快捷键</h2>
           </div>
           <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
         </header>
@@ -615,19 +818,19 @@
       </form>
     </dialog>
 
-    <dialog id="audit-dialog">
+    <dialog id="audit-dialog" aria-labelledby="audit-dialog-title">
       <form method="dialog" class="dialog-card audit-dialog-card">
         <header>
           <div>
             <span class="dialog-kicker">DESIGN AUDIT</span>
-            <h2>设计检查</h2>
+            <h2 id="audit-dialog-title">设计检查</h2>
           </div>
           <button class="dialog-close" value="cancel" aria-label="关闭">×</button>
         </header>
         <div id="audit-summary" class="workspace-summary"></div>
         <div id="audit-results" class="audit-results"></div>
         <footer>
-          <p>检查画布边界、Frame 归属、空文本和文字对比度。</p>
+          <p>检查画布与容器越界、圆角裁切、文本排版和实例文字对比度。</p>
           <div class="dialog-footer-actions">
             <button id="save-audit-report" class="button" value="cancel" type="button">
               保存报告
