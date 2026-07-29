@@ -31,6 +31,10 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    overwritten from a stale read.
    When metadata returns a non-null repository `revision`, also pass it as `expected_revision`.
    Either mismatch fails before any design mutation and requires a fresh read.
+   Before creating a UI region, choose its layout owner: use nested horizontal/vertical containers
+   for normal rows, columns, navigation, messages, controls, and repeated content. Use manual
+   coordinates only for overlays, deliberately art-directed overlap, or a layout that v3 cannot
+   express safely. Do not begin a normal application screen as one large `layout: "none"` tree.
 4. Call `validate_design` after every meaningful edit. It audits every page, not only the active
    canvas. `valid` is true only when no audit issues remain. `renderSafe` isolates blocking
    clipping, canvas overflow, and text-layout failures, but non-blocking contrast/content warnings
@@ -61,10 +65,16 @@ Read metadata, then call `import_html` with the workspace-relative `.html` path,
 optional root selector, current `expected_state_revision`, and current `expected_revision` when
 non-null. The tool reads up to 20 relative local CSS files, removes scripts and network resources,
 waits for fonts and two animation frames, then replaces the canvas with computed geometry,
-typography, paint, borders, clipping, and one non-inset shadow. It saves by default, returns an
-immediate audit and rollback `transactionId`, and fails if the live design changes while HTML is
-rendering. Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source
-elements when later Agent edits need durable layer identities.
+typography, paint, borders, clipping, and one non-inset shadow. Supported non-wrapping CSS Flex
+containers become v3 horizontal/vertical Auto Layout with computed gap, four-side padding,
+alignment, distribution, grow, and stretch semantics. Browser-measured `x/y` remain in the saved
+file as exact initial geometry and fallback data; Auto Layout owns flow-child positions after a
+reflow. Flex wrap/reverse, unequal grow factors, absolute/fixed direct children, floats, Grid, and
+decoration layers that cannot be excluded from v3 Auto Layout fall back to measured manual
+geometry instead of silently changing the screenshot. It saves by default, returns an immediate
+audit and rollback `transactionId`, and fails if the live design changes while HTML is rendering.
+Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
+when later Agent edits need durable layer identities.
 
 Compare the rendered HTML and exported Design SVG in the same browser, viewport, device scale, and
 font environment. Save the source, converted, and amplified pixel-difference screenshots. Report
@@ -78,10 +88,13 @@ In the `codeshell-panel-apps` collection repository, run the maintained baseline
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
-Treat it as a regression gate: windowed SSIM must be at least 0.99, the ratio of pixels changing by
-more than 8 channel levels must be at most 1%, and the ratio changing by more than 24 levels must be
-at most 0.6%, with zero blocking audit issues. The JSON report and four PNG artifacts are evidence
-for the comparison. Imported
+Treat it as a regression gate: the measured conversion needs windowed SSIM of at least 0.99, at
+most 1% of pixels changing by more than 8 channel levels, and at most 0.6% changing by more than 24
+levels. The fixture must also preserve at least 20 Auto Layout containers. After resolving every
+Auto Layout once, the reflowed comparison must keep windowed SSIM at or above 0.97, the two changed
+pixel ratios at or below 2% and 1.5%, and zero blocking audit issues. The JSON report, captured and
+reflowed design sources, and measured/reflow screenshot artifacts are evidence for both initial
+fidelity and adaptive stability. Imported
 browser-measured text and deliberately clipped effects carry explicit document metadata so
 validation does not turn exact browser geometry into false layout blockers.
 
@@ -94,12 +107,17 @@ call `validate_design`, and inspect a Design Studio screenshot before editing it
 bundled `app/html-capture.mjs` helper directly only when developing the importer or running its
 browser regression fixture.
 
-## Coordinate contract
+## Resolved geometry and coordinate fallback
 
-All node `x` and `y` values are **absolute document/canvas coordinates**, including nodes nested
-inside frames, groups, and components. They are never relative to the parent.
-Every new root-level or manually positioned node must provide both `x` and `y`; never rely on the
-editor default because multiple omitted positions would overlap at the canvas origin.
+The editor materializes every node's resolved `x` and `y` as **absolute document/canvas
+coordinates**, including nodes nested inside frames, groups, and components. They are never
+parent-relative. This does not make `x/y` the semantic layout source for every node: a
+horizontal/vertical parent owns the resolved positions of its direct flow children. Omit child
+`x/y` when creating or moving those children through Agent operations; read the coordinates back
+after reflow only for inspection, screenshot cropping, and fallback geometry.
+
+Every root-level or manually positioned node must provide both `x` and `y`; never rely on the editor
+default because multiple omitted positions would overlap at the canvas origin.
 
 For example, if a frame starts at `(80, 40)` and has 24 px visual inset, its first manually
 positioned child starts near `(104, 64)`, not `(24, 24)` and never `(0, 0)`. Before writing a nested
@@ -130,8 +148,9 @@ detail.
 
 ## Manual layout versus auto layout
 
-Containers default to `layout: "none"`, `gap: 0`, and `padding: 0`. In manual layout, Agent-supplied
-absolute geometry is preserved across transactions.
+Containers technically default to `layout: "none"`, `gap: 0`, and `padding: 0`, but normal UI
+structure should not inherit that default accidentally. In manual layout, Agent-supplied absolute
+geometry is preserved across transactions.
 
 When a container uses `layout: "horizontal"` or `"vertical"`, that container owns its direct
 children’s positions. Configure `padding`, `gap`, `alignItems`, `justifyContent`, child
@@ -149,9 +168,11 @@ container needs asymmetric inset; an omitted side falls back to the container’
 With `justifyContent: "space-between"`, configured `gap` remains the minimum gap; surplus room is
 distributed, but a tight container never silently compresses that explicit spacing value.
 
-Use manual layout for fixed screen compositions, overlays, and art-directed mockups. Use auto layout
-for repeated rows, button contents, navigation items, chips, and content whose order or size will
-change. Do not mix the two mental models inside one direct-child list.
+Use Auto Layout by default for application shells, panels, repeated rows, button contents,
+navigation items, chips, cards, forms, messages, and content whose order or size can change. Use
+manual layout for overlays, deliberate overlap, canvas artwork, and unsupported layout semantics.
+Do not mix the two mental models inside one direct-child list; introduce a nested manual container
+for the exceptional overlay.
 
 ## Typography
 
@@ -425,6 +446,9 @@ Handle the current audit codes as follows:
 - `layout.text-overflow`: increase the text box height or reduce/rewrite the text.
 - `layout.text-width-overflow`: widen the text box, insert an intentional line break, or shorten the
   copy; Design Studio does not silently auto-wrap fixed text nodes.
+- `layout.manual-only-ui`: a container-heavy screen has no Auto Layout. Rebuild normal rows and
+  columns with nested horizontal/vertical containers; retain manual coordinates only where overlap
+  or unsupported CSS requires a fallback.
 - `a11y.text-contrast`: change foreground/background colors; do not dismiss it as cosmetic.
 - `a11y.instance-text-contrast`: the component master may be readable in its library context, but
   this instance is not; fix the master's own surface, the target background, the instance opacity,

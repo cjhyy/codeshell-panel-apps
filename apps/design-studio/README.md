@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.7 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.8 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 
@@ -16,7 +16,8 @@ surface: nine declared design tools plus a repository-design Skill.
   portable multiline SVG text that does not collapse in native preview renderers.
 - Repository-stable drop shadows rendered consistently in canvas screenshots and SVG exports.
 - Browser-rendered HTML capture that measures computed layout, typography, borders, clipping, and
-  shadows before rebuilding the page as editable v3 layers instead of guessing from markup.
+  shadows, maps supported CSS Flex semantics to editable v3 Auto Layout, and keeps measured
+  coordinates as exact initial geometry and fallback data.
 - A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
   and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
   and the converted document remains undoable and revision-guarded.
@@ -24,8 +25,9 @@ surface: nine declared design tools plus a repository-design Skill.
   fill, stroke, and shadow colors without corrupting color swaps.
 - Deterministic v3 `.codesign.json` documents with a compact page switcher, multi-page editing, and
   deeply nested layers.
-- Automatic binding to the current repository: recovery first, then the
-  repository's last-opened or newest design, otherwise a blank repo document.
+- Automatic binding to the current repository: recovery first, then the repository's last-opened
+  design, then `designs/design.codesign.json`, then the newest remaining design, otherwise a blank
+  repo document at the default path.
 - A repository file tab that lists every `designs/**/*.codesign.json` document, shows the active
   file and file count, and supports one-click switching or explicit refresh without leaving the
   editor.
@@ -112,18 +114,23 @@ Run the same-browser regression from this collection repository:
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
-The command writes source, converted, side-by-side, amplified pixel-difference, and JSON report
-artifacts. It fails unless windowed SSIM is at least `0.99`, pixels changing by more than 8 channel
+The command writes source, measured conversion, reflowed conversion, side-by-side, amplified
+pixel-difference, captured/reflowed `.codesign.json`, and JSON report artifacts. The measured
+conversion fails unless windowed SSIM is at least `0.99`, pixels changing by more than 8 channel
 levels stay at or below `1%`, and pixels changing by more than 24 levels stay at or below `0.6%`.
-The converted document must also have zero blocking audit issues.
+The fixture must retain at least 20 Auto Layout containers. After resolving those layouts once,
+windowed SSIM must remain at least `0.97`, with the changed-pixel ratios at or below `2%` and
+`1.5%`. Both documents must have zero blocking audit issues.
 Browser-measured text bounds and explicitly clipped imported effects remain tagged in the editable
 document so the audit does not replace exact geometry with fallback estimates; real contrast,
 layout, and clipping issues still fail validation normally.
 
-This path deliberately captures the browser's computed result after fonts and layout settle. It is
-not an HTML parser and does not promise fidelity for unsupported v3 features such as raster images,
-SVG paths, gradients, pseudo-elements, multiple shadows, or four independently editable corner
-radii.
+This path deliberately captures the browser's computed result after fonts and layout settle.
+Non-wrapping Flex rows/columns map gap, four-side padding, alignment, distribution, equal grow, and
+stretch into v3. Flex wrap/reverse, unequal grow, direct absolute/fixed children, float, Grid, and
+decoration overlays that v3 cannot exclude from flow keep measured manual geometry. It is not an
+HTML parser and does not promise fidelity for unsupported v3 features such as raster images, SVG
+paths, gradients, pseudo-elements, multiple shadows, or four independently editable corner radii.
 
 ## Package boundary
 

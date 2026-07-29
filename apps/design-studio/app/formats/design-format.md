@@ -37,9 +37,10 @@ literal because a painted node cannot distinguish which name supplied that value
 ## Repository binding and live sync
 
 Each project gets its own active file and recovery snapshot. The panel restores recovery, reopens
-the last file, otherwise opens the newest file below `designs/`, and finally starts at
-`designs/design.codesign.json`. A clean canvas reloads repo edits automatically. A dirty canvas
-shows a conflict instead of overwriting either side.
+the last file, otherwise prefers `designs/design.codesign.json`, then opens the newest remaining
+file below `designs/`, and finally starts a blank document at that default path. A clean canvas
+reloads repo edits automatically. A dirty canvas shows a conflict instead of overwriting either
+side.
 
 Design Studio's bundled Agent tools operate on the same in-memory document, refresh the canvas
 immediately, and save to the active repo source by default. This avoids the delay and ambiguity of
@@ -101,7 +102,9 @@ Containers store `layout`, `gap`, uniform `padding`, `alignItems`, and `justifyC
 `paddingTop`, `paddingRight`, `paddingBottom`, and `paddingLeft` values override individual sides.
 Any child, including a nested container, may use `layoutGrow` and `layoutAlign`. Nested auto-layout
 is resolved outermost-first, moving complete child subtrees before inner containers place their own
-children. Current geometry is kept explicit so Git diffs and Agent reads remain understandable.
+children. Current absolute-canvas geometry is materialized so Git diffs, screenshots, and Agent
+reads remain understandable, but a flow child's stored `x/y` is resolved/fallback geometry rather
+than the semantic source of truth; its direct auto-layout parent owns that position.
 Manual containers use `layout: "none"` and preserve child geometry. Auto-layout containers own
 direct-child positions and reflow only when their structure, visibility, size, or layout inputs
 change. Hidden direct children consume no layout space. A configured gap is a minimum under

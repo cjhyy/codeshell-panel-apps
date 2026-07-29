@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -60,7 +60,7 @@
       },
       {
         "name": "get_design_context",
-        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are absolute canvas coordinates.",
+        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are materialized absolute-canvas geometry; direct auto-layout child positions are resolved/fallback values owned by their parent layout.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -499,7 +499,7 @@
       },
       {
         "name": "import_html",
-        "description": "Render a workspace-local HTML file and its local CSS in an isolated browser viewport, replace the current canvas with editable v3 layers, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "description": "Render a workspace-local HTML file and local CSS in an isolated viewport, map supported non-wrapping Flex semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
         "inputSchema": {
           "type": "object",
           "properties": {

@@ -285,11 +285,162 @@ function borderSides(style) {
     );
 }
 
+function flexAxis(value) {
+  if (value === "row") return "horizontal";
+  if (value === "column") return "vertical";
+  return null;
+}
+
+function flexJustification(value) {
+  if (["normal", "start", "flex-start"].includes(value)) return "start";
+  if (["end", "flex-end"].includes(value)) return "end";
+  if (value === "center") return "center";
+  if (value === "space-between") return "space-between";
+  return null;
+}
+
+function flexAlignment(value) {
+  if (["normal", "stretch"].includes(value)) return "stretch";
+  if (["start", "flex-start", "self-start"].includes(value)) return "start";
+  if (["end", "flex-end", "self-end"].includes(value)) return "end";
+  if (value === "center") return "center";
+  return null;
+}
+
+function visibleElementChildren(element, ownerWindow) {
+  return [...element.children].filter((child) => {
+    const style = ownerWindow.getComputedStyle(child);
+    const rect = child.getBoundingClientRect();
+    return isVisibleElement(child, style, rect);
+  });
+}
+
+function flexLayoutProperties(element, style, ownerWindow) {
+  if (!["flex", "inline-flex"].includes(style.display)) return null;
+  const layout = flexAxis(style.flexDirection);
+  const justifyContent = flexJustification(style.justifyContent);
+  const alignItems = flexAlignment(style.alignItems);
+  if (
+    !layout ||
+    !justifyContent ||
+    !alignItems ||
+    !["nowrap", "none"].includes(style.flexWrap)
+  ) {
+    return null;
+  }
+
+  const childStyles = visibleElementChildren(element, ownerWindow).map((child) =>
+    ownerWindow.getComputedStyle(child),
+  );
+  if (
+    childStyles.some(
+      (childStyle) =>
+        ["absolute", "fixed"].includes(childStyle.position) ||
+        childStyle.float !== "none" ||
+        (childStyle.alignSelf !== "auto" && flexAlignment(childStyle.alignSelf) === null),
+    )
+  ) {
+    return null;
+  }
+
+  const positiveGrowValues = childStyles
+    .map((childStyle) => Number.parseFloat(childStyle.flexGrow || "0"))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (
+    positiveGrowValues.length > 1 &&
+    positiveGrowValues.some((value) => Math.abs(value - positiveGrowValues[0]) > 0.001)
+  ) {
+    // v3 stores grow as a boolean. Unequal CSS grow factors need measured-coordinate fallback.
+    return null;
+  }
+
+  const rowGap = Math.max(0, pixelValue(style.rowGap));
+  const columnGap = Math.max(0, pixelValue(style.columnGap));
+  return {
+    layout,
+    gap: round(layout === "horizontal" ? columnGap : rowGap),
+    padding: 0,
+    paddingTop: round(Math.max(0, pixelValue(style.paddingTop))),
+    paddingRight: round(Math.max(0, pixelValue(style.paddingRight))),
+    paddingBottom: round(Math.max(0, pixelValue(style.paddingBottom))),
+    paddingLeft: round(Math.max(0, pixelValue(style.paddingLeft))),
+    alignItems,
+    justifyContent,
+  };
+}
+
+function flexItemProperties(style) {
+  const grow = Number.parseFloat(style.flexGrow || "0");
+  const alignment = style.alignSelf === "auto" ? "auto" : flexAlignment(style.alignSelf);
+  return {
+    ...(Number.isFinite(grow) && grow > 0 ? { layoutGrow: 1 } : {}),
+    ...(alignment ? { layoutAlign: alignment } : {}),
+  };
+}
+
+function fitTransparentWrapperToChildren(frame) {
+  if (
+    !frame ||
+    frame.fill !== "transparent" ||
+    frame.stroke !== "transparent" ||
+    frame.shadow ||
+    frame.clipContent === true
+  ) {
+    return;
+  }
+  const children = frame.children.filter(
+    (child) =>
+      child.visible !== false &&
+      [child.x, child.y, child.width, child.height].every(Number.isFinite),
+  );
+  if (children.length === 0) return;
+  const left = Math.min(frame.x, ...children.map((child) => child.x));
+  const top = Math.min(frame.y, ...children.map((child) => child.y));
+  const right = Math.max(
+    frame.x + frame.width,
+    ...children.map((child) => child.x + child.width),
+  );
+  const bottom = Math.max(
+    frame.y + frame.height,
+    ...children.map((child) => child.y + child.height),
+  );
+  frame.x = round(left);
+  frame.y = round(top);
+  frame.width = round(Math.max(1, right - left));
+  frame.height = round(Math.max(1, bottom - top));
+}
+
+function ensureAutoLayoutFrameFitsChildren(frame) {
+  if (!frame || !["horizontal", "vertical"].includes(frame.layout)) return;
+  const children = frame.children.filter((child) => child.visible !== false);
+  if (children.length === 0) return;
+  const horizontal = frame.layout === "horizontal";
+  const mainSize = horizontal ? "width" : "height";
+  const crossSize = horizontal ? "height" : "width";
+  const mainPadding =
+    (horizontal ? frame.paddingLeft : frame.paddingTop) +
+    (horizontal ? frame.paddingRight : frame.paddingBottom);
+  const crossPadding =
+    (horizontal ? frame.paddingTop : frame.paddingLeft) +
+    (horizontal ? frame.paddingBottom : frame.paddingRight);
+  const requiredMain =
+    mainPadding +
+    children.reduce((total, child) => total + child[mainSize], 0) +
+    frame.gap * Math.max(0, children.length - 1);
+  const requiredCross =
+    crossPadding + Math.max(...children.map((child) => child[crossSize]));
+  frame[mainSize] = round(Math.max(frame[mainSize], requiredMain));
+  frame[crossSize] = round(Math.max(frame[crossSize], requiredCross));
+}
+
 function elementNeedsFrame(element, style, forceFrame = false) {
   const fill = parseCssColor(style.backgroundColor);
   const opacity = Number.parseFloat(style.opacity || "1");
   return (
     forceFrame ||
+    ["flex", "inline-flex"].includes(style.display) ||
+    Number.parseFloat(style.flexGrow || "0") > 0 ||
+    style.alignSelf !== "auto" ||
     element.hasAttribute("data-codeshell-id") ||
     element.hasAttribute("data-codeshell-name") ||
     (fill && fill.alpha > 0) ||
@@ -305,7 +456,15 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
   const fill = parseCssColor(style.backgroundColor);
   const radius = representativeCornerRadius(style);
   const shadow = parseCssBoxShadow(style.boxShadow);
-  if ((fill && fill.alpha > 0) || shadow) {
+  let hasManualLayers = false;
+  if (fill?.alpha === 1) {
+    frame.fill = fill.hex;
+    if (shadow) {
+      frame.shadow = shadow;
+      frame.effectClipping = "intentional";
+    }
+  } else if ((fill && fill.alpha > 0) || shadow) {
+    hasManualLayers = true;
     frame.children.push(
       rectangleNode(nextId("surface"), `${frame.name} surface`, rect, {
         fill: fill?.alpha > 0 ? fill.hex : "transparent",
@@ -327,6 +486,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
     );
   if (uniform) {
     const border = borders[0];
+    hasManualLayers = true;
     frame.children.push(
       rectangleNode(
         nextId("border"),
@@ -345,10 +505,11 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
         },
       ),
     );
-    return;
+    return hasManualLayers;
   }
 
   for (const border of borders) {
+    hasManualLayers = true;
     const borderRect =
       border.side === "top"
         ? { x: rect.x, y: rect.y, width: rect.width, height: border.width }
@@ -379,6 +540,7 @@ function appendSurfaceLayers(frame, style, rect, nextId) {
       ),
     );
   }
+  return hasManualLayers;
 }
 
 function appendTextLayers(frame, node, style, rootRect, nextId) {
@@ -439,6 +601,7 @@ export async function captureHtmlToDesign(root, options = {}) {
     element,
     fallbackName = element.tagName.toLowerCase(),
     forceFrame = false,
+    parentOwnsLayout = false,
   ) => {
     const style = ownerWindow.getComputedStyle(element);
     const browserRect = element.getBoundingClientRect();
@@ -450,25 +613,40 @@ export async function captureHtmlToDesign(root, options = {}) {
       element.id ||
       element.classList[0] ||
       fallbackName;
-    const needsFrame = elementNeedsFrame(element, style, forceFrame);
+    const intrinsicNeedsFrame = elementNeedsFrame(element, style, forceFrame);
+    const needsFrame = intrinsicNeedsFrame || parentOwnsLayout;
+    const transparentLayoutWrapper = needsFrame && !intrinsicNeedsFrame && parentOwnsLayout;
+    const layoutProperties = flexLayoutProperties(element, style, ownerWindow);
     const holder = needsFrame
       ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
           cornerRadius: representativeCornerRadius(style),
+          ...(layoutProperties ?? {}),
+          ...(parentOwnsLayout ? flexItemProperties(style) : {}),
           clipContent:
             ["hidden", "clip"].includes(style.overflowX) ||
             ["hidden", "clip"].includes(style.overflowY),
         })
       : { name, children: [] };
-    if (needsFrame) appendSurfaceLayers(holder, style, rect, nextId);
+    const hasManualLayers = needsFrame
+      ? appendSurfaceLayers(holder, style, rect, nextId)
+      : false;
+    if (hasManualLayers && holder.layout !== "none") {
+      // v3 cannot exclude a decoration child from Auto Layout. Keep exact pixels for this
+      // container while allowing eligible descendants to retain their own layout semantics.
+      holder.layout = "none";
+    }
+    const ownsLayout = needsFrame && holder.layout !== "none";
 
     for (const child of element.childNodes) {
       if (child.nodeType === TEXT_NODE) {
         appendTextLayers(holder, child, style, rootRect, nextId);
       } else if (child.nodeType === ELEMENT_NODE) {
-        holder.children.push(...captureElement(child));
+        holder.children.push(...captureElement(child, child.tagName.toLowerCase(), false, ownsLayout));
       }
     }
+    if (transparentLayoutWrapper || ownsLayout) fitTransparentWrapperToChildren(holder);
+    if (ownsLayout) ensureAutoLayoutFrameFitsChildren(holder);
     return needsFrame ? [holder] : holder.children;
   };
 

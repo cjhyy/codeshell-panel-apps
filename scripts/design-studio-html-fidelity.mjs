@@ -14,7 +14,11 @@ const THRESHOLDS = {
   windowedSsim: 0.99,
   changedPixelRatio8: 0.01,
   changedPixelRatio24: 0.006,
+  reflowWindowedSsim: 0.97,
+  reflowChangedPixelRatio8: 0.02,
+  reflowChangedPixelRatio24: 0.015,
   blockingIssueCount: 0,
+  minimumAutoLayoutCount: 20,
 };
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -83,12 +87,16 @@ async function captureMode(page, origin, mode) {
     serializedBytes: Number(document.documentElement.dataset.qaSerializedBytes ?? 0),
     issueCount: Number(document.documentElement.dataset.qaIssueCount ?? 0),
     blockingIssueCount: Number(document.documentElement.dataset.qaBlockingIssueCount ?? 0),
+    autoLayoutCount: Number(document.documentElement.dataset.qaAutoLayoutCount ?? 0),
+    manualContainerCount: Number(document.documentElement.dataset.qaManualContainerCount ?? 0),
+    issueCodes: JSON.parse(document.documentElement.dataset.qaIssueCodes ?? "{}"),
   }));
   if (state.error) throw new Error(`Fixture ${mode} failed:\n${state.error}`);
   const locator =
-    mode === "converted" ? page.locator("svg[data-qa-render]") : page.locator("#fixture");
+    mode === "source" ? page.locator("#fixture") : page.locator("svg[data-qa-render]");
   const screenshot = await locator.screenshot({ animations: "disabled", caret: "hide" });
-  return { screenshot, state };
+  const designSource = await page.locator("#qa-design").textContent();
+  return { screenshot, state, designSource };
 }
 
 function luminance(data, pixelIndex) {
@@ -220,18 +228,28 @@ try {
   const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
   const source = await captureMode(page, server.origin, "source");
   const converted = await captureMode(page, server.origin, "converted");
+  const reflowed = await captureMode(page, server.origin, "converted-reflow");
   const comparison = comparePngBuffers(source.screenshot, converted.screenshot);
+  const reflowComparison = comparePngBuffers(source.screenshot, reflowed.screenshot);
   const metrics = roundedMetrics(comparison.metrics);
+  const reflowMetrics = roundedMetrics(reflowComparison.metrics);
   const passed =
     metrics.windowedSsim >= THRESHOLDS.windowedSsim &&
     metrics.changedPixelRatio8 <= THRESHOLDS.changedPixelRatio8 &&
     metrics.changedPixelRatio24 <= THRESHOLDS.changedPixelRatio24 &&
-    source.state.blockingIssueCount === THRESHOLDS.blockingIssueCount;
+    reflowMetrics.windowedSsim >= THRESHOLDS.reflowWindowedSsim &&
+    reflowMetrics.changedPixelRatio8 <= THRESHOLDS.reflowChangedPixelRatio8 &&
+    reflowMetrics.changedPixelRatio24 <= THRESHOLDS.reflowChangedPixelRatio24 &&
+    source.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
+    reflowed.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
+    source.state.autoLayoutCount >= THRESHOLDS.minimumAutoLayoutCount;
   const report = {
     passed,
     thresholds: THRESHOLDS,
     metrics,
+    reflowMetrics,
     capture: source.state,
+    reflowCapture: reflowed.state,
     fixture: relative(REPOSITORY_ROOT, resolve(REPOSITORY_ROOT, `.${FIXTURE_PATH}`)),
   };
 
@@ -239,10 +257,18 @@ try {
   await Promise.all([
     writeFile(join(outputDir, "source-html.png"), source.screenshot),
     writeFile(join(outputDir, "converted-design.png"), converted.screenshot),
+    writeFile(join(outputDir, "captured-design.codesign.json"), converted.designSource),
     writeFile(join(outputDir, "pixel-diff.png"), PNG.sync.write(comparison.diff)),
+    writeFile(join(outputDir, "reflowed-design.png"), reflowed.screenshot),
+    writeFile(join(outputDir, "reflowed-design.codesign.json"), reflowed.designSource),
+    writeFile(join(outputDir, "reflow-pixel-diff.png"), PNG.sync.write(reflowComparison.diff)),
     writeFile(
       join(outputDir, "side-by-side.png"),
       PNG.sync.write(sideBySide(comparison.source, comparison.converted)),
+    ),
+    writeFile(
+      join(outputDir, "reflow-side-by-side.png"),
+      PNG.sync.write(sideBySide(reflowComparison.source, reflowComparison.converted)),
     ),
     writeFile(join(outputDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`),
   ]);
