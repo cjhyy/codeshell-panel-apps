@@ -30,14 +30,7 @@ const allowedExtensions = new Set([
   ".woff2",
   ".ttf",
 ]);
-const allowedAgentExtensions = new Set([
-  ".md",
-  ".json",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-]);
+const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
 
 async function walk(directory, root = directory) {
   const files = [];
@@ -69,30 +62,11 @@ async function validatePackage(packagePath) {
     manifest.schemaVersion === 1 || manifest.schemaVersion === 2,
     `${packagePath}: schemaVersion must be 1 or 2`,
   );
-  assert.match(
-    manifest.id,
-    /^[a-z][a-z0-9-]{0,63}$/,
-    `${packagePath}: invalid id`,
-  );
-  assert.equal(
-    typeof manifest.version,
-    "string",
-    `${packagePath}: version is required`,
-  );
-  assert.equal(
-    typeof manifest.title?.default,
-    "string",
-    `${packagePath}: title is required`,
-  );
-  assert.match(
-    manifest.entry,
-    /^app\/[^/].*\.html$/,
-    `${packagePath}: entry must be below app/`,
-  );
-  assert(
-    Array.isArray(manifest.permissions),
-    `${packagePath}: permissions must be an array`,
-  );
+  assert.match(manifest.id, /^[a-z][a-z0-9-]{0,63}$/, `${packagePath}: invalid id`);
+  assert.equal(typeof manifest.version, "string", `${packagePath}: version is required`);
+  assert.equal(typeof manifest.title?.default, "string", `${packagePath}: title is required`);
+  assert.match(manifest.entry, /^app\/[^/].*\.html$/, `${packagePath}: entry must be below app/`);
+  assert(Array.isArray(manifest.permissions), `${packagePath}: permissions must be an array`);
   const declaredSkillRoots = new Set();
   if (manifest.schemaVersion === 2 && manifest.agent) {
     assert(Array.isArray(manifest.agent.tools), `${packagePath}: agent.tools must be an array`);
@@ -125,18 +99,11 @@ async function validatePackage(packagePath) {
     entryRealPath.startsWith(`${rootRealPath}${sep}`),
     `${packagePath}: entry escapes its package`,
   );
-  assert(
-    (await stat(entryRealPath)).isFile(),
-    `${packagePath}: entry is not a file`,
-  );
+  assert((await stat(entryRealPath)).isFile(), `${packagePath}: entry is not a file`);
 
   const files = await walk(root);
   for (const file of files) {
-    if (
-      file === ".codeshell-panel/panel.json" ||
-      file === "README.md" ||
-      file === "LICENSE"
-    ) {
+    if (file === ".codeshell-panel/panel.json" || file === "README.md" || file === "LICENSE") {
       continue;
     }
     const declaredAgentAsset = [...declaredSkillRoots].some(
@@ -163,8 +130,7 @@ async function validatePackage(packagePath) {
 }
 
 const results = [];
-for (const packagePath of packages)
-  results.push(await validatePackage(packagePath));
+for (const packagePath of packages) results.push(await validatePackage(packagePath));
 
 const geometry = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/geometry.mjs"))
@@ -188,7 +154,7 @@ const baseNode = (id, type, name) => ({
   y: 0,
   width: 100,
   height: 100,
-  fill: "#ffffff",
+  fill: type === "group" ? "transparent" : "#ffffff",
   stroke: "transparent",
   strokeWidth: 0,
   opacity: 1,
@@ -236,14 +202,9 @@ const designState = designCodec.normalizeDesignDocument(nestedDesign);
 assert.equal(designState.nodes.length, 3);
 assert.equal(designState.nodes[2].parentId, "group");
 const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designState));
-assert.equal(
-  designRoundTrip.pages[0].children[0].children[0].children[0].id,
-  "rect",
-);
+assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
 
-const quant = await import(
-  pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/engine.mjs"))
-);
+const quant = await import(pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/engine.mjs")));
 const bars = quant.generateDemoBars(260);
 const run = quant.runBacktest(bars, {
   strategy: { type: "sma-cross", fast: 20, slow: 50 },

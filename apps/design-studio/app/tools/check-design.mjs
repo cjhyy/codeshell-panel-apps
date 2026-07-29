@@ -4,12 +4,8 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { auditDesign } from "../audit.mjs";
-import {
-  exportDesignSvg,
-  normalizeDesignDocument,
-  serializeDesignDocument,
-} from "../document.mjs";
+import { auditDesignPages } from "../audit.mjs";
+import { exportDesignSvg, normalizeDesignDocument, serializeDesignDocument } from "../document.mjs";
 
 export function inspectDesignSource(source, path = "design.codesign.json") {
   if (typeof source !== "string") throw new Error(`${path}: source must be UTF-8 text`);
@@ -26,7 +22,7 @@ export function inspectDesignSource(source, path = "design.codesign.json") {
     document,
     canonical,
     isCanonical: source === canonical,
-    issues: auditDesign(document),
+    issues: auditDesignPages(document),
   };
 }
 
@@ -90,13 +86,17 @@ async function main(arguments_) {
       if (failed) {
         failures += 1;
       } else {
+        const totalNodeCount = inspection.document.pages.reduce(
+          (count, page) => count + page.nodes.length,
+          0,
+        );
         process.stdout.write(
-          `✓ ${path}: ${inspection.document.nodes.length} layer(s), ${warnings} audit warning(s)${checkSvg ? ", SVG current" : ""}\n`,
+          `✓ ${path}: ${inspection.document.pages.length} page(s), ${totalNodeCount} layer(s), ${warnings} audit warning(s)${checkSvg ? ", SVG current" : ""}\n`,
         );
       }
       for (const issue of inspection.issues) {
         process.stderr.write(
-          `  ${issue.severity}: ${issue.nodeId}: ${issue.message.replaceAll("\n", " ")}\n`,
+          `  ${issue.severity}: ${issue.pageId ?? inspection.document.activePageId}/${issue.nodeId}: ${issue.message.replaceAll("\n", " ")}\n`,
         );
       }
     } catch (error) {

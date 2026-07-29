@@ -7,11 +7,11 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 
 ## Included apps
 
-| App           | Subdirectory         | Purpose                                                                            |
-| ------------- | -------------------- | ---------------------------------------------------------------------------------- |
-| Design Studio | `apps/design-studio` | Agent-native, Figma-like repo design with structured tools and v3 JSON/SVG output |
-| Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports        |
-| Starter       | `templates/starter`  | Minimal template for creating another Panel App                                    |
+| App               | Subdirectory         | Purpose                                                                                                   |
+| ----------------- | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Design Studio 0.6 | `apps/design-studio` | Agent-native, Figma-like repo design with eight structured tools, a bundled Skill, and v3 JSON/SVG output |
+| Quant Lab         | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                               |
+| Starter           | `templates/starter`  | Minimal template for creating another Panel App                                                           |
 
 ## Install from GitHub
 
@@ -30,6 +30,10 @@ CodeShell clones the source into a temporary directory, validates the package,
 shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
+
+Design Studio 0.6 fixes nested absolute-canvas geometry, limits auto-layout
+reflow to containers that own layout, makes every audit issue fail validation,
+and adds visual screenshots plus design-system search to the Agent workflow.
 
 ## Repository layout
 
