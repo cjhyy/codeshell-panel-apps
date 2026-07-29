@@ -15,8 +15,10 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    `max_depth: 1` or `2`, then deepen only the branch you will change. If
    `descendantsTruncated` is true, the returned empty child list is a context boundary—not proof
    that the source node has no children. Metadata lists every page, its node count, and a compact
-   whole-document layer index whose entries carry `pageId` and `pageName`; a subtree read may
-   target a stable node id on any page and returns that node's page identity.
+   page catalog plus the active page's layer index, whose entries carry `pageId` and `pageName`.
+   Use `get_design_context.page_id` to read one indexed page without loading the complete logical
+   document into an Agent result; a subtree read may target a stable node id and returns its page
+   identity.
    Before creating new visual primitives, call `search_design_system` with the intended semantic
    role, then use the layer index and `get_design_context` to inspect likely component matches.
    Metadata's `tokens` is the complete color-token inventory. Read the full document only for a
@@ -24,10 +26,12 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    Agent result budget; oversized reads fail with instructions to use a bounded subtree. Reuse an
    existing component or color token when it
    expresses the intended role; do not create a visually duplicate local substitute.
-   A large logical design may be stored as a `codeshell.design.bundle` manifest plus immutable
-   parts under `designs/codesign-data/`. Treat those files as one document and never edit the parts
-   directly. Design Studio verifies and reconstructs them; Agent work remains metadata → bounded
-   subtree → transaction regardless of the repository storage mode.
+   A large logical design is stored as a `codeshell.design.index` plus immutable,
+   content-addressed page objects under `designs/codesign-data/pages/`. Treat those files as one
+   document and never edit the objects directly. Design Studio verifies pages independently and
+   reuses unchanged pages on save; Agent work remains metadata → bounded subtree → transaction
+   regardless of the repository storage mode. `codeshell.design.bundle` is a read-only legacy
+   migration format.
 3. Call `use_design` with a short transaction of operations. It refreshes the live canvas and
    saves the active repo source by default. Its compact `audit` summary is an immediate regression
    signal, but call `validate_design` to read the actual issue records. `changedNodeIds` includes
@@ -85,7 +89,7 @@ initial geometry and fallback data; Auto Layout owns only flow-child positions a
 Form values, browser text baselines, and wrappable text source are preserved. Reverse directions,
 unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy controls fall back to
 measured manual geometry instead of silently changing the screenshot. It saves by default, returns
-canonical `documentBytes` and `documentLimitBytes`, an immediate audit and rollback
+canonical `documentBytes`, the `indexed-pages` capacity model, an immediate audit and rollback
 `transactionId`, and fails if the live design changes while HTML is rendering.
 Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
 when later Agent edits need durable layer identities.
@@ -425,8 +429,9 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
   external changes, and build a fresh transaction. Do not overwrite the repository file directly.
 - If calling `save_design` separately, first read metadata and pass its current `stateRevision` as
   `expected_state_revision`; saving also fails closed when the live canvas changed after that read.
-  Its `storageMode`, `partCount`, `documentBytes`, and `documentLimitBytes` confirm whether the
-  logical document remained a single source or was committed as a verified bundle.
+  Its `capacityModel`, `storageMode`, `partCount`, `changedPartCount`, `changedPageCount`, and
+  `documentBytes` report whether the logical document stayed single-source or committed through
+  the page index, and how much of the document changed. No whole-document byte limit is reported.
 - If screenshot generation fails, treat visual verification as incomplete. Fix the reported
   geometry/render problem or clearly report the blocker instead of claiming the design looks good.
   If it reports that the design changed during rendering, read metadata again and regenerate from

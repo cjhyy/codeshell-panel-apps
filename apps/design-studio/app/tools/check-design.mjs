@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { auditDesignPages } from "../audit.mjs";
 import { exportDesignSvg, normalizeDesignDocument, serializeDesignDocument } from "../document.mjs";
 import { resolveDesignPersistenceSource } from "../document-bundle.mjs";
+import { resolveDesignIndexDocument } from "../document-index.mjs";
 
 export function inspectDesignSource(source, path = "design.codesign.json") {
   if (typeof source !== "string") throw new Error(`${path}: source must be UTF-8 text`);
@@ -43,11 +44,26 @@ export function isDesignPreviewCurrent(document, svgSource) {
 
 export async function readDesignSourcePath(path, { workspaceRoot = process.cwd() } = {}) {
   const primarySource = decodeDesignSource(await readFile(path), path);
+  const readText = async (partPath) =>
+    decodeDesignSource(await readFile(resolve(workspaceRoot, partPath)), partPath);
+  const sha256 = async (source) => createHash("sha256").update(source).digest("hex");
+  const indexed = await resolveDesignIndexDocument({
+    primarySource,
+    readText,
+    sha256,
+  });
+  if (indexed) {
+    return {
+      ...indexed,
+      source: serializeDesignDocument(indexed.document),
+      primaryCanonical:
+        primarySource === `${JSON.stringify(indexed.manifest, null, 2)}\n`,
+    };
+  }
   const resolved = await resolveDesignPersistenceSource({
     primarySource,
-    readText: async (partPath) =>
-      decodeDesignSource(await readFile(resolve(workspaceRoot, partPath)), partPath),
-    sha256: async (source) => createHash("sha256").update(source).digest("hex"),
+    readText,
+    sha256,
   });
   return {
     ...resolved,
@@ -110,7 +126,7 @@ async function main(arguments_) {
           0,
         );
         process.stdout.write(
-          `✓ ${path}: ${inspection.document.pages.length} page(s), ${totalNodeCount} layer(s), ${warnings} audit warning(s)${persisted.mode === "bundle" ? `, ${(persisted.bytes / 1024 / 1024).toFixed(2)} MiB bundle` : ""}${checkSvg ? ", SVG current" : ""}\n`,
+          `✓ ${path}: ${inspection.document.pages.length} page(s), ${totalNodeCount} layer(s), ${warnings} audit warning(s)${persisted.mode === "indexed" ? ", indexed pages" : persisted.mode === "bundle" ? ", legacy bundle" : ""}${checkSvg ? ", SVG current" : ""}\n`,
         );
       }
       for (const issue of inspection.issues) {

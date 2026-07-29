@@ -59,17 +59,18 @@ async function startStaticServer() {
   };
 }
 
-function baseRectangle(index) {
+function baseRectangle(pageIndex, index) {
+  const sequence = pageIndex * 350 + index + 1;
   return {
-    id: `large-layer-${index + 1}`,
+    id: `large-layer-${sequence}`,
     type: "rectangle",
-    name: `Large layer ${index + 1}`,
-    notes: `Repository-scale design metadata ${index + 1} `.repeat(10).slice(0, 360),
+    name: `Large layer ${sequence}`,
+    notes: `Repository-scale design metadata ${sequence} `.repeat(6).slice(0, 180),
     x: (index % 25) * 72,
     y: Math.floor(index / 25) * 72,
     width: 64,
     height: 64,
-    fill: index % 2 === 0 ? "#5b5bd6" : "#f0f0ff",
+    fill: sequence % 2 === 0 ? "#5b5bd6" : "#f0f0ff",
     stroke: "transparent",
     strokeWidth: 0,
     opacity: 1,
@@ -88,13 +89,13 @@ const documentSource = serializeDesignDocument(
     canvas: { width: 1_800, height: 1_440, background: "#ffffff" },
     tokens: { colors: [] },
     activePageId: "page-1",
-    pages: [
-      {
-        id: "page-1",
-        name: "Large page",
-        children: Array.from({ length: 500 }, (_, index) => baseRectangle(index)),
-      },
-    ],
+    pages: Array.from({ length: 2 }, (_, pageIndex) => ({
+      id: `page-${pageIndex + 1}`,
+      name: `Large page ${pageIndex + 1}`,
+      children: Array.from({ length: 350 }, (_, index) =>
+        baseRectangle(pageIndex, index),
+      ),
+    })),
   }),
 );
 const sourceBytes = new TextEncoder().encode(documentSource).length;
@@ -130,7 +131,7 @@ try {
       const source = localStorage.getItem(`codeshell-design-studio:file:${path}`);
       if (!source) return false;
       try {
-        return JSON.parse(source).format === "codeshell.design.bundle";
+        return JSON.parse(source).format === "codeshell.design.index";
       } catch {
         return false;
       }
@@ -141,32 +142,63 @@ try {
     const prefix = "codeshell-design-studio:";
     const primary = localStorage.getItem(`${prefix}file:${path}`);
     const manifest = JSON.parse(primary);
-    const parts = manifest.parts.map((part) => ({
-      ...part,
-      content: localStorage.getItem(`${prefix}file:${part.path}`),
-    }));
+    const partPath = (sha256, index) =>
+      `designs/codesign-data/pages/${sha256.slice(0, 16)}/${sha256}-${String(index + 1).padStart(4, "0")}.txt`;
+    const pageRecords = manifest.pages.map((descriptor) => {
+      const parts = Array.from({ length: descriptor.partCount }, (_, index) => {
+        const path = partPath(descriptor.sha256, index);
+        return {
+          path,
+          content: localStorage.getItem(`${prefix}file:${path}`),
+          modifiedAt: localStorage.getItem(`${prefix}mtime:${path}`),
+        };
+      });
+      return { descriptor, parts, page: JSON.parse(parts.map((part) => part.content).join("")) };
+    });
+    const reconstructed = `${JSON.stringify(
+      {
+        format: "codeshell.design",
+        version: 3,
+        name: manifest.name,
+        canvas: manifest.canvas,
+        tokens: manifest.tokens,
+        activePageId: manifest.activePageId,
+        pages: pageRecords.map(({ page }) => ({
+          id: page.id,
+          name: page.name,
+          children: page.children,
+        })),
+      },
+      null,
+      2,
+    )}\n`;
     return {
       format: manifest.format,
-      bytes: manifest.bytes,
-      partCount: parts.length,
-      maximumPartBytes: Math.max(...parts.map((part) => part.bytes)),
-      reconstructed: parts.map((part) => part.content).join("") === expectedSource,
+      pageCount: manifest.pages.length,
+      totalNodeCount: manifest.pages.reduce((sum, item) => sum + item.nodeCount, 0),
+      partCount: pageRecords.reduce((sum, item) => sum + item.parts.length, 0),
+      partModifiedAt: pageRecords.flatMap((item) =>
+        item.parts.map((part) => [part.path, part.modifiedAt]),
+      ),
+      reconstructed: reconstructed === expectedSource,
     };
   }, { path: DESIGN_PATH, expectedSource: documentSource });
-  if (!persisted.reconstructed) throw new Error("Saved design bundle did not reconstruct exactly");
-  const removedPartPath = await page.evaluate((path) => {
-    const prefix = "codeshell-design-studio:";
-    const manifest = JSON.parse(localStorage.getItem(`${prefix}file:${path}`));
-    const partPath = manifest.parts.at(-1).path;
-    localStorage.removeItem(`${prefix}file:${partPath}`);
-    localStorage.removeItem(`${prefix}mtime:${partPath}`);
-    return partPath;
-  }, DESIGN_PATH);
+  if (!persisted.reconstructed) throw new Error("Saved design index did not reconstruct exactly");
+  await page.waitForTimeout(20);
   await page.locator("#save").click();
   await page.waitForFunction(
-    (path) => localStorage.getItem(`codeshell-design-studio:file:${path}`) != null,
-    removedPartPath,
+    () => document.querySelector("#save-state")?.dataset.kind === "saved",
   );
+  const unchangedPartsReused = await page.evaluate((previousEntries) => {
+    const prefix = "codeshell-design-studio:";
+    return previousEntries.every(
+      ([path, modifiedAt]) =>
+        localStorage.getItem(`${prefix}mtime:${path}`) === modifiedAt,
+    );
+  }, persisted.partModifiedAt);
+  if (!unchangedPartsReused) {
+    throw new Error("Unchanged indexed pages were rewritten");
+  }
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForFunction(
     (path) =>
@@ -176,8 +208,8 @@ try {
   );
   await page.locator("#layers-tab-button").click();
   const layerCount = await page.locator("#layers-list .layer-row").count();
-  if (layerCount !== 500) {
-    throw new Error(`Reloaded bundle exposed ${layerCount} layers instead of 500`);
+  if (layerCount !== 350) {
+    throw new Error(`Reloaded index exposed ${layerCount} active-page layers instead of 350`);
   }
   process.stdout.write(
     `${JSON.stringify(
@@ -185,7 +217,8 @@ try {
         passed: true,
         sourceBytes,
         ...persisted,
-        interruptedSaveRecovered: true,
+        partModifiedAt: undefined,
+        unchangedPagesReused: unchangedPartsReused,
         reloadedLayerCount: layerCount,
       },
       null,

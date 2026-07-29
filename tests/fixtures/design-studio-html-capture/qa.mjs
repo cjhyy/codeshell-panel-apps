@@ -19,7 +19,7 @@ try {
   const { captureHtmlToDesign } =
     await import("../../../apps/design-studio/app/html-capture.mjs?capture=9");
   const {
-    assertDesignDocumentSize,
+    measureDesignDocumentBytes,
     exportDesignSvg,
     normalizeDesignDocument,
     serializeDesignDocument,
@@ -70,7 +70,7 @@ try {
   const svg = exportDesignSvg(normalized);
 
   const serialized = serializeDesignDocument(normalized);
-  qaState.qaSerializedBytes = String(assertDesignDocumentSize(normalized));
+  qaState.qaSerializedBytes = String(measureDesignDocumentBytes(normalized));
   qaState.qaNodeCount = String(normalized.nodes.length);
   qaState.qaAutoLayoutCount = String(
     normalized.nodes.filter(

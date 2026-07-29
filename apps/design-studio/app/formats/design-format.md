@@ -160,11 +160,12 @@ Layout and accessibility audit runs across every page. Issue records carry the s
 page name so an inactive page cannot hide clipping, overflow, effect clipping, text sizing, or
 multi-point text-contrast defects.
 
-Limits are 20 pages, 500 source nodes total, 16 nested instance levels, 10,000 expanded render
-layers per page, 32 color tokens, and 8 MiB per logical source. Canonical sources up to the
-CodeShell Host's 384 KiB per-file write budget remain one ordinary `.codesign.json`. Larger
-sources use a canonical `codeshell.design.bundle` manifest at that path plus immutable,
-content-addressed UTF-8 parts below `designs/codesign-data/`; the editor, Agent tools, and checker
-reconstruct and validate them as one Design v3 document. Use
+Operational safety limits are 1,000 pages, 10,000 source nodes per page, 16 nested instance
+levels, 10,000 expanded render layers per page, and 32 color tokens. There is no whole-document
+byte limit. Canonical sources within the CodeShell Host's per-file write budget remain one
+ordinary `.codesign.json`. Larger sources use a canonical `codeshell.design.index` at that path;
+each page is an independently checksummed, content-addressed object below
+`designs/codesign-data/pages/`. Saving writes only changed page objects and commits the index last.
+The older `codeshell.design.bundle` format remains readable and migrates on the next save. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.

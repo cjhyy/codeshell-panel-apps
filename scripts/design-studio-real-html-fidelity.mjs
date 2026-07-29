@@ -6,9 +6,8 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { auditDesign, summarizeAudit } from "../apps/design-studio/app/audit.mjs";
 import {
-  assertDesignDocumentSize,
   exportDesignSvg,
-  MAX_DESIGN_DOCUMENT_BYTES,
+  measureDesignDocumentBytes,
   normalizeDesignDocument,
   serializeDesignDocument,
 } from "../apps/design-studio/app/document.mjs";
@@ -281,7 +280,7 @@ async function captureSample(context, sample, viewport, injectedCaptureSource, o
     let documentBytes;
     try {
       normalized = normalizeDesignDocument(captured);
-      documentBytes = assertDesignDocumentSize(normalized);
+      documentBytes = measureDesignDocumentBytes(normalized);
     } catch (error) {
       await Promise.all([
         writeFile(join(outputDir, "source-html.png"), sourceScreenshot),
@@ -345,8 +344,7 @@ async function captureSample(context, sample, viewport, injectedCaptureSource, o
       rawBytes,
       rawNodeCount,
       documentBytes,
-      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
-      documentHeadroomBytes: MAX_DESIGN_DOCUMENT_BYTES - documentBytes,
+      capacityModel: "indexed-pages",
       nodeCount: normalized.nodes.length,
       autoLayoutCount: normalized.nodes.filter((node) =>
         ["horizontal", "vertical", "grid"].includes(node.layout),

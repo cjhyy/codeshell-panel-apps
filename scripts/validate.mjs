@@ -222,6 +222,9 @@ const designCodec = await import(
 const designBundle = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document-bundle.mjs"))
 );
+const designIndex = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document-index.mjs"))
+);
 const designAudit = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/audit.mjs"))
 );
@@ -324,11 +327,8 @@ const nestedDesign = {
   ],
 };
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
-assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 8 * 1024 * 1024);
-assert(
-  designCodec.MAX_DESIGN_DOCUMENT_BYTES <=
-    designBundle.MAX_DESIGN_BUNDLE_PART_BYTES * designBundle.MAX_DESIGN_BUNDLE_PARTS,
-);
+assert.equal(designCodec.MAX_DESIGN_NODES_PER_PAGE, 10_000);
+assert.equal(designCodec.MAX_DESIGN_PAGES, 1_000);
 assert.equal(designState.nodes.length, 5);
 assert.equal(designState.nodes[2].parentId, "group");
 assert.equal(designState.nodes[0].layout, "grid");
@@ -340,6 +340,89 @@ assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
 assert.equal(designRoundTrip.pages[0].children[0].children[1].textOverflow, "ellipsis");
 assert.equal(designRoundTrip.pages[0].children[0].children[2].constraintBaseWidth, 100);
+const indexedDesignInput = structuredClone(nestedDesign);
+indexedDesignInput.pages.push({
+  id: "page-2",
+  name: "Page 2",
+  children: [{ ...baseNode("page-2-rect", "rectangle", "Page 2 rectangle") }],
+});
+const indexedDesign = designCodec.normalizeDesignDocument(indexedDesignInput);
+const hashDesignSource = async (source) =>
+  createHash("sha256").update(source).digest("hex");
+const indexedPlan = await designIndex.createDesignIndexPersistencePlan({
+  document: indexedDesign,
+  sha256: hashDesignSource,
+});
+assert.equal(indexedPlan.mode, "indexed");
+assert.equal(indexedPlan.manifest.pages.length, 2);
+assert.equal(indexedPlan.changedPageCount, 2);
+assert.equal(
+  indexedPlan.bytes,
+  new TextEncoder().encode(designCodec.serializeDesignDocument(indexedDesign)).length,
+);
+assert(indexedPlan.parts.length >= 2);
+const indexedResolved = await designIndex.resolveDesignIndexDocument({
+  primarySource: indexedPlan.primarySource,
+  readText: async (path) => indexedPlan.parts.find((part) => part.path === path)?.content,
+  sha256: hashDesignSource,
+});
+assert.equal(indexedResolved.document.pages.length, 2);
+assert.equal(indexedResolved.document.pages[1].children[0].id, "page-2-rect");
+const unchangedIndexedPlan = await designIndex.createDesignIndexPersistencePlan({
+  document: indexedDesign,
+  sha256: hashDesignSource,
+  previousManifest: indexedPlan.manifest,
+});
+assert.equal(unchangedIndexedPlan.changedPageCount, 0);
+assert.equal(unchangedIndexedPlan.parts.length, 0);
+const changedIndexedDesign = structuredClone(indexedDesign);
+changedIndexedDesign.pages[1].nodes[0].name = "Changed on page 2";
+const incrementalIndexedPlan = await designIndex.createDesignIndexPersistencePlan({
+  document: changedIndexedDesign,
+  sha256: hashDesignSource,
+  previousManifest: indexedPlan.manifest,
+});
+assert.equal(incrementalIndexedPlan.changedPageCount, 1);
+assert(
+  incrementalIndexedPlan.parts.every((part) => part.pageId === "page-2"),
+);
+const indexedCheckerWorkspace = await mkdtemp(
+  join(tmpdir(), "codeshell-design-index-"),
+);
+try {
+  const primaryPath = join(
+    indexedCheckerWorkspace,
+    "designs",
+    "indexed.codesign.json",
+  );
+  await mkdir(dirname(primaryPath), { recursive: true });
+  await writeFile(primaryPath, indexedPlan.primarySource);
+  for (const part of indexedPlan.parts) {
+    const partPath = join(indexedCheckerWorkspace, ...part.path.split("/"));
+    await mkdir(dirname(partPath), { recursive: true });
+    await writeFile(partPath, part.content);
+  }
+  const checkerResolved = await designChecker.readDesignSourcePath(primaryPath, {
+    workspaceRoot: indexedCheckerWorkspace,
+  });
+  assert.equal(checkerResolved.mode, "indexed");
+  assert.equal(checkerResolved.document.pages.length, 2);
+  assert.equal(checkerResolved.primaryCanonical, true);
+  const corruptedPartPath = join(
+    indexedCheckerWorkspace,
+    ...indexedPlan.parts[0].path.split("/"),
+  );
+  await writeFile(corruptedPartPath, `${indexedPlan.parts[0].content}corrupt`);
+  await assert.rejects(
+    () =>
+      designChecker.readDesignSourcePath(primaryPath, {
+        workspaceRoot: indexedCheckerWorkspace,
+      }),
+    /重组后的字节数无效|摘要校验失败/u,
+  );
+} finally {
+  await rm(indexedCheckerWorkspace, { recursive: true, force: true });
+}
 const largeDesignSource = `${"界面🙂".repeat(180_000)}\n`;
 const largeDesignSha256 = createHash("sha256").update(largeDesignSource).digest("hex");
 const largeDesignPlan = designBundle.createDesignPersistencePlan({
