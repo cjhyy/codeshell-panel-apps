@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Visualize jobs, full JDs, tailored resumes, and interview questions generated from the active CodeShell project's CODESHELL.md and verified project files.",
+  "description": "Bind one CodeShell project and session to a bundled job-hunt Skill, then visualize sourced jobs, company research, tailored resumes, and interview preparation.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -215,6 +215,305 @@
         "readOnly": false
       },
       {
+        "name": "save_workflow_progress",
+        "description": "Create or update the current session's job-hunt workflow progress so the project-bound panel can visualize long-running work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "workflow_id": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "status": {
+              "type": "string",
+              "enum": ["running", "completed", "partial", "failed"]
+            },
+            "current_step": {
+              "type": "string",
+              "enum": ["discover", "verify-jd", "company", "reviews", "interviews", "artifacts"]
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "steps": {
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["pending", "running", "completed", "skipped", "failed"]
+                  },
+                  "message": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "required": ["id", "status"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["status", "current_step"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_job_research",
+        "description": "Save sourced company facts, public review summaries, interview intelligence, risks, and source records for one saved job.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            "company": {
+              "type": "object",
+              "properties": {
+                "official_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "website": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "careers_url": {
+                  "type": "string",
+                  "maxLength": 1000
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                },
+                "industry": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "stage": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "size": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "locations": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "products": {
+                  "type": "array",
+                  "maxItems": 30,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "tech_signals": {
+                  "type": "array",
+                  "maxItems": 30,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "hiring_signals": {
+                  "type": "array",
+                  "maxItems": 30,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                }
+              },
+              "required": ["official_name", "summary"],
+              "additionalProperties": false
+            },
+            "reviews": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "url": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "published_at": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "sentiment": {
+                    "type": "string",
+                    "enum": ["positive", "mixed", "negative", "unknown"]
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 3000
+                  },
+                  "pros": {
+                    "type": "array",
+                    "maxItems": 15,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "cons": {
+                    "type": "array",
+                    "maxItems": 15,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "confidence": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"]
+                  }
+                },
+                "required": ["source", "sentiment", "summary", "confidence"],
+                "additionalProperties": false
+              }
+            },
+            "interview_intel": {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string",
+                  "maxLength": 5000
+                },
+                "process": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "themes": {
+                  "type": "array",
+                  "maxItems": 30,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                },
+                "questions": {
+                  "type": "array",
+                  "maxItems": 30,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string",
+                        "minLength": 8,
+                        "maxLength": 1000
+                      },
+                      "category": {
+                        "type": "string",
+                        "maxLength": 100
+                      },
+                      "origin": {
+                        "type": "string",
+                        "enum": ["reported", "predicted"]
+                      },
+                      "source_url": {
+                        "type": "string",
+                        "maxLength": 1000
+                      }
+                    },
+                    "required": ["question", "origin"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "risks": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "string",
+                "maxLength": 1000
+              }
+            },
+            "sources": {
+              "type": "array",
+              "maxItems": 60,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": ["official", "job", "review", "interview", "news", "other"]
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "publisher": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "url": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "published_at": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "accessed_at": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "notes": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "required": ["kind", "title", "url", "accessed_at"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["job_id", "company", "reviews", "interview_intel", "risks", "sources"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
         "name": "save_interview_question_set",
         "description": "Save a JD-specific interview question set grounded in the candidate's verified repositories and work history.",
         "inputSchema": {
@@ -335,6 +634,6 @@
         "readOnly": false
       }
     ],
-    "skills": ["agent/skills/job-tailor/SKILL.md"]
+    "skills": ["agent/skills/job-hunt-workflow/SKILL.md"]
   }
 }
