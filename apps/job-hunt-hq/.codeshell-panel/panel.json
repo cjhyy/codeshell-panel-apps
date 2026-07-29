@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Bind one CodeShell project and session to a bundled job-hunt Skill, then visualize sourced jobs, company research, tailored resumes, and interview preparation.",
+  "description": "Turn a project resume, candidate evidence, and optional JDs into iterative resume improvement, interview intelligence, preparation plans, question sets, and interview debriefs.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -26,7 +26,7 @@
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read the active CodeShell project binding, target job, saved opportunities, extracted candidate context, current resume, and saved interview question sets.",
+        "description": "Read the active project binding, candidate evidence, optional target JDs, resume versions, interview intelligence, preparation plans, question sets, and interview debriefs.",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -241,7 +241,17 @@
             },
             "current_step": {
               "type": "string",
-              "enum": ["discover", "verify-jd", "company", "reviews", "interviews", "artifacts"]
+              "enum": [
+                "discover",
+                "verify-jd",
+                "company",
+                "reviews",
+                "interviews",
+                "resume",
+                "prepare",
+                "debrief",
+                "artifacts"
+              ]
             },
             "message": {
               "type": "string",
@@ -609,14 +619,221 @@
         "readOnly": false
       },
       {
-        "name": "save_resume_draft",
-        "description": "Save an Agent-written Markdown resume draft for the selected job so the user can continue editing it in the panel.",
+        "name": "save_preparation_plan",
+        "description": "Create or replace the candidate's evidence-grounded preparation and gap-remediation plan for an optional saved job.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "job_id": {
               "type": "string",
+              "maxLength": 80
+            },
+            "title": {
+              "type": "string",
               "minLength": 1,
+              "maxLength": 160
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000
+            },
+            "strengths": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "gaps": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "area": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "impact": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"]
+                  },
+                  "actions": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "practice": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "required": ["area", "priority", "actions"],
+                "additionalProperties": false
+              }
+            },
+            "resume_changes": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 800
+              }
+            },
+            "next_actions": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["resume", "evidence", "study", "practice", "research"]
+                  },
+                  "detail": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"]
+                  }
+                },
+                "required": ["title", "kind", "priority"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["title", "summary", "strengths", "gaps", "resume_changes", "next_actions"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_interview_debrief",
+        "description": "Save one real interview debrief and the evidence-grounded improvements that should feed the next resume or preparation iteration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "round": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "interviewed_at": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "outcome": {
+              "type": "string",
+              "enum": ["pending", "pass", "reject", "unknown"]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000
+            },
+            "questions": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "answer_summary": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "signal": {
+                    "type": "string",
+                    "enum": ["strong", "mixed", "weak", "unknown"]
+                  },
+                  "reported_feedback": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "analysis": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "better_answer_points": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  }
+                },
+                "required": ["question", "signal", "reported_feedback", "analysis"],
+                "additionalProperties": false
+              }
+            },
+            "strengths": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              }
+            },
+            "gaps": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 800
+              }
+            },
+            "next_actions": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "maxLength": 800
+              }
+            }
+          },
+          "required": ["round", "outcome", "summary", "questions", "strengths", "gaps", "next_actions"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_resume_draft",
+        "description": "Save an Agent-written Markdown resume revision, either as a general candidate version or tailored to an optional saved job.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
               "maxLength": 80
             },
             "title": {
@@ -639,7 +856,7 @@
               }
             }
           },
-          "required": ["job_id", "title", "markdown"],
+          "required": ["title", "markdown"],
           "additionalProperties": false
         },
         "readOnly": false

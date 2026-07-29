@@ -178,7 +178,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.6.0", `${packagePath}: project model version mismatch`);
+    assert.equal(manifest.version, "0.7.0", `${packagePath}: project model version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -190,6 +190,14 @@ async function validatePackage(packagePath) {
     assert(toolNames.has("save_candidate_context"), `${packagePath}: context tool is required`);
     assert(toolNames.has("save_job_research"), `${packagePath}: research tool is required`);
     assert(toolNames.has("save_workflow_progress"), `${packagePath}: workflow tool is required`);
+    assert(
+      toolNames.has("save_preparation_plan"),
+      `${packagePath}: preparation plan tool is required`,
+    );
+    assert(
+      toolNames.has("save_interview_debrief"),
+      `${packagePath}: interview debrief tool is required`,
+    );
     assert.deepEqual(
       manifest.agent.skills,
       ["agent/skills/job-hunt-workflow/SKILL.md"],
@@ -207,6 +215,26 @@ async function validatePackage(packagePath) {
       `${packagePath}: chat must stay in the CodeShell session`,
     );
     assert.match(html, /id="jd-preview"/, `${packagePath}: full JD view is required`);
+    assert.match(
+      html,
+      /id="workflow-job-picker"/,
+      `${packagePath}: multi-job task composer is required`,
+    );
+    assert.match(
+      html,
+      /id="workflow-task-picker"/,
+      `${packagePath}: composable task picker is required`,
+    );
+    assert.match(
+      html,
+      /id="preparation-gap-list"/,
+      `${packagePath}: preparation plan view is required`,
+    );
+    assert.match(
+      html,
+      /id="interview-debrief-list"/,
+      `${packagePath}: interview debrief view is required`,
+    );
     assert.match(
       html,
       /data-resume-mode="jd"/,
@@ -248,9 +276,21 @@ async function validatePackage(packagePath) {
       /panel-app:job-hunt-hq/,
       `${packagePath}: Skill must explain how to invoke its panel tools`,
     );
+    assert.match(
+      skill,
+      /zero, one, or many saved `job_id`/,
+      `${packagePath}: Skill must support zero, one, or many selected jobs`,
+    );
+    assert.match(
+      skill,
+      /Presets are shortcuts,\s+not fixed workflows/,
+      `${packagePath}: Skill must not force fixed scenarios`,
+    );
     assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
     assert(snapshotSchema.required.includes("jobResearch"));
     assert(snapshotSchema.required.includes("workflowRuns"));
+    assert(snapshotSchema.required.includes("preparationPlans"));
+    assert(snapshotSchema.required.includes("interviewDebriefs"));
 
     const { upsertJobOpportunities } = await import(
       pathToFileURL(join(root, "app", "job-opportunities.mjs"))

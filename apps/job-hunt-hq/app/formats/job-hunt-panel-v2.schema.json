@@ -14,7 +14,9 @@
     "workflowRuns",
     "resume",
     "versions",
-    "interviewSets"
+    "interviewSets",
+    "preparationPlans",
+    "interviewDebriefs"
   ],
   "properties": {
     "schemaVersion": {
@@ -54,6 +56,12 @@
       "type": "array"
     },
     "interviewSets": {
+      "type": "array"
+    },
+    "preparationPlans": {
+      "type": "array"
+    },
+    "interviewDebriefs": {
       "type": "array"
     }
   },

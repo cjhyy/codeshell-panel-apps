@@ -18,6 +18,8 @@ Use project snapshot schema version 2. Treat IDs as opaque strings.
   "resume": {},
   "versions": [],
   "interviewSets": [],
+  "preparationPlans": [],
+  "interviewDebriefs": [],
   "workflowRuns": []
 }
 ```
@@ -143,3 +145,70 @@ Use one run to expose progress in the panel:
 ```
 
 Reuse the returned `workflowId` for later progress updates.
+
+`currentStep` also accepts `resume`, `prepare`, and `debrief`.
+
+## Preparation plan
+
+Store one current plan for each `jobId`, plus at most one general plan with an
+empty `jobId`:
+
+```json
+{
+  "id": "plan-id",
+  "jobId": "job-id-or-empty",
+  "title": "Preparation plan",
+  "summary": "Evidence-grounded summary",
+  "strengths": ["Verified strength"],
+  "gaps": [
+    {
+      "area": "Capability or evidence gap",
+      "evidence": "What is currently known",
+      "impact": "Why it matters",
+      "priority": "high | medium | low",
+      "actions": ["Concrete next step"],
+      "practice": "Practice prompt"
+    }
+  ],
+  "resumeChanges": ["Specific revision"],
+  "nextActions": [
+    {
+      "title": "Action",
+      "kind": "resume | evidence | study | practice | research",
+      "detail": "Scope",
+      "priority": "high | medium | low"
+    }
+  ],
+  "updatedAt": "ISO-8601"
+}
+```
+
+## Interview debrief
+
+Append one record for every real interview. An empty `jobId` is allowed when
+the exact role is not yet saved.
+
+```json
+{
+  "id": "debrief-id",
+  "jobId": "job-id-or-empty",
+  "round": "Technical round",
+  "interviewedAt": "ISO-8601",
+  "outcome": "pending | pass | reject | unknown",
+  "summary": "User-grounded debrief",
+  "questions": [
+    {
+      "question": "What was asked",
+      "answerSummary": "What the user recalls answering",
+      "signal": "strong | mixed | weak | unknown",
+      "reportedFeedback": "What the interviewer explicitly said, or empty",
+      "analysis": "Agent interpretation kept separate from reported feedback",
+      "betterAnswerPoints": ["Improvement point"]
+    }
+  ],
+  "strengths": ["Observed strength"],
+  "gaps": ["Observed gap"],
+  "nextActions": ["Next action"],
+  "createdAt": "ISO-8601"
+}
+```

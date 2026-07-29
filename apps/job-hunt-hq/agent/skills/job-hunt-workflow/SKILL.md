@@ -1,6 +1,6 @@
 ---
 name: job-hunt-workflow
-description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use whenever the user asks to find or compare jobs, collect or verify a JD, research a company or careers site, summarize public company reviews, investigate interview processes or reported questions, tailor or revise a resume, generate candidate-specific interview questions, run a mock interview, update application progress, or run an end-to-end job-hunt workflow.
+description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use whenever the user asks to find, select, or compare jobs; collect or verify JDs; research companies, reviews, or interview reports; analyze JD fit; tailor or revise a general or job-specific resume; create a preparation plan or interview questions; run a mock interview; save a real interview debrief; iterate materials from interview feedback; update application progress; or execute any user-selected combination of these tasks.
 ---
 
 # Job Hunt Workflow
@@ -9,19 +9,24 @@ Keep the conversation in the current CodeShell session. Do not create a second
 chat surface or ask the user to open another repository. The enabled Panel App,
 its tools, and this Skill are one project-scoped product.
 
-## Choose the smallest useful mode
+## Resolve jobs and tasks independently
 
-Infer the mode from the user's current request:
+Treat the request as two independent selections:
 
-- **Quick discovery**: find and save relevant jobs. Use this for requests such
-  as "看看 BOSS 有什么岗位". Do not automatically research companies, create
-  resumes, or generate interview questions.
-- **Focused task**: research one saved job, tailor one resume, generate one
-  interview set, update progress, or another explicitly requested artifact.
-- **Complete workflow**: combine discovery, research, resume, and interview
-  preparation only when the user explicitly asks for the full flow.
+1. **Target jobs**: zero, one, or many saved `job_id` values. Zero means a
+   general candidate artifact such as a baseline resume or preparation plan.
+2. **Requested tasks**: any combination of discovery, JD verification, match
+   analysis, company/interview intelligence, resume revision, question sets,
+   preparation planning, mock interviewing, debriefing, or progress updates.
 
-Read [references/workflows.md](references/workflows.md) for the selected mode.
+The Panel task composer may pass explicit jobs and tasks. Treat those as the
+execution boundary. In ordinary chat, infer the smallest useful combination
+from the user's words. Never add research, resumes, questions, or mock
+interviews merely because another task was requested. Presets are shortcuts,
+not fixed workflows.
+
+Read [references/workflows.md](references/workflows.md) for the selected task
+modules and their dependencies.
 Read [references/data-contract.md](references/data-contract.md) only before a
 structured write whose fields are not already clear from the Panel tool schema.
 
@@ -65,10 +70,10 @@ the current project's `job-hunt-panel.json`, which the panel renders.
 - Produce the first useful panel write early. For discovery, save 3–8 relevant
   listing records as soon as their company, title, URL, and visible details are
   verified. Mark JD completeness honestly, then enrich the same records later.
-- Continue automatically through the selected mode. Do not stop after
+- Continue automatically through the selected task combination. Do not stop after
   announcing the next step.
-- Use `save_workflow_progress` only for the complete workflow or genuinely long
-  multi-stage tasks. A quick discovery request does not need a workflow run.
+- Use `save_workflow_progress` only for genuinely long multi-job or multi-task
+  work. A quick discovery or single artifact does not need a workflow run.
 - Do not load generic process Skills after this Skill is active. Use another
   specialized Skill only when the user explicitly requests an artifact format
   that requires it.
@@ -94,9 +99,17 @@ the current project's `job-hunt-panel.json`, which the panel renders.
   time, completeness, and important missing evidence. A listing snippet is a
   valid partial result, not a complete JD.
 - Return a transparent partial result when sources are blocked or weak.
+- A match analysis or preparation plan must distinguish a missing skill from a
+  missing piece of evidence. Do not recommend inventing experience to close
+  either gap.
+- A real interview debrief must come from user-provided notes, questions,
+  answers, feedback, or outcomes. Ask briefly for missing interview facts
+  before saving; never fabricate a completed interview.
 
 ## Finish
 
 Write every requested structured artifact through the appropriate Panel App
-tool before the final response. Then summarize briefly what changed in the
-panel, what remains unverified, and the highest-value next step.
+tool before the final response. For multiple selected jobs, write one
+job-specific artifact at a time so each output keeps its `job_id`. Then
+summarize briefly what changed in the panel, what remains unverified, and the
+highest-value next step.

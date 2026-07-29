@@ -52,11 +52,30 @@ const INTERVIEW_MODE_LABELS = {
   "system-design": "系统设计",
 };
 
+const WORKFLOW_TASKS = {
+  resume: { label: "简历优化", requiresJob: false },
+  match: { label: "JD 匹配", requiresJob: true },
+  intel: { label: "公司与面经", requiresJob: true },
+  questions: { label: "定制题库", requiresJob: true },
+  prepare: { label: "补强计划", requiresJob: false },
+  mock: { label: "模拟面试", requiresJob: true },
+  debrief: { label: "真实复盘", requiresJob: false },
+};
+
+const WORKFLOW_PRESETS = {
+  resume: ["resume", "match", "prepare"],
+  interview: ["match", "intel", "questions", "prepare"],
+  debrief: ["debrief", "prepare", "resume"],
+  full: ["resume", "match", "intel", "questions", "prepare"],
+};
+
 const PANEL_VIEWS = new Set(["dashboard", "materials", "research", "resumes", "interviews"]);
 
 const seedState = {
   selectedJobId: "job-aurora",
   selectedInterviewSetId: "iset-aurora",
+  workflowJobIds: ["job-aurora"],
+  workflowTaskIds: ["resume", "match", "prepare"],
   activeView: "dashboard",
   statusFilter: "all",
   jobFilter: "all",
@@ -335,6 +354,76 @@ const seedState = {
       ],
     },
   ],
+  preparationPlans: [
+    {
+      id: "plan-aurora",
+      jobId: "job-aurora",
+      title: "Aurora Labs · 面试补强计划",
+      summary:
+        "项目架构和前端性能是已有优势；当前优先补齐量化结果、LLM 评估实践和跨团队决策案例。",
+      strengths: ["AI Agent 产品经历", "React 性能与复杂状态", "桌面端与开发者工具"],
+      gaps: [
+        {
+          area: "量化结果",
+          evidence: "简历描述了性能与交付改善，但没有可核验的指标口径。",
+          impact: "面试官可能继续追问影响范围与结果可信度。",
+          priority: "high",
+          actions: ["回查性能基线、时间窗口和可公开指标", "准备无法给精确值时的诚实表达"],
+          practice: "用 90 秒说明一次性能改进，区分事实、区间和无法确认的数据。",
+        },
+        {
+          area: "LLM 评估",
+          evidence: "JD 强调大模型能力边界，现有材料主要体现产品和前端实现。",
+          impact: "可能难以回答模型效果、成本和质量如何被验证。",
+          priority: "medium",
+          actions: ["整理一次真实的模型选型或 Prompt 迭代过程", "补充失败案例与评估方法"],
+          practice: "回答“如何判断一个 Agent 功能真的变好了”。",
+        },
+      ],
+      resumeChanges: ["把“改善长会话稳定性”改成可核验的问题、动作与结果三段式表达"],
+      nextActions: [
+        {
+          title: "补齐长会话性能案例",
+          kind: "evidence",
+          detail: "确认基线、优化动作、影响范围和可以公开的结果。",
+          priority: "high",
+        },
+        {
+          title: "练习 Agent 评估题",
+          kind: "practice",
+          detail: "准备指标、样本、失败分类与线上反馈闭环。",
+          priority: "medium",
+        },
+      ],
+      updatedAt: "2026-07-29T09:25:00.000Z",
+      sample: true,
+    },
+  ],
+  interviewDebriefs: [
+    {
+      id: "debrief-aurora",
+      jobId: "job-aurora",
+      round: "一面 · 技术面",
+      interviewedAt: "2026-07-29T10:00:00.000Z",
+      outcome: "pending",
+      summary: "示例复盘：项目架构说明清楚，但性能结果和模型评估回答不够具体。",
+      questions: [
+        {
+          question: "长会话性能优化前后的指标是什么？",
+          answerSummary: "说明了定位过程，但没有给出明确基线和验证窗口。",
+          signal: "weak",
+          reportedFeedback: "",
+          analysis: "需要先确认能公开的数据，再用统一口径表达。",
+          betterAnswerPoints: ["问题规模与基线", "采取的动作", "验证方法", "真实结果或限制"],
+        },
+      ],
+      strengths: ["架构边界表达清楚", "能解释技术取舍"],
+      gaps: ["量化结果不足", "模型评估案例不完整"],
+      nextActions: ["更新性能案例表述", "补练 Agent 评估与失败分析"],
+      createdAt: "2026-07-29T10:30:00.000Z",
+      sample: true,
+    },
+  ],
 };
 
 function emptyProjectState() {
@@ -342,6 +431,8 @@ function emptyProjectState() {
     ...clone(seedState),
     selectedJobId: "",
     selectedInterviewSetId: "",
+    workflowJobIds: [],
+    workflowTaskIds: ["resume", "prepare"],
     activeView: "dashboard",
     profile: {
       name: "等待 Agent 识别",
@@ -364,6 +455,8 @@ function emptyProjectState() {
     },
     versions: [],
     interviewSets: [],
+    preparationPlans: [],
+    interviewDebriefs: [],
   };
 }
 
@@ -441,7 +534,11 @@ const elements = {
   reportedQuestions: document.querySelector("#reported-questions"),
   researchRisks: document.querySelector("#research-risks"),
   researchSources: document.querySelector("#research-sources"),
-  runFullWorkflow: document.querySelector("#run-full-workflow"),
+  workflowBuilder: document.querySelector("#workflow-builder"),
+  workflowJobPicker: document.querySelector("#workflow-job-picker"),
+  workflowTaskPicker: document.querySelector("#workflow-task-picker"),
+  workflowSelectionSummary: document.querySelector("#workflow-selection-summary"),
+  runCustomWorkflow: document.querySelector("#run-custom-workflow"),
   runCompanyResearch: document.querySelector("#run-company-research"),
   resumeVersionList: document.querySelector("#resume-version-list"),
   interviewSetCount: document.querySelector("#interview-set-count"),
@@ -455,6 +552,15 @@ const elements = {
   interviewQuestionList: document.querySelector("#interview-question-list"),
   simulateInterview: document.querySelector("#simulate-interview"),
   regenerateInterview: document.querySelector("#regenerate-interview"),
+  preparationTitle: document.querySelector("#preparation-title"),
+  preparationSummary: document.querySelector("#preparation-summary"),
+  preparationStrengths: document.querySelector("#preparation-strengths"),
+  preparationGapList: document.querySelector("#preparation-gap-list"),
+  preparationActionList: document.querySelector("#preparation-action-list"),
+  debriefCount: document.querySelector("#debrief-count"),
+  interviewDebriefList: document.querySelector("#interview-debrief-list"),
+  refreshPreparationPlan: document.querySelector("#refresh-preparation-plan"),
+  startInterviewDebrief: document.querySelector("#start-interview-debrief"),
   toast: document.querySelector("#toast"),
 };
 
@@ -538,6 +644,8 @@ function mergeState(input) {
     "workflowRuns",
     "versions",
     "interviewSets",
+    "preparationPlans",
+    "interviewDebriefs",
   ]) {
     if (Array.isArray(input[field])) next[field] = input[field];
   }
@@ -547,6 +655,14 @@ function mergeState(input) {
   if (typeof input.selectedJobId === "string") next.selectedJobId = input.selectedJobId;
   if (typeof input.selectedInterviewSetId === "string") {
     next.selectedInterviewSetId = input.selectedInterviewSetId;
+  }
+  if (Array.isArray(input.workflowJobIds)) {
+    next.workflowJobIds = input.workflowJobIds.filter((id) => typeof id === "string").slice(0, 20);
+  }
+  if (Array.isArray(input.workflowTaskIds)) {
+    next.workflowTaskIds = input.workflowTaskIds
+      .filter((id) => Object.hasOwn(WORKFLOW_TASKS, id))
+      .slice(0, Object.keys(WORKFLOW_TASKS).length);
   }
   if (typeof input.activeView === "string" && PANEL_VIEWS.has(input.activeView)) {
     next.activeView = input.activeView;
@@ -577,6 +693,9 @@ function mergeState(input) {
   if (!next.jobs.some((job) => job.id === next.selectedJobId)) {
     next.selectedJobId = next.jobs[0]?.id ?? "";
   }
+  next.workflowJobIds = next.workflowJobIds.filter((id) =>
+    next.jobs.some((job) => job.id === id),
+  );
   if (!next.interviewSets.some((set) => set.id === next.selectedInterviewSetId)) {
     next.selectedInterviewSetId = next.interviewSets[0]?.id ?? "";
   }
@@ -669,8 +788,11 @@ function updateContext(next) {
   elements.askAgent.disabled = Boolean(context.busy);
   elements.simulateInterview.disabled = Boolean(context.busy) || !selectedInterviewSet();
   elements.regenerateInterview.disabled = Boolean(context.busy) || !selectedJob();
-  elements.runFullWorkflow.disabled = Boolean(context.busy);
+  elements.runCustomWorkflow.disabled =
+    Boolean(context.busy) || state.workflowTaskIds.length === 0;
   elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
+  elements.refreshPreparationPlan.disabled = Boolean(context.busy);
+  elements.startInterviewDebrief.disabled = Boolean(context.busy);
   elements.projectSessionState.textContent = context.sessionId
     ? context.busy
       ? "当前 Session · Agent 执行中"
@@ -688,6 +810,16 @@ function selectedJob() {
 
 function selectedInterviewSet() {
   return state.interviewSets.find((set) => set.id === state.selectedInterviewSetId) ?? null;
+}
+
+function selectedWorkflowJobs() {
+  return state.jobs.filter((job) => state.workflowJobIds.includes(job.id));
+}
+
+function selectedPreparationPlan() {
+  return selectedJob()
+    ? state.preparationPlans.find((plan) => plan.jobId === state.selectedJobId) ?? null
+    : state.preparationPlans.find((plan) => !plan.jobId) ?? null;
 }
 
 function formatDate(value) {
@@ -752,6 +884,8 @@ function projectSnapshotPayload() {
     resume: clone(state.resume),
     versions: clone(state.versions),
     interviewSets: clone(state.interviewSets),
+    preparationPlans: clone(state.preparationPlans),
+    interviewDebriefs: clone(state.interviewDebriefs),
   };
 }
 
@@ -800,6 +934,8 @@ async function syncProjectContext({ quiet = true } = {}) {
         const migrated = mergeState(parsed);
         if (!Array.isArray(parsed.jobResearch)) migrated.jobResearch = [];
         if (!Array.isArray(parsed.workflowRuns)) migrated.workflowRuns = [];
+        if (!Array.isArray(parsed.preparationPlans)) migrated.preparationPlans = [];
+        if (!Array.isArray(parsed.interviewDebriefs)) migrated.interviewDebriefs = [];
         state = migrated;
         projectContext.hasSnapshot = true;
         projectContext.lastSyncedAt = parsed.updatedAt || "";
@@ -877,6 +1013,50 @@ function renderView() {
   });
 }
 
+function renderWorkflowBuilder() {
+  const availableIds = new Set(state.jobs.map((job) => job.id));
+  state.workflowJobIds = state.workflowJobIds.filter((id) => availableIds.has(id));
+  elements.workflowJobPicker.replaceChildren();
+  if (!state.jobs.length) {
+    elements.workflowJobPicker.append(
+      makeTextElement("span", "workflow-picker-empty", "还没有岗位，可先只处理通用简历与材料。"),
+    );
+  } else {
+    for (const job of state.jobs) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.workflowJobId = job.id;
+      button.classList.toggle("active", state.workflowJobIds.includes(job.id));
+      button.setAttribute("aria-pressed", String(state.workflowJobIds.includes(job.id)));
+      button.append(
+        makeTextElement("strong", "", job.company),
+        makeTextElement("small", "", job.title),
+      );
+      elements.workflowJobPicker.append(button);
+    }
+  }
+
+  elements.workflowTaskPicker
+    .querySelectorAll("[data-workflow-task]")
+    .forEach((button) => {
+      const active = state.workflowTaskIds.includes(button.dataset.workflowTask);
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+
+  const jobs = selectedWorkflowJobs();
+  const taskLabels = state.workflowTaskIds
+    .map((id) => WORKFLOW_TASKS[id]?.label)
+    .filter(Boolean);
+  const jobSummary = jobs.length
+    ? `${jobs.length} 个岗位`
+    : "通用候选人材料（未选岗位）";
+  elements.workflowSelectionSummary.textContent = taskLabels.length
+    ? `${jobSummary} · ${taskLabels.join("、")}`
+    : `${jobSummary} · 请选择至少一个任务`;
+  elements.runCustomWorkflow.disabled = Boolean(context.busy) || taskLabels.length === 0;
+}
+
 function renderCounts() {
   const counts = {
     all: state.jobs.length,
@@ -890,7 +1070,9 @@ function renderCounts() {
   elements.resumeNavCount.textContent = String(
     Math.max(state.versions.length, state.resume.markdown ? 1 : 0),
   );
-  elements.interviewNavCount.textContent = String(state.interviewSets.length);
+  elements.interviewNavCount.textContent = String(
+    state.interviewSets.length + state.interviewDebriefs.length,
+  );
   elements.allCount.textContent = String(counts.all);
   elements.savedCount.textContent = String(counts.saved);
   elements.tailoringCount.textContent = String(counts.tailoring);
@@ -1116,16 +1298,19 @@ function renderJobDescription(job) {
 
 function renderResume() {
   const job = selectedJob();
-  const bound = state.resume.jobId === state.selectedJobId && Boolean(state.resume.markdown);
+  const bound =
+    state.resume.jobId === (job?.id || "") && Boolean(state.resume.markdown);
   elements.resumeTitle.textContent = bound
     ? state.resume.title
     : job
       ? `定制简历 · ${job.company}`
-      : "定制简历 · 等待选择职位";
+      : "通用简历 · 候选人基线";
   elements.resumeJobLabel.textContent = job
     ? `${job.company} / ${job.title}${job.sample ? " · 示例 JD" : ""}`
-    : "尚未绑定职位";
-  elements.resumeUpdated.textContent = state.resume.updatedAt
+    : bound
+      ? "通用版本 · 未绑定职位"
+      : "尚未绑定职位";
+  elements.resumeUpdated.textContent = bound && state.resume.updatedAt
     ? `更新于 ${formatDate(state.resume.updatedAt)}`
     : "未生成";
   elements.resumeEditor.value = bound ? state.resume.markdown : "";
@@ -1140,7 +1325,7 @@ function renderResume() {
     button.classList.toggle("active", button.dataset.resumeMode === resumeMode);
   });
   elements.saveResume.disabled = !bound;
-  elements.generateResume.disabled = !job || Boolean(context.busy);
+  elements.generateResume.disabled = Boolean(context.busy);
 }
 
 function renderInsights() {
@@ -1286,7 +1471,117 @@ function renderVersions() {
   }
 }
 
+function renderInterviewLoop() {
+  const job = selectedJob();
+  const plan = selectedPreparationPlan();
+  const debriefs = state.interviewDebriefs
+    .filter((item) => (job ? item.jobId === job.id : !item.jobId))
+    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+
+  elements.preparationTitle.textContent =
+    plan?.title || (job ? `${job.company} · 等待补强计划` : "通用候选人补强计划");
+  elements.preparationSummary.textContent =
+    plan?.summary ||
+    "让 Agent 对照真实材料识别已有优势、证据缺口、简历修改项和下一步练习。";
+  renderTagItems(
+    elements.preparationStrengths,
+    plan?.strengths,
+    job ? "优势待分析" : "可先生成通用优势清单",
+  );
+
+  elements.preparationGapList.replaceChildren();
+  for (const gap of plan?.gaps || []) {
+    const card = document.createElement("article");
+    card.className = "preparation-gap";
+    const header = document.createElement("header");
+    const priority = makeTextElement(
+      "span",
+      "preparation-priority",
+      { high: "优先补", medium: "随后补", low: "观察" }[gap.priority] || "待安排",
+    );
+    priority.dataset.priority = gap.priority || "medium";
+    header.append(makeTextElement("strong", "", gap.area || "能力缺口"), priority);
+    const details = [gap.evidence, gap.impact].filter(Boolean).join(" ");
+    card.append(
+      header,
+      makeTextElement("p", "", details || "等待补充证据和影响。"),
+    );
+    if (gap.actions?.length) {
+      card.append(makeTextElement("p", "", `行动：${gap.actions.join("；")}`));
+    }
+    if (gap.practice) {
+      card.append(makeTextElement("p", "", `练习：${gap.practice}`));
+    }
+    elements.preparationGapList.append(card);
+  }
+  if (!plan?.gaps?.length) {
+    elements.preparationGapList.append(
+      makeTextElement("div", "interview-loop-empty", "还没有保存能力缺口。"),
+    );
+  }
+
+  elements.preparationActionList.replaceChildren();
+  for (const action of plan?.nextActions || []) {
+    const card = document.createElement("article");
+    card.className = "preparation-action";
+    const header = document.createElement("header");
+    const priority = makeTextElement(
+      "span",
+      "preparation-priority",
+      { high: "高", medium: "中", low: "低" }[action.priority] || "待定",
+    );
+    priority.dataset.priority = action.priority || "medium";
+    header.append(makeTextElement("strong", "", action.title || "下一步"), priority);
+    card.append(header, makeTextElement("p", "", action.detail || action.kind || "待补充"));
+    elements.preparationActionList.append(card);
+  }
+
+  elements.debriefCount.textContent = `${debriefs.length} 次`;
+  elements.interviewDebriefList.replaceChildren();
+  for (const debrief of debriefs) {
+    const card = document.createElement("article");
+    card.className = "interview-debrief-item";
+    const header = document.createElement("header");
+    const outcomeLabels = {
+      pending: "等待结果",
+      pass: "通过",
+      reject: "未通过",
+      unknown: "未知",
+    };
+    const outcome = makeTextElement(
+      "span",
+      "debrief-outcome",
+      outcomeLabels[debrief.outcome] || "未知",
+    );
+    outcome.dataset.outcome = debrief.outcome || "unknown";
+    header.append(makeTextElement("strong", "", debrief.round || "面试记录"), outcome);
+    card.append(
+      header,
+      makeTextElement("p", "", debrief.summary || "暂无复盘摘要"),
+      makeTextElement(
+        "p",
+        "",
+        `${debrief.questions?.length || 0} 个问题 · ${formatDate(debrief.interviewedAt || debrief.createdAt)}`,
+      ),
+    );
+    elements.interviewDebriefList.append(card);
+  }
+  if (!debriefs.length) {
+    elements.interviewDebriefList.append(
+      makeTextElement(
+        "div",
+        "interview-loop-empty",
+        job ? "这个岗位还没有真实面试记录。" : "选择岗位后查看对应复盘。",
+      ),
+    );
+  }
+
+  elements.refreshPreparationPlan.disabled = Boolean(context.busy);
+  elements.startInterviewDebrief.disabled = Boolean(context.busy);
+}
+
 function renderInterviews() {
+  renderInterviewLoop();
   elements.interviewSetCount.textContent = String(state.interviewSets.length).padStart(2, "0");
   elements.interviewSetList.replaceChildren();
 
@@ -1617,6 +1912,7 @@ function renderResearch() {
 
 function renderAll() {
   renderView();
+  renderWorkflowBuilder();
   renderCounts();
   renderStats();
   renderJobs();
@@ -1629,7 +1925,7 @@ function renderAll() {
 }
 
 function composeDraft(job) {
-  const keywords = extractKeywords(job);
+  const keywords = job ? extractKeywords(job) : [];
   const matched = keywords.filter(keywordMatched);
   const experienceSections = state.experiences
     .map((experience) => {
@@ -1649,7 +1945,9 @@ function composeDraft(job) {
     `${state.profile.role || "目标角色"} · ${state.profile.contact || "联系方式待补充"}`,
     "",
     "## 专业概述",
-    `${state.profile.summary || "请补充职业简介"} 针对 ${job.company} 的「${job.title}」机会，重点呈现 ${matched.slice(0, 4).join("、") || "相关产品与工程能力"}。`,
+    job
+      ? `${state.profile.summary || "请补充职业简介"} 针对 ${job.company} 的「${job.title}」机会，重点呈现 ${matched.slice(0, 4).join("、") || "相关产品与工程能力"}。`
+      : state.profile.summary || "请补充职业简介与目标方向。",
     "",
     "## 核心能力",
     matched.length
@@ -1663,9 +1961,13 @@ function composeDraft(job) {
     repoSections || "### 待补充\n- 请先在材料库添加 Repo 或项目成果。",
     "",
     "## 定制说明",
-    `- 目标职位：${job.company} · ${job.title}`,
-    `- 已覆盖关键词：${matched.join("、") || "待核对"}`,
-    `- 待补强：${keywords.filter((keyword) => !matched.includes(keyword)).join("、") || "请补充更多可量化结果"}`,
+    job ? `- 目标职位：${job.company} · ${job.title}` : "- 当前版本：通用候选人基线",
+    job
+      ? `- 已覆盖关键词：${matched.join("、") || "待核对"}`
+      : `- 目标方向：${state.profile.target || "待补充"}`,
+    job
+      ? `- 待补强：${keywords.filter((keyword) => !matched.includes(keyword)).join("、") || "请补充更多可量化结果"}`
+      : "- 待补强：请补充可核验的影响范围、量化结果与项目证据",
   ].join("\n");
 }
 
@@ -1687,14 +1989,14 @@ function archiveCurrentResume() {
 
 function generateLocalDraft() {
   const job = selectedJob();
-  if (!job) return notify("先选择或添加一个职位", "error");
-  if (state.resume.markdown && state.resume.jobId !== job.id) archiveCurrentResume();
-  job.status = "tailoring";
+  const jobId = job?.id || "";
+  if (state.resume.markdown && state.resume.jobId !== jobId) archiveCurrentResume();
+  if (job) job.status = "tailoring";
   const now = new Date().toISOString();
   state.resume = {
-    jobId: job.id,
+    jobId,
     versionId: uid("resume"),
-    title: `${job.company} · ${job.title}`,
+    title: job ? `${job.company} · ${job.title}` : "通用候选人简历",
     markdown: composeDraft(job),
     notes: ["请核对所有事实与日期", "建议补充至少一个可量化结果"],
     updatedAt: now,
@@ -1707,14 +2009,13 @@ function generateLocalDraft() {
 
 async function generateDraft() {
   const job = selectedJob();
-  if (!job) return notify("先选择或添加一个职位", "error");
   if (!window.codeshellPanel?.call) {
     generateLocalDraft();
     return;
   }
   const prompt = [
-    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
-    `目标职位 ID：${job.id}`,
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具生成一份可编辑的粗版简历。",
+    job ? `目标职位 ID：${job.id}` : "本次不绑定岗位，生成通用候选人基线简历。",
     "先调用 get_job_search_context 读取 JD 与项目上下文；项目中有 CODESHELL.md 时按它检查工作经历、项目说明、代码和其他候选人资料。",
     "若识别到候选人资料变化，调用 save_candidate_context 更新面板中的项目上下文。",
     "仅使用当前项目中能核实的事实；不要编造公司、日期、职责、技术或数字。对无法确认的信息放进 notes。",
@@ -1730,10 +2031,12 @@ async function generateDraft() {
 
 async function saveResumeToRepo() {
   const job = selectedJob();
-  if (!job || !state.resume.markdown || state.resume.jobId !== job.id) {
-    return notify("当前职位还没有可保存的简历", "error");
+  if (!state.resume.markdown || state.resume.jobId !== (job?.id || "")) {
+    return notify("当前视图还没有可保存的简历", "error");
   }
-  const path = `job-hunt-resume-${slugify(`${job.company}-${job.title}`)}.md`;
+  const path = job
+    ? `job-hunt-resume-${slugify(`${job.company}-${job.title}`)}.md`
+    : "job-hunt-resume-current.md";
   let expectedModifiedAt = null;
   let expectedRevision;
   try {
@@ -1805,10 +2108,9 @@ async function submitJobSearch(form) {
 
 async function submitResumeRevision(request) {
   const job = selectedJob();
-  if (!job) return notify("先选择一个职位", "error");
   const prompt = [
     "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
-    `目标职位 ID：${job.id}`,
+    job ? `目标职位 ID：${job.id}` : "本次不绑定岗位，调整通用候选人基线简历。",
     "先调用 get_job_search_context；项目中有 CODESHELL.md 时按它读取相关资料，再逐条核对 JD 与项目证据。",
     "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。只使用能核实的真实信息，不要编造公司、日期、技术、职责或数据。",
     "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
@@ -2075,16 +2377,46 @@ async function submitSessionTask(prompt, successMessage) {
   }
 }
 
-function runFullWorkflowInSession() {
+function runCustomWorkflowInSession(taskIds = state.workflowTaskIds, jobs = selectedWorkflowJobs()) {
+  const tasks = taskIds.filter((id) => Object.hasOwn(WORKFLOW_TASKS, id));
+  if (!tasks.length) return notify("请先选择至少一个任务", "error");
+  const needsJob = tasks.some((id) => WORKFLOW_TASKS[id].requiresJob);
+  if (needsJob && !jobs.length) {
+    return notify("JD 匹配、公司面经、题库和模拟面试需要先选择岗位", "error");
+  }
+
+  const jobLines = jobs.length
+    ? jobs.map((job) => `- ${job.id}｜${job.company}｜${job.title}`)
+    : ["- 未选择岗位：只处理通用候选人材料"];
+  const instructions = {
+    resume:
+      "简历优化：对每个已选岗位分别生成一份有证据的 Markdown 简历并调用 save_resume_draft；未选岗位时保存通用基线简历，省略 job_id。",
+    match:
+      "JD 匹配：逐岗位拆解要求、已有证据、真实缺口与影响，并把结果合并进 save_preparation_plan。",
+    intel:
+      "公司与面经：逐岗位查官网、招聘页、可靠公开信息、评价和面试经验，区分 reported 与 predicted，并调用 save_job_research。",
+    questions:
+      "定制题库：逐岗位从 JD、Repo、工作经历和缺口生成问题、回答点与追问，并调用 save_interview_question_set。",
+    prepare:
+      "补强计划：整理优势、能力缺口、简历修改项和按优先级排序的下一步行动，并调用 save_preparation_plan；未选岗位时省略 job_id。",
+    mock:
+      "模拟面试：先完成其他已选结构化任务，再从一个已选岗位开始互动；每次只问一道题，收到回答后再反馈和追问。",
+    debrief:
+      "真实复盘：先简短询问我粘贴面试轮次、问题、回答、反馈与结果；收到后调用 save_interview_debrief，并据此更新补强计划。不要替我编造未提供的面试内容。",
+  };
+  const prompt = [
+    "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，执行下面这组用户自由组合的任务。",
+    "先调用 get_job_search_context，再读取当前项目中适用的 CODESHELL.md 与候选人材料。只执行本次勾选的任务，不要自动扩展成固定流程。",
+    "已选岗位：",
+    ...jobLines,
+    `已选任务：${tasks.map((id) => WORKFLOW_TASKS[id].label).join("、")}`,
+    ...tasks.map((id) => `- ${instructions[id]}`),
+    "每完成一个可结构化的结果就立即用对应 Panel 工具写回，长任务用 save_workflow_progress 保存阶段进度。所有表述必须来自可核验材料；未知信息明确列为缺口，不编造经历、职责、技术或数字。",
+    "访问招聘网站和评价来源时遵守访问限制，不导出登录凭据，不在浏览器外复用认证请求；受限信息标为待核验。",
+  ].join("\n");
   return submitSessionTask(
-    [
-      "请使用 job-hunt-hq:job-hunt-workflow skill，在当前 CodeShell 项目中运行一次完整求职流程。",
-      "先读取 panel-app:job-hunt-hq 的工具与面板上下文；项目中有 CODESHELL.md 时再按它读取候选人材料。",
-      "按项目里的目标岗位与来源要求：发现并核验少量当前岗位、保存完整 JD、调研公司官网与公开评价、整理公开面试情报。",
-      "对合适岗位生成可编辑简历草稿和有证据的面试题，并把所有结构化结果与流程进度写回面板。",
-      "先保存阶段性结果，再继续补全。不要绕过访问限制，也不要导出或在浏览器外复用招聘网站的登录凭据；受限来源标为部分完成。",
-    ].join("\n"),
-    "任务已发送到当前 Session；过程和结果会继续出现在原对话与本面板中",
+    prompt,
+    "组合任务已发送到当前 Session；结果会按岗位写回面板",
   );
 }
 
@@ -2145,6 +2477,12 @@ function registerAgentTools(ready) {
       workflowRuns: clone(state.workflowRuns),
       resume: clone(state.resume),
       interviewSets: clone(state.interviewSets),
+      preparationPlans: clone(state.preparationPlans),
+      interviewDebriefs: clone(state.interviewDebriefs),
+      workflowSelection: {
+        jobIds: clone(state.workflowJobIds),
+        taskIds: clone(state.workflowTaskIds),
+      },
       providerCatalog: clone(JOB_PROVIDERS),
       evidencePolicy:
         "Read panel context first. Check the current project's CODESHELL.md once and follow it when present; its absence is not a blocker. Use only verifiable project evidence; never invent facts or metrics.",
@@ -2296,7 +2634,17 @@ function registerAgentTools(ready) {
     await ready;
     assertPlainObject(args, "save_workflow_progress");
     const statuses = ["running", "completed", "partial", "failed"];
-    const stepIds = ["discover", "verify-jd", "company", "reviews", "interviews", "artifacts"];
+    const stepIds = [
+      "discover",
+      "verify-jd",
+      "company",
+      "reviews",
+      "interviews",
+      "resume",
+      "prepare",
+      "debrief",
+      "artifacts",
+    ];
     const stepStatuses = ["pending", "running", "completed", "skipped", "failed"];
     if (!statuses.includes(args.status) || !stepIds.includes(args.current_step)) {
       throw new Error("status 或 current_step 无效");
@@ -2560,11 +2908,178 @@ function registerAgentTools(ready) {
     };
   });
 
+  register("save_preparation_plan", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_preparation_plan");
+    const requestedJobId = cleanText(args.job_id, 80);
+    const job = requestedJobId
+      ? state.jobs.find((item) => item.id === requestedJobId)
+      : null;
+    if (requestedJobId && !job) throw new Error("job_id 不存在，请先读取面板上下文");
+    if (
+      !cleanText(args.title, 160) ||
+      !cleanText(args.summary, 5000) ||
+      !Array.isArray(args.strengths) ||
+      !Array.isArray(args.gaps) ||
+      !Array.isArray(args.resume_changes) ||
+      !Array.isArray(args.next_actions)
+    ) {
+      throw new Error(
+        "title、summary、strengths、gaps、resume_changes 和 next_actions 为必填",
+      );
+    }
+    const priorities = ["high", "medium", "low"];
+    const actionKinds = ["resume", "evidence", "study", "practice", "research"];
+    const gaps = args.gaps.slice(0, 30).map((gap, index) => {
+      assertPlainObject(gap, `gaps[${index}]`);
+      if (
+        !cleanText(gap.area, 120) ||
+        !priorities.includes(gap.priority) ||
+        !Array.isArray(gap.actions)
+      ) {
+        throw new Error(`gaps[${index}] 缺少 area、priority 或 actions`);
+      }
+      return {
+        area: cleanText(gap.area, 120),
+        evidence: cleanText(gap.evidence, 1000),
+        impact: cleanText(gap.impact, 1000),
+        priority: gap.priority,
+        actions: cleanTextList(gap.actions, 8, 500),
+        practice: cleanText(gap.practice, 1000),
+      };
+    });
+    const nextActions = args.next_actions.slice(0, 30).map((action, index) => {
+      assertPlainObject(action, `next_actions[${index}]`);
+      if (
+        !cleanText(action.title, 160) ||
+        !actionKinds.includes(action.kind) ||
+        !priorities.includes(action.priority)
+      ) {
+        throw new Error(`next_actions[${index}] 缺少有效 title、kind 或 priority`);
+      }
+      return {
+        title: cleanText(action.title, 160),
+        kind: action.kind,
+        detail: cleanText(action.detail, 1000),
+        priority: action.priority,
+      };
+    });
+    const existing = state.preparationPlans.find(
+      (plan) => (plan.jobId || "") === requestedJobId,
+    );
+    const plan = {
+      id: existing?.id || uid("plan"),
+      jobId: requestedJobId,
+      title: cleanText(args.title, 160),
+      summary: cleanText(args.summary, 5000),
+      strengths: cleanTextList(args.strengths, 20, 500),
+      gaps,
+      resumeChanges: cleanTextList(args.resume_changes, 20, 800),
+      nextActions,
+      updatedAt: new Date().toISOString(),
+      sample: false,
+    };
+    state.preparationPlans = [
+      plan,
+      ...state.preparationPlans.filter((item) => (item.jobId || "") !== requestedJobId),
+    ].slice(0, 80);
+    if (job) state.selectedJobId = job.id;
+    if (!job) state.selectedJobId = "";
+    state.activeView = "interviews";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    return {
+      saved: true,
+      jobId: requestedJobId || null,
+      preparationPlanId: plan.id,
+      gapCount: gaps.length,
+      nextActionCount: nextActions.length,
+      projectSaved,
+    };
+  });
+
+  register("save_interview_debrief", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_interview_debrief");
+    const requestedJobId = cleanText(args.job_id, 80);
+    const job = requestedJobId
+      ? state.jobs.find((item) => item.id === requestedJobId)
+      : null;
+    if (requestedJobId && !job) throw new Error("job_id 不存在，请先读取面板上下文");
+    if (
+      !cleanText(args.round, 120) ||
+      !["pending", "pass", "reject", "unknown"].includes(args.outcome) ||
+      !cleanText(args.summary, 5000) ||
+      !Array.isArray(args.questions) ||
+      !Array.isArray(args.strengths) ||
+      !Array.isArray(args.gaps) ||
+      !Array.isArray(args.next_actions)
+    ) {
+      throw new Error(
+        "round、outcome、summary、questions、strengths、gaps 和 next_actions 为必填",
+      );
+    }
+    const signals = ["strong", "mixed", "weak", "unknown"];
+    const questions = args.questions.slice(0, 30).map((question, index) => {
+      assertPlainObject(question, `questions[${index}]`);
+      if (
+        !cleanText(question.question, 1000) ||
+        !signals.includes(question.signal) ||
+        typeof question.reported_feedback !== "string" ||
+        typeof question.analysis !== "string"
+      ) {
+        throw new Error(
+          `questions[${index}] 缺少 question、有效 signal、reported_feedback 或 analysis`,
+        );
+      }
+      return {
+        question: cleanText(question.question, 1000),
+        answerSummary: cleanText(question.answer_summary, 2000),
+        signal: question.signal,
+        reportedFeedback: cleanText(question.reported_feedback, 2000),
+        analysis: cleanText(question.analysis, 2000),
+        betterAnswerPoints: cleanTextList(question.better_answer_points, 10, 500),
+      };
+    });
+    const debrief = {
+      id: uid("debrief"),
+      jobId: requestedJobId,
+      round: cleanText(args.round, 120),
+      interviewedAt: cleanText(args.interviewed_at, 80) || new Date().toISOString(),
+      outcome: args.outcome,
+      summary: cleanText(args.summary, 5000),
+      questions,
+      strengths: cleanTextList(args.strengths, 20, 500),
+      gaps: cleanTextList(args.gaps, 20, 800),
+      nextActions: cleanTextList(args.next_actions, 20, 800),
+      createdAt: new Date().toISOString(),
+      sample: false,
+    };
+    state.interviewDebriefs = [debrief, ...state.interviewDebriefs].slice(0, 80);
+    if (job) state.selectedJobId = job.id;
+    if (!job) state.selectedJobId = "";
+    state.activeView = "interviews";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    return {
+      saved: true,
+      jobId: requestedJobId || null,
+      interviewDebriefId: debrief.id,
+      questionCount: questions.length,
+      projectSaved,
+    };
+  });
+
   register("save_resume_draft", async (args = {}) => {
     await ready;
     assertPlainObject(args, "save_resume_draft");
-    const job = state.jobs.find((item) => item.id === args.job_id);
-    if (!job) throw new Error("job_id 不存在，请先读取面板上下文");
+    const requestedJobId = cleanText(args.job_id, 80);
+    const job = requestedJobId
+      ? state.jobs.find((item) => item.id === requestedJobId)
+      : null;
+    if (requestedJobId && !job) throw new Error("job_id 不存在，请先读取面板上下文");
     if (
       typeof args.title !== "string" ||
       !args.title.trim() ||
@@ -2573,13 +3088,13 @@ function registerAgentTools(ready) {
     ) {
       throw new Error("title 和至少 80 字符的 markdown 为必填");
     }
-    if (state.resume.markdown && state.resume.jobId !== job.id) archiveCurrentResume();
+    if (state.resume.markdown && state.resume.jobId !== requestedJobId) archiveCurrentResume();
     const now = new Date().toISOString();
-    state.selectedJobId = job.id;
+    state.selectedJobId = requestedJobId;
     state.activeView = "dashboard";
-    job.status = "tailoring";
+    if (job) job.status = "tailoring";
     state.resume = {
-      jobId: job.id,
+      jobId: requestedJobId,
       versionId: uid("resume"),
       title: args.title.trim().slice(0, 120),
       markdown: args.markdown.trim().slice(0, 50000),
@@ -2595,7 +3110,7 @@ function registerAgentTools(ready) {
     renderMaterials();
     return {
       saved: true,
-      jobId: job.id,
+      jobId: requestedJobId || null,
       title: state.resume.title,
       updatedAt: now,
       characterCount: state.resume.markdown.length,
@@ -2655,7 +3170,41 @@ function bindEvents() {
   document
     .querySelector("#open-search")
     .addEventListener("click", () => openDialog("agent-dialog"));
-  elements.runFullWorkflow.addEventListener("click", () => void runFullWorkflowInSession());
+  document.querySelector("#focus-workflow-builder").addEventListener("click", () => {
+    state.activeView = "dashboard";
+    renderAll();
+    elements.workflowBuilder.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  document.querySelectorAll("[data-workflow-preset]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.workflowTaskIds = [...(WORKFLOW_PRESETS[button.dataset.workflowPreset] || [])];
+      persist();
+      renderWorkflowBuilder();
+    });
+  });
+  elements.workflowJobPicker.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-workflow-job-id]");
+    if (!button) return;
+    const id = button.dataset.workflowJobId;
+    state.workflowJobIds = state.workflowJobIds.includes(id)
+      ? state.workflowJobIds.filter((item) => item !== id)
+      : [...state.workflowJobIds, id];
+    persist();
+    renderWorkflowBuilder();
+  });
+  elements.workflowTaskPicker.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-workflow-task]");
+    if (!button) return;
+    const id = button.dataset.workflowTask;
+    state.workflowTaskIds = state.workflowTaskIds.includes(id)
+      ? state.workflowTaskIds.filter((item) => item !== id)
+      : [...state.workflowTaskIds, id];
+    persist();
+    renderWorkflowBuilder();
+  });
+  elements.runCustomWorkflow.addEventListener("click", () =>
+    void runCustomWorkflowInSession(),
+  );
   elements.runCompanyResearch.addEventListener("click", () =>
     void runCompanyResearchInSession(),
   );
@@ -2675,6 +3224,14 @@ function bindEvents() {
     openDialog("interview-dialog");
   });
   elements.simulateInterview.addEventListener("click", () => void simulateInterviewSession());
+  elements.refreshPreparationPlan.addEventListener("click", () => {
+    const job = selectedJob();
+    void runCustomWorkflowInSession(job ? ["match", "prepare"] : ["prepare"], job ? [job] : []);
+  });
+  elements.startInterviewDebrief.addEventListener("click", () => {
+    const job = selectedJob();
+    void runCustomWorkflowInSession(["debrief"], job ? [job] : []);
+  });
 
   elements.interviewSetList.addEventListener("click", (event) => {
     const card = event.target.closest("[data-interview-set-id]");
@@ -2722,6 +3279,7 @@ function bindEvents() {
     job.match = calculateMatch(job);
     state.jobs.unshift(job);
     state.selectedJobId = job.id;
+    state.workflowJobIds = [job.id];
     state.statusFilter = "all";
     state.jobFilter = "all";
     state.jobSourceFilter = "all";
@@ -2766,7 +3324,7 @@ function bindEvents() {
   });
 
   elements.resumeEditor.addEventListener("input", () => {
-    if (state.resume.jobId !== state.selectedJobId) return;
+    if (state.resume.jobId !== (selectedJob()?.id || "")) return;
     state.resume.markdown = elements.resumeEditor.value;
     state.resume.updatedAt = new Date().toISOString();
     persist();
