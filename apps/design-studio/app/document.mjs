@@ -8,9 +8,9 @@ import {
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 export const MAX_DESIGN_NODES = 500;
-// CodeShell's workspace.writeText bridge accepts at most 384 KiB. Keep the
-// document limit aligned so a design accepted by the editor is always savable.
-export const MAX_DESIGN_DOCUMENT_BYTES = 384 * 1024;
+// This is the complete logical document budget. Sources above the Host's
+// per-text-file budget are persisted through a content-addressed bundle.
+export const MAX_DESIGN_DOCUMENT_BYTES = 8 * 1024 * 1024;
 export const MAX_SVG_EXPORT_BYTES = 384 * 1024;
 export const MAX_COMPONENT_INSTANCE_DEPTH = 16;
 export const MAX_RENDERED_NODES_PER_PAGE = 10_000;
@@ -1359,7 +1359,7 @@ export function assertDesignDocumentSize(value) {
   const bytes = new TextEncoder().encode(serializeDesignDocument(value)).length;
   if (bytes > MAX_DESIGN_DOCUMENT_BYTES) {
     throw new Error(
-      `设计文件为 ${(bytes / 1024).toFixed(1)} KiB，超过 ${MAX_DESIGN_DOCUMENT_BYTES / 1024} KiB 上限`,
+      `设计文件为 ${(bytes / 1024 / 1024).toFixed(2)} MiB，超过 ${MAX_DESIGN_DOCUMENT_BYTES / 1024 / 1024} MiB 逻辑文档上限`,
     );
   }
   return bytes;

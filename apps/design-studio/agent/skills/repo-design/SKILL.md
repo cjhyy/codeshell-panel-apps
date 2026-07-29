@@ -24,6 +24,10 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    Agent result budget; oversized reads fail with instructions to use a bounded subtree. Reuse an
    existing component or color token when it
    expresses the intended role; do not create a visually duplicate local substitute.
+   A large logical design may be stored as a `codeshell.design.bundle` manifest plus immutable
+   parts under `designs/codesign-data/`. Treat those files as one document and never edit the parts
+   directly. Design Studio verifies and reconstructs them; Agent work remains metadata → bounded
+   subtree → transaction regardless of the repository storage mode.
 3. Call `use_design` with a short transaction of operations. It refreshes the live canvas and
    saves the active repo source by default. Its compact `audit` summary is an immediate regression
    signal, but call `validate_design` to read the actual issue records. `changedNodeIds` includes
@@ -421,6 +425,8 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
   external changes, and build a fresh transaction. Do not overwrite the repository file directly.
 - If calling `save_design` separately, first read metadata and pass its current `stateRevision` as
   `expected_state_revision`; saving also fails closed when the live canvas changed after that read.
+  Its `storageMode`, `partCount`, `documentBytes`, and `documentLimitBytes` confirm whether the
+  logical document remained a single source or was committed as a verified bundle.
 - If screenshot generation fails, treat visual verification as incomplete. Fix the reported
   geometry/render problem or clearly report the blocker instead of claiming the design looks good.
   If it reports that the design changed during rendering, read metadata again and regenerate from

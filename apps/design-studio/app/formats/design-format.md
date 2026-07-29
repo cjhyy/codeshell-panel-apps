@@ -161,6 +161,10 @@ page name so an inactive page cannot hide clipping, overflow, effect clipping, t
 multi-point text-contrast defects.
 
 Limits are 20 pages, 500 source nodes total, 16 nested instance levels, 10,000 expanded render
-layers per page, 32 color tokens, and 384 KiB per source (matching CodeShell workspace writes). Use
+layers per page, 32 color tokens, and 8 MiB per logical source. Canonical sources up to the
+CodeShell Host's 384 KiB per-file write budget remain one ordinary `.codesign.json`. Larger
+sources use a canonical `codeshell.design.bundle` manifest at that path plus immutable,
+content-addressed UTF-8 parts below `designs/codesign-data/`; the editor, Agent tools, and checker
+reconstruct and validate them as one Design v3 document. Use
 `codeshell-design-v3.schema.json` for repository validation. SVG and `*.audit.md` are generated
 review artifacts, never authoritative sources.

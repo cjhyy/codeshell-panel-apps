@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -25,7 +25,7 @@
     "tools": [
       {
         "name": "get_design_metadata",
-        "description": "Read the active design's file, page, canvas, color tokens, selection, compact layer index, and machine-readable absolute-coordinate/layout contract.",
+        "description": "Read the active design's file, logical byte budget, single-or-bundle storage mode, page, canvas, color tokens, selection, compact layer index, and machine-readable absolute-coordinate/layout contract.",
         "inputSchema": {
           "type": "object",
           "properties": {},
