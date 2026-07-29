@@ -145,6 +145,29 @@ async function validatePackage(packagePath) {
   );
   if (manifest.id === "design-studio") {
     const appScript = await readFile(join(root, "app", "app.js"), "utf8");
+    const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
+    const registeredToolNames = new Set(
+      [...appScript.matchAll(/register\("([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
+    );
+    const queriedIds = [
+      ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
+    ].map((match) => match[1]);
+    assert.equal(manifest.version, "0.17.0", `${packagePath}: product-loop version mismatch`);
+    assert.deepEqual(
+      [...registeredToolNames].sort(),
+      [...toolNames].sort(),
+      `${packagePath}: manifest tools and registered handlers must match`,
+    );
+    for (const id of queriedIds) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    for (const toolName of [
+      "read_product_brief",
+      "generate_frontend",
+      "compare_frontend",
+    ]) {
+      assert(toolNames.has(toolName), `${packagePath}: ${toolName} tool is required`);
+    }
     assert.match(html, /id="repo-files-tab-button"/, `${packagePath}: file tab is required`);
     assert.match(html, /id="repo-files-list"/, `${packagePath}: file list is required`);
     assert.match(html, /id="refresh-repo-files"/, `${packagePath}: file refresh is required`);
@@ -158,6 +181,8 @@ async function validatePackage(packagePath) {
       /renderDesignFileRows/,
       `${packagePath}: shared file rendering is required`,
     );
+    assert.match(html, /id="sidebar-pages-list"/, `${packagePath}: persistent pages are required`);
+    assert.match(html, /id="delivery-tab"/, `${packagePath}: delivery workflow is required`);
   }
   if (manifest.id === "job-hunt-hq") {
     const appScript = await readFile(join(root, "app", "app.js"), "utf8");
@@ -378,6 +403,15 @@ const designLayout = await import(
 );
 const designChecker = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/tools/check-design.mjs"))
+);
+const designFrontend = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/frontend-export.mjs"))
+);
+const designComparison = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/design-compare.mjs"))
+);
+const productBrief = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/product-brief.mjs"))
 );
 const baseNode = (id, type, name) => ({
   id,
@@ -1312,6 +1346,36 @@ assert.equal(
   ]).path,
   "designs/newer.codesign.json",
 );
+const frontendHtml = designFrontend.exportDesignFrontend(nestedDesign);
+assert.match(frontendHtml, /data-codeshell-id="frame"/);
+assert.match(frontendHtml, /display:grid/);
+assert.match(frontendHtml, /grid-template-columns:repeat\(2, minmax\(0, 1fr\)\)/);
+assert.match(frontendHtml, /data-codeshell-id="absolute-badge"/);
+assert.match(frontendHtml, /right:10px/);
+assert(designFrontend.isSafeFrontendPath("design-output/index.html"));
+assert(!designFrontend.isSafeFrontendPath("../index.html"));
+const identicalComparison = designComparison.compareDesignDocuments(nestedDesign, nestedDesign);
+assert.equal(identicalComparison.passed, true);
+assert.equal(identicalComparison.coverage, 1);
+const movedDesign = structuredClone(nestedDesign);
+movedDesign.pages[0].children[0].children[0].width += 12;
+const movedComparison = designComparison.compareDesignDocuments(nestedDesign, movedDesign);
+assert.equal(movedComparison.passed, false);
+assert.equal(movedComparison.maximumGeometryDelta, 12);
+const parsedBrief = productBrief.parseProductBrief(
+  "# Inbox\n\n## 目标\n- 更快回复客户\n\n## 需求\n- [P0] 会话列表 验收：可以选择会话\n\n## 页面\n- 收件箱：列表与聊天区",
+  { path: "docs/PRD.md" },
+);
+assert.equal(parsedBrief.title, "Inbox");
+assert.equal(parsedBrief.requirements[0].priority, "P0");
+assert.equal(parsedBrief.requirements[0].acceptanceCriteria[0], "可以选择会话");
+assert.equal(parsedBrief.screens[0].name, "收件箱");
+assert.match(
+  productBrief.productBriefPrompt(parsedBrief, {
+    designPath: "designs/inbox.codesign.json",
+  }),
+  /Auto Layout/,
+);
 
 const quant = await import(pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/engine.mjs")));
 const bars = quant.generateDemoBars(260);
@@ -1333,4 +1397,5 @@ console.log("✓ Design Studio v3 recursive document smoke test");
 console.log("✓ Design Studio responsive layout smoke test");
 console.log("✓ Design Studio manual-only layout quality audit");
 console.log("✓ Design Studio default repository file selection");
+console.log("✓ Design Studio PRD → frontend → comparison smoke test");
 console.log("✓ Quant Lab engine smoke test");

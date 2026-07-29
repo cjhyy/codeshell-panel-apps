@@ -1,6 +1,6 @@
 ---
 name: repo-design
-description: Create, import from rendered HTML, inspect, refine, and visually verify the active repository's CodeShell Design v3 source through Design Studio's structured Agent tools. Use for repository design files, HTML-to-design reconstruction, Figma-like layout work, and screenshot-driven fidelity checks.
+description: Turn PRDs or rendered HTML into responsive repository designs, refine them through Design Studio's structured tools, generate editable frontend HTML, and visually compare implementation with the Design v3 source. Use for repo design files, Figma-like layout work, design-to-code delivery, and screenshot-driven fidelity checks.
 ---
 
 # Repository design workflow
@@ -66,9 +66,13 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    changes while an image is rendering, screenshot generation fails instead of labeling an older
    image with a newer `stateRevision`.
 
-Keep transactions small enough to diagnose. A useful iteration normally changes one coherent
-region (for example the top bar or one message card), validates it, and then looks at the complete
-screen. Do not replace a detailed screen with empty frames merely to make warnings disappear.
+Keep transactions small enough to diagnose: change one coherent region, validate it, then inspect
+the complete screen. Do not replace detailed UI with empty frames merely to remove warnings.
+
+## Product delivery loop
+
+When input is a PRD or the result is frontend code, read [`references/product-delivery-loop.md`](references/product-delivery-loop.md)
+and follow its requirement IDs → responsive design → frontend → measured comparison loop.
 
 ## HTML fidelity workflow
 
@@ -473,18 +477,13 @@ When an audit returns an unfamiliar code or clipping/contrast diagnosis, read
 [references/audit-codes.md](references/audit-codes.md) before editing. It maps each current code to
 the intended repair and distinguishes component-instance context from master context.
 
-After each coherent region reaches zero issues, call `get_design_screenshot` with its `node_id` and
-`max_width: 1200` to inspect that region at a readable scale. Before finishing, call it with each
-affected `page_id` and omit `node_id` for complete-page review. Look for problems an axis-aligned
-audit cannot judge: weak hierarchy,
-uneven rhythm, accidental density, confusing grouping, implausible product structure, and visually
-unbalanced empty space.
+After each coherent region reaches zero issues, inspect it with `get_design_screenshot`,
+`node_id`, and `max_width: 1200`; before finishing, review each affected complete `page_id`.
+Check hierarchy, rhythm, density, grouping, product plausibility, and empty-space balance.
 
-Prefer semantic names and stable ids. Use frames for screens and sections, groups for organization,
-components for reusable masters, and instances for reuse. Put repeated spacing into auto-layout
-containers instead of manually positioning every child. For precise screen mockups, manual layout
-is appropriate when every child has verified absolute bounds. Do not edit generated SVG or audit
-Markdown as if they were source.
+Prefer semantic names and stable ids: frames for screens/sections, groups for organization,
+components for masters, and instances for reuse. Put repeated spacing into Auto Layout; use manual
+layout only for verified absolute mockups. Never edit generated SVG or audit Markdown as source.
 
 ## Completion gate
 
