@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -60,7 +60,7 @@
       },
       {
         "name": "get_design_context",
-        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are materialized absolute-canvas geometry; flow children are owned by parent layout while layoutPositioning:absolute children retain x/y ownership.",
+        "description": "Read the complete CodeShell Design v3 document when it fits the Agent result budget, or one bounded node subtree from any page by stable node id. Oversized reads fail with guidance to use metadata, node_id, and a shallow max_depth. Nested x/y values are materialized absolute-canvas geometry; flow children are owned by parent layout while layoutPositioning:absolute children retain x/y ownership.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -75,7 +75,7 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 32,
-              "description": "Maximum descendant depth for a node subtree. Defaults to 32 and is ignored when node_id is omitted."
+              "description": "Maximum descendant depth for a node subtree. Defaults to 32 and is ignored when node_id is omitted. Start with 1 or 2 for large imported screens."
             }
           },
           "additionalProperties": false
@@ -604,7 +604,7 @@
       },
       {
         "name": "import_html",
-        "description": "Render a workspace-local HTML file and local CSS in an isolated viewport, map supported Flex/Grid/Wrap and absolute-child semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "description": "Render the visible first viewport of a workspace-local HTML file and local CSS, prune fully offscreen descendants, map supported Flex/Grid/Wrap and absolute-child semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -627,7 +627,7 @@
               "minLength": 1,
               "maxLength": 200,
               "allOf": [{ "pattern": "^[^\\u0000-\\u001F\\u007F]+$" }, { "pattern": "\\S" }],
-              "description": "CSS selector for the region to convert. Defaults to body."
+              "description": "CSS selector for the first-viewport region to convert. Defaults to html; fully offscreen descendants are omitted."
             },
             "viewport_width": {
               "type": "integer",

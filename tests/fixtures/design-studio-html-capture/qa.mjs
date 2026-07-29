@@ -18,7 +18,12 @@ try {
   }
   const { captureHtmlToDesign } =
     await import("../../../apps/design-studio/app/html-capture.mjs?capture=9");
-  const { exportDesignSvg, normalizeDesignDocument, serializeDesignDocument } =
+  const {
+    assertDesignDocumentSize,
+    exportDesignSvg,
+    normalizeDesignDocument,
+    serializeDesignDocument,
+  } =
     await import("../../../apps/design-studio/app/document.mjs");
   const { auditDesign, summarizeAudit } = await import("../../../apps/design-studio/app/audit.mjs");
   const { applyAllAutoLayouts } =
@@ -28,9 +33,24 @@ try {
   qaState.qaStage = "frames";
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   qaState.qaStage = "capture";
+  const offscreenProbe = document.createElement("div");
+  offscreenProbe.dataset.codeshellId = "viewport-offscreen-probe";
+  offscreenProbe.style.cssText =
+    "position:absolute;left:0;top:1200px;width:20px;height:20px;background:#f00";
+  fixture.append(offscreenProbe);
   const captured = await captureHtmlToDesign(fixture, {
     name: "CodeShell HTML fidelity fixture",
+    captureBounds: {
+      left: 0,
+      top: 0,
+      right: window.innerWidth,
+      bottom: window.innerHeight,
+    },
   });
+  offscreenProbe.remove();
+  if (JSON.stringify(captured).includes("viewport-offscreen-probe")) {
+    throw new Error("Viewport capture serialized a fully offscreen descendant");
+  }
   qaState.qaStage = "normalize";
   qaState.qaRawBytes = String(new TextEncoder().encode(JSON.stringify(captured)).length);
   const normalized = normalizeDesignDocument(captured);
@@ -50,7 +70,7 @@ try {
   const svg = exportDesignSvg(normalized);
 
   const serialized = serializeDesignDocument(normalized);
-  qaState.qaSerializedBytes = String(new TextEncoder().encode(serialized).length);
+  qaState.qaSerializedBytes = String(assertDesignDocumentSize(normalized));
   qaState.qaNodeCount = String(normalized.nodes.length);
   qaState.qaAutoLayoutCount = String(
     normalized.nodes.filter(

@@ -6,7 +6,9 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { auditDesign, summarizeAudit } from "../apps/design-studio/app/audit.mjs";
 import {
+  assertDesignDocumentSize,
   exportDesignSvg,
+  MAX_DESIGN_DOCUMENT_BYTES,
   normalizeDesignDocument,
   serializeDesignDocument,
 } from "../apps/design-studio/app/document.mjs";
@@ -200,9 +202,6 @@ async function prepareSourcePage(page, sample, viewport, injectedCaptureSource) 
     content: `html, body {
       animation: none !important;
       caret-color: transparent !important;
-      height: ${viewport.height}px !important;
-      max-height: ${viewport.height}px !important;
-      overflow: hidden !important;
       transition: none !important;
     }
     * {
@@ -212,26 +211,14 @@ async function prepareSourcePage(page, sample, viewport, injectedCaptureSource) 
     }
     ::-webkit-scrollbar { display: none !important; }`,
   });
-  await page.evaluate(async ({ selector, viewport: size }) => {
+  await page.evaluate(async ({ selector }) => {
     await document.fonts?.ready;
     await new Promise((resolveFrame) =>
       requestAnimationFrame(() => requestAnimationFrame(resolveFrame)),
     );
     const root = document.querySelector(selector);
     if (!root) throw new Error(`Root selector not found: ${selector}`);
-    const viewportRect = { left: 0, top: 0, right: size.width, bottom: size.height };
-    for (const element of root.querySelectorAll("*")) {
-      const rect = element.getBoundingClientRect();
-      if (
-        rect.right <= viewportRect.left ||
-        rect.bottom <= viewportRect.top ||
-        rect.left >= viewportRect.right ||
-        rect.top >= viewportRect.bottom
-      ) {
-        element.setAttribute("data-codeshell-capture-ignore", "");
-      }
-    }
-  }, { selector: sample.selector, viewport });
+  }, { selector: sample.selector });
   await page.addScriptTag({ content: injectedCaptureSource });
 }
 
@@ -265,9 +252,17 @@ async function captureSample(context, sample, viewport, injectedCaptureSource, o
       caret: "hide",
     });
     const captured = await sourcePage.evaluate(
-      ({ selector, name }) =>
-        globalThis.__codeshellCaptureHtmlToDesign(document.querySelector(selector), { name }),
-      { selector: sample.selector, name: sample.name },
+      ({ selector, name, size }) =>
+        globalThis.__codeshellCaptureHtmlToDesign(document.querySelector(selector), {
+          name,
+          captureBounds: {
+            left: 0,
+            top: 0,
+            right: size.width,
+            bottom: size.height,
+          },
+        }),
+      { selector: sample.selector, name: sample.name, size: viewport },
     );
     const rawSource = `${JSON.stringify(captured, null, 2)}\n`;
     const rawBytes = new TextEncoder().encode(rawSource).length;
@@ -283,8 +278,10 @@ async function captureSample(context, sample, viewport, injectedCaptureSource, o
     const outputDir = join(outputRoot, sample.id);
     await mkdir(outputDir, { recursive: true });
     let normalized;
+    let documentBytes;
     try {
       normalized = normalizeDesignDocument(captured);
+      documentBytes = assertDesignDocumentSize(normalized);
     } catch (error) {
       await Promise.all([
         writeFile(join(outputDir, "source-html.png"), sourceScreenshot),
@@ -347,6 +344,9 @@ async function captureSample(context, sample, viewport, injectedCaptureSource, o
       viewport,
       rawBytes,
       rawNodeCount,
+      documentBytes,
+      documentLimitBytes: MAX_DESIGN_DOCUMENT_BYTES,
+      documentHeadroomBytes: MAX_DESIGN_DOCUMENT_BYTES - documentBytes,
       nodeCount: normalized.nodes.length,
       autoLayoutCount: normalized.nodes.filter((node) =>
         ["horizontal", "vertical", "grid"].includes(node.layout),

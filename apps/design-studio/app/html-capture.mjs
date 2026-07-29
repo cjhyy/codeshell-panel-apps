@@ -124,6 +124,47 @@ function relativeRect(rect, rootRect) {
   };
 }
 
+function intersectRects(left, right) {
+  const intersection = {
+    left: Math.max(left.left, right.left),
+    top: Math.max(left.top, right.top),
+    right: Math.min(left.right, right.right),
+    bottom: Math.min(left.bottom, right.bottom),
+  };
+  if (
+    intersection.right - intersection.left < 0.5 ||
+    intersection.bottom - intersection.top < 0.5
+  ) {
+    return null;
+  }
+  return {
+    ...intersection,
+    width: intersection.right - intersection.left,
+    height: intersection.bottom - intersection.top,
+  };
+}
+
+function normalizedCaptureBounds(value) {
+  if (value === undefined) return null;
+  if (
+    !value ||
+    typeof value !== "object" ||
+    ![value.left, value.top, value.right, value.bottom].every(Number.isFinite) ||
+    value.right - value.left < 1 ||
+    value.bottom - value.top < 1
+  ) {
+    throw new Error("captureHtmlToDesign captureBounds must be a non-empty browser rectangle");
+  }
+  return {
+    left: value.left,
+    top: value.top,
+    right: value.right,
+    bottom: value.bottom,
+    width: value.right - value.left,
+    height: value.bottom - value.top,
+  };
+}
+
 function semanticSlug(value) {
   const normalized = String(value ?? "")
     .toLowerCase()
@@ -223,7 +264,7 @@ function isVisibleElement(element, style, rect) {
   );
 }
 
-function textLineRects(node, rootRect) {
+function textLineRects(node, rootRect, captureBounds = null) {
   const source = node.textContent ?? "";
   if (!source.trim()) return [];
   const range = node.ownerDocument.createRange();
@@ -252,6 +293,19 @@ function textLineRects(node, rootRect) {
   range.detach();
   return lines
     .sort((left, right) => left.top - right.top || left.left - right.left)
+    .filter(
+      (line) =>
+        !captureBounds ||
+        intersectRects(
+          {
+            left: line.left,
+            top: line.top,
+            right: line.right,
+            bottom: line.bottom,
+          },
+          captureBounds,
+        ),
+    )
     .map((line) => ({
       text: line.text.replace(/\s+/gu, " ").trim(),
       rect: relativeRect(
@@ -791,7 +845,7 @@ function svgShapeNode(element, style, rect, nextId) {
   };
 }
 
-function appendTextLayers(frame, node, style, rootRect, nextId) {
+function appendTextLayers(frame, node, style, rootRect, nextId, captureBounds = null) {
   const color =
     parseCssColor(node.parentElement?.namespaceURI === SVG_NS ? style.fill : style.color) ??
     { hex: "#000000", alpha: 1 };
@@ -800,7 +854,7 @@ function appendTextLayers(frame, node, style, rootRect, nextId) {
     style.lineHeight === "normal" ? size * 1.2 : pixelValue(style.lineHeight, size * 1.2);
   const spacing = style.letterSpacing === "normal" ? 0 : pixelValue(style.letterSpacing);
   const baselineOffset = hangingBaselineOffset(style, size, spacing, node.ownerDocument);
-  const lines = textLineRects(node, rootRect);
+  const lines = textLineRects(node, rootRect, captureBounds);
   const rawText = transformedText(
     String(node.textContent ?? "")
       .replace(/\s+/gu, " ")
@@ -1086,9 +1140,16 @@ export async function captureHtmlToDesign(root, options = {}) {
   const ownerDocument = root.ownerDocument;
   const ownerWindow = ownerDocument.defaultView;
   if (ownerDocument.fonts?.ready) await ownerDocument.fonts.ready;
-  const rootRect = root.getBoundingClientRect();
-  if (rootRect.width < 1 || rootRect.height < 1) {
+  const measuredRootRect = root.getBoundingClientRect();
+  if (measuredRootRect.width < 1 || measuredRootRect.height < 1) {
     throw new Error("captureHtmlToDesign root must have rendered geometry");
+  }
+  const requestedCaptureBounds = normalizedCaptureBounds(options.captureBounds);
+  const rootRect = requestedCaptureBounds
+    ? intersectRects(measuredRootRect, requestedCaptureBounds)
+    : measuredRootRect;
+  if (!rootRect) {
+    throw new Error("captureHtmlToDesign root does not intersect captureBounds");
   }
   let sequence = 0;
   const nextId = (hint) => `${semanticSlug(hint)}-${++sequence}`;
@@ -1102,7 +1163,11 @@ export async function captureHtmlToDesign(root, options = {}) {
     const style = ownerWindow.getComputedStyle(element);
     const browserRect = element.getBoundingClientRect();
     if (!isVisibleElement(element, style, browserRect)) return [];
-    const rect = relativeRect(browserRect, rootRect);
+    if (requestedCaptureBounds && !intersectRects(browserRect, rootRect)) return [];
+    const rect = relativeRect(
+      requestedCaptureBounds && element === root ? rootRect : browserRect,
+      rootRect,
+    );
     const svgShape = svgShapeNode(element, style, rect, nextId);
     if (svgShape) return [svgShape];
     const name =
@@ -1118,7 +1183,8 @@ export async function captureHtmlToDesign(root, options = {}) {
     const measuredInsets = layoutInsets(style);
     const clipsContent =
       ["hidden", "clip"].includes(style.overflowX) ||
-      ["hidden", "clip"].includes(style.overflowY);
+      ["hidden", "clip"].includes(style.overflowY) ||
+      Boolean(requestedCaptureBounds && element === root);
     const holder = needsFrame
       ? frameNode(nextId(element.getAttribute("data-codeshell-id") || name), name, rect, {
           opacity: round(clamp(Number.parseFloat(style.opacity || "1"), 0, 1), 4),
@@ -1147,7 +1213,14 @@ export async function captureHtmlToDesign(root, options = {}) {
 
     for (const child of element.childNodes) {
       if (child.nodeType === TEXT_NODE) {
-        appendTextLayers(holder, child, style, rootRect, nextId);
+        appendTextLayers(
+          holder,
+          child,
+          style,
+          rootRect,
+          nextId,
+          requestedCaptureBounds ? rootRect : null,
+        );
       } else if (child.nodeType === ELEMENT_NODE) {
         holder.children.push(
           ...captureElement(
@@ -1221,6 +1294,10 @@ export async function captureHtmlToDesign(root, options = {}) {
   if (!capturedRoot) throw new Error("captureHtmlToDesign root is not visible");
   capturedRoot.x = 0;
   capturedRoot.y = 0;
+  if (requestedCaptureBounds) {
+    capturedRoot.clipContent = true;
+    capturedRoot.contentClipping = "intentional";
+  }
   return {
     format: "codeshell.design",
     version: 3,

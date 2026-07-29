@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.12 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.13 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 
@@ -24,7 +24,9 @@ surface: nine declared design tools plus a repository-design Skill.
   fallback data.
 - A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
   and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
-  and the converted document remains undoable and revision-guarded.
+  fully offscreen descendants are omitted from the first-screen capture, and the converted document
+  remains undoable and revision-guarded. Import results report canonical document bytes against the
+  save budget so capacity regressions are visible before a later save.
 - Document color tokens whose UI or Agent edits propagate simultaneously through matching canvas,
   fill, stroke, and shadow colors without corrupting color swaps.
 - Deterministic v3 `.codesign.json` documents with a compact page switcher, multi-page editing, and
@@ -158,6 +160,10 @@ W3C fixed-position example. Pass `--url`, `--selector`, `--width`, and `--height
 page. This network-dependent probe is diagnostic rather than a CI gate.
 
 This path deliberately captures the browser's computed result after fonts and layout settle.
+The product importer captures the visible first viewport rather than the root's entire scrolling
+height. Partially visible layers retain their measured geometry behind an intentional root clip;
+fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
+design is one visible region instead of the complete viewport.
 Flex rows/columns map Wrap, axis gaps, four-side padding, alignment, distribution, and Fill/Fixed
 sizing into v3. Grid maps equal computed columns and row/column spans; direct absolute/fixed
 children are excluded from flow and retain measured Constraints. Opaque uniform borders remain

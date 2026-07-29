@@ -31,7 +31,7 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.12 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+Design Studio 0.13 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
 dual-axis Hug/Fill/Fixed sizing, per-item alignment/auto margin, and absolute children with
 Constraints inside Auto Layout. Guarded HTML import maps supported Flex/Grid semantics, form
 values, wrapping, ellipsis, and browser baselines. Local, html2figma-derived, and opt-in real-page

@@ -261,7 +261,7 @@ const nestedDesign = {
   ],
 };
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
-assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 512 * 1024);
+assert.equal(designCodec.MAX_DESIGN_DOCUMENT_BYTES, 384 * 1024);
 assert.equal(designState.nodes.length, 5);
 assert.equal(designState.nodes[2].parentId, "group");
 assert.equal(designState.nodes[0].layout, "grid");
