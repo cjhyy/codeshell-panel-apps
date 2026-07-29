@@ -193,7 +193,10 @@ const propertyInputs = {
   notes: document.querySelector("#prop-notes"),
   clipContent: document.querySelector("#prop-clip-content"),
   layout: document.querySelector("#prop-layout"),
+  layoutWrap: document.querySelector("#prop-layout-wrap"),
   gap: document.querySelector("#prop-layout-gap"),
+  rowGap: document.querySelector("#prop-layout-row-gap"),
+  columnGap: document.querySelector("#prop-layout-column-gap"),
   padding: document.querySelector("#prop-layout-padding"),
   paddingTop: document.querySelector("#prop-layout-padding-top"),
   paddingRight: document.querySelector("#prop-layout-padding-right"),
@@ -201,7 +204,13 @@ const propertyInputs = {
   paddingLeft: document.querySelector("#prop-layout-padding-left"),
   alignItems: document.querySelector("#prop-align-items"),
   justifyContent: document.querySelector("#prop-justify-content"),
-  layoutGrow: document.querySelector("#prop-layout-grow"),
+  alignContent: document.querySelector("#prop-align-content"),
+  gridColumns: document.querySelector("#prop-grid-columns"),
+  layoutSizingHorizontal: document.querySelector("#prop-layout-sizing-horizontal"),
+  layoutSizingVertical: document.querySelector("#prop-layout-sizing-vertical"),
+  layoutPositioning: document.querySelector("#prop-layout-positioning"),
+  gridColumnSpan: document.querySelector("#prop-grid-column-span"),
+  gridRowSpan: document.querySelector("#prop-grid-row-span"),
   layoutAlign: document.querySelector("#prop-layout-align"),
   shadowEnabled: document.querySelector("#prop-shadow-enabled"),
   shadowColor: document.querySelector("#prop-shadow-color"),
@@ -348,10 +357,13 @@ function baseNode(type, overrides = {}) {
   if (isContainerNode({ type })) {
     Object.assign(defaults, {
       layout: "none",
+      layoutWrap: "none",
       gap: 0,
       padding: 0,
       alignItems: "start",
       justifyContent: "start",
+      alignContent: "start",
+      gridColumns: 2,
     });
   }
   return { ...defaults, ...overrides };
@@ -532,7 +544,10 @@ function nodeTransform(node, nodes = design.nodes) {
 
 function isAutoLayoutPositionOwned(node) {
   if (!node?.parentId) return false;
-  return isAutoLayoutContainer(nodeById(node.parentId));
+  return (
+    node.layoutPositioning !== "absolute" &&
+    isAutoLayoutContainer(nodeById(node.parentId))
+  );
 }
 
 function selectedPositionMutableNodes() {
@@ -1304,10 +1319,11 @@ function renderProperties() {
   elements.toggleVisible.textContent = single.visible ? "眼" : "隐";
   const container = isContainerNode(single);
   const parent = single.parentId ? nodeById(single.parentId) : null;
-  const autoLayoutChild = Boolean(parent) && ["horizontal", "vertical"].includes(parent.layout);
-  propertyInputs.x.disabled = autoLayoutChild;
-  propertyInputs.y.disabled = autoLayoutChild;
-  const positionHint = autoLayoutChild
+  const autoLayoutChild = isAutoLayoutContainer(parent);
+  const flowLayoutChild = autoLayoutChild && single.layoutPositioning !== "absolute";
+  propertyInputs.x.disabled = flowLayoutChild;
+  propertyInputs.y.disabled = flowLayoutChild;
+  const positionHint = flowLayoutChild
     ? `位置由自动布局容器「${parent.name}」管理`
     : "绝对画布坐标";
   propertyInputs.x.title = positionHint;
@@ -1328,7 +1344,18 @@ function renderProperties() {
   elements.childLayoutControls.hidden = !autoLayoutChild;
   if (container) {
     propertyInputs.layout.value = single.layout ?? "none";
+    const flexLayout = ["horizontal", "vertical"].includes(single.layout);
+    const gridLayout = single.layout === "grid";
+    propertyInputs.layoutWrap.closest("label").hidden = !flexLayout;
+    propertyInputs.gridColumns.closest("label").hidden = !gridLayout;
+    propertyInputs.alignContent.closest("label").hidden =
+      !gridLayout && !(flexLayout && single.layoutWrap === "wrap");
+    propertyInputs.layoutWrap.value = single.layoutWrap ?? "none";
     propertyInputs.gap.value = String(round(single.gap ?? 0));
+    propertyInputs.rowGap.value =
+      single.rowGap === undefined ? "" : String(round(single.rowGap));
+    propertyInputs.columnGap.value =
+      single.columnGap === undefined ? "" : String(round(single.columnGap));
     propertyInputs.padding.value = String(round(single.padding ?? 0));
     propertyInputs.paddingTop.value =
       single.paddingTop === undefined ? "" : String(round(single.paddingTop));
@@ -1340,10 +1367,35 @@ function renderProperties() {
       single.paddingLeft === undefined ? "" : String(round(single.paddingLeft));
     propertyInputs.alignItems.value = single.alignItems ?? "start";
     propertyInputs.justifyContent.value = single.justifyContent ?? "start";
+    propertyInputs.alignContent.value = single.alignContent ?? "start";
+    propertyInputs.gridColumns.value = String(single.gridColumns ?? 2);
   }
   if (autoLayoutChild) {
-    propertyInputs.layoutGrow.checked = single.layoutGrow === 1;
+    const horizontalParent = parent.layout === "horizontal";
+    propertyInputs.layoutSizingHorizontal.value =
+      single.layoutSizingHorizontal ??
+      (single.layoutGrow === 1 && horizontalParent
+        ? "fill"
+        : single.layoutAlign === "stretch" && !horizontalParent
+          ? "fill"
+          : "fixed");
+    propertyInputs.layoutSizingVertical.value =
+      single.layoutSizingVertical ??
+      (single.layoutGrow === 1 && parent.layout === "vertical"
+        ? "fill"
+        : single.layoutAlign === "stretch" && horizontalParent
+          ? "fill"
+          : "fixed");
+    propertyInputs.layoutPositioning.value = single.layoutPositioning ?? "auto";
+    propertyInputs.gridColumnSpan.value = String(single.gridColumnSpan ?? 1);
+    propertyInputs.gridRowSpan.value = String(single.gridRowSpan ?? 1);
     propertyInputs.layoutAlign.value = single.layoutAlign ?? "auto";
+    const absoluteLayoutChild = single.layoutPositioning === "absolute";
+    propertyInputs.layoutSizingHorizontal.disabled = absoluteLayoutChild;
+    propertyInputs.layoutSizingVertical.disabled = absoluteLayoutChild;
+    propertyInputs.layoutAlign.disabled = absoluteLayoutChild;
+    propertyInputs.gridColumnSpan.closest(".property-grid").hidden =
+      parent.layout !== "grid" || absoluteLayoutChild;
   }
   elements.componentSection.hidden = !["frame", "component", "instance"].includes(single.type);
   elements.makeComponent.hidden = single.type !== "frame";
@@ -3489,7 +3541,7 @@ async function submitToAgent() {
       "请使用 design-studio:repo-design skill 和 panel-app:design-studio 的结构化工具处理当前仓库设计。",
       `设计源文件：${path}`,
       `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${design.version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
-      "所有嵌套节点的 x/y 都是画布绝对坐标；仅自动布局容器的直接子节点省略 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
+      "所有嵌套节点的 x/y 都是画布绝对坐标；自动布局容器的流式直接子节点省略 x/y，layoutPositioning:absolute 的子节点仍必须提供 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
       "不要把 SVG 当作源文件。完成前必须达到零校验问题并实际检查完整画布截图；最后总结变更图层、设计理由和实现影响。",
       "",
       `我的要求：${request}`,
@@ -3742,9 +3794,24 @@ propertyInputs.clipContent.addEventListener("change", () => {
 bindPropertyInput(
   propertyInputs.layout,
   (node, value) => {
-    if (!isContainerNode(node) || !["none", "horizontal", "vertical"].includes(value)) return;
+    if (
+      !isContainerNode(node) ||
+      !["none", "horizontal", "vertical", "grid"].includes(value)
+    ) {
+      return;
+    }
     ensureDesignV3();
     node.layout = value;
+  },
+  "change",
+  "container",
+);
+bindPropertyInput(
+  propertyInputs.layoutWrap,
+  (node, value) => {
+    if (!isContainerNode(node) || !["none", "wrap"].includes(value)) return;
+    ensureDesignV3();
+    node.layoutWrap = value;
   },
   "change",
   "container",
@@ -3759,6 +3826,22 @@ bindPropertyInput(
   "input",
   "container",
 );
+for (const [input, property] of [
+  [propertyInputs.rowGap, "rowGap"],
+  [propertyInputs.columnGap, "columnGap"],
+]) {
+  bindPropertyInput(
+    input,
+    (node, value) => {
+      if (!isContainerNode(node)) return;
+      ensureDesignV3();
+      if (value === "") delete node[property];
+      else node[property] = clamp(finiteOr(value, node.gap ?? 0), 0, 2000);
+    },
+    "input",
+    "container",
+  );
+}
 bindPropertyInput(
   propertyInputs.padding,
   (node, value) => {
@@ -3807,15 +3890,65 @@ bindPropertyInput(
   "change",
   "container",
 );
-propertyInputs.layoutGrow.addEventListener("change", () => {
-  const node = selectedNode();
-  if (!node || isEffectivelyLocked(node)) return;
-  ensureDesignV3();
-  node.layoutGrow = propertyInputs.layoutGrow.checked ? 1 : 0;
-  reflowParent(node);
-  commitHistory();
-  markChanged();
-});
+bindPropertyInput(
+  propertyInputs.alignContent,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.alignContent = value;
+  },
+  "change",
+  "container",
+);
+bindPropertyInput(
+  propertyInputs.gridColumns,
+  (node, value) => {
+    if (!isContainerNode(node)) return;
+    ensureDesignV3();
+    node.gridColumns = Math.round(clamp(finiteOr(value, 2), 1, 24));
+  },
+  "input",
+  "container",
+);
+for (const [input, property] of [
+  [propertyInputs.layoutSizingHorizontal, "layoutSizingHorizontal"],
+  [propertyInputs.layoutSizingVertical, "layoutSizingVertical"],
+]) {
+  bindPropertyInput(
+    input,
+    (node, value) => {
+      ensureDesignV3();
+      node[property] = value;
+      delete node.layoutGrow;
+      reflowParent(node);
+      if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
+    },
+    "change",
+  );
+}
+bindPropertyInput(
+  propertyInputs.layoutPositioning,
+  (node, value) => {
+    ensureDesignV3();
+    node.layoutPositioning = value;
+    reflowParent(node);
+  },
+  "change",
+);
+for (const [input, property] of [
+  [propertyInputs.gridColumnSpan, "gridColumnSpan"],
+  [propertyInputs.gridRowSpan, "gridRowSpan"],
+]) {
+  bindPropertyInput(
+    input,
+    (node, value) => {
+      ensureDesignV3();
+      node[property] = Math.round(clamp(finiteOr(value, 1), 1, 24));
+      reflowParent(node);
+    },
+    "input",
+  );
+}
 bindPropertyInput(
   propertyInputs.layoutAlign,
   (node, value) => {
@@ -4680,7 +4813,10 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "textMeasurement",
   "textAlign",
   "layout",
+  "layoutWrap",
   "gap",
+  "rowGap",
+  "columnGap",
   "padding",
   "paddingTop",
   "paddingRight",
@@ -4688,6 +4824,13 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "paddingLeft",
   "alignItems",
   "justifyContent",
+  "alignContent",
+  "gridColumns",
+  "layoutSizingHorizontal",
+  "layoutSizingVertical",
+  "layoutPositioning",
+  "gridColumnSpan",
+  "gridRowSpan",
   "layoutGrow",
   "layoutAlign",
   "componentId",
@@ -4725,7 +4868,23 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
       setNodeTreePosition(design.nodes, node.id, key, value);
     } else if (
       value === null &&
-      ["notes", "shadow", "clipContent", "layoutGrow", "layoutAlign"].includes(key)
+      [
+        "notes",
+        "shadow",
+        "clipContent",
+        "layoutWrap",
+        "rowGap",
+        "columnGap",
+        "alignContent",
+        "gridColumns",
+        "layoutSizingHorizontal",
+        "layoutSizingVertical",
+        "layoutPositioning",
+        "gridColumnSpan",
+        "gridRowSpan",
+        "layoutGrow",
+        "layoutAlign",
+      ].includes(key)
     ) {
       delete node[key];
     } else {
@@ -4900,17 +5059,24 @@ async function applyAgentDesignOperations(args) {
         if (operation.parent_id) moveAgentNode(node.id, operation.parent_id, operation.before_id);
         else if (operation.before_id) moveAgentNode(node.id, null, operation.before_id);
         const parent = node.parentId ? nodeById(node.parentId) : null;
+        const flowLayoutChild =
+          isAutoLayoutContainer(parent) && node.layoutPositioning !== "absolute";
         if (
-          isAutoLayoutContainer(parent) &&
+          flowLayoutChild &&
           (Object.hasOwn(properties, "x") || Object.hasOwn(properties, "y"))
         ) {
           throw new Error(`图层 ${node.id} 将由自动布局容器 ${parent.id} 定位；创建时不要提供 x/y`);
         }
         if (
-          !isAutoLayoutContainer(parent) &&
+          !flowLayoutChild &&
           (!Object.hasOwn(properties, "x") || !Object.hasOwn(properties, "y"))
         ) {
-          const owner = parent ? `手工布局容器 ${parent.id}` : "画布根级";
+          const owner =
+            isAutoLayoutContainer(parent) && node.layoutPositioning === "absolute"
+              ? `自动布局容器 ${parent.id} 中的绝对子节点`
+              : parent
+                ? `手工布局容器 ${parent.id}`
+                : "画布根级";
           throw new Error(`${owner}中的新图层必须同时提供绝对画布坐标 x 和 y`);
         }
         requestParentReflow(node.parentId);
@@ -4921,8 +5087,13 @@ async function applyAgentDesignOperations(args) {
         if (!node) throw new Error(`图层不存在：${operation.node_id}`);
         const changes = operation.changes;
         const parent = node.parentId ? nodeById(node.parentId) : null;
+        const nextPositioning =
+          changes?.layoutPositioning === undefined
+            ? node.layoutPositioning
+            : changes.layoutPositioning;
         if (
           isAutoLayoutContainer(parent) &&
+          nextPositioning !== "absolute" &&
           changes &&
           typeof changes === "object" &&
           !Array.isArray(changes) &&
@@ -4943,7 +5114,10 @@ async function applyAgentDesignOperations(args) {
               "width",
               "height",
               "layout",
+              "layoutWrap",
               "gap",
+              "rowGap",
+              "columnGap",
               "padding",
               "paddingTop",
               "paddingRight",
@@ -4951,6 +5125,10 @@ async function applyAgentDesignOperations(args) {
               "paddingLeft",
               "alignItems",
               "justifyContent",
+              "alignContent",
+              "gridColumns",
+              "layoutSizingHorizontal",
+              "layoutSizingVertical",
             ].includes(field),
           )
         ) {
@@ -4959,7 +5137,18 @@ async function applyAgentDesignOperations(args) {
         if (
           isAutoLayoutContainer(parent) &&
           [...changedFields].some((field) =>
-            ["width", "height", "visible", "layoutGrow", "layoutAlign"].includes(field),
+            [
+              "width",
+              "height",
+              "visible",
+              "layoutSizingHorizontal",
+              "layoutSizingVertical",
+              "layoutPositioning",
+              "gridColumnSpan",
+              "gridRowSpan",
+              "layoutGrow",
+              "layoutAlign",
+            ].includes(field),
           )
         ) {
           requestParentReflow(parent.id);
@@ -5321,10 +5510,16 @@ function registerAgentTools(ready) {
       geometryContract: {
         coordinateSpace: "absolute-canvas",
         manualLayoutPreservesGeometry: true,
-        autoLayoutOwnsDirectChildPositions: true,
-        autoLayoutChildCoordinates: "resolved-fallback",
+        autoLayoutOwnsDirectFlowChildPositions: true,
+        autoLayoutFlowChildCoordinates: "resolved-fallback",
         autoLayoutChildSizingAppliesToContainers: true,
         asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
+        independentGapFields: ["rowGap", "columnGap"],
+        independentSizingFields: ["layoutSizingHorizontal", "layoutSizingVertical"],
+        supportedLayouts: ["horizontal", "vertical", "grid"],
+        supportsWrap: true,
+        absoluteChildrenField: "layoutPositioning",
+        gridSpanFields: ["gridColumnSpan", "gridRowSpan"],
       },
       selection: [...selectedIds],
       dirty,

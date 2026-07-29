@@ -56,7 +56,21 @@ try {
     normalized.nodes.filter(
       (node) =>
         ["frame", "group", "component"].includes(node.type) &&
-        ["horizontal", "vertical"].includes(node.layout),
+        ["horizontal", "vertical", "grid"].includes(node.layout),
+    ).length,
+  );
+  qaState.qaGridLayoutCount = String(
+    normalized.nodes.filter((node) => node.layout === "grid").length,
+  );
+  qaState.qaWrapLayoutCount = String(
+    normalized.nodes.filter((node) => node.layoutWrap === "wrap").length,
+  );
+  const normalizedById = new Map(normalized.nodes.map((node) => [node.id, node]));
+  qaState.qaAbsoluteAutoChildCount = String(
+    normalized.nodes.filter(
+      (node) =>
+        node.layoutPositioning === "absolute" &&
+        ["horizontal", "vertical", "grid"].includes(normalizedById.get(node.parentId)?.layout),
     ).length,
   );
   qaState.qaManualContainerCount = String(

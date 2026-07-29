@@ -461,17 +461,58 @@
                       <option value="none">自由布局</option>
                       <option value="horizontal">水平排列</option>
                       <option value="vertical">垂直排列</option>
+                      <option value="grid">网格</option>
                     </select>
                   </label>
+                  <div class="property-grid layout-sizing-grid">
+                    <label
+                      ><span>换行</span
+                      ><select id="prop-layout-wrap">
+                        <option value="none">不换行</option>
+                        <option value="wrap">自动换行</option>
+                      </select></label
+                    >
+                    <label
+                      ><span>网格列数</span
+                      ><input
+                        id="prop-grid-columns"
+                        type="number"
+                        min="1"
+                        max="24"
+                      /></label
+                    >
+                  </div>
                   <div class="property-grid">
                     <label
-                      ><span>间距</span
+                      ><span>统一间距</span
                       ><input id="prop-layout-gap" type="number" min="0" max="2000"
                     /></label>
                     <label
                       ><span>内边距</span
                       ><input id="prop-layout-padding" type="number" min="0" max="2000"
                     /></label>
+                  </div>
+                  <div class="property-grid">
+                    <label
+                      ><span>行间距</span
+                      ><input
+                        id="prop-layout-row-gap"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                      /></label
+                    >
+                    <label
+                      ><span>列间距</span
+                      ><input
+                        id="prop-layout-column-gap"
+                        type="number"
+                        min="0"
+                        max="2000"
+                        placeholder="统一"
+                      /></label
+                    >
                   </div>
                   <div class="property-grid" aria-label="独立内边距">
                     <label
@@ -535,12 +576,43 @@
                       </select>
                     </label>
                   </div>
+                  <label class="stacked-field">
+                    <span>多行 / 网格对齐</span>
+                    <select id="prop-align-content">
+                      <option value="start">起点</option>
+                      <option value="center">居中</option>
+                      <option value="end">终点</option>
+                      <option value="space-between">两端对齐</option>
+                      <option value="stretch">拉伸</option>
+                    </select>
+                  </label>
                 </div>
                 <div id="child-layout-controls" class="layout-controls" hidden>
-                  <label class="checkbox-field">
-                    <input id="prop-layout-grow" type="checkbox" />
-                    <span>填满主轴剩余空间</span>
+                  <label class="stacked-field">
+                    <span>定位</span>
+                    <select id="prop-layout-positioning">
+                      <option value="auto">自动布局</option>
+                      <option value="absolute">绝对定位</option>
+                    </select>
                   </label>
+                  <div class="property-grid layout-sizing-grid">
+                    <label>
+                      <span>水平尺寸</span>
+                      <select id="prop-layout-sizing-horizontal">
+                        <option value="fixed">固定</option>
+                        <option value="hug">适应内容</option>
+                        <option value="fill">填满容器</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>垂直尺寸</span>
+                      <select id="prop-layout-sizing-vertical">
+                        <option value="fixed">固定</option>
+                        <option value="hug">适应内容</option>
+                        <option value="fill">填满容器</option>
+                      </select>
+                    </label>
+                  </div>
                   <label class="stacked-field">
                     <span>交叉轴对齐</span>
                     <select id="prop-layout-align">
@@ -551,6 +623,16 @@
                       <option value="stretch">拉伸</option>
                     </select>
                   </label>
+                  <div class="property-grid">
+                    <label>
+                      <span>跨列</span>
+                      <input id="prop-grid-column-span" type="number" min="1" max="24" />
+                    </label>
+                    <label>
+                      <span>跨行</span>
+                      <input id="prop-grid-row-span" type="number" min="1" max="24" />
+                    </label>
+                  </div>
                 </div>
               </div>
 

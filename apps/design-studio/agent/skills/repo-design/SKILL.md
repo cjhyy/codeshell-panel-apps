@@ -31,10 +31,11 @@ Use the installed Design Studio Panel App as the authoritative structured editor
    overwritten from a stale read.
    When metadata returns a non-null repository `revision`, also pass it as `expected_revision`.
    Either mismatch fails before any design mutation and requires a fresh read.
-   Before creating a UI region, choose its layout owner: use nested horizontal/vertical containers
-   for normal rows, columns, navigation, messages, controls, and repeated content. Use manual
-   coordinates only for overlays, deliberately art-directed overlap, or a layout that v3 cannot
-   express safely. Do not begin a normal application screen as one large `layout: "none"` tree.
+   Before creating a UI region, choose its layout owner: use nested horizontal/vertical containers,
+   Wrap, or Grid for normal rows, columns, navigation, messages, controls, and repeated content.
+   Use `layoutPositioning: "absolute"` for an overlay inside Auto Layout; use a manual container
+   only for deliberately art-directed overlap or unsupported visual primitives. Do not begin a
+   normal application screen as one large `layout: "none"` tree.
 4. Call `validate_design` after every meaningful edit. It audits every page, not only the active
    canvas. `valid` is true only when no audit issues remain. `renderSafe` isolates blocking
    clipping, canvas overflow, and text-layout failures, but non-blocking contrast/content warnings
@@ -65,13 +66,14 @@ Read metadata, then call `import_html` with the workspace-relative `.html` path,
 optional root selector, current `expected_state_revision`, and current `expected_revision` when
 non-null. The tool reads up to 20 relative local CSS files, removes scripts and network resources,
 waits for fonts and two animation frames, then replaces the canvas with computed geometry,
-typography, paint, borders, clipping, and one non-inset shadow. Supported non-wrapping CSS Flex
-containers become v3 horizontal/vertical Auto Layout with computed gap, four-side padding,
-alignment, distribution, grow, and stretch semantics. Browser-measured `x/y` remain in the saved
-file as exact initial geometry and fallback data; Auto Layout owns flow-child positions after a
-reflow. Flex wrap/reverse, unequal grow factors, absolute/fixed direct children, floats, Grid, and
-decoration layers that cannot be excluded from v3 Auto Layout fall back to measured manual
-geometry instead of silently changing the screenshot. It saves by default, returns an immediate
+typography, paint, borders, clipping, and one non-inset shadow. Supported CSS Flex and Grid
+containers become v3 Auto Layout with independent row/column gaps, Wrap, column/span
+metadata, four-side padding, alignment, and dual-axis Fill/Fixed semantics. Absolute/fixed direct
+children become `layoutPositioning: "absolute"` and leave the flow. Browser-measured `x/y` remain
+in the saved file as exact initial geometry and fallback data; Auto Layout owns only flow-child
+positions after a reflow. Reverse directions, unequal Flex grow factors, floats, unequal Grid
+tracks, and decoration-heavy controls fall back to measured manual geometry instead of silently
+changing the screenshot. It saves by default, returns an immediate
 audit and rollback `transactionId`, and fails if the live design changes while HTML is rendering.
 Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
 when later Agent edits need durable layer identities.
@@ -112,9 +114,10 @@ browser regression fixture.
 The editor materializes every node's resolved `x` and `y` as **absolute document/canvas
 coordinates**, including nodes nested inside frames, groups, and components. They are never
 parent-relative. This does not make `x/y` the semantic layout source for every node: a
-horizontal/vertical parent owns the resolved positions of its direct flow children. Omit child
-`x/y` when creating or moving those children through Agent operations; read the coordinates back
-after reflow only for inspection, screenshot cropping, and fallback geometry.
+horizontal, vertical, or Grid parent owns the resolved positions of its direct flow children. Omit
+child `x/y` when creating those children through Agent operations; read the coordinates back after
+reflow only for inspection, screenshot cropping, and fallback geometry. A child with
+`layoutPositioning: "absolute"` is excluded from that flow and must use absolute-canvas `x/y`.
 
 Every root-level or manually positioned node must provide both `x` and `y`; never rely on the editor
 default because multiple omitted positions would overlap at the canvas origin.
@@ -133,14 +136,8 @@ on axis-aligned arithmetic. Rounded clipping containers need the same visual che
 their rectangular bounds is necessary but not sufficient near a corner arc, so inset important
 content or verify the exact rendered clip with validation and a node screenshot.
 
-When placing a child manually, calculate and re-check all four edges:
-
-```text
-left   = child.x
-top    = child.y
-right  = child.x + child.width
-bottom = child.y + child.height
-```
+When placing a child manually, calculate `left=x`, `top=y`, `right=x+width`, and
+`bottom=y+height`.
 
 Compare them with the parent's absolute left/top/right/bottom. If `clipContent` is true, any child
 edge outside the parent is a blocking defect and will not merely be an invisible organizational
@@ -152,16 +149,23 @@ Containers technically default to `layout: "none"`, `gap: 0`, and `padding: 0`, 
 structure should not inherit that default accidentally. In manual layout, Agent-supplied absolute
 geometry is preserved across transactions.
 
-When a container uses `layout: "horizontal"` or `"vertical"`, that container owns its direct
-children’s positions. Configure `padding`, `gap`, `alignItems`, `justifyContent`, child
-`layoutGrow`, and child `layoutAlign`; do not write child `x/y`. Structural, visibility, sizing, or
-layout-property changes reflow only the affected auto-layout containers. Unrelated name, content,
-paint, and effect edits must not move layers. When an outer auto-layout moves a nested container,
-Design Studio moves that container’s complete subtree and then resolves nested auto-layout from
-outermost to innermost.
-Any child—including a nested frame, group, or component—may use `layoutGrow` and `layoutAlign`.
-The canvas also blocks direct dragging, keyboard nudging, alignment, and distribution for those
-position-owned children; change sibling order or the parent’s layout controls instead.
+When a container uses `layout: "horizontal"`, `"vertical"`, or `"grid"`, it owns its direct flow
+children’s positions. Configure `padding`, optional `rowGap`/`columnGap`, `alignItems`,
+`justifyContent`, and `alignContent`. Horizontal/vertical containers may set
+`layoutWrap: "wrap"`; Grid uses `gridColumns` and child `gridColumnSpan`/`gridRowSpan`.
+Set each child's `layoutSizingHorizontal` and `layoutSizingVertical` independently to `fixed`,
+`hug`, or `fill`. Hug resizes an Auto Layout container to visible flow content; Fill consumes its
+available parent axis. A Fill child under a Hug parent on the same axis uses its current intrinsic
+size to break the circular dependency.
+Legacy `layoutGrow` and `layoutAlign` remain readable, but new work must use the dual-axis fields.
+Structural, visibility, sizing, or layout-property changes reflow only affected containers.
+When an outer layout moves a nested container, Design Studio moves its complete subtree and then
+resolves nested sizing and layout to convergence.
+
+Set `layoutPositioning: "absolute"` only for overlays, badges, and decoration that must stay inside
+an Auto Layout container without consuming space. Provide absolute-canvas `x/y`; the canvas allows
+dragging and nudging those nodes. Flow children block direct position edits; change sibling order
+or parent layout instead.
 Hidden direct children do not consume auto-layout space, so changing `visible` reflows their parent.
 Use optional `paddingTop`, `paddingRight`, `paddingBottom`, and `paddingLeft` overrides when a
 container needs asymmetric inset; an omitted side falls back to the container’s uniform `padding`.
@@ -170,9 +174,8 @@ distributed, but a tight container never silently compresses that explicit spaci
 
 Use Auto Layout by default for application shells, panels, repeated rows, button contents,
 navigation items, chips, cards, forms, messages, and content whose order or size can change. Use
-manual layout for overlays, deliberate overlap, canvas artwork, and unsupported layout semantics.
-Do not mix the two mental models inside one direct-child list; introduce a nested manual container
-for the exceptional overlay.
+an absolute child for a local overlay and manual layout for canvas artwork or unsupported
+semantics.
 
 ## Typography
 
@@ -221,10 +224,11 @@ For a manually positioned region:
 
 For an auto-layout region:
 
-1. Set the container's layout direction, padding, gap, alignment, and distribution.
+1. Set layout direction/Grid columns, Wrap, padding, axis gaps, alignment, and distribution.
 2. Create or move children into sibling order without supplying child `x/y`.
-3. Set child width/height, `layoutGrow`, and `layoutAlign` as needed, including on nested containers.
-4. Read the subtree again after the transaction because the resolved geometry is explicit.
+3. Set child width/height and horizontal/vertical `fixed`, `hug`, or `fill` sizing.
+4. For an overlay, set `layoutPositioning: "absolute"` and provide absolute-canvas `x/y`.
+5. Read the subtree again after the transaction because the resolved geometry is explicit.
 
 `use_design` and `import_html` are atomic. If an operation, conversion, or save is invalid, the
 canvas rolls back. Prefer one
@@ -367,7 +371,8 @@ layout:
         "padding": 20,
         "alignItems": "stretch",
         "justifyContent": "start",
-        "layoutGrow": 1,
+        "layoutSizingHorizontal": "fill",
+        "layoutSizingVertical": "fill",
         "layoutAlign": "stretch"
       }
     },
@@ -401,8 +406,9 @@ invent, shorten, or reuse a `stateRevision` from an earlier transaction.
 - If `expected_state_revision` fails, the live in-memory canvas changed even if the repository
   revision did not. Re-read metadata and the affected page/subtree; do not retry from the stale
   layout snapshot.
-- If a transaction says an auto-layout child owns `x/y`, remove those fields and control position
-  through sibling order and parent layout. Do not retry the rejected payload unchanged.
+- If a transaction says a flow child owns `x/y`, remove those fields and control position through
+  sibling order and parent layout. For a true overlay, set `layoutPositioning: "absolute"` and
+  provide absolute-canvas `x/y`. Do not retry the rejected payload unchanged.
 - If a root or manual child is missing `x/y`, calculate both absolute coordinates before retrying.
 - If an id is missing or stale, read metadata and the smallest relevant subtree again; never guess a
   replacement id from a display name.
@@ -446,9 +452,9 @@ Handle the current audit codes as follows:
 - `layout.text-overflow`: increase the text box height or reduce/rewrite the text.
 - `layout.text-width-overflow`: widen the text box, insert an intentional line break, or shorten the
   copy; Design Studio does not silently auto-wrap fixed text nodes.
-- `layout.manual-only-ui`: a container-heavy screen has no Auto Layout. Rebuild normal rows and
-  columns with nested horizontal/vertical containers; retain manual coordinates only where overlap
-  or unsupported CSS requires a fallback.
+- `layout.manual-only-ui`: a container-heavy screen has no Auto Layout. Rebuild normal rows,
+  columns, Wrap, and repeated regions with horizontal/vertical/Grid containers; retain manual
+  coordinates only where canvas artwork or unsupported CSS requires a fallback.
 - `a11y.text-contrast`: change foreground/background colors; do not dismiss it as cosmetic.
 - `a11y.instance-text-contrast`: the component master may be readable in its library context, but
   this instance is not; fix the master's own surface, the target background, the instance opacity,

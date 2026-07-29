@@ -98,19 +98,33 @@ rendered component content.
 
 ## Auto layout and components
 
-Containers store `layout`, `gap`, uniform `padding`, `alignItems`, and `justifyContent`. Optional
-`paddingTop`, `paddingRight`, `paddingBottom`, and `paddingLeft` values override individual sides.
-Any child, including a nested container, may use `layoutGrow` and `layoutAlign`. Nested auto-layout
-is resolved outermost-first, moving complete child subtrees before inner containers place their own
-children. Current absolute-canvas geometry is materialized so Git diffs, screenshots, and Agent
-reads remain understandable, but a flow child's stored `x/y` is resolved/fallback geometry rather
-than the semantic source of truth; its direct auto-layout parent owns that position.
-Manual containers use `layout: "none"` and preserve child geometry. Auto-layout containers own
-direct-child positions and reflow only when their structure, visibility, size, or layout inputs
-change. Hidden direct children consume no layout space. A configured gap is a minimum under
-`space-between`; a tight container reports overflow instead of silently compressing that gap.
-Direct dragging, keyboard nudging, alignment, and distribution do not override auto-layout-owned
-positions; reorder siblings or edit the parent layout instead.
+Containers store `layout`, uniform `gap`/`padding`, `alignItems`, and `justifyContent`. Layout is
+`none`, `horizontal`, `vertical`, or `grid`. Optional `rowGap` and `columnGap` override the
+axis-specific gap; four side padding values similarly override uniform padding.
+Horizontal and vertical layouts support `layoutWrap: "wrap"` plus `alignContent` for the line
+block. Grid uses equal-width `gridColumns` from 1–24, row-major placement, and optional
+`gridColumnSpan`/`gridRowSpan` on each child.
+
+Every node may independently set `layoutSizingHorizontal` and `layoutSizingVertical` to `fixed`,
+`hug`, or `fill`. Fixed preserves the materialized size, Hug sizes an Auto Layout container to its
+visible flow content, and Fill consumes available parent space on that axis. A Fill child under a
+Hug parent on the same axis uses its current intrinsic size so the circular request stays
+deterministic. `layoutGrow` and `layoutAlign` remain backward-compatible aliases; explicit
+dual-axis sizing wins.
+
+An Auto Layout child with `layoutPositioning: "absolute"` is excluded from flow and preserves its
+absolute-canvas `x/y`. Other visible direct children participate in flow; hidden and absolute
+children consume no layout space. Nested layout resolves Hug bottom-up and Fill/positions
+top-down until geometry converges. Moving a container still moves its complete subtree, including
+absolute descendants.
+
+Current absolute-canvas geometry is always materialized so Git diffs, screenshots, and Agent reads
+remain understandable. A flow child's stored `x/y` is resolved/fallback geometry owned by its
+parent; an absolute child's `x/y` remains semantic. Manual containers preserve all child geometry.
+Auto Layout reflows only after relevant structure, visibility, size, or layout inputs change. A
+configured gap is a minimum under `space-between`; tight containers report overflow rather than
+compressing it. Direct dragging, nudging, alignment, and distribution are blocked only for
+flow-owned positions.
 
 A component is a visible master subtree. Instances store `componentId` and their own bounds.
 Editing a master updates every instance. Complete nested descendants render in instances, and a

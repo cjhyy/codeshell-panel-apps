@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -60,7 +60,7 @@
       },
       {
         "name": "get_design_context",
-        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are materialized absolute-canvas geometry; direct auto-layout child positions are resolved/fallback values owned by their parent layout.",
+        "description": "Read the complete CodeShell Design v3 document, or one node subtree from any page by stable node id. Nested x/y values are materialized absolute-canvas geometry; flow children are owned by parent layout while layoutPositioning:absolute children retain x/y ownership.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -131,13 +131,13 @@
                   "type": "number",
                   "minimum": -20000,
                   "maximum": 20000,
-                  "description": "Absolute canvas X for a root/manual-layout node. Never make it parent-relative; omit it for a direct auto-layout child."
+                  "description": "Absolute canvas X for a root/manual/absolute-positioned node. Never make it parent-relative; omit it only for a flow child."
                 },
                 "y": {
                   "type": "number",
                   "minimum": -20000,
                   "maximum": 20000,
-                  "description": "Absolute canvas Y for a root/manual-layout node. Never make it parent-relative; omit it for a direct auto-layout child."
+                  "description": "Absolute canvas Y for a root/manual/absolute-positioned node. Never make it parent-relative; omit it only for a flow child."
                 },
                 "width": { "type": "number", "minimum": 1, "maximum": 20000 },
                 "height": { "type": "number", "minimum": 1, "maximum": 20000 },
@@ -177,10 +177,24 @@
                 "textAlign": { "type": "string", "enum": ["left", "center", "right"] },
                 "layout": {
                   "type": "string",
-                  "enum": ["none", "horizontal", "vertical"],
-                  "description": "Container layout. Defaults to none; only horizontal/vertical owns direct-child positions."
+                  "enum": ["none", "horizontal", "vertical", "grid"],
+                  "description": "Container layout. Horizontal, vertical, and grid own flow-child positions."
+                },
+                "layoutWrap": {
+                  "type": ["string", "null"],
+                  "enum": ["none", "wrap", null]
                 },
                 "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
+                "rowGap": {
+                  "type": ["number", "null"],
+                  "minimum": 0,
+                  "maximum": 2000
+                },
+                "columnGap": {
+                  "type": ["number", "null"],
+                  "minimum": 0,
+                  "maximum": 2000
+                },
                 "padding": { "type": "number", "minimum": 0, "maximum": 2000 },
                 "paddingTop": { "type": "number", "minimum": 0, "maximum": 2000 },
                 "paddingRight": { "type": "number", "minimum": 0, "maximum": 2000 },
@@ -193,6 +207,38 @@
                 "justifyContent": {
                   "type": "string",
                   "enum": ["start", "center", "end", "space-between"]
+                },
+                "alignContent": {
+                  "type": ["string", "null"],
+                  "enum": ["start", "center", "end", "space-between", "stretch", null]
+                },
+                "gridColumns": {
+                  "type": ["integer", "null"],
+                  "minimum": 1,
+                  "maximum": 24
+                },
+                "layoutSizingHorizontal": {
+                  "type": ["string", "null"],
+                  "enum": ["fixed", "hug", "fill", null]
+                },
+                "layoutSizingVertical": {
+                  "type": ["string", "null"],
+                  "enum": ["fixed", "hug", "fill", null]
+                },
+                "layoutPositioning": {
+                  "type": ["string", "null"],
+                  "enum": ["auto", "absolute", null],
+                  "description": "Absolute children keep absolute canvas x/y and are excluded from their parent's flow."
+                },
+                "gridColumnSpan": {
+                  "type": ["integer", "null"],
+                  "minimum": 1,
+                  "maximum": 24
+                },
+                "gridRowSpan": {
+                  "type": ["integer", "null"],
+                  "minimum": 1,
+                  "maximum": 24
                 },
                 "layoutGrow": { "type": ["number", "null"], "enum": [0, 1, null] },
                 "layoutAlign": {
@@ -499,7 +545,7 @@
       },
       {
         "name": "import_html",
-        "description": "Render a workspace-local HTML file and local CSS in an isolated viewport, map supported non-wrapping Flex semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
+        "description": "Render a workspace-local HTML file and local CSS in an isolated viewport, map supported Flex/Grid/Wrap and absolute-child semantics to editable v3 Auto Layout, keep measured geometry for fidelity/fallback, validate the result, and optionally save it. Scripts and network resources are removed before rendering.",
         "inputSchema": {
           "type": "object",
           "properties": {

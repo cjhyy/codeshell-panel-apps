@@ -814,6 +814,14 @@ kbd {
   grid-template-columns: 28px minmax(0, 1fr);
 }
 
+#layout-section .property-grid label {
+  grid-template-columns: 42px minmax(0, 1fr);
+}
+
+#layout-section .layout-sizing-grid label {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .property-grid label > span {
   white-space: nowrap;
 }

@@ -103,12 +103,18 @@ button {
 }
 
 .top-actions {
+  position: relative;
+  flex-wrap: wrap;
   gap: 9px;
+  padding-left: 16px;
   color: #a1a1aa;
   font-size: 12px;
 }
 
 .status-dot {
+  position: absolute;
+  top: 11.5px;
+  left: 0;
   width: 7px;
   height: 7px;
   border-radius: 50%;

@@ -168,6 +168,9 @@ const designAudit = await import(
 const designRepository = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/repository.mjs"))
 );
+const designLayout = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/layout.mjs"))
+);
 const baseNode = (id, type, name) => ({
   id,
   type,
@@ -199,15 +202,23 @@ const nestedDesign = {
       children: [
         {
           ...baseNode("frame", "frame", "Frame"),
-          layout: "none",
+          layout: "grid",
+          layoutWrap: "none",
           gap: 0,
+          rowGap: 12,
+          columnGap: 16,
           padding: 0,
           alignItems: "start",
           justifyContent: "start",
+          alignContent: "stretch",
+          gridColumns: 2,
           children: [
             {
               ...baseNode("group", "group", "Group"),
               fill: "transparent",
+              layoutSizingHorizontal: "fill",
+              layoutSizingVertical: "hug",
+              gridColumnSpan: 2,
               layout: "none",
               gap: 0,
               padding: 0,
@@ -224,8 +235,176 @@ const nestedDesign = {
 const designState = designCodec.normalizeDesignDocument(nestedDesign);
 assert.equal(designState.nodes.length, 3);
 assert.equal(designState.nodes[2].parentId, "group");
+assert.equal(designState.nodes[0].layout, "grid");
+assert.equal(designState.nodes[0].columnGap, 16);
+assert.equal(designState.nodes[1].layoutSizingVertical, "hug");
 const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designState));
 assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
+assert.equal(designRoundTrip.pages[0].children[0].gridColumns, 2);
+assert.equal(designRoundTrip.pages[0].children[0].children[0].gridColumnSpan, 2);
+const responsiveLayoutNodes = [
+  {
+    ...baseNode("responsive-row", "frame", "Responsive row"),
+    x: 100,
+    y: 50,
+    width: 300,
+    height: 100,
+    layout: "horizontal",
+    layoutWrap: "none",
+    gap: 10,
+    rowGap: 20,
+    columnGap: 10,
+    padding: 10,
+    alignItems: "start",
+    justifyContent: "start",
+    alignContent: "start",
+  },
+  {
+    ...baseNode("responsive-fixed", "rectangle", "Fixed"),
+    parentId: "responsive-row",
+    width: 50,
+    height: 30,
+  },
+  {
+    ...baseNode("responsive-fill", "rectangle", "Fill"),
+    parentId: "responsive-row",
+    width: 20,
+    height: 20,
+    layoutSizingHorizontal: "fill",
+    layoutSizingVertical: "fill",
+  },
+  {
+    ...baseNode("responsive-overlay", "rectangle", "Overlay"),
+    parentId: "responsive-row",
+    x: 360,
+    y: 55,
+    width: 20,
+    height: 20,
+    layoutPositioning: "absolute",
+  },
+];
+designLayout.applyAllAutoLayouts(responsiveLayoutNodes);
+assert.equal(responsiveLayoutNodes[1].x, 110);
+assert.equal(responsiveLayoutNodes[2].x, 170);
+assert.equal(responsiveLayoutNodes[2].width, 220);
+assert.equal(responsiveLayoutNodes[2].height, 80);
+assert.equal(responsiveLayoutNodes[3].x, 360);
+assert.equal(responsiveLayoutNodes[3].y, 55);
+
+const wrapLayoutNodes = [
+  {
+    ...baseNode("wrap-row", "frame", "Wrap row"),
+    width: 300,
+    height: 120,
+    layout: "horizontal",
+    layoutWrap: "wrap",
+    gap: 0,
+    rowGap: 20,
+    columnGap: 10,
+    padding: 10,
+    alignItems: "start",
+    justifyContent: "start",
+    alignContent: "start",
+  },
+  ...["a", "b", "c"].map((id) => ({
+    ...baseNode(`wrap-${id}`, "rectangle", `Wrap ${id}`),
+    parentId: "wrap-row",
+    width: 120,
+    height: 30,
+  })),
+];
+designLayout.applyAllAutoLayouts(wrapLayoutNodes);
+assert.deepEqual(
+  wrapLayoutNodes.slice(1).map((node) => [node.x, node.y]),
+  [
+    [10, 10],
+    [140, 10],
+    [10, 60],
+  ],
+);
+
+const hugLayoutNodes = [
+  {
+    ...baseNode("hug-row", "frame", "Hug row"),
+    x: 20,
+    y: 30,
+    width: 1,
+    height: 1,
+    layout: "horizontal",
+    gap: 8,
+    padding: 12,
+    alignItems: "start",
+    justifyContent: "start",
+    layoutSizingHorizontal: "hug",
+    layoutSizingVertical: "hug",
+  },
+  {
+    ...baseNode("hug-a", "rectangle", "Hug A"),
+    parentId: "hug-row",
+    width: 40,
+    height: 20,
+  },
+  {
+    ...baseNode("hug-b", "rectangle", "Hug B"),
+    parentId: "hug-row",
+    width: 60,
+    height: 30,
+  },
+];
+designLayout.applyAllAutoLayouts(hugLayoutNodes);
+assert.equal(hugLayoutNodes[0].width, 132);
+assert.equal(hugLayoutNodes[0].height, 54);
+assert.deepEqual(
+  hugLayoutNodes.slice(1).map((node) => [node.x, node.y]),
+  [
+    [32, 42],
+    [80, 42],
+  ],
+);
+
+const gridLayoutNodes = [
+  {
+    ...baseNode("grid", "frame", "Grid"),
+    width: 320,
+    height: 160,
+    layout: "grid",
+    gridColumns: 3,
+    gap: 0,
+    rowGap: 10,
+    columnGap: 10,
+    padding: 10,
+    alignItems: "start",
+    justifyContent: "start",
+    alignContent: "start",
+  },
+  {
+    ...baseNode("grid-wide", "rectangle", "Grid wide"),
+    parentId: "grid",
+    width: 20,
+    height: 30,
+    gridColumnSpan: 2,
+    layoutSizingHorizontal: "fill",
+  },
+  {
+    ...baseNode("grid-side", "rectangle", "Grid side"),
+    parentId: "grid",
+    width: 20,
+    height: 30,
+    layoutSizingHorizontal: "fill",
+  },
+  {
+    ...baseNode("grid-next", "rectangle", "Grid next"),
+    parentId: "grid",
+    width: 20,
+    height: 30,
+    layoutSizingHorizontal: "fill",
+  },
+];
+designLayout.applyAllAutoLayouts(gridLayoutNodes);
+assert.equal(gridLayoutNodes[1].x, 10);
+assert.equal(gridLayoutNodes[1].width, 196.67);
+assert.equal(gridLayoutNodes[2].x, 216.67);
+assert.equal(gridLayoutNodes[3].y, 50);
 const manualOnlyNodes = Array.from({ length: 12 }, (_, index) => ({
   ...baseNode(`manual-frame-${index + 1}`, "frame", `Manual frame ${index + 1}`),
   x: (index % 6) * 120,
@@ -291,6 +470,7 @@ for (const result of results) {
 }
 console.log("✓ Design Studio geometry smoke test");
 console.log("✓ Design Studio v3 recursive document smoke test");
+console.log("✓ Design Studio responsive layout smoke test");
 console.log("✓ Design Studio manual-only layout quality audit");
 console.log("✓ Design Studio default repository file selection");
 console.log("✓ Quant Lab engine smoke test");

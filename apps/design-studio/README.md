@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.8 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.9 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: nine declared design tools plus a repository-design Skill.
 
@@ -8,16 +8,17 @@ surface: nine declared design tools plus a repository-design Skill.
 
 - Vector canvas with selection, collapsible layer hierarchy, frames, alignment,
   distribution, snapping, rotation, zoom, pan, undo, and redo.
-- Figma-style horizontal and vertical auto layout with gap, asymmetric padding, alignment,
-  space distribution, and stretch/grow controls on primitives or nested containers.
+- Figma-style horizontal, vertical, wrapped, and Grid layout with independent row/column gaps,
+  asymmetric padding, line distribution, column/row spans, dual-axis Hug/Fill/Fixed sizing, and
+  absolute children excluded from flow.
 - Reusable master components, cross-page/nested instance rendering, cycle-safe composition, and
   bounded acyclic expansion so repeated instances cannot exhaust the canvas or exporter.
 - Repository-stable font family, 100–900 weights, italic, letter spacing, text decoration, and
   portable multiline SVG text that does not collapse in native preview renderers.
 - Repository-stable drop shadows rendered consistently in canvas screenshots and SVG exports.
 - Browser-rendered HTML capture that measures computed layout, typography, borders, clipping, and
-  shadows, maps supported CSS Flex semantics to editable v3 Auto Layout, and keeps measured
-  coordinates as exact initial geometry and fallback data.
+  shadows, maps supported CSS Flex/Grid/Wrap and absolute-child semantics to editable v3 Auto
+  Layout, and keeps measured coordinates as exact initial geometry and fallback data.
 - A guarded **HTML** import dialog and `import_html` Agent tool for workspace-local files: scripts
   and network resources are removed, linked local CSS is inlined, the target viewport is isolated,
   and the converted document remains undoable and revision-guarded.
@@ -63,10 +64,11 @@ surface: nine declared design tools plus a repository-design Skill.
   bounds cannot add blank margins, while non-clipped component-master overflow and effects remain
   visible on instance crops.
 
-Nested node geometry uses absolute canvas coordinates. Manual-layout containers
-preserve Agent-authored `x/y`; auto-layout containers own their direct children
-and reflow only after relevant structural, visibility, sizing, or layout-property changes. Direct canvas
-dragging, nudging, alignment, and distribution cannot bypass that ownership. Agent-created
+Nested node geometry uses absolute canvas coordinates. Manual-layout containers preserve
+Agent-authored `x/y`; auto-layout containers own direct flow children while
+`layoutPositioning: "absolute"` children retain their coordinates. Reflow runs only after relevant
+structural, visibility, sizing, or layout-property changes. Direct canvas dragging, nudging,
+alignment, and distribution cannot bypass flow ownership. Agent-created
 nodes require a stable lowercase, hyphen-separated semantic id so transactions are
 reproducible and later operations can address every new node explicitly.
 
@@ -126,11 +128,12 @@ document so the audit does not replace exact geometry with fallback estimates; r
 layout, and clipping issues still fail validation normally.
 
 This path deliberately captures the browser's computed result after fonts and layout settle.
-Non-wrapping Flex rows/columns map gap, four-side padding, alignment, distribution, equal grow, and
-stretch into v3. Flex wrap/reverse, unequal grow, direct absolute/fixed children, float, Grid, and
-decoration overlays that v3 cannot exclude from flow keep measured manual geometry. It is not an
-HTML parser and does not promise fidelity for unsupported v3 features such as raster images, SVG
-paths, gradients, pseudo-elements, multiple shadows, or four independently editable corner radii.
+Flex rows/columns map Wrap, axis gaps, four-side padding, alignment, distribution, and Fill/Fixed
+sizing into v3. Grid maps equal computed columns and row/column spans; direct absolute/fixed
+children are excluded from flow. Reverse directions, unequal Flex grow, floats, unequal Grid
+tracks, and decoration-heavy controls keep measured manual geometry. It is not an HTML parser and
+does not promise fidelity for unsupported visual primitives such as raster images, SVG paths,
+gradients, pseudo-elements, multiple shadows, or four independently editable corner radii.
 
 ## Package boundary
 

@@ -19,6 +19,9 @@ const THRESHOLDS = {
   reflowChangedPixelRatio24: 0.015,
   blockingIssueCount: 0,
   minimumAutoLayoutCount: 20,
+  minimumGridLayoutCount: 1,
+  minimumWrapLayoutCount: 1,
+  minimumAbsoluteAutoChildCount: 1,
 };
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -88,6 +91,11 @@ async function captureMode(page, origin, mode) {
     issueCount: Number(document.documentElement.dataset.qaIssueCount ?? 0),
     blockingIssueCount: Number(document.documentElement.dataset.qaBlockingIssueCount ?? 0),
     autoLayoutCount: Number(document.documentElement.dataset.qaAutoLayoutCount ?? 0),
+    gridLayoutCount: Number(document.documentElement.dataset.qaGridLayoutCount ?? 0),
+    wrapLayoutCount: Number(document.documentElement.dataset.qaWrapLayoutCount ?? 0),
+    absoluteAutoChildCount: Number(
+      document.documentElement.dataset.qaAbsoluteAutoChildCount ?? 0,
+    ),
     manualContainerCount: Number(document.documentElement.dataset.qaManualContainerCount ?? 0),
     issueCodes: JSON.parse(document.documentElement.dataset.qaIssueCodes ?? "{}"),
   }));
@@ -242,7 +250,10 @@ try {
     reflowMetrics.changedPixelRatio24 <= THRESHOLDS.reflowChangedPixelRatio24 &&
     source.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
     reflowed.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
-    source.state.autoLayoutCount >= THRESHOLDS.minimumAutoLayoutCount;
+    source.state.autoLayoutCount >= THRESHOLDS.minimumAutoLayoutCount &&
+    source.state.gridLayoutCount >= THRESHOLDS.minimumGridLayoutCount &&
+    source.state.wrapLayoutCount >= THRESHOLDS.minimumWrapLayoutCount &&
+    source.state.absoluteAutoChildCount >= THRESHOLDS.minimumAbsoluteAutoChildCount;
   const report = {
     passed,
     thresholds: THRESHOLDS,
