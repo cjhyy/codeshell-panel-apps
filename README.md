@@ -76,7 +76,7 @@ npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
 The gate requires windowed SSIM ≥ 0.99, at most 1% of pixels changing by more than 8 channel
-levels, at most 0.5% changing by more than 24 levels, and zero blocking audit issues.
+levels, at most 0.6% changing by more than 24 levels, and zero blocking audit issues.
 
 For local iteration, clone this repository and use **Choose source folder**.
 For remote iteration, push a commit and use **Update from source**.

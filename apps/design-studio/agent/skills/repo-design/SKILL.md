@@ -80,7 +80,7 @@ npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 
 Treat it as a regression gate: windowed SSIM must be at least 0.99, the ratio of pixels changing by
 more than 8 channel levels must be at most 1%, and the ratio changing by more than 24 levels must be
-at most 0.5%, with zero blocking audit issues. The JSON report and four PNG artifacts are evidence
+at most 0.6%, with zero blocking audit issues. The JSON report and four PNG artifacts are evidence
 for the comparison. Imported
 browser-measured text and deliberately clipped effects carry explicit document metadata so
 validation does not turn exact browser geometry into false layout blockers.

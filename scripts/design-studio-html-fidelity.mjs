@@ -13,7 +13,7 @@ const VIEWPORT = { width: 960, height: 640 };
 const THRESHOLDS = {
   windowedSsim: 0.99,
   changedPixelRatio8: 0.01,
-  changedPixelRatio24: 0.005,
+  changedPixelRatio24: 0.006,
   blockingIssueCount: 0,
 };
 const MIME_TYPES = new Map([

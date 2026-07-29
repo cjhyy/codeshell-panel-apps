@@ -109,7 +109,7 @@ npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 
 The command writes source, converted, side-by-side, amplified pixel-difference, and JSON report
 artifacts. It fails unless windowed SSIM is at least `0.99`, pixels changing by more than 8 channel
-levels stay at or below `1%`, and pixels changing by more than 24 levels stay at or below `0.5%`.
+levels stay at or below `1%`, and pixels changing by more than 24 levels stay at or below `0.6%`.
 The converted document must also have zero blocking audit issues.
 Browser-measured text bounds and explicitly clipped imported effects remain tagged in the editable
 document so the audit does not replace exact geometry with fallback estimates; real contrast,
