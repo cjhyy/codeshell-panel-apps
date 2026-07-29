@@ -314,7 +314,6 @@ try {
   if (lazyOpen.inactiveReadBeforeSwitch) {
     throw new Error("Indexed open eagerly read the inactive page");
   }
-  await page.locator("#layers-tab-button").click();
   const layerCount = await page.locator("#layers-list .layer-row").count();
   if (layerCount !== 352) {
     throw new Error(`Reloaded index exposed ${layerCount} active-page layers instead of 352`);
@@ -399,7 +398,6 @@ try {
       document.querySelector("#active-page")?.value === "page-2",
     DESIGN_PATH,
   );
-  await page.locator("#layers-tab-button").click();
   await page.locator('.layer-row[data-id="large-layer-351"]').click();
   await page.locator("#design-tab-button").click();
   if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
@@ -414,7 +412,6 @@ try {
   await page.waitForFunction(
     () => document.querySelector("#active-page")?.value === "page-2",
   );
-  await page.locator("#layers-tab-button").click();
   await page.locator('.layer-row[data-id="large-layer-351"]').click();
   await page.locator("#design-tab-button").click();
   if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
