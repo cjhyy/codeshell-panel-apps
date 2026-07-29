@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
@@ -144,7 +144,7 @@
       },
       {
         "name": "save_job_opportunities",
-        "description": "Save structured job opportunities found by the Agent into the job-search board.",
+        "description": "Create or enrich structured job opportunities. Save listing-only or partial JD records early, then call again with the same URL to update them as more evidence becomes available.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -195,8 +195,19 @@
                   },
                   "description": {
                     "type": "string",
-                    "minLength": 1,
                     "maxLength": 20000
+                  },
+                  "jd_completeness": {
+                    "type": "string",
+                    "enum": ["full", "partial", "listing_only"]
+                  },
+                  "verification_notes": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "fetched_at": {
+                    "type": "string",
+                    "maxLength": 80
                   },
                   "match": {
                     "type": "integer",
@@ -204,7 +215,7 @@
                     "maximum": 100
                   }
                 },
-                "required": ["company", "title", "description"],
+                "required": ["company", "title"],
                 "additionalProperties": false
               }
             }

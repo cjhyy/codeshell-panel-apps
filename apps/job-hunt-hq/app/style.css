@@ -743,8 +743,15 @@ select:focus-visible {
   margin-top: 10px;
 }
 
+.job-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .source-badge,
 .status-badge,
+.jd-completeness-badge,
 .tiny-badge {
   display: inline-flex;
   min-height: 19px;
@@ -765,6 +772,27 @@ select:focus-visible {
 
 .status-badge[data-status="applied"] {
   color: var(--green);
+}
+
+.jd-completeness-badge[data-completeness="full"] {
+  color: var(--green);
+}
+
+.jd-completeness-badge[data-completeness="partial"] {
+  color: #f1c77a;
+}
+
+.jd-completeness-badge[data-completeness="listing_only"] {
+  color: var(--faint);
+}
+
+.jd-verification-note {
+  margin-top: 14px;
+  border-left: 2px solid #5d5337;
+  padding-left: 10px;
+  color: #b7a779;
+  font-size: 10px;
+  line-height: 1.6;
 }
 
 .empty-list-button {
