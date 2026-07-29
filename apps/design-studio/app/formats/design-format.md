@@ -73,6 +73,11 @@ Text nodes require content, size, weight, line height, and alignment. Optional `
 when omitted they render with the editor's system sans-serif defaults.
 HTML imports may add `textMeasurement: "browser"` after measuring the exact rendered Range bounds.
 The audit then trusts the stored width instead of substituting its portable cross-font estimate.
+Adaptive imported text may also preserve `textSource`, the last measured `textFlowWidth`, and
+`layoutBaselineOffset`. `textFlow: "wrap"` regenerates explicit line breaks when an Auto Layout
+parent changes width. `textOverflow: "ellipsis"` regenerates a single truncated line ending in
+`…`. These fields keep the source copy editable while the materialized `text` remains the rendered
+fallback.
 Newline-delimited text renders as explicit, independently positioned SVG lines so native preview
 renderers preserve the live canvas layout. Text fill and optional stroke render consistently in the
 live canvas and SVG preview.
@@ -112,9 +117,15 @@ visible flow content, and Fill consumes available parent space on that axis. A F
 Hug parent on the same axis uses its current intrinsic size so the circular request stays
 deterministic. Optional `layoutAlignSelf` overrides the parent's cross-axis alignment for one flow
 child.
+Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
+`margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 
 An Auto Layout child with `layoutPositioning: "absolute"` is excluded from flow and preserves its
-absolute-canvas `x/y`. Other visible direct children participate in flow; hidden and absolute
+absolute-canvas `x/y`. It may set `constraintHorizontal` and `constraintVertical` to `start`,
+`center`, `end`, `stretch`, or `scale`, with four optional inset values. Stretch preserves both
+edge insets; end preserves the trailing inset; center follows the parent center. Scale uses
+`constraintBaseWidth`/`constraintBaseHeight` as stable import-time dimensions so repeated reflows
+do not compound growth. Other visible direct children participate in flow; hidden and absolute
 children consume no layout space. Nested layout resolves Hug bottom-up and Fill/positions
 top-down until geometry converges. Moving a container still moves its complete subtree, including
 absolute descendants.

@@ -31,9 +31,10 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.11 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
-dual-axis Hug/Fill/Fixed sizing, per-item `layoutAlignSelf`, and absolute children inside Auto
-Layout. Guarded HTML import maps supported Flex/Grid semantics, while local and opt-in real-page
+Design Studio 0.12 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+dual-axis Hug/Fill/Fixed sizing, per-item alignment/auto margin, and absolute children with
+Constraints inside Auto Layout. Guarded HTML import maps supported Flex/Grid semantics, form
+values, wrapping, ellipsis, and browser baselines. Local, html2figma-derived, and opt-in real-page
 fidelity probes verify measured and reflowed output.
 
 ## Repository layout
@@ -74,13 +75,19 @@ then generate source, converted, side-by-side, amplified difference, and JSON me
 npm install
 npx playwright install chromium
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
+npm run test:fidelity:cases -- --output artifacts/design-studio-html2figma-cases
 ```
 
 The gate checks both the exact browser-measured conversion and a second render after resolving all
 imported Auto Layout containers. The measured render requires windowed SSIM ≥ 0.99, while the
-reflowed render requires ≥ 0.97; both enforce changed-pixel limits and zero blocking audit issues.
+reflowed semantic render requires ≥ 0.86; both enforce changed-pixel limits and zero blocking audit
+issues.
 The fixture must retain at least 20 semantic Auto Layout containers plus verified Grid, Wrap, and
 an absolute child inside Auto Layout.
+The second command runs 19 offline use cases adapted from html2figma's 64-template catalog,
+including Hug/Fill/Fixed, Wrap, Grid spans, Constraints, forms, tables, inline text, SVG, shadows,
+and responsive widgets. It compares both initial and 760→520 px reflow screenshots and requires
+zero blocking audit issues.
 
 For an opt-in network check against curated public pages, run:
 

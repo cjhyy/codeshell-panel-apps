@@ -69,11 +69,12 @@ waits for fonts and two animation frames, then replaces the canvas with computed
 typography, paint, borders, clipping, and one non-inset shadow. Supported CSS Flex and Grid
 containers become v3 Auto Layout with independent row/column gaps, Wrap, column/span
 metadata, four-side padding, alignment, and dual-axis Fill/Fixed semantics. Absolute/fixed direct
-children become `layoutPositioning: "absolute"` and leave the flow. Browser-measured `x/y` remain
-in the saved file as exact initial geometry and fallback data; Auto Layout owns only flow-child
-positions after a reflow. Reverse directions, unequal Flex grow factors, floats, unequal Grid
-tracks, and decoration-heavy controls fall back to measured manual geometry instead of silently
-changing the screenshot. It saves by default, returns an immediate
+children become `layoutPositioning: "absolute"`, leave the flow, and carry start/end/stretch
+Constraints with four measured insets. Browser-measured `x/y` remain in the saved file as exact
+initial geometry and fallback data; Auto Layout owns only flow-child positions after a reflow.
+Form values, browser text baselines, and wrappable text source are preserved. Reverse directions,
+unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy controls fall back to
+measured manual geometry instead of silently changing the screenshot. It saves by default, returns an immediate
 audit and rollback `transactionId`, and fails if the live design changes while HTML is rendering.
 Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
 when later Agent edits need durable layer identities.
@@ -90,18 +91,32 @@ In the `codeshell-panel-apps` collection repository, run the maintained baseline
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
+Run the adapted html2figma catalog before changing capture or layout behavior:
+
+```sh
+npm run test:fidelity:cases -- --output artifacts/design-studio-html2figma-cases
+```
+
+It covers 19 representative cases selected from the 64-case upstream catalog: Hug/Fill/Fixed,
+Wrap, Grid spans, Constraints, navigation, cards, forms, tables, inline text, lists, SVG,
+borders/shadows, nesting, dashboards, and baseline alignment. It renders both the original HTML
+and converted design at the import width and a narrower width, then writes per-case source,
+converted, diff, side-by-side, design JSON, metrics, audit codes, and a summary report.
+
 For public-page diagnostics, run `npm run test:fidelity:real -- --output
 artifacts/design-studio-real-html-fidelity`; it is not a CI gate because pages are external.
 
 Treat it as a regression gate: the measured conversion needs windowed SSIM of at least 0.99, at
 most 1% of pixels changing by more than 8 channel levels, and at most 0.6% changing by more than 24
 levels. The fixture must also preserve at least 20 Auto Layout containers. After resolving every
-Auto Layout once, the reflowed comparison must keep windowed SSIM at or above 0.97, the two changed
-pixel ratios at or below 2% and 1.5%, and zero blocking audit issues. The JSON report, captured and
+Auto Layout once, the semantic reflow comparison must keep windowed SSIM at or above 0.86, the two
+changed pixel ratios at or below 8% and 6%, and zero blocking audit issues. The JSON report, captured and
 reflowed design sources, and measured/reflow screenshot artifacts are evidence for both initial
-fidelity and adaptive stability. Imported
-browser-measured text and deliberately clipped effects carry explicit document metadata so
-validation does not turn exact browser geometry into false layout blockers.
+fidelity and adaptive stability. The varied html2figma suite uses broader gates because it includes
+CSS shapes that v3 intentionally approximates: initial SSIM ≥ 0.94 and >24-level changed pixels
+≤ 8%; narrow-width SSIM ≥ 0.87 and changed pixels ≤ 12%; both require zero blocking issues.
+Imported browser-measured text and deliberately clipped effects carry explicit document metadata
+so validation does not turn exact browser geometry into false layout blockers.
 
 Treat unsupported CSS as an explicit fidelity gap. v3 currently approximates four unequal corner
 radii with one representative radius. Basic inline SVG rectangles, circles, ellipses, and text
@@ -168,12 +183,16 @@ resolves nested sizing and layout to convergence.
 Set `layoutPositioning: "absolute"` only for overlays, badges, and decoration that must stay inside
 an Auto Layout container without consuming space. Provide absolute-canvas `x/y`; the canvas allows
 dragging and nudging those nodes. Flow children block direct position edits; change sibling order
-or parent layout instead.
+or parent layout instead. Add horizontal and vertical Constraints (`start`, `center`, `end`,
+`stretch`, or `scale`) plus the corresponding measured insets. Preserve
+`constraintBaseWidth`/`constraintBaseHeight` for stable scale behavior after repeated reflows.
 Hidden direct children do not consume auto-layout space, so changing `visible` reflows their parent.
 Use optional `paddingTop`, `paddingRight`, `paddingBottom`, and `paddingLeft` overrides when a
 container needs asymmetric inset; an omitted side falls back to the container’s uniform `padding`.
 With `justifyContent: "space-between"`, configured `gap` remains the minimum gap; surplus room is
 distributed, but a tight container never silently compresses that explicit spacing value.
+Use `layoutMarginBefore: "auto"` on a flow child for CSS-like `margin-left: auto` in a horizontal
+container or `margin-top: auto` in a vertical container.
 
 Use Auto Layout by default for application shells, panels, repeated rows, button contents,
 navigation items, chips, cards, forms, messages, and content whose order or size can change. Use
@@ -302,36 +321,8 @@ all cross-page instances have been intentionally removed or replaced.
 
 ### Minimal transaction examples
 
-For a manually positioned child, both the parent and child use absolute canvas coordinates:
-
-```json
-{
-  "expected_state_revision": "<stateRevision from get_design_metadata>",
-  "operations": [
-    {
-      "op": "create_node",
-      "type": "frame",
-      "id": "chat-shell",
-      "properties": { "name": "Chat shell", "x": 80, "y": 40, "width": 1180, "height": 740 }
-    },
-    {
-      "op": "create_node",
-      "type": "text",
-      "id": "chat-title",
-      "parent_id": "chat-shell",
-      "properties": {
-        "name": "Chat title",
-        "x": 104,
-        "y": 64,
-        "width": 420,
-        "height": 36,
-        "text": "Conversation",
-        "fontSize": 28
-      }
-    }
-  ]
-}
-```
+For a manually positioned child, both parent and child use absolute canvas coordinates. For
+example, a child inside a frame at `(80,40)` with 24 px inset starts at `(104,64)`.
 
 For nested auto layout, give the root container its canvas `x/y`, but omit `x/y` from every direct
 child whose auto-layout parent owns its position. The nested container may itself grow in the outer

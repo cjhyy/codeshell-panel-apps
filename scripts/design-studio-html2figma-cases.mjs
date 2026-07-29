@@ -5,23 +5,20 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
+import {
+  html2figmaCases,
+  html2figmaCatalog,
+} from "../tests/fixtures/design-studio-html2figma-cases/cases.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIR, "..");
-const FIXTURE_PATH = "/tests/fixtures/design-studio-html-capture/index.html";
-const VIEWPORT = { width: 960, height: 640 };
+const FIXTURE_PATH = "/tests/fixtures/design-studio-html2figma-cases/index.html";
 const THRESHOLDS = {
-  windowedSsim: 0.99,
-  changedPixelRatio8: 0.01,
-  changedPixelRatio24: 0.006,
-  reflowWindowedSsim: 0.86,
-  reflowChangedPixelRatio8: 0.08,
-  reflowChangedPixelRatio24: 0.06,
+  windowedSsim: 0.94,
+  changedPixelRatio24: 0.08,
+  reflowWindowedSsim: 0.87,
+  reflowChangedPixelRatio24: 0.12,
   blockingIssueCount: 0,
-  minimumAutoLayoutCount: 20,
-  minimumGridLayoutCount: 1,
-  minimumWrapLayoutCount: 1,
-  minimumAbsoluteAutoChildCount: 1,
 };
 const MIME_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -32,12 +29,12 @@ const MIME_TYPES = new Map([
   [".svg", "image/svg+xml; charset=utf-8"],
 ]);
 
-function outputArgument() {
-  const index = process.argv.indexOf("--output");
+function argumentValue(name) {
+  const index = process.argv.indexOf(name);
   if (index === -1) return null;
   const value = process.argv[index + 1];
-  if (!value || value.startsWith("--")) throw new Error("--output requires a directory");
-  return resolve(process.cwd(), value);
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  return value;
 }
 
 function safeFilePath(requestUrl) {
@@ -79,15 +76,15 @@ async function startStaticServer() {
   };
 }
 
-async function captureMode(page, origin, mode) {
-  await page.goto(`${origin}${FIXTURE_PATH}?mode=${mode}&fidelity=1`, {
-    waitUntil: "networkidle",
-  });
+async function captureMode(page, origin, testCase, mode) {
+  const url = new URL(FIXTURE_PATH, origin);
+  url.searchParams.set("case", testCase.id);
+  url.searchParams.set("mode", mode);
+  await page.goto(url.href, { waitUntil: "networkidle" });
   await page.waitForFunction(() => document.documentElement.dataset.qaReady === "true");
   const state = await page.evaluate(() => ({
     error: document.documentElement.dataset.qaError ?? null,
     nodeCount: Number(document.documentElement.dataset.qaNodeCount ?? 0),
-    serializedBytes: Number(document.documentElement.dataset.qaSerializedBytes ?? 0),
     issueCount: Number(document.documentElement.dataset.qaIssueCount ?? 0),
     blockingIssueCount: Number(document.documentElement.dataset.qaBlockingIssueCount ?? 0),
     autoLayoutCount: Number(document.documentElement.dataset.qaAutoLayoutCount ?? 0),
@@ -96,12 +93,13 @@ async function captureMode(page, origin, mode) {
     absoluteAutoChildCount: Number(
       document.documentElement.dataset.qaAbsoluteAutoChildCount ?? 0,
     ),
-    manualContainerCount: Number(document.documentElement.dataset.qaManualContainerCount ?? 0),
     issueCodes: JSON.parse(document.documentElement.dataset.qaIssueCodes ?? "{}"),
   }));
-  if (state.error) throw new Error(`Fixture ${mode} failed:\n${state.error}`);
+  if (state.error) throw new Error(`${testCase.id} ${mode} failed:\n${state.error}`);
   const locator =
-    mode === "source" ? page.locator("#fixture") : page.locator("svg[data-qa-render]");
+    mode === "source" || mode === "source-reflow"
+      ? page.locator("#fixture")
+      : page.locator("svg[data-qa-render]");
   const screenshot = await locator.screenshot({ animations: "disabled", caret: "hide" });
   const designSource = await page.locator("#qa-design").textContent();
   return { screenshot, state, designSource };
@@ -171,9 +169,6 @@ function comparePngBuffers(sourceBuffer, convertedBuffer) {
     diff.data[offset + 2] = Math.min(255, blue * 6);
     diff.data[offset + 3] = 255;
   }
-
-  const allIndices = Array.from({ length: pixelCount }, (_, index) => index);
-  const globalSsim = ssimForIndices(source.data, converted.data, allIndices);
   const windowScores = [];
   const windowSize = 8;
   for (let top = 0; top < source.height; top += windowSize) {
@@ -187,8 +182,6 @@ function comparePngBuffers(sourceBuffer, convertedBuffer) {
       windowScores.push(ssimForIndices(source.data, converted.data, indices));
     }
   }
-  const windowedSsim =
-    windowScores.reduce((total, score) => total + score, 0) / windowScores.length;
   return {
     source,
     converted,
@@ -199,8 +192,8 @@ function comparePngBuffers(sourceBuffer, convertedBuffer) {
       meanAbsoluteError: absoluteError / (pixelCount * 3),
       changedPixelRatio8: changed8 / pixelCount,
       changedPixelRatio24: changed24 / pixelCount,
-      globalSsim,
-      windowedSsim,
+      windowedSsim:
+        windowScores.reduce((total, score) => total + score, 0) / windowScores.length,
     },
   };
 }
@@ -228,64 +221,131 @@ function roundedMetrics(metrics) {
   );
 }
 
-const explicitOutput = outputArgument();
-const outputDir = explicitOutput ?? (await mkdtemp(join(tmpdir(), "design-fidelity-")));
+function meetsExpectedCounts(state, expected = {}) {
+  return (
+    state.autoLayoutCount >= (expected.autoLayouts ?? 0) &&
+    state.gridLayoutCount >= (expected.gridLayouts ?? 0) &&
+    state.wrapLayoutCount >= (expected.wrapLayouts ?? 0) &&
+    state.absoluteAutoChildCount >= (expected.absoluteAutoChildren ?? 0)
+  );
+}
+
+async function writeCaseArtifacts(outputDir, testCase, captures, comparisons) {
+  const caseDir = join(outputDir, testCase.id);
+  await mkdir(caseDir, { recursive: true });
+  await Promise.all([
+    writeFile(join(caseDir, "source.png"), captures.source.screenshot),
+    writeFile(join(caseDir, "converted.png"), captures.converted.screenshot),
+    writeFile(join(caseDir, "source-reflow.png"), captures.sourceReflow.screenshot),
+    writeFile(join(caseDir, "converted-reflow.png"), captures.convertedReflow.screenshot),
+    writeFile(join(caseDir, "converted.codesign.json"), captures.converted.designSource),
+    writeFile(join(caseDir, "converted-reflow.codesign.json"), captures.convertedReflow.designSource),
+    writeFile(join(caseDir, "diff.png"), PNG.sync.write(comparisons.standard.diff)),
+    writeFile(join(caseDir, "reflow-diff.png"), PNG.sync.write(comparisons.reflow.diff)),
+    writeFile(
+      join(caseDir, "side-by-side.png"),
+      PNG.sync.write(sideBySide(comparisons.standard.source, comparisons.standard.converted)),
+    ),
+    writeFile(
+      join(caseDir, "reflow-side-by-side.png"),
+      PNG.sync.write(sideBySide(comparisons.reflow.source, comparisons.reflow.converted)),
+    ),
+  ]);
+}
+
+const outputArgument = argumentValue("--output");
+const caseArgument = argumentValue("--case");
+const outputDir = outputArgument
+  ? resolve(process.cwd(), outputArgument)
+  : await mkdtemp(join(tmpdir(), "design-html2figma-cases-"));
+const selectedCases = caseArgument
+  ? html2figmaCases.filter((testCase) => testCase.id === caseArgument)
+  : html2figmaCases;
+if (selectedCases.length === 0) throw new Error(`Unknown --case ${caseArgument}`);
+
 const server = await startStaticServer();
 const browser = await chromium.launch({ headless: true });
+const results = [];
 try {
-  const page = await browser.newPage({ viewport: VIEWPORT, deviceScaleFactor: 1 });
-  const source = await captureMode(page, server.origin, "source");
-  const converted = await captureMode(page, server.origin, "converted");
-  const reflowed = await captureMode(page, server.origin, "converted-reflow");
-  const comparison = comparePngBuffers(source.screenshot, converted.screenshot);
-  const reflowComparison = comparePngBuffers(source.screenshot, reflowed.screenshot);
-  const metrics = roundedMetrics(comparison.metrics);
-  const reflowMetrics = roundedMetrics(reflowComparison.metrics);
-  const passed =
-    metrics.windowedSsim >= THRESHOLDS.windowedSsim &&
-    metrics.changedPixelRatio8 <= THRESHOLDS.changedPixelRatio8 &&
-    metrics.changedPixelRatio24 <= THRESHOLDS.changedPixelRatio24 &&
-    reflowMetrics.windowedSsim >= THRESHOLDS.reflowWindowedSsim &&
-    reflowMetrics.changedPixelRatio8 <= THRESHOLDS.reflowChangedPixelRatio8 &&
-    reflowMetrics.changedPixelRatio24 <= THRESHOLDS.reflowChangedPixelRatio24 &&
-    source.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
-    reflowed.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
-    source.state.autoLayoutCount >= THRESHOLDS.minimumAutoLayoutCount &&
-    source.state.gridLayoutCount >= THRESHOLDS.minimumGridLayoutCount &&
-    source.state.wrapLayoutCount >= THRESHOLDS.minimumWrapLayoutCount &&
-    source.state.absoluteAutoChildCount >= THRESHOLDS.minimumAbsoluteAutoChildCount;
-  const report = {
-    passed,
-    thresholds: THRESHOLDS,
-    metrics,
-    reflowMetrics,
-    capture: source.state,
-    reflowCapture: reflowed.state,
-    fixture: relative(REPOSITORY_ROOT, resolve(REPOSITORY_ROOT, `.${FIXTURE_PATH}`)),
-  };
-
-  await mkdir(outputDir, { recursive: true });
-  await Promise.all([
-    writeFile(join(outputDir, "source-html.png"), source.screenshot),
-    writeFile(join(outputDir, "converted-design.png"), converted.screenshot),
-    writeFile(join(outputDir, "captured-design.codesign.json"), converted.designSource),
-    writeFile(join(outputDir, "pixel-diff.png"), PNG.sync.write(comparison.diff)),
-    writeFile(join(outputDir, "reflowed-design.png"), reflowed.screenshot),
-    writeFile(join(outputDir, "reflowed-design.codesign.json"), reflowed.designSource),
-    writeFile(join(outputDir, "reflow-pixel-diff.png"), PNG.sync.write(reflowComparison.diff)),
-    writeFile(
-      join(outputDir, "side-by-side.png"),
-      PNG.sync.write(sideBySide(comparison.source, comparison.converted)),
-    ),
-    writeFile(
-      join(outputDir, "reflow-side-by-side.png"),
-      PNG.sync.write(sideBySide(reflowComparison.source, reflowComparison.converted)),
-    ),
-    writeFile(join(outputDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`),
-  ]);
-  process.stdout.write(`${JSON.stringify({ ...report, outputDir }, null, 2)}\n`);
-  if (!passed) process.exitCode = 1;
+  const page = await browser.newPage({
+    viewport: { width: 900, height: 700 },
+    deviceScaleFactor: 1,
+  });
+  for (const testCase of selectedCases) {
+    try {
+      const source = await captureMode(page, server.origin, testCase, "source");
+      const converted = await captureMode(page, server.origin, testCase, "converted");
+      const sourceReflow = await captureMode(page, server.origin, testCase, "source-reflow");
+      const convertedReflow = await captureMode(
+        page,
+        server.origin,
+        testCase,
+        "converted-reflow",
+      );
+      const standard = comparePngBuffers(source.screenshot, converted.screenshot);
+      const reflow = comparePngBuffers(sourceReflow.screenshot, convertedReflow.screenshot);
+      const metrics = roundedMetrics(standard.metrics);
+      const reflowMetrics = roundedMetrics(reflow.metrics);
+      const passed =
+        metrics.windowedSsim >= THRESHOLDS.windowedSsim &&
+        metrics.changedPixelRatio24 <= THRESHOLDS.changedPixelRatio24 &&
+        reflowMetrics.windowedSsim >= THRESHOLDS.reflowWindowedSsim &&
+        reflowMetrics.changedPixelRatio24 <= THRESHOLDS.reflowChangedPixelRatio24 &&
+        converted.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
+        convertedReflow.state.blockingIssueCount === THRESHOLDS.blockingIssueCount &&
+        meetsExpectedCounts(converted.state, testCase.expected);
+      results.push({
+        id: testCase.id,
+        name: testCase.name,
+        category: testCase.category,
+        sourceTemplate: testCase.sourceTemplate,
+        width: testCase.width,
+        reflowWidth: testCase.reflowWidth,
+        passed,
+        metrics,
+        reflowMetrics,
+        capture: converted.state,
+        reflowCapture: convertedReflow.state,
+        expected: testCase.expected,
+      });
+      if (outputArgument || !passed) {
+        await writeCaseArtifacts(
+          outputDir,
+          testCase,
+          { source, converted, sourceReflow, convertedReflow },
+          { standard, reflow },
+        );
+      }
+    } catch (error) {
+      results.push({
+        id: testCase.id,
+        name: testCase.name,
+        category: testCase.category,
+        sourceTemplate: testCase.sourceTemplate,
+        passed: false,
+        error: error instanceof Error ? error.stack : String(error),
+      });
+    }
+  }
 } finally {
   await browser.close();
   await server.close();
 }
+
+const passedCount = results.filter((result) => result.passed).length;
+const report = {
+  passed: passedCount === results.length,
+  summary: {
+    passed: passedCount,
+    failed: results.length - passedCount,
+    total: results.length,
+  },
+  catalog: html2figmaCatalog,
+  thresholds: THRESHOLDS,
+  fixture: relative(REPOSITORY_ROOT, resolve(REPOSITORY_ROOT, `.${FIXTURE_PATH}`)),
+  results,
+};
+await mkdir(outputDir, { recursive: true });
+await writeFile(join(outputDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ ...report, outputDir }, null, 2)}\n`);
+if (!report.passed) process.exitCode = 1;
