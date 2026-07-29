@@ -958,6 +958,28 @@ export function auditDesign(document) {
       });
     }
   });
+  const containers = document.nodes.filter(
+    (node) =>
+      effectivelyVisible(node) &&
+      ["frame", "group", "component"].includes(node.type),
+  );
+  if (
+    containers.length >= 12 &&
+    !containers.some((node) => ["horizontal", "vertical"].includes(node.layout))
+  ) {
+    const root =
+      containers.find((node) => !node.parentId) ??
+      containers.reduce((largest, node) =>
+        node.width * node.height > largest.width * largest.height ? node : largest,
+      );
+    issues.push({
+      code: "layout.manual-only-ui",
+      severity: "warning",
+      blocking: false,
+      nodeId: root.id,
+      message: `文档包含 ${containers.length} 个容器但没有使用 Auto Layout；界面类设计应优先用 horizontal/vertical、gap、padding、grow 和 stretch，让 x/y 只承担手工布局与降级定位`,
+    });
+  }
   issues.push(...auditInstanceTextContrast(document, byId));
   return issues;
 }

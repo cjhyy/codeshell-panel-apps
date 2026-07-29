@@ -21,6 +21,8 @@ try {
   const { exportDesignSvg, normalizeDesignDocument, serializeDesignDocument } =
     await import("../../../apps/design-studio/app/document.mjs");
   const { auditDesign, summarizeAudit } = await import("../../../apps/design-studio/app/audit.mjs");
+  const { applyAllAutoLayouts } =
+    await import("../../../apps/design-studio/app/layout.mjs");
   qaState.qaStage = "fonts";
   await document.fonts.ready;
   qaState.qaStage = "frames";
@@ -32,23 +34,44 @@ try {
   qaState.qaStage = "normalize";
   qaState.qaRawBytes = String(new TextEncoder().encode(JSON.stringify(captured)).length);
   const normalized = normalizeDesignDocument(captured);
-  const audit = summarizeAudit(auditDesign(normalized));
+  const mode = qaParams.get("mode") ?? "source";
+  if (mode === "converted-reflow") applyAllAutoLayouts(normalized.nodes);
+  const auditIssues = auditDesign(normalized);
+  const audit = summarizeAudit(auditIssues);
   qaState.qaIssueCount = String(audit.issueCount);
   qaState.qaBlockingIssueCount = String(audit.blockingIssueCount);
+  qaState.qaIssueCodes = JSON.stringify(
+    auditIssues.reduce((counts, issue) => {
+      counts[issue.code] = (counts[issue.code] ?? 0) + 1;
+      return counts;
+    }, {}),
+  );
   qaState.qaStage = "svg";
   const svg = exportDesignSvg(normalized);
 
   const serialized = serializeDesignDocument(normalized);
   qaState.qaSerializedBytes = String(new TextEncoder().encode(serialized).length);
   qaState.qaNodeCount = String(normalized.nodes.length);
+  qaState.qaAutoLayoutCount = String(
+    normalized.nodes.filter(
+      (node) =>
+        ["frame", "group", "component"].includes(node.type) &&
+        ["horizontal", "vertical"].includes(node.layout),
+    ).length,
+  );
+  qaState.qaManualContainerCount = String(
+    normalized.nodes.filter(
+      (node) =>
+        ["frame", "group", "component"].includes(node.type) && node.layout === "none",
+    ).length,
+  );
   const data = document.createElement("script");
   data.id = "qa-design";
   data.type = "application/json";
   data.textContent = serialized;
   document.head.append(data);
 
-  const mode = qaParams.get("mode") ?? "source";
-  if (mode === "converted") {
+  if (mode !== "source") {
     document.body.innerHTML = svg;
     document.body.querySelector("svg")?.setAttribute("data-qa-render", "converted");
   }

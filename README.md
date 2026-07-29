@@ -31,9 +31,10 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.7 keeps the 0.6 absolute-canvas, targeted auto-layout, blocking validation,
-screenshot, and design-system improvements, then adds guarded workspace HTML import and a
-same-browser fidelity gate.
+Design Studio 0.8 keeps the absolute-canvas, targeted auto-layout, blocking validation, screenshot,
+file-list, and design-system improvements, then makes guarded HTML import layout-aware: supported
+CSS Flex becomes editable v3 Auto Layout and the same-browser gate verifies both measured and
+reflowed output.
 
 ## Repository layout
 
@@ -75,8 +76,10 @@ npx playwright install chromium
 npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
 ```
 
-The gate requires windowed SSIM ≥ 0.99, at most 1% of pixels changing by more than 8 channel
-levels, at most 0.6% changing by more than 24 levels, and zero blocking audit issues.
+The gate checks both the exact browser-measured conversion and a second render after resolving all
+imported Auto Layout containers. The measured render requires windowed SSIM ≥ 0.99, while the
+reflowed render requires ≥ 0.97; both enforce changed-pixel limits and zero blocking audit issues.
+The fixture must retain at least 20 semantic Auto Layout containers.
 
 For local iteration, clone this repository and use **Choose source folder**.
 For remote iteration, push a commit and use **Update from source**.

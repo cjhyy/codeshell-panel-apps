@@ -40,6 +40,7 @@ import {
   serializeDesignDocument,
   workspaceVersionChanged,
 } from "./document.mjs";
+import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
 import {
@@ -64,7 +65,7 @@ const TOOL_SHORTCUTS = {
   t: "text",
   h: "hand",
 };
-const DEFAULT_PATH = "designs/design.codesign.json";
+const DEFAULT_PATH = DEFAULT_DESIGN_PATH;
 const DEFAULT_COLOR_TOKENS = Object.freeze([
   { name: "Ink", value: "#171717" },
   { name: "Paper", value: "#f7f7f3" },
@@ -3010,7 +3011,7 @@ function renderDesignFileRows(container, files, { closeDialog = false } = {}) {
     copy.append(name, path);
     const size = document.createElement("span");
     size.className = "file-size";
-    size.textContent = formatBytes(Number(file.size) || 0);
+    size.textContent = `${file.path === DEFAULT_PATH ? "默认 · " : ""}${formatBytes(Number(file.size) || 0)}`;
     button.append(icon, copy, size);
     button.addEventListener("click", () => {
       if (active) return;
@@ -4358,14 +4359,6 @@ async function restoreRecovery(
   return true;
 }
 
-function chooseRepoDesignFile(files) {
-  return [...files].sort(
-    (left, right) =>
-      (Number(right.modifiedAt) || 0) - (Number(left.modifiedAt) || 0) ||
-      left.path.localeCompare(right.path),
-  )[0];
-}
-
 function resetToRepoBlankDocument() {
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
@@ -5329,6 +5322,7 @@ function registerAgentTools(ready) {
         coordinateSpace: "absolute-canvas",
         manualLayoutPreservesGeometry: true,
         autoLayoutOwnsDirectChildPositions: true,
+        autoLayoutChildCoordinates: "resolved-fallback",
         autoLayoutChildSizingAppliesToContainers: true,
         asymmetricPaddingFields: ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"],
       },

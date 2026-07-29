@@ -162,6 +162,12 @@ assert.deepEqual(
 const designCodec = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document.mjs"))
 );
+const designAudit = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/audit.mjs"))
+);
+const designRepository = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/repository.mjs"))
+);
 const baseNode = (id, type, name) => ({
   id,
   type,
@@ -220,6 +226,53 @@ assert.equal(designState.nodes.length, 3);
 assert.equal(designState.nodes[2].parentId, "group");
 const designRoundTrip = JSON.parse(designCodec.serializeDesignDocument(designState));
 assert.equal(designRoundTrip.pages[0].children[0].children[0].children[0].id, "rect");
+const manualOnlyNodes = Array.from({ length: 12 }, (_, index) => ({
+  ...baseNode(`manual-frame-${index + 1}`, "frame", `Manual frame ${index + 1}`),
+  x: (index % 6) * 120,
+  y: Math.floor(index / 6) * 120,
+  layout: "none",
+  gap: 0,
+  padding: 0,
+  alignItems: "start",
+  justifyContent: "start",
+}));
+const manualOnlyDocument = {
+  canvas: { width: 1000, height: 800, background: "#eeeeee" },
+  nodes: manualOnlyNodes,
+};
+assert(
+  designAudit
+    .auditDesign(manualOnlyDocument)
+    .some((issue) => issue.code === "layout.manual-only-ui"),
+);
+assert(
+  !designAudit
+    .auditDesign({
+      ...manualOnlyDocument,
+      nodes: manualOnlyNodes.map((node, index) =>
+        index === 0 ? { ...node, layout: "horizontal" } : node,
+      ),
+    })
+    .some((issue) => issue.code === "layout.manual-only-ui"),
+);
+const defaultDesignEntry = {
+  path: designRepository.DEFAULT_DESIGN_PATH,
+  modifiedAt: 10,
+};
+assert.equal(
+  designRepository.chooseRepoDesignFile([
+    { path: "designs/newest.codesign.json", modifiedAt: 100 },
+    defaultDesignEntry,
+  ]),
+  defaultDesignEntry,
+);
+assert.equal(
+  designRepository.chooseRepoDesignFile([
+    { path: "designs/older.codesign.json", modifiedAt: 10 },
+    { path: "designs/newer.codesign.json", modifiedAt: 100 },
+  ]).path,
+  "designs/newer.codesign.json",
+);
 
 const quant = await import(pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/engine.mjs")));
 const bars = quant.generateDemoBars(260);
@@ -238,4 +291,6 @@ for (const result of results) {
 }
 console.log("✓ Design Studio geometry smoke test");
 console.log("✓ Design Studio v3 recursive document smoke test");
+console.log("✓ Design Studio manual-only layout quality audit");
+console.log("✓ Design Studio default repository file selection");
 console.log("✓ Quant Lab engine smoke test");
