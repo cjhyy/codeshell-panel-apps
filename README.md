@@ -33,13 +33,16 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.15 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
+Design Studio 0.16 uses one v3 responsive-layout model: Wrap, Grid, independent axis gaps,
 dual-axis Hug/Fill/Fixed sizing, per-item alignment/auto margin, and absolute children with
 Constraints inside Auto Layout. Guarded HTML import maps supported Flex/Grid semantics, form
 values, wrapping, ellipsis, and browser baselines. Logical designs have no whole-document byte
-limit: larger sources become a small page index plus verified, content-addressed page objects, and
-unchanged pages are reused on save. Host request budgets remain bounded without becoming product
-file limits. Local, html2figma-derived, and opt-in real-page
+limit: larger sources become a small page index plus verified, content-addressed page objects;
+the runtime loads and caches only the active page and its component dependencies, then reuses
+unchanged pages on save. Images and fonts live in a deduplicated content-addressed resource
+library, while undo and crash recovery store operations instead of repeated whole-document
+snapshots. Host request budgets remain bounded without becoming product file limits. Local,
+html2figma-derived, and opt-in real-page
 fidelity probes verify measured and reflowed output.
 
 ## Repository layout

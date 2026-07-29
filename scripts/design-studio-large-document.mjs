@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import {
   normalizeDesignDocument,
   serializeDesignDocument,
 } from "../apps/design-studio/app/document.mjs";
+import { createDesignResourcePersistencePlan } from "../apps/design-studio/app/resource-store.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIR, "..");
@@ -81,6 +83,31 @@ function baseRectangle(pageIndex, index) {
   };
 }
 
+const pixelBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const pixelResourcePlan = await createDesignResourcePersistencePlan({
+  id: "large-pixel",
+  kind: "image",
+  mime: "image/png",
+  base64: pixelBase64,
+  sha256Bytes: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+});
+const fontBytes = await readFile(
+  resolve(
+    REPOSITORY_ROOT,
+    "node_modules/playwright-core/lib/vite/traceViewer/codicon.DCmgc-ay.ttf",
+  ),
+);
+const fontResourcePlan = await createDesignResourcePersistencePlan({
+  id: "large-font",
+  kind: "font",
+  mime: "font/ttf",
+  base64: fontBytes.toString("base64"),
+  family: "CodeShell Resource Test",
+  weight: 400,
+  style: "normal",
+  sha256Bytes: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+});
 const documentSource = serializeDesignDocument(
   normalizeDesignDocument({
     format: "codeshell.design",
@@ -88,13 +115,47 @@ const documentSource = serializeDesignDocument(
     name: "Large repository design",
     canvas: { width: 1_800, height: 1_440, background: "#ffffff" },
     tokens: { colors: [] },
+    resources: [pixelResourcePlan.descriptor, fontResourcePlan.descriptor],
     activePageId: "page-1",
     pages: Array.from({ length: 2 }, (_, pageIndex) => ({
       id: `page-${pageIndex + 1}`,
       name: `Large page ${pageIndex + 1}`,
-      children: Array.from({ length: 350 }, (_, index) =>
-        baseRectangle(pageIndex, index),
-      ),
+      children: [
+        ...(pageIndex === 0
+          ? [
+              {
+                ...baseRectangle(10, 0),
+                id: "large-image",
+                type: "image",
+                name: "Content-addressed image",
+                imageRef: "large-pixel",
+                objectFit: "cover",
+                fill: "transparent",
+              },
+              {
+                ...baseRectangle(10, 1),
+                id: "large-font-text",
+                type: "text",
+                name: "Content-addressed font",
+                text: "A",
+                fontSize: 16,
+                fontWeight: 400,
+                fontFamily: "sans-serif",
+                fontRef: "large-font",
+                fontStyle: "normal",
+                lineHeight: 1.2,
+                letterSpacing: 0,
+                textDecoration: "none",
+                textAlign: "left",
+                cornerRadius: 0,
+                fill: "#111111",
+              },
+            ]
+          : []),
+        ...Array.from({ length: 350 }, (_, index) =>
+          baseRectangle(pageIndex, index),
+        ),
+      ],
     })),
   }),
 );
@@ -109,12 +170,22 @@ const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1_280, height: 800 } });
 try {
   await page.addInitScript(
-    ({ path, source }) => {
+    ({ path, source, resourceParts }) => {
       const prefix = "codeshell-design-studio:";
-      localStorage.setItem(`${prefix}file:${path}`, source);
-      localStorage.setItem(`${prefix}mtime:${path}`, "1000");
+      if (localStorage.getItem(`${prefix}file:${path}`) == null) {
+        localStorage.setItem(`${prefix}file:${path}`, source);
+        localStorage.setItem(`${prefix}mtime:${path}`, "1000");
+        for (const part of resourceParts) {
+          localStorage.setItem(`${prefix}file:${part.path}`, part.content);
+          localStorage.setItem(`${prefix}mtime:${part.path}`, "1000");
+        }
+      }
     },
-    { path: DESIGN_PATH, source: documentSource },
+    {
+      path: DESIGN_PATH,
+      source: documentSource,
+      resourceParts: [...pixelResourcePlan.parts, ...fontResourcePlan.parts],
+    },
   );
   await page.goto(`${server.origin}/apps/design-studio/app/index.html`, {
     waitUntil: "networkidle",
@@ -162,6 +233,7 @@ try {
         name: manifest.name,
         canvas: manifest.canvas,
         tokens: manifest.tokens,
+        resources: manifest.resources ?? [],
         activePageId: manifest.activePageId,
         pages: pageRecords.map(({ page }) => ({
           id: page.id,
@@ -185,9 +257,16 @@ try {
   }, { path: DESIGN_PATH, expectedSource: documentSource });
   if (!persisted.reconstructed) throw new Error("Saved design index did not reconstruct exactly");
   await page.waitForTimeout(20);
+  const primaryModifiedAtBeforeSecondSave = await page.evaluate((path) =>
+    localStorage.getItem(`codeshell-design-studio:mtime:${path}`),
+  DESIGN_PATH);
   await page.locator("#save").click();
   await page.waitForFunction(
-    () => document.querySelector("#save-state")?.dataset.kind === "saved",
+    ({ path, previousModifiedAt }) =>
+      localStorage.getItem(`codeshell-design-studio:mtime:${path}`) !==
+        previousModifiedAt &&
+      document.querySelector("#save-state")?.dataset.kind === "saved",
+    { path: DESIGN_PATH, previousModifiedAt: primaryModifiedAtBeforeSecondSave },
   );
   const unchangedPartsReused = await page.evaluate((previousEntries) => {
     const prefix = "codeshell-design-studio:";
@@ -206,10 +285,140 @@ try {
       document.querySelector("#save-state")?.dataset.kind === "saved",
     DESIGN_PATH,
   );
+  const lazyOpen = await page.evaluate((path) => {
+    const prefix = "codeshell-design-studio:";
+    const manifest = JSON.parse(localStorage.getItem(`${prefix}file:${path}`));
+    const descriptor = manifest.pages.find((page) => page.id === "page-2");
+    if (!descriptor?.sha256) {
+      return {
+        format: manifest.format,
+        pageIds: manifest.pages.map((page) => page.id),
+        inactivePartPath: null,
+        inactiveReadBeforeSwitch: null,
+        reads: [...(globalThis.__designStudioMockReads ?? [])],
+      };
+    }
+    const inactivePartPath =
+      `designs/codesign-data/pages/${descriptor.sha256.slice(0, 16)}/` +
+      `${descriptor.sha256}-0001.txt`;
+    const reads = globalThis.__designStudioMockReads ?? [];
+    return {
+      inactivePartPath,
+      inactiveReadBeforeSwitch: reads.includes(inactivePartPath),
+      reads: [...reads],
+    };
+  }, DESIGN_PATH);
+  if (!lazyOpen.inactivePartPath) {
+    throw new Error(`Reloaded source was not a two-page index: ${JSON.stringify(lazyOpen)}`);
+  }
+  if (lazyOpen.inactiveReadBeforeSwitch) {
+    throw new Error("Indexed open eagerly read the inactive page");
+  }
   await page.locator("#layers-tab-button").click();
   const layerCount = await page.locator("#layers-list .layer-row").count();
-  if (layerCount !== 350) {
-    throw new Error(`Reloaded index exposed ${layerCount} active-page layers instead of 350`);
+  if (layerCount !== 352) {
+    throw new Error(`Reloaded index exposed ${layerCount} active-page layers instead of 352`);
+  }
+  const renderedResourceImage = await page
+    .locator('image[data-node-id="large-image"]')
+    .getAttribute("href");
+  if (!renderedResourceImage?.startsWith("data:image/png;base64,")) {
+    throw new Error("Content-addressed image did not render from its resource reference");
+  }
+  const renderedResourceFont = await page.evaluate(() => {
+    const text = document.querySelector('text[data-node-id="large-font-text"]');
+    return {
+      family: text?.getAttribute("font-family"),
+      loaded: document.fonts.check('400 16px "CodeShell Resource Test"'),
+    };
+  });
+  if (
+    renderedResourceFont.family !== "CodeShell Resource Test" ||
+    renderedResourceFont.loaded !== true
+  ) {
+    throw new Error("Content-addressed font did not load and render from fontRef");
+  }
+  await page.locator("#active-page").selectOption("page-2");
+  await page.waitForFunction(
+    (inactivePartPath) =>
+      (globalThis.__designStudioMockReads ?? []).includes(inactivePartPath) &&
+      document.querySelector("#active-page")?.value === "page-2",
+    lazyOpen.inactivePartPath,
+  );
+  const switchedLayerCount = await page.locator("#layers-list .layer-row").count();
+  if (switchedLayerCount !== 350) {
+    throw new Error(
+      `Lazy page switch exposed ${switchedLayerCount} layers instead of 350`,
+    );
+  }
+  await page.locator('.layer-row[data-id="large-layer-351"]').click();
+  await page.locator("#design-tab-button").click();
+  await page.locator("#prop-name").fill("Recovered layer 351");
+  await page.locator("#prop-name").blur();
+  await page.waitForFunction(
+    () => document.querySelector("#save-state")?.dataset.kind === "dirty",
+  );
+  await page.waitForFunction(() => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.includes("storage:recovery.")) continue;
+      const value = JSON.parse(localStorage.getItem(key));
+      return (
+        value?.format === "codeshell.design.recovery" &&
+        value.design === undefined &&
+        value.record?.operations?.length > 0
+      );
+    }
+    return false;
+  });
+  const recoveryLog = await page.evaluate(() => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.includes("storage:recovery.")) continue;
+      const source = localStorage.getItem(key);
+      const value = JSON.parse(source);
+      if (value?.format === "codeshell.design.recovery") {
+        return {
+          bytes: new TextEncoder().encode(source).length,
+          operationCount: value.record.operations.length,
+          containsWholeDesign: Object.hasOwn(value, "design"),
+        };
+      }
+    }
+    return null;
+  });
+  if (!recoveryLog || recoveryLog.containsWholeDesign) {
+    throw new Error("Recovery persisted a whole-document snapshot instead of operations");
+  }
+  page.on("dialog", (dialog) => void dialog.accept());
+  await page.reload({ waitUntil: "networkidle" });
+  await page.waitForFunction(
+    (path) =>
+      document.querySelector("#document-path")?.value === path &&
+      document.querySelector("#save-state")?.dataset.kind === "dirty" &&
+      document.querySelector("#active-page")?.value === "page-2",
+    DESIGN_PATH,
+  );
+  await page.locator("#layers-tab-button").click();
+  await page.locator('.layer-row[data-id="large-layer-351"]').click();
+  await page.locator("#design-tab-button").click();
+  if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
+    throw new Error("Operation-log recovery did not restore the cross-page node edit");
+  }
+  await page.locator("#stage").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await page.waitForFunction(
+    () => document.querySelector("#active-page")?.value === "page-1",
+  );
+  await page.keyboard.press("Control+Shift+z");
+  await page.waitForFunction(
+    () => document.querySelector("#active-page")?.value === "page-2",
+  );
+  await page.locator("#layers-tab-button").click();
+  await page.locator('.layer-row[data-id="large-layer-351"]').click();
+  await page.locator("#design-tab-button").click();
+  if ((await page.locator("#prop-name").inputValue()) !== "Recovered layer 351") {
+    throw new Error("Redo did not replay the recovered operation record");
   }
   process.stdout.write(
     `${JSON.stringify(
@@ -219,7 +428,14 @@ try {
         ...persisted,
         partModifiedAt: undefined,
         unchangedPagesReused: unchangedPartsReused,
+        inactivePageDeferredUntilSwitch: true,
+        contentAddressedImageRendered: true,
+        contentAddressedFontRendered: true,
+        operationLogRecovery: true,
+        recoveryOperationCount: recoveryLog.operationCount,
+        recoveryBytes: recoveryLog.bytes,
         reloadedLayerCount: layerCount,
+        switchedLayerCount,
       },
       null,
       2,

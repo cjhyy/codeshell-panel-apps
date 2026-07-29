@@ -1,8 +1,8 @@
 # Design Studio Panel App
 
-Design Studio 0.15 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.16 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
-surface: nine declared design tools plus a repository-design Skill.
+surface: ten declared design tools plus a repository-design Skill.
 
 ## What it does
 
@@ -35,6 +35,17 @@ surface: nine declared design tools plus a repository-design Skill.
   immutable, content-addressed page objects under `designs/codesign-data/`. Saving reuses unchanged
   pages and commits the primary index only after every changed page object is available. Legacy
   monolithic and `codeshell.design.bundle` documents migrate to the page index on their next save.
+- An indexed-page runtime that opens only the active page plus transitive component-provider pages,
+  keeps clean pages in a bounded LRU cache, pins dirty pages and their dependencies, and loads a
+  requested page on demand. Metadata stays lightweight; full validation and export deliberately
+  materialize every page.
+- A content-addressed image/font library under `designs/codesign-data/images/` and `fonts/`.
+  Documents keep stable `imageRef`/`fontRef` descriptors rather than embedded binary payloads;
+  identical bytes reuse the same verified objects. The Agent resource tool accepts small inline
+  Base64 or ordered workspace `.txt` chunks, so larger assets do not require larger tool arguments.
+- Operation-log undo, redo, and crash recovery. Recovery stores the delta from the last saved
+  baseline and spills large logs into checked content-addressed chunks, avoiding repeated
+  whole-document snapshots in app storage.
 - Automatic binding to the current repository: recovery first, then the repository's last-opened
   design, then `designs/design.codesign.json`, then the newest remaining design, otherwise a blank
   repo document at the default path.
@@ -110,9 +121,10 @@ Add `--check-svg` when the repository also keeps a sibling generated SVG preview
 the current active page exactly.
 
 The checker resolves indexed and legacy large-document manifests automatically and verifies every
-page object's UTF-8 byte length plus complete SHA-256 before normalizing or auditing the
-reconstructed v3 document. Do not edit `designs/codesign-data/` objects directly; save through
-Design Studio so the primary index changes only after every changed immutable page is available.
+page and referenced resource object's byte length plus complete SHA-256 before normalizing or
+auditing the reconstructed v3 document. Do not edit `designs/codesign-data/` objects directly;
+save through Design Studio so the primary index changes only after every changed immutable object
+is available.
 
 ## HTML fidelity fixture
 

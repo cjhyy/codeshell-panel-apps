@@ -263,6 +263,18 @@ const designBundle = await import(
 const designIndex = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/document-index.mjs"))
 );
+const designPageRuntime = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/page-runtime.mjs"))
+);
+const designOperationLog = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/operation-log.mjs"))
+);
+const designResources = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/resource-store.mjs"))
+);
+const designRecovery = await import(
+  pathToFileURL(join(repositoryRoot, "apps/design-studio/app/recovery-store.mjs"))
+);
 const designAudit = await import(
   pathToFileURL(join(repositoryRoot, "apps/design-studio/app/audit.mjs"))
 );
@@ -423,6 +435,281 @@ const incrementalIndexedPlan = await designIndex.createDesignIndexPersistencePla
 assert.equal(incrementalIndexedPlan.changedPageCount, 1);
 assert(
   incrementalIndexedPlan.parts.every((part) => part.pageId === "page-2"),
+);
+const loadedPageRecords = new Map([
+  ["page-1", designCodec.repositoryDesignPage(indexedDesign, "page-1")],
+]);
+const lazySavePlan = await designIndex.createIncrementalDesignIndexPersistencePlan({
+  document: indexedDesign,
+  pageRecords: loadedPageRecords,
+  sha256: hashDesignSource,
+  previousManifest: indexedPlan.manifest,
+});
+assert.equal(lazySavePlan.changedPageCount, 0);
+assert.equal(lazySavePlan.parts.length, 0);
+assert.equal(
+  lazySavePlan.manifest.pages[1].sha256,
+  indexedPlan.manifest.pages[1].sha256,
+);
+const componentContainer = (id, name, children = []) => ({
+  ...baseNode(id, "component", name),
+  layout: "none",
+  gap: 0,
+  padding: 0,
+  alignItems: "start",
+  justifyContent: "start",
+  children,
+});
+const lazyIndexedDesign = designCodec.normalizeDesignDocument({
+  ...nestedDesign,
+  name: "Lazy page smoke",
+  pages: [
+    {
+      id: "screen",
+      name: "Screen",
+      children: [
+        {
+          ...baseNode("button-instance", "instance", "Button instance"),
+          fill: "transparent",
+          componentId: "button-component",
+        },
+      ],
+    },
+    {
+      id: "components",
+      name: "Components",
+      children: [
+        componentContainer("button-component", "Button", [
+          {
+            ...baseNode("icon-instance", "instance", "Icon instance"),
+            fill: "transparent",
+            componentId: "icon-component",
+          },
+        ]),
+      ],
+    },
+    {
+      id: "icons",
+      name: "Icons",
+      children: [componentContainer("icon-component", "Icon")],
+    },
+    {
+      id: "archive",
+      name: "Archive",
+      children: [{ ...baseNode("archive-rect", "rectangle", "Archive") }],
+    },
+  ],
+  activePageId: "screen",
+});
+const lazyIndexedPlan = await designIndex.createDesignIndexPersistencePlan({
+  document: lazyIndexedDesign,
+  sha256: hashDesignSource,
+});
+const lazyReadPaths = [];
+const lazyCache = new designPageRuntime.IndexedPageCache({
+  manifest: lazyIndexedPlan.manifest,
+  readText: async (path) => {
+    lazyReadPaths.push(path);
+    return lazyIndexedPlan.parts.find((part) => part.path === path)?.content;
+  },
+  sha256: hashDesignSource,
+  maximumLoadedPages: 3,
+});
+const activeClosure = await lazyCache.ensure(["screen"]);
+assert.deepEqual([...activeClosure.keys()].sort(), ["components", "icons", "screen"]);
+assert.equal(lazyCache.has("archive"), false);
+assert.equal(lazyReadPaths.length, 3);
+lazyCache.markDirty("screen");
+await lazyCache.ensure(["archive"]);
+assert.equal(lazyCache.has("archive"), true);
+assert.equal(lazyCache.has("screen"), true);
+assert.equal(lazyCache.has("components") && lazyCache.has("icons"), true);
+assert.equal(lazyCache.loadedPageIds().length, 4);
+lazyCache.markAllClean();
+lazyCache.evict();
+assert.equal(lazyCache.has("components") && lazyCache.has("icons"), false);
+assert.equal(lazyCache.loadedPageIds().length, 3);
+assert.equal(lazyReadPaths.length, 4);
+const operationBefore = designOperationLog.captureDesignOperationState(indexedDesign);
+const operationEdited = structuredClone(indexedDesign);
+operationEdited.name = "Operation log edit";
+operationEdited.nodes[0].name = "Edited frame";
+operationEdited.nodes.push({
+  ...baseNode("operation-node", "rectangle", "Operation node"),
+});
+operationEdited.pages[0].nodes = operationEdited.nodes;
+const operationAfter = designOperationLog.captureDesignOperationState(operationEdited);
+const operationRecord = designOperationLog.createDesignOperationRecord(
+  operationBefore,
+  operationAfter,
+);
+assert.equal(designOperationLog.isEmptyDesignOperationRecord(operationRecord), false);
+const operationReplay = structuredClone(indexedDesign);
+designOperationLog.applyDesignOperationRecord(operationReplay, operationRecord, "forward");
+assert.deepEqual(
+  designOperationLog.captureDesignOperationState(operationReplay),
+  operationAfter,
+);
+designOperationLog.applyDesignOperationRecord(operationReplay, operationRecord, "reverse");
+assert.deepEqual(
+  designOperationLog.captureDesignOperationState(operationReplay),
+  operationBefore,
+);
+const pixelBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const hashDesignBytes = async (bytes) =>
+  createHash("sha256").update(bytes).digest("hex");
+const pixelResource = await designResources.createDesignResourcePersistencePlan({
+  id: "pixel-image",
+  kind: "image",
+  mime: "image/png",
+  base64: pixelBase64,
+  sha256Bytes: hashDesignBytes,
+});
+const duplicatePixelResource =
+  await designResources.createDesignResourcePersistencePlan({
+    id: "pixel-image-copy",
+    kind: "image",
+    mime: "image/png",
+    base64: pixelBase64,
+    sha256Bytes: hashDesignBytes,
+  });
+assert.equal(
+  pixelResource.descriptor.sha256,
+  duplicatePixelResource.descriptor.sha256,
+);
+assert.deepEqual(
+  pixelResource.parts.map((part) => part.path),
+  duplicatePixelResource.parts.map((part) => part.path),
+);
+const resolvedPixel = await designResources.resolveDesignResource({
+  descriptor: pixelResource.descriptor,
+  readText: async (path) =>
+    pixelResource.parts.find((part) => part.path === path)?.content,
+  sha256Bytes: hashDesignBytes,
+});
+assert.equal(resolvedPixel.base64, pixelBase64);
+assert(resolvedPixel.dataUrl.startsWith("data:image/png;base64,"));
+const resourceCache = new designResources.DesignResourceCache({
+  resources: [pixelResource.descriptor, duplicatePixelResource.descriptor],
+  readText: async (path) =>
+    pixelResource.parts.find((part) => part.path === path)?.content,
+  sha256Bytes: hashDesignBytes,
+});
+await resourceCache.load("pixel-image");
+await resourceCache.load("pixel-image-copy");
+resourceCache.retain(["pixel-image-copy"]);
+assert.deepEqual(resourceCache.loadedResourceIds(), ["pixel-image-copy"]);
+await assert.rejects(
+  () =>
+    designResources.resolveDesignResource({
+      descriptor: pixelResource.descriptor,
+      readText: async () => `${pixelBase64.slice(0, -4)}AAAA`,
+      sha256Bytes: hashDesignBytes,
+    }),
+  /摘要校验失败|字节数无效/u,
+);
+const imageDesign = designCodec.normalizeDesignDocument({
+  ...nestedDesign,
+  resources: [pixelResource.descriptor],
+  pages: [
+    {
+      id: "page-1",
+      name: "Page 1",
+      children: [
+        {
+          ...baseNode("pixel-node", "image", "Pixel"),
+          fill: "transparent",
+          imageRef: "pixel-image",
+          objectFit: "cover",
+        },
+      ],
+    },
+  ],
+});
+assert.equal(imageDesign.nodes[0].imageRef, "pixel-image");
+const imageSvg = designCodec.exportDesignSvg(imageDesign, {
+  resourceDataUrls: new Map([["pixel-image", resolvedPixel.dataUrl]]),
+});
+assert(imageSvg.includes(`<image data-node-id="pixel-node"`));
+assert(imageSvg.includes(resolvedPixel.dataUrl));
+const fontDescriptor = {
+  id: "test-font",
+  kind: "font",
+  mime: "font/ttf",
+  bytes: 1,
+  sha256: "0".repeat(64),
+  partCount: 1,
+  family: 'Test "Font"',
+  weight: 400,
+  style: "normal",
+};
+const fontDesign = designCodec.normalizeDesignDocument({
+  ...nestedDesign,
+  resources: [fontDescriptor],
+  pages: [
+    {
+      id: "page-1",
+      name: "Page 1",
+      children: [
+        {
+          ...baseNode("font-node", "text", "Font text"),
+          text: "Font text",
+          fontSize: 16,
+          fontWeight: 400,
+          lineHeight: 1.2,
+          textAlign: "left",
+          fontRef: "test-font",
+        },
+      ],
+    },
+  ],
+});
+const fontSvg = designCodec.exportDesignSvg(fontDesign, {
+  resourceDataUrls: new Map([["test-font", "data:font/ttf;base64,AA=="]]),
+});
+assert(fontSvg.includes("@font-face"));
+assert(fontSvg.includes("data:font/ttf;base64,AA=="));
+assert(fontSvg.includes("Test &quot;Font&quot;"));
+const largeRecoverySnapshot = {
+  format: "codeshell.design.recovery",
+  version: 1,
+  workspaceRoot: "/repo",
+  path: "designs/recovery.codesign.json",
+  record: {
+    version: 1,
+    operations: [
+      {
+        type: "set-document",
+        field: "name",
+        before: "Before",
+        after: "R".repeat(220 * 1024),
+      },
+    ],
+  },
+  baseDocument: null,
+  baseModifiedAt: 1,
+  baseRevision: "revision-1",
+};
+const recoveryPlan = await designRecovery.createRecoveryPersistencePlan({
+  snapshot: largeRecoverySnapshot,
+  sha256: hashDesignSource,
+});
+assert.equal(recoveryPlan.mode, "external");
+assert(recoveryPlan.parts.length >= 1);
+assert(
+  new TextEncoder().encode(JSON.stringify(recoveryPlan.value)).length <
+    256 * 1024,
+);
+const resolvedRecovery = await designRecovery.resolveRecoveryPersistence({
+  value: recoveryPlan.value,
+  readText: async (path) =>
+    recoveryPlan.parts.find((part) => part.path === path)?.content,
+  sha256: hashDesignSource,
+});
+assert.equal(
+  resolvedRecovery.record.operations[0].after.length,
+  220 * 1024,
 );
 const indexedCheckerWorkspace = await mkdtemp(
   join(tmpdir(), "codeshell-design-index-"),

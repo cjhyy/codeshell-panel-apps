@@ -17,6 +17,11 @@
     },
     "canvas": { "$ref": "#/$defs/canvas" },
     "tokens": { "$ref": "#/$defs/tokens" },
+    "resources": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": { "$ref": "#/$defs/resource" }
+    },
     "activePageId": { "$ref": "#/$defs/pageId" },
     "pages": {
       "type": "array",
@@ -82,6 +87,43 @@
         }
       }
     },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "mime", "bytes", "sha256", "partCount"],
+      "properties": {
+        "id": { "$ref": "#/$defs/pageId" },
+        "kind": { "enum": ["image", "font"] },
+        "mime": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "partCount": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]+$"
+        },
+        "weight": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "style": { "enum": ["normal", "italic", "oblique"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "font" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["family", "weight", "style"] },
+          "else": {
+            "allOf": [
+              { "not": { "required": ["family"] } },
+              { "not": { "required": ["weight"] } },
+              { "not": { "required": ["style"] } }
+            ]
+          }
+        }
+      ]
+    },
     "node": {
       "type": "object",
       "additionalProperties": false,
@@ -105,7 +147,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/nodeId" },
         "type": {
-          "enum": ["frame", "group", "component", "instance", "rectangle", "ellipse", "text"]
+          "enum": ["frame", "group", "component", "instance", "rectangle", "ellipse", "text", "image"]
         },
         "name": {
           "type": "string",
@@ -162,7 +204,10 @@
         "textOverflow": { "enum": ["ellipsis"] },
         "textFlowWidth": { "type": "number", "minimum": 1, "maximum": 20000 },
         "layoutBaselineOffset": { "type": "number", "minimum": -100, "maximum": 100 },
+        "fontRef": { "$ref": "#/$defs/pageId" },
         "textAlign": { "enum": ["left", "center", "right"] },
+        "imageRef": { "$ref": "#/$defs/pageId" },
+        "objectFit": { "enum": ["fill", "contain", "cover"] },
         "layout": { "enum": ["none", "horizontal", "vertical", "grid"] },
         "layoutWrap": { "enum": ["none", "wrap"] },
         "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
@@ -255,9 +300,23 @@
                 { "required": ["textOverflow"] },
                 { "required": ["textFlowWidth"] },
                 { "required": ["layoutBaselineOffset"] },
+                { "required": ["fontRef"] },
                 { "required": ["textAlign"] }
               ]
             }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "image" } },
+            "required": ["type"]
+          },
+          "then": { "required": ["imageRef", "objectFit"] },
+          "else": {
+            "allOf": [
+              { "not": { "required": ["imageRef"] } },
+              { "not": { "required": ["objectFit"] } }
+            ]
           }
         },
         {

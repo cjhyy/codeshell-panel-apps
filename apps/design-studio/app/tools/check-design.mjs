@@ -8,7 +8,11 @@ import { fileURLToPath } from "node:url";
 import { auditDesignPages } from "../audit.mjs";
 import { exportDesignSvg, normalizeDesignDocument, serializeDesignDocument } from "../document.mjs";
 import { resolveDesignPersistenceSource } from "../document-bundle.mjs";
-import { resolveDesignIndexDocument } from "../document-index.mjs";
+import {
+  resolveDesignIndexDocument,
+  serializeDesignIndexManifest,
+} from "../document-index.mjs";
+import { resolveDesignResource } from "../resource-store.mjs";
 
 export function inspectDesignSource(source, path = "design.codesign.json") {
   if (typeof source !== "string") throw new Error(`${path}: source must be UTF-8 text`);
@@ -38,8 +42,11 @@ export function decodeDesignSource(bytes, path = "design.codesign.json") {
   }
 }
 
-export function isDesignPreviewCurrent(document, svgSource) {
-  return typeof svgSource === "string" && svgSource === exportDesignSvg(document);
+export function isDesignPreviewCurrent(document, svgSource, resourceDataUrls = new Map()) {
+  return (
+    typeof svgSource === "string" &&
+    svgSource === exportDesignSvg(document, { resourceDataUrls })
+  );
 }
 
 export async function readDesignSourcePath(path, { workspaceRoot = process.cwd() } = {}) {
@@ -47,17 +54,33 @@ export async function readDesignSourcePath(path, { workspaceRoot = process.cwd()
   const readText = async (partPath) =>
     decodeDesignSource(await readFile(resolve(workspaceRoot, partPath)), partPath);
   const sha256 = async (source) => createHash("sha256").update(source).digest("hex");
+  const sha256Bytes = async (bytes) =>
+    createHash("sha256").update(bytes).digest("hex");
+  const loadResources = async (document) => {
+    const resolvedResources = await Promise.all(
+      (document.resources ?? []).map((descriptor) =>
+        resolveDesignResource({ descriptor, readText, sha256Bytes }),
+      ),
+    );
+    return new Map(
+      resolvedResources.map((resource) => [
+        resource.descriptor.id,
+        resource.dataUrl,
+      ]),
+    );
+  };
   const indexed = await resolveDesignIndexDocument({
     primarySource,
     readText,
     sha256,
   });
   if (indexed) {
+    const resourceDataUrls = await loadResources(indexed.document);
     return {
       ...indexed,
       source: serializeDesignDocument(indexed.document),
-      primaryCanonical:
-        primarySource === `${JSON.stringify(indexed.manifest, null, 2)}\n`,
+      primaryCanonical: primarySource === serializeDesignIndexManifest(indexed.manifest),
+      resourceDataUrls,
     };
   }
   const resolved = await resolveDesignPersistenceSource({
@@ -65,8 +88,19 @@ export async function readDesignSourcePath(path, { workspaceRoot = process.cwd()
     readText,
     sha256,
   });
+  let resolvedDocument = null;
+  try {
+    resolvedDocument = normalizeDesignDocument(JSON.parse(resolved.source));
+  } catch {
+    // Legacy generic bundle tests may contain non-design text. inspectDesignSource
+    // remains the authoritative design parser for the CLI path.
+  }
+  const resourceDataUrls = resolvedDocument
+    ? await loadResources(resolvedDocument)
+    : new Map();
   return {
     ...resolved,
+    resourceDataUrls,
     primaryCanonical:
       resolved.mode === "single" ||
       primarySource === `${JSON.stringify(resolved.manifest, null, 2)}\n`,
@@ -113,7 +147,13 @@ async function main(arguments_) {
         } catch (error) {
           throw new Error(`${path}: missing sibling SVG preview ${svgPath}`, { cause: error });
         }
-        if (!isDesignPreviewCurrent(inspection.document, svgSource)) {
+        if (
+          !isDesignPreviewCurrent(
+            inspection.document,
+            svgSource,
+            persisted.resourceDataUrls,
+          )
+        ) {
           failed = true;
           process.stderr.write(`✗ ${path}: sibling SVG preview is stale\n`);
         }
