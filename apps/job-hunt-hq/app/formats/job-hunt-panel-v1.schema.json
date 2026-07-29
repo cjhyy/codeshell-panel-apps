@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeshell.dev/schemas/job-hunt-panel-v1.schema.json",
+  "title": "Job Hunt HQ project snapshot",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "updatedAt",
+    "profile",
+    "jobs",
+    "repos",
+    "experiences",
+    "resume",
+    "versions",
+    "interviewSets"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "updatedAt": {
+      "type": "string"
+    },
+    "selectedJobId": {
+      "type": "string"
+    },
+    "selectedInterviewSetId": {
+      "type": "string"
+    },
+    "profile": {
+      "type": "object"
+    },
+    "jobs": {
+      "type": "array"
+    },
+    "repos": {
+      "type": "array"
+    },
+    "experiences": {
+      "type": "array"
+    },
+    "resume": {
+      "type": "object"
+    },
+    "versions": {
+      "type": "array"
+    },
+    "interviewSets": {
+      "type": "array"
+    }
+  },
+  "additionalProperties": false
+}

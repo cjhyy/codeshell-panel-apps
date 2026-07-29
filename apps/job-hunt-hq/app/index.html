@@ -52,8 +52,8 @@
           </button>
           <button class="nav-item" type="button" data-view-target="materials">
             <span class="nav-icon" aria-hidden="true">◇</span>
-            <span>材料库</span>
-            <span id="source-nav-count" class="nav-count">4</span>
+            <span>当前项目</span>
+            <span id="source-nav-count" class="nav-count">1</span>
           </button>
           <button class="nav-item" type="button" data-view-target="resumes">
             <span class="nav-icon" aria-hidden="true">▤</span>
@@ -99,7 +99,7 @@
             class="icon-button"
             type="button"
             data-view-target="materials"
-            aria-label="编辑个人资料"
+            aria-label="查看当前项目上下文"
           >
             ···
           </button>
@@ -182,9 +182,10 @@
                 <div class="segmented" role="group" aria-label="简历显示模式">
                   <button class="active" type="button" data-resume-mode="preview">预览</button>
                   <button type="button" data-resume-mode="edit">编辑</button>
+                  <button type="button" data-resume-mode="jd">职位 JD</button>
                 </div>
                 <button id="save-resume" class="button button-quiet compact" type="button">
-                  保存到 Repo
+                  保存到当前项目
                 </button>
                 <button id="generate-resume" class="button button-primary compact" type="button">
                   <span aria-hidden="true">✦</span>
@@ -205,6 +206,8 @@
                   spellcheck="false"
                   hidden
                 ></textarea>
+                <article id="jd-preview" class="resume-paper jd-paper" aria-label="职位 JD" hidden>
+                </article>
               </div>
             </section>
 
@@ -238,7 +241,7 @@
                   <span class="agent-spark" aria-hidden="true">✦</span>
                   <div>
                     <strong>Agent 已就绪</strong>
-                    <span>会读取当前面板材料，不会编造经历。</span>
+                    <span>会读取当前项目资料，不会编造经历。</span>
                   </div>
                 </div>
                 <button id="ask-agent" class="button button-primary full" type="button">
@@ -261,13 +264,45 @@
         <section id="view-materials" class="view" aria-labelledby="materials-title" hidden>
           <header class="page-heading compact-heading">
             <div>
-              <span class="eyebrow">SOURCE OF TRUTH</span>
-              <h1 id="materials-title">材料库</h1>
-              <p>这里放真实、可验证的经历。生成简历时只会从这些证据中取材。</p>
+              <span class="eyebrow">CURRENT PROJECT ONLY</span>
+              <h1 id="materials-title">当前项目上下文</h1>
+              <p>
+                面板只绑定扩展设置中启用的当前项目，不会打开其他 Repo。Agent 会遵循项目里的
+                CODESHELL.md。
+              </p>
             </div>
           </header>
 
           <section class="materials-grid">
+            <article class="material-card project-context-card">
+              <header>
+                <div>
+                  <span class="panel-kicker">PROJECT BINDING</span>
+                  <h2 id="project-context-name">正在读取当前项目</h2>
+                </div>
+                <span id="project-context-state" class="card-index">检测中</span>
+              </header>
+              <div class="project-context-row">
+                <span>项目范围</span>
+                <strong>仅当前项目</strong>
+              </div>
+              <div class="project-context-row">
+                <span>CODESHELL.md</span>
+                <strong id="codeshell-file-state">正在检测</strong>
+              </div>
+              <div class="project-context-row">
+                <span>面板数据</span>
+                <strong id="project-snapshot-state">等待同步</strong>
+              </div>
+              <p>
+                Agent 负责读取项目资料、优化内容并写回面板；面板只展示岗位、JD、Resume
+                和面试题。
+              </p>
+              <button id="sync-project-context" class="button button-quiet" type="button">
+                重新读取当前项目
+              </button>
+            </article>
+
             <article class="material-card profile-card">
               <header>
                 <div>
@@ -279,30 +314,28 @@
               <div class="profile-form-grid">
                 <label>
                   姓名
-                  <input id="profile-name" value="林默" />
+                  <input id="profile-name" value="林默" readonly />
                 </label>
                 <label>
                   目标角色
-                  <input id="profile-role" value="前端 / AI 产品工程师" />
+                  <input id="profile-role" value="前端 / AI 产品工程师" readonly />
                 </label>
                 <label>
                   联系方式
-                  <input id="profile-contact" value="linmo@example.com · 上海" />
+                  <input id="profile-contact" value="linmo@example.com · 上海" readonly />
                 </label>
                 <label>
                   求职方向
-                  <input id="profile-target" value="AI 应用、开发者工具、前端平台" />
+                  <input id="profile-target" value="AI 应用、开发者工具、前端平台" readonly />
                 </label>
                 <label class="span-2">
                   职业简介
-                  <textarea id="profile-summary" rows="4">
+                  <textarea id="profile-summary" rows="4" readonly>
 5 年前端与产品工程经验，擅长把复杂工作流做成清晰、可靠的产品体验，近期聚焦 AI Agent、开发者工具与跨端应用。</textarea
                   >
                 </label>
               </div>
-              <button id="save-profile" class="button button-primary" type="button">
-                保存个人资料
-              </button>
+              <p class="project-readonly-note">由 Agent 从当前项目资料中提取并同步。</p>
             </article>
 
             <article class="material-card">
@@ -314,14 +347,7 @@
                 <span id="repo-count" class="card-index">02</span>
               </header>
               <div id="repo-list" class="material-list"></div>
-              <div class="card-actions">
-                <button id="scan-workspace" class="button button-quiet" type="button">
-                  读取当前 Repo
-                </button>
-                <button id="open-repo-form" class="button button-primary" type="button">
-                  添加项目
-                </button>
-              </div>
+              <p class="project-readonly-note">这里展示 Agent 从当前项目中识别出的项目证据。</p>
             </article>
 
             <article class="material-card">
@@ -333,25 +359,23 @@
                 <span id="experience-count" class="card-index">02</span>
               </header>
               <div id="experience-list" class="material-list"></div>
-              <button id="open-experience-form" class="button button-primary" type="button">
-                添加工作经历
-              </button>
+              <p class="project-readonly-note">这里展示 Agent 从当前项目中识别出的工作经历。</p>
             </article>
 
             <article class="material-card readiness-card">
               <header>
                 <div>
                   <span class="panel-kicker">READINESS</span>
-                  <h2>材料准备度</h2>
+                  <h2>项目数据状态</h2>
                 </div>
                 <span class="card-index">72%</span>
               </header>
               <div class="readiness-bar"><i></i></div>
               <ul>
-                <li class="done">已有个人定位与联系方式</li>
-                <li class="done">已有 2 段工作经历</li>
-                <li class="done">已有可引用的 Repo</li>
-                <li>建议补充一个可量化的业务结果</li>
+                <li class="done">只使用当前项目范围</li>
+                <li class="done">岗位和 JD 会写入项目快照</li>
+                <li class="done">Resume 与面试题按岗位关联</li>
+                <li>内容优化规则来自 CODESHELL.md</li>
               </ul>
             </article>
           </section>
@@ -506,100 +530,6 @@
             </button>
             <button class="button button-primary" type="submit">分析并保存</button>
           </div>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="repo-dialog" class="dialog">
-      <form id="repo-form" method="dialog" class="dialog-card dialog-card-small">
-        <header>
-          <div>
-            <span class="panel-kicker">PROJECT EVIDENCE</span>
-            <h2>添加项目 / Repo</h2>
-          </div>
-          <button
-            class="icon-button"
-            type="button"
-            data-close-dialog="repo-dialog"
-            aria-label="关闭"
-          >
-            ×
-          </button>
-        </header>
-        <div class="dialog-grid one-column">
-          <label>
-            项目名称
-            <input name="name" placeholder="例如：CodeShell" required maxlength="100" />
-          </label>
-          <label>
-            Repo 路径或链接
-            <input name="path" placeholder="packages/agent 或 GitHub URL" maxlength="1000" />
-          </label>
-          <label>
-            技术栈
-            <input name="tech" placeholder="React, TypeScript, Electron" maxlength="300" />
-          </label>
-          <label>
-            亮点与结果
-            <textarea
-              name="summary"
-              rows="5"
-              placeholder="你做了什么，解决了什么问题，有什么结果？"
-              required
-              maxlength="3000"
-            ></textarea>
-          </label>
-        </div>
-        <footer>
-          <span>尽量写出规模、效率、性能或业务结果。</span>
-          <button class="button button-primary" type="submit">添加项目</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="experience-dialog" class="dialog">
-      <form id="experience-form" method="dialog" class="dialog-card dialog-card-small">
-        <header>
-          <div>
-            <span class="panel-kicker">WORK HISTORY</span>
-            <h2>添加工作经历</h2>
-          </div>
-          <button
-            class="icon-button"
-            type="button"
-            data-close-dialog="experience-dialog"
-            aria-label="关闭"
-          >
-            ×
-          </button>
-        </header>
-        <div class="dialog-grid">
-          <label>
-            公司
-            <input name="company" required maxlength="100" />
-          </label>
-          <label>
-            职位
-            <input name="role" required maxlength="120" />
-          </label>
-          <label class="span-2">
-            时间
-            <input name="period" placeholder="2022.06 — 至今" maxlength="100" />
-          </label>
-          <label class="span-2">
-            工作成果
-            <textarea
-              name="achievements"
-              rows="7"
-              placeholder="每行一条，优先写动作 + 影响 + 数据。"
-              required
-              maxlength="5000"
-            ></textarea>
-          </label>
-        </div>
-        <footer>
-          <span>不会把你没有写过的结果补进简历。</span>
-          <button class="button button-primary" type="submit">添加经历</button>
         </footer>
       </form>
     </dialog>

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Collect jobs across recruiting sites, tailor resumes, and generate evidence-grounded interview question sets from each JD, repository, and work-history profile.",
+  "description": "Visualize jobs, full JDs, tailored resumes, and interview questions generated from the active CodeShell project's CODESHELL.md and verified project files.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -26,13 +26,121 @@
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read the active target job, saved opportunities, candidate profile, repositories, work history, current resume, and saved interview question sets.",
+        "description": "Read the active CodeShell project binding, target job, saved opportunities, extracted candidate context, current resume, and saved interview question sets.",
         "inputSchema": {
           "type": "object",
           "properties": {},
           "additionalProperties": false
         },
         "readOnly": true
+      },
+      {
+        "name": "save_candidate_context",
+        "description": "Save candidate profile, project evidence, and work history extracted from the active CodeShell project's verified files.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "role": {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                "contact": {
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "target": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 3000
+                }
+              },
+              "additionalProperties": false
+            },
+            "repositories": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "path": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "tech": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 3000
+                  }
+                },
+                "required": ["name", "summary"],
+                "additionalProperties": false
+              }
+            },
+            "work_history": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "company": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "role": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "period": {
+                    "type": "string",
+                    "maxLength": 100
+                  },
+                  "achievements": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 1000
+                    }
+                  }
+                },
+                "required": ["company", "role"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["profile", "repositories", "work_history"],
+          "additionalProperties": false
+        },
+        "readOnly": false
       },
       {
         "name": "save_job_opportunities",

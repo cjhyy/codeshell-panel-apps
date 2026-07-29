@@ -1,5 +1,6 @@
 const STORAGE_KEY = "job-hunt-state-v1";
 const PREVIEW_PREFIX = "codeshell-job-hunt-hq:";
+const PROJECT_STATE_PATH = "job-hunt-panel.json";
 
 const JOB_PROVIDERS = [
   { id: "boss", label: "BOSS 直聘", domain: "zhipin.com" },
@@ -235,6 +236,34 @@ const seedState = {
   ],
 };
 
+function emptyProjectState() {
+  return {
+    ...clone(seedState),
+    selectedJobId: "",
+    selectedInterviewSetId: "",
+    activeView: "dashboard",
+    profile: {
+      name: "等待 Agent 识别",
+      role: "当前项目",
+      contact: "",
+      target: "",
+      summary: "",
+    },
+    jobs: [],
+    repos: [],
+    experiences: [],
+    resume: {
+      jobId: "",
+      title: "",
+      markdown: "",
+      notes: [],
+      updatedAt: "",
+    },
+    versions: [],
+    interviewSets: [],
+  };
+}
+
 const elements = {
   workspaceLabel: document.querySelector("#workspace-label"),
   lastSaved: document.querySelector("#last-saved"),
@@ -262,6 +291,7 @@ const elements = {
   resumeUpdated: document.querySelector("#resume-updated"),
   resumePreview: document.querySelector("#resume-preview"),
   resumeEditor: document.querySelector("#resume-editor"),
+  jdPreview: document.querySelector("#jd-preview"),
   generateResume: document.querySelector("#generate-resume"),
   saveResume: document.querySelector("#save-resume"),
   matchScore: document.querySelector("#match-score"),
@@ -281,6 +311,10 @@ const elements = {
   repoCount: document.querySelector("#repo-count"),
   experienceList: document.querySelector("#experience-list"),
   experienceCount: document.querySelector("#experience-count"),
+  projectContextName: document.querySelector("#project-context-name"),
+  projectContextState: document.querySelector("#project-context-state"),
+  codeshellFileState: document.querySelector("#codeshell-file-state"),
+  projectSnapshotState: document.querySelector("#project-snapshot-state"),
   resumeVersionList: document.querySelector("#resume-version-list"),
   interviewSetCount: document.querySelector("#interview-set-count"),
   interviewSetList: document.querySelector("#interview-set-list"),
@@ -298,6 +332,12 @@ const elements = {
 
 let state = structuredClone(seedState);
 let context = { cwd: null, trusted: false, busy: false };
+let projectContext = {
+  name: "当前项目",
+  hasCodeshellFile: false,
+  hasSnapshot: false,
+  lastSyncedAt: "",
+};
 let resumeMode = "preview";
 let toastTimer = null;
 let saveTimer = null;
@@ -416,6 +456,7 @@ function mockHostCall(method, params = {}) {
     return Promise.resolve({
       path: params.path || ".",
       entries: [
+        { name: "CODESHELL.md", path: "CODESHELL.md", kind: "file" },
         { name: "package.json", path: "package.json", kind: "file" },
         { name: "packages", path: "packages", kind: "directory" },
         { name: "README.md", path: "README.md", kind: "file" },
@@ -539,6 +580,88 @@ function persist({ quiet = true } = {}) {
   }, 80);
 }
 
+function projectSnapshotPayload() {
+  return {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    selectedJobId: state.selectedJobId,
+    selectedInterviewSetId: state.selectedInterviewSetId,
+    profile: clone(state.profile),
+    jobs: clone(state.jobs),
+    repos: clone(state.repos),
+    experiences: clone(state.experiences),
+    resume: clone(state.resume),
+    versions: clone(state.versions),
+    interviewSets: clone(state.interviewSets),
+  };
+}
+
+async function writeProjectSnapshot() {
+  if (!window.codeshellPanel?.call) return false;
+  let expectedModifiedAt = null;
+  let expectedRevision;
+  try {
+    const existing = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+    expectedModifiedAt = existing.modifiedAt;
+    expectedRevision = existing.revision;
+  } catch {
+    expectedModifiedAt = null;
+  }
+  try {
+    const result = await hostCall("workspace.writeText", {
+      path: PROJECT_STATE_PATH,
+      content: `${JSON.stringify(projectSnapshotPayload(), null, 2)}\n`,
+      expectedModifiedAt,
+      ...(expectedRevision ? { expectedRevision } : {}),
+    });
+    projectContext.hasSnapshot = true;
+    projectContext.lastSyncedAt = new Date().toISOString();
+    projectContext.snapshotRevision = result?.revision || "";
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncProjectContext({ quiet = true } = {}) {
+  try {
+    const [info, listing] = await Promise.all([
+      hostCall("workspace.info", {}),
+      hostCall("workspace.list", { path: "." }),
+    ]);
+    const entries = listing?.entries ?? [];
+    projectContext.name = info?.name || context.cwd?.split(/[\\/]/).filter(Boolean).at(-1) || "当前项目";
+    projectContext.hasCodeshellFile = entries.some(
+      (entry) => String(entry.name || "").toLowerCase() === "codeshell.md",
+    );
+    try {
+      const snapshot = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+      const parsed = JSON.parse(snapshot.content);
+      if (parsed?.schemaVersion === 1) {
+        state = mergeState(parsed);
+        projectContext.hasSnapshot = true;
+        projectContext.lastSyncedAt = parsed.updatedAt || "";
+        projectContext.snapshotRevision = snapshot.revision || "";
+      }
+    } catch {
+      projectContext.hasSnapshot = false;
+      if (window.codeshellPanel?.call) state = emptyProjectState();
+    }
+    renderAll();
+    if (!quiet) {
+      notify(
+        projectContext.hasSnapshot
+          ? "已从当前项目重新读取岗位、JD、Resume 和面试题"
+          : "已读取当前项目；Agent 生成内容后会自动写入面板",
+      );
+    }
+  } catch (error) {
+    if (!quiet) {
+      notify(error instanceof Error ? error.message : "读取当前项目失败", "error");
+    }
+  }
+}
+
 function extractKeywords(job) {
   if (!job) return [];
   const text = `${job.title} ${job.description}`.toLowerCase();
@@ -600,7 +723,7 @@ function renderCounts() {
     applied: state.jobs.filter((job) => job.status === "applied").length,
   };
   elements.jobNavCount.textContent = String(state.jobs.length);
-  elements.sourceNavCount.textContent = String(state.repos.length + state.experiences.length);
+  elements.sourceNavCount.textContent = context.cwd ? "1" : "0";
   elements.resumeNavCount.textContent = String(
     Math.max(state.versions.length, state.resume.markdown ? 1 : 0),
   );
@@ -776,6 +899,36 @@ function renderMarkdown(markdown) {
   }
 }
 
+function renderJobDescription(job) {
+  elements.jdPreview.replaceChildren();
+  elements.jdPreview.classList.toggle("empty", !job);
+  if (!job) {
+    const inner = document.createElement("div");
+    inner.className = "resume-empty-inner";
+    inner.append(
+      makeTextElement("strong", "", "先选择一个岗位"),
+      makeTextElement("p", "", "选择左侧岗位后，这里会展示完整 JD。"),
+    );
+    elements.jdPreview.append(inner);
+    return;
+  }
+  const heading = document.createElement("header");
+  heading.className = "jd-heading";
+  heading.append(
+    makeTextElement("h1", "", job.title),
+    makeTextElement(
+      "p",
+      "jd-meta",
+      `${job.company} · ${job.location || "地点未注明"} · ${job.salary || "薪资未注明"} · ${job.source || "来源未注明"}`,
+    ),
+  );
+  elements.jdPreview.append(
+    heading,
+    makeTextElement("h2", "", "职位描述"),
+    makeTextElement("p", "jd-description", job.description || "暂无完整 JD"),
+  );
+}
+
 function renderResume() {
   const job = selectedJob();
   const bound = state.resume.jobId === state.selectedJobId && Boolean(state.resume.markdown);
@@ -792,9 +945,12 @@ function renderResume() {
     : "未生成";
   elements.resumeEditor.value = bound ? state.resume.markdown : "";
   renderMarkdown(bound ? state.resume.markdown : "");
+  renderJobDescription(job);
   const editing = resumeMode === "edit";
-  elements.resumePreview.hidden = editing;
+  const showingJd = resumeMode === "jd";
+  elements.resumePreview.hidden = editing || showingJd;
   elements.resumeEditor.hidden = !editing;
+  elements.jdPreview.hidden = !showingJd;
   document.querySelectorAll("[data-resume-mode]").forEach((button) => {
     button.classList.toggle("active", button.dataset.resumeMode === resumeMode);
   });
@@ -848,6 +1004,14 @@ function renderInsights() {
 }
 
 function renderMaterials() {
+  elements.projectContextName.textContent = projectContext.name;
+  elements.projectContextState.textContent = context.cwd ? "已绑定" : "未绑定";
+  elements.codeshellFileState.textContent = projectContext.hasCodeshellFile
+    ? "已发现"
+    : "未发现";
+  elements.projectSnapshotState.textContent = projectContext.hasSnapshot
+    ? `已同步${projectContext.lastSyncedAt ? ` · ${formatDate(projectContext.lastSyncedAt)}` : ""}`
+    : "Agent 首次写回后创建";
   elements.sideProfileName.textContent = state.profile.name;
   elements.sideProfileRole.textContent = state.profile.role;
   elements.profileName.value = state.profile.name;
@@ -871,11 +1035,6 @@ function renderMaterials() {
       ),
       makeTextElement("p", "", repo.summary),
     );
-    const remove = makeTextElement("button", "remove-material", "×");
-    remove.type = "button";
-    remove.dataset.removeRepo = repo.id;
-    remove.setAttribute("aria-label", `删除项目 ${repo.name}`);
-    item.append(remove);
     elements.repoList.append(item);
   }
 
@@ -888,11 +1047,6 @@ function renderMaterials() {
       makeTextElement("span", "material-item-meta", experience.period || "时间待补充"),
       makeTextElement("p", "", (experience.achievements || []).join("；")),
     );
-    const remove = makeTextElement("button", "remove-material", "×");
-    remove.type = "button";
-    remove.dataset.removeExperience = experience.id;
-    remove.setAttribute("aria-label", `删除经历 ${experience.company}`);
-    item.append(remove);
     elements.experienceList.append(item);
   }
 }
@@ -1144,7 +1298,7 @@ function archiveCurrentResume() {
   );
 }
 
-function generateDraft() {
+function generateLocalDraft() {
   const job = selectedJob();
   if (!job) return notify("先选择或添加一个职位", "error");
   if (state.resume.markdown && state.resume.jobId !== job.id) archiveCurrentResume();
@@ -1164,12 +1318,35 @@ function generateDraft() {
   notify("粗版简历已生成，可以直接切到“编辑”继续修改");
 }
 
+async function generateDraft() {
+  const job = selectedJob();
+  if (!job) return notify("先选择或添加一个职位", "error");
+  if (!window.codeshellPanel?.call) {
+    generateLocalDraft();
+    return;
+  }
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
+    `目标职位 ID：${job.id}`,
+    "先读取当前项目根目录的 CODESHELL.md，并按其中规则检查与求职有关的工作经历、项目说明、代码和其他资料。",
+    "再调用 get_job_search_context 读取完整 JD。若识别到候选人资料，先调用 save_candidate_context 更新面板中的项目上下文。",
+    "仅使用当前项目中能核实的事实；不要编造公司、日期、职责、技术或数字。对无法确认的信息放进 notes。",
+    "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
+  ].join("\n");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    notify("Agent 正在读取当前项目并生成简历，完成后会自动显示");
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "提交简历生成失败", "error");
+  }
+}
+
 async function saveResumeToRepo() {
   const job = selectedJob();
   if (!job || !state.resume.markdown || state.resume.jobId !== job.id) {
     return notify("当前职位还没有可保存的简历", "error");
   }
-  const path = `job-hunt/resume-${slugify(`${job.company}-${job.title}`)}.md`;
+  const path = `job-hunt-resume-${slugify(`${job.company}-${job.title}`)}.md`;
   let expectedModifiedAt = null;
   let expectedRevision;
   try {
@@ -1202,40 +1379,6 @@ function closeDialog(id) {
   if (dialog instanceof HTMLDialogElement) dialog.close();
 }
 
-async function scanWorkspace() {
-  try {
-    const [info, listing] = await Promise.all([
-      hostCall("workspace.info", {}),
-      hostCall("workspace.list", { path: "." }),
-    ]);
-    const filenames = (listing?.entries ?? []).map((entry) => entry.name.toLowerCase());
-    const tech = [
-      filenames.includes("package.json") ? "TypeScript / JavaScript" : null,
-      filenames.includes("cargo.toml") ? "Rust" : null,
-      filenames.includes("go.mod") ? "Go" : null,
-      filenames.some((name) => name.startsWith("requirements")) ? "Python" : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const path = info?.gitBranch ? `${info.name} · ${info.gitBranch}` : info?.name || "当前工作区";
-    if (state.repos.some((repo) => repo.path === path)) {
-      return notify("当前 Repo 已经在材料库里");
-    }
-    state.repos.unshift({
-      id: uid("repo"),
-      name: info?.name || "当前 Repo",
-      path,
-      tech: tech || "技术栈待补充",
-      summary: `已读取工作区顶层结构（${(listing?.entries ?? []).length} 项）。请补充你在这个项目中的具体职责、难点与结果。`,
-    });
-    persist();
-    renderAll();
-    notify("已把当前 Repo 加入材料库，建议继续补充项目结果");
-  } catch (error) {
-    notify(error instanceof Error ? error.message : "读取当前 Repo 失败", "error");
-  }
-}
-
 async function submitJobSearch(form) {
   if (context.busy) return notify("当前 Agent 正在运行，请稍后再试", "error");
   const data = new FormData(form);
@@ -1254,11 +1397,12 @@ async function submitJobSearch(form) {
     .join("、");
   const prompt = [
     "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具处理这次职位搜索。",
+    "先读取当前项目根目录的 CODESHELL.md 和与求职有关的项目资料，并严格遵循其中规则。",
     `在以下渠道查找合计最多 ${count} 个当前有效的职位：${providerSummary}。`,
     `搜索条件：关键词「${keyword}」，城市「${city || "不限"}」，经验「${seniority || "不限"}」。`,
     "逐站搜索公开页面；不要绕过登录、验证码、访问频率、robots 或其他限制。受限渠道直接跳过并记录原因。",
     "把不同网站的结果统一为相同字段，并按规范化 URL 优先、公司 + 职位 + 地点 + 来源其次去重。",
-    "先调用 get_job_search_context 了解候选人材料，再给每个职位一个有依据的初步匹配度。",
+    "调用 get_job_search_context 读取面板状态；若识别到候选人资料，先调用 save_candidate_context 更新面板，再给每个职位一个有依据的初步匹配度。",
     "最后必须调用 save_job_opportunities，把 company、title、location、salary、source、source_id、url、published_at、employment_type、description 和 match 写回面板。",
     "source_id 必须使用本次选择中的短 ID。若某个渠道不可访问，请明确说明，并提醒我把对应 JD 手动粘贴到面板；不要编造职位。",
   ].join("\n");
@@ -1279,11 +1423,11 @@ async function submitJobSearch(form) {
 async function submitResumeRevision(request) {
   const job = selectedJob();
   if (!job) return notify("先选择一个职位", "error");
-  if (!state.resume.markdown || state.resume.jobId !== job.id) generateDraft();
   const prompt = [
     "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
     `目标职位 ID：${job.id}`,
-    "先调用 get_job_search_context，逐条核对 JD 与材料证据。只使用面板中已有的真实信息，不要编造公司、日期、技术、职责或数据。",
+    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条核对完整 JD 与项目证据。",
+    "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。只使用能核实的真实信息，不要编造公司、日期、技术、职责或数据。",
     "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
     `我的调整要求：${request}`,
   ].join("\n");
@@ -1471,24 +1615,24 @@ async function generateInterviewSet(form) {
     language: String(data.get("language") || "中文"),
     focus: String(data.get("focus") || "").trim(),
   };
-  const set = {
-    id: uid("interview"),
-    jobId: job.id,
-    title: `${job.company} · ${INTERVIEW_MODE_LABELS[options.mode] || "定制面试"}`,
-    mode: options.mode,
-    difficulty: options.difficulty,
-    createdAt: new Date().toISOString(),
-    questions: buildInterviewQuestions(job, options),
-  };
-  state.interviewSets = [set, ...state.interviewSets].slice(0, 20);
-  state.selectedInterviewSetId = set.id;
-  state.interviewCategoryFilter = "全部";
-  state.activeView = "interviews";
-  persist();
-  renderAll();
   closeDialog("interview-dialog");
 
   if (!window.codeshellPanel?.call) {
+    const set = {
+      id: uid("interview"),
+      jobId: job.id,
+      title: `${job.company} · ${INTERVIEW_MODE_LABELS[options.mode] || "定制面试"}`,
+      mode: options.mode,
+      difficulty: options.difficulty,
+      createdAt: new Date().toISOString(),
+      questions: buildInterviewQuestions(job, options),
+    };
+    state.interviewSets = [set, ...state.interviewSets].slice(0, 20);
+    state.selectedInterviewSetId = set.id;
+    state.interviewCategoryFilter = "全部";
+    state.activeView = "interviews";
+    persist();
+    renderAll();
     notify("已生成可编辑预览题单；安装到 CodeShell 后，Agent 会进一步按材料深挖");
     return;
   }
@@ -1499,13 +1643,14 @@ async function generateInterviewSet(form) {
     `题单模式：${options.mode}（${INTERVIEW_MODE_LABELS[options.mode] || "综合面试"}）`,
     `难度：${options.difficulty}；数量：${options.count}；回答语言：${options.language}。`,
     options.focus ? `特别关注：${options.focus}` : "特别关注：根据 JD 与候选人证据自动判断。",
-    "先调用 get_job_search_context，逐条交叉核对 JD、工作经历、Repo 和当前简历。",
+    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条交叉核对完整 JD、工作经历、代码项目和当前简历。",
+    "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。",
     "每道题都要说明为什么问、关联哪些真实证据、回答要点和可能追问；同时覆盖最明显的材料缺口。不要编造项目、技术、职责或数字。",
     "完成后必须调用 save_interview_question_set 写回面板。",
   ].join("\n");
   try {
     await hostCall("agent.submitPrompt", { prompt });
-    notify("基础题单已就绪；Agent 正在结合你的材料生成更深入版本");
+    notify("Agent 正在读取当前项目并生成面试题，完成后会自动显示");
   } catch (error) {
     notify(error instanceof Error ? error.message : "提交面试题生成失败", "error");
   }
@@ -1521,7 +1666,7 @@ async function simulateInterviewSession() {
   const prompt = [
     "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，开始一场互动模拟面试。",
     `目标职位 ID：${job.id}；面试题单 ID：${set.id}；题单标题：${set.title}。`,
-    "先调用 get_job_search_context 读取完整题单。每次只问一道题，在我回答前不要展示回答要点。",
+    "先读取当前项目根目录的 CODESHELL.md，再调用 get_job_search_context 读取完整题单。每次只问一道题，在我回答前不要展示回答要点。",
     "收到回答后，从事实证据、结构清晰度、技术深度和岗位相关性四方面给简短反馈，再选择一个追问或进入下一题。",
     "若我的回答超出已有材料，提醒我核实，不要替我补造事实。全部结束后给出优势、风险和下一轮练习建议。",
   ].join("\n");
@@ -1548,6 +1693,8 @@ function registerAgentTools(ready) {
     assertPlainObject(args, "get_job_search_context");
     if (Object.keys(args).length) throw new Error("get_job_search_context 不接受参数");
     return {
+      project: clone(projectContext),
+      projectStatePath: PROJECT_STATE_PATH,
       selectedJobId: state.selectedJobId,
       selectedJob: clone(selectedJob()),
       opportunities: clone(state.jobs),
@@ -1557,9 +1704,71 @@ function registerAgentTools(ready) {
       resume: clone(state.resume),
       interviewSets: clone(state.interviewSets),
       providerCatalog: clone(JOB_PROVIDERS),
-      evidencePolicy: "Use only explicit panel evidence; never invent facts or metrics.",
+      evidencePolicy:
+        "Read the current project's CODESHELL.md and relevant files first. Use only verifiable project evidence; never invent facts or metrics.",
       collectionPolicy:
         "Use public pages only, preserve source attribution, and never bypass login, CAPTCHA, robots, or rate limits.",
+    };
+  });
+
+  register("save_candidate_context", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_candidate_context");
+    assertPlainObject(args.profile, "profile");
+    if (!Array.isArray(args.repositories) || !Array.isArray(args.work_history)) {
+      throw new Error("repositories 和 work_history 必须是数组");
+    }
+    const text = (value, maxLength) =>
+      String(value || "")
+        .trim()
+        .slice(0, maxLength);
+    state.profile = {
+      name: text(args.profile.name, 100) || "姓名待确认",
+      role: text(args.profile.role, 120) || "目标职位待确认",
+      contact: text(args.profile.contact, 300),
+      target: text(args.profile.target, 500),
+      summary: text(args.profile.summary, 3000),
+    };
+    state.repos = args.repositories.slice(0, 30).map((repo, index) => {
+      assertPlainObject(repo, `repositories[${index}]`);
+      if (!text(repo.name, 100) || !text(repo.summary, 3000)) {
+        throw new Error(`repositories[${index}] 缺少 name 或 summary`);
+      }
+      return {
+        id: text(repo.id, 100) || uid("repo"),
+        name: text(repo.name, 100),
+        path: text(repo.path, 1000),
+        tech: text(repo.tech, 500),
+        summary: text(repo.summary, 3000),
+      };
+    });
+    state.experiences = args.work_history.slice(0, 30).map((experience, index) => {
+      assertPlainObject(experience, `work_history[${index}]`);
+      if (!text(experience.company, 100) || !text(experience.role, 120)) {
+        throw new Error(`work_history[${index}] 缺少 company 或 role`);
+      }
+      return {
+        id: text(experience.id, 100) || uid("exp"),
+        company: text(experience.company, 100),
+        role: text(experience.role, 120),
+        period: text(experience.period, 100),
+        achievements: Array.isArray(experience.achievements)
+          ? experience.achievements
+              .map((item) => text(item, 1000))
+              .filter(Boolean)
+              .slice(0, 20)
+          : [],
+      };
+    });
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: true,
+      projectSaved,
+      repositories: state.repos.length,
+      workHistory: state.experiences.length,
     };
   });
 
@@ -1624,11 +1833,14 @@ function registerAgentTools(ready) {
     state.activeView = "dashboard";
     persist();
     renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
     return {
       saved: unique.length,
       skippedDuplicates: incoming.length - unique.length,
       selectedJobId: state.selectedJobId,
       totalJobs: state.jobs.length,
+      projectSaved,
     };
   });
 
@@ -1700,12 +1912,15 @@ function registerAgentTools(ready) {
     state.activeView = "interviews";
     persist();
     renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
     return {
       saved: true,
       jobId: job.id,
       interviewSetId: set.id,
       questionCount: questions.length,
       categories: [...new Set(questions.map((question) => question.category))],
+      projectSaved,
     };
   });
 
@@ -1740,12 +1955,15 @@ function registerAgentTools(ready) {
     resumeMode = "preview";
     persist();
     renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
     return {
       saved: true,
       jobId: job.id,
       title: state.resume.title,
       updatedAt: now,
       characterCount: state.resume.markdown.length,
+      projectSaved,
     };
   });
 }
@@ -1804,13 +2022,9 @@ function bindEvents() {
   for (const id of ["open-job-form", "compact-add-job", "empty-add-job"]) {
     document.querySelector(`#${id}`).addEventListener("click", () => openDialog("job-dialog"));
   }
-  document
-    .querySelector("#open-repo-form")
-    .addEventListener("click", () => openDialog("repo-dialog"));
-  document
-    .querySelector("#open-experience-form")
-    .addEventListener("click", () => openDialog("experience-dialog"));
-  document.querySelector("#scan-workspace").addEventListener("click", scanWorkspace);
+  document.querySelector("#sync-project-context").addEventListener("click", () => {
+    void syncProjectContext({ quiet: false });
+  });
   document.querySelector("#open-interview-form").addEventListener("click", () => {
     if (!selectedJob()) return notify("先选择或添加一个职位", "error");
     openDialog("interview-dialog");
@@ -1876,46 +2090,8 @@ function bindEvents() {
     closeDialog("job-dialog");
     persist();
     renderAll();
+    void writeProjectSnapshot().then(() => renderMaterials());
     notify(`已分析 ${job.company} 的 JD，当前匹配度 ${calculateMatch(job)}%`);
-  });
-
-  document.querySelector("#repo-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    state.repos.unshift({
-      id: uid("repo"),
-      name: String(data.get("name") || "").trim(),
-      path: String(data.get("path") || "").trim(),
-      tech: String(data.get("tech") || "").trim(),
-      summary: String(data.get("summary") || "").trim(),
-    });
-    form.reset();
-    closeDialog("repo-dialog");
-    persist();
-    renderAll();
-    notify("项目已加入材料库");
-  });
-
-  document.querySelector("#experience-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const data = new FormData(form);
-    state.experiences.unshift({
-      id: uid("exp"),
-      company: String(data.get("company") || "").trim(),
-      role: String(data.get("role") || "").trim(),
-      period: String(data.get("period") || "").trim(),
-      achievements: String(data.get("achievements") || "")
-        .split(/\r?\n/)
-        .map((item) => item.replace(/^[-*]\s*/, "").trim())
-        .filter(Boolean),
-    });
-    form.reset();
-    closeDialog("experience-dialog");
-    persist();
-    renderAll();
-    notify("工作经历已加入材料库");
   });
 
   document.querySelector("#agent-search-form").addEventListener("submit", (event) => {
@@ -1935,42 +2111,13 @@ function bindEvents() {
     void generateInterviewSet(event.currentTarget);
   });
 
-  document.querySelector("#save-profile").addEventListener("click", () => {
-    state.profile = {
-      name: elements.profileName.value.trim(),
-      role: elements.profileRole.value.trim(),
-      contact: elements.profileContact.value.trim(),
-      target: elements.profileTarget.value.trim(),
-      summary: elements.profileSummary.value.trim(),
-    };
-    persist({ quiet: false });
-    renderAll();
-  });
-
-  elements.repoList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-repo]");
-    if (!button) return;
-    state.repos = state.repos.filter((repo) => repo.id !== button.dataset.removeRepo);
-    persist();
-    renderAll();
-  });
-
-  elements.experienceList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-remove-experience]");
-    if (!button) return;
-    state.experiences = state.experiences.filter(
-      (experience) => experience.id !== button.dataset.removeExperience,
-    );
-    persist();
-    renderAll();
-  });
-
   document.querySelectorAll("[data-resume-mode]").forEach((button) => {
     button.addEventListener("click", () => {
-      if (resumeMode === "edit" && button.dataset.resumeMode === "preview") {
+      if (resumeMode === "edit" && button.dataset.resumeMode !== "edit") {
         state.resume.markdown = elements.resumeEditor.value;
         state.resume.updatedAt = new Date().toISOString();
         persist();
+        void writeProjectSnapshot().then(() => renderMaterials());
       }
       resumeMode = button.dataset.resumeMode;
       renderResume();
@@ -1985,7 +2132,7 @@ function bindEvents() {
     persist();
   });
 
-  elements.generateResume.addEventListener("click", generateDraft);
+  elements.generateResume.addEventListener("click", () => void generateDraft());
   elements.saveResume.addEventListener("click", () => void saveResumeToRepo());
   elements.askAgent.addEventListener("click", () => openDialog("resume-agent-dialog"));
   elements.openSourceJob.addEventListener("click", async () => {
@@ -2003,6 +2150,7 @@ function bindEvents() {
     job.status = "applied";
     persist();
     renderAll();
+    void writeProjectSnapshot().then(() => renderMaterials());
     notify("已标记为投递，祝你拿到面试");
   });
 
@@ -2014,6 +2162,7 @@ function bindEvents() {
         state.resume.updatedAt = new Date().toISOString();
         persist({ quiet: false });
         renderResume();
+        void writeProjectSnapshot().then(() => renderMaterials());
       } else if (state.resume.markdown) {
         void saveResumeToRepo();
       }
@@ -2032,10 +2181,17 @@ async function initialize() {
     ]);
     state = mergeState(saved);
     updateContext(nextContext);
-    if (window.codeshellPanel?.on) {
-      window.codeshellPanel.on("context.changed", updateContext);
-    }
     renderAll();
+    await syncProjectContext({ quiet: true });
+    if (window.codeshellPanel?.on) {
+      window.codeshellPanel.on("context.changed", (next) => {
+        const previousCwd = context.cwd;
+        updateContext(next);
+        if (next?.cwd && next.cwd !== previousCwd) {
+          void syncProjectContext({ quiet: true });
+        }
+      });
+    }
   } catch (error) {
     updateContext({ cwd: null, trusted: false, busy: false });
     renderAll();

@@ -147,6 +147,46 @@ async function validatePackage(packagePath) {
       `${packagePath}: shared file rendering is required`,
     );
   }
+  if (manifest.id === "job-hunt-hq") {
+    const appScript = await readFile(join(root, "app", "app.js"), "utf8");
+    const skill = await readFile(
+      join(root, "agent", "skills", "job-tailor", "SKILL.md"),
+      "utf8",
+    );
+    const snapshotSchema = JSON.parse(
+      await readFile(
+        join(root, "app", "formats", "job-hunt-panel-v1.schema.json"),
+        "utf8",
+      ),
+    );
+    const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
+    assert.equal(manifest.version, "0.4.0", `${packagePath}: project model version mismatch`);
+    assert(toolNames.has("save_candidate_context"), `${packagePath}: context tool is required`);
+    assert.match(html, /id="project-context-name"/, `${packagePath}: project status is required`);
+    assert.match(html, /id="jd-preview"/, `${packagePath}: full JD view is required`);
+    assert.match(
+      html,
+      /data-resume-mode="jd"/,
+      `${packagePath}: JD display mode is required`,
+    );
+    assert.match(
+      appScript,
+      /const PROJECT_STATE_PATH = "job-hunt-panel\.json"/,
+      `${packagePath}: project snapshot path is required`,
+    );
+    assert.match(
+      appScript,
+      /async function syncProjectContext/,
+      `${packagePath}: project sync is required`,
+    );
+    assert.match(
+      appScript,
+      /async function writeProjectSnapshot/,
+      `${packagePath}: project snapshot writer is required`,
+    );
+    assert.match(skill, /CODESHELL\.md/, `${packagePath}: Skill must read CODESHELL.md`);
+    assert.equal(snapshotSchema.properties.schemaVersion.const, 1);
+  }
   return { id: manifest.id, files: files.length };
 }
 

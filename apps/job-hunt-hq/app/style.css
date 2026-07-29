@@ -859,6 +859,29 @@ select:focus-visible {
   text-align: center;
 }
 
+.jd-paper {
+  min-height: 620px;
+}
+
+.jd-paper .jd-heading {
+  margin-bottom: 22px;
+  border-bottom: 1px solid #c5c3ba;
+  padding-bottom: 16px;
+}
+
+.jd-paper .jd-heading h1 {
+  margin-bottom: 8px;
+}
+
+.jd-paper .jd-meta {
+  color: #6d7069;
+  font-size: 9px;
+}
+
+.jd-paper .jd-description {
+  white-space: pre-wrap;
+}
+
 .resume-empty-inner {
   max-width: 270px;
 }
@@ -1131,6 +1154,49 @@ select:focus-visible {
 
 .profile-card {
   grid-column: 1 / -1;
+}
+
+.project-context-card {
+  background:
+    radial-gradient(circle at 100% 0%, rgb(223 255 63 / 8%), transparent 50%),
+    var(--surface);
+}
+
+.project-context-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.project-context-row strong {
+  color: #c9d59d;
+  font-size: 9px;
+}
+
+.project-context-card > p,
+.project-readonly-note {
+  color: var(--muted);
+  font-size: 8.5px;
+  line-height: 1.6;
+}
+
+.project-context-card > p {
+  margin: 15px 0;
+}
+
+.project-readonly-note {
+  margin: 12px 0 0;
+}
+
+input[readonly],
+textarea[readonly] {
+  color: #b7b7b1;
+  background: #171717;
 }
 
 .profile-form-grid,

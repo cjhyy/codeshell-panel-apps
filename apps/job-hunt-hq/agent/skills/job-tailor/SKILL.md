@@ -1,6 +1,6 @@
 ---
 name: job-tailor
-description: Use Job Hunt HQ panel context to collect public job descriptions, tailor honest resumes, and generate evidence-grounded interview preparation from verified repositories and work history.
+description: Use the active CodeShell project's CODESHELL.md and verified files with Job Hunt HQ to collect public JDs, tailor honest resumes, and generate evidence-grounded interview preparation.
 ---
 
 # Job Tailor
@@ -11,29 +11,38 @@ from the Job Hunt HQ panel.
 
 ## Workflow
 
-1. Call `get_job_search_context` before writing or revising a resume.
-2. Treat the selected JD as the target. If no job is selected, ask the user to
+1. Work only inside the active CodeShell project. Read its root
+   `CODESHELL.md` first, then inspect the project files that contain candidate
+   facts, work history, project evidence, or job-search rules.
+2. Call `get_job_search_context` before writing or revising a resume. Treat its
+   panel data as a visualization cache; the active project's verified files are
+   the source of truth.
+3. When the project files provide updated candidate facts, call
+   `save_candidate_context` so the panel can visualize the extracted profile,
+   project evidence, and work history.
+4. Treat the selected JD as the target. If no job is selected, ask the user to
    select or add one before drafting.
-3. Use only evidence present in the candidate profile, repositories, and work
-   history. Never invent employers, dates, metrics, ownership, technologies, or
-   outcomes.
-4. Extract 6–10 high-signal requirements from the JD. Map each requirement to
+5. Use only evidence present in the active project's verified files. Never
+   invent employers, dates, metrics, ownership, technologies, or outcomes.
+6. Extract 6–10 high-signal requirements from the JD. Map each requirement to
    explicit evidence and note genuine gaps.
-5. Write concise Chinese Markdown unless the JD or user requests another
+7. Write concise Chinese Markdown unless the JD or user requests another
    language. Prefer outcome-led bullets and natural keyword coverage over
    keyword stuffing.
-6. Call `save_resume_draft` with the selected `job_id`, a clear title, the full
+8. Call `save_resume_draft` with the selected `job_id`, a clear title, the full
    Markdown draft, and short notes for gaps or facts the user should verify.
-7. Tell the user what was emphasized, what was omitted for lack of evidence, and
+9. Tell the user what was emphasized, what was omitted for lack of evidence, and
    which two additions would most improve the draft.
 
 ## Interview preparation
 
 When asked to generate a question set:
 
-1. Call `get_job_search_context` and use the exact selected `job_id`.
-2. Cross-reference the JD with repositories, work history, profile, and current
-   resume. Do not turn an inferred skill into a claimed fact.
+1. Re-read the active project's `CODESHELL.md`, call
+   `get_job_search_context`, and use the exact selected `job_id`.
+2. Cross-reference the full JD with verified project files, extracted project
+   evidence, work history, profile, and current resume. Do not turn an inferred
+   skill into a claimed fact.
 3. Unless the user selects a narrower mode, cover technical foundations, project
    depth, system design, behavioral evidence, and genuine capability gaps.
 4. Every question must include:
@@ -50,7 +59,8 @@ When asked to generate a question set:
 
 For an interactive mock interview:
 
-- Read the saved question set from `get_job_search_context`.
+- Re-read `CODESHELL.md`, then read the saved question set from
+  `get_job_search_context`.
 - Ask one question at a time and withhold answer points until the user responds.
 - After each answer, give brief feedback on evidence, clarity, technical depth,
   and relevance, then ask one follow-up or continue.
@@ -62,6 +72,8 @@ For an interactive mock interview:
 
 When asked to collect roles from one or more recruiting sites:
 
+- Read the active project's `CODESHELL.md` and relevant candidate files first.
+  If extracted candidate context changed, call `save_candidate_context`.
 - Read `providerCatalog` from `get_job_search_context`, then honor the exact
   provider IDs selected by the user. The initial catalog covers BOSS 直聘,
   LinkedIn, 拉勾, 猎聘, 脉脉, 前程无忧, 智联招聘, and company career pages.
