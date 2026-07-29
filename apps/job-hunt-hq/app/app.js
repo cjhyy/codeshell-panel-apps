@@ -1,0 +1,2204 @@
+const STORAGE_KEY = "job-hunt-state-v1";
+const PREVIEW_PREFIX = "codeshell-job-hunt-hq:";
+const PROJECT_STATE_PATH = "job-hunt-panel.json";
+
+const JOB_PROVIDERS = [
+  { id: "boss", label: "BOSS 直聘", domain: "zhipin.com" },
+  { id: "linkedin", label: "LinkedIn", domain: "linkedin.com/jobs" },
+  { id: "lagou", label: "拉勾", domain: "lagou.com" },
+  { id: "liepin", label: "猎聘", domain: "liepin.com" },
+  { id: "maimai", label: "脉脉", domain: "maimai.cn" },
+  { id: "51job", label: "前程无忧", domain: "51job.com" },
+  { id: "zhaopin", label: "智联招聘", domain: "zhaopin.com" },
+  { id: "official", label: "公司官网", domain: "company career pages" },
+];
+
+const PROVIDER_BY_ID = new Map(JOB_PROVIDERS.map((provider) => [provider.id, provider]));
+
+const KEYWORD_RULES = [
+  { label: "React", tokens: ["react", "next.js", "nextjs"] },
+  { label: "TypeScript", tokens: ["typescript", "ts"] },
+  { label: "AI Agent", tokens: ["ai agent", "agent", "智能体"] },
+  { label: "LLM 应用", tokens: ["llm", "大模型", "生成式 ai", "prompt"] },
+  { label: "前端工程化", tokens: ["工程化", "构建", "vite", "webpack", "monorepo"] },
+  { label: "Electron", tokens: ["electron", "桌面端", "跨端"] },
+  { label: "Node.js", tokens: ["node.js", "nodejs", "node "] },
+  { label: "产品意识", tokens: ["产品意识", "产品思维", "用户体验", "业务理解"] },
+  { label: "系统设计", tokens: ["系统设计", "架构设计", "技术架构"] },
+  { label: "性能优化", tokens: ["性能优化", "性能", "首屏", "渲染"] },
+  { label: "可视化", tokens: ["可视化", "图表", "canvas", "webgl"] },
+  { label: "协作沟通", tokens: ["沟通", "协作", "跨团队", "推动"] },
+  { label: "英语", tokens: ["英语", "英文"] },
+  { label: "本科", tokens: ["本科", "学士"] },
+];
+
+const STATUS_LABELS = {
+  saved: "已收藏",
+  tailoring: "定制中",
+  applied: "已投递",
+};
+
+const INTERVIEW_MODE_LABELS = {
+  balanced: "综合面试",
+  technical: "技术深挖",
+  project: "项目复盘",
+  behavioral: "行为面试",
+  "system-design": "系统设计",
+};
+
+const seedState = {
+  selectedJobId: "job-aurora",
+  selectedInterviewSetId: "iset-aurora",
+  activeView: "dashboard",
+  statusFilter: "all",
+  jobFilter: "all",
+  jobSourceFilter: "all",
+  interviewCategoryFilter: "全部",
+  profile: {
+    name: "林默",
+    role: "前端 / AI 产品工程师",
+    contact: "linmo@example.com · 上海",
+    target: "AI 应用、开发者工具、前端平台",
+    summary:
+      "5 年前端与产品工程经验，擅长把复杂工作流做成清晰、可靠的产品体验，近期聚焦 AI Agent、开发者工具与跨端应用。",
+  },
+  jobs: [
+    {
+      id: "job-aurora",
+      company: "Aurora Labs",
+      title: "AI 产品前端工程师",
+      location: "上海",
+      salary: "30–45K · 15薪",
+      source: "BOSS 直聘",
+      sourceId: "boss",
+      url: "https://www.zhipin.com/",
+      description:
+        "负责 AI Agent 产品的前端架构与核心体验，使用 React、TypeScript 和现代前端工程化体系交付高质量功能；与产品、算法和设计团队紧密协作，理解大模型能力边界并推动 LLM 应用落地；关注复杂交互、性能优化与可维护性。有 Electron、Node.js、开发者工具或 AI 产品经验优先。",
+      match: 94,
+      status: "tailoring",
+      createdAt: "2026-07-29T08:30:00.000Z",
+      sample: true,
+    },
+    {
+      id: "job-nova",
+      company: "NovaFlow",
+      title: "高级前端工程师 · 开发者工具",
+      location: "上海 / 远程",
+      salary: "28–42K · 14薪",
+      source: "LinkedIn",
+      sourceId: "linkedin",
+      url: "https://www.linkedin.com/jobs/",
+      description:
+        "参与开发者工具与桌面端产品建设，主导 React、TypeScript、Electron 技术方案和系统设计。需要具备前端工程化、性能优化、跨团队协作和复杂状态管理经验；有 Node.js、Monorepo 与 AI 辅助编程产品经验加分。",
+      match: 89,
+      status: "saved",
+      createdAt: "2026-07-28T10:20:00.000Z",
+      sample: true,
+    },
+    {
+      id: "job-pulse",
+      company: "Pulse AI",
+      title: "AI 应用工程师",
+      location: "杭州",
+      salary: "25–40K · 16薪",
+      source: "猎聘",
+      sourceId: "liepin",
+      url: "https://www.liepin.com/",
+      description:
+        "面向企业客户构建 LLM 应用与 Agent 工作流，负责从需求理解、原型验证到前端交付。熟悉 React、TypeScript、Node.js，了解 Prompt 设计、检索增强与模型评估；重视产品意识、用户体验和业务价值。",
+      match: 82,
+      status: "saved",
+      createdAt: "2026-07-27T03:40:00.000Z",
+      sample: true,
+    },
+  ],
+  repos: [
+    {
+      id: "repo-codeshell",
+      name: "CodeShell",
+      path: "github.com/example/codeshell",
+      tech: "TypeScript · React · Electron · AI Agent",
+      summary:
+        "设计并实现多 Agent 编排与跨端交互工作流，把复杂运行状态收敛为可理解、可恢复的产品体验。",
+    },
+    {
+      id: "repo-console",
+      name: "Observability Console",
+      path: "packages/console",
+      tech: "React · TypeScript · Canvas",
+      summary: "重构大数据量时间线渲染与筛选交互，降低页面卡顿并提升问题定位效率。",
+    },
+  ],
+  experiences: [
+    {
+      id: "exp-arc",
+      company: "弧光科技",
+      role: "高级前端工程师",
+      period: "2022.06 — 至今",
+      achievements: [
+        "负责 AI 工作台核心体验与前端架构，协同产品、设计和算法团队推进复杂功能落地。",
+        "建设可复用的状态管理与组件体系，缩短多条业务线的功能交付周期。",
+        "推动桌面端性能排查和渲染优化，改善长会话场景下的交互稳定性。",
+      ],
+    },
+    {
+      id: "exp-bay",
+      company: "湾流网络",
+      role: "前端工程师",
+      period: "2020.07 — 2022.05",
+      achievements: [
+        "参与企业级数据产品从 0 到 1 的前端研发，负责可视化工作台和权限配置体验。",
+        "建立 TypeScript 与前端质量规范，减少多人协作中的重复问题。",
+      ],
+    },
+  ],
+  resume: {
+    jobId: "",
+    title: "",
+    markdown: "",
+    notes: [],
+    updatedAt: "",
+  },
+  versions: [],
+  interviewSets: [
+    {
+      id: "iset-aurora",
+      jobId: "job-aurora",
+      title: "Aurora Labs · AI 产品前端工程师",
+      mode: "balanced",
+      difficulty: "进阶",
+      createdAt: "2026-07-29T09:20:00.000Z",
+      questions: [
+        {
+          id: "q-agent-architecture",
+          category: "项目深挖",
+          difficulty: "进阶",
+          question:
+            "请用 3 分钟介绍你在 CodeShell 中如何拆分多 Agent 编排、运行状态和用户界面之间的职责边界。",
+          why: "JD 强调 AI Agent 产品与前端架构，需要确认你是否真正参与过核心方案设计。",
+          evidenceRefs: ["Repo · CodeShell", "弧光科技 · AI 工作台"],
+          answerPoints: ["先讲业务问题与约束", "说明关键架构选择和取舍", "用结果或故障案例收尾"],
+          followUps: ["如果 Agent 执行中断，状态如何恢复？"],
+        },
+        {
+          id: "q-react-performance",
+          category: "技术基础",
+          difficulty: "进阶",
+          question:
+            "长会话持续追加消息时，React 页面为什么会越来越卡？你会如何定位并设计渲染优化方案？",
+          why: "JD 明确要求 React、性能优化和复杂交互能力，并可对应你已有的长会话优化经历。",
+          evidenceRefs: ["弧光科技 · 长会话性能", "React"],
+          answerPoints: [
+            "建立可复现基线",
+            "区分计算、提交和绘制成本",
+            "说明窗口化、状态切片与缓存取舍",
+          ],
+          followUps: ["如果虚拟列表高度不固定怎么办？"],
+        },
+        {
+          id: "q-system-design",
+          category: "系统设计",
+          difficulty: "挑战",
+          question:
+            "设计一个支持模型流式输出、工具调用、暂停恢复和多会话切换的 AI 工作台前端，你会如何划分状态与事件协议？",
+          why: "这是目标岗位最可能出现的综合设计题，覆盖 Agent、系统设计与前端工程化。",
+          evidenceRefs: ["Repo · CodeShell", "JD · AI Agent 产品"],
+          answerPoints: [
+            "先定义状态机和事件边界",
+            "区分持久状态与瞬时 UI 状态",
+            "讨论幂等、恢复和错误隔离",
+          ],
+          followUps: ["多窗口同时操作时如何避免状态冲突？"],
+        },
+        {
+          id: "q-collaboration",
+          category: "行为面试",
+          difficulty: "基础",
+          question: "讲一个你与产品、设计或算法团队对方案判断不一致的例子。你如何推动达成结论？",
+          why: "JD 强调跨团队协作，需要用真实事件验证影响力，而不只是沟通意愿。",
+          evidenceRefs: ["弧光科技 · 跨团队协作"],
+          answerPoints: ["用 STAR 结构", "说清分歧和各方目标", "突出你采取的动作与最终结果"],
+          followUps: ["如果最后证明你的判断错了，你会怎么处理？"],
+        },
+        {
+          id: "q-gap-metrics",
+          category: "能力差距",
+          difficulty: "挑战",
+          question:
+            "你的材料提到性能和交付效率改善，但缺少具体数字。面试中你会如何在不夸大的前提下证明影响？",
+          why: "当前材料的量化结果不足，这是面试官最容易继续追问的可信度风险。",
+          evidenceRefs: ["材料缺口 · 量化结果"],
+          answerPoints: ["区分已知事实与合理区间", "说明测量口径", "无法确认的数据明确不报精确值"],
+          followUps: ["你当时为什么没有建立数据基线？"],
+        },
+      ],
+    },
+  ],
+};
+
+function emptyProjectState() {
+  return {
+    ...clone(seedState),
+    selectedJobId: "",
+    selectedInterviewSetId: "",
+    activeView: "dashboard",
+    profile: {
+      name: "等待 Agent 识别",
+      role: "当前项目",
+      contact: "",
+      target: "",
+      summary: "",
+    },
+    jobs: [],
+    repos: [],
+    experiences: [],
+    resume: {
+      jobId: "",
+      title: "",
+      markdown: "",
+      notes: [],
+      updatedAt: "",
+    },
+    versions: [],
+    interviewSets: [],
+  };
+}
+
+const elements = {
+  workspaceLabel: document.querySelector("#workspace-label"),
+  lastSaved: document.querySelector("#last-saved"),
+  sideProfileName: document.querySelector("#side-profile-name"),
+  sideProfileRole: document.querySelector("#side-profile-role"),
+  jobNavCount: document.querySelector("#job-nav-count"),
+  sourceNavCount: document.querySelector("#source-nav-count"),
+  resumeNavCount: document.querySelector("#resume-nav-count"),
+  interviewNavCount: document.querySelector("#interview-nav-count"),
+  allCount: document.querySelector("#all-count"),
+  savedCount: document.querySelector("#saved-count"),
+  tailoringCount: document.querySelector("#tailoring-count"),
+  appliedCount: document.querySelector("#applied-count"),
+  statJobs: document.querySelector("#stat-jobs"),
+  statSourceDetail: document.querySelector("#stat-source-detail"),
+  statMatch: document.querySelector("#stat-match"),
+  statSources: document.querySelector("#stat-sources"),
+  statNext: document.querySelector("#stat-next"),
+  statNextDetail: document.querySelector("#stat-next-detail"),
+  jobList: document.querySelector("#job-list"),
+  jobSourceFilter: document.querySelector("#job-source-filter"),
+  emptyAddJob: document.querySelector("#empty-add-job"),
+  resumeTitle: document.querySelector("#resume-title"),
+  resumeJobLabel: document.querySelector("#resume-job-label"),
+  resumeUpdated: document.querySelector("#resume-updated"),
+  resumePreview: document.querySelector("#resume-preview"),
+  resumeEditor: document.querySelector("#resume-editor"),
+  jdPreview: document.querySelector("#jd-preview"),
+  generateResume: document.querySelector("#generate-resume"),
+  saveResume: document.querySelector("#save-resume"),
+  matchScore: document.querySelector("#match-score"),
+  keywordCount: document.querySelector("#keyword-count"),
+  keywordList: document.querySelector("#keyword-list"),
+  coverageLabel: document.querySelector("#coverage-label"),
+  coverageList: document.querySelector("#coverage-list"),
+  openSourceJob: document.querySelector("#open-source-job"),
+  advanceJob: document.querySelector("#advance-job"),
+  askAgent: document.querySelector("#ask-agent"),
+  profileName: document.querySelector("#profile-name"),
+  profileRole: document.querySelector("#profile-role"),
+  profileContact: document.querySelector("#profile-contact"),
+  profileTarget: document.querySelector("#profile-target"),
+  profileSummary: document.querySelector("#profile-summary"),
+  repoList: document.querySelector("#repo-list"),
+  repoCount: document.querySelector("#repo-count"),
+  experienceList: document.querySelector("#experience-list"),
+  experienceCount: document.querySelector("#experience-count"),
+  projectContextName: document.querySelector("#project-context-name"),
+  projectContextState: document.querySelector("#project-context-state"),
+  codeshellFileState: document.querySelector("#codeshell-file-state"),
+  projectSnapshotState: document.querySelector("#project-snapshot-state"),
+  resumeVersionList: document.querySelector("#resume-version-list"),
+  interviewSetCount: document.querySelector("#interview-set-count"),
+  interviewSetList: document.querySelector("#interview-set-list"),
+  interviewJobLabel: document.querySelector("#interview-job-label"),
+  interviewSetTitle: document.querySelector("#interview-set-title"),
+  interviewQuestionCount: document.querySelector("#interview-question-count"),
+  interviewEvidenceCount: document.querySelector("#interview-evidence-count"),
+  interviewCategoryCount: document.querySelector("#interview-category-count"),
+  interviewCategoryFilters: document.querySelector("#interview-category-filters"),
+  interviewQuestionList: document.querySelector("#interview-question-list"),
+  simulateInterview: document.querySelector("#simulate-interview"),
+  regenerateInterview: document.querySelector("#regenerate-interview"),
+  toast: document.querySelector("#toast"),
+};
+
+let state = structuredClone(seedState);
+let context = { cwd: null, trusted: false, busy: false };
+let projectContext = {
+  name: "当前项目",
+  hasCodeshellFile: false,
+  hasSnapshot: false,
+  lastSyncedAt: "",
+};
+let resumeMode = "preview";
+let toastTimer = null;
+let saveTimer = null;
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function normalizeSourceId(sourceId, sourceLabel = "") {
+  const explicit = String(sourceId || "")
+    .trim()
+    .toLowerCase();
+  if (PROVIDER_BY_ID.has(explicit)) return explicit;
+  const label = String(sourceLabel || "").toLowerCase();
+  return (
+    JOB_PROVIDERS.find(
+      (provider) =>
+        label.includes(provider.id) ||
+        label.includes(provider.label.toLowerCase()) ||
+        label.includes(provider.domain.split("/")[0]),
+    )?.id ?? "other"
+  );
+}
+
+function providerLabel(sourceId, fallback = "") {
+  return PROVIDER_BY_ID.get(sourceId)?.label || fallback || "其他";
+}
+
+function normalizeJobUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:") return "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(utm_|spm|track|ref|source)/i.test(key)) url.searchParams.delete(key);
+    }
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function jobDedupeKey(job) {
+  const url = normalizeJobUrl(job.url);
+  if (url) return `url:${url}`;
+  return [normalizeSourceId(job.sourceId, job.source), job.company, job.title, job.location]
+    .map((value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase(),
+    )
+    .join("|");
+}
+
+function mergeState(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return clone(seedState);
+  const next = clone(seedState);
+  if (input.profile && typeof input.profile === "object") {
+    next.profile = { ...next.profile, ...input.profile };
+  }
+  for (const field of ["jobs", "repos", "experiences", "versions", "interviewSets"]) {
+    if (Array.isArray(input[field])) next[field] = input[field];
+  }
+  if (input.resume && typeof input.resume === "object") {
+    next.resume = { ...next.resume, ...input.resume };
+  }
+  if (typeof input.selectedJobId === "string") next.selectedJobId = input.selectedJobId;
+  if (typeof input.selectedInterviewSetId === "string") {
+    next.selectedInterviewSetId = input.selectedInterviewSetId;
+  }
+  if (typeof input.activeView === "string") next.activeView = input.activeView;
+  if (typeof input.statusFilter === "string") next.statusFilter = input.statusFilter;
+  if (typeof input.jobFilter === "string") next.jobFilter = input.jobFilter;
+  if (typeof input.jobSourceFilter === "string") {
+    next.jobSourceFilter = input.jobSourceFilter;
+  }
+  if (typeof input.interviewCategoryFilter === "string") {
+    next.interviewCategoryFilter = input.interviewCategoryFilter;
+  }
+  if (next.jobFilter === "boss") {
+    next.jobFilter = "all";
+    next.jobSourceFilter = "boss";
+  }
+  next.jobs = next.jobs.map((job) => ({
+    ...job,
+    sourceId: normalizeSourceId(job.sourceId, job.source),
+  }));
+  if (!next.jobs.some((job) => job.id === next.selectedJobId)) {
+    next.selectedJobId = next.jobs[0]?.id ?? "";
+  }
+  if (!next.interviewSets.some((set) => set.id === next.selectedInterviewSetId)) {
+    next.selectedInterviewSetId = next.interviewSets[0]?.id ?? "";
+  }
+  return next;
+}
+
+function mockHostCall(method, params = {}) {
+  if (method === "storage.get") {
+    return Promise.resolve(
+      JSON.parse(localStorage.getItem(`${PREVIEW_PREFIX}${params.key}`) || "null"),
+    );
+  }
+  if (method === "storage.set") {
+    localStorage.setItem(`${PREVIEW_PREFIX}${params.key}`, JSON.stringify(params.value));
+    return Promise.resolve(true);
+  }
+  if (method === "workspace.info") {
+    return Promise.resolve({
+      name: "codeshell",
+      root: "/preview/codeshell",
+      trusted: true,
+      gitBranch: "preview",
+    });
+  }
+  if (method === "workspace.list") {
+    return Promise.resolve({
+      path: params.path || ".",
+      entries: [
+        { name: "CODESHELL.md", path: "CODESHELL.md", kind: "file" },
+        { name: "package.json", path: "package.json", kind: "file" },
+        { name: "packages", path: "packages", kind: "directory" },
+        { name: "README.md", path: "README.md", kind: "file" },
+      ],
+      truncated: false,
+    });
+  }
+  if (method === "workspace.readText") {
+    const content = localStorage.getItem(`${PREVIEW_PREFIX}file:${params.path}`);
+    if (content == null) return Promise.reject(new Error("file not found"));
+    const modifiedAt =
+      Number(localStorage.getItem(`${PREVIEW_PREFIX}mtime:${params.path}`)) || Date.now();
+    return Promise.resolve({
+      path: params.path,
+      content,
+      size: content.length,
+      modifiedAt,
+      revision: `preview:${modifiedAt}`,
+    });
+  }
+  if (method === "workspace.writeText") {
+    const modifiedAt = Date.now();
+    localStorage.setItem(`${PREVIEW_PREFIX}file:${params.path}`, params.content);
+    localStorage.setItem(`${PREVIEW_PREFIX}mtime:${params.path}`, String(modifiedAt));
+    return Promise.resolve({
+      path: params.path,
+      size: params.content.length,
+      modifiedAt,
+      revision: `preview:${modifiedAt}`,
+    });
+  }
+  if (method === "external.open") {
+    window.open(params.url, "_blank", "noopener,noreferrer");
+    return Promise.resolve(true);
+  }
+  if (method === "agent.submitPrompt") return Promise.resolve({ accepted: true });
+  return Promise.resolve(null);
+}
+
+function hostCall(method, params) {
+  if (window.codeshellPanel?.call) return window.codeshellPanel.call(method, params);
+  return mockHostCall(method, params);
+}
+
+function getContext() {
+  if (window.codeshellPanel?.getContext) return window.codeshellPanel.getContext();
+  return Promise.resolve({
+    cwd: "/preview/codeshell",
+    trusted: true,
+    busy: false,
+    locale: "zh-CN",
+  });
+}
+
+function updateContext(next) {
+  context = { ...context, ...(next ?? {}) };
+  const name = context.cwd ? context.cwd.split(/[\\/]/).filter(Boolean).at(-1) : "浏览器预览";
+  elements.workspaceLabel.textContent = `${name || "未绑定项目"}${context.busy ? " · Agent 忙碌中" : " · 已连接"}`;
+  elements.generateResume.disabled = Boolean(context.busy);
+  elements.askAgent.disabled = Boolean(context.busy);
+  elements.simulateInterview.disabled = Boolean(context.busy) || !selectedInterviewSet();
+  elements.regenerateInterview.disabled = Boolean(context.busy) || !selectedJob();
+}
+
+function uid(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function selectedJob() {
+  return state.jobs.find((job) => job.id === state.selectedJobId) ?? null;
+}
+
+function selectedInterviewSet() {
+  return state.interviewSets.find((set) => set.id === state.selectedInterviewSetId) ?? null;
+}
+
+function formatDate(value) {
+  if (!value) return "未生成";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚更新";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function slugify(value) {
+  const ascii = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return ascii || `resume-${Date.now().toString(36)}`;
+}
+
+function notify(message, kind = "default") {
+  clearTimeout(toastTimer);
+  elements.toast.textContent = message;
+  elements.toast.classList.toggle("error", kind === "error");
+  elements.toast.hidden = false;
+  toastTimer = setTimeout(
+    () => {
+      elements.toast.hidden = true;
+    },
+    kind === "error" ? 5200 : 3200,
+  );
+}
+
+function persist({ quiet = true } = {}) {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await hostCall("storage.set", { key: STORAGE_KEY, value: clone(state) });
+      elements.lastSaved.textContent = "刚刚保存";
+      if (!quiet) notify("已保存到求职面板");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "保存失败", "error");
+    }
+  }, 80);
+}
+
+function projectSnapshotPayload() {
+  return {
+    schemaVersion: 1,
+    updatedAt: new Date().toISOString(),
+    selectedJobId: state.selectedJobId,
+    selectedInterviewSetId: state.selectedInterviewSetId,
+    profile: clone(state.profile),
+    jobs: clone(state.jobs),
+    repos: clone(state.repos),
+    experiences: clone(state.experiences),
+    resume: clone(state.resume),
+    versions: clone(state.versions),
+    interviewSets: clone(state.interviewSets),
+  };
+}
+
+async function writeProjectSnapshot() {
+  if (!window.codeshellPanel?.call) return false;
+  let expectedModifiedAt = null;
+  let expectedRevision;
+  try {
+    const existing = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+    expectedModifiedAt = existing.modifiedAt;
+    expectedRevision = existing.revision;
+  } catch {
+    expectedModifiedAt = null;
+  }
+  try {
+    const result = await hostCall("workspace.writeText", {
+      path: PROJECT_STATE_PATH,
+      content: `${JSON.stringify(projectSnapshotPayload(), null, 2)}\n`,
+      expectedModifiedAt,
+      ...(expectedRevision ? { expectedRevision } : {}),
+    });
+    projectContext.hasSnapshot = true;
+    projectContext.lastSyncedAt = new Date().toISOString();
+    projectContext.snapshotRevision = result?.revision || "";
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function syncProjectContext({ quiet = true } = {}) {
+  try {
+    const [info, listing] = await Promise.all([
+      hostCall("workspace.info", {}),
+      hostCall("workspace.list", { path: "." }),
+    ]);
+    const entries = listing?.entries ?? [];
+    projectContext.name = info?.name || context.cwd?.split(/[\\/]/).filter(Boolean).at(-1) || "当前项目";
+    projectContext.hasCodeshellFile = entries.some(
+      (entry) => String(entry.name || "").toLowerCase() === "codeshell.md",
+    );
+    try {
+      const snapshot = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+      const parsed = JSON.parse(snapshot.content);
+      if (parsed?.schemaVersion === 1) {
+        state = mergeState(parsed);
+        projectContext.hasSnapshot = true;
+        projectContext.lastSyncedAt = parsed.updatedAt || "";
+        projectContext.snapshotRevision = snapshot.revision || "";
+      }
+    } catch {
+      projectContext.hasSnapshot = false;
+      if (window.codeshellPanel?.call) state = emptyProjectState();
+    }
+    renderAll();
+    if (!quiet) {
+      notify(
+        projectContext.hasSnapshot
+          ? "已从当前项目重新读取岗位、JD、Resume 和面试题"
+          : "已读取当前项目；Agent 生成内容后会自动写入面板",
+      );
+    }
+  } catch (error) {
+    if (!quiet) {
+      notify(error instanceof Error ? error.message : "读取当前项目失败", "error");
+    }
+  }
+}
+
+function extractKeywords(job) {
+  if (!job) return [];
+  const text = `${job.title} ${job.description}`.toLowerCase();
+  const found = KEYWORD_RULES.filter((rule) =>
+    rule.tokens.some((token) => text.includes(token.toLowerCase())),
+  );
+  if (found.length >= 5) return found.slice(0, 10).map((rule) => rule.label);
+  const fallback = ["业务理解", "交付质量", "问题解决", "团队协作"];
+  return [...new Set([...found.map((rule) => rule.label), ...fallback])].slice(0, 8);
+}
+
+function evidenceText() {
+  return [
+    state.profile.role,
+    state.profile.target,
+    state.profile.summary,
+    ...state.repos.flatMap((repo) => [repo.name, repo.tech, repo.summary]),
+    ...state.experiences.flatMap((experience) => [
+      experience.role,
+      experience.company,
+      ...(experience.achievements ?? []),
+    ]),
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function keywordMatched(keyword) {
+  const rule = KEYWORD_RULES.find((item) => item.label === keyword);
+  const corpus = evidenceText();
+  if (rule) return rule.tokens.some((token) => corpus.includes(token.toLowerCase()));
+  return ["业务理解", "交付质量", "问题解决", "团队协作"].includes(keyword);
+}
+
+function calculateMatch(job) {
+  const keywords = extractKeywords(job);
+  if (!keywords.length) return 0;
+  const matched = keywords.filter(keywordMatched).length;
+  const evidenceScore = Math.round((matched / keywords.length) * 100);
+  return Math.round((evidenceScore * 0.75 + Number(job.match || 70) * 0.25) / 1);
+}
+
+function renderView() {
+  document.querySelectorAll(".view").forEach((view) => {
+    const active = view.id === `view-${state.activeView}`;
+    view.classList.toggle("active", active);
+    view.hidden = !active;
+  });
+  document.querySelectorAll("[data-view-target]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.viewTarget === state.activeView);
+  });
+}
+
+function renderCounts() {
+  const counts = {
+    all: state.jobs.length,
+    saved: state.jobs.filter((job) => job.status === "saved").length,
+    tailoring: state.jobs.filter((job) => job.status === "tailoring").length,
+    applied: state.jobs.filter((job) => job.status === "applied").length,
+  };
+  elements.jobNavCount.textContent = String(state.jobs.length);
+  elements.sourceNavCount.textContent = context.cwd ? "1" : "0";
+  elements.resumeNavCount.textContent = String(
+    Math.max(state.versions.length, state.resume.markdown ? 1 : 0),
+  );
+  elements.interviewNavCount.textContent = String(state.interviewSets.length);
+  elements.allCount.textContent = String(counts.all);
+  elements.savedCount.textContent = String(counts.saved);
+  elements.tailoringCount.textContent = String(counts.tailoring);
+  elements.appliedCount.textContent = String(counts.applied);
+  document.querySelectorAll("[data-status-filter]").forEach((button) => {
+    button.classList.toggle("active-soft", button.dataset.statusFilter === state.statusFilter);
+  });
+}
+
+function renderStats() {
+  const average = state.jobs.length
+    ? Math.round(state.jobs.reduce((sum, job) => sum + calculateMatch(job), 0) / state.jobs.length)
+    : 0;
+  const sourceParts = [
+    Boolean(state.profile.summary),
+    state.repos.length > 0,
+    state.experiences.length > 0,
+    state.repos.some((repo) => /\d/.test(repo.summary)),
+  ];
+  const completeness = Math.round(
+    (sourceParts.filter(Boolean).length / Math.max(sourceParts.length, 1)) * 100,
+  );
+  const sourceCount = new Set(state.jobs.map((job) => normalizeSourceId(job.sourceId, job.source)))
+    .size;
+  elements.statJobs.textContent = String(state.jobs.length).padStart(2, "0");
+  elements.statSourceDetail.textContent = sourceCount
+    ? `来自 ${sourceCount} 个招聘渠道`
+    : "等待导入职位";
+  elements.statMatch.textContent = `${average}%`;
+  elements.statSources.textContent = `${completeness}%`;
+  if (state.resume.markdown && state.resume.jobId === state.selectedJobId) {
+    elements.statNext.textContent = "继续精修";
+    elements.statNextDetail.textContent = "核对事实与量化结果";
+  } else {
+    elements.statNext.textContent = "生成草稿";
+    elements.statNextDetail.textContent = selectedJob() ? "为当前职位定制" : "先选择一个职位";
+  }
+}
+
+function renderSourceFilter() {
+  const activeSources = [...new Set(state.jobs.map((job) => job.sourceId || "other"))];
+  const options = [
+    { id: "all", label: "全部渠道" },
+    ...activeSources
+      .map((id) => ({
+        id,
+        label: providerLabel(id, state.jobs.find((job) => job.sourceId === id)?.source),
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label, "zh-CN")),
+  ];
+  elements.jobSourceFilter.replaceChildren(
+    ...options.map((item) => {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.label;
+      return option;
+    }),
+  );
+  if (!options.some((item) => item.id === state.jobSourceFilter)) {
+    state.jobSourceFilter = "all";
+  }
+  elements.jobSourceFilter.value = state.jobSourceFilter;
+}
+
+function jobsForCurrentFilter() {
+  return state.jobs.filter((job) => {
+    if (state.statusFilter !== "all" && job.status !== state.statusFilter) return false;
+    if (state.jobFilter === "90" && calculateMatch(job) < 90) return false;
+    if (
+      state.jobSourceFilter !== "all" &&
+      normalizeSourceId(job.sourceId, job.source) !== state.jobSourceFilter
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function makeTextElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+function renderJobs() {
+  renderSourceFilter();
+  const jobs = jobsForCurrentFilter();
+  elements.jobList.replaceChildren();
+  for (const job of jobs) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `job-card${job.id === state.selectedJobId ? " active" : ""}`;
+    card.dataset.jobId = job.id;
+
+    const top = document.createElement("div");
+    top.className = "job-card-top";
+    top.append(
+      makeTextElement("span", "job-company", job.company),
+      makeTextElement("span", "match-pill", `${calculateMatch(job)}%`),
+    );
+
+    const title = makeTextElement("h3", "", job.title);
+    const meta = document.createElement("div");
+    meta.className = "job-card-meta";
+    meta.append(
+      makeTextElement("span", "", job.location || "地点未注明"),
+      makeTextElement("span", "", job.salary || "薪资面议"),
+    );
+
+    const bottom = document.createElement("div");
+    bottom.className = "job-card-bottom";
+    bottom.append(makeTextElement("span", "source-badge", job.source || "手动添加"));
+    const status = makeTextElement("span", "status-badge", STATUS_LABELS[job.status] || "已收藏");
+    status.dataset.status = job.status;
+    bottom.append(status);
+    card.append(top, title, meta, bottom);
+    elements.jobList.append(card);
+  }
+  elements.emptyAddJob.hidden = jobs.length > 0;
+}
+
+function renderMarkdown(markdown) {
+  elements.resumePreview.replaceChildren();
+  elements.resumePreview.classList.toggle("empty", !markdown.trim());
+  if (!markdown.trim()) {
+    const inner = document.createElement("div");
+    inner.className = "resume-empty-inner";
+    inner.append(
+      makeTextElement("span", "resume-empty-symbol", "✦"),
+      makeTextElement("strong", "", "准备生成第一版"),
+      makeTextElement(
+        "p",
+        "",
+        "选择左侧职位，再点击“生成粗版”。你会得到一份可以继续编辑的 Markdown 简历。",
+      ),
+    );
+    elements.resumePreview.append(inner);
+    return;
+  }
+
+  const lines = markdown.split(/\r?\n/);
+  let list = null;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      list = null;
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      list = null;
+      elements.resumePreview.append(makeTextElement("h1", "", line.slice(2)));
+    } else if (line.startsWith("## ")) {
+      list = null;
+      elements.resumePreview.append(makeTextElement("h2", "", line.slice(3)));
+    } else if (line.startsWith("### ")) {
+      list = null;
+      elements.resumePreview.append(makeTextElement("h3", "", line.slice(4)));
+    } else if (/^[-*]\s/.test(line)) {
+      if (!list) {
+        list = document.createElement("ul");
+        elements.resumePreview.append(list);
+      }
+      list.append(makeTextElement("li", "", line.replace(/^[-*]\s/, "")));
+    } else {
+      list = null;
+      elements.resumePreview.append(makeTextElement("p", "", line));
+    }
+  }
+}
+
+function renderJobDescription(job) {
+  elements.jdPreview.replaceChildren();
+  elements.jdPreview.classList.toggle("empty", !job);
+  if (!job) {
+    const inner = document.createElement("div");
+    inner.className = "resume-empty-inner";
+    inner.append(
+      makeTextElement("strong", "", "先选择一个岗位"),
+      makeTextElement("p", "", "选择左侧岗位后，这里会展示完整 JD。"),
+    );
+    elements.jdPreview.append(inner);
+    return;
+  }
+  const heading = document.createElement("header");
+  heading.className = "jd-heading";
+  heading.append(
+    makeTextElement("h1", "", job.title),
+    makeTextElement(
+      "p",
+      "jd-meta",
+      `${job.company} · ${job.location || "地点未注明"} · ${job.salary || "薪资未注明"} · ${job.source || "来源未注明"}`,
+    ),
+  );
+  elements.jdPreview.append(
+    heading,
+    makeTextElement("h2", "", "职位描述"),
+    makeTextElement("p", "jd-description", job.description || "暂无完整 JD"),
+  );
+}
+
+function renderResume() {
+  const job = selectedJob();
+  const bound = state.resume.jobId === state.selectedJobId && Boolean(state.resume.markdown);
+  elements.resumeTitle.textContent = bound
+    ? state.resume.title
+    : job
+      ? `定制简历 · ${job.company}`
+      : "定制简历 · 等待选择职位";
+  elements.resumeJobLabel.textContent = job
+    ? `${job.company} / ${job.title}${job.sample ? " · 示例 JD" : ""}`
+    : "尚未绑定职位";
+  elements.resumeUpdated.textContent = state.resume.updatedAt
+    ? `更新于 ${formatDate(state.resume.updatedAt)}`
+    : "未生成";
+  elements.resumeEditor.value = bound ? state.resume.markdown : "";
+  renderMarkdown(bound ? state.resume.markdown : "");
+  renderJobDescription(job);
+  const editing = resumeMode === "edit";
+  const showingJd = resumeMode === "jd";
+  elements.resumePreview.hidden = editing || showingJd;
+  elements.resumeEditor.hidden = !editing;
+  elements.jdPreview.hidden = !showingJd;
+  document.querySelectorAll("[data-resume-mode]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.resumeMode === resumeMode);
+  });
+  elements.saveResume.disabled = !bound;
+  elements.generateResume.disabled = !job || Boolean(context.busy);
+}
+
+function renderInsights() {
+  const job = selectedJob();
+  const keywords = extractKeywords(job);
+  const matches = keywords.filter(keywordMatched);
+  elements.matchScore.textContent = job ? `${calculateMatch(job)}%` : "--";
+  elements.keywordCount.textContent = `${keywords.length} 项`;
+  elements.coverageLabel.textContent = `${matches.length} / ${keywords.length}`;
+  elements.keywordList.replaceChildren();
+  elements.coverageList.replaceChildren();
+
+  if (!job) {
+    elements.keywordList.append(makeTextElement("span", "tag", "选择一个职位"));
+    return;
+  }
+
+  for (const keyword of keywords) {
+    const tag = makeTextElement("span", `tag${keywordMatched(keyword) ? " matched" : ""}`, keyword);
+    elements.keywordList.append(tag);
+  }
+
+  const coverageRows = [
+    { label: "工作经历", value: Math.min(100, state.experiences.length * 45 + 10) },
+    { label: "Repo 证据", value: Math.min(100, state.repos.length * 38 + 12) },
+    {
+      label: "JD 关键词",
+      value: keywords.length ? Math.round((matches.length / keywords.length) * 100) : 0,
+    },
+    { label: "量化结果", value: evidenceText().match(/\d+/g)?.length ? 72 : 22 },
+  ];
+  for (const row of coverageRows) {
+    const item = document.createElement("div");
+    item.className = "coverage-item";
+    const track = document.createElement("progress");
+    track.className = "coverage-track";
+    track.max = 100;
+    track.value = row.value;
+    track.setAttribute("aria-label", `${row.label} ${row.value}%`);
+    item.append(makeTextElement("span", "", row.label), track);
+    elements.coverageList.append(item);
+  }
+  elements.openSourceJob.disabled = !job.url;
+  elements.advanceJob.disabled = !job;
+  elements.advanceJob.textContent = job.status === "applied" ? "已标记为投递" : "标记为已投递";
+}
+
+function renderMaterials() {
+  elements.projectContextName.textContent = projectContext.name;
+  elements.projectContextState.textContent = context.cwd ? "已绑定" : "未绑定";
+  elements.codeshellFileState.textContent = projectContext.hasCodeshellFile
+    ? "已发现"
+    : "未发现";
+  elements.projectSnapshotState.textContent = projectContext.hasSnapshot
+    ? `已同步${projectContext.lastSyncedAt ? ` · ${formatDate(projectContext.lastSyncedAt)}` : ""}`
+    : "Agent 首次写回后创建";
+  elements.sideProfileName.textContent = state.profile.name;
+  elements.sideProfileRole.textContent = state.profile.role;
+  elements.profileName.value = state.profile.name;
+  elements.profileRole.value = state.profile.role;
+  elements.profileContact.value = state.profile.contact;
+  elements.profileTarget.value = state.profile.target;
+  elements.profileSummary.value = state.profile.summary;
+  elements.repoCount.textContent = String(state.repos.length).padStart(2, "0");
+  elements.experienceCount.textContent = String(state.experiences.length).padStart(2, "0");
+
+  elements.repoList.replaceChildren();
+  for (const repo of state.repos) {
+    const item = document.createElement("article");
+    item.className = "material-item";
+    item.append(
+      makeTextElement("strong", "", repo.name),
+      makeTextElement(
+        "span",
+        "material-item-meta",
+        `${repo.tech || "技术栈待补充"} · ${repo.path || "本地项目"}`,
+      ),
+      makeTextElement("p", "", repo.summary),
+    );
+    elements.repoList.append(item);
+  }
+
+  elements.experienceList.replaceChildren();
+  for (const experience of state.experiences) {
+    const item = document.createElement("article");
+    item.className = "material-item";
+    item.append(
+      makeTextElement("strong", "", `${experience.company} · ${experience.role}`),
+      makeTextElement("span", "material-item-meta", experience.period || "时间待补充"),
+      makeTextElement("p", "", (experience.achievements || []).join("；")),
+    );
+    elements.experienceList.append(item);
+  }
+}
+
+function renderVersions() {
+  elements.resumeVersionList.replaceChildren();
+  const versions = [...state.versions];
+  if (state.resume.markdown && !versions.some((version) => version.id === state.resume.versionId)) {
+    versions.unshift({
+      id: state.resume.versionId || "current",
+      jobId: state.resume.jobId,
+      title: state.resume.title,
+      markdown: state.resume.markdown,
+      updatedAt: state.resume.updatedAt,
+    });
+  }
+  if (!versions.length) {
+    const empty = document.createElement("article");
+    empty.className = "resume-version-card";
+    empty.append(
+      makeTextElement("span", "panel-kicker", "NO DRAFTS YET"),
+      makeTextElement("h2", "", "还没有简历版本"),
+      makeTextElement("p", "", "回到机会面板，选择职位并生成第一份定制草稿。"),
+    );
+    elements.resumeVersionList.append(empty);
+    return;
+  }
+  for (const [index, version] of versions.entries()) {
+    const job = state.jobs.find((item) => item.id === version.jobId);
+    const card = document.createElement("article");
+    card.className = `resume-version-card${index === 0 ? " current" : ""}`;
+    const header = document.createElement("header");
+    header.append(
+      makeTextElement("span", "panel-kicker", index === 0 ? "CURRENT VERSION" : "ARCHIVED"),
+      makeTextElement("span", "tiny-badge", formatDate(version.updatedAt)),
+    );
+    const mini = document.createElement("div");
+    mini.className = "mini-paper";
+    mini.append(
+      document.createElement("i"),
+      document.createElement("span"),
+      document.createElement("span"),
+      document.createElement("span"),
+    );
+    card.append(
+      header,
+      makeTextElement("h2", "", version.title || "未命名简历"),
+      makeTextElement("p", "", job ? `${job.company} · ${job.title}` : "职位信息待关联"),
+      mini,
+    );
+    elements.resumeVersionList.append(card);
+  }
+}
+
+function renderInterviews() {
+  elements.interviewSetCount.textContent = String(state.interviewSets.length).padStart(2, "0");
+  elements.interviewSetList.replaceChildren();
+
+  for (const set of state.interviewSets) {
+    const job = state.jobs.find((item) => item.id === set.jobId);
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `interview-set-card${set.id === state.selectedInterviewSetId ? " active" : ""}`;
+    card.dataset.interviewSetId = set.id;
+    card.append(
+      makeTextElement("span", "panel-kicker", INTERVIEW_MODE_LABELS[set.mode] || "定制面试"),
+      makeTextElement("strong", "", set.title || `${job?.company || "目标岗位"} · 面试题`),
+      makeTextElement(
+        "span",
+        "material-item-meta",
+        `${set.questions?.length || 0} 题 · ${formatDate(set.createdAt)}`,
+      ),
+    );
+    elements.interviewSetList.append(card);
+  }
+
+  const set = selectedInterviewSet();
+  const job = set ? state.jobs.find((item) => item.id === set.jobId) : null;
+  const questions = Array.isArray(set?.questions) ? set.questions : [];
+  const categories = [...new Set(questions.map((item) => item.category).filter(Boolean))];
+  const evidenceRefs = new Set(questions.flatMap((item) => item.evidenceRefs || []));
+
+  elements.interviewJobLabel.textContent = job
+    ? `${job.company} / ${job.title}${job.sample ? " · 示例 JD" : ""}`
+    : "选择职位后生成专属题单";
+  elements.interviewSetTitle.textContent = set?.title || "还没有面试题单";
+  elements.interviewQuestionCount.textContent = String(questions.length).padStart(2, "0");
+  elements.interviewEvidenceCount.textContent = String(evidenceRefs.size).padStart(2, "0");
+  elements.interviewCategoryCount.textContent = String(categories.length).padStart(2, "0");
+  elements.simulateInterview.disabled = !set || Boolean(context.busy);
+  elements.regenerateInterview.disabled = !job || Boolean(context.busy);
+
+  const filterOptions = ["全部", ...categories];
+  if (!filterOptions.includes(state.interviewCategoryFilter)) {
+    state.interviewCategoryFilter = "全部";
+  }
+  elements.interviewCategoryFilters.replaceChildren(
+    ...filterOptions.map((category) => {
+      const button = makeTextElement("button", "interview-filter", category);
+      button.type = "button";
+      button.dataset.interviewCategory = category;
+      button.classList.toggle("active", category === state.interviewCategoryFilter);
+      return button;
+    }),
+  );
+
+  const visibleQuestions = questions.filter(
+    (item) =>
+      state.interviewCategoryFilter === "全部" || item.category === state.interviewCategoryFilter,
+  );
+  elements.interviewQuestionList.replaceChildren();
+
+  if (!visibleQuestions.length) {
+    const empty = document.createElement("article");
+    empty.className = "interview-empty";
+    const inner = document.createElement("div");
+    inner.append(
+      makeTextElement("strong", "", "先生成一套岗位定制面试题"),
+      makeTextElement(
+        "p",
+        "",
+        "系统会把 JD、工作经历和 Repo 证据交叉起来，覆盖技术、项目、系统设计、行为与材料缺口。",
+      ),
+    );
+    empty.append(inner);
+    elements.interviewQuestionList.append(empty);
+    return;
+  }
+
+  for (const [index, question] of visibleQuestions.entries()) {
+    const card = document.createElement("article");
+    card.className = "question-card";
+
+    const top = document.createElement("div");
+    top.className = "question-card-top";
+    const meta = document.createElement("div");
+    meta.className = "question-meta";
+    meta.append(
+      makeTextElement("span", "question-category", question.category || "岗位问题"),
+      makeTextElement("span", "question-difficulty", question.difficulty || "进阶"),
+    );
+    top.append(
+      makeTextElement("span", "question-index", `Q${String(index + 1).padStart(2, "0")}`),
+      meta,
+    );
+
+    const why = document.createElement("p");
+    why.className = "question-why";
+    why.append(
+      makeTextElement("span", "question-why-label", "为什么会问"),
+      document.createTextNode(question.why),
+    );
+
+    const evidence = document.createElement("div");
+    evidence.className = "question-evidence";
+    const refs = question.evidenceRefs?.length ? question.evidenceRefs : ["JD · 待补充证据"];
+    evidence.append(...refs.map((item) => makeTextElement("span", "evidence-chip", item)));
+
+    const answer = document.createElement("details");
+    answer.className = "answer-points";
+    answer.append(makeTextElement("summary", "", "查看回答要点与可能追问"));
+    const answerTitle = makeTextElement("strong", "", "回答要点");
+    const answerList = document.createElement("ul");
+    answerList.append(
+      ...(question.answerPoints?.length
+        ? question.answerPoints
+        : ["先讲场景与目标", "说明自己的动作与取舍", "以真实结果或复盘收尾"]
+      ).map((item) => makeTextElement("li", "", item)),
+    );
+    answer.append(answerTitle, answerList);
+    if (question.followUps?.length) {
+      answer.append(makeTextElement("strong", "", "可能追问"));
+      const followUpList = document.createElement("ul");
+      followUpList.append(...question.followUps.map((item) => makeTextElement("li", "", item)));
+      answer.append(followUpList);
+    }
+
+    card.append(top, makeTextElement("h3", "", question.question), why, evidence, answer);
+    elements.interviewQuestionList.append(card);
+  }
+}
+
+function renderAll() {
+  renderView();
+  renderCounts();
+  renderStats();
+  renderJobs();
+  renderResume();
+  renderInsights();
+  renderMaterials();
+  renderVersions();
+  renderInterviews();
+}
+
+function composeDraft(job) {
+  const keywords = extractKeywords(job);
+  const matched = keywords.filter(keywordMatched);
+  const experienceSections = state.experiences
+    .map((experience) => {
+      const bullets = (experience.achievements || []).map((item) => `- ${item}`).join("\n");
+      return `### ${experience.company} · ${experience.role}\n${experience.period || ""}\n${bullets}`;
+    })
+    .join("\n\n");
+  const repoSections = state.repos
+    .map(
+      (repo) =>
+        `### ${repo.name}\n${repo.tech || "技术栈待补充"}\n- ${repo.summary}${repo.path ? `\n- Repo：${repo.path}` : ""}`,
+    )
+    .join("\n\n");
+
+  return [
+    `# ${state.profile.name || "你的姓名"}`,
+    `${state.profile.role || "目标角色"} · ${state.profile.contact || "联系方式待补充"}`,
+    "",
+    "## 专业概述",
+    `${state.profile.summary || "请补充职业简介"} 针对 ${job.company} 的「${job.title}」机会，重点呈现 ${matched.slice(0, 4).join("、") || "相关产品与工程能力"}。`,
+    "",
+    "## 核心能力",
+    matched.length
+      ? matched.map((keyword) => `- ${keyword}`).join("\n")
+      : "- 请根据职位要求补充对应能力证据",
+    "",
+    "## 工作经历",
+    experienceSections || "### 待补充\n- 请先在材料库添加真实工作经历。",
+    "",
+    "## 项目与代码",
+    repoSections || "### 待补充\n- 请先在材料库添加 Repo 或项目成果。",
+    "",
+    "## 定制说明",
+    `- 目标职位：${job.company} · ${job.title}`,
+    `- 已覆盖关键词：${matched.join("、") || "待核对"}`,
+    `- 待补强：${keywords.filter((keyword) => !matched.includes(keyword)).join("、") || "请补充更多可量化结果"}`,
+  ].join("\n");
+}
+
+function archiveCurrentResume() {
+  if (!state.resume.markdown) return;
+  const version = {
+    id: state.resume.versionId || uid("resume"),
+    jobId: state.resume.jobId,
+    title: state.resume.title,
+    markdown: state.resume.markdown,
+    notes: state.resume.notes || [],
+    updatedAt: state.resume.updatedAt,
+  };
+  state.versions = [version, ...state.versions.filter((item) => item.id !== version.id)].slice(
+    0,
+    12,
+  );
+}
+
+function generateLocalDraft() {
+  const job = selectedJob();
+  if (!job) return notify("先选择或添加一个职位", "error");
+  if (state.resume.markdown && state.resume.jobId !== job.id) archiveCurrentResume();
+  job.status = "tailoring";
+  const now = new Date().toISOString();
+  state.resume = {
+    jobId: job.id,
+    versionId: uid("resume"),
+    title: `${job.company} · ${job.title}`,
+    markdown: composeDraft(job),
+    notes: ["请核对所有事实与日期", "建议补充至少一个可量化结果"],
+    updatedAt: now,
+  };
+  resumeMode = "preview";
+  persist();
+  renderAll();
+  notify("粗版简历已生成，可以直接切到“编辑”继续修改");
+}
+
+async function generateDraft() {
+  const job = selectedJob();
+  if (!job) return notify("先选择或添加一个职位", "error");
+  if (!window.codeshellPanel?.call) {
+    generateLocalDraft();
+    return;
+  }
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，为当前职位生成粗版简历。",
+    `目标职位 ID：${job.id}`,
+    "先读取当前项目根目录的 CODESHELL.md，并按其中规则检查与求职有关的工作经历、项目说明、代码和其他资料。",
+    "再调用 get_job_search_context 读取完整 JD。若识别到候选人资料，先调用 save_candidate_context 更新面板中的项目上下文。",
+    "仅使用当前项目中能核实的事实；不要编造公司、日期、职责、技术或数字。对无法确认的信息放进 notes。",
+    "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
+  ].join("\n");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    notify("Agent 正在读取当前项目并生成简历，完成后会自动显示");
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "提交简历生成失败", "error");
+  }
+}
+
+async function saveResumeToRepo() {
+  const job = selectedJob();
+  if (!job || !state.resume.markdown || state.resume.jobId !== job.id) {
+    return notify("当前职位还没有可保存的简历", "error");
+  }
+  const path = `job-hunt-resume-${slugify(`${job.company}-${job.title}`)}.md`;
+  let expectedModifiedAt = null;
+  let expectedRevision;
+  try {
+    const existing = await hostCall("workspace.readText", { path });
+    expectedModifiedAt = existing.modifiedAt;
+    expectedRevision = existing.revision;
+  } catch {
+    expectedModifiedAt = null;
+  }
+  try {
+    await hostCall("workspace.writeText", {
+      path,
+      content: state.resume.markdown,
+      expectedModifiedAt,
+      ...(expectedRevision ? { expectedRevision } : {}),
+    });
+    notify(`已保存到 ${path}`);
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "保存到 Repo 失败", "error");
+  }
+}
+
+function openDialog(id) {
+  const dialog = document.querySelector(`#${id}`);
+  if (dialog instanceof HTMLDialogElement) dialog.showModal();
+}
+
+function closeDialog(id) {
+  const dialog = document.querySelector(`#${id}`);
+  if (dialog instanceof HTMLDialogElement) dialog.close();
+}
+
+async function submitJobSearch(form) {
+  if (context.busy) return notify("当前 Agent 正在运行，请稍后再试", "error");
+  const data = new FormData(form);
+  const keyword = String(data.get("keyword") || "").trim();
+  const city = String(data.get("city") || "").trim();
+  const seniority = String(data.get("seniority") || "").trim();
+  const count = Number(data.get("count") || 5);
+  const providerIds = data
+    .getAll("providers")
+    .map((value) => String(value))
+    .filter((id) => PROVIDER_BY_ID.has(id));
+  if (!providerIds.length) return notify("至少选择一个招聘渠道", "error");
+  const providers = providerIds.map((id) => PROVIDER_BY_ID.get(id));
+  const providerSummary = providers
+    .map((provider) => `${provider.label}（${provider.domain}）`)
+    .join("、");
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具处理这次职位搜索。",
+    "先读取当前项目根目录的 CODESHELL.md 和与求职有关的项目资料，并严格遵循其中规则。",
+    `在以下渠道查找合计最多 ${count} 个当前有效的职位：${providerSummary}。`,
+    `搜索条件：关键词「${keyword}」，城市「${city || "不限"}」，经验「${seniority || "不限"}」。`,
+    "逐站搜索公开页面；不要绕过登录、验证码、访问频率、robots 或其他限制。受限渠道直接跳过并记录原因。",
+    "把不同网站的结果统一为相同字段，并按规范化 URL 优先、公司 + 职位 + 地点 + 来源其次去重。",
+    "调用 get_job_search_context 读取面板状态；若识别到候选人资料，先调用 save_candidate_context 更新面板，再给每个职位一个有依据的初步匹配度。",
+    "最后必须调用 save_job_opportunities，把 company、title、location、salary、source、source_id、url、published_at、employment_type、description 和 match 写回面板。",
+    "source_id 必须使用本次选择中的短 ID。若某个渠道不可访问，请明确说明，并提醒我把对应 JD 手动粘贴到面板；不要编造职位。",
+  ].join("\n");
+
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    closeDialog("agent-dialog");
+    notify(
+      window.codeshellPanel?.call
+        ? "已交给 Agent，找到的职位会写回机会面板"
+        : "浏览器预览不会真实抓取；安装到 CodeShell 后会交给 Agent",
+    );
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "提交职位搜索失败", "error");
+  }
+}
+
+async function submitResumeRevision(request) {
+  const job = selectedJob();
+  if (!job) return notify("先选择一个职位", "error");
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具调整当前简历。",
+    `目标职位 ID：${job.id}`,
+    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条核对完整 JD 与项目证据。",
+    "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。只使用能核实的真实信息，不要编造公司、日期、技术、职责或数据。",
+    "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
+    `我的调整要求：${request}`,
+  ].join("\n");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    closeDialog("resume-agent-dialog");
+    notify(
+      window.codeshellPanel?.call
+        ? "Agent 已开始调整，完成后新草稿会写回这里"
+        : "浏览器预览不会调用 Agent；安装到 CodeShell 后可使用此功能",
+    );
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "提交调整失败", "error");
+  }
+}
+
+function buildInterviewQuestions(job, options) {
+  const difficulty = options.difficulty || "进阶";
+  const keywords = extractKeywords(job);
+  const unmatched = keywords.filter((keyword) => !keywordMatched(keyword));
+  const focusSuffix = options.focus ? `，并结合「${options.focus}」` : "";
+  const questions = [];
+  const add = (category, question, why, evidenceRefs, answerPoints, followUps) => {
+    questions.push({
+      id: uid("question"),
+      category,
+      difficulty,
+      question,
+      why,
+      evidenceRefs,
+      answerPoints,
+      followUps,
+    });
+  };
+
+  for (const repo of state.repos) {
+    add(
+      "项目深挖",
+      `请用 3 分钟介绍 ${repo.name}：你负责的核心范围是什么，最难的技术或产品决策是什么${focusSuffix}？`,
+      `这个项目与 ${job.title} 的能力要求存在交集，面试官会验证你是否真正参与了关键决策。`,
+      [`Repo · ${repo.name}`, `JD · ${keywords.slice(0, 2).join(" / ") || job.title}`],
+      ["从问题、约束、个人职责开始", "解释方案选择与被放弃的方案", "用真实结果或复盘结束"],
+      ["如果重做一次，你会改变哪项设计？", "哪一部分最能证明是你本人完成的？"],
+    );
+    add(
+      "项目深挖",
+      `${repo.name} 使用了 ${repo.tech || "多项技术"}。请选择一个关键模块，说明数据流、错误处理和可维护性设计。`,
+      "Repo 材料里有技术栈和项目摘要，适合继续追问实现细节与工程判断。",
+      [`Repo · ${repo.name}`, repo.path ? `代码位置 · ${repo.path}` : "Repo · 技术实现"],
+      ["画清模块边界与数据流", "说明异常、降级和可观测性", "交代测试方式和长期维护成本"],
+      ["高并发或大数据量下，哪个环节先出现瓶颈？"],
+    );
+  }
+
+  for (const experience of state.experiences) {
+    const achievement = experience.achievements?.[0] || "负责的重要项目";
+    add(
+      "经历复盘",
+      `在 ${experience.company} 担任 ${experience.role} 时，你提到“${achievement}”。请说明目标、你的具体动作和最终影响。`,
+      "这道题把简历描述展开成可核验的 STAR 证据，避免回答停留在团队层面。",
+      [`工作经历 · ${experience.company}`, `职位 · ${experience.role}`],
+      ["区分团队成果与个人贡献", "补充时间、规模和约束", "没有精确数字时明确说明测量口径"],
+      ["最大的阻力来自哪里？", "你如何确认结果确实由这项改动带来？"],
+    );
+    add(
+      "行为面试",
+      `讲一个你在 ${experience.company} 推动跨团队决策的真实例子：各方目标有什么冲突，你如何让事情继续向前？`,
+      "目标 JD 强调协作与交付，需要验证影响力、判断力和沟通方式。",
+      [`工作经历 · ${experience.company}`, "JD · 协作沟通"],
+      ["用 STAR 结构控制在 2–3 分钟", "说清利益相关方与分歧", "突出自己的动作、结果和反思"],
+      ["如果对方仍不同意，你会如何升级或止损？"],
+    );
+  }
+
+  for (const keyword of keywords) {
+    add(
+      "技术基础",
+      `围绕 ${keyword}，请解释一个你在真实项目里遇到的问题、定位过程、解决方案与取舍。`,
+      `“${keyword}”来自目标 JD，面试官通常会从概念继续追到真实应用。`,
+      [`JD · ${keyword}`, keywordMatched(keyword) ? "材料 · 已有相关证据" : "材料缺口 · 证据不足"],
+      ["先给出概念和适用边界", "用一个真实项目连接理论与实践", "主动说明取舍和失败情况"],
+      [`如果不使用 ${keyword}，你会选择什么方案？`],
+    );
+  }
+
+  add(
+    "系统设计",
+    `请设计一个面向「${job.title}」日常工作的核心系统：先澄清需求，再说明模块、状态、接口、异常恢复和监控方案。`,
+    "综合系统设计题可以同时观察需求拆解、架构边界、可靠性和表达结构。",
+    [`JD · ${job.title}`, ...state.repos.slice(0, 1).map((repo) => `Repo · ${repo.name}`)],
+    ["先问规模、角色和成功指标", "划分核心模块与数据所有权", "覆盖失败、恢复、监控和演进"],
+    ["如果流量增长十倍，先改哪里？", "如何做灰度发布和回滚？"],
+  );
+  add(
+    "系统设计",
+    `如果要把 ${job.company} 的相关产品做成支持实时更新、离线恢复和多端同步的应用，你会怎样设计前端状态与事件协议？`,
+    "该问题结合岗位场景验证复杂交互、状态一致性与工程化能力。",
+    [`JD · ${job.company}`, "材料 · 前端工程经验"],
+    [
+      "区分服务端状态、持久状态和临时 UI 状态",
+      "定义事件顺序、幂等与冲突策略",
+      "讨论断线恢复和可观测性",
+    ],
+    ["多窗口同时修改时如何解决冲突？"],
+  );
+  add(
+    "行为面试",
+    "讲一个上线后结果没有达到预期的项目。你如何发现问题、承担责任并推动修正？",
+    "失败复盘能验证诚实度、学习速度和结果意识，也能暴露只讲成功案例的盲区。",
+    ["工作经历 · 复盘能力"],
+    ["选择真实且有边界的例子", "不甩锅，清楚说明自己的判断", "给出后续机制性改进"],
+    ["同类问题后来是否再次发生？"],
+  );
+  add(
+    "行为面试",
+    `为什么选择 ${job.company} 的 ${job.title}，你的已有经历能立即解决什么问题，还需要补什么？`,
+    "考察求职动机是否建立在 JD 与个人证据上，而不是通用话术。",
+    [`JD · ${job.title}`, `个人目标 · ${state.profile.target || "待补充"}`],
+    [
+      "把公司、岗位和个人方向分别讲清",
+      "用两项强证据说明即时价值",
+      "坦诚说明一项待补能力和学习计划",
+    ],
+    ["如果拿到多个 offer，你最看重什么？"],
+  );
+
+  for (const keyword of unmatched) {
+    add(
+      "能力差距",
+      `JD 要求 ${keyword}，但当前经历和 Repo 中缺少直接证据。你会如何诚实回答，并说明可迁移经验与补齐计划？`,
+      "这是当前材料的显性缺口，提前准备比临场夸大更可信。",
+      [`JD · ${keyword}`, `材料缺口 · ${keyword}`],
+      ["明确说出实际经验边界", "连接相邻能力与学习速度", "给出已开始或可验证的补齐动作"],
+      [`如果入职第一周就要使用 ${keyword}，你会怎么做？`],
+    );
+  }
+
+  add(
+    "能力差距",
+    "你的材料中哪些结果还缺少数字或清晰口径？面试时如何在不夸大的前提下证明影响？",
+    "量化不足会降低简历与口头陈述的可信度，需要提前确认哪些数据可说、哪些只能描述趋势。",
+    ["材料缺口 · 量化结果"],
+    ["区分事实、区间和主观判断", "说明指标定义与测量窗口", "无法确认的数据不报精确值"],
+    ["为什么当时没有建立数据基线？"],
+  );
+
+  const preferredCategory = {
+    technical: "技术基础",
+    project: "项目深挖",
+    behavioral: "行为面试",
+    "system-design": "系统设计",
+  }[options.mode];
+
+  let ordered = questions;
+  if (preferredCategory) {
+    ordered = [...questions].sort(
+      (left, right) =>
+        Number(right.category === preferredCategory) - Number(left.category === preferredCategory),
+    );
+  } else {
+    const buckets = new Map();
+    for (const question of questions) {
+      if (!buckets.has(question.category)) buckets.set(question.category, []);
+      buckets.get(question.category).push(question);
+    }
+    ordered = [];
+    while ([...buckets.values()].some((items) => items.length)) {
+      for (const items of buckets.values()) {
+        const next = items.shift();
+        if (next) ordered.push(next);
+      }
+    }
+  }
+  return ordered.slice(0, Math.min(20, Math.max(3, options.count || 10)));
+}
+
+async function generateInterviewSet(form) {
+  const job = selectedJob();
+  if (!job) return notify("先选择或添加一个职位", "error");
+  const data = new FormData(form);
+  const options = {
+    mode: String(data.get("mode") || "balanced"),
+    difficulty: String(data.get("difficulty") || "进阶"),
+    count: Number(data.get("count") || 10),
+    language: String(data.get("language") || "中文"),
+    focus: String(data.get("focus") || "").trim(),
+  };
+  closeDialog("interview-dialog");
+
+  if (!window.codeshellPanel?.call) {
+    const set = {
+      id: uid("interview"),
+      jobId: job.id,
+      title: `${job.company} · ${INTERVIEW_MODE_LABELS[options.mode] || "定制面试"}`,
+      mode: options.mode,
+      difficulty: options.difficulty,
+      createdAt: new Date().toISOString(),
+      questions: buildInterviewQuestions(job, options),
+    };
+    state.interviewSets = [set, ...state.interviewSets].slice(0, 20);
+    state.selectedInterviewSetId = set.id;
+    state.interviewCategoryFilter = "全部";
+    state.activeView = "interviews";
+    persist();
+    renderAll();
+    notify("已生成可编辑预览题单；安装到 CodeShell 后，Agent 会进一步按材料深挖");
+    return;
+  }
+
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具生成岗位定制面试题。",
+    `目标职位 ID：${job.id}`,
+    `题单模式：${options.mode}（${INTERVIEW_MODE_LABELS[options.mode] || "综合面试"}）`,
+    `难度：${options.difficulty}；数量：${options.count}；回答语言：${options.language}。`,
+    options.focus ? `特别关注：${options.focus}` : "特别关注：根据 JD 与候选人证据自动判断。",
+    "先读取当前项目根目录的 CODESHELL.md 和相关资料，再调用 get_job_search_context，逐条交叉核对完整 JD、工作经历、代码项目和当前简历。",
+    "若识别到新的候选人资料，先调用 save_candidate_context 更新面板。",
+    "每道题都要说明为什么问、关联哪些真实证据、回答要点和可能追问；同时覆盖最明显的材料缺口。不要编造项目、技术、职责或数字。",
+    "完成后必须调用 save_interview_question_set 写回面板。",
+  ].join("\n");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    notify("Agent 正在读取当前项目并生成面试题，完成后会自动显示");
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "提交面试题生成失败", "error");
+  }
+}
+
+async function simulateInterviewSession() {
+  const set = selectedInterviewSet();
+  const job = set ? state.jobs.find((item) => item.id === set.jobId) : null;
+  if (!set || !job) return notify("先选择一套面试题", "error");
+  if (!window.codeshellPanel?.call) {
+    return notify("安装到 CodeShell 后可开始一题一题的模拟面试");
+  }
+  const prompt = [
+    "请使用 job-hunt-hq:job-tailor skill 和 panel-app:job-hunt-hq 工具，开始一场互动模拟面试。",
+    `目标职位 ID：${job.id}；面试题单 ID：${set.id}；题单标题：${set.title}。`,
+    "先读取当前项目根目录的 CODESHELL.md，再调用 get_job_search_context 读取完整题单。每次只问一道题，在我回答前不要展示回答要点。",
+    "收到回答后，从事实证据、结构清晰度、技术深度和岗位相关性四方面给简短反馈，再选择一个追问或进入下一题。",
+    "若我的回答超出已有材料，提醒我核实，不要替我补造事实。全部结束后给出优势、风险和下一轮练习建议。",
+  ].join("\n");
+  try {
+    await hostCall("agent.submitPrompt", { prompt });
+    notify("模拟面试已开始，Agent 会从第一题逐步追问");
+  } catch (error) {
+    notify(error instanceof Error ? error.message : "启动模拟面试失败", "error");
+  }
+}
+
+function assertPlainObject(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${name} 参数格式不正确`);
+  }
+}
+
+function registerAgentTools(ready) {
+  const register = window.codeshellPanel?.registerTool;
+  if (!register) return;
+
+  register("get_job_search_context", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "get_job_search_context");
+    if (Object.keys(args).length) throw new Error("get_job_search_context 不接受参数");
+    return {
+      project: clone(projectContext),
+      projectStatePath: PROJECT_STATE_PATH,
+      selectedJobId: state.selectedJobId,
+      selectedJob: clone(selectedJob()),
+      opportunities: clone(state.jobs),
+      profile: clone(state.profile),
+      repositories: clone(state.repos),
+      workHistory: clone(state.experiences),
+      resume: clone(state.resume),
+      interviewSets: clone(state.interviewSets),
+      providerCatalog: clone(JOB_PROVIDERS),
+      evidencePolicy:
+        "Read the current project's CODESHELL.md and relevant files first. Use only verifiable project evidence; never invent facts or metrics.",
+      collectionPolicy:
+        "Use public pages only, preserve source attribution, and never bypass login, CAPTCHA, robots, or rate limits.",
+    };
+  });
+
+  register("save_candidate_context", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_candidate_context");
+    assertPlainObject(args.profile, "profile");
+    if (!Array.isArray(args.repositories) || !Array.isArray(args.work_history)) {
+      throw new Error("repositories 和 work_history 必须是数组");
+    }
+    const text = (value, maxLength) =>
+      String(value || "")
+        .trim()
+        .slice(0, maxLength);
+    state.profile = {
+      name: text(args.profile.name, 100) || "姓名待确认",
+      role: text(args.profile.role, 120) || "目标职位待确认",
+      contact: text(args.profile.contact, 300),
+      target: text(args.profile.target, 500),
+      summary: text(args.profile.summary, 3000),
+    };
+    state.repos = args.repositories.slice(0, 30).map((repo, index) => {
+      assertPlainObject(repo, `repositories[${index}]`);
+      if (!text(repo.name, 100) || !text(repo.summary, 3000)) {
+        throw new Error(`repositories[${index}] 缺少 name 或 summary`);
+      }
+      return {
+        id: text(repo.id, 100) || uid("repo"),
+        name: text(repo.name, 100),
+        path: text(repo.path, 1000),
+        tech: text(repo.tech, 500),
+        summary: text(repo.summary, 3000),
+      };
+    });
+    state.experiences = args.work_history.slice(0, 30).map((experience, index) => {
+      assertPlainObject(experience, `work_history[${index}]`);
+      if (!text(experience.company, 100) || !text(experience.role, 120)) {
+        throw new Error(`work_history[${index}] 缺少 company 或 role`);
+      }
+      return {
+        id: text(experience.id, 100) || uid("exp"),
+        company: text(experience.company, 100),
+        role: text(experience.role, 120),
+        period: text(experience.period, 100),
+        achievements: Array.isArray(experience.achievements)
+          ? experience.achievements
+              .map((item) => text(item, 1000))
+              .filter(Boolean)
+              .slice(0, 20)
+          : [],
+      };
+    });
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: true,
+      projectSaved,
+      repositories: state.repos.length,
+      workHistory: state.experiences.length,
+    };
+  });
+
+  register("save_job_opportunities", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_job_opportunities");
+    if (!Array.isArray(args.jobs) || args.jobs.length < 1 || args.jobs.length > 12) {
+      throw new Error("jobs 必须包含 1–12 个职位");
+    }
+    const incoming = args.jobs.map((job, index) => {
+      assertPlainObject(job, `jobs[${index}]`);
+      if (
+        typeof job.company !== "string" ||
+        !job.company.trim() ||
+        typeof job.title !== "string" ||
+        !job.title.trim() ||
+        typeof job.description !== "string" ||
+        !job.description.trim()
+      ) {
+        throw new Error(`jobs[${index}] 缺少 company、title 或 description`);
+      }
+      const url = normalizeJobUrl(job.url);
+      const sourceId = normalizeSourceId(job.source_id, job.source);
+      return {
+        id: uid("agent-job"),
+        company: job.company.trim().slice(0, 80),
+        title: job.title.trim().slice(0, 120),
+        location: String(job.location || "")
+          .trim()
+          .slice(0, 80),
+        salary: String(job.salary || "")
+          .trim()
+          .slice(0, 80),
+        source: String(job.source || "Agent 搜索")
+          .trim()
+          .slice(0, 40),
+        sourceId,
+        url,
+        publishedAt: String(job.published_at || "")
+          .trim()
+          .slice(0, 80),
+        employmentType: String(job.employment_type || "")
+          .trim()
+          .slice(0, 80),
+        description: job.description.trim().slice(0, 20000),
+        match: Number.isInteger(job.match) ? Math.min(100, Math.max(0, job.match)) : 70,
+        status: "saved",
+        createdAt: new Date().toISOString(),
+        sample: false,
+      };
+    });
+    const existingKeys = new Set(state.jobs.map(jobDedupeKey));
+    const unique = incoming.filter((job) => {
+      const key = jobDedupeKey(job);
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    });
+    state.jobs = [...unique, ...state.jobs].slice(0, 80);
+    if (unique[0]) state.selectedJobId = unique[0].id;
+    state.jobSourceFilter = "all";
+    state.activeView = "dashboard";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: unique.length,
+      skippedDuplicates: incoming.length - unique.length,
+      selectedJobId: state.selectedJobId,
+      totalJobs: state.jobs.length,
+      projectSaved,
+    };
+  });
+
+  register("save_interview_question_set", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_interview_question_set");
+    const job = state.jobs.find((item) => item.id === args.job_id);
+    if (!job) throw new Error("job_id 不存在，请先读取面板上下文");
+    if (
+      typeof args.title !== "string" ||
+      !args.title.trim() ||
+      !Object.hasOwn(INTERVIEW_MODE_LABELS, args.mode) ||
+      !Array.isArray(args.questions) ||
+      args.questions.length < 3 ||
+      args.questions.length > 30
+    ) {
+      throw new Error("title、有效 mode 和 3–30 道 questions 为必填");
+    }
+    const questions = args.questions.map((question, index) => {
+      assertPlainObject(question, `questions[${index}]`);
+      if (
+        typeof question.category !== "string" ||
+        !question.category.trim() ||
+        !["基础", "进阶", "挑战"].includes(question.difficulty) ||
+        typeof question.question !== "string" ||
+        question.question.trim().length < 8 ||
+        typeof question.why !== "string" ||
+        !question.why.trim()
+      ) {
+        throw new Error(`questions[${index}] 缺少分类、难度、问题或出题原因`);
+      }
+      const normalizeList = (value, maxItems, maxLength) =>
+        Array.isArray(value)
+          ? value
+              .map((item) =>
+                String(item || "")
+                  .trim()
+                  .slice(0, maxLength),
+              )
+              .filter(Boolean)
+              .slice(0, maxItems)
+          : [];
+      return {
+        id: uid("agent-question"),
+        category: question.category.trim().slice(0, 40),
+        difficulty: question.difficulty,
+        question: question.question.trim().slice(0, 600),
+        why: question.why.trim().slice(0, 600),
+        evidenceRefs: normalizeList(question.evidence_refs, 8, 160),
+        answerPoints: normalizeList(question.answer_points, 8, 300),
+        followUps: normalizeList(question.follow_ups, 5, 500),
+      };
+    });
+    const set = {
+      id: uid("agent-interview"),
+      jobId: job.id,
+      title: args.title.trim().slice(0, 120),
+      mode: args.mode,
+      difficulty: questions.some((question) => question.difficulty === "挑战")
+        ? "挑战"
+        : questions[0]?.difficulty || "进阶",
+      createdAt: new Date().toISOString(),
+      questions,
+    };
+    state.interviewSets = [set, ...state.interviewSets].slice(0, 20);
+    state.selectedJobId = job.id;
+    state.selectedInterviewSetId = set.id;
+    state.interviewCategoryFilter = "全部";
+    state.activeView = "interviews";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: true,
+      jobId: job.id,
+      interviewSetId: set.id,
+      questionCount: questions.length,
+      categories: [...new Set(questions.map((question) => question.category))],
+      projectSaved,
+    };
+  });
+
+  register("save_resume_draft", async (args = {}) => {
+    await ready;
+    assertPlainObject(args, "save_resume_draft");
+    const job = state.jobs.find((item) => item.id === args.job_id);
+    if (!job) throw new Error("job_id 不存在，请先读取面板上下文");
+    if (
+      typeof args.title !== "string" ||
+      !args.title.trim() ||
+      typeof args.markdown !== "string" ||
+      args.markdown.trim().length < 80
+    ) {
+      throw new Error("title 和至少 80 字符的 markdown 为必填");
+    }
+    if (state.resume.markdown && state.resume.jobId !== job.id) archiveCurrentResume();
+    const now = new Date().toISOString();
+    state.selectedJobId = job.id;
+    state.activeView = "dashboard";
+    job.status = "tailoring";
+    state.resume = {
+      jobId: job.id,
+      versionId: uid("resume"),
+      title: args.title.trim().slice(0, 120),
+      markdown: args.markdown.trim().slice(0, 50000),
+      notes: Array.isArray(args.notes)
+        ? args.notes.map((note) => String(note).slice(0, 300)).slice(0, 12)
+        : [],
+      updatedAt: now,
+    };
+    resumeMode = "preview";
+    persist();
+    renderAll();
+    const projectSaved = await writeProjectSnapshot();
+    renderMaterials();
+    return {
+      saved: true,
+      jobId: job.id,
+      title: state.resume.title,
+      updatedAt: now,
+      characterCount: state.resume.markdown.length,
+      projectSaved,
+    };
+  });
+}
+
+function bindEvents() {
+  document.querySelectorAll("[data-view-target]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.activeView = button.dataset.viewTarget;
+      persist();
+      renderAll();
+    });
+  });
+
+  document.querySelectorAll("[data-status-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.statusFilter = button.dataset.statusFilter;
+      state.activeView = "dashboard";
+      persist();
+      renderAll();
+    });
+  });
+
+  document.querySelectorAll("[data-job-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.jobFilter = button.dataset.jobFilter;
+      document.querySelectorAll("[data-job-filter]").forEach((item) => {
+        item.classList.toggle("active", item === button);
+      });
+      persist();
+      renderJobs();
+    });
+  });
+
+  elements.jobSourceFilter.addEventListener("change", () => {
+    state.jobSourceFilter = elements.jobSourceFilter.value;
+    persist();
+    renderJobs();
+  });
+
+  elements.jobList.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-job-id]");
+    if (!card) return;
+    if (resumeMode === "edit" && state.resume.jobId === state.selectedJobId) {
+      state.resume.markdown = elements.resumeEditor.value;
+      state.resume.updatedAt = new Date().toISOString();
+    }
+    state.selectedJobId = card.dataset.jobId;
+    resumeMode = "preview";
+    persist();
+    renderAll();
+  });
+
+  document
+    .querySelector("#open-search")
+    .addEventListener("click", () => openDialog("agent-dialog"));
+  for (const id of ["open-job-form", "compact-add-job", "empty-add-job"]) {
+    document.querySelector(`#${id}`).addEventListener("click", () => openDialog("job-dialog"));
+  }
+  document.querySelector("#sync-project-context").addEventListener("click", () => {
+    void syncProjectContext({ quiet: false });
+  });
+  document.querySelector("#open-interview-form").addEventListener("click", () => {
+    if (!selectedJob()) return notify("先选择或添加一个职位", "error");
+    openDialog("interview-dialog");
+  });
+  elements.regenerateInterview.addEventListener("click", () => {
+    const set = selectedInterviewSet();
+    if (set) state.selectedJobId = set.jobId;
+    openDialog("interview-dialog");
+  });
+  elements.simulateInterview.addEventListener("click", () => void simulateInterviewSession());
+
+  elements.interviewSetList.addEventListener("click", (event) => {
+    const card = event.target.closest("[data-interview-set-id]");
+    if (!card) return;
+    const set = state.interviewSets.find((item) => item.id === card.dataset.interviewSetId);
+    if (!set) return;
+    state.selectedInterviewSetId = set.id;
+    state.selectedJobId = set.jobId;
+    state.interviewCategoryFilter = "全部";
+    persist();
+    renderAll();
+  });
+
+  elements.interviewCategoryFilters.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-interview-category]");
+    if (!button) return;
+    state.interviewCategoryFilter = button.dataset.interviewCategory;
+    persist();
+    renderInterviews();
+  });
+
+  document.querySelectorAll("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", () => closeDialog(button.dataset.closeDialog));
+  });
+
+  document.querySelector("#job-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const job = {
+      id: uid("job"),
+      company: String(data.get("company") || "").trim(),
+      title: String(data.get("title") || "").trim(),
+      location: String(data.get("location") || "").trim(),
+      salary: String(data.get("salary") || "").trim(),
+      source: String(data.get("source") || "手动添加").trim(),
+      sourceId: normalizeSourceId("", data.get("source")),
+      url: String(data.get("url") || "").trim(),
+      description: String(data.get("description") || "").trim(),
+      match: 76,
+      status: "saved",
+      createdAt: new Date().toISOString(),
+      sample: false,
+    };
+    job.match = calculateMatch(job);
+    state.jobs.unshift(job);
+    state.selectedJobId = job.id;
+    state.statusFilter = "all";
+    state.jobFilter = "all";
+    state.jobSourceFilter = "all";
+    state.activeView = "dashboard";
+    form.reset();
+    closeDialog("job-dialog");
+    persist();
+    renderAll();
+    void writeProjectSnapshot().then(() => renderMaterials());
+    notify(`已分析 ${job.company} 的 JD，当前匹配度 ${calculateMatch(job)}%`);
+  });
+
+  document.querySelector("#agent-search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitJobSearch(event.currentTarget);
+  });
+
+  document.querySelector("#resume-agent-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const request = String(new FormData(form).get("request") || "").trim();
+    void submitResumeRevision(request);
+  });
+
+  document.querySelector("#interview-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    void generateInterviewSet(event.currentTarget);
+  });
+
+  document.querySelectorAll("[data-resume-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (resumeMode === "edit" && button.dataset.resumeMode !== "edit") {
+        state.resume.markdown = elements.resumeEditor.value;
+        state.resume.updatedAt = new Date().toISOString();
+        persist();
+        void writeProjectSnapshot().then(() => renderMaterials());
+      }
+      resumeMode = button.dataset.resumeMode;
+      renderResume();
+      renderVersions();
+    });
+  });
+
+  elements.resumeEditor.addEventListener("input", () => {
+    if (state.resume.jobId !== state.selectedJobId) return;
+    state.resume.markdown = elements.resumeEditor.value;
+    state.resume.updatedAt = new Date().toISOString();
+    persist();
+  });
+
+  elements.generateResume.addEventListener("click", () => void generateDraft());
+  elements.saveResume.addEventListener("click", () => void saveResumeToRepo());
+  elements.askAgent.addEventListener("click", () => openDialog("resume-agent-dialog"));
+  elements.openSourceJob.addEventListener("click", async () => {
+    const job = selectedJob();
+    if (!job?.url) return notify("这个职位没有保存原始链接", "error");
+    try {
+      await hostCall("external.open", { url: job.url });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "无法打开职位原页", "error");
+    }
+  });
+  elements.advanceJob.addEventListener("click", () => {
+    const job = selectedJob();
+    if (!job) return;
+    job.status = "applied";
+    persist();
+    renderAll();
+    void writeProjectSnapshot().then(() => renderMaterials());
+    notify("已标记为投递，祝你拿到面试");
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      if (resumeMode === "edit") {
+        state.resume.markdown = elements.resumeEditor.value;
+        state.resume.updatedAt = new Date().toISOString();
+        persist({ quiet: false });
+        renderResume();
+        void writeProjectSnapshot().then(() => renderMaterials());
+      } else if (state.resume.markdown) {
+        void saveResumeToRepo();
+      }
+    }
+    if (event.key === "Escape") {
+      document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
+    }
+  });
+}
+
+async function initialize() {
+  try {
+    const [saved, nextContext] = await Promise.all([
+      hostCall("storage.get", { key: STORAGE_KEY }).catch(() => null),
+      getContext().catch(() => null),
+    ]);
+    state = mergeState(saved);
+    updateContext(nextContext);
+    renderAll();
+    await syncProjectContext({ quiet: true });
+    if (window.codeshellPanel?.on) {
+      window.codeshellPanel.on("context.changed", (next) => {
+        const previousCwd = context.cwd;
+        updateContext(next);
+        if (next?.cwd && next.cwd !== previousCwd) {
+          void syncProjectContext({ quiet: true });
+        }
+      });
+    }
+  } catch (error) {
+    updateContext({ cwd: null, trusted: false, busy: false });
+    renderAll();
+    notify(error instanceof Error ? error.message : "初始化失败", "error");
+  }
+}
+
+bindEvents();
+const ready = initialize();
+registerAgentTools(ready);
