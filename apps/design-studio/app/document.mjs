@@ -172,6 +172,7 @@ function normalizedNode(candidate, parentId) {
   if (isContainerType(candidate.type)) {
     node.layout = candidate.layout ?? "none";
     if (candidate.layoutWrap !== undefined) node.layoutWrap = candidate.layoutWrap;
+    if (candidate.layoutReverse !== undefined) node.layoutReverse = candidate.layoutReverse;
     node.gap = candidate.gap ?? 0;
     if (candidate.rowGap !== undefined) node.rowGap = candidate.rowGap;
     if (candidate.columnGap !== undefined) node.columnGap = candidate.columnGap;
@@ -186,6 +187,10 @@ function normalizedNode(candidate, parentId) {
     if (candidate.gridColumns !== undefined) node.gridColumns = candidate.gridColumns;
   }
   for (const property of [
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
     "layoutSizingHorizontal",
     "layoutSizingVertical",
     "layoutPositioning",
@@ -281,6 +286,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "objectFit",
     "layout",
     "layoutWrap",
+    "layoutReverse",
     "gap",
     "rowGap",
     "columnGap",
@@ -293,6 +299,10 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     "justifyContent",
     "alignContent",
     "gridColumns",
+    "minWidth",
+    "maxWidth",
+    "minHeight",
+    "maxHeight",
     "layoutSizingHorizontal",
     "layoutSizingVertical",
     "layoutPositioning",
@@ -518,9 +528,15 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     }
     if (
       candidate.layoutWrap !== undefined &&
-      !["none", "wrap"].includes(candidate.layoutWrap)
+      !["none", "wrap", "wrap-reverse"].includes(candidate.layoutWrap)
     ) {
       throw new Error(`容器 ${candidate.id} 的 layoutWrap 无效`);
+    }
+    if (
+      candidate.layoutReverse !== undefined &&
+      typeof candidate.layoutReverse !== "boolean"
+    ) {
+      throw new Error(`容器 ${candidate.id} 的 layoutReverse 无效`);
     }
     for (const property of [
       "gap",
@@ -535,7 +551,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
       if (candidate[property] === undefined) continue;
       assertFiniteRange(candidate[property], 0, 2000, `容器 ${candidate.id}.${property}`);
     }
-    if (!["start", "center", "end", "stretch"].includes(candidate.alignItems)) {
+    if (!["start", "center", "end", "stretch", "baseline"].includes(candidate.alignItems)) {
       throw new Error(`容器 ${candidate.id} 的 alignItems 无效`);
     }
     if (!["start", "center", "end", "space-between"].includes(candidate.justifyContent)) {
@@ -562,6 +578,7 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     [
       "layout",
       "layoutWrap",
+      "layoutReverse",
       "gap",
       "rowGap",
       "columnGap",
@@ -580,7 +597,9 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
   }
   if (
     candidate.layoutAlignSelf !== undefined &&
-    !["auto", "start", "center", "end", "stretch"].includes(candidate.layoutAlignSelf)
+    !["auto", "start", "center", "end", "stretch", "baseline"].includes(
+      candidate.layoutAlignSelf,
+    )
   ) {
     throw new Error(`图层 ${candidate.id} 的 layoutAlignSelf 无效`);
   }
@@ -597,6 +616,25 @@ function validateAndFlattenNode(candidate, parentId, depth, state, label) {
     ) {
       throw new Error(`图层 ${candidate.id} 的 ${property} 无效`);
     }
+  }
+  for (const property of ["minWidth", "maxWidth", "minHeight", "maxHeight"]) {
+    if (candidate[property] !== undefined) {
+      assertFiniteRange(candidate[property], 1, 20000, `图层 ${candidate.id}.${property}`);
+    }
+  }
+  if (
+    candidate.minWidth !== undefined &&
+    candidate.maxWidth !== undefined &&
+    candidate.minWidth > candidate.maxWidth
+  ) {
+    throw new Error(`图层 ${candidate.id} 的 minWidth 不能大于 maxWidth`);
+  }
+  if (
+    candidate.minHeight !== undefined &&
+    candidate.maxHeight !== undefined &&
+    candidate.minHeight > candidate.maxHeight
+  ) {
+    throw new Error(`图层 ${candidate.id} 的 minHeight 不能大于 maxHeight`);
   }
   if (
     candidate.layoutPositioning !== undefined &&

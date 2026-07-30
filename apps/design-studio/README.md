@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.17 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.18 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: thirteen declared design/delivery tools plus a repository-design Skill.
 
@@ -19,10 +19,11 @@ surface: thirteen declared design/delivery tools plus a repository-design Skill.
 - Same-viewport design/implementation comparison with pixel similarity, changed-pixel ratio,
   stable-ID coverage, per-node geometry/style differences, a three-up preview, and a Markdown
   report written beside the frontend implementation.
-- Figma-style horizontal, vertical, wrapped, and Grid layout with independent row/column gaps,
-  asymmetric padding, line distribution, column/row spans, dual-axis Hug/Fill/Fixed sizing, and
-  absolute children excluded from flow. Absolute children support start, center, end, stretch,
-  and scale Constraints; flow children support CSS-style leading auto margin.
+- Figma-style horizontal, vertical, wrapped, reverse-flow, and Grid layout with independent
+  row/column gaps, asymmetric padding, Baseline alignment, Min/Max bounds, column/row spans,
+  dual-axis Hug/Fill/Fixed sizing, and absolute children excluded from flow. Absolute children
+  support start, center, end, stretch, and scale Constraints; flow children support CSS-style
+  leading auto margin.
 - Reusable master components, cross-page/nested instance rendering, cycle-safe composition, and
   bounded acyclic expansion so repeated instances cannot exhaust the canvas or exporter.
 - Repository-stable font family, 100–900 weights, italic, letter spacing, text decoration, and
@@ -166,17 +167,18 @@ Browser-measured text bounds and explicitly clipped imported effects remain tagg
 document so the audit does not replace exact geometry with fallback estimates; real contrast,
 layout, and clipping issues still fail validation normally.
 
-The broader offline parity suite adapts 19 representative cases from html2figma's 64-template
+The broader offline parity suite adapts 20 representative cases from html2figma's 64-template
 catalog and checks each at its import width and after a 760→520 px reflow:
 
 ```sh
 npm run test:fidelity:cases -- --output artifacts/design-studio-html2figma-cases
 ```
 
-It covers Hug/Fill/Fixed, Wrap, Grid spans, absolute Constraints, navigation, cards, forms, tables,
-inline text, ellipsis, lists, SVG primitives, borders/shadows, nesting, dashboards, and baseline
-alignment. Every case writes source/converted/diff/side-by-side images, editable design sources,
-metrics, and audit codes. The varied suite gates initial SSIM at `0.94`, reflow SSIM at `0.87`,
+It covers Hug/Fill/Fixed, Min/Max, reverse flow, Wrap, Grid spans, absolute Constraints,
+navigation, cards, forms, tables, inline text, ellipsis, lists, SVG primitives, borders/shadows,
+nesting, dashboards, and Baseline alignment. Every case writes
+source/converted/diff/side-by-side images, editable design sources, metrics, and audit codes. The
+varied suite gates initial SSIM at `0.94`, reflow SSIM at `0.87`,
 changed pixels over 24 channel levels at `8%`/`12%`, and blocking issues at zero. See
 `tests/fixtures/design-studio-html2figma-cases/README.md` in the collection repository for the
 source-to-case coverage matrix.
@@ -208,11 +210,12 @@ The product importer captures the visible first viewport rather than the root's 
 height. Partially visible layers retain their measured geometry behind an intentional root clip;
 fully offscreen descendants are not serialized. Choose a tighter root selector when the desired
 design is one visible region instead of the complete viewport.
-Flex rows/columns map Wrap, axis gaps, four-side padding, alignment, distribution, and Fill/Fixed
-sizing into v3. Grid maps equal computed columns and row/column spans; direct absolute/fixed
-children are excluded from flow and retain measured Constraints. Opaque uniform borders remain
-editable decorations without forcing a manual-layout fallback. Reverse directions, unequal Flex
-grow, floats, unequal Grid tracks, and decoration-heavy controls keep measured manual geometry.
+Flex rows/columns map reverse direction, Wrap/Wrap Reverse, axis gaps, four-side padding, Baseline,
+Min/Max, alignment, distribution, and Fill/Fixed sizing into v3. Grid maps equal computed columns
+and row/column spans; direct absolute/fixed children are excluded from flow and retain measured
+Constraints. Opaque uniform borders remain editable decorations without forcing a manual-layout
+fallback. Unequal Flex grow, floats, unequal Grid tracks, and decoration-heavy controls keep
+measured manual geometry.
 It is not an HTML parser and does not promise fidelity for unsupported visual primitives such as
 raster images, SVG paths, gradients, pseudo-elements, multiple shadows, or four independently
 editable corner radii.

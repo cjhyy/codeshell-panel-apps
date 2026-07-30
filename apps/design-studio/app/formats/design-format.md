@@ -125,8 +125,10 @@ rendered component content.
 Containers store `layout`, uniform `gap`/`padding`, `alignItems`, and `justifyContent`. Layout is
 `none`, `horizontal`, `vertical`, or `grid`. Optional `rowGap` and `columnGap` override the
 axis-specific gap; four side padding values similarly override uniform padding.
-Horizontal and vertical layouts support `layoutWrap: "wrap"` plus `alignContent` for the line
-block. Grid uses equal-width `gridColumns` from 1–24, row-major placement, and optional
+Horizontal and vertical layouts support `layoutWrap: "wrap"` or `"wrap-reverse"` plus
+`alignContent` for the line block. `layoutReverse: true` reverses the main-axis order without
+rewriting sibling source order. `alignItems: "baseline"` aligns mixed-size text rows. Grid uses
+equal-width `gridColumns` from 1–24, row-major placement, and optional
 `gridColumnSpan`/`gridRowSpan` on each child.
 
 Every node may independently set `layoutSizingHorizontal` and `layoutSizingVertical` to `fixed`,
@@ -134,7 +136,8 @@ Every node may independently set `layoutSizingHorizontal` and `layoutSizingVerti
 visible flow content, and Fill consumes available parent space on that axis. A Fill child under a
 Hug parent on the same axis uses its current intrinsic size so the circular request stays
 deterministic. Optional `layoutAlignSelf` overrides the parent's cross-axis alignment for one flow
-child.
+child. Optional `minWidth`, `maxWidth`, `minHeight`, and `maxHeight` bound Fixed, Hug, Fill,
+stretch, scale, and responsive text sizing without discarding the selected sizing mode.
 Optional `layoutMarginBefore: "auto"` consumes surplus main-axis space before that child, matching
 `margin-left: auto` in a horizontal container or `margin-top: auto` in a vertical container.
 

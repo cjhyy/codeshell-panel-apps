@@ -338,6 +338,26 @@ export const html2figmaCases = [
     `),
   },
   {
+    id: "reverse-min-max",
+    name: "Reverse flow with Min / Max",
+    category: "layout",
+    sourceTemplate: "[Layout] Flex Direction and Min Max",
+    width: 760,
+    reflowWidth: 520,
+    height: 210,
+    expected: { autoLayouts: 2, reverseLayouts: 1, minMaxNodes: 2 },
+    html: frame(`
+      <div style="height:170px;display:flex;flex-direction:column;gap:12px;padding:16px;background:#fff;border:1px solid #dbe2ea;border-radius:12px;">
+        <strong>Newest activity first</strong>
+        <div style="display:flex;flex-direction:row-reverse;gap:10px;">
+          <span style="flex:1 1 0;min-width:120px;max-width:220px;padding:12px;background:#dbeafe;color:#1d4ed8;border-radius:8px;">Latest</span>
+          <span style="flex:1 1 0;min-width:100px;max-width:180px;padding:12px;background:#ede9fe;color:#6d28d9;border-radius:8px;">Previous</span>
+          <span style="padding:12px;background:#f1f5f9;color:#475569;border-radius:8px;">Oldest</span>
+        </div>
+      </div>
+    `),
+  },
+  {
     id: "baseline-alignment",
     name: "Baseline alignment",
     category: "layout",
@@ -345,7 +365,7 @@ export const html2figmaCases = [
     width: 760,
     reflowWidth: 520,
     height: 190,
-    expected: { autoLayouts: 1 },
+    expected: { autoLayouts: 1, baselineLayouts: 1 },
     html: frame(`
       <div style="height:150px;display:flex;align-items:baseline;gap:14px;padding:18px;box-sizing:border-box;background:#fff;border-radius:12px;border:1px solid #dbe2ea;">
         <span style="font-size:12px;padding:7px 10px;background:#e0e7ff;color:#4338ca;border-radius:6px;">Small label</span>

@@ -48,6 +48,91 @@ const allowedExtensions = new Set([
   ".ttf",
 ]);
 const allowedAgentExtensions = new Set([".md", ".json", ".png", ".jpg", ".jpeg", ".webp"]);
+const maxHostSchemaPatternLength = 512;
+const maxHostPatternInputLength = 10_000;
+
+// Keep Panel App manifests inside CodeShell's fail-closed regular-expression
+// subset. JavaScript can compile a much wider set of patterns than the Host
+// intentionally accepts, so package validation must catch this before install.
+function isHostSafeSchemaPattern(pattern) {
+  if (typeof pattern !== "string" || pattern.length > maxHostSchemaPatternLength) return false;
+  let escaped = false;
+  let inCharacterClass = false;
+  let variableQuantifiers = 0;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (escaped) {
+      if (!inCharacterClass && /[1-9k]/u.test(character)) return false;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (character === "[" && !inCharacterClass) {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === "]" && inCharacterClass) {
+      inCharacterClass = false;
+      continue;
+    }
+    if (!inCharacterClass && ["(", ")", "|", "."].includes(character)) return false;
+    if (!inCharacterClass && ["*", "+", "?"].includes(character)) {
+      variableQuantifiers += 1;
+      continue;
+    }
+    if (!inCharacterClass && character === "{") {
+      const closingBrace = pattern.indexOf("}", index + 1);
+      if (closingBrace < 0) return false;
+      const body = pattern.slice(index + 1, closingBrace);
+      const match = /^(\d+)(?:,(\d+))?$/u.exec(body);
+      if (!match) return false;
+      const minimum = Number(match[1]);
+      const maximum = match[2] === undefined ? minimum : Number(match[2]);
+      if (
+        !Number.isSafeInteger(minimum) ||
+        !Number.isSafeInteger(maximum) ||
+        minimum > maximum ||
+        maximum > maxHostPatternInputLength
+      ) {
+        return false;
+      }
+      if (minimum !== maximum) variableQuantifiers += 1;
+      index = closingBrace;
+      continue;
+    }
+    if (!inCharacterClass && character === "}") return false;
+  }
+  if (escaped || inCharacterClass || variableQuantifiers > 1) return false;
+  try {
+    new RegExp(pattern, "u");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertHostSafeSchemaPatterns(schema, packagePath, toolName, path = "arguments") {
+  if (!schema || typeof schema !== "object") return;
+  if (Array.isArray(schema)) {
+    schema.forEach((value, index) =>
+      assertHostSafeSchemaPatterns(value, packagePath, toolName, `${path}[${index}]`),
+    );
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(schema, "pattern")) {
+    assert(
+      isHostSafeSchemaPattern(schema.pattern),
+      `${packagePath}: ${toolName} has a Host-incompatible JSON Schema pattern at ${path}`,
+    );
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "pattern") continue;
+    assertHostSafeSchemaPatterns(value, packagePath, toolName, `${path}.${key}`);
+  }
+}
 
 async function walk(directory, root = directory) {
   const files = [];
@@ -95,6 +180,7 @@ async function validatePackage(packagePath) {
       toolNames.add(tool.name);
       assert.equal(typeof tool.description, "string", `${packagePath}: tool description required`);
       assert.equal(tool.inputSchema?.type, "object", `${packagePath}: tool schema must be object`);
+      assertHostSafeSchemaPatterns(tool.inputSchema, packagePath, tool.name);
       assert.equal(typeof tool.readOnly, "boolean", `${packagePath}: tool readOnly required`);
     }
     for (const skill of manifest.agent.skills) {
@@ -152,7 +238,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.17.0", `${packagePath}: product-loop version mismatch`);
+    assert.equal(manifest.version, "0.18.0", `${packagePath}: responsive-layout version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -393,6 +479,10 @@ async function validatePackage(packagePath) {
 }
 
 const results = [];
+assert.equal(isHostSafeSchemaPattern("^[a-z][a-z0-9-]{0,63}$"), true);
+assert.equal(isHostSafeSchemaPattern("^(a+)+$"), false);
+assert.equal(isHostSafeSchemaPattern("^a+a+$"), false);
+assert.equal(isHostSafeSchemaPattern("^(?:md|mdx|txt)$"), false);
 for (const packagePath of packages) results.push(await validatePackage(packagePath));
 
 const geometry = await import(
@@ -1360,6 +1450,47 @@ assert(
     .auditDesign({
       ...manualOnlyDocument,
       nodes: [{ ...clippedParent, contentClipping: "intentional" }, clippedChild],
+    })
+    .some((issue) => issue.code === "layout.parent-overflow"),
+);
+const browserTextParent = {
+  ...baseNode("browser-text-parent", "frame", "Browser text parent"),
+  width: 100,
+  height: 18,
+  fill: "transparent",
+  layout: "vertical",
+  gap: 0,
+  padding: 0,
+  alignItems: "start",
+  justifyContent: "start",
+};
+const browserTextChild = {
+  ...baseNode("browser-text-child", "text", "Browser text child"),
+  parentId: browserTextParent.id,
+  x: 0,
+  y: 2.5,
+  width: 80,
+  height: 18,
+  text: "Browser text",
+  fontSize: 14,
+  fontWeight: 400,
+  lineHeight: 1.2,
+  textAlign: "left",
+  textMeasurement: "browser",
+};
+assert(
+  !designAudit
+    .auditDesign({
+      ...manualOnlyDocument,
+      nodes: [browserTextParent, browserTextChild],
+    })
+    .some((issue) => issue.code === "layout.parent-overflow"),
+);
+assert(
+  designAudit
+    .auditDesign({
+      ...manualOnlyDocument,
+      nodes: [browserTextParent, { ...browserTextChild, textMeasurement: undefined }],
     })
     .some((issue) => issue.code === "layout.parent-overflow"),
 );

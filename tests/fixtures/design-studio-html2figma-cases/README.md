@@ -1,6 +1,6 @@
 # html2figma parity cases
 
-This offline fixture adapts 19 representative templates from the 64-template catalog in
+This offline fixture adapts 20 representative templates from the 64-template catalog in
 `cjhyy/html2figma` at revision `ea78385c7ab8cb251d5f0cc10213dea4a93e9a7c`
 (`packages/test/web/templates.ts`). The markup is intentionally compact, deterministic, and free
 of network resources so it can gate Design Studio capture and v3 reflow in CI.
@@ -25,6 +25,7 @@ of network resources so it can gate Design Studio capture and v3 reflow in CI.
 | `borders-shadows` | `[Advanced] Box Shadow Transparency` | borders, radii, and shadows |
 | `nested-relative` | `[Advanced] Relative + Flex Mixed Layout` | nested relative Flex |
 | `dashboard-widget` | `[Advanced] Dashboard Widget` | dense Grid/Flex composition |
+| `reverse-min-max` | `[Layout] Flex Direction and Min Max` | reverse flow and bounded Fill |
 | `baseline-alignment` | `[Layout] Baseline Alignment` | mixed-size text baseline |
 
 Run all cases with:
@@ -38,5 +39,5 @@ shrinking from 760 px to 520 px. The output includes source/converted screenshot
 diffs, side-by-side images, both `.codesign.json` documents, audit summaries, and `report.json`.
 The initial gate requires SSIM ≥ 0.94 and no more than 8% of pixels changing by over 24 channel
 levels. The narrow-width gate requires SSIM ≥ 0.87 and no more than 12% changed pixels. Both
-require zero blocking layout issues and the expected Auto Layout, Grid, Wrap, or absolute-child
-structure for each case.
+require zero blocking layout issues and the expected Auto Layout, Grid, Wrap, reverse-flow,
+Min/Max, Baseline, or absolute-child structure for each case.

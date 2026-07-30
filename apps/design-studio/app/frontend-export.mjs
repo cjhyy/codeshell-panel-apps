@@ -219,6 +219,18 @@ function sizingDeclarations(node, parent) {
       ["grid-row", `span ${Math.max(1, Number(node.gridRowSpan) || 1)}`],
     );
   }
+  if (Number.isFinite(Number(node.minWidth))) {
+    declarations.push(["min-width", cssNumber(node.minWidth)]);
+  }
+  if (Number.isFinite(Number(node.maxWidth))) {
+    declarations.push(["max-width", cssNumber(node.maxWidth)]);
+  }
+  if (Number.isFinite(Number(node.minHeight))) {
+    declarations.push(["min-height", cssNumber(node.minHeight)]);
+  }
+  if (Number.isFinite(Number(node.maxHeight))) {
+    declarations.push(["max-height", cssNumber(node.maxHeight)]);
+  }
   return declarations;
 }
 
@@ -238,8 +250,18 @@ function layoutDeclarations(node) {
   }
   return [
     ["display", "flex"],
-    ["flex-direction", node.layout === "vertical" ? "column" : "row"],
-    ["flex-wrap", node.layoutWrap === "wrap" ? "wrap" : "nowrap"],
+    [
+      "flex-direction",
+      `${node.layout === "vertical" ? "column" : "row"}${node.layoutReverse ? "-reverse" : ""}`,
+    ],
+    [
+      "flex-wrap",
+      node.layoutWrap === "wrap-reverse"
+        ? "wrap-reverse"
+        : node.layoutWrap === "wrap"
+          ? "wrap"
+          : "nowrap",
+    ],
     ["row-gap", cssNumber(node.rowGap ?? node.gap)],
     ["column-gap", cssNumber(node.columnGap ?? node.gap)],
     ["align-items", alignment(node.alignItems)],

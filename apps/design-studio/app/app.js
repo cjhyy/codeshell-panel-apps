@@ -257,6 +257,7 @@ const propertyInputs = {
   clipContent: document.querySelector("#prop-clip-content"),
   layout: document.querySelector("#prop-layout"),
   layoutWrap: document.querySelector("#prop-layout-wrap"),
+  layoutReverse: document.querySelector("#prop-layout-reverse"),
   gap: document.querySelector("#prop-layout-gap"),
   rowGap: document.querySelector("#prop-layout-row-gap"),
   columnGap: document.querySelector("#prop-layout-column-gap"),
@@ -269,6 +270,10 @@ const propertyInputs = {
   justifyContent: document.querySelector("#prop-justify-content"),
   alignContent: document.querySelector("#prop-align-content"),
   gridColumns: document.querySelector("#prop-grid-columns"),
+  minWidth: document.querySelector("#prop-min-width"),
+  maxWidth: document.querySelector("#prop-max-width"),
+  minHeight: document.querySelector("#prop-min-height"),
+  maxHeight: document.querySelector("#prop-max-height"),
   layoutSizingHorizontal: document.querySelector("#prop-layout-sizing-horizontal"),
   layoutSizingVertical: document.querySelector("#prop-layout-sizing-vertical"),
   layoutPositioning: document.querySelector("#prop-layout-positioning"),
@@ -1734,10 +1739,13 @@ function renderProperties() {
     const flexLayout = ["horizontal", "vertical"].includes(single.layout);
     const gridLayout = single.layout === "grid";
     propertyInputs.layoutWrap.closest("label").hidden = !flexLayout;
+    propertyInputs.layoutReverse.closest("label").hidden = !flexLayout;
     propertyInputs.gridColumns.closest("label").hidden = !gridLayout;
     propertyInputs.alignContent.closest("label").hidden =
-      !gridLayout && !(flexLayout && single.layoutWrap === "wrap");
+      !gridLayout &&
+      !(flexLayout && ["wrap", "wrap-reverse"].includes(single.layoutWrap));
     propertyInputs.layoutWrap.value = single.layoutWrap ?? "none";
+    propertyInputs.layoutReverse.checked = single.layoutReverse === true;
     propertyInputs.gap.value = String(round(single.gap ?? 0));
     propertyInputs.rowGap.value =
       single.rowGap === undefined ? "" : String(round(single.rowGap));
@@ -1766,6 +1774,15 @@ function renderProperties() {
     propertyInputs.gridColumnSpan.value = String(single.gridColumnSpan ?? 1);
     propertyInputs.gridRowSpan.value = String(single.gridRowSpan ?? 1);
     propertyInputs.layoutAlignSelf.value = single.layoutAlignSelf ?? "auto";
+    for (const [input, property] of [
+      [propertyInputs.minWidth, "minWidth"],
+      [propertyInputs.maxWidth, "maxWidth"],
+      [propertyInputs.minHeight, "minHeight"],
+      [propertyInputs.maxHeight, "maxHeight"],
+    ]) {
+      input.value =
+        single[property] === undefined ? "" : String(round(single[property]));
+    }
     const absoluteLayoutChild = single.layoutPositioning === "absolute";
     propertyInputs.layoutSizingHorizontal.disabled = absoluteLayoutChild;
     propertyInputs.layoutSizingVertical.disabled = absoluteLayoutChild;
@@ -4913,13 +4930,27 @@ bindPropertyInput(
 bindPropertyInput(
   propertyInputs.layoutWrap,
   (node, value) => {
-    if (!isContainerNode(node) || !["none", "wrap"].includes(value)) return;
+    if (
+      !isContainerNode(node) ||
+      !["none", "wrap", "wrap-reverse"].includes(value)
+    ) {
+      return;
+    }
     ensureDesignV3();
     node.layoutWrap = value;
   },
   "change",
   "container",
 );
+propertyInputs.layoutReverse.addEventListener("change", () => {
+  const node = selectedNode();
+  if (!isContainerNode(node) || isEffectivelyLocked(node)) return;
+  ensureDesignV3();
+  node.layoutReverse = propertyInputs.layoutReverse.checked;
+  applyAutoLayouts(design.nodes, new Set([node.id]));
+  commitHistory();
+  markChanged();
+});
 bindPropertyInput(
   propertyInputs.gap,
   (node, value) => {
@@ -5027,6 +5058,32 @@ for (const [input, property] of [
       if (isContainerNode(node)) applyAutoLayouts(design.nodes, new Set([node.id]));
     },
     "change",
+  );
+}
+for (const [input, property, opposite] of [
+  [propertyInputs.minWidth, "minWidth", "maxWidth"],
+  [propertyInputs.maxWidth, "maxWidth", "minWidth"],
+  [propertyInputs.minHeight, "minHeight", "maxHeight"],
+  [propertyInputs.maxHeight, "maxHeight", "minHeight"],
+]) {
+  bindPropertyInput(
+    input,
+    (node, value) => {
+      ensureDesignV3();
+      if (value === "") {
+        delete node[property];
+        return;
+      }
+      let next = clamp(finiteOr(value, 1), 1, 20000);
+      if (Number.isFinite(node[opposite])) {
+        next = property.startsWith("min")
+          ? Math.min(next, node[opposite])
+          : Math.max(next, node[opposite]);
+      }
+      node[property] = next;
+    },
+    "input",
+    "size",
   );
 }
 bindPropertyInput(
@@ -6035,6 +6092,7 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "objectFit",
   "layout",
   "layoutWrap",
+  "layoutReverse",
   "gap",
   "rowGap",
   "columnGap",
@@ -6047,6 +6105,10 @@ const AGENT_NODE_PATCH_FIELDS = new Set([
   "justifyContent",
   "alignContent",
   "gridColumns",
+  "minWidth",
+  "maxWidth",
+  "minHeight",
+  "maxHeight",
   "layoutSizingHorizontal",
   "layoutSizingVertical",
   "layoutPositioning",
@@ -6111,10 +6173,15 @@ function applyAgentNodePatch(node, changes, { moveTree = false } = {}) {
         "objectFit",
         "clipContent",
         "layoutWrap",
+        "layoutReverse",
         "rowGap",
         "columnGap",
         "alignContent",
         "gridColumns",
+        "minWidth",
+        "maxWidth",
+        "minHeight",
+        "maxHeight",
         "layoutSizingHorizontal",
         "layoutSizingVertical",
         "layoutPositioning",
@@ -6373,6 +6440,7 @@ async function applyAgentDesignOperations(args) {
               "height",
               "layout",
               "layoutWrap",
+              "layoutReverse",
               "gap",
               "rowGap",
               "columnGap",
@@ -6385,6 +6453,10 @@ async function applyAgentDesignOperations(args) {
               "justifyContent",
               "alignContent",
               "gridColumns",
+              "minWidth",
+              "maxWidth",
+              "minHeight",
+              "maxHeight",
               "layoutSizingHorizontal",
               "layoutSizingVertical",
             ].includes(field),
@@ -6398,6 +6470,10 @@ async function applyAgentDesignOperations(args) {
             [
               "width",
               "height",
+              "minWidth",
+              "maxWidth",
+              "minHeight",
+              "maxHeight",
               "visible",
               "layoutSizingHorizontal",
               "layoutSizingVertical",

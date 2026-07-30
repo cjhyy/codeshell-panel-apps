@@ -91,62 +91,19 @@ metadata, four-side padding, alignment, and dual-axis Fill/Fixed semantics. Abso
 children become `layoutPositioning: "absolute"`, leave the flow, and carry start/end/stretch
 Constraints with four measured insets. Browser-measured `x/y` remain in the saved file as exact
 initial geometry and fallback data; Auto Layout owns only flow-child positions after a reflow.
-Form values, browser text baselines, and wrappable text source are preserved. Reverse directions,
-unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy controls fall back to
-measured manual geometry instead of silently changing the screenshot. It saves by default, returns
-canonical `documentBytes`, the `indexed-pages` capacity model, an immediate audit and rollback
-`transactionId`, and fails if the live design changes while HTML is rendering.
+Form values, browser text baselines, Min/Max dimensions, reverse flow, and wrappable text source
+are preserved. Unequal Flex grow factors, floats, unequal Grid tracks, and decoration-heavy
+controls fall back to measured manual geometry instead of silently changing the screenshot. It
+saves by default, returns canonical `documentBytes`, the `indexed-pages` capacity model, an
+immediate audit and rollback `transactionId`, and fails if the live design changes while HTML is
+rendering.
 Add stable `data-codeshell-id` and `data-codeshell-name` attributes to important source elements
 when later Agent edits need durable layer identities.
 
-Compare the rendered HTML and exported Design SVG in the same browser, viewport, device scale, and
-font environment. Save the source, converted, and amplified pixel-difference screenshots. Report
-the measured error rather than claiming a subjective match; use mean absolute channel error,
-changed-pixel percentages at explicit thresholds, and a local/windowed SSIM. Iterate on the largest
-cluster in the difference image before polishing isolated pixels.
-
-In the `codeshell-panel-apps` collection repository, run the maintained baseline with:
-
-```sh
-npm run test:fidelity -- --output artifacts/design-studio-html-fidelity
-```
-
-Run the adapted html2figma catalog before changing capture or layout behavior:
-
-```sh
-npm run test:fidelity:cases -- --output artifacts/design-studio-html2figma-cases
-```
-
-It covers 19 representative cases selected from the 64-case upstream catalog: Hug/Fill/Fixed,
-Wrap, Grid spans, Constraints, navigation, cards, forms, tables, inline text, lists, SVG,
-borders/shadows, nesting, dashboards, and baseline alignment. It renders both the original HTML
-and converted design at the import width and a narrower width, then writes per-case source,
-converted, diff, side-by-side, design JSON, metrics, audit codes, and a summary report.
-
-For public-page diagnostics, run `npm run test:fidelity:real -- --output
-artifacts/design-studio-real-html-fidelity`; it is not a CI gate because pages are external.
-
-Treat it as a regression gate: the measured conversion needs windowed SSIM of at least 0.99, at
-most 1% of pixels changing by more than 8 channel levels, and at most 0.6% changing by more than 24
-levels. The fixture must also preserve at least 20 Auto Layout containers. After resolving every
-Auto Layout once, the semantic reflow comparison must keep windowed SSIM at or above 0.86, the two
-changed pixel ratios at or below 8% and 6%, and zero blocking audit issues. The JSON report, captured and
-reflowed design sources, and measured/reflow screenshot artifacts are evidence for both initial
-fidelity and adaptive stability. The varied html2figma suite uses broader gates because it includes
-CSS shapes that v3 intentionally approximates: initial SSIM ≥ 0.94 and >24-level changed pixels
-≤ 8%; narrow-width SSIM ≥ 0.87 and changed pixels ≤ 12%; both require zero blocking issues.
-Imported browser-measured text and deliberately clipped effects carry explicit document metadata
-so validation does not turn exact browser geometry into false layout blockers.
-
-Treat unsupported CSS as an explicit fidelity gap. v3 currently approximates four unequal corner
-radii with one representative radius. Basic inline SVG rectangles, circles, ellipses, and text
-paint are measured; HTML capture does not yet import raster images, SVG paths/references,
-gradients, pseudo-elements, multiple backgrounds, multiple shadows, filters, or rich text runs.
-Extend the format/capture path or disclose the limitation; never silently call those cases
-pixel-perfect. After conversion, normalize the document, keep it below repository size limits,
-call `validate_design`, and inspect a Design Studio screenshot before editing it further. Use the
-bundled `app/html-capture.mjs` helper directly only when developing the importer or running its
-browser regression fixture.
+Read [`references/html-fidelity.md`](references/html-fidelity.md) before changing the importer or
+layout engine, running pixel comparisons, or reporting unsupported CSS. Use its maintained
+fixtures, thresholds, artifact checklist, and explicit fallback policy; never describe a match as
+pixel-perfect without measured evidence.
 
 ## Resolved geometry and coordinate fallback
 
@@ -190,11 +147,13 @@ geometry is preserved across transactions.
 When a container uses `layout: "horizontal"`, `"vertical"`, or `"grid"`, it owns its direct flow
 children’s positions. Configure `padding`, optional `rowGap`/`columnGap`, `alignItems`,
 `justifyContent`, and `alignContent`. Horizontal/vertical containers may set
-`layoutWrap: "wrap"`; Grid uses `gridColumns` and child `gridColumnSpan`/`gridRowSpan`.
+`layoutWrap` to `wrap` or `wrap-reverse` and `layoutReverse: true`; Grid uses `gridColumns` and
+child `gridColumnSpan`/`gridRowSpan`. Use `alignItems: "baseline"` for mixed-size text rows.
 Set each child's `layoutSizingHorizontal` and `layoutSizingVertical` independently to `fixed`,
 `hug`, or `fill`. Hug resizes an Auto Layout container to visible flow content; Fill consumes its
 available parent axis. A Fill child under a Hug parent on the same axis uses its current intrinsic
-size to break the circular dependency.
+size to break the circular dependency. Use `minWidth`, `maxWidth`, `minHeight`, and `maxHeight`
+when responsive children need explicit bounds; do not replace bounded Fill with a fixed width.
 Use `layoutAlignSelf` only when one flow child must override the parent's cross-axis alignment.
 Structural, visibility, sizing, or layout-property changes reflow only affected containers.
 When an outer layout moves a nested container, Design Studio moves its complete subtree and then
