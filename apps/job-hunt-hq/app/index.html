@@ -738,14 +738,41 @@
           <small id="session-context-detail">Agent 会读取当前项目和面板上下文。</small>
         </section>
 
+        <div class="session-block-heading">
+          <span>快捷填充</span>
+          <small>点击后仍可修改</small>
+        </div>
         <div id="session-quick-actions" class="session-quick-actions" aria-label="快捷指令"></div>
 
-        <label for="session-instruction">告诉 Agent 接下来做什么</label>
+        <div class="session-compose-heading">
+          <label for="session-instruction">你将发送到当前 Session</label>
+          <span id="session-instruction-count">0 / 2000</span>
+        </div>
         <textarea
           id="session-instruction"
-          rows="5"
+          rows="6"
+          maxlength="2000"
           placeholder="例如：对比这两个岗位，告诉我应该优先准备哪一个，并把结论写回补强计划。"
         ></textarea>
+        <small class="session-compose-hint">
+          这里保留你写的原话。Agent 的回复出现在当前 Session，结构化结果继续写回面板。
+        </small>
+
+        <details class="session-prompt-details">
+          <summary>查看 Agent 实际收到的完整内容</summary>
+          <pre id="session-prompt-preview">填写上面的指令后，这里会显示完整上下文。</pre>
+        </details>
+
+        <section class="session-activity" aria-labelledby="session-activity-title">
+          <header>
+            <div>
+              <span class="panel-kicker">SESSION RECEIPTS</span>
+              <strong id="session-activity-title">最近发送</strong>
+            </div>
+            <span id="session-activity-count">0 条</span>
+          </header>
+          <div id="session-activity-list" class="session-activity-list"></div>
+        </section>
       </div>
 
       <footer>

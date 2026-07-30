@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Turn project evidence and optional JDs into job-search artifacts, then continue any job, resume, research report, gap, question, or debrief in the current Session.",
+  "description": "Turn project evidence and optional JDs into job-search artifacts, then continue any panel object in the current Session with visible prompts, execution receipts, and structured write-back.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",

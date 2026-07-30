@@ -81,6 +81,7 @@ const seedState = {
   jobFilter: "all",
   jobSourceFilter: "all",
   interviewCategoryFilter: "全部",
+  sessionActivity: [],
   profile: {
     name: "林默",
     role: "前端 / AI 产品工程师",
@@ -568,6 +569,10 @@ const elements = {
   sessionContextDetail: document.querySelector("#session-context-detail"),
   sessionQuickActions: document.querySelector("#session-quick-actions"),
   sessionInstruction: document.querySelector("#session-instruction"),
+  sessionInstructionCount: document.querySelector("#session-instruction-count"),
+  sessionPromptPreview: document.querySelector("#session-prompt-preview"),
+  sessionActivityCount: document.querySelector("#session-activity-count"),
+  sessionActivityList: document.querySelector("#session-activity-list"),
   sessionBridgeState: document.querySelector("#session-bridge-state"),
   sessionBridgeStateLabel: document.querySelector("#session-bridge-state-label"),
   sendSessionInstruction: document.querySelector("#send-session-instruction"),
@@ -587,6 +592,7 @@ let projectContext = {
 let resumeMode = "preview";
 let toastTimer = null;
 let saveTimer = null;
+let sessionSubmissionPending = false;
 let sessionBridgeContext = {
   kind: "panel",
   title: "当前求职面板",
@@ -664,6 +670,7 @@ function mergeState(input) {
     "interviewSets",
     "preparationPlans",
     "interviewDebriefs",
+    "sessionActivity",
   ]) {
     if (Array.isArray(input[field])) next[field] = input[field];
   }
@@ -717,6 +724,39 @@ function mergeState(input) {
   if (!next.interviewSets.some((set) => set.id === next.selectedInterviewSetId)) {
     next.selectedInterviewSetId = next.interviewSets[0]?.id ?? "";
   }
+  next.sessionActivity = next.sessionActivity
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item) => ({
+      id: cleanText(item.id, 100) || uid("session"),
+      target:
+        item.target && typeof item.target === "object" && !Array.isArray(item.target)
+          ? {
+              kind: cleanText(item.target.kind, 40) || "panel",
+              title: cleanText(item.target.title, 500) || "当前求职面板",
+              detail: cleanText(item.target.detail, 1000),
+              payload:
+                item.target.payload &&
+                typeof item.target.payload === "object" &&
+                !Array.isArray(item.target.payload)
+                  ? item.target.payload
+                  : {},
+            }
+          : {
+              kind: "panel",
+              title: "当前求职面板",
+              detail: "",
+              payload: {},
+            },
+      instruction: cleanText(item.instruction, 2000),
+      workspace: cleanText(item.workspace, 2000),
+      status: ["submitted", "completed", "failed"].includes(item.status)
+        ? item.status
+        : "submitted",
+      createdAt: cleanText(item.createdAt, 80),
+      updatedAt: cleanText(item.updatedAt, 80),
+    }))
+    .filter((item) => item.instruction)
+    .slice(0, 24);
   return next;
 }
 
@@ -811,10 +851,16 @@ function updateContext(next) {
   elements.runCompanyResearch.disabled = Boolean(context.busy) || !selectedJob();
   elements.refreshPreparationPlan.disabled = Boolean(context.busy);
   elements.startInterviewDebrief.disabled = Boolean(context.busy);
-  elements.sendSessionInstruction.disabled = Boolean(context.busy);
-  elements.sessionBridgeState.classList.toggle("busy", Boolean(context.busy));
+  elements.sendSessionInstruction.disabled =
+    Boolean(context.busy) || sessionSubmissionPending;
+  elements.sessionBridgeState.classList.toggle(
+    "busy",
+    Boolean(context.busy) || sessionSubmissionPending,
+  );
   elements.sessionBridgeStateLabel.textContent = context.busy
     ? " 当前 Session 正在处理任务"
+    : sessionSubmissionPending
+      ? " 正在提交到当前 Session"
     : " 已绑定当前 Session";
   elements.projectSessionState.textContent = context.sessionId
     ? context.busy
@@ -1032,7 +1078,10 @@ function renderSessionBridge() {
       return button;
     }),
   );
-  elements.sendSessionInstruction.disabled = Boolean(context.busy);
+  elements.sendSessionInstruction.disabled =
+    Boolean(context.busy) || sessionSubmissionPending;
+  renderSessionInstructionPreview();
+  renderSessionActivity();
 }
 
 function openSessionBridge(target = currentSessionTarget(), suggestedPrompt = "") {
@@ -1049,6 +1098,7 @@ function openSessionBridge(target = currentSessionTarget(), suggestedPrompt = ""
   } else if (previousTarget !== nextTarget || !elements.sessionInstruction.value.trim()) {
     elements.sessionInstruction.value = sessionActionsFor(target)[0]?.prompt || "";
   }
+  renderSessionInstructionPreview();
   elements.sessionInstruction.focus();
 }
 
@@ -1066,6 +1116,96 @@ function buildSessionBridgePrompt(instruction) {
     `我的指令：${instruction}`,
     "只执行这条指令直接要求的任务，不自动扩展成固定全流程。需要结构化更新时用对应 Panel 工具写回；如果缺少真实事实，先在当前 Session 中向我询问，不要编造。",
   ].join("\n");
+}
+
+function renderSessionInstructionPreview() {
+  const instruction = elements.sessionInstruction.value;
+  elements.sessionInstructionCount.textContent = `${instruction.length} / 2000`;
+  elements.sessionPromptPreview.textContent = instruction.trim()
+    ? buildSessionBridgePrompt(instruction.trim())
+    : "填写上面的指令后，这里会显示完整上下文。";
+}
+
+function renderSessionActivity() {
+  const workspace = context.cwd || "preview";
+  const activities = (state.sessionActivity || [])
+    .filter((item) => (item.workspace || "preview") === workspace)
+    .slice(0, 8);
+  elements.sessionActivityCount.textContent = `${activities.length} 条`;
+  elements.sessionActivityList.replaceChildren();
+  if (!activities.length) {
+    elements.sessionActivityList.append(
+      makeTextElement(
+        "div",
+        "session-activity-empty",
+        "还没有发送记录。发送后，你写的原话和执行状态会保留在这里。",
+      ),
+    );
+    return;
+  }
+  const statusLabels = {
+    submitted: "已提交",
+    completed: "已完成",
+    failed: "发送失败",
+  };
+  for (const activity of activities) {
+    const card = document.createElement("article");
+    card.className = "session-activity-card";
+    const header = document.createElement("header");
+    const status = makeTextElement(
+      "span",
+      "session-activity-status",
+      statusLabels[activity.status] || "已提交",
+    );
+    status.dataset.status = activity.status || "submitted";
+    header.append(
+      makeTextElement("strong", "", activity.target?.title || "当前求职面板"),
+      status,
+    );
+    const instruction = makeTextElement(
+      "p",
+      "",
+      activity.instruction || "未保存指令内容",
+    );
+    const footer = document.createElement("footer");
+    const time = makeTextElement(
+      "span",
+      "",
+      formatDate(activity.updatedAt || activity.createdAt),
+    );
+    const continueButton = makeTextElement("button", "", "基于这条继续 ↗");
+    continueButton.type = "button";
+    continueButton.dataset.sessionActivityId = activity.id;
+    footer.append(time, continueButton);
+    card.append(header, instruction, footer);
+    elements.sessionActivityList.append(card);
+  }
+}
+
+function recordSessionSubmission(instruction) {
+  const now = new Date().toISOString();
+  const activity = {
+    id: uid("session"),
+    target: clone(sessionBridgeContext),
+    instruction,
+    workspace: context.cwd || "preview",
+    status: "submitted",
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.sessionActivity = [activity, ...(state.sessionActivity || [])].slice(0, 24);
+  persist();
+  renderSessionActivity();
+  return activity.id;
+}
+
+function updateSessionSubmission(id, status) {
+  const activity = state.sessionActivity.find((item) => item.id === id);
+  if (!activity) return;
+  activity.status = status;
+  activity.updatedAt = new Date().toISOString();
+  persist();
+  renderSessionActivity();
 }
 
 function persist({ quiet = true } = {}) {
@@ -1143,11 +1283,13 @@ async function syncProjectContext({ quiet = true } = {}) {
       const snapshot = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
       const parsed = JSON.parse(snapshot.content);
       if (parsed?.schemaVersion === 1 || parsed?.schemaVersion === 2) {
+        const localSessionActivity = clone(state.sessionActivity || []);
         const migrated = mergeState(parsed);
         if (!Array.isArray(parsed.jobResearch)) migrated.jobResearch = [];
         if (!Array.isArray(parsed.workflowRuns)) migrated.workflowRuns = [];
         if (!Array.isArray(parsed.preparationPlans)) migrated.preparationPlans = [];
         if (!Array.isArray(parsed.interviewDebriefs)) migrated.interviewDebriefs = [];
+        migrated.sessionActivity = localSessionActivity;
         state = migrated;
         projectContext.hasSnapshot = true;
         projectContext.lastSyncedAt = parsed.updatedAt || "";
@@ -1155,7 +1297,11 @@ async function syncProjectContext({ quiet = true } = {}) {
       }
     } catch {
       projectContext.hasSnapshot = false;
-      if (window.codeshellPanel?.call) state = emptyProjectState();
+      if (window.codeshellPanel?.call) {
+        const localSessionActivity = clone(state.sessionActivity || []);
+        state = emptyProjectState();
+        state.sessionActivity = localSessionActivity;
+      }
     }
     renderAll();
     if (!quiet) {
@@ -3379,18 +3525,40 @@ function bindEvents() {
     const action = sessionActionsFor(sessionBridgeContext)[Number(button.dataset.sessionQuickIndex)];
     if (!action) return;
     elements.sessionInstruction.value = action.prompt;
+    renderSessionInstructionPreview();
     elements.sessionInstruction.focus();
+  });
+  elements.sessionInstruction.addEventListener("input", renderSessionInstructionPreview);
+  elements.sessionActivityList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-session-activity-id]");
+    if (!button) return;
+    const activity = state.sessionActivity.find(
+      (item) => item.id === button.dataset.sessionActivityId,
+    );
+    if (!activity) return;
+    openSessionBridge(activity.target, activity.instruction);
   });
   elements.sendSessionInstruction.addEventListener("click", async () => {
     const instruction = elements.sessionInstruction.value.trim();
     if (!instruction) return notify("先写一句希望 Agent 做什么", "error");
-    const sent = await submitSessionTask(
-      buildSessionBridgePrompt(instruction),
-      "已把当前对象和指令发送到 Session；结果会继续写回面板",
-    );
-    if (sent) {
-      elements.sessionInstruction.value = "";
-      elements.sessionBridgeStateLabel.textContent = "已发送，等待 Agent 回写";
+    const submissionId = recordSessionSubmission(instruction);
+    sessionSubmissionPending = true;
+    renderSessionBridge();
+    elements.sessionBridgeState.classList.add("busy");
+    elements.sessionBridgeStateLabel.textContent = "正在提交，你写的内容已保留";
+    try {
+      const sent = await submitSessionTask(
+        buildSessionBridgePrompt(instruction),
+        "当前 Session 已完成这条指令；发送内容已保留在面板",
+      );
+      updateSessionSubmission(submissionId, sent ? "completed" : "failed");
+      elements.sessionBridgeStateLabel.textContent = sent
+        ? "Agent 已完成；可在当前 Session 查看回复"
+        : "发送失败；可以从最近发送重新尝试";
+    } finally {
+      sessionSubmissionPending = false;
+      elements.sessionBridgeState.classList.toggle("busy", Boolean(context.busy));
+      elements.sendSessionInstruction.disabled = Boolean(context.busy);
     }
   });
 
