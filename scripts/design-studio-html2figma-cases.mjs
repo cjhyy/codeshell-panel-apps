@@ -90,6 +90,11 @@ async function captureMode(page, origin, testCase, mode) {
     autoLayoutCount: Number(document.documentElement.dataset.qaAutoLayoutCount ?? 0),
     gridLayoutCount: Number(document.documentElement.dataset.qaGridLayoutCount ?? 0),
     wrapLayoutCount: Number(document.documentElement.dataset.qaWrapLayoutCount ?? 0),
+    reverseLayoutCount: Number(document.documentElement.dataset.qaReverseLayoutCount ?? 0),
+    baselineLayoutCount: Number(
+      document.documentElement.dataset.qaBaselineLayoutCount ?? 0,
+    ),
+    minMaxNodeCount: Number(document.documentElement.dataset.qaMinMaxNodeCount ?? 0),
     absoluteAutoChildCount: Number(
       document.documentElement.dataset.qaAbsoluteAutoChildCount ?? 0,
     ),
@@ -226,6 +231,9 @@ function meetsExpectedCounts(state, expected = {}) {
     state.autoLayoutCount >= (expected.autoLayouts ?? 0) &&
     state.gridLayoutCount >= (expected.gridLayouts ?? 0) &&
     state.wrapLayoutCount >= (expected.wrapLayouts ?? 0) &&
+    state.reverseLayoutCount >= (expected.reverseLayouts ?? 0) &&
+    state.baselineLayoutCount >= (expected.baselineLayouts ?? 0) &&
+    state.minMaxNodeCount >= (expected.minMaxNodes ?? 0) &&
     state.absoluteAutoChildCount >= (expected.absoluteAutoChildren ?? 0)
   );
 }

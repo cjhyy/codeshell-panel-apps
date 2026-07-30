@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "design-studio",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "title": {
     "default": "Design Studio",
     "en": "Design Studio",
@@ -50,7 +50,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 512,
-                "pattern": "^designs/(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\:\\u0000-\\u001F\\u007F]+\\.txt$"
+                "pattern": "^designs/[^\\\\:\\u0000-\\u001F\\u007F]{1,500}[.]txt$"
               },
               "description": "Ordered workspace-relative .txt files containing consecutive Base64 chunks for a larger resource."
             },
@@ -96,7 +96,17 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.(?:md|mdx|txt)$",
+              "anyOf": [
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]md$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]mdx$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]txt$"
+                }
+              ],
               "description": "Workspace-relative PRD path."
             }
           },
@@ -289,7 +299,11 @@
                 },
                 "layoutWrap": {
                   "type": ["string", "null"],
-                  "enum": ["none", "wrap", null]
+                  "enum": ["none", "wrap", "wrap-reverse", null]
+                },
+                "layoutReverse": {
+                  "type": ["boolean", "null"],
+                  "description": "Reverses the main-axis order while preserving source sibling order."
                 },
                 "gap": { "type": "number", "minimum": 0, "maximum": 2000 },
                 "rowGap": {
@@ -309,7 +323,7 @@
                 "paddingLeft": { "type": "number", "minimum": 0, "maximum": 2000 },
                 "alignItems": {
                   "type": "string",
-                  "enum": ["start", "center", "end", "stretch"]
+                  "enum": ["start", "center", "end", "stretch", "baseline"]
                 },
                 "justifyContent": {
                   "type": "string",
@@ -323,6 +337,26 @@
                   "type": ["integer", "null"],
                   "minimum": 1,
                   "maximum": 24
+                },
+                "minWidth": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "maxWidth": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "minHeight": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
+                },
+                "maxHeight": {
+                  "type": ["number", "null"],
+                  "minimum": 1,
+                  "maximum": 20000
                 },
                 "layoutSizingHorizontal": {
                   "type": ["string", "null"],
@@ -339,7 +373,7 @@
                 },
                 "layoutAlignSelf": {
                   "type": ["string", "null"],
-                  "enum": ["auto", "start", "center", "end", "stretch", null]
+                  "enum": ["auto", "start", "center", "end", "stretch", "baseline", null]
                 },
                 "layoutMarginBefore": {
                   "type": ["string", "null"],
@@ -760,7 +794,14 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html?$",
+              "anyOf": [
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]html$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]htm$"
+                }
+              ],
               "description": "Workspace-relative HTML output path."
             },
             "page_id": {
@@ -789,7 +830,14 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 512,
-              "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*\\.html?$",
+              "anyOf": [
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]html$"
+                },
+                {
+                  "pattern": "^[^/\\\\:\\u0000-\\u001F\\u007F][^\\\\:\\u0000-\\u001F\\u007F]*[.]htm$"
+                }
+              ],
               "description": "Workspace-relative implementation HTML path."
             },
             "report_path": {

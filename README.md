@@ -33,11 +33,11 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Design Studio 0.17 adds a complete PRD → responsive design → editable frontend → measured
-comparison loop while keeping one v3 layout model: Wrap, Grid, independent axis gaps,
-dual-axis Hug/Fill/Fixed sizing, per-item alignment/auto margin, and absolute children with
-Constraints inside Auto Layout. Guarded HTML import maps supported Flex/Grid semantics, form
-values, wrapping, ellipsis, and browser baselines. Generated HTML keeps stable layer IDs and maps
+Design Studio 0.18 keeps the complete PRD → responsive design → editable frontend → measured
+comparison loop in one v3 layout model: Wrap/Wrap Reverse, Grid, independent axis gaps,
+dual-axis Hug/Fill/Fixed sizing, Min/Max, reverse flow, Baseline, per-item alignment/auto margin,
+and absolute children with Constraints inside Auto Layout. Guarded HTML import maps supported
+Flex/Grid semantics, form values, wrapping, ellipsis, and browser baselines. Generated HTML keeps stable layer IDs and maps
 Auto Layout back to Flex/Grid so it can be refined as ordinary frontend code. Logical designs have no whole-document byte
 limit: larger sources become a small page index plus verified, content-addressed page objects;
 the runtime loads and caches only the active page and its component dependencies, then reuses
@@ -99,10 +99,10 @@ reflowed semantic render requires ≥ 0.86; both enforce changed-pixel limits an
 issues.
 The fixture must retain at least 20 semantic Auto Layout containers plus verified Grid, Wrap, and
 an absolute child inside Auto Layout.
-The second command runs 19 offline use cases adapted from html2figma's 64-template catalog,
-including Hug/Fill/Fixed, Wrap, Grid spans, Constraints, forms, tables, inline text, SVG, shadows,
-and responsive widgets. It compares both initial and 760→520 px reflow screenshots and requires
-zero blocking audit issues.
+The second command runs 20 offline use cases adapted from html2figma's 64-template catalog,
+including Hug/Fill/Fixed, Min/Max, reverse flow, Wrap, Grid spans, Constraints, Baseline, forms,
+tables, inline text, SVG, shadows, and responsive widgets. It compares both initial and 760→520 px
+reflow screenshots and requires zero blocking audit issues.
 The third command reverses the direction: it generates HTML from a realistic design, renders and
 recaptures it, then gates pixel similarity, stable-ID coverage, and maximum geometry drift.
 

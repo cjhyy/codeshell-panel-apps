@@ -510,12 +510,17 @@
                       <option value="grid">网格</option>
                     </select>
                   </label>
+                  <label id="layout-reverse-field" class="checkbox-field">
+                    <input id="prop-layout-reverse" type="checkbox" />
+                    <span>反向排列子项</span>
+                  </label>
                   <div class="property-grid layout-sizing-grid">
                     <label
                       ><span>换行</span
                       ><select id="prop-layout-wrap">
                         <option value="none">不换行</option>
                         <option value="wrap">自动换行</option>
+                        <option value="wrap-reverse">反向换行</option>
                       </select></label
                     >
                     <label
@@ -610,6 +615,7 @@
                         <option value="center">居中</option>
                         <option value="end">终点</option>
                         <option value="stretch">拉伸</option>
+                        <option value="baseline">文字基线</option>
                       </select>
                     </label>
                     <label>
@@ -667,8 +673,53 @@
                       <option value="center">居中</option>
                       <option value="end">终点</option>
                       <option value="stretch">拉伸</option>
+                      <option value="baseline">文字基线</option>
                     </select>
                   </label>
+                  <div class="property-grid" aria-label="水平最小和最大尺寸">
+                    <label>
+                      <span>最小宽度</span>
+                      <input
+                        id="prop-min-width"
+                        type="number"
+                        min="1"
+                        max="20000"
+                        placeholder="无"
+                      />
+                    </label>
+                    <label>
+                      <span>最大宽度</span>
+                      <input
+                        id="prop-max-width"
+                        type="number"
+                        min="1"
+                        max="20000"
+                        placeholder="无"
+                      />
+                    </label>
+                  </div>
+                  <div class="property-grid" aria-label="垂直最小和最大尺寸">
+                    <label>
+                      <span>最小高度</span>
+                      <input
+                        id="prop-min-height"
+                        type="number"
+                        min="1"
+                        max="20000"
+                        placeholder="无"
+                      />
+                    </label>
+                    <label>
+                      <span>最大高度</span>
+                      <input
+                        id="prop-max-height"
+                        type="number"
+                        min="1"
+                        max="20000"
+                        placeholder="无"
+                      />
+                    </label>
+                  </div>
                   <div class="property-grid">
                     <label>
                       <span>跨列</span>

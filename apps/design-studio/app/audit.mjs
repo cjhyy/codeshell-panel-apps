@@ -71,6 +71,26 @@ function contains(container, node) {
   );
 }
 
+function isTextBaselineOverflow(node, parent) {
+  if (
+    node.type !== "text" ||
+    (node.textMeasurement !== "browser" && !Number.isFinite(node.layoutBaselineOffset)) ||
+    parent.clipContent === true
+  ) {
+    return false;
+  }
+  const epsilon = 0.5;
+  const horizontallyContained =
+    node.x >= parent.x - epsilon &&
+    node.x + node.width <= parent.x + parent.width + epsilon;
+  const verticalOverflow = Math.max(
+    0,
+    parent.y - node.y,
+    node.y + node.height - (parent.y + parent.height),
+  );
+  return horizontallyContained && verticalOverflow <= Math.max(4, node.fontSize * 0.35);
+}
+
 function isIntentionalClippedEdgeSurface(node, ancestor) {
   const radius =
     ancestor.type === "ellipse"
@@ -849,7 +869,11 @@ export function auditDesign(document) {
         exceedsParent &&
         parent.clipContent === true &&
         parent.contentClipping === "intentional";
-      if (exceedsParent && !intentionallyClippedByParent) {
+      if (
+        exceedsParent &&
+        !intentionallyClippedByParent &&
+        !isTextBaselineOverflow(node, parent)
+      ) {
         issues.push({
           code: "layout.parent-overflow",
           severity: parent.clipContent === true ? "error" : "warning",

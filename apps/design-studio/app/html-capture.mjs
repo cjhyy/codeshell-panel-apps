@@ -340,8 +340,8 @@ function borderSides(style) {
 }
 
 function flexAxis(value) {
-  if (value === "row") return "horizontal";
-  if (value === "column") return "vertical";
+  if (value === "row" || value === "row-reverse") return "horizontal";
+  if (value === "column" || value === "column-reverse") return "vertical";
   return null;
 }
 
@@ -358,6 +358,7 @@ function flexAlignment(value) {
   if (["start", "flex-start", "self-start"].includes(value)) return "start";
   if (["end", "flex-end", "self-end"].includes(value)) return "end";
   if (value === "center") return "center";
+  if (value === "baseline") return "baseline";
   return null;
 }
 
@@ -405,6 +406,25 @@ function cssSizeMode(element, property) {
   const percentage = value.match(/^([-\d.]+)%$/u);
   if (percentage && Number.parseFloat(percentage[1]) >= 99) return "fill";
   return "fixed";
+}
+
+function layoutSizeLimits(style) {
+  const limit = (property, ignored) => {
+    const value = String(style[property] ?? "").trim().toLowerCase();
+    if (!value || ignored.includes(value)) return undefined;
+    const pixels = Number.parseFloat(value);
+    return Number.isFinite(pixels) && pixels > 0 ? round(pixels) : undefined;
+  };
+  const minWidth = limit("minWidth", ["auto", "0px"]);
+  const maxWidth = limit("maxWidth", ["none"]);
+  const minHeight = limit("minHeight", ["auto", "0px"]);
+  const maxHeight = limit("maxHeight", ["none"]);
+  return {
+    ...(minWidth !== undefined ? { minWidth } : {}),
+    ...(maxWidth !== undefined ? { maxWidth } : {}),
+    ...(minHeight !== undefined ? { minHeight } : {}),
+    ...(maxHeight !== undefined ? { maxHeight } : {}),
+  };
 }
 
 function insetIsSpecified(element, property) {
@@ -465,7 +485,7 @@ function flexLayoutProperties(element, style, ownerWindow) {
     !layout ||
     !justifyContent ||
     !alignItems ||
-    !["nowrap", "wrap", "none"].includes(style.flexWrap)
+    !["nowrap", "wrap", "wrap-reverse", "none"].includes(style.flexWrap)
   ) {
     return null;
   }
@@ -502,7 +522,10 @@ function flexLayoutProperties(element, style, ownerWindow) {
     gap: round(layout === "horizontal" ? columnGap : rowGap),
     rowGap: round(rowGap),
     columnGap: round(columnGap),
-    layoutWrap: style.flexWrap === "wrap" ? "wrap" : "none",
+    layoutWrap: ["wrap", "wrap-reverse"].includes(style.flexWrap)
+      ? style.flexWrap
+      : "none",
+    layoutReverse: style.flexDirection.endsWith("-reverse"),
     padding: 0,
     paddingTop: round(inset.top),
     paddingRight: round(inset.right),
@@ -598,6 +621,7 @@ function layoutItemProperties(element, style, parentLayout) {
   const properties = {
     layoutSizingHorizontal: "fixed",
     layoutSizingVertical: "fixed",
+    ...layoutSizeLimits(style),
     ...(absolute ? { layoutPositioning: "absolute" } : {}),
     ...(alignment ? { layoutAlignSelf: alignment } : {}),
   };

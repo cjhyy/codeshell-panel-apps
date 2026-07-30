@@ -68,7 +68,24 @@ try {
     normalized.nodes.filter((node) => node.layout === "grid").length,
   );
   qaState.qaWrapLayoutCount = String(
-    normalized.nodes.filter((node) => node.layoutWrap === "wrap").length,
+    normalized.nodes.filter((node) =>
+      ["wrap", "wrap-reverse"].includes(node.layoutWrap),
+    ).length,
+  );
+  qaState.qaReverseLayoutCount = String(
+    normalized.nodes.filter(
+      (node) => node.layoutReverse === true || node.layoutWrap === "wrap-reverse",
+    ).length,
+  );
+  qaState.qaBaselineLayoutCount = String(
+    normalized.nodes.filter((node) => node.alignItems === "baseline").length,
+  );
+  qaState.qaMinMaxNodeCount = String(
+    normalized.nodes.filter((node) =>
+      ["minWidth", "maxWidth", "minHeight", "maxHeight"].some(
+        (property) => node[property] !== undefined,
+      ),
+    ).length,
   );
   qaState.qaAbsoluteAutoChildCount = String(
     normalized.nodes.filter(
