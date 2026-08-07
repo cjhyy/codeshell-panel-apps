@@ -1,17 +1,95 @@
 # Job Hunt HQ task modules
 
 Run only the modules requested by the user or selected in the Panel task
-composer. A request may target zero, one, or many saved jobs. Reuse the same
-candidate evidence across jobs, but write each job-specific artifact with its
-own opaque `job_id`.
+composer. A request may target zero, one, or many explicitly shortlisted jobs.
+Reuse the same candidate evidence across jobs, but write each job-specific
+artifact with its own opaque `job_id`. Jobs in `inbox` are discovery results,
+not evidence of user interest.
+
+## Initialize the current project
+
+Use this module when the Panel target kind is `project-bootstrap` or the user
+asks the Panel to initialize, repair, scan, or complete the current project.
+
+1. Invoke `get_job_search_context`, inspect the root listing, and read the
+   current `CODESHELL.md` when present. Scan only obvious resume, biography,
+   work-history, portfolio, project-summary, and interview-note files. Exclude
+   dependencies, build output, caches, generated bundles, and large binaries.
+2. Reuse existing paths. Do not move, rename, reformat, or duplicate candidate
+   files merely to match a preferred layout.
+3. If `CODESHELL.md` is absent, create it. If it exists, preserve unrelated
+   project instructions and add or update only a concise `Job Hunt HQ` section
+   that identifies authoritative paths, target directions, and fact rules.
+4. Only when equivalent candidate-data files do not exist, create the missing
+   files among:
+   - `career-data/profile.md`
+   - `career-data/work-experience.md`
+   - `career-data/projects.md`
+   - `career-data/interview-notes.md`
+   - `career-data/jd/README.md`
+   Keep incoming JD text, screenshots, PDFs, documents, and chat exports under
+   `career-data/jd/inbox/`; do not mix them into candidate evidence files.
+5. Write explicit `TODO` prompts into new templates. Never present a template,
+   example, inferred metric, or guessed employment detail as candidate fact.
+6. Inspect Git history read-only when it belongs to the current project. A Repo
+   or commit is candidate evidence only after authorship and the substantive
+   change are verified.
+7. Invoke `save_candidate_context` with every verified fact and empty arrays
+   for categories with no evidence. This creates or updates the current
+   project's `job-hunt-panel.json` through the Panel.
+8. Generate a first Base Resume only when one broad target category can be
+   inferred and at least three resume claims can be supported. Otherwise finish
+   initialization and report the smallest set of real facts still needed.
+
+Do not open another repository, create a second chat, or ask the user to build
+this directory structure manually.
+
+## Import JD inbox sources
+
+Use this module when the Panel target kind is `jd-intake` or the user asks to
+import JD files, screenshots, pasted chat text, PDFs, Word files, or the project
+JD inbox.
+
+1. Invoke `get_job_search_context` and process only the named `intakeId` /
+   `sourcePath` values under `career-data/jd/inbox/`. A project scan stays in
+   that directory and must not scan another Repo.
+2. Read normal text files directly. For a Panel-staged
+   `_attachments/*/manifest.json`, read its `parts` in order, concatenate and
+   decode their base64 into exactly `reconstructedPath`, then verify
+   `byteSize` and `sha256`. Never reconstruct outside the current project.
+3. Extract from screenshots, PDFs, Word documents, chat exports, and text as
+   supported by the available tools. One source may contain multiple jobs.
+   Preserve its path, original link, visible dates, and uncertainty. Combine
+   multiple screenshots into one JD only when company, role, context, and page
+   order clearly agree; otherwise use `needs_review`.
+4. Invoke `save_job_opportunities` for every verified candidate. Only a complete
+   JD that passes the Panel gate returns a formal `savedJobs` ID. Partial text
+   returns a `savedLeads` record and must not be treated as a `job_id`.
+5. Invoke `save_jd_intake_results` for every processed source with one terminal
+   status: `imported`, `duplicate`, `needs_review`, or `failed`. `imported`
+   requires real formal `job_ids`; a source that produced only leads is
+   `needs_review`. A Trace alone is never a completed import.
+6. Stop after intake unless another module was explicitly selected. Imported
+   jobs remain `inbox`; do not start resumes, research, or interview work.
 
 ## Dependency rules
 
+- Treat the Panel's five stages—foundation, discovery, inbox triage,
+  preparation, and follow-up—as state boundaries. They explain what is safe to
+  do next; they are not a mandatory end-to-end scenario.
 - Discovery can run alone.
-- Company intelligence, match analysis, job-specific resume work, question
-  sets, and mock interviews require a saved job with enough JD evidence.
-- A general resume or preparation plan does not require a job. Omit `job_id`
-  when saving it.
+- Company intelligence, match analysis, interview questions, and mock
+  interviews require a shortlisted formal job with a complete JD. A `jobLead`
+  never qualifies. An `inbox`
+  record qualifies only when the user explicitly names or selects that job for
+  the requested task.
+- A Base Resume requires a broad `category`, never a `job_id`. One project may
+  maintain multiple bases for different directions.
+- A job-specific resume is a JD Variant. It requires a saved Base Resume, its
+  `base_resume_id`, and a target `job_id`. If no applicable base exists, create
+  and save the base before deriving the variant.
+- Commit interview questions can run without a saved job. They require a Git
+  repository with substantive, candidate-attributable commits.
 - Match analysis and preparation planning share `save_preparation_plan`; when
   both are requested, write one combined plan per job.
 - A mock interview should use a saved question set when available. If the user
@@ -21,23 +99,103 @@ own opaque `job_id`.
   it, update a preparation plan or resume only when those tasks were also
   selected.
 
+## Verify one recruiting channel
+
+Use this module when the Panel target kind is `channel-verification`.
+
+1. Resolve exactly one provider from the Panel payload. Do not open, verify, or
+   search any other provider during this run.
+2. Invoke `get_job_search_context`, confirm the current Session, and open only
+   that provider in the connected visible browser. Do not search for jobs.
+3. Treat Panel-managed login as already resolved by the CodeShell Host. The
+   Panel may have opened an isolated login window, saved the Cookie, and
+   restored it to this task browser before submitting verification. Do not call
+   `UseCredential` or `InjectCredential` for a Panel-launched run. Only when a
+   direct chat explicitly asks the Agent to restore a saved Cookie, read and
+   follow [channel-login.md](channel-login.md).
+4. Classify the final visible result as exactly one of:
+   - `ready`: the channel can proceed to a real search in this Session;
+   - `login_required`: the user must sign in;
+   - `captcha_required`: the user must complete a visible challenge;
+   - `blocked`: access is denied or restricted;
+   - `unavailable`: the site cannot currently be reached or verified.
+5. Treat the CodeShell browser profile as host-owned. Its current-Session
+   partition is persistent across app restarts, so a user login can survive a
+   restart without exposing Cookie values to the Panel or Agent. Never read,
+   export, copy, or serialize accounts, passwords, cookies, tokens, CAPTCHA
+   values, or browser storage. Panel-managed login and restoration remain
+   entirely in the Host. A direct-chat, host-gated `InjectCredential` call is
+   allowed because it does not expose Cookie values to the Agent. Never promise
+   automatic cross-Session reuse: restoring a separate saved login always
+   requires an explicit provider-scoped action and the Host's gate.
+6. Invoke `save_channel_verification` with `provider_id`, the classification,
+   and a concise user-visible `detail`. An injection count is not evidence of
+   login; only the fresh visible page is.
+7. Invoke `complete_execution_trace` and stop. When user action is required,
+   leave the visible page available for the user; after they finish, the Panel
+   starts a new verification run for that same provider.
+
+A direct chat follow-up such as “inject my saved BOSS Cookie and check again”
+continues the same one-provider verification through
+[channel-login.md](channel-login.md). Re-read Panel context, perform the fresh
+browser check, and actually invoke `save_channel_verification` after
+the observation. Reuse the supplied Trace ID when it is still available; if
+none is available, do not invent one or claim that a Trace was completed.
+
 ## Discover jobs
 
-1. Resolve target roles, locations, seniority, exclusions, and providers from
-   the request, panel context, and one pass over relevant project files.
-2. Browse the requested provider as the user sees it. Prefer public listing
+1. Resolve target roles, locations, seniority, freshness, work mode,
+   exclusions, and providers from the Panel's `discoveryPreferences`, the
+   request, and one pass over relevant project files. Explicit Panel values
+   win; do not silently widen excluded roles, companies, locations, work
+   modes, or date windows.
+2. Read `channelVerifications`. Every requested provider must be `ready` for
+   the current Session before a Panel-launched discovery starts. If any record
+   is missing, stale, or not ready, do not browse or search; return the exact
+   providers to the Panel's one-channel verification module.
+3. Browse the requested provider as the user sees it. Prefer public listing
    pages, official careers pages, and public structured ATS pages. Never export
    browser credentials or replay authenticated requests outside the browser.
-3. Verify that each retained listing appears current. Save the first useful
-   batch without waiting for every detail:
+   If the visible access state changes, invoke `save_channel_verification` with
+   the new state and stop only that provider.
+4. Verify that each retained listing appears current. Save useful candidates in
+   batches while continuing to their detail pages:
    - `listing_only`: title/company/URL and visible listing metadata
    - `partial`: a real excerpt or incomplete JD
    - `full`: the complete visible JD
-4. Invoke `save_job_opportunities` with 3–8 relevant records. Later calls
-   should enrich matching records instead of creating duplicates.
-5. Estimate match only when candidate evidence exists. Otherwise omit it.
+5. Invoke `save_job_opportunities` with relevant records. `listing_only` and
+   `partial` records land in `jobLeads`; only a `full` record with substantive
+   responsibilities and requirements enters `jobs` as `inbox`. Leads do not
+   count toward the requested total. Continue opening candidates until the
+   formal target is reached, viable results are exhausted, or access is blocked.
+   Do not move a new formal job to `saved` or start downstream preparation
+   unless the user explicitly expresses interest or selects that exact job.
+   Later calls should enrich matching URLs instead of creating duplicates.
+6. Estimate match only when candidate evidence exists. Otherwise omit it.
+7. Summarize successful providers in one `source` Trace event and report each
+   blocked provider as a `warning`. Include provider coverage, inbox-added /
+   updated counts, incomplete JDs, and access limitations in the final Trace
+   outcome, including separate formal-job and lead counts.
 
 Stop after saving discovery results unless another module was selected.
+
+## Run scheduled discovery
+
+Use this module when the prompt contains
+`job-hunt-hq:scheduled-discovery:v1`.
+
+1. Continue the bound project and Session. Re-read Panel context and use only
+   the listed providers that remain `ready` in that Session.
+2. Do not pause for login, CAPTCHA, approval, or user questions. Mark a changed
+   provider state, skip it, and continue with public or still-ready sources.
+3. Apply the normal discovery module and count only complete formal JDs.
+4. Save through `save_job_opportunities` when Panel tools are available.
+5. Always write one immutable JSON receipt under
+   `career-data/discovery/runs/<UTC-time>-scheduled.json` with
+   `schemaVersion: 1`, a stable `runId`, `generatedAt`, `source: "scheduled"`,
+   and the exact candidate records in `jobs`. Never edit
+   `job-hunt-panel.json` directly; the Panel imports and deduplicates unseen
+   receipts when the project is next synchronized.
 
 ## Research company and interview intelligence
 
@@ -64,28 +222,52 @@ For every selected job, or once without a job for general preparation:
    - skills the candidate truly lacks,
    - capabilities that may exist but lack usable evidence,
    - facts or metrics that still need verification.
-4. Rank gaps by likely interview or screening impact.
-5. Create specific resume changes, evidence-gathering actions, study tasks, and
-   practice prompts.
-6. Invoke `save_preparation_plan`. Use one combined plan when both match and
+4. Classify every gap as `profile`, `evidence`, or `skill`. Never infer a skill
+   gap merely because candidate documentation is incomplete.
+5. Rank gaps by likely interview or screening impact.
+6. Create specific resume changes, evidence-gathering actions, and practice
+   prompts. For real `skill` gaps only, create a staged learning Roadmap with a
+   realistic duration, smallest useful tasks, a portfolio or practice
+   deliverable, observable success criteria, and status. Prefer project output
+   over course lists. Use an empty Roadmap when no real skill gap exists.
+7. Invoke `save_preparation_plan`. Use one combined plan when both match and
    preparation tasks were selected.
 
-## Tailor or revise a resume
+## Build, tailor, or revise a resume
 
-For every selected job, or once without a job for a general baseline:
+Start by resolving the requested layer:
 
-1. Read the current resume and all verified candidate evidence.
-2. For a job-specific version, extract 6–10 high-signal JD requirements and
-   map them to true evidence. For a general version, optimize structure,
-   clarity, evidence strength, and the candidate's stated target direction.
-3. Write concise Markdown in the requested language. Prefer outcome-led bullets
-   and natural keyword coverage.
-4. Invoke `save_resume_draft`. Put uncertain or missing facts in `notes`
-   instead of filling them in. Omit `job_id` for a general version.
+1. Read [resume-quality.md](resume-quality.md), `baseResumes`,
+   `selectedBaseResumeId`, `resume`, `resumeVersions`, and all verified
+   candidate evidence.
+2. For a Base Resume:
+   - choose one broad category;
+   - optimize the complete candidate story, structure, evidence strength, and
+     outcome-led bullets without using an employer-specific JD;
+   - rank facts by relevance, outcome, ownership, evidence, and
+     differentiation; mark only the best 3–6 as `core`;
+   - map the professional summary and every capability, work, and project
+     bullet to source-backed `claim_evidence` using the exact rendered text;
+     explain what each source proves and add point-specific interview questions;
+   - invoke `save_resume_draft` with `resume_kind: "base"`, `category`,
+     `claim_evidence`, and no `job_id` or `base_resume_id`.
+3. For a JD Variant:
+   - require an applicable saved base; create it first if missing;
+   - read that complete base before the JD;
+   - extract 6–10 high-signal JD requirements and map them to true base/project
+     evidence;
+   - preserve facts and chronology while changing emphasis, summary, ordering,
+     and natural keyword coverage;
+   - re-rank the 3–6 `core` claims for this JD and preserve or update exact
+     claim-to-source mappings; never use the JD as the only source for a
+     candidate capability;
+   - invoke `save_resume_draft` with `resume_kind: "variant"`, the base's
+     `category`, `base_resume_id`, `job_id`, and complete `claim_evidence`.
+4. Put uncertain or missing facts in `notes` instead of filling them in.
 
 Default section order:
 
-1. Name, target role, contact
+1. Name, target role, contact, optional photo
 2. Professional summary
 3. Relevant skills
 4. Reverse-chronological work experience
@@ -104,6 +286,21 @@ For every selected job:
    and realistic follow-ups.
 4. Invoke `save_interview_question_set`.
 
+## Generate commit deep-dive questions
+
+1. Run without a job unless the user also selected JD tailoring.
+2. Use read-only Git inspection. Start with the relevant Repo's log, exclude
+   trivial merge/format-only commits, and verify candidate attribution before
+   treating a change as evidence.
+3. Inspect selected commits and key diffs. Ask about problem framing,
+   implementation decisions, alternatives, tests, failure handling,
+   compatibility, rollout, and rollback.
+4. Give every question at least one evidence reference formatted as
+   `commit:<sha> · <subject> · <key path>`.
+5. Invoke `save_interview_question_set` with `source_mode: "commits"` and no
+   `job_id`. Use `source_mode: "mixed"` with a valid `job_id` only when the user
+   explicitly wants commit evidence cross-referenced with a JD.
+
 ## Run a mock interview
 
 1. Read the selected job and saved question set.
@@ -114,6 +311,23 @@ For every selected job:
 4. Never turn an unsupported answer into a candidate fact.
 5. End with strengths, risks, and the next practice focus. Save another
    artifact only if the user selected it.
+
+## Update application progress
+
+Use this module when the user changes a saved job's recruiting stage, reports
+contact with a recruiter, schedules or finishes an interview, receives an
+offer or rejection, withdraws, archives a role, or asks to set a follow-up.
+
+1. Resolve one saved `job_id` and preserve the existing JD and artifacts.
+2. Use only an explicit user action or user-provided recruiting event. Do not
+   infer `applied` from a generated resume, `interviewing` from a practice
+   session, or `offer` from positive feedback.
+3. Choose one stage: `saved`, `tailoring`, `applied`, `screening`,
+   `interviewing`, `offer`, `rejected`, `withdrawn`, or `archived`.
+4. Keep a concise factual `note`. Add `next_action` and `next_action_at` when a
+   follow-up, interview, decision, or preparation deadline is known.
+5. Invoke `update_application_progress`. It appends to the job's timeline; do
+   not overwrite history manually.
 
 ## Save a real interview debrief
 
@@ -126,7 +340,9 @@ For every selected job:
 3. For each question, record the answer signal and better-answer points without
    inventing missing content.
 4. Invoke `save_interview_debrief`.
-5. If preparation or resume iteration was also selected, use the debrief as new
+5. If the user explicitly reported a recruiting stage or next action, also
+   invoke `update_application_progress` for that job.
+6. If preparation or resume iteration was also selected, use the debrief as new
    evidence and update only the corresponding artifacts.
 
 ## Long combinations

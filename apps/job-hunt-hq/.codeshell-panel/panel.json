@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "0.9.0",
+  "version": "1.25.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Turn project evidence and optional JDs into job-search artifacts, then continue any panel object in the current Session with visible prompts, execution receipts, and structured write-back.",
+  "description": "Bind a dedicated career-data workspace, verify profile, experience, repository evidence, Base Resume and job sources, then turn selected JDs into traceable job-search artifacts in the current Session.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -20,7 +20,9 @@
     "workspace.write",
     "storage",
     "external.open",
-    "agent.submitPrompt"
+    "agent.submitPrompt",
+    "credentials.cookies",
+    "automations.manage"
   ],
   "agent": {
     "tools": [
@@ -35,11 +37,176 @@
         "readOnly": true
       },
       {
+        "name": "report_execution_trace",
+        "description": "Record one meaningful source, stage, or warning in the active Panel execution trace. Use this sparingly for observable milestones, not hidden reasoning or narration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "event_type": {
+              "type": "string",
+              "enum": ["source", "stage", "warning"]
+            },
+            "label": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "source_refs": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            }
+          },
+          "required": ["event_type", "label", "source_refs"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "complete_execution_trace",
+        "description": "Finish the active Panel execution trace with an explicit outcome summary, final status, and output references after useful structured writes are complete.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "status": {
+              "type": "string",
+              "enum": ["completed", "partial", "failed"]
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2000
+            },
+            "output_refs": {
+              "description": "Opaque IDs, source locators, or short artifact references produced by this run.",
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "error": {
+              "description": "Concise blocking error or unresolved failure when status is failed or partial.",
+              "type": "string",
+              "maxLength": 2000
+            }
+          },
+          "required": ["trace_id", "status", "summary", "output_refs"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_channel_verification",
+        "description": "Save the visible-browser access and login result for exactly one recruiting provider in the current Session. CodeShell owns the persistent browser profile; this tool never receives credentials, cookies, or verification codes.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "provider_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "description": "Exact built-in or custom provider id from get_job_search_context.providerCatalog."
+            },
+            "status": {
+              "type": "string",
+              "enum": ["ready", "login_required", "captcha_required", "blocked", "unavailable"]
+            },
+            "detail": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            }
+          },
+          "required": ["provider_id", "status", "detail"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_jd_intake_results",
+        "description": "Save explicit recognition outcomes for pasted text, screenshots, PDFs, documents, chat exports, or files from the project JD inbox. Every processed source must become imported, needs_review, duplicate, or failed instead of existing only as a Trace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "results": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "intake_id": { "type": "string", "maxLength": 100 },
+                  "source_path": { "type": "string", "minLength": 1, "maxLength": 1000 },
+                  "original_name": { "type": "string", "minLength": 1, "maxLength": 240 },
+                  "source_kind": {
+                    "type": "string",
+                    "enum": ["pasted_text", "image", "pdf", "document", "file", "project_file", "project_scan", "chat_export"]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["imported", "needs_review", "duplicate", "failed"]
+                  },
+                  "summary": { "type": "string", "maxLength": 2000 },
+                  "job_ids": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                  },
+                  "error": { "type": "string", "maxLength": 2000 }
+                },
+                "required": ["source_path", "original_name", "source_kind", "status", "summary", "job_ids"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["results"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
         "name": "save_candidate_context",
         "description": "Save candidate profile, project evidence, and work history extracted from the active CodeShell project's verified files.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "profile": {
               "type": "object",
               "properties": {
@@ -144,10 +311,15 @@
       },
       {
         "name": "save_job_opportunities",
-        "description": "Create or enrich structured job opportunities. Save listing-only or partial JD records early, then call again with the same URL to update them as more evidence becomes available.",
+        "description": "Save discovered job records through a strict completeness gate. Listing cards and partial descriptions become jobLeads and never count as formal opportunities; only a full JD with substantive responsibilities and requirements enters the triage jobs pool and is written to career-data/jd/jobs/.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "jobs": {
               "type": "array",
               "minItems": 1,
@@ -226,11 +398,69 @@
         "readOnly": false
       },
       {
+        "name": "update_application_progress",
+        "description": "Update one job's triage or application stage, next action, reminder date, and evidence-based progress note while preserving an append-only timeline. Only move an inbox job to saved when the user explicitly expresses interest.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "job_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "saved",
+                "tailoring",
+                "applied",
+                "screening",
+                "interviewing",
+                "offer",
+                "rejected",
+                "withdrawn",
+                "archived"
+              ]
+            },
+            "note": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "next_action": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "next_action_at": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "occurred_at": {
+              "type": "string",
+              "maxLength": 80
+            }
+          },
+          "required": ["job_id", "status"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
         "name": "save_workflow_progress",
         "description": "Create or update the current session's job-hunt workflow progress so the project-bound panel can visualize long-running work.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "workflow_id": {
               "type": "string",
               "maxLength": 100
@@ -293,6 +523,11 @@
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "job_id": {
               "type": "string",
               "minLength": 1,
@@ -536,14 +771,22 @@
       },
       {
         "name": "save_interview_question_set",
-        "description": "Save a JD-specific interview question set grounded in the candidate's verified repositories and work history.",
+        "description": "Save an evidence-grounded interview question set derived from a JD, verified candidate materials, or substantive Git commits.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "job_id": {
               "type": "string",
-              "minLength": 1,
               "maxLength": 80
+            },
+            "source_mode": {
+              "type": "string",
+              "enum": ["jd", "commits", "mixed"]
             },
             "title": {
               "type": "string",
@@ -582,6 +825,7 @@
                   },
                   "evidence_refs": {
                     "type": "array",
+                    "minItems": 1,
                     "maxItems": 8,
                     "items": {
                       "type": "string",
@@ -608,22 +852,27 @@
                     }
                   }
                 },
-                "required": ["category", "difficulty", "question", "why"],
+                "required": ["category", "difficulty", "question", "why", "evidence_refs"],
                 "additionalProperties": false
               }
             }
           },
-          "required": ["job_id", "title", "mode", "questions"],
+          "required": ["source_mode", "title", "mode", "questions"],
           "additionalProperties": false
         },
         "readOnly": false
       },
       {
         "name": "save_preparation_plan",
-        "description": "Create or replace the candidate's evidence-grounded preparation and gap-remediation plan for an optional saved job.",
+        "description": "Create or replace the candidate's evidence-grounded preparation plan, classifying profile, evidence, and real skill gaps and adding a learning roadmap only for skill gaps.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "job_id": {
               "type": "string",
               "maxLength": 80
@@ -657,6 +906,10 @@
                     "minLength": 1,
                     "maxLength": 120
                   },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["profile", "evidence", "skill"]
+                  },
                   "evidence": {
                     "type": "string",
                     "maxLength": 1000
@@ -682,7 +935,75 @@
                     "maxLength": 1000
                   }
                 },
-                "required": ["area", "priority", "actions"],
+                "required": ["area", "kind", "priority", "actions"],
+                "additionalProperties": false
+              }
+            },
+            "roadmap": {
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "phase": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": ["foundation", "project", "practice", "validation"]
+                  },
+                  "duration": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "objective": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "tasks": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "deliverable": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1000
+                  },
+                  "success_criteria": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                      "type": "string",
+                      "maxLength": 500
+                    }
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["planned", "in_progress", "done"]
+                  }
+                },
+                "required": [
+                  "phase",
+                  "title",
+                  "kind",
+                  "duration",
+                  "tasks",
+                  "deliverable",
+                  "success_criteria",
+                  "status"
+                ],
                 "additionalProperties": false
               }
             },
@@ -723,7 +1044,15 @@
               }
             }
           },
-          "required": ["title", "summary", "strengths", "gaps", "resume_changes", "next_actions"],
+          "required": [
+            "title",
+            "summary",
+            "strengths",
+            "gaps",
+            "roadmap",
+            "resume_changes",
+            "next_actions"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -734,6 +1063,11 @@
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
             "job_id": {
               "type": "string",
               "maxLength": 80
@@ -828,10 +1162,27 @@
       },
       {
         "name": "save_resume_draft",
-        "description": "Save an Agent-written Markdown resume revision, either as a general candidate version or tailored to an optional saved job.",
+        "description": "Save a direction-level Base Resume or a JD-specific variant with an exact record for every rendered resume point: priority, why it matters, source locator, what the source proves, related interview questions, and an optional improvement. Create the base first; variants must identify both base_resume_id and job_id.",
         "inputSchema": {
           "type": "object",
           "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "resume_kind": {
+              "type": "string",
+              "enum": ["base", "variant"]
+            },
+            "category": {
+              "type": "string",
+              "maxLength": 80
+            },
+            "base_resume_id": {
+              "type": "string",
+              "maxLength": 100
+            },
             "job_id": {
               "type": "string",
               "maxLength": 80
@@ -846,6 +1197,99 @@
               "minLength": 80,
               "maxLength": 50000
             },
+            "claim_evidence": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 120,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "claim": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 800
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["verified", "needs_review"]
+                  },
+                  "importance": {
+                    "type": "string",
+                    "enum": ["core", "supporting"]
+                  },
+                  "why_it_matters": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400
+                  },
+                  "sources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": ["experience", "repository", "commit", "file", "user", "other"]
+                        },
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 160
+                        },
+                        "locator": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        },
+                        "evidence": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 800
+                        }
+                      },
+                      "required": ["kind", "label", "locator", "evidence"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "interview_questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "question": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        },
+                        "focus": {
+                          "type": "string",
+                          "maxLength": 240
+                        }
+                      },
+                      "required": ["question"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "improvement": {
+                    "type": "string",
+                    "maxLength": 800
+                  }
+                },
+                "required": [
+                  "claim",
+                  "status",
+                  "importance",
+                  "why_it_matters",
+                  "sources",
+                  "interview_questions"
+                ],
+                "additionalProperties": false
+              }
+            },
             "notes": {
               "type": "array",
               "maxItems": 12,
@@ -856,12 +1300,18 @@
               }
             }
           },
-          "required": ["title", "markdown"],
+          "required": ["resume_kind", "category", "title", "markdown", "claim_evidence"],
           "additionalProperties": false
         },
         "readOnly": false
       }
     ],
-    "skills": ["agent/skills/job-hunt-workflow/SKILL.md"]
+    "skills": [
+      "agent/skills/job-hunt-workflow/SKILL.md",
+      "agent/skills/job-intelligence/SKILL.md",
+      "agent/skills/resume-writing/SKILL.md",
+      "agent/skills/resume-design/SKILL.md",
+      "agent/skills/interview-coach/SKILL.md"
+    ]
   }
 }

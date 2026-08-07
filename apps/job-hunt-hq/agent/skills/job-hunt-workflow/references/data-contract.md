@@ -2,6 +2,31 @@
 
 Use project snapshot schema version 2. Treat IDs as opaque strings.
 
+Session traces are Panel-local execution telemetry, not part of the project
+snapshot. A `Panel Trace ID` may appear in a submitted prompt; leave it intact.
+Pass that exact value as `trace_id` to every non-readonly Panel tool exposed by
+the current schema. This explicitly associates telemetry and write-back
+artifacts with the correct execution even when older traces are still visible.
+The read-only `get_job_search_context` call does not require `trace_id` and
+returns the currently active ID for inspection.
+
+`report_execution_trace` accepts `source`, `stage`, or `warning`. Use
+`source_refs` for concise locators such as project paths, `commit:<sha>`, or
+public URLs. It is execution telemetry, not a place for hidden reasoning.
+
+For a Panel-launched run, call `complete_execution_trace` last. Its status is
+the explicit run outcome:
+
+- `completed`: every selected task reached a useful result;
+- `partial`: useful artifacts exist, but evidence, access, or user input is
+  still missing;
+- `failed`: no requested result could be completed.
+
+Put the short user-visible result in `summary`, a blocking reason in `error`,
+and saved artifact IDs or compact source locators in `output_refs`. This trace
+outcome remains Panel-local telemetry; do not duplicate it into
+`job-hunt-panel.json`.
+
 ## Root snapshot
 
 ```json
@@ -10,6 +35,13 @@ Use project snapshot schema version 2. Treat IDs as opaque strings.
   "updatedAt": "ISO-8601",
   "selectedJobId": "job-id",
   "selectedInterviewSetId": "set-id",
+  "selectedBaseResumeId": "resume-id",
+  "discoveryPreferences": {},
+  "channelVerifications": [],
+  "jdIntakeItems": [],
+  "jobLeads": [],
+  "discoveryRunReceipts": [],
+  "discoveryReceiptCutoff": "ISO-8601 reset boundary or empty string",
   "profile": {},
   "jobs": [],
   "repos": [],
@@ -24,9 +56,143 @@ Use project snapshot schema version 2. Treat IDs as opaque strings.
 }
 ```
 
-## Job
+`discoveryPreferences` stores the current project's last user-confirmed job
+search criteria: keyword, location, seniority, count, provider IDs, freshness
+window, work mode, exclusions, and last run time. Treat the Panel-submitted
+values as the boundary for that discovery run. Do not silently widen a search
+to excluded roles, locations, companies, or older listings.
 
-Store one normalized record for every role:
+`channelVerifications` stores one current record per provider:
+
+```json
+{
+  "providerId": "boss",
+  "state": "unchecked | checking | ready | login_required | captcha_required | blocked | unavailable",
+  "checkedAt": "ISO-8601",
+  "sessionId": "opaque-session-id",
+  "detail": "Visible, user-readable result"
+}
+```
+
+Only `ready` authorizes a later website search, and only when `sessionId`
+matches the current Session. A different Session makes the record stale even
+though `stale` is not persisted as a state. Verification is always one
+provider per run. CodeShell may persist that Session's browser partition across
+app restarts, but the record must never contain an account, password, cookie,
+token, CAPTCHA value, browser storage value, or other credential material.
+
+`jdIntakeItems` is the project-visible JD source inbox. It is distinct from
+Session Trace telemetry:
+
+```json
+{
+  "id": "jd-intake-id",
+  "sourceKind": "pasted_text | image | pdf | document | file | project_file | project_scan | chat_export",
+  "originalName": "WeChat screenshot.png",
+  "sourcePath": "career-data/jd/inbox/...",
+  "status": "staged | processing | imported | needs_review | duplicate | failed",
+  "summary": "User-visible recognition result",
+  "jobIds": ["job-id"],
+  "receivedAt": "ISO-8601",
+  "updatedAt": "ISO-8601",
+  "error": ""
+}
+```
+
+Panel-staged binary files use a text-safe manifest with ordered base64 chunks,
+the exact project-local reconstruction path, byte size, and SHA-256. Rebuild
+only that path before inspection. Finalize every processed source through
+`save_jd_intake_results`; `imported` must reference actual saved job IDs.
+
+`jobLeads` contains listing cards and incomplete JDs that have not passed the
+formal gate. `discoveryRunReceipts` is a bounded ledger of scheduled JSON files
+already imported from `career-data/discovery/runs/`. Neither collection is a
+set of formal jobs, and neither may drive resume, match, research, application,
+or interview artifacts. `discoveryReceiptCutoff` prevents receipts created at
+or before the most recent project reset from repopulating a deliberately
+cleared pool.
+
+## Resume hierarchy
+
+The candidate profile may contain a panel-managed, compressed
+`photoDataUrl` and `photoName`. Preserve them when updating candidate facts;
+do not synthesize or replace a user-selected photo.
+
+Store the active resume in `resume` and older records in `versions`. Both use
+the same shape:
+
+```json
+{
+  "id": "archived-record-id",
+  "versionId": "active-record-id",
+  "kind": "base | variant",
+  "category": "Frontend engineering",
+  "baseResumeId": "base-id-or-empty",
+  "jobId": "job-id-or-empty",
+  "title": "Resume title",
+  "markdown": "# Complete Markdown resume",
+  "claimEvidence": [
+    {
+      "claim": "Exact text of one Markdown bullet",
+      "status": "verified | needs_review",
+      "importance": "core | supporting",
+      "whyItMatters": "Why a recruiter should care about this point",
+      "sources": [
+        {
+          "kind": "experience | repository | commit | file | user | other",
+          "label": "Human-readable source",
+          "locator": "commit:abc1234 or file:path#L20",
+          "evidence": "What this exact source proves about the claim"
+        }
+      ],
+      "interviewQuestions": [
+        {
+          "question": "Question that tests ownership, depth, tradeoff, or result",
+          "focus": "What the interviewer is trying to verify"
+        }
+      ],
+      "improvement": "Specific evidence or wording improvement, or empty"
+    }
+  ],
+  "notes": ["Unverified fact to resolve"],
+  "updatedAt": "ISO-8601"
+}
+```
+
+- A base has `kind: "base"`, an explicit broad `category`, and empty
+  `baseResumeId` / `jobId`.
+- A variant has `kind: "variant"`, inherits its base's `category`, and
+  requires valid `baseResumeId` and `jobId`.
+- Treat IDs as opaque. Read `baseResumes` from `get_job_search_context`
+  before deriving a variant.
+- `claimEvidence.claim` must match its rendered professional-summary paragraph,
+  capability-section line, or Markdown bullet after removing the bullet marker
+  and Markdown emphasis. Every such claim requires at least one source. A
+  `needs_review` source preserves a trace without presenting it as fully
+  verified.
+- On Panel tool input, use snake_case names `why_it_matters` and
+  `interview_questions`; the snapshot normalizes them to the camelCase shape
+  above.
+- Mark only 3–6 claims as `core`. Every claim requires a non-empty
+  `why_it_matters`, at least one question, and a non-empty `evidence`
+  explanation for every source. A stable locator says where to look;
+  `evidence` says what the material proves.
+
+## Interview question set
+
+Use `sourceMode: "jd | commits | mixed"`. JD and mixed sets require a valid
+`jobId`; commit-only sets use an empty `jobId`. Every question needs at least
+one evidence reference. For commit-only sets, at least one reference per
+question must use:
+
+```text
+commit:<7-40 character SHA> · <subject> · <key path>
+```
+
+## Formal job
+
+Store one normalized record in `jobs` only after the complete JD passes the
+Panel gate:
 
 ```json
 {
@@ -40,21 +206,49 @@ Store one normalized record for every role:
   "url": "https://canonical-job-url",
   "publishedAt": "Source date or empty",
   "employmentType": "Full-time or source text",
-  "description": "Available JD text or listing excerpt",
-  "jdCompleteness": "full | partial | listing_only",
+  "description": "Complete source JD text with responsibilities and requirements",
+  "jdCompleteness": "full",
+  "jdPath": "career-data/jd/jobs/job-id.md",
   "verificationNotes": "Missing fields or access limitation",
   "fetchedAt": "ISO-8601",
   "match": 82,
-  "status": "saved",
+  "status": "inbox",
+  "statusUpdatedAt": "ISO-8601 or empty",
+  "application": {
+    "nextAction": "Prepare screening call",
+    "nextActionAt": "ISO-8601 or YYYY-MM-DD",
+    "history": [
+      {
+        "id": "application-event-id",
+        "stage": "applied",
+        "previousStage": "tailoring",
+        "note": "Submitted through official careers page",
+        "nextAction": "Follow up in five working days",
+        "nextActionAt": "2026-08-12",
+        "occurredAt": "ISO-8601",
+        "source": "user | agent | system"
+      }
+    ]
+  },
   "createdAt": "ISO-8601",
   "updatedAt": "ISO-8601"
 }
 ```
 
 Deduplicate by canonical URL first, then
-`sourceId + company + title + location`. Save partial records early and update
-the same record as stronger evidence becomes available. Never call a listing
-excerpt a full JD.
+`sourceId + company + title + location`. Save partial candidates through the
+same Panel tool, but expect them in `jobLeads`, not `jobs`. Re-submit the same
+URL after reading the complete source page so the lead can be promoted without
+changing its opaque ID. Never call or count a listing excerpt as a full JD.
+
+Application stages are `inbox`, `saved`, `tailoring`, `applied`, `screening`,
+`interviewing`, `offer`, `rejected`, `withdrawn`, or `archived`. Newly
+discovered jobs default to `inbox`. That means the listing was collected for
+review; it does not mean the user is interested. Move `inbox` to `saved` only
+after an explicit user selection. Update later recruiting stages only from an
+explicit user action or user-provided recruiting event. Generating a resume
+does not prove that an application was submitted, and saving an interview plan
+does not prove that an interview was scheduled.
 
 ## Job research
 
@@ -162,12 +356,26 @@ empty `jobId`:
   "strengths": ["Verified strength"],
   "gaps": [
     {
-      "area": "Capability or evidence gap",
+      "area": "Gap area",
+      "kind": "profile | evidence | skill",
       "evidence": "What is currently known",
       "impact": "Why it matters",
       "priority": "high | medium | low",
       "actions": ["Concrete next step"],
       "practice": "Practice prompt"
+    }
+  ],
+  "roadmap": [
+    {
+      "phase": "Stage 1",
+      "title": "Learn and apply one real skill gap",
+      "kind": "foundation | project | practice | validation",
+      "duration": "3 days",
+      "objective": "Observable learning objective",
+      "tasks": ["Smallest useful task"],
+      "deliverable": "Source-backed artifact or practice output",
+      "successCriteria": ["Observable completion criterion"],
+      "status": "planned | in_progress | done"
     }
   ],
   "resumeChanges": ["Specific revision"],
@@ -182,6 +390,11 @@ empty `jobId`:
   "updatedAt": "ISO-8601"
 }
 ```
+
+Classify missing personal facts or work-history fields as `profile`, candidate
+claims without usable proof as `evidence`, and only genuinely absent capability
+as `skill`. `roadmap` must contain stages only for `skill` gaps; pass an empty
+array when the plan contains profile or evidence work only.
 
 ## Interview debrief
 

@@ -31,6 +31,139 @@
     "selectedInterviewSetId": {
       "type": "string"
     },
+    "selectedBaseResumeId": {
+      "type": "string"
+    },
+    "discoveryPreferences": {
+      "type": "object",
+      "required": [
+        "keyword",
+        "location",
+        "seniority",
+        "count",
+        "providers",
+        "freshnessDays",
+        "workMode",
+        "exclusions",
+        "lastRunAt"
+      ],
+      "properties": {
+        "keyword": { "type": "string" },
+        "location": { "type": "string" },
+        "seniority": { "type": "string" },
+        "count": { "type": "integer", "enum": [5, 8, 10] },
+        "providers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "freshnessDays": { "type": "integer", "enum": [0, 3, 7, 14, 30] },
+        "workMode": {
+          "type": "string",
+          "enum": ["any", "onsite", "hybrid", "remote"]
+        },
+        "exclusions": { "type": "string" },
+        "lastRunAt": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "channelVerifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["providerId", "state", "checkedAt", "sessionId", "detail"],
+        "properties": {
+          "providerId": { "type": "string" },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unchecked",
+              "checking",
+              "ready",
+              "login_required",
+              "captcha_required",
+              "blocked",
+              "unavailable"
+            ]
+          },
+          "checkedAt": { "type": "string" },
+          "sessionId": { "type": "string" },
+          "detail": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "customProviders": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "domain", "url", "custom"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^custom-[a-z0-9][a-z0-9-]*$" },
+          "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "domain": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "url": { "type": "string", "pattern": "^https://" },
+          "custom": { "const": true }
+        },
+        "additionalProperties": false
+      }
+    },
+    "jdIntakeItems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "sourceKind",
+          "originalName",
+          "sourcePath",
+          "status",
+          "summary",
+          "jobIds",
+          "receivedAt",
+          "updatedAt",
+          "error"
+        ],
+        "properties": {
+          "id": { "type": "string" },
+          "sourceKind": {
+            "type": "string",
+            "enum": ["pasted_text", "image", "pdf", "document", "file", "project_file", "project_scan", "chat_export"]
+          },
+          "originalName": { "type": "string" },
+          "sourcePath": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["staged", "processing", "imported", "needs_review", "duplicate", "failed"]
+          },
+          "summary": { "type": "string" },
+          "jobIds": { "type": "array", "items": { "type": "string" } },
+          "receivedAt": { "type": "string" },
+          "updatedAt": { "type": "string" },
+          "error": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "jobLeads": {
+      "description": "Incomplete listing cards or partial JDs. These are not formal opportunities and are never counted in jobs.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "discoveryRunReceipts": {
+      "description": "Bounded import ledger for scheduled discovery run files under career-data/discovery/runs/.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "discoveryReceiptCutoff": {
+      "description": "ISO-8601 reset boundary. Scheduled discovery receipts generated at or before this time must not be re-imported.",
+      "type": "string"
+    },
     "profile": {
       "type": "object"
     },

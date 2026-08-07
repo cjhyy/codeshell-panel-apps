@@ -276,6 +276,14 @@ async function validatePackage(packagePath) {
       join(root, "agent", "skills", "job-hunt-workflow", "SKILL.md"),
       "utf8",
     );
+    const workflowReference = await readFile(
+      join(root, "agent", "skills", "job-hunt-workflow", "references", "workflows.md"),
+      "utf8",
+    );
+    const channelLoginReference = await readFile(
+      join(root, "agent", "skills", "job-hunt-workflow", "references", "channel-login.md"),
+      "utf8",
+    );
     const snapshotSchema = JSON.parse(
       await readFile(
         join(root, "app", "formats", "job-hunt-panel-v2.schema.json"),
@@ -289,7 +297,15 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.9.0", `${packagePath}: project model version mismatch`);
+    assert.equal(manifest.version, "1.25.0", `${packagePath}: guided workflow version mismatch`);
+    assert(
+      manifest.permissions.includes("credentials.cookies"),
+      `${packagePath}: channel login needs the host-owned Cookie permission`,
+    );
+    assert(
+      manifest.permissions.includes("automations.manage"),
+      `${packagePath}: scheduled discovery needs project-scoped automation permission`,
+    );
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -301,6 +317,43 @@ async function validatePackage(packagePath) {
     assert(toolNames.has("save_candidate_context"), `${packagePath}: context tool is required`);
     assert(toolNames.has("save_job_research"), `${packagePath}: research tool is required`);
     assert(toolNames.has("save_workflow_progress"), `${packagePath}: workflow tool is required`);
+    assert(toolNames.has("report_execution_trace"), `${packagePath}: trace tool is required`);
+    assert(
+      toolNames.has("update_application_progress"),
+      `${packagePath}: application progress tool is required`,
+    );
+    const applicationTool = manifest.agent.tools.find(
+      (tool) => tool.name === "update_application_progress",
+    );
+    assert(
+      applicationTool.inputSchema.properties.status.enum.includes("inbox"),
+      `${packagePath}: application tool must support triage inbox`,
+    );
+    assert(
+      toolNames.has("complete_execution_trace"),
+      `${packagePath}: explicit trace outcome tool is required`,
+    );
+    assert(
+      toolNames.has("save_channel_verification"),
+      `${packagePath}: one-provider channel verification tool is required`,
+    );
+    assert(
+      toolNames.has("save_jd_intake_results"),
+      `${packagePath}: JD source intake result tool is required`,
+    );
+    for (const tool of manifest.agent.tools.filter((item) => !item.readOnly)) {
+      assert.equal(
+        tool.inputSchema.properties?.trace_id?.type,
+        "string",
+        `${packagePath}: ${tool.name} must accept explicit trace_id correlation`,
+      );
+    }
+    const contextTool = manifest.agent.tools.find((tool) => tool.name === "get_job_search_context");
+    assert.equal(
+      contextTool.inputSchema.properties?.trace_id,
+      undefined,
+      `${packagePath}: read-only context must not require trace_id`,
+    );
     assert(
       toolNames.has("save_preparation_plan"),
       `${packagePath}: preparation plan tool is required`,
@@ -311,8 +364,127 @@ async function validatePackage(packagePath) {
     );
     assert.deepEqual(
       manifest.agent.skills,
-      ["agent/skills/job-hunt-workflow/SKILL.md"],
-      `${packagePath}: one bundled workflow Skill is required`,
+      [
+        "agent/skills/job-hunt-workflow/SKILL.md",
+        "agent/skills/job-intelligence/SKILL.md",
+        "agent/skills/resume-writing/SKILL.md",
+        "agent/skills/resume-design/SKILL.md",
+        "agent/skills/interview-coach/SKILL.md",
+      ],
+      `${packagePath}: complete job-hunt Skill suite is required`,
+    );
+    const resumeWritingSkill = await readFile(
+      join(root, "agent", "skills", "resume-writing", "SKILL.md"),
+      "utf8",
+    );
+    const resumeFocusRubric = await readFile(
+      join(root, "agent", "skills", "resume-writing", "references", "focus-rubric.md"),
+      "utf8",
+    );
+    const resumeDesignSkill = await readFile(
+      join(root, "agent", "skills", "resume-design", "SKILL.md"),
+      "utf8",
+    );
+    const jobIntelligenceSkill = await readFile(
+      join(root, "agent", "skills", "job-intelligence", "SKILL.md"),
+      "utf8",
+    );
+    const interviewCoachSkill = await readFile(
+      join(root, "agent", "skills", "interview-coach", "SKILL.md"),
+      "utf8",
+    );
+    assert.match(
+      resumeWritingSkill,
+      /Build the focus brief/,
+      `${packagePath}: resume Skill must establish a hiring thesis before drafting`,
+    );
+    assert.match(
+      resumeWritingSkill,
+      /score is below 80\/100/,
+      `${packagePath}: resume Skill must enforce a minimum focus score`,
+    );
+    assert.match(
+      resumeWritingSkill,
+      /job-hunt-hq:job-hunt-workflow/,
+      `${packagePath}: resume Skill must coordinate with Panel workflow`,
+    );
+    assert.match(
+      resumeFocusRubric,
+      /Six-second scan test/,
+      `${packagePath}: resume Skill must include a first-scan audit`,
+    );
+    assert.match(
+      appScript,
+      /job-hunt-hq:resume-writing/,
+      `${packagePath}: resume Panel actions must explicitly load the focused writer`,
+    );
+    assert.match(
+      resumeDesignSkill,
+      /below 85\/100/,
+      `${packagePath}: resume design Skill must enforce visual quality`,
+    );
+    assert.match(
+      jobIntelligenceSkill,
+      /Every newly discovered formal job remains `inbox`/,
+      `${packagePath}: intelligence Skill must preserve triage semantics`,
+    );
+    assert.match(
+      interviewCoachSkill,
+      /Classify every gap|Classify gaps/,
+      `${packagePath}: interview Skill must classify gaps before roadmaps`,
+    );
+    assert.match(html, /id="resume-template-select"/, `${packagePath}: resume templates required`);
+    assert.match(html, /id="resume-density-select"/, `${packagePath}: resume density required`);
+    assert.match(html, /id="resume-export-status"/, `${packagePath}: PDF export receipt required`);
+    assert.match(
+      appScript,
+      /workspace\.exportPdf/,
+      `${packagePath}: resume PDF must use the native Host export`,
+    );
+    assert.match(
+      appScript,
+      /career-data\/resumes/,
+      `${packagePath}: resume PDFs must stay inside the project data directory`,
+    );
+    assert.match(
+      appScript,
+      /job-hunt-hq:job-intelligence/,
+      `${packagePath}: discovery and research must load job intelligence`,
+    );
+    assert.match(
+      appScript,
+      /data-restore-provider-login-id/,
+      `${packagePath}: login-required channels must expose an explicit saved-login action`,
+    );
+    assert.match(
+      appScript,
+      /credentials\.cookies\.loginAndSave/,
+      `${packagePath}: channel login must use the host-owned login-and-save method`,
+    );
+    assert.match(
+      appScript,
+      /credentials\.cookies\.restore/,
+      `${packagePath}: saved logins must restore through the host boundary`,
+    );
+    assert.match(
+      workflowReference,
+      /channel-login\.md/,
+      `${packagePath}: channel verification must route saved logins through its safety reference`,
+    );
+    assert.match(
+      channelLoginReference,
+      /Never invoke `UseCredential` with a Cookie credential id/,
+      `${packagePath}: saved-login workflow must forbid Cookie file materialization`,
+    );
+    assert.match(
+      skill,
+      /Never say that a verification state or Trace was written unless that exact/,
+      `${packagePath}: workflow Skill must forbid fabricated Panel write receipts`,
+    );
+    assert.match(
+      appScript,
+      /job-hunt-hq:interview-coach/,
+      `${packagePath}: interview actions must load the coach`,
     );
     assert.match(html, /id="project-context-name"/, `${packagePath}: project status is required`);
     assert.match(
@@ -346,6 +518,127 @@ async function validatePackage(packagePath) {
       `${packagePath}: Session submission receipts are required`,
     );
     assert.match(
+      html,
+      /id="session-trace-filters"/,
+      `${packagePath}: Session traces must be filterable`,
+    );
+    assert.match(
+      html,
+      /data-session-trace-filter="partial"/,
+      `${packagePath}: partial Session outcomes must be filterable`,
+    );
+    for (const id of [
+      "application-stage",
+      "application-next-action",
+      "application-next-action-at",
+      "application-note",
+      "update-application",
+      "application-history",
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    assert.match(
+      html,
+      /data-status-filter="inbox"/,
+      `${packagePath}: discovered jobs need a triage inbox`,
+    );
+    assert.match(html, /id="inbox-count"/, `${packagePath}: inbox count is required`);
+    assert.match(
+      html,
+      /data-career-flow-action="materials"/,
+      `${packagePath}: dashboard must expose the guided career flow`,
+    );
+    assert.match(
+      html,
+      /data-job-status-shortcut="active"/,
+      `${packagePath}: opportunity panel needs a shortlisted-job shortcut`,
+    );
+    assert.match(
+      html,
+      /id="dashboard-focus-secondary"/,
+      `${packagePath}: next-best action needs an alternate path`,
+    );
+    for (const id of [
+      "intake-search-sites",
+      "intake-import-message",
+      "intake-project-files",
+      "workflow-disclosure",
+      "resume-workspace-slot",
+      "reset-job-hunt-project",
+      "confirm-reset-job-hunt",
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    assert.match(
+      skill,
+      /recruiter or friend forwards/,
+      `${packagePath}: workflow Skill must normalize manual JD intake channels`,
+    );
+    assert.match(
+      skill,
+      /hand control to the user for sign-in or\s+CAPTCHA/,
+      `${packagePath}: workflow Skill must preserve the interactive login boundary`,
+    );
+    assert.match(
+      appScript,
+      /resetJobHuntWorkspace/,
+      `${packagePath}: project-bound reset flow is required`,
+    );
+    assert(
+      html.indexOf('class="workbench"') < html.indexOf('id="workflow-builder"'),
+      `${packagePath}: users must see jobs before composing downstream tasks`,
+    );
+    assert.match(
+      html,
+      /data-status-filter="interview"/,
+      `${packagePath}: interview-stage grouping is required`,
+    );
+    assert.match(
+      html,
+      /data-status-filter="closed"/,
+      `${packagePath}: closed-stage grouping is required`,
+    );
+    assert.match(
+      html,
+      /id="save-project-snapshot"/,
+      `${packagePath}: failed project writes must be recoverable from the Panel`,
+    );
+    assert.match(
+      appScript,
+      /dataset\.triageJobId/,
+      `${packagePath}: inbox cards must expose explicit triage actions`,
+    );
+    assert.match(
+      appScript,
+      /status: "inbox"/,
+      `${packagePath}: imported jobs must default to inbox`,
+    );
+    assert.match(
+      appScript,
+      /完整 JD 进入待筛选岗位池也不代表感兴趣或准备投递/,
+      `${packagePath}: manual JD import must explain the formal inbox boundary`,
+    );
+    assert.match(
+      appScript,
+      /isWorkflowEligibleStage/,
+      `${packagePath}: inbox jobs must stay out of downstream task selection`,
+    );
+    assert.match(
+      appScript,
+      /function renderCareerFlow/,
+      `${packagePath}: career flow must reflect current project state`,
+    );
+    assert.match(
+      appScript,
+      /function renderDashboardFocus/,
+      `${packagePath}: dashboard needs a state-aware next action`,
+    );
+    assert.match(
+      appScript,
+      /function workflowMissingJobTasks/,
+      `${packagePath}: job-dependent tasks must be validated before submission`,
+    );
+    assert.match(
       appScript,
       /function openSessionBridge/,
       `${packagePath}: contextual Session actions are required`,
@@ -360,7 +653,102 @@ async function validatePackage(packagePath) {
       /function recordSessionSubmission/,
       `${packagePath}: submitted Session instructions must remain visible`,
     );
+    assert.match(
+      appScript,
+      /function recordTraceArtifact/,
+      `${packagePath}: Session traces must link written artifacts`,
+    );
+    assert.match(
+      appScript,
+      /function latestTraceForArtifact/,
+      `${packagePath}: artifacts must resolve their latest generation Trace`,
+    );
+    assert.match(
+      appScript,
+      /function inspectSessionTrace/,
+      `${packagePath}: artifacts must open their generation Trace`,
+    );
+    assert.match(
+      appScript,
+      /function syncActiveTraceLifecycle/,
+      `${packagePath}: Session traces must follow the Agent busy lifecycle`,
+    );
+    assert.match(
+      appScript,
+      /function activateTraceFromToolArgs/,
+      `${packagePath}: writes must resolve their explicit Trace ID`,
+    );
+    assert.match(
+      appScript,
+      /function rerunSessionTrace/,
+      `${packagePath}: a Trace must be replayable from its original input`,
+    );
+    assert.match(
+      appScript,
+      /hostCall\("agent\.submitPrompt", \{ prompt: tracedPrompt, displayText \}\)/,
+      `${packagePath}: Panel input must remain visible in the bound Session`,
+    );
+    assert.match(
+      appScript,
+      /session-trace-input/,
+      `${packagePath}: Trace detail must expose the submitted input`,
+    );
+    assert.match(
+      appScript,
+      /data\.traceFeedbackValue|dataset\.traceFeedbackValue/,
+      `${packagePath}: Trace results must accept a user evaluation`,
+    );
+    assert.match(
+      appScript,
+      /compactPanelLocalState\(state\)/,
+      `${packagePath}: local Panel storage must use the bounded UI and Trace payload`,
+    );
+    assert.match(
+      appScript,
+      /projectSnapshotSaveQueue/,
+      `${packagePath}: project snapshot writes must be serialized`,
+    );
+    assert.match(
+      appScript,
+      /function generateLocalDraft[\s\S]*?const markdown = composeDraft\(job, category\)/,
+      `${packagePath}: preview resume generation must build its draft in scope`,
+    );
+    assert.equal(
+      [...appScript.matchAll(/hostCall\("agent\.submitPrompt"/g)].length,
+      1,
+      `${packagePath}: every Agent launch must use the unified traced submitter`,
+    );
+    assert.match(
+      html,
+      /SESSION TRACES/,
+      `${packagePath}: Trace timeline must be visible in the Session bridge`,
+    );
     assert.match(html, /id="jd-preview"/, `${packagePath}: full JD view is required`);
+    for (const field of [
+      "keyword",
+      "location",
+      "seniority",
+      "count",
+      "freshnessDays",
+      "workMode",
+      "exclusions",
+    ]) {
+      assert.match(
+        html,
+        new RegExp(`name="${field}"`),
+        `${packagePath}: discovery field ${field} is required`,
+      );
+    }
+    assert.match(
+      appScript,
+      /input\.name = "providers"/,
+      `${packagePath}: discovery provider choices must render from the channel catalog`,
+    );
+    assert.match(
+      appScript,
+      /state\.discoveryPreferences = preferences/,
+      `${packagePath}: discovery criteria must persist with the project`,
+    );
     assert.match(
       html,
       /id="workflow-job-picker"/,
@@ -375,6 +763,56 @@ async function validatePackage(packagePath) {
       html,
       /id="preparation-gap-list"/,
       `${packagePath}: preparation plan view is required`,
+    );
+    for (const id of [
+      "resume-category",
+      "base-resume-select",
+      "tailor-resume",
+      "resume-photo-input",
+      "resume-evidence-ledger",
+      "resume-evidence-list",
+      "generate-commit-interview",
+      "print-resume",
+      "resume-trace",
+      "resume-print-root",
+      "preparation-gap-summary",
+      "preparation-roadmap-count",
+      "preparation-roadmap-list",
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    assert.match(
+      appScript,
+      /function buildPublicResumePrintClone[\s\S]*?querySelectorAll\("\.resume-point-proof"\)/,
+      `${packagePath}: PDF export must omit internal evidence annotations`,
+    );
+    assert.match(
+      appScript,
+      /async function exportResumeToPdf[\s\S]*?workspace\.exportPdf/,
+      `${packagePath}: native public resume PDF export is required`,
+    );
+    assert.match(
+      appScript,
+      /function openSystemPdfFallback[\s\S]*?window\.print\(\)/,
+      `${packagePath}: legacy PDF fallback is required`,
+    );
+    const appStyle = await readFile(join(root, "app", "style.css"), "utf8");
+    assert.match(appStyle, /@media print/, `${packagePath}: print stylesheet is required`);
+    assert.match(appStyle, /@page\s*\{\s*size:\s*A4;/, `${packagePath}: A4 page size is required`);
+    assert.match(
+      appStyle,
+      /body\.printing-resume > :not\(\.resume-print-root\)/,
+      `${packagePath}: PDF export must isolate the public resume`,
+    );
+    assert.match(
+      appScript,
+      /async function generateBaseDraft/,
+      `${packagePath}: Base Resume generation is required`,
+    );
+    assert.match(
+      appScript,
+      /async function generateVariantDraft/,
+      `${packagePath}: JD Variant generation is required`,
     );
     assert.match(
       html,
@@ -409,8 +847,177 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       skill,
-      /Never request, reveal, export, or reuse session cookies/,
-      `${packagePath}: Skill must forbid credential replay`,
+      /Never request, reveal, export, or materialize Cookie values/,
+      `${packagePath}: Skill must forbid raw credential access and replay`,
+    );
+    assert.match(
+      html,
+      /id="search-project-preflight"/,
+      `${packagePath}: website discovery must show project preflight`,
+    );
+    assert.match(
+      html,
+      /id="search-login-preflight"/,
+      `${packagePath}: website discovery must show login preflight`,
+    );
+    assert.match(
+      html,
+      /id="source-overview-title"/,
+      `${packagePath}: dashboard must expose data sources before job discovery`,
+    );
+    assert.match(
+      html,
+      /id="source-base-state"/,
+      `${packagePath}: data source overview must separate Base Resume`,
+    );
+    assert.match(
+      html,
+      /class="career-flow"[^>]*hidden/,
+      `${packagePath}: global workflow must not appear as tabs in the JD pool`,
+    );
+    assert.match(
+      appScript,
+      /materialsSourceOverviewSlot\.append\(sourceOverviewPanel\)/,
+      `${packagePath}: source overview belongs to the data source page`,
+    );
+    assert.match(
+      appStyle,
+      /color-scheme:\s*light/,
+      `${packagePath}: main panel theme must remain light`,
+    );
+    assert.match(
+      html,
+      /id="job-search-query"/,
+      `${packagePath}: JD pool needs direct search`,
+    );
+    assert.match(
+      html,
+      /id="job-detail-description"/,
+      `${packagePath}: JD pool needs an inline full-description reader`,
+    );
+    assert.match(
+      html,
+      /id="job-detail-interest"/,
+      `${packagePath}: JD reader needs fixed triage actions`,
+    );
+    assert.match(
+      html,
+      /id="delete-job"/,
+      `${packagePath}: JD reader needs a visible delete action`,
+    );
+    assert.match(
+      html,
+      /id="delete-job-dialog"/,
+      `${packagePath}: deleting a JD needs explicit confirmation`,
+    );
+    assert.match(
+      html,
+      /id="jd-inbox-panel"/,
+      `${packagePath}: project-visible JD inbox is required`,
+    );
+    assert.match(
+      html,
+      /id="jd-file-input"[^>]*accept="image\/\*,\.pdf,\.doc,\.docx/,
+      `${packagePath}: JD intake must accept screenshots, PDF, and Word files`,
+    );
+    assert.match(
+      appScript,
+      /save_jd_intake_results.*不能只留下 Trace/s,
+      `${packagePath}: JD intake prompt must require structured outcomes`,
+    );
+    assert.match(
+      appScript,
+      /function renderJobPoolDetail/,
+      `${packagePath}: JD reader renderer is required`,
+    );
+    assert.match(
+      html,
+      /id="channel-verification-list"/,
+      `${packagePath}: channel management needs one-provider verification controls`,
+    );
+    for (const id of [
+      "job-leads-panel",
+      "job-lead-list",
+      "discovery-automation-panel",
+      "discovery-automation-form",
+      "discovery-automation-status",
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    assert.match(
+      appScript,
+      /job-hunt-hq:scheduled-discovery:v1/,
+      `${packagePath}: recurring discovery needs a stable task marker`,
+    );
+    assert.match(
+      appScript,
+      /career-data\/discovery\/runs/,
+      `${packagePath}: scheduled results need a project-local receipt path`,
+    );
+    assert.match(
+      appScript,
+      /automations\.create/,
+      `${packagePath}: recurring discovery must use the project-scoped Host automation API`,
+    );
+    assert.match(
+      html,
+      /id="view-channels"/,
+      `${packagePath}: channels need an independent top-level view`,
+    );
+    assert.match(
+      html,
+      /id="show-add-channel"/,
+      `${packagePath}: data sources need an explicit add-channel action`,
+    );
+    assert.match(
+      html,
+      /id="custom-channel-url"[^>]*type="url"/,
+      `${packagePath}: custom channels need a validated URL field`,
+    );
+    assert.match(
+      appScript,
+      /data\.removeProviderId|removeProviderId/,
+      `${packagePath}: custom channels need an explicit remove action`,
+    );
+    assert.match(
+      appScript,
+      /本次唯一渠道.*provider_id=/,
+      `${packagePath}: channel verification prompt must be limited to one provider`,
+    );
+    assert.match(
+      appScript,
+      /恢复登录并验证/,
+      `${packagePath}: saved channel logins need one combined restore-and-verify action`,
+    );
+    assert.match(
+      html,
+      /Cookie 直接进入 CodeShell 凭证库/,
+      `${packagePath}: channel UI must explain host-owned Cookie persistence`,
+    );
+    assert.match(
+      workflowReference,
+      /persistent across app restarts/,
+      `${packagePath}: channel workflow must preserve the CodeShell browser boundary`,
+    );
+    assert.match(
+      workflowReference,
+      /[Nn]ever promise\s+automatic cross-Session reuse/,
+      `${packagePath}: channel workflow must not promise cross-session cookie sharing`,
+    );
+    assert.match(
+      appScript,
+      /!verification\.allReady/,
+      `${packagePath}: website discovery must require verified selected channels`,
+    );
+    assert.match(
+      skill,
+      /website-discovery task launched by the Panel requires an initialized/,
+      `${packagePath}: Panel website discovery must require initialization`,
+    );
+    assert.match(
+      skill,
+      /separate, one-provider task/,
+      `${packagePath}: Skill must separate verification from discovery`,
     );
     assert.match(
       skill,
@@ -424,7 +1031,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       skill,
-      /zero, one, or many saved `job_id`/,
+      /zero, one, or many explicitly shortlisted `job_id`/,
       `${packagePath}: Skill must support zero, one, or many selected jobs`,
     );
     assert.match(
@@ -432,13 +1039,121 @@ async function validatePackage(packagePath) {
       /Presets are shortcuts,\s+not fixed workflows/,
       `${packagePath}: Skill must not force fixed scenarios`,
     );
+    assert.match(skill, /Base Resume/, `${packagePath}: Skill must define Base Resume first`);
+    assert.match(
+      skill,
+      /base_resume_id/,
+      `${packagePath}: Skill must preserve variant lineage`,
+    );
+    assert.match(skill, /claim_evidence/, `${packagePath}: Skill must require resume sources`);
+    assert.match(
+      skill,
+      /Panel requests project initialization/,
+      `${packagePath}: Skill must route one-click project initialization`,
+    );
+    assert.match(
+      skill,
+      /references\/resume-quality\.md/,
+      `${packagePath}: Skill must load the resume quality protocol`,
+    );
+    assert.match(
+      skill,
+      /sources\[\]\.evidence/,
+      `${packagePath}: Skill must explain what every resume source proves`,
+    );
+    assert.match(skill, /Panel Trace ID/, `${packagePath}: Skill must preserve Trace correlation`);
+    assert.match(skill, /pass that exact ID to every non-readonly/, `${packagePath}: Skill must pass trace_id`);
+    assert.match(
+      skill,
+      /finish with `complete_execution_trace`/,
+      `${packagePath}: Skill must explicitly finish Panel traces`,
+    );
+    assert.match(
+      skill,
+      /commit:<sha>/,
+      `${packagePath}: Skill must define commit question evidence`,
+    );
+    assert.match(
+      html,
+      /data-workflow-task="commits"/,
+      `${packagePath}: Commit deep-dive task is required`,
+    );
+    assert.match(
+      html,
+      /id="initialize-job-hunt-project"/,
+      `${packagePath}: one-click project initialization is required`,
+    );
+    assert.match(
+      appScript,
+      /initializeJobHuntProject/,
+      `${packagePath}: project initialization must submit through the current Session`,
+    );
+    assert.match(
+      appScript,
+      /buildProjectBootstrapTask/,
+      `${packagePath}: initialization must use the tested project-bootstrap contract`,
+    );
+    assert.match(
+      workflowReference,
+      /## Initialize the current project/,
+      `${packagePath}: Skill workflow must define project initialization`,
+    );
+    assert.match(
+      workflowReference,
+      /## Update application progress/,
+      `${packagePath}: Skill workflow must define application tracking`,
+    );
+    const resumeTool = manifest.agent.tools.find((tool) => tool.name === "save_resume_draft");
+    assert(resumeTool.inputSchema.required.includes("claim_evidence"));
+    const claimSchema = resumeTool.inputSchema.properties.claim_evidence.items;
+    assert(claimSchema.required.includes("importance"));
+    assert(claimSchema.required.includes("why_it_matters"));
+    assert(claimSchema.required.includes("interview_questions"));
+    assert(claimSchema.properties.sources.items.required.includes("evidence"));
+    const questionTool = manifest.agent.tools.find(
+      (tool) => tool.name === "save_interview_question_set",
+    );
+    assert(questionTool.inputSchema.required.includes("source_mode"));
+    assert(!questionTool.inputSchema.required.includes("job_id"));
+    const preparationTool = manifest.agent.tools.find(
+      (tool) => tool.name === "save_preparation_plan",
+    );
+    assert(preparationTool.inputSchema.required.includes("roadmap"));
+    assert(preparationTool.inputSchema.properties.gaps.items.required.includes("kind"));
+    assert.deepEqual(preparationTool.inputSchema.properties.gaps.items.properties.kind.enum, [
+      "profile",
+      "evidence",
+      "skill",
+    ]);
+    assert(
+      preparationTool.inputSchema.properties.roadmap.items.required.includes("success_criteria"),
+    );
+    assert.match(
+      appScript,
+      /dataset\.sessionRoadmapIndex/,
+      `${packagePath}: roadmap stages must continue in the current Session`,
+    );
     assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
+    assert(snapshotSchema.properties.selectedBaseResumeId);
+    assert(snapshotSchema.properties.discoveryPreferences);
+    assert(snapshotSchema.properties.channelVerifications);
+    assert(!snapshotSchema.required.includes("channelVerifications"));
+    assert(snapshotSchema.properties.customProviders);
+    assert(!snapshotSchema.required.includes("customProviders"));
+    assert(snapshotSchema.properties.jdIntakeItems);
+    assert(!snapshotSchema.required.includes("jdIntakeItems"));
+    assert(snapshotSchema.properties.jobLeads);
+    assert(!snapshotSchema.required.includes("jobLeads"));
+    assert(snapshotSchema.properties.discoveryRunReceipts);
+    assert(!snapshotSchema.required.includes("discoveryRunReceipts"));
+    assert(snapshotSchema.properties.discoveryReceiptCutoff);
+    assert(!snapshotSchema.required.includes("discoveryReceiptCutoff"));
     assert(snapshotSchema.required.includes("jobResearch"));
     assert(snapshotSchema.required.includes("workflowRuns"));
     assert(snapshotSchema.required.includes("preparationPlans"));
     assert(snapshotSchema.required.includes("interviewDebriefs"));
 
-    const { upsertJobOpportunities } = await import(
+    const { assessJobOpportunity, upsertJobDiscovery, upsertJobOpportunities } = await import(
       pathToFileURL(join(root, "app", "job-opportunities.mjs"))
     );
     const listing = {
@@ -451,6 +1166,11 @@ async function validatePackage(packagePath) {
       description: "Short listing",
       jdCompleteness: "partial",
       status: "saved",
+      application: {
+        nextAction: "Review full JD",
+        nextActionAt: "2026-01-03",
+        history: [],
+      },
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
@@ -474,6 +1194,747 @@ async function validatePackage(packagePath) {
     assert.equal(progressiveResult.jobs[0].id, "job-existing");
     assert.equal(progressiveResult.jobs[0].jdCompleteness, "full");
     assert.equal(progressiveResult.jobs[0].description, fullJd.description);
+    assert.equal(progressiveResult.jobs[0].application.nextAction, "Review full JD");
+
+    const shortCandidate = {
+      ...listing,
+      id: "lead-1",
+      description: "负责前端开发；要求熟悉 React。",
+      jdCompleteness: "partial",
+      status: "inbox",
+    };
+    const firstDiscovery = upsertJobDiscovery([], [], [shortCandidate], {
+      dedupeKey: keyByUrl,
+      metadataKey: keyByMetadata,
+    });
+    assert.equal(firstDiscovery.jobs.length, 0);
+    assert.equal(firstDiscovery.leads.length, 1);
+    assert.equal(firstDiscovery.leads[0].id, "lead-1");
+    assert.equal(assessJobOpportunity(shortCandidate).isFormal, false);
+    const completeDescription = [
+      "岗位职责：负责 AI 产品前端架构、复杂交互、状态管理和性能治理；参与需求分析、方案评审、测试、发布和线上问题复盘；推动组件体系、监控体系和工程规范建设；与产品、设计和算法团队协作交付。",
+      "任职要求：三年以上前端经验，熟练掌握 React、TypeScript、浏览器原理与工程化工具；能够独立完成技术方案、质量验证和跨团队推动；具备清晰沟通、问题排查和结果复盘能力；有 Electron、Node.js 或 AI 应用经验优先。",
+      "其他说明：岗位为正式全职，候选人需要能够说明真实项目所有权、技术取舍、验证指标和失败案例。",
+    ].join("");
+    const completeCandidate = {
+      ...shortCandidate,
+      id: "incoming-full",
+      description: completeDescription,
+      jdCompleteness: "full",
+      fetchedAt: "2026-08-07T00:00:00.000Z",
+    };
+    assert.equal(assessJobOpportunity(completeCandidate).isFormal, true);
+    const promotedDiscovery = upsertJobDiscovery(
+      firstDiscovery.jobs,
+      firstDiscovery.leads,
+      [completeCandidate],
+      { dedupeKey: keyByUrl, metadataKey: keyByMetadata },
+    );
+    assert.equal(promotedDiscovery.jobs.length, 1);
+    assert.equal(promotedDiscovery.leads.length, 0);
+    assert.equal(promotedDiscovery.jobs[0].id, "lead-1");
+    assert.equal(promotedDiscovery.promoted.length, 1);
+
+    const { jobRemovalPreview, removeJobAndLinkedArtifacts } = await import(
+      pathToFileURL(join(root, "app", "job-removal-model.mjs"))
+    );
+    const removalState = {
+      jobs: [{ id: "job-trash" }, { id: "job-keep" }],
+      selectedJobId: "job-trash",
+      workflowJobIds: ["job-trash", "job-keep"],
+      jobResearch: [{ id: "research-trash", jobId: "job-trash" }],
+      resume: {
+        versionId: "variant-current",
+        kind: "variant",
+        jobId: "job-trash",
+        style: { template: "editorial", density: "comfortable" },
+      },
+      selectedBaseResumeId: "base-keep",
+      versions: [
+        { id: "base-keep", kind: "base", jobId: "", markdown: "base" },
+        { id: "variant-old", kind: "variant", jobId: "job-trash" },
+      ],
+      interviewSets: [{ id: "set-trash", jobId: "job-trash" }],
+      selectedInterviewSetId: "set-trash",
+      preparationPlans: [{ id: "plan-trash", jobId: "job-trash" }],
+      interviewDebriefs: [{ id: "debrief-trash", jobId: "job-trash" }],
+    };
+    assert.equal(jobRemovalPreview(removalState, "job-trash").linkedArtifactCount, 6);
+    const removedJob = removeJobAndLinkedArtifacts(removalState, "job-trash", {
+      kind: "base",
+      jobId: "",
+      style: {},
+    });
+    assert.equal(removedJob.next.jobs.length, 1);
+    assert.equal(removedJob.next.selectedJobId, "job-keep");
+    assert.deepEqual(removedJob.next.workflowJobIds, ["job-keep"]);
+    assert.equal(removedJob.next.resume.kind, "base");
+    assert.equal(removedJob.next.resume.versionId, "base-keep");
+    assert.equal(removedJob.next.versions.length, 0);
+    assert.equal(removedJob.next.jobResearch.length, 0);
+    assert.equal(removedJob.next.interviewSets.length, 0);
+    assert.equal(removedJob.next.preparationPlans.length, 0);
+    assert.equal(removedJob.next.interviewDebriefs.length, 0);
+
+    const { JD_INBOX_PATH, jdIntakeCounts, normalizeJdIntakeItems, upsertJdIntakeItems } =
+      await import(pathToFileURL(join(root, "app", "jd-intake-model.mjs")));
+    assert.equal(JD_INBOX_PATH, "career-data/jd/inbox");
+    const intakeItems = normalizeJdIntakeItems([
+      {
+        id: "intake-image",
+        sourceKind: "image",
+        originalName: "wechat.png",
+        sourcePath: "career-data/jd/inbox/wechat.png",
+        status: "staged",
+        receivedAt: "2026-08-07T00:00:00.000Z",
+      },
+      { id: "invalid", sourcePath: "" },
+    ]);
+    assert.equal(intakeItems.length, 1);
+    const completedIntake = upsertJdIntakeItems(intakeItems, [
+      {
+        ...intakeItems[0],
+        status: "imported",
+        jobIds: ["job-keep"],
+        summary: "识别出 1 个岗位",
+      },
+    ]);
+    assert.equal(completedIntake.length, 1);
+    assert.equal(completedIntake[0].status, "imported");
+    assert.deepEqual(jdIntakeCounts(completedIntake), {
+      total: 1,
+      pending: 0,
+      imported: 1,
+      attention: 0,
+    });
+
+    const {
+      normalizeCustomProviders,
+      normalizeChannelVerifications,
+      normalizeDiscoveryPreferences,
+      resolveChannelVerificationForSession,
+      resolveJobRecency,
+    } = await import(
+      pathToFileURL(join(root, "app", "discovery-model.mjs"))
+    );
+    const customProviders = normalizeCustomProviders(
+      [
+        { label: "Acme Careers", url: "https://careers.acme.test/jobs?utm_source=x" },
+        { label: "重复网址", url: "https://careers.acme.test/jobs" },
+        { label: "不安全网址", url: "http://jobs.invalid.test" },
+      ],
+      { reservedProviderIds: ["boss", "official"] },
+    );
+    assert.deepEqual(customProviders, [
+      {
+        id: "custom-careers-acme-test",
+        label: "Acme Careers",
+        domain: "careers.acme.test/jobs",
+        url: "https://careers.acme.test/jobs",
+        custom: true,
+      },
+    ]);
+    const inferredDiscovery = normalizeDiscoveryPreferences(
+      {
+        location: "上海 / 远程",
+        seniority: "5–10 年",
+        count: 10,
+        providers: ["boss", "invalid", "official", "boss"],
+        freshnessDays: 14,
+        workMode: "hybrid",
+        exclusions: "外包、销售岗",
+      },
+      {
+        profile: { target: "AI 应用工程师" },
+        validProviderIds: ["boss", "linkedin", "official"],
+      },
+    );
+    assert.equal(inferredDiscovery.keyword, "AI 应用工程师");
+    assert.deepEqual(inferredDiscovery.providers, ["boss", "official"]);
+    assert.equal(inferredDiscovery.freshnessDays, 14);
+    assert.equal(inferredDiscovery.workMode, "hybrid");
+    assert.equal(inferredDiscovery.exclusions, "外包、销售岗");
+    const fallbackDiscovery = normalizeDiscoveryPreferences(
+      { providers: ["invalid"], count: 999, workMode: "everywhere" },
+      {
+        profile: { role: "前端工程师" },
+        validProviderIds: ["boss", "official"],
+      },
+    );
+    assert.equal(fallbackDiscovery.keyword, "前端工程师");
+    assert.deepEqual(fallbackDiscovery.providers, ["boss", "official"]);
+    assert.deepEqual(
+      normalizeDiscoveryPreferences(
+        { providers: [] },
+        { validProviderIds: ["boss", "official"] },
+      ).providers,
+      [],
+    );
+    assert.equal(fallbackDiscovery.count, 8);
+    assert.equal(fallbackDiscovery.workMode, "any");
+    const normalizedVerifications = normalizeChannelVerifications(
+      [
+        {
+          providerId: "boss",
+          state: "login_required",
+          checkedAt: "2026-08-06T00:00:00.000Z",
+          sessionId: "session-old",
+          detail: "需要登录",
+        },
+        {
+          providerId: "invalid",
+          state: "ready",
+          sessionId: "session-current",
+        },
+        {
+          providerId: "boss",
+          state: "ready",
+          checkedAt: "2026-08-07T00:00:00.000Z",
+          sessionId: "session-current",
+          detail: "职位搜索页可用",
+        },
+      ],
+      ["boss", "official"],
+    );
+    assert.equal(normalizedVerifications.length, 1);
+    assert.equal(
+      resolveChannelVerificationForSession(
+        "boss",
+        normalizedVerifications,
+        "session-current",
+      ).state,
+      "ready",
+    );
+    assert.equal(
+      resolveChannelVerificationForSession("boss", normalizedVerifications, "session-new").state,
+      "stale",
+    );
+    assert.equal(
+      resolveChannelVerificationForSession("official", normalizedVerifications, "session-current")
+        .state,
+      "unchecked",
+    );
+    assert.deepEqual(
+      resolveJobRecency(
+        { publishedAt: "2026-08-04T00:00:00.000Z" },
+        Date.parse("2026-08-06T00:00:00.000Z"),
+      ),
+      { state: "fresh", label: "2 天前发布", source: "published" },
+    );
+    assert.deepEqual(
+      resolveJobRecency(
+        { fetchedAt: "2026-06-01T00:00:00.000Z" },
+        Date.parse("2026-08-06T00:00:00.000Z"),
+      ),
+      { state: "stale", label: "66 天前核验", source: "fetched" },
+    );
+
+    const {
+      APPLICATION_STAGE_LABELS,
+      applicationStatusMatchesFilter,
+      isWorkflowEligibleStage,
+      normalizeJobApplication,
+      updateApplicationProgress,
+    } = await import(pathToFileURL(join(root, "app", "application-model.mjs")));
+    const discoveredApplication = normalizeJobApplication({ id: "job-discovered" });
+    assert.equal(discoveredApplication.status, "inbox");
+    assert.equal(APPLICATION_STAGE_LABELS.inbox, "待筛选");
+    assert.equal(APPLICATION_STAGE_LABELS.saved, "感兴趣");
+    assert.equal(applicationStatusMatchesFilter("inbox", "inbox"), true);
+    assert.equal(applicationStatusMatchesFilter("saved", "active"), true);
+    assert.equal(applicationStatusMatchesFilter("tailoring", "active"), true);
+    assert.equal(applicationStatusMatchesFilter("archived", "active"), false);
+    assert.equal(isWorkflowEligibleStage("inbox"), false);
+    assert.equal(isWorkflowEligibleStage("saved"), true);
+    assert.equal(isWorkflowEligibleStage("archived"), false);
+    assert.equal(
+      normalizeJobApplication({ id: "agent-job-legacy", status: "saved" }).status,
+      "inbox",
+    );
+    assert.equal(
+      normalizeJobApplication({
+        id: "agent-job-reviewed",
+        status: "saved",
+        application: {
+          history: [{ id: "triage-1", stage: "saved", note: "User shortlisted" }],
+        },
+      }).status,
+      "saved",
+    );
+    const legacyApplication = normalizeJobApplication({
+      id: "job-legacy",
+      status: "applied",
+    });
+    assert.equal(legacyApplication.status, "applied");
+    assert.deepEqual(legacyApplication.application.history, []);
+    assert.equal(APPLICATION_STAGE_LABELS.interviewing, "面试中");
+    const firstProgress = updateApplicationProgress(
+      legacyApplication,
+      {
+        status: "screening",
+        note: "Recruiter scheduled a screening call.",
+        nextAction: "Prepare recruiter questions",
+        nextActionAt: "2026-08-08",
+      },
+      {
+        eventId: "application-1",
+        source: "agent",
+        now: "2026-08-06T10:00:00.000Z",
+      },
+    );
+    assert.equal(firstProgress.changed, true);
+    assert.equal(firstProgress.job.status, "screening");
+    assert.equal(firstProgress.job.application.history.length, 1);
+    assert.equal(firstProgress.job.application.history[0].source, "agent");
+    const noteOnlyProgress = updateApplicationProgress(
+      firstProgress.job,
+      { status: "screening", note: "Confirmed video call link." },
+      {
+        eventId: "application-2",
+        source: "user",
+        now: "2026-08-07T10:00:00.000Z",
+      },
+    );
+    assert.equal(noteOnlyProgress.job.application.nextAction, "Prepare recruiter questions");
+    assert.equal(noteOnlyProgress.job.application.nextActionAt, "2026-08-08");
+    assert.equal(noteOnlyProgress.job.application.history.length, 2);
+    assert.equal(applicationStatusMatchesFilter("screening", "interview"), true);
+    assert.equal(applicationStatusMatchesFilter("interviewing", "interview"), true);
+    assert.equal(applicationStatusMatchesFilter("rejected", "closed"), true);
+    assert.equal(applicationStatusMatchesFilter("offer", "closed"), false);
+
+    const { resolveCareerCurrentStep, resolveDashboardFocusKind } = await import(
+      pathToFileURL(join(root, "app", "workflow-model.mjs"))
+    );
+    assert.equal(resolveCareerCurrentStep({ projectReady: false }), "materials");
+    assert.equal(
+      resolveCareerCurrentStep({ projectReady: true, hasBase: false }),
+      "base",
+    );
+    assert.equal(
+      resolveCareerCurrentStep({ projectReady: true, hasBase: true }),
+      "inbox",
+    );
+    assert.equal(
+      resolveCareerCurrentStep({
+        projectReady: true,
+        hasBase: true,
+        totalJobs: 4,
+        inboxCount: 2,
+        eligibleCount: 2,
+      }),
+      "inbox",
+    );
+    assert.equal(
+      resolveCareerCurrentStep({
+        projectReady: true,
+        hasBase: true,
+        totalJobs: 2,
+        eligibleCount: 2,
+      }),
+      "preparation",
+    );
+    assert.equal(
+      resolveDashboardFocusKind({ bootstrapState: "ready", hasBase: false }),
+      "foundation",
+    );
+    assert.equal(
+      resolveDashboardFocusKind({
+        bootstrapState: "ready",
+        hasBase: true,
+        inboxCount: 3,
+        eligibleCount: 1,
+      }),
+      "inbox",
+    );
+    assert.equal(
+      resolveDashboardFocusKind({
+        bootstrapState: "ready",
+        hasBase: true,
+        hasNextApplication: true,
+        eligibleCount: 1,
+      }),
+      "followup",
+    );
+    assert.equal(
+      resolveDashboardFocusKind({
+        bootstrapState: "ready",
+        hasBase: true,
+        eligibleCount: 2,
+        selectedCount: 1,
+        selectedTaskCount: 1,
+      }),
+      "run",
+    );
+    assert.equal(
+      resolveDashboardFocusKind({
+        bootstrapState: "ready",
+        hasBase: true,
+        eligibleCount: 2,
+        selectedCount: 1,
+        selectedTaskCount: 0,
+      }),
+      "compose",
+    );
+
+    const {
+      normalizePreparationGapKind,
+      normalizeRoadmapMilestone,
+      preparationGapCounts,
+    } = await import(pathToFileURL(join(root, "app", "roadmap-model.mjs")));
+    assert.equal(
+      normalizePreparationGapKind(undefined, {
+        area: "工作经历时间",
+        actions: ["请本人补齐任职年月"],
+      }),
+      "profile",
+    );
+    assert.equal(
+      normalizePreparationGapKind(undefined, {
+        area: "系统设计能力",
+        actions: ["学习容量估算并完成一个项目实战"],
+      }),
+      "skill",
+    );
+    assert.equal(
+      normalizePreparationGapKind(undefined, {
+        area: "性能结果",
+        actions: ["回查基线和 Commit Source"],
+      }),
+      "evidence",
+    );
+    assert.deepEqual(
+      preparationGapCounts([
+        { kind: "profile" },
+        { kind: "evidence" },
+        { kind: "skill" },
+        { area: "量化结果", actions: ["补 Source"] },
+      ]),
+      { profile: 1, evidence: 2, skill: 1 },
+    );
+    assert.deepEqual(
+      normalizeRoadmapMilestone(
+        {
+          phase: "Week 1",
+          title: "Build evaluation basics",
+          kind: "foundation",
+          duration: "3 days",
+          tasks: ["Read", "", "Practice"],
+          deliverable: "Evaluation note",
+          success_criteria: ["Explain the loop"],
+          status: "in_progress",
+        },
+        0,
+      ),
+      {
+        phase: "Week 1",
+        title: "Build evaluation basics",
+        kind: "foundation",
+        duration: "3 days",
+        objective: "",
+        tasks: ["Read", "Practice"],
+        deliverable: "Evaluation note",
+        successCriteria: ["Explain the loop"],
+        status: "in_progress",
+      },
+    );
+
+    const {
+      baseResumeRecords,
+      collectResumeRecords,
+      extractResumeClaims,
+      isSupportedResumePhoto,
+      normalizeResumeRecord,
+      normalizeResumeStyle,
+      resumeClaimStrength,
+      resumeEvidenceCoverage,
+      selectBaseResume,
+    } = await import(pathToFileURL(join(root, "app", "resume-model.mjs")));
+    const legacyBase = normalizeResumeRecord(
+      { versionId: "resume-base", markdown: "# Base", updatedAt: "2026-01-01" },
+      { profileTarget: "Frontend" },
+    );
+    const legacyVariant = normalizeResumeRecord({
+      versionId: "resume-variant",
+      jobId: "job-existing",
+      markdown: "# Variant",
+      updatedAt: "2026-01-02",
+    });
+    assert.equal(legacyBase.kind, "base");
+    assert.equal(legacyBase.category, "Frontend");
+    assert.equal(legacyVariant.kind, "variant");
+    assert.equal(legacyVariant.jobId, "job-existing");
+    assert.deepEqual(legacyBase.style, {
+      template: "editorial",
+      density: "comfortable",
+    });
+    assert.deepEqual(
+      normalizeResumeStyle({ template: "minimal", density: "compact" }),
+      { template: "minimal", density: "compact" },
+    );
+    assert.deepEqual(
+      normalizeResumeStyle({ template: "unknown", density: "tiny" }),
+      { template: "editorial", density: "comfortable" },
+    );
+    assert.deepEqual(
+      normalizeResumeRecord({
+        markdown: "# Resume",
+        pdfExports: [
+          {
+            path: "career-data/resumes/base.pdf",
+            exportedAt: "2026-08-06T10:00:00.000Z",
+            size: 4096,
+          },
+          { path: "career-data/resumes/not-a-pdf.txt", size: -1 },
+        ],
+      }).pdfExports,
+      [
+        {
+          path: "career-data/resumes/base.pdf",
+          exportedAt: "2026-08-06T10:00:00.000Z",
+          size: 4096,
+        },
+      ],
+    );
+    const resumeRecords = collectResumeRecords(legacyVariant, [legacyBase, legacyVariant]);
+    assert.equal(resumeRecords.length, 2);
+    assert.deepEqual(baseResumeRecords(resumeRecords).map((resume) => resume.versionId), [
+      "resume-base",
+    ]);
+    assert.equal(selectBaseResume(resumeRecords, "resume-base")?.versionId, "resume-base");
+    assert.equal(isSupportedResumePhoto("data:image/jpeg;base64,Zm9v"), true);
+    assert.equal(isSupportedResumePhoto("https://example.test/photo.jpg"), false);
+    const sourcedMarkdown = [
+      "# Candidate",
+      "## Skills",
+      "- Built a resumable agent runtime",
+      "- Reduced long-session rendering work",
+    ].join("\n");
+    assert.deepEqual(extractResumeClaims(sourcedMarkdown), [
+      "Built a resumable agent runtime",
+      "Reduced long-session rendering work",
+    ]);
+    assert.deepEqual(
+      extractResumeClaims("# Candidate\n## Professional Summary\nFrontend engineer with agent runtime experience."),
+      ["Frontend engineer with agent runtime experience."],
+    );
+    assert.deepEqual(
+      extractResumeClaims("# Candidate\n## Core Skills\nReact · TypeScript\nAgent workflow design"),
+      ["React · TypeScript", "Agent workflow design"],
+    );
+    const evidenceCoverage = resumeEvidenceCoverage(sourcedMarkdown, [
+      {
+        claim: "Built a resumable agent runtime",
+        status: "verified",
+        importance: "core",
+        whyItMatters: "Shows ownership of a reliability-critical runtime.",
+        sources: [
+          {
+            kind: "commit",
+            label: "runtime",
+            locator: "commit:abc1234",
+            evidence: "Adds persisted checkpoints and resume handling.",
+          },
+        ],
+        interviewQuestions: [
+          {
+            question: "How did the runtime recover an interrupted run?",
+            focus: "Recovery design and ownership",
+          },
+        ],
+      },
+    ]);
+    assert.equal(evidenceCoverage.total, 2);
+    assert.equal(evidenceCoverage.supported, 1);
+    assert.equal(evidenceCoverage.complete, 1);
+    assert.equal(evidenceCoverage.core, 1);
+    assert.equal(evidenceCoverage.strong, 1);
+    assert.deepEqual(evidenceCoverage.missing, ["Reduced long-session rendering work"]);
+    assert.equal(resumeClaimStrength(evidenceCoverage.mapped[0].evidence), "strong");
+
+    const {
+      PROJECT_CANDIDATE_TEMPLATE_PATHS,
+      buildProjectBootstrapTask,
+      resolveProjectBootstrapStatus,
+    } = await import(pathToFileURL(join(root, "app", "project-bootstrap.mjs")));
+    assert.equal(resolveProjectBootstrapStatus().state, "missing");
+    assert.equal(
+      resolveProjectBootstrapStatus({
+        hasCodeshellFile: true,
+        hasSnapshot: true,
+      }).state,
+      "partial",
+    );
+    assert.equal(
+      resolveProjectBootstrapStatus({
+        hasCodeshellFile: true,
+        hasSnapshot: true,
+        repositories: [{ id: "repo-1" }],
+        experiences: [{ id: "exp-1" }],
+      }).state,
+      "ready",
+    );
+    assert.equal(
+      resolveProjectBootstrapStatus({ snapshotUnreadable: true }).state,
+      "blocked",
+    );
+    const bootstrapTask = buildProjectBootstrapTask({
+      workspace: "/current/job-project",
+      projectName: "My Job Project",
+      hasCodeshellFile: true,
+      hasSnapshot: false,
+      resumeEvidenceProtocol: "Every claim needs real evidence.",
+    });
+    assert.equal(bootstrapTask.metadata.target.kind, "project-bootstrap");
+    assert.equal(bootstrapTask.metadata.target.payload.workspace, "/current/job-project");
+    assert.match(bootstrapTask.prompt, /只处理当前项目/);
+    assert.match(bootstrapTask.prompt, /不打开、切换或修改其他 Repo/);
+    assert.match(bootstrapTask.prompt, /不要把占位文字当成候选人事实/);
+    assert.match(bootstrapTask.prompt, /至少有足够证据支持 3 条真实简历要点/);
+    assert.match(bootstrapTask.prompt, /Every claim needs real evidence/);
+    for (const candidatePath of PROJECT_CANDIDATE_TEMPLATE_PATHS) {
+      assert.match(bootstrapTask.prompt, new RegExp(candidatePath.replaceAll(".", "\\.")));
+    }
+
+    const { appendTraceEvent, attachTraceArtifact, finalizeTrace, transitionTraceForBusy } =
+      await import(pathToFileURL(join(root, "app", "trace-model.mjs")));
+    const trace = {
+      id: "trace-1",
+      status: "submitted",
+      events: [],
+      artifacts: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    assert.equal(
+      appendTraceEvent(trace, {
+        id: "event-submitted",
+        kind: "submitted",
+        label: "Panel submitted",
+        at: "2026-01-01T00:00:00.000Z",
+      }),
+      true,
+    );
+    assert.equal(
+      appendTraceEvent(trace, {
+        id: "event-duplicate",
+        kind: "submitted",
+        label: "Panel submitted",
+        at: "2026-01-01T00:00:00.100Z",
+      }),
+      false,
+    );
+    assert.equal(
+      transitionTraceForBusy(trace, false, true, {
+        id: "event-running",
+        at: "2026-01-01T00:00:01.000Z",
+      }),
+      true,
+    );
+    assert.equal(trace.status, "running");
+    assert.equal(
+      appendTraceEvent(trace, {
+        id: "event-source",
+        kind: "source",
+        label: "Read commit evidence",
+        detail: "commit:abc1234",
+        at: "2026-01-01T00:00:01.500Z",
+      }),
+      true,
+    );
+    assert.equal(
+      attachTraceArtifact(
+        trace,
+        { kind: "resume", id: "resume-1", label: "Base resume" },
+        { id: "event-artifact", at: "2026-01-01T00:00:02.000Z" },
+      ),
+      true,
+    );
+    assert.equal(trace.artifacts.length, 1);
+    assert.equal(
+      transitionTraceForBusy(trace, true, false, {
+        id: "event-completed",
+        at: "2026-01-01T00:00:03.000Z",
+      }),
+      true,
+    );
+    assert.equal(trace.status, "completed");
+    assert.match(trace.events.at(-1).detail, /^已写回 1 个结构化产物/);
+    assert.equal(trace.startedAt, "2026-01-01T00:00:01.000Z");
+    assert.equal(trace.completedAt, "2026-01-01T00:00:03.000Z");
+    assert.equal(trace.outcome.status, "completed");
+    assert.deepEqual(trace.outcome.outputRefs, ["resume:resume-1"]);
+    assert.equal(
+      finalizeTrace(trace, {
+        status: "partial",
+        summary: "Saved a base resume; two metrics still need confirmation.",
+        outputRefs: ["resume:resume-1", "file:career-data/projects.md"],
+        error: "Two outcome metrics are unverified.",
+        at: "2026-01-01T00:00:03.500Z",
+      }),
+      true,
+    );
+    assert.equal(trace.status, "partial");
+    assert.equal(trace.outcome.outputRefs.length, 2);
+    assert.equal(trace.events.at(-1).kind, "partial");
+    assert.equal(
+      appendTraceEvent(trace, {
+        id: "event-feedback",
+        kind: "feedback",
+        label: "User marked useful",
+        at: "2026-01-01T00:00:04.000Z",
+      }),
+      true,
+    );
+    assert.equal(trace.status, "partial");
+
+    const {
+      PANEL_LOCAL_STORAGE_TARGET_BYTES,
+      compactPanelLocalState,
+      encodedJsonBytes,
+    } = await import(pathToFileURL(join(root, "app", "storage-model.mjs")));
+    const oversizedLocalState = {
+      selectedJobId: "job-existing",
+      activeView: "interviews",
+      profile: { photoDataUrl: `data:image/jpeg;base64,${"x".repeat(300_000)}` },
+      jobs: [{ description: "JD".repeat(100_000) }],
+      sessionActivity: Array.from({ length: 24 }, (_, index) => ({
+        id: `trace-${index}`,
+        instruction: `instruction-${index}`,
+        requestPrompt: "prompt".repeat(3_000),
+        workspace: "/project",
+        status: "completed",
+        outcome: {
+          status: "completed",
+          summary: "Saved a source-backed base resume.",
+          outputRefs: ["resume:resume-1"],
+          error: "",
+          completedAt: "2026-01-01T00:00:03.000Z",
+        },
+        startedAt: "2026-01-01T00:00:01.000Z",
+        completedAt: "2026-01-01T00:00:03.000Z",
+        events: Array.from({ length: 40 }, (_, eventIndex) => ({
+          id: `event-${index}-${eventIndex}`,
+          kind: "source",
+          label: "Source resolved",
+          detail: "detail".repeat(300),
+          at: "2026-01-01T00:00:00.000Z",
+        })),
+      })),
+    };
+    const compactedLocalState = compactPanelLocalState(oversizedLocalState);
+    assert(encodedJsonBytes(compactedLocalState) <= PANEL_LOCAL_STORAGE_TARGET_BYTES);
+    assert.equal(compactedLocalState.selectedJobId, "job-existing");
+    assert.equal(compactedLocalState.activeView, "interviews");
+    assert.equal(compactedLocalState.profile, undefined);
+    assert.equal(compactedLocalState.jobs, undefined);
+    assert(compactedLocalState.sessionActivity.length > 0);
+    assert.equal(compactedLocalState.sessionActivity[0].outcome.status, "completed");
+    assert.equal(compactedLocalState.sessionActivity[0].outcome.outputRefs[0], "resume:resume-1");
+    assert.equal(
+      compactedLocalState.sessionActivity[0].completedAt,
+      "2026-01-01T00:00:03.000Z",
+    );
   }
   return { id: manifest.id, files: files.length };
 }
