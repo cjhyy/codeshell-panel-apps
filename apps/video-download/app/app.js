@@ -31,6 +31,10 @@ const elements = {
   taskModelHelp: [...document.querySelectorAll("[data-task-model-help]")],
   urlInput: document.querySelector("#url-input"),
   clearUrl: document.querySelector("#clear-url"),
+  cookieSelect: document.querySelector("#cookie-select"),
+  cookieRefresh: document.querySelector("#cookie-refresh"),
+  cookieLogin: document.querySelector("#cookie-login"),
+  cookieHelp: document.querySelector("#cookie-help"),
   formError: document.querySelector("#form-error"),
   inspectButton: document.querySelector("#inspect-button"),
   inspectStatus: document.querySelector("#inspect-status"),
@@ -50,9 +54,16 @@ const elements = {
   playlistOptions: document.querySelector("#playlist-options"),
   playlistItems: document.querySelector("#playlist-items"),
   playlistEnd: document.querySelector("#playlist-end"),
+  qualitySelect: document.querySelector("#quality-select"),
+  qualityHelp: document.querySelector("#quality-help"),
   subtitles: document.querySelector("#subtitle-toggle"),
   subtitleOptions: document.querySelector("#subtitle-options"),
+  subtitleMode: document.querySelector("#subtitle-mode"),
+  subtitleLanguagePreset: document.querySelector("#subtitle-language-preset"),
+  subtitleCustomRow: document.querySelector("#subtitle-custom-row"),
   subtitleLanguages: document.querySelector("#subtitle-languages"),
+  subtitleEmbed: document.querySelector("#subtitle-embed"),
+  subtitleHelp: document.querySelector("#subtitle-help"),
   destinationName: document.querySelector("#destination-name"),
   destinationPath: document.querySelector("#destination-path"),
   chooseDirectory: document.querySelector("#choose-directory"),
@@ -107,7 +118,24 @@ const FFMPEG_RELEASE_BASE = "https://github.com/yt-dlp/FFmpeg-Builds/releases/do
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-const SUPPORTED_FORMATS = new Set(["best", "1080", "720", "audio"]);
+const SUPPORTED_FORMATS = new Set([
+  "best",
+  "2160",
+  "1440",
+  "1080",
+  "720",
+  "480",
+  "360",
+  "audio",
+]);
+const SUBTITLE_MODES = new Set(["manual", "auto", "both"]);
+const SUBTITLE_LANGUAGE_PRESETS = {
+  "zh-en": "zh-Hans,zh-Hant,zh.*,en.*",
+  "zh-hans": "zh-Hans,zh-CN,zh.*",
+  "zh-hant": "zh-Hant,zh-TW",
+  en: "en.*",
+  all: "all",
+};
 const TAB_NAMES = ["download", "task", "history"];
 
 let currentJob = null;
@@ -135,6 +163,11 @@ let versionRefreshPending = false;
 let versionRefreshError = "";
 let taskModelCatalog = { defaultModel: "", models: [] };
 let selectedTaskModelId = "";
+let cookieAccounts = [];
+let cookieAccountsUrl = "";
+let cookieLoading = false;
+let cookieAuthorization = null;
+let cookieReloadTimer = null;
 const ignoredProbeProcessIds = new Set();
 const outputBuffers = { stdout: "", stderr: "" };
 
@@ -447,7 +480,9 @@ function saveHistory() {
 }
 
 function selectedFormat() {
-  return document.querySelector('input[name="format"]:checked')?.value || "best";
+  return SUPPORTED_FORMATS.has(elements.qualitySelect.value)
+    ? elements.qualitySelect.value
+    : "best";
 }
 
 function sanitizeMediaUrl(url, playlistMode) {
@@ -472,6 +507,191 @@ function normalizedUrl(options = {}) {
   } catch {
     return null;
   }
+}
+
+function cookieSite(urlValue) {
+  const url = new URL(urlValue);
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const base = host.split(".").slice(-2).join(".") || host;
+  const id = base
+    .split(".")[0]
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+  return {
+    id: id && /^[a-z]/.test(id) ? id : `site-${id || "login"}`,
+    label: host,
+  };
+}
+
+function invalidateCookieAuthorization() {
+  cookieAuthorization = null;
+}
+
+function renderCookieAccounts(message = "", preferredId = "") {
+  const selected = preferredId || elements.cookieSelect.value;
+  elements.cookieSelect.replaceChildren();
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "不使用 Cookie";
+  elements.cookieSelect.append(none);
+  for (const account of cookieAccounts) {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.health === "corrupted" ? `${account.label}（需要重新登录）` : account.label;
+    option.disabled = account.health === "corrupted";
+    elements.cookieSelect.append(option);
+  }
+  if (cookieAccounts.some((account) => account.id === selected && account.health !== "corrupted")) {
+    elements.cookieSelect.value = selected;
+  }
+  const validUrl = Boolean(normalizedUrl());
+  const available = Number(context.apiVersion) >= 10;
+  elements.cookieSelect.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieRefresh.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieLogin.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieHelp.textContent = message
+    ? message
+    : !validUrl
+      ? "粘贴链接后会显示与该网站匹配的已保存账号。"
+      : !available
+        ? "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。"
+        : cookieLoading
+          ? "正在读取与该网站匹配的已保存账号…"
+          : cookieAccounts.length
+            ? `找到 ${cookieAccounts.length} 个匹配账号；Cookie 内容不会暴露给面板。`
+            : "没有匹配账号，可点击“登录并保存”创建一个。";
+}
+
+async function refreshCookieAccounts(options = {}) {
+  const url = normalizedUrl();
+  invalidateCookieAuthorization();
+  if (!url || Number(context.apiVersion) < 10) {
+    cookieAccounts = [];
+    cookieAccountsUrl = "";
+    renderCookieAccounts();
+    return [];
+  }
+  if (previewMode) {
+    cookieAccounts = [{ id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname }];
+    cookieAccountsUrl = url;
+    renderCookieAccounts("预览模式：已显示一个示例 Cookie 账号。");
+    return cookieAccounts;
+  }
+  cookieLoading = true;
+  renderCookieAccounts();
+  let finalMessage = "";
+  let preferredId = "";
+  try {
+    const result = await panel.call("credentials.cookies.list", { url });
+    if (normalizedUrl() !== url) return [];
+    cookieAccounts = Array.isArray(result?.accounts)
+      ? result.accounts.filter(
+          (account) =>
+            account &&
+            typeof account.id === "string" &&
+            typeof account.label === "string" &&
+            account.id.length <= 160,
+        )
+      : [];
+    cookieAccountsUrl = url;
+    if (
+      typeof options.selectId === "string" &&
+      cookieAccounts.some(
+        (account) => account.id === options.selectId && account.health !== "corrupted",
+      )
+    ) {
+      preferredId = options.selectId;
+    }
+    return cookieAccounts;
+  } catch (error) {
+    cookieAccounts = [];
+    cookieAccountsUrl = "";
+    finalMessage = `无法读取 Cookie 账号：${error instanceof Error ? error.message : String(error)}`;
+    return [];
+  } finally {
+    cookieLoading = false;
+    renderCookieAccounts(finalMessage, preferredId);
+    updateActionAvailability();
+  }
+}
+
+function scheduleCookieAccountsRefresh() {
+  if (cookieReloadTimer) clearTimeout(cookieReloadTimer);
+  renderCookieAccounts();
+  cookieReloadTimer = setTimeout(() => {
+    cookieReloadTimer = null;
+    void refreshCookieAccounts();
+  }, 450);
+}
+
+async function loginAndSaveCookie() {
+  const url = normalizedUrl();
+  if (!url) {
+    showError("请先粘贴要下载的网站链接，再登录并保存 Cookie。");
+    return;
+  }
+  if (Number(context.apiVersion) < 10 || previewMode) {
+    renderCookieAccounts(
+      previewMode ? "预览模式不会打开登录窗口。" : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+    );
+    return;
+  }
+  const site = cookieSite(url);
+  cookieLoading = true;
+  renderCookieAccounts("请在 CodeShell 打开的隔离窗口中完成登录，然后保存。 ");
+  let finalMessage = "";
+  try {
+    const result = await panel.call("credentials.cookies.loginAndSave", {
+      providerId: site.id,
+      providerLabel: site.label,
+      url,
+    });
+    if (!result?.ok) {
+      finalMessage = result?.cancelled ? "已取消登录。" : result?.error || "没有保存 Cookie，请重试。";
+      return;
+    }
+    await refreshCookieAccounts({ selectId: result.credential?.id });
+    finalMessage = `已保存并选择 ${result.credential?.label || "登录账号"}。`;
+  } catch (error) {
+    finalMessage = `登录失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    cookieLoading = false;
+    renderCookieAccounts(finalMessage);
+  }
+}
+
+async function cookieFileArguments(url) {
+  if (cookieAccountsUrl !== url) await refreshCookieAccounts();
+  const credentialId = elements.cookieSelect.value;
+  if (!credentialId) return [];
+  if (!runtime.ytDlp?.handle) throw new Error("yt-dlp 还没有准备好。");
+  if (previewMode) return ["preview-cookie"];
+  const host = new URL(url).hostname.toLowerCase();
+  if (
+    cookieAuthorization?.credentialId === credentialId &&
+    cookieAuthorization.executableHandle === runtime.ytDlp.handle &&
+    cookieAuthorization.host === host
+  ) {
+    return [cookieAuthorization.fileArgumentHandle];
+  }
+  const result = await panel.call("credentials.cookies.authorizeProcess", {
+    credentialId,
+    url,
+    executableHandle: runtime.ytDlp.handle,
+  });
+  if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
+    throw new Error(result?.invalid ? "这个 Cookie 已失效，请重新登录并保存。" : "已取消使用 Cookie。");
+  }
+  cookieAuthorization = {
+    credentialId,
+    executableHandle: runtime.ytDlp.handle,
+    host,
+    fileArgumentHandle: result.fileArgumentHandle,
+  };
+  const account = cookieAccounts.find((item) => item.id === credentialId);
+  elements.cookieHelp.textContent = `本次面板将使用 ${account?.label || "所选账号"}；关闭面板后授权自动失效。`;
+  return [result.fileArgumentHandle];
 }
 
 function networkArguments() {
@@ -522,9 +742,74 @@ function normalizedSubtitleLanguages(value = elements.subtitleLanguages.value) {
   return compact;
 }
 
+function selectedSubtitleMode() {
+  return SUBTITLE_MODES.has(elements.subtitleMode.value) ? elements.subtitleMode.value : "both";
+}
+
+function selectedSubtitleLanguages() {
+  const preset = elements.subtitleLanguagePreset.value;
+  if (preset === "custom") return normalizedSubtitleLanguages();
+  return SUBTITLE_LANGUAGE_PRESETS[preset] || SUBTITLE_LANGUAGE_PRESETS["zh-en"];
+}
+
+function renderQualityOptions(video = inspectedVideo) {
+  const previous = selectedFormat();
+  const standardHeights = [2160, 1440, 1080, 720, 480, 360];
+  const available = new Set(
+    Array.isArray(video?.availableHeights) && video.availableHeights.length
+      ? video.availableHeights
+      : standardHeights,
+  );
+  const choices = [
+    { value: "best", label: "自动 · 最高可用画质" },
+    ...standardHeights
+      .filter((height) => !video || available.has(height) || height <= Number(video.maxHeight || 0))
+      .map((height) => ({
+        value: String(height),
+        label:
+          height === 2160
+            ? "2160p · 4K"
+            : height === 1440
+              ? "1440p · 2K"
+              : height === 1080
+                ? "1080p · Full HD"
+                : height === 720
+                  ? "720p · HD"
+                  : height === 480
+                    ? "480p · 标清"
+                    : "360p · 节省空间",
+      })),
+    { value: "audio", label: "仅音频 · MP3" },
+  ];
+  elements.qualitySelect.replaceChildren();
+  for (const choice of choices) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    if (choice.value === "audio" && !runtime.ffmpeg?.handle) option.disabled = true;
+    elements.qualitySelect.append(option);
+  }
+  elements.qualitySelect.value = choices.some((choice) => choice.value === previous)
+    ? previous
+    : "best";
+  elements.qualityHelp.textContent = video
+    ? video.isPlaylist
+      ? "播放列表会按每条视频的实际可用画质下载。"
+      : `已按视频实际清晰度更新；最高 ${video.maxHeight ? `${video.maxHeight}p` : "未知"}。`
+    : "获取视频信息后，会根据实际可用清晰度更新选项。";
+}
+
 function updateConditionalOptions() {
   elements.playlistOptions.hidden = !elements.playlist.checked;
   elements.subtitleOptions.hidden = !elements.subtitles.checked;
+  elements.subtitleCustomRow.hidden = elements.subtitleLanguagePreset.value !== "custom";
+  const canEmbed = Boolean(runtime.ffmpeg?.handle) && selectedFormat() !== "audio";
+  elements.subtitleEmbed.disabled = !canEmbed || Boolean(currentJob?.running);
+  elements.subtitleHelp.textContent = !runtime.ffmpeg?.handle
+    ? "当前没有 ffmpeg，将保留网站提供的独立字幕文件。"
+    : elements.subtitleEmbed.checked
+      ? "字幕会转换为 SRT 并嵌入视频；也会保留下载流程所需的字幕文件。"
+      : "字幕会转换为 SRT 并作为独立文件保留，不嵌入视频。";
 }
 
 function formatDuration(value) {
@@ -555,6 +840,9 @@ function normalizeInspectedVideo(raw, url) {
     .filter((height) => Number.isFinite(height) && height > 0);
   const videoFormats = formats.filter((format) => format?.vcodec && format.vcodec !== "none");
   const audioFormats = formats.filter((format) => format?.acodec && format.acodec !== "none");
+  const availableHeights = [...new Set(heights.map((height) => Math.round(height)))].sort(
+    (left, right) => right - left,
+  );
   return {
     id: String(raw.id || "").slice(0, 200),
     url,
@@ -565,6 +853,7 @@ function normalizeInspectedVideo(raw, url) {
     uploadDate: String(raw.upload_date || "").slice(0, 20),
     viewCount: Number(raw.view_count) || 0,
     maxHeight: heights.length ? Math.max(...heights) : 0,
+    availableHeights,
     formatCount: formats.length,
     videoFormatCount: videoFormats.length,
     audioFormatCount: audioFormats.length,
@@ -679,6 +968,7 @@ function renderDownloadList() {
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
   inspectedVideo = null;
   elements.videoInfo.hidden = true;
+  renderQualityOptions(null);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "idle";
   elements.inspectStatus.textContent = message;
@@ -707,6 +997,7 @@ function renderInspectedVideo(video) {
       : "未知";
   elements.videoDate.textContent = formatUploadDate(video.uploadDate);
   elements.videoInfo.hidden = false;
+  renderQualityOptions(video);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "ready";
   elements.inspectStatus.textContent = "信息已获取；链接变化后需要重新获取";
@@ -720,7 +1011,7 @@ function currentConfiguration() {
   try {
     playlistItems = normalizedPlaylistItems();
     playlistEnd = normalizedPlaylistEnd();
-    subtitleLanguages = normalizedSubtitleLanguages();
+    subtitleLanguages = selectedSubtitleLanguages();
   } catch {
     // Return the editable values to the Session; startDownload performs strict validation.
     playlistItems = elements.playlistItems.value.trim();
@@ -733,7 +1024,14 @@ function currentConfiguration() {
     playlistItems,
     playlistEnd,
     subtitles: elements.subtitles.checked,
+    subtitleMode: selectedSubtitleMode(),
     subtitleLanguages,
+    subtitleLanguagePreset: elements.subtitleLanguagePreset.value,
+    embedSubtitles: elements.subtitleEmbed.checked && Boolean(runtime.ffmpeg?.handle),
+    cookieAccount: elements.cookieSelect.value
+      ? cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label ||
+        "已选择账号"
+      : null,
   };
 }
 
@@ -1005,11 +1303,17 @@ function setControlsBusy(busy, operation = "download") {
   elements.playlist.disabled = busy;
   elements.playlistItems.disabled = busy;
   elements.playlistEnd.disabled = busy;
-  document.querySelectorAll('input[name="format"]').forEach((input) => {
-    input.disabled = busy || (input.value === "audio" && !runtime.ffmpeg?.handle);
-  });
+  elements.qualitySelect.disabled = busy;
+  const cookieUnavailable =
+    busy || cookieLoading || !normalizedUrl() || Number(context.apiVersion) < 10;
+  elements.cookieSelect.disabled = cookieUnavailable;
+  elements.cookieRefresh.disabled = cookieUnavailable;
+  elements.cookieLogin.disabled = cookieUnavailable;
   elements.subtitles.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleMode.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleLanguagePreset.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguages.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleEmbed.disabled = busy || selectedFormat() === "audio" || !runtime.ffmpeg?.handle;
   elements.inspectButton.textContent =
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
   elements.downloadLabel.textContent = busy && operation === "download" ? "正在下载…" : "开始下载";
@@ -1118,7 +1422,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
   const cleaned = String(stderr || "").replace(/\u001b\[[0-9;]*m/g, "");
   const lower = cleaned.toLowerCase();
   if (lower.includes("http error 403") || lower.includes("403 forbidden")) {
-    return "站点拒绝了请求（403）。可先更新本机 yt-dlp 或更换网络；需要登录的视频还需 Cookie，而当前面板暂不支持 Cookie。";
+    return "站点拒绝了请求（403）。可先更新 yt-dlp；如果视频需要登录，请在下载页选择匹配的 Cookie 账号后重试。";
   }
   if (
     lower.includes("sign in") ||
@@ -1126,13 +1430,13 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     lower.includes("confirm you're not a bot") ||
     lower.includes("confirm you’re not a bot")
   ) {
-    return "这个视频需要登录验证。当前面板暂不支持向 yt-dlp 提供 Cookie，因此无法下载此类视频。";
+    return "这个视频需要登录验证。请在下载页选择匹配的 Cookie 账号，或点击“登录并保存”。";
   }
   if (lower.includes("private video") || lower.includes("members-only")) {
-    return "这是私密或会员视频，需要有访问权限的登录 Cookie。当前面板暂不支持此能力。";
+    return "这是私密或会员视频，需要选择一个确实有访问权限的 Cookie 账号。";
   }
   if (lower.includes("age-restricted") || lower.includes("age restricted")) {
-    return "这个视频需要年龄验证，匿名下载不可用；当前面板暂不支持登录 Cookie。";
+    return "这个视频需要年龄验证；请选择已完成验证的 Cookie 账号后重试。";
   }
   if (lower.includes("not available in your country") || lower.includes("geo-restricted")) {
     return "这个视频在当前地区不可用，请遵守站点规则并换用可访问的来源。";
@@ -1307,9 +1611,11 @@ async function inspectVideo() {
   }
 
   try {
+    const fileArgumentHandles = await cookieFileArguments(url);
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
+      fileArgumentHandles,
       args: inspectionArguments(url),
     });
     if (!inspectionJob?.running) return;
@@ -1346,7 +1652,7 @@ function buildArguments(url) {
   ];
   if (format === "audio") {
     args.push("--extract-audio", "--audio-format", "mp3", "--audio-quality", "0");
-  } else if (format === "1080" || format === "720") {
+  } else if (/^\d{3,4}$/.test(format)) {
     args.push("--format");
     const height = format;
     if (runtime.ffmpeg?.handle) {
@@ -1376,16 +1682,13 @@ function buildArguments(url) {
     args.push("--no-playlist");
   }
   if (elements.subtitles.checked && format !== "audio") {
-    args.push(
-      "--write-subs",
-      "--write-auto-subs",
-      "--sub-format",
-      "vtt",
-      "--sub-langs",
-      normalizedSubtitleLanguages(),
-    );
+    const subtitleMode = selectedSubtitleMode();
+    if (subtitleMode === "manual" || subtitleMode === "both") args.push("--write-subs");
+    if (subtitleMode === "auto" || subtitleMode === "both") args.push("--write-auto-subs");
+    args.push("--sub-format", "vtt", "--sub-langs", selectedSubtitleLanguages());
     if (runtime.ffmpeg?.handle) {
-      args.push("--convert-subs", "srt", "--embed-subs");
+      args.push("--convert-subs", "srt");
+      if (elements.subtitleEmbed.checked) args.push("--embed-subs");
     }
     args.push("--ignore-errors");
   }
@@ -1423,7 +1726,7 @@ async function startDownload() {
       normalizedPlaylistEnd();
     }
     if (elements.subtitles.checked && selectedFormat() !== "audio") {
-      normalizedSubtitleLanguages();
+      selectedSubtitleLanguages();
     }
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
@@ -1463,9 +1766,11 @@ async function startDownload() {
   }
 
   try {
+    const fileArgumentHandles = await cookieFileArguments(url);
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
+      fileArgumentHandles,
       args: buildArguments(url),
     });
     if (!currentJob?.running) return;
@@ -1602,10 +1907,11 @@ function applyConfiguration(input) {
   if (format === "audio" && !runtime.ffmpeg?.handle) {
     throw new Error("当前没有 ffmpeg，无法应用仅音频配置");
   }
-  const formatInput = document.querySelector(`input[name="format"][value="${format}"]`);
-  if (!formatInput) throw new Error("目标格式不可用");
   const inspectionModeChanged = elements.playlist.checked !== input.playlist;
-  formatInput.checked = true;
+  if (![...elements.qualitySelect.options].some((option) => option.value === format)) {
+    renderQualityOptions(null);
+  }
+  elements.qualitySelect.value = format;
   elements.playlist.checked = input.playlist;
   if (typeof input.playlistItems === "string") {
     elements.playlistItems.value = normalizedPlaylistItems(input.playlistItems);
@@ -1614,8 +1920,24 @@ function applyConfiguration(input) {
     elements.playlistEnd.value = normalizedPlaylistEnd(input.playlistEnd) || "";
   }
   elements.subtitles.checked = format === "audio" ? false : input.subtitles;
+  if (typeof input.subtitleMode === "string" && SUBTITLE_MODES.has(input.subtitleMode)) {
+    elements.subtitleMode.value = input.subtitleMode;
+  }
+  if (
+    typeof input.subtitleLanguagePreset === "string" &&
+    (input.subtitleLanguagePreset === "custom" ||
+      Object.hasOwn(SUBTITLE_LANGUAGE_PRESETS, input.subtitleLanguagePreset))
+  ) {
+    elements.subtitleLanguagePreset.value = input.subtitleLanguagePreset;
+  }
   if (typeof input.subtitleLanguages === "string") {
     elements.subtitleLanguages.value = normalizedSubtitleLanguages(input.subtitleLanguages);
+    if (typeof input.subtitleLanguagePreset !== "string") {
+      elements.subtitleLanguagePreset.value = "custom";
+    }
+  }
+  if (typeof input.embedSubtitles === "boolean") {
+    elements.subtitleEmbed.checked = input.embedSubtitles;
   }
   elements.subtitles.disabled = format === "audio" || Boolean(currentJob?.running);
   updateConditionalOptions();
@@ -1698,9 +2020,25 @@ function videoContextForAgent() {
       },
       ffmpeg: Boolean(runtime.ffmpeg?.handle),
       audioAvailable: Boolean(runtime.ffmpeg?.handle),
-      formats: ["best", "1080", "720", ...(runtime.ffmpeg?.handle ? ["audio"] : [])],
-      cookies: false,
-      cookieNote: "当前 Panel Host 没有安全的 Cookie 文件句柄能力，登录受限视频暂不支持。",
+      formats: [
+        "best",
+        "2160",
+        "1440",
+        "1080",
+        "720",
+        "480",
+        "360",
+        ...(runtime.ffmpeg?.handle ? ["audio"] : []),
+      ],
+      cookies: Number(context.apiVersion) >= 10,
+      selectedCookieAccount: elements.cookieSelect.value
+        ? cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label ||
+          "已选择账号"
+        : null,
+      cookieNote:
+        Number(context.apiVersion) >= 10
+          ? "Cookie 由 Host 以不透明临时文件授权给 yt-dlp，内容和路径不会暴露给面板。"
+          : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
     },
   };
 }
@@ -2490,7 +2828,7 @@ async function requestAiErrorAnalysis() {
     "</untrusted_diagnostics>",
     "说明最可能的原因，并给出按优先级排列、用户可以直接照做的解决步骤。",
     "你没有工具。不要修改面板配置，不要开始或重试下载，也不要重新访问该网址。",
-    "如果错误与登录或 Cookie 有关，请明确说明当前 Panel Host 暂不支持把 Cookie 安全地交给 yt-dlp。",
+    "如果错误与登录或 Cookie 有关，请建议用户回到下载页选择匹配账号或重新登录保存；不要要求用户粘贴 Cookie 内容。",
   ].join("\n");
   lastFailure.analysisError = "";
   elements.errorAnalysisResult.hidden = true;
@@ -2795,10 +3133,12 @@ async function refreshRuntimeDependencies() {
     ]);
     runtime.ytDlp = ytDlp.available ? ytDlp : null;
     runtime.ffmpeg = ffmpeg.available ? ffmpeg : null;
+    invalidateCookieAuthorization();
+    renderQualityOptions(inspectedVideo);
     dependenciesChecked = true;
     setupRequestError = "";
     if (!runtime.ffmpeg && selectedFormat() === "audio") {
-      document.querySelector('input[name="format"][value="best"]').checked = true;
+      elements.qualitySelect.value = "best";
     }
     setDependency(
       elements.ytdlpDot,
@@ -2888,7 +3228,9 @@ async function initializeRuntime() {
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "Ready");
     dependenciesChecked = true;
     setRuntimeBadge("ready", "Preview");
-    updateSessionContext({ apiVersion: 9 });
+    updateSessionContext({ apiVersion: 10 });
+    renderQualityOptions(null);
+    renderCookieAccounts();
     await loadTaskModels();
     await refreshVersionInfo();
     updateActionAvailability();
@@ -2909,6 +3251,7 @@ async function initializeRuntime() {
     const directory = await panel.call("filesystem.getKnownDirectory", { name: "downloads" });
     setDestination(directory);
     await refreshRuntimeDependencies();
+    await refreshCookieAccounts();
   } catch (error) {
     dependenciesChecked = true;
     setRuntimeBadge("error", "Unavailable");
@@ -2922,7 +3265,9 @@ async function initializeRuntime() {
 elements.urlInput.addEventListener("input", () => {
   showError("");
   clearFailure();
+  invalidateCookieAuthorization();
   clearInspectedVideo("链接已变化，请重新获取视频信息");
+  scheduleCookieAccountsRefresh();
   updateActionAvailability();
 });
 elements.tabs.forEach((button, index) => {
@@ -2943,11 +3288,27 @@ elements.clearUrl.addEventListener("click", () => {
   elements.urlInput.value = "";
   showError("");
   clearFailure();
+  cookieAccounts = [];
+  cookieAccountsUrl = "";
+  invalidateCookieAuthorization();
+  renderCookieAccounts();
   clearInspectedVideo();
   elements.urlInput.focus();
   updateActionAvailability();
 });
 elements.inspectButton.addEventListener("click", inspectVideo);
+elements.cookieRefresh.addEventListener("click", () => void refreshCookieAccounts());
+elements.cookieLogin.addEventListener("click", () => void loginAndSaveCookie());
+elements.cookieSelect.addEventListener("change", () => {
+  invalidateCookieAuthorization();
+  clearFailure();
+  clearInspectedVideo("Cookie 账号已变化，请重新获取视频信息");
+  renderCookieAccounts(
+    elements.cookieSelect.value
+      ? `已选择 ${cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；首次使用时 CodeShell 会确认授权。`
+      : "不会向 yt-dlp 提供 Cookie。",
+  );
+});
 elements.playlist.addEventListener("change", () => {
   updateConditionalOptions();
   clearFailure();
@@ -2965,7 +3326,16 @@ elements.subtitles.addEventListener("change", () => {
   updateConditionalOptions();
   showError("");
 });
+elements.subtitleMode.addEventListener("change", () => showError(""));
+elements.subtitleLanguagePreset.addEventListener("change", () => {
+  updateConditionalOptions();
+  showError("");
+});
 elements.subtitleLanguages.addEventListener("input", () => showError(""));
+elements.subtitleEmbed.addEventListener("change", () => {
+  updateConditionalOptions();
+  showError("");
+});
 elements.chooseDirectory.addEventListener("click", chooseDirectory);
 elements.downloadButton.addEventListener("click", startDownload);
 elements.refreshVersions.addEventListener("click", () => {
@@ -2998,15 +3368,15 @@ elements.clearHistory.addEventListener("click", () => {
   saveHistory();
   renderHistory();
 });
-document.querySelectorAll('input[name="format"]').forEach((input) => {
-  input.addEventListener("change", () => {
-    const audioOnly = selectedFormat() === "audio";
-    if (audioOnly) elements.subtitles.checked = false;
-    elements.subtitles.disabled = audioOnly || Boolean(currentJob?.running);
-    elements.subtitleLanguages.disabled = audioOnly || Boolean(currentJob?.running);
-    updateConditionalOptions();
-    updateActionAvailability();
-  });
+elements.qualitySelect.addEventListener("change", () => {
+  const audioOnly = selectedFormat() === "audio";
+  if (audioOnly) elements.subtitles.checked = false;
+  elements.subtitles.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleMode.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleLanguagePreset.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleLanguages.disabled = audioOnly || Boolean(currentJob?.running);
+  updateConditionalOptions();
+  updateActionAvailability();
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
