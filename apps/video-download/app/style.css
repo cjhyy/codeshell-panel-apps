@@ -48,7 +48,8 @@ body {
 
 button,
 textarea,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -58,6 +59,7 @@ button {
 
 button:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 input:focus-visible + i {
   outline: 2px solid color-mix(in srgb, var(--accent) 72%, white);
   outline-offset: 2px;
@@ -511,6 +513,66 @@ input:focus-visible + i {
 .setup-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.setup-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.setup-ai-button {
+  min-width: 0;
+}
+
+.task-model-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-muted) 82%, transparent);
+}
+
+.task-model-picker[hidden] {
+  display: none;
+}
+
+.task-model-picker label {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.task-model-picker label > span {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.task-model-picker select {
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  font-size: 9px;
+}
+
+.task-model-picker small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-model-picker.compact {
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
 }
 
 .download-card {

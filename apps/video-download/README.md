@@ -1,17 +1,20 @@
 # Mimi Download
 
-Mimi Download is a local-first CodeShell Panel App for `yt-dlp`. If `yt-dlp`
-or `ffmpeg` is missing, a one-click setup action starts an isolated, bounded
-Task with the bundled `video-download-setup` Skill. The Task does not inherit
-the current conversation, project instructions, memory, or unrelated Skills. It
-first resolves the latest stable yt-dlp release from the official GitHub API
-and compares the installed version with that tag. With supported Python it
-reuses the existing installation owner; without Python it downloads the exact
-official standalone binary for the current platform, verifies
-`SHA2-256SUMS`, and installs it to a user-writable PATH directory. It then
-updates or installs ffmpeg, verifies both dependencies in that order, and asks
-the panel to re-check its runtime. It never inspects or downloads media during
-setup, and it never hardcodes a release version.
+Mimi Download is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+**Install / Update** action is deterministic and does not invoke a model. It
+resolves the latest stable yt-dlp release from the official GitHub API, tries a
+safe update of an existing installation, and otherwise downloads the exact
+official standalone binary for the current platform. The binary is verified
+against `SHA2-256SUMS` before it is installed into CodeShell's Host-managed
+per-user executable directory. The same flow then prepares ffmpeg with an
+available non-interactive package manager and verifies both dependencies.
+
+Unusual environments have a separate **AI Initialize / Repair** action. Before
+starting it, the user explicitly chooses a configured Provider and model. The
+resulting bounded Task uses the bundled `video-download-setup` Skill but does
+not inherit the current conversation, project instructions, memory, or
+unrelated Skills. Model credentials remain in CodeShell and are never exposed
+to the panel. Neither setup path inspects a video or starts a download.
 
 The Download tab always shows the installed yt-dlp version beside the latest
 stable tag from the official GitHub Releases API. Both checks are deterministic
@@ -44,7 +47,7 @@ download, or writes into the current conversation.
 
 ## Requirements
 
-- CodeShell Desktop with Panel API v8 and the atomic `process` and `agent.task` Host permissions.
+- CodeShell Desktop with Panel API v9 and the atomic `process` and `agent.task` Host permissions.
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available on the Desktop app's PATH, or initialize it from the panel.
 - `ffmpeg` is recommended for merging video/audio streams and MP3 conversion.
 - `curl` is optional and used only to read the official latest yt-dlp release tag.
@@ -54,12 +57,14 @@ resolves an executable to an opaque, app-scoped handle, runs it with
 `shell: false`, and streams bounded stdout/stderr events back to the Panel. The
 first execution of an executable requires Host confirmation.
 
-One-click setup and error-only AI analysis use `agent.task`. Task state and
-results return to the panel through `agent.task.changed`, so there is no Session
-picker or manual binding step. Setup also renders a bounded live activity list
-for model, plan, tool, and error events directly in the initialization card;
-the private Task intentionally does not create a normal chat Session. The Panel
-exposes six domain tools:
+Only optional AI repair and error-only AI analysis use `agent.task`. Both show
+Provider/model selectors populated from secret-free Host metadata. Task state
+and results return to the panel through `agent.task.changed`, so there is no
+Session picker or manual binding step. The panel renders a bounded live
+activity list for model, plan, tool, and error events; the private Task is
+ephemeral and intentionally does not appear as a normal chat Session. The
+deterministic setup uses `process.info` and CodeShell's `user-bin` directory,
+both introduced in Panel API v9. The Panel exposes six domain tools:
 
 - `inspect_video` sets an optional URL and retrieves video or playlist metadata with local `yt-dlp`.
 - `get_video_download_context` reads metadata, configuration, destination, and task status.

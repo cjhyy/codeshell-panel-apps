@@ -1923,7 +1923,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.9.1", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.10.0", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",
@@ -2004,7 +2004,8 @@ async function validatePackage(packagePath) {
       "sanitizeMediaUrl",
       "renderDownloadList",
       "requestAiErrorAnalysis",
-      "requestSetup",
+      "requestDirectSetup",
+      "requestAiSetup",
       "refreshRuntimeDependencies",
       'panel.call("agent.task.start"',
       'panel.call("agent.task.list"',
@@ -2013,7 +2014,37 @@ async function validatePackage(packagePath) {
       assert(appScript.includes(expected), `${packagePath}: missing ${expected}`);
     }
     assert.match(html, /id="download-list"/, `${packagePath}: download list is required`);
-    assert.match(html, /id="setup-button"/, `${packagePath}: one-click setup is required`);
+    assert.match(
+      html,
+      /id="setup-update-button"/,
+      `${packagePath}: deterministic setup action is required`,
+    );
+    assert.match(
+      html,
+      /id="setup-ai-button"/,
+      `${packagePath}: optional AI repair action is required`,
+    );
+    assert.match(
+      html,
+      /data-task-provider/,
+      `${packagePath}: AI Task provider selector is required`,
+    );
+    assert.match(html, /data-task-model/, `${packagePath}: AI Task model selector is required`);
+    assert.match(
+      appScript,
+      /panel\.call\("agent\.task\.models"\)/,
+      `${packagePath}: AI Task models must come from the Host`,
+    );
+    assert.match(
+      appScript,
+      /panel\.call\("process\.info"\)/,
+      `${packagePath}: deterministic setup needs Host platform metadata`,
+    );
+    assert.match(
+      appScript,
+      /name: "user-bin"/,
+      `${packagePath}: deterministic setup must use the Host-managed bin directory`,
+    );
     assert.match(
       html,
       /id="analyze-error-button"/,

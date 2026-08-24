@@ -111,14 +111,36 @@
             </div>
           </div>
           <p id="setup-help" class="setup-help">
-            初始化在独立 Task 中运行；不会读取当前对话、链接或下载视频。
+            可直接安装/更新；遇到特殊环境时再使用隔离 AI Task。
           </p>
           <ol id="setup-progress" class="setup-progress" aria-live="polite" hidden></ol>
           <pre id="setup-result" class="task-result" hidden></pre>
-          <button id="setup-button" class="setup-button" type="button" disabled>
-            <span aria-hidden="true">↻</span>
-            <span id="setup-label">一键初始化</span>
-          </button>
+          <div class="task-model-picker" data-task-model-picker hidden>
+            <label>
+              <span>AI Provider</span>
+              <select data-task-provider aria-label="AI Provider"></select>
+            </label>
+            <label>
+              <span>模型</span>
+              <select data-task-model aria-label="AI 模型"></select>
+            </label>
+            <small data-task-model-help>模型配置由 CodeShell Host 提供，不会向面板暴露密钥。</small>
+          </div>
+          <div class="setup-actions">
+            <button id="setup-update-button" class="setup-button" type="button" disabled>
+              <span aria-hidden="true">↻</span>
+              <span id="setup-update-label">一键安装 / 更新</span>
+            </button>
+            <button
+              id="setup-ai-button"
+              class="secondary-button setup-ai-button"
+              type="button"
+              disabled
+            >
+              <span aria-hidden="true">✦</span>
+              <span id="setup-ai-label">AI 初始化 / 修复</span>
+            </button>
+          </div>
         </section>
 
         <section class="download-card" aria-labelledby="download-heading">
@@ -366,6 +388,17 @@
             </p>
           </div>
           <pre id="error-analysis-result" class="task-result" hidden></pre>
+          <div class="task-model-picker compact" data-task-model-picker hidden>
+            <label>
+              <span>AI Provider</span>
+              <select data-task-provider aria-label="错误分析 AI Provider"></select>
+            </label>
+            <label>
+              <span>模型</span>
+              <select data-task-model aria-label="错误分析 AI 模型"></select>
+            </label>
+            <small data-task-model-help>选择只用于这类面板 Task。</small>
+          </div>
           <button id="analyze-error-button" class="error-analysis-button" type="button" disabled>
             <span aria-hidden="true">✦</span>
             <span id="analyze-error-label">让 AI 分析错误</span>
