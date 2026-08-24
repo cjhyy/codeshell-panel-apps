@@ -1923,7 +1923,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.11.0", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.12.0", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",
@@ -1997,6 +1997,10 @@ async function validatePackage(packagePath) {
       `${packagePath}: process permission is required`,
     );
     assert(
+      manifest.permissions.includes("credentials.cookies"),
+      `${packagePath}: cookie account permission is required`,
+    );
+    assert(
       manifest.permissions.includes("agent.task"),
       `${packagePath}: isolated Task permission is required`,
     );
@@ -2020,6 +2024,10 @@ async function validatePackage(packagePath) {
       applyTool.inputSchema.properties.format.enum.includes("720"),
       `${packagePath}: 720p preset is required`,
     );
+    assert(
+      applyTool.inputSchema.properties.format.enum.includes("2160"),
+      `${packagePath}: 4K preset is required`,
+    );
     for (const expected of [
       "--continue",
       "--fragment-retries",
@@ -2036,10 +2044,25 @@ async function validatePackage(packagePath) {
       'panel.call("agent.task.start"',
       'panel.call("agent.task.list"',
       'panel.on("agent.task.changed"',
+      'panel.call("credentials.cookies.authorizeProcess"',
+      "fileArgumentHandles",
     ]) {
       assert(appScript.includes(expected), `${packagePath}: missing ${expected}`);
     }
     assert.match(html, /id="download-list"/, `${packagePath}: download list is required`);
+    assert.match(html, /id="cookie-select"/, `${packagePath}: cookie picker is required`);
+    assert.match(html, /id="quality-select"/, `${packagePath}: quality picker is required`);
+    assert.match(html, /id="subtitle-mode"/, `${packagePath}: subtitle source picker is required`);
+    assert.match(
+      html,
+      /id="subtitle-language-preset"/,
+      `${packagePath}: subtitle language picker is required`,
+    );
+    assert.match(
+      html,
+      /id="subtitle-embed"/,
+      `${packagePath}: subtitle embedding must be optional`,
+    );
     assert.match(
       html,
       /id="setup-update-button"/,

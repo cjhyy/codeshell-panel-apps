@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.11 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.12 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -32,11 +32,15 @@ unavailable and never blocks downloading. The setup action additionally uses
 wget or Windows PowerShell as HTTPS fallbacks.
 
 After initialization, paste a supported video URL, inspect its title, duration,
-source, and available quality, then choose a preset and download without
-creating an Agent turn. Downloads use
+source, and available quality, then choose an actual resolution and download
+without creating an Agent turn. Saved CodeShell Cookie accounts matching the
+target website appear in a selector; users can also open the Host-owned login
+window and save a new account. Downloads use
 resume support, fragment retries, exponential backoff, bounded filenames, and
-user-facing error classification. Playlist ranges and subtitle languages remain
-optional, so the default flow is still paste, inspect, and download. Inspection
+user-facing error classification. Playlist ranges remain optional. Subtitle
+controls provide human/automatic source choices, language presets, and an
+independent embed switch, so users can keep a separate SRT instead of embedding
+it. The default flow is still paste, inspect, and download. Inspection
 also renders the actual download list: a single link shows one item, while a
 playlist marks every visible entry as `will download` or `skipped` as its range
 changes.
@@ -55,7 +59,7 @@ download, or writes into the current conversation.
 
 ## Requirements
 
-- CodeShell Desktop with Panel API v9 and the atomic `process` and `agent.task` Host permissions.
+- CodeShell Desktop with Panel API v10 and the atomic `process`, `credentials.cookies`, and `agent.task` Host permissions.
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available on the Desktop app's PATH, or initialize it from the panel.
 - `ffmpeg` is recommended for merging video/audio streams and MP3 conversion.
 - `curl` is optional and used only to read the official latest yt-dlp release tag.
@@ -64,6 +68,12 @@ The deterministic inspection and download path uses only `process`. CodeShell
 resolves an executable to an opaque, app-scoped handle, runs it with
 `shell: false`, and streams bounded stdout/stderr events back to the Panel. The
 first execution of an executable requires Host confirmation.
+
+Panel API v10 authorizes a selected Cookie account as an opaque file-argument
+handle bound to the resolved `yt-dlp` executable. CodeShell creates the
+owner-only temporary Netscape file only after confirmation and removes it when
+the Panel closes. Cookie values and the temporary path never cross the Panel
+bridge.
 
 Only optional AI repair and error-only AI analysis use `agent.task`. Both show
 Provider/model selectors populated from secret-free Host metadata. Task state
@@ -85,13 +95,13 @@ This still lets an ordinary Session operate the Panel directly when the user
 asks in the conversation. Starting a download remains a separate mutating tool.
 Inspection and downloading themselves never need a Session or an LLM.
 
-## Current limitation
+## Cookie safety
 
-Publicly accessible media follows the same core yt-dlp path as the standalone
-Mimi Download app. Login-restricted media is not yet supported: Panel Host v8
-does not expose Cookie contents or a Cookie-file path to panel code, and the app
-does not silently read a browser profile. Adding this later requires a generic,
-Host-owned file-handle capability rather than a video-specific permission.
+Mimi Download never reads a browser profile or asks the user to paste Cookie
+contents. A saved account is matched to the target website by the Host, and the
+user must explicitly select and authorize it before `yt-dlp` receives the
+temporary file. Choosing **Do not use Cookie** keeps the public-media path
+unchanged.
 
 ## Install from GitHub
 
