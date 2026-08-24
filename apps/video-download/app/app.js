@@ -1,6 +1,7 @@
 import {
   compareYtDlpVersions,
   parseGitHubLatestRelease,
+  parseGitHubRelease,
   parseYtDlpVersionOutput,
   shouldOfferSetup,
 } from "./version.js";
@@ -100,6 +101,9 @@ const VERSION_PROBE_TIMEOUT_MS = 75_000;
 const SETUP_PROCESS_TIMEOUT_MS = 45 * 60_000;
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const YT_DLP_RELEASE_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download";
+const FFMPEG_LATEST_RELEASE_API =
+  "https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest";
+const FFMPEG_RELEASE_BASE = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download";
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
@@ -1149,7 +1153,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     return "所选画质不可用，请改选“最佳画质”或较低画质后重试。";
   }
   if (lower.includes("ffmpeg not found") || lower.includes("ffprobe not found")) {
-    return "需要 ffmpeg 才能合并或转换当前格式。安装 ffmpeg 后请重新打开面板。";
+    return "需要 ffmpeg 才能合并或转换当前格式。可使用一键安装；完成后面板会立即复检。";
   }
   if (
     lower.includes("timed out") ||
@@ -1410,7 +1414,7 @@ async function startDownload() {
     return;
   }
   if (selectedFormat() === "audio" && !runtime.ffmpeg?.handle) {
-    showError("仅音频模式需要 ffmpeg。安装后请重新打开面板。");
+    showError("仅音频模式需要 ffmpeg。可使用一键安装；完成后面板会立即复检。");
     return;
   }
   try {
@@ -1845,7 +1849,12 @@ function runDirectSetupProcess(executable, directory, args, label) {
         (error) => finishDirectSetupProcess(job, null, error),
       );
   }).then((result) => {
-    pushSetupActivity(`${label}完成`, "completed", "process", executable.name || label);
+    pushSetupActivity(
+      result?.code === 0 ? `${label}完成` : `${label}未成功，正在尝试备用路线`,
+      result?.code === 0 ? "completed" : "failed",
+      "process",
+      executable.name || label,
+    );
     return result;
   });
 }
@@ -1862,32 +1871,175 @@ async function requireSetupExecutable(name) {
   return executable;
 }
 
-async function readLatestYtDlpRelease(directory) {
-  const curl = await requireSetupExecutable("curl");
-  const response = await runDirectSetupProcess(
-    curl,
+async function optionalSetupExecutable(...names) {
+  for (const name of names) {
+    const executable = await panel.call("process.find", { name });
+    if (executable?.available && executable.handle) return executable;
+  }
+  return null;
+}
+
+function curlTransferArgs(platform) {
+  return [
+    "--fail",
+    "--show-error",
+    "--location",
+    "--http1.1",
+    "--retry",
+    "4",
+    "--retry-all-errors",
+    "--connect-timeout",
+    "20",
+    ...(platform === "win32" ? ["--ssl-revoke-best-effort"] : []),
+  ];
+}
+
+function powershellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function findPowerShell() {
+  return optionalSetupExecutable("pwsh.exe", "pwsh", "powershell.exe", "powershell");
+}
+
+async function fetchTextWithAvailableClient(platform, directory, url, label) {
+  const failures = [];
+  const curl = await optionalSetupExecutable("curl.exe", "curl");
+  if (curl) {
+    const result = await runDirectSetupProcess(
+      curl,
+      directory,
+      [
+        ...curlTransferArgs(platform),
+        "--silent",
+        "--max-time",
+        "60",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "User-Agent: Mimi-Download-Panel",
+        url,
+      ],
+      label,
+    );
+    if (result.code === 0 && result.stdout.trim()) return result.stdout;
+    failures.push(sanitizeDiagnosticText(result.stderr || "curl 请求失败", 240));
+  }
+
+  const wget = await optionalSetupExecutable("wget");
+  if (wget) {
+    const result = await runDirectSetupProcess(
+      wget,
+      directory,
+      [
+        "--quiet",
+        "--output-document=-",
+        "--timeout=30",
+        "--tries=4",
+        "--header=Accept: application/vnd.github+json",
+        "--user-agent=Mimi-Download-Panel",
+        url,
+      ],
+      `${label}（wget 备用通道）`,
+    );
+    if (result.code === 0 && result.stdout.trim()) return result.stdout;
+    failures.push(sanitizeDiagnosticText(result.stderr || "wget 请求失败", 240));
+  }
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (powershell) {
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "$ProgressPreference='SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+        `$response=Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(url)} -Headers @{'Accept'='application/vnd.github+json';'User-Agent'='Mimi-Download-Panel'}`,
+        "[Console]::Out.Write($response.Content)",
+      ].join("; ");
+      const result = await runDirectSetupProcess(
+        powershell,
+        directory,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        `${label}（PowerShell 备用通道）`,
+      );
+      if (result.code === 0 && result.stdout.trim()) return result.stdout;
+      failures.push(sanitizeDiagnosticText(result.stderr || "PowerShell 请求失败", 240));
+    }
+  }
+
+  const detail = failures.filter(Boolean).join("；");
+  throw new Error(`${label}失败${detail ? `：${detail}` : "：没有可用的 HTTPS 下载器"}`);
+}
+
+async function downloadWithAvailableClient(platform, directory, url, filename, label) {
+  const failures = [];
+  const curl = await optionalSetupExecutable("curl.exe", "curl");
+  if (curl) {
+    const result = await runDirectSetupProcess(
+      curl,
+      directory,
+      [...curlTransferArgs(platform), "--max-time", "1800", "--output", filename, url],
+      label,
+    );
+    if (result.code === 0) return;
+    failures.push(sanitizeDiagnosticText(result.stderr || "curl 下载失败", 240));
+  }
+
+  const wget = await optionalSetupExecutable("wget");
+  if (wget) {
+    const result = await runDirectSetupProcess(
+      wget,
+      directory,
+      ["--output-document", filename, "--timeout=30", "--tries=4", url],
+      `${label}（wget 备用通道）`,
+    );
+    if (result.code === 0) return;
+    failures.push(sanitizeDiagnosticText(result.stderr || "wget 下载失败", 240));
+  }
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (powershell) {
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "$ProgressPreference='SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+        `Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(url)} -OutFile ${powershellLiteral(filename)} -Headers @{'User-Agent'='Mimi-Download-Panel'}`,
+      ].join("; ");
+      const result = await runDirectSetupProcess(
+        powershell,
+        directory,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        `${label}（PowerShell 备用通道）`,
+      );
+      if (result.code === 0) return;
+      failures.push(sanitizeDiagnosticText(result.stderr || "PowerShell 下载失败", 240));
+    }
+  }
+
+  const detail = failures.filter(Boolean).join("；");
+  throw new Error(`${label}失败${detail ? `：${detail}` : "：没有可用的 HTTPS 下载器"}`);
+}
+
+async function readGitHubRelease(platform, directory, apiUrl, label) {
+  const text = await fetchTextWithAvailableClient(platform, directory, apiUrl, label);
+  const release = parseGitHubRelease(text);
+  if (!release) throw new Error(`${label}响应无法识别`);
+  return release;
+}
+
+async function readLatestYtDlpRelease(platform, directory) {
+  const release = await readGitHubRelease(
+    platform,
     directory,
-    [
-      "--fail",
-      "--silent",
-      "--show-error",
-      "--location",
-      "--max-time",
-      "20",
-      "--header",
-      "Accept: application/vnd.github+json",
-      "--header",
-      "User-Agent: Mimi-Download-Panel",
-      GITHUB_LATEST_RELEASE_API,
-    ],
+    GITHUB_LATEST_RELEASE_API,
     "查询 yt-dlp 官方最新版",
   );
-  requireSuccessfulProcess(response, "查询 yt-dlp 官方最新版");
-  const latest = parseGitHubLatestRelease(response.stdout);
-  if (!latest) throw new Error("GitHub 最新版响应无法识别");
+  const latest = release.version;
+  if (!latest) throw new Error("GitHub yt-dlp 最新版标签无法识别");
   runtime.latestYtDlpVersion = latest;
   renderVersionInfo();
-  return { latest, curl };
+  return { latest, release };
 }
 
 function ytDlpAssetFor(platform, arch, libc) {
@@ -1931,64 +2083,57 @@ function checksumFromToolOutput(text) {
   );
 }
 
-async function installOfficialYtDlpBinary(platform, arch, libc, latest, curl, directory) {
-  const { asset, installedName } = ytDlpAssetFor(platform, arch, libc);
-  const temporaryName = `${installedName}.download`;
-  const checksumResult = await runDirectSetupProcess(
-    curl,
-    directory,
-    [
-      "--fail",
-      "--silent",
-      "--show-error",
-      "--location",
-      `${YT_DLP_RELEASE_BASE}/${latest}/SHA2-256SUMS`,
-    ],
-    "读取官方 SHA-256 校验表",
-  );
-  requireSuccessfulProcess(checksumResult, "读取官方 SHA-256 校验表");
-  const expected = checksumFromReleaseList(checksumResult.stdout, asset);
-  if (!expected) throw new Error(`官方校验表中没有 ${asset}`);
-  const downloadResult = await runDirectSetupProcess(
-    curl,
-    directory,
-    [
-      "--fail",
-      "--show-error",
-      "--location",
-      "--retry",
-      "3",
-      "--output",
-      temporaryName,
-      `${YT_DLP_RELEASE_BASE}/${latest}/${asset}`,
-    ],
-    `下载官方 ${asset}`,
-  );
-  requireSuccessfulProcess(downloadResult, `下载官方 ${asset}`);
-
+async function verifyDownloadedSha256(platform, directory, filename, expected, label) {
   let actual = "";
   if (platform === "win32") {
     const certutil = await requireSetupExecutable("certutil.exe");
     const result = await runDirectSetupProcess(
       certutil,
       directory,
-      ["-hashfile", temporaryName, "SHA256"],
-      "校验 yt-dlp SHA-256",
+      ["-hashfile", filename, "SHA256"],
+      label,
     );
-    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    requireSuccessfulProcess(result, label);
     actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
   } else {
     let hashTool = await panel.call("process.find", { name: "sha256sum" });
-    let args = [temporaryName];
+    let args = [filename];
     if (!hashTool?.available) {
       hashTool = await requireSetupExecutable("shasum");
-      args = ["-a", "256", temporaryName];
+      args = ["-a", "256", filename];
     }
-    const result = await runDirectSetupProcess(hashTool, directory, args, "校验 yt-dlp SHA-256");
-    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    const result = await runDirectSetupProcess(hashTool, directory, args, label);
+    requireSuccessfulProcess(result, label);
     actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
   }
-  if (!actual || actual !== expected) throw new Error("yt-dlp SHA-256 校验失败，已拒绝安装");
+  if (!actual || actual !== expected) throw new Error(`${label}失败，已拒绝安装`);
+}
+
+async function installOfficialYtDlpBinary(platform, arch, libc, latest, release, directory) {
+  const { asset, installedName } = ytDlpAssetFor(platform, arch, libc);
+  const temporaryName = platform === "win32" ? "yt-dlp.download.exe" : `${installedName}.download`;
+  let expected = release.assets?.[asset]?.sha256 || "";
+  if (expected) {
+    pushSetupActivity("已从 GitHub Release API 读取 yt-dlp SHA-256", "completed", "plan");
+  } else {
+    const checksumText = await fetchTextWithAvailableClient(
+      platform,
+      directory,
+      `${YT_DLP_RELEASE_BASE}/${latest}/SHA2-256SUMS`,
+      "读取官方 SHA-256 校验表",
+    );
+    expected = checksumFromReleaseList(checksumText, asset);
+  }
+  if (!expected) throw new Error(`官方校验表中没有 ${asset}`);
+  await downloadWithAvailableClient(
+    platform,
+    directory,
+    `${YT_DLP_RELEASE_BASE}/${latest}/${asset}`,
+    temporaryName,
+    `下载官方 ${asset}`,
+  );
+
+  await verifyDownloadedSha256(platform, directory, temporaryName, expected, "校验 yt-dlp SHA-256");
 
   if (platform !== "win32") {
     const chmod = await requireSetupExecutable("chmod");
@@ -2034,7 +2179,7 @@ async function installOfficialYtDlpBinary(platform, arch, libc, latest, curl, di
 }
 
 async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
-  const { latest, curl } = await readLatestYtDlpRelease(managedBin);
+  const { latest, release } = await readLatestYtDlpRelease(platform, managedBin);
   if (runtime.ytDlp?.handle) {
     const installed = runtime.ytDlp.version || "";
     if (compareYtDlpVersions(installed, latest) === 0) {
@@ -2062,7 +2207,7 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
       pushSetupActivity("现有安装无法自更新，改用官方二进制", "completed", "plan");
     }
   }
-  await installOfficialYtDlpBinary(platform, arch, libc, latest, curl, managedBin);
+  await installOfficialYtDlpBinary(platform, arch, libc, latest, release, managedBin);
   const installed = await requireSetupExecutable("yt-dlp");
   const verified = await runDirectSetupProcess(
     installed,
@@ -2075,57 +2220,119 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
   runtime.ytDlp = { ...installed, version };
 }
 
-async function ensureFfmpeg(platform, directory) {
-  if (platform === "darwin" || platform === "linux") {
+function ffmpegAssetFor(platform, arch) {
+  if (platform === "win32") {
+    if (arch === "arm64") return "ffmpeg-master-latest-winarm64-gpl.zip";
+    if (arch === "ia32") return "ffmpeg-master-latest-win32-gpl.zip";
+    if (arch === "x64") return "ffmpeg-master-latest-win64-gpl.zip";
+  }
+  if (platform === "linux") {
+    if (arch === "arm64") return "ffmpeg-master-latest-linuxarm64-gpl.tar.xz";
+    if (arch === "x64") return "ffmpeg-master-latest-linux64-gpl.tar.xz";
+  }
+  return "";
+}
+
+async function installGitHubFfmpeg(platform, arch, directory) {
+  const asset = ffmpegAssetFor(platform, arch);
+  if (!asset) return false;
+  const release = await readGitHubRelease(
+    platform,
+    directory,
+    FFMPEG_LATEST_RELEASE_API,
+    "查询 ffmpeg GitHub 最新版",
+  );
+  const expected = release.assets?.[asset]?.sha256 || "";
+  if (!expected) throw new Error(`ffmpeg GitHub Release 缺少 ${asset} 的 SHA-256`);
+  const archive = platform === "win32" ? "ffmpeg.download.zip" : "ffmpeg.download.tar.xz";
+  await downloadWithAvailableClient(
+    platform,
+    directory,
+    `${FFMPEG_RELEASE_BASE}/${release.tag}/${asset}`,
+    archive,
+    `从 GitHub 下载 ${asset}`,
+  );
+  await verifyDownloadedSha256(platform, directory, archive, expected, "校验 ffmpeg SHA-256");
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (!powershell) throw new Error("解压 ffmpeg GitHub 版本需要 Windows PowerShell");
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      "$target='ffmpeg.download'",
+      "if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Recurse -Force}",
+      `Expand-Archive -LiteralPath ${powershellLiteral(archive)} -DestinationPath $target -Force`,
+      "$ffmpeg=Get-ChildItem -LiteralPath $target -Filter 'ffmpeg.exe' -File -Recurse | Select-Object -First 1",
+      "$ffprobe=Get-ChildItem -LiteralPath $target -Filter 'ffprobe.exe' -File -Recurse | Select-Object -First 1",
+      "if($null -eq $ffmpeg -or $null -eq $ffprobe){throw 'ffmpeg archive is missing required binaries'}",
+      "Copy-Item -LiteralPath $ffmpeg.FullName -Destination 'ffmpeg.exe' -Force",
+      "Copy-Item -LiteralPath $ffprobe.FullName -Destination 'ffprobe.exe' -Force",
+      "Remove-Item -LiteralPath $target -Recurse -Force",
+      `Remove-Item -LiteralPath ${powershellLiteral(archive)} -Force`,
+    ].join("; ");
+    const extracted = await runDirectSetupProcess(
+      powershell,
+      directory,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      "安装 GitHub ffmpeg 二进制",
+    );
+    requireSuccessfulProcess(extracted, "安装 GitHub ffmpeg 二进制");
+  } else {
+    const tar = await requireSetupExecutable("tar");
+    const root = asset.replace(/\.tar\.xz$/, "");
+    const extracted = await runDirectSetupProcess(
+      tar,
+      directory,
+      ["-xJf", archive, "--strip-components", "2", `${root}/bin/ffmpeg`, `${root}/bin/ffprobe`],
+      "安装 GitHub ffmpeg 二进制",
+    );
+    requireSuccessfulProcess(extracted, "安装 GitHub ffmpeg 二进制");
+    const chmod = await requireSetupExecutable("chmod");
+    const executable = await runDirectSetupProcess(
+      chmod,
+      directory,
+      ["755", "ffmpeg", "ffprobe"],
+      "设置 ffmpeg 可执行权限",
+    );
+    requireSuccessfulProcess(executable, "设置 ffmpeg 可执行权限");
+    const rm = await requireSetupExecutable("rm");
+    const removed = await runDirectSetupProcess(
+      rm,
+      directory,
+      ["-f", archive],
+      "清理 ffmpeg 安装包",
+    );
+    requireSuccessfulProcess(removed, "清理 ffmpeg 安装包");
+  }
+
+  const installed = await requireSetupExecutable("ffmpeg");
+  const verified = await runDirectSetupProcess(installed, directory, ["-version"], "验证 ffmpeg");
+  requireSuccessfulProcess(verified, "验证 ffmpeg");
+  runtime.ffmpeg = installed;
+  return true;
+}
+
+async function ensureFfmpeg(platform, arch, directory) {
+  if (runtime.ffmpeg?.handle) {
+    pushSetupActivity("ffmpeg 已就绪，保留当前可用版本", "completed", "plan");
+    return;
+  }
+  if (await installGitHubFfmpeg(platform, arch, directory)) return;
+  if (platform === "darwin") {
     const brew = await panel.call("process.find", { name: "brew" });
     if (brew?.available) {
-      const action = runtime.ffmpeg?.handle ? "upgrade" : "install";
       const result = await runDirectSetupProcess(
         brew,
         directory,
-        [action, "ffmpeg"],
-        `${action === "upgrade" ? "更新" : "安装"} ffmpeg（Homebrew）`,
+        ["install", "ffmpeg"],
+        "安装 ffmpeg（Homebrew）",
       );
       if (result.code !== 0)
         throw new Error(sanitizeDiagnosticText(result.stderr || "Homebrew 执行失败", 500));
       return;
     }
   }
-  if (platform === "win32") {
-    const winget = await panel.call("process.find", { name: "winget.exe" });
-    if (winget?.available) {
-      const common = [
-        "--id",
-        "Gyan.FFmpeg",
-        "--exact",
-        "--accept-source-agreements",
-        "--accept-package-agreements",
-        "--silent",
-      ];
-      let result = await runDirectSetupProcess(
-        winget,
-        directory,
-        [runtime.ffmpeg?.handle ? "upgrade" : "install", ...common],
-        `${runtime.ffmpeg?.handle ? "更新" : "安装"} ffmpeg（winget）`,
-      );
-      if (result.code !== 0 && runtime.ffmpeg?.handle) {
-        result = await runDirectSetupProcess(
-          winget,
-          directory,
-          ["install", ...common],
-          "安装 ffmpeg（winget）",
-        );
-      }
-      if (result.code !== 0)
-        throw new Error(sanitizeDiagnosticText(result.stderr || "winget 执行失败", 500));
-      return;
-    }
-  }
-  if (runtime.ffmpeg?.handle) {
-    pushSetupActivity("ffmpeg 已安装；没有可用的自动更新器，保留当前版本", "completed", "plan");
-    return;
-  }
-  throw new Error("没有找到可安全无交互运行的 ffmpeg 安装器，请使用 AI 初始化 / 修复");
+  throw new Error(`当前平台没有可验证的 ffmpeg 自动安装路线：${platform}/${arch}`);
 }
 
 async function requestDirectSetup() {
@@ -2164,7 +2371,7 @@ async function requestDirectSetup() {
     ]);
     await ensureLatestYtDlp(system.platform, system.arch, system.libc, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
-    await ensureFfmpeg(system.platform, managedBin);
+    await ensureFfmpeg(system.platform, system.arch, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
     await refreshRuntimeDependencies();
     setupTaskResult = `本地安装 / 更新完成。yt-dlp ${runtime.ytDlp?.version || "已验证"}；ffmpeg ${runtime.ffmpeg?.handle ? "已就绪" : "需要处理"}。`;
@@ -2209,8 +2416,8 @@ async function requestAiSetup() {
     "先读取 panel-app:video-download 的工具列表，并调用 get_video_download_context 确认面板状态。",
     `面板当前检测到需要处理：${missing || "重新检查 yt-dlp 与 ffmpeg"}。`,
     "这是我点击面板“AI 初始化 / 修复”发起的请求。第一步必须先处理 yt-dlp：从 https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest 读取官方最新稳定版，比较已安装版本，不得把 PyPI 或包管理器显示的 latest 当作版本基准。",
-    "如果没有受支持的 Python，不要安装 Python 包；按系统、CPU 架构和 Linux libc 下载该 GitHub Release 的官方独立二进制，使用 SHA2-256SUMS 校验后安装到用户可写的 PATH 目录，并验证版本。",
-    "第二步处理 ffmpeg：已安装就更新，没有就安装，并验证版本。即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新。",
+    "如果没有受支持的 Python，不要安装 Python 包；按系统、CPU 架构和 Linux libc 下载该 GitHub Release 的官方独立二进制，优先使用 Release API 的 sha256: 资产摘要校验，旧 Release 缺少摘要时才读取 SHA2-256SUMS，然后安装到用户可写的 PATH 目录并验证版本。",
+    "第二步处理 ffmpeg：保留可用版本；缺少时在 Windows/Linux 优先使用 yt-dlp/FFmpeg-Builds 的 GitHub Release 并校验资产 SHA-256，在 macOS 使用现有 Homebrew。即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新。",
     "完成后调用 refresh_video_download_dependencies，再次读取面板状态并告诉我结果。",
     "不要读取当前视频链接，不要检查 Cookie，不要获取视频信息，也不要开始下载。",
   ].join("\n");
@@ -2624,7 +2831,7 @@ async function refreshRuntimeDependencies() {
       ytDlp: Boolean(runtime.ytDlp),
       ffmpeg: Boolean(runtime.ffmpeg),
       versions,
-      restartMayBeRequired: !runtime.ytDlp || !runtime.ffmpeg,
+      restartMayBeRequired: false,
     };
   } catch (error) {
     const message = sanitizeDiagnosticText(

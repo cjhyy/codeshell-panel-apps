@@ -1923,7 +1923,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.10.0", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.11.0", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",
@@ -1933,6 +1933,22 @@ async function validatePackage(packagePath) {
       versionHelpers.parseGitHubLatestRelease('{"tag_name":"2026.08.19"}'),
       "2026.08.19",
       `${packagePath}: GitHub release parser mismatch`,
+    );
+    assert.deepEqual(
+      versionHelpers.parseGitHubRelease(
+        '{"tag_name":"2026.08.19","assets":[{"name":"yt-dlp.exe","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}',
+      ),
+      {
+        tag: "2026.08.19",
+        version: "2026.08.19",
+        assets: {
+          "yt-dlp.exe": {
+            name: "yt-dlp.exe",
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          },
+        },
+      },
+      `${packagePath}: GitHub asset digest parser mismatch`,
     );
     assert.equal(
       versionHelpers.compareYtDlpVersions("2026.07.04", "2026.08.19"),
@@ -1965,6 +1981,16 @@ async function validatePackage(packagePath) {
       appScript,
       /https:\/\/api\.github\.com\/repos\/yt-dlp\/yt-dlp\/releases\/latest/,
       `${packagePath}: latest version lookup must use the fixed official GitHub API`,
+    );
+    assert.match(
+      appScript,
+      /api\.github\.com\/repos\/yt-dlp\/FFmpeg-Builds\/releases\/latest/,
+      `${packagePath}: missing ffmpeg must use the verified GitHub build release`,
+    );
+    assert.match(
+      appScript,
+      /PowerShell 备用通道/,
+      `${packagePath}: Windows setup needs a curl-independent HTTPS fallback`,
     );
     assert(
       manifest.permissions.includes("process"),

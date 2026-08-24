@@ -30,16 +30,16 @@ When Python is unavailable, skip pip, pipx, and the generic `yt-dlp` artifact.
 Download an official standalone executable even when a package manager would
 otherwise be the normal install route:
 
-| Platform | Architecture/runtime | Asset |
-|---|---|---|
-| macOS 10.15+ | universal Intel/Apple Silicon | `yt-dlp_macos` |
-| Windows 8+ | x86_64 | `yt-dlp.exe` |
-| Windows 8+ | x86 32-bit | `yt-dlp_x86.exe` |
-| Windows 10+ | ARM64 | `yt-dlp_arm64.exe` |
-| Linux glibc 2.17+ | x86_64 | `yt-dlp_linux` |
-| Linux glibc 2.17+ | aarch64 | `yt-dlp_linux_aarch64` |
-| Linux musl 1.2+ | x86_64 | `yt-dlp_musllinux` |
-| Linux musl 1.2+ | aarch64 | `yt-dlp_musllinux_aarch64` |
+| Platform          | Architecture/runtime          | Asset                      |
+| ----------------- | ----------------------------- | -------------------------- |
+| macOS 10.15+      | universal Intel/Apple Silicon | `yt-dlp_macos`             |
+| Windows 8+        | x86_64                        | `yt-dlp.exe`               |
+| Windows 8+        | x86 32-bit                    | `yt-dlp_x86.exe`           |
+| Windows 10+       | ARM64                         | `yt-dlp_arm64.exe`         |
+| Linux glibc 2.17+ | x86_64                        | `yt-dlp_linux`             |
+| Linux glibc 2.17+ | aarch64                       | `yt-dlp_linux_aarch64`     |
+| Linux musl 1.2+   | x86_64                        | `yt-dlp_musllinux`         |
+| Linux musl 1.2+   | aarch64                       | `yt-dlp_musllinux_aarch64` |
 
 For an architecture or runtime not represented here, inspect the current
 release assets and official release-file table. Do not guess an asset name.
@@ -47,11 +47,12 @@ release assets and official release-file table. Do not guess an asset name.
 ## Safe binary replacement
 
 1. Resolve the exact asset from the same latest release response.
-2. Download the asset, `SHA2-256SUMS`, and optionally its signature into a new
-   temporary directory. Never overwrite the working executable during the
-   download.
-3. Verify the downloaded asset's SHA-256 against its exact line in
-   `SHA2-256SUMS`. Abort and delete the temporary download on mismatch.
+2. Prefer the selected asset's `sha256:` digest in the GitHub Release API
+   response. Download `SHA2-256SUMS` only as a compatibility fallback when an
+   older Release omits asset digests. Never overwrite the working executable
+   during the download.
+3. Verify the downloaded asset against that exact SHA-256. Abort and delete
+   the temporary download on mismatch.
 4. On macOS/Linux, add executable permission and run the temporary binary with
    `--version` before replacing the target.
 5. Install into an existing user-writable PATH directory. Prefer
@@ -66,3 +67,18 @@ Official stable download URLs may use
 `https://github.com/yt-dlp/yt-dlp/releases/latest/download/<asset>`, but still
 resolve and record the tag before downloading so the version comparison and
 result remain explicit.
+
+## ffmpeg builds for the panel
+
+FFmpeg's upstream project does not publish ready-to-run binaries in its source
+repository. For a missing Windows or Linux dependency, use the builds maintained
+for yt-dlp at:
+
+```text
+https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest
+```
+
+Select only the exact x64/ARM64 (or supported Windows x86) GPL archive named by
+the Release, require its `sha256:` asset digest, extract only `ffmpeg` and
+`ffprobe`, and install them into CodeShell's managed user bin. Do not use this
+route on macOS; retain the existing Homebrew route there.

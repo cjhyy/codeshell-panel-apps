@@ -19,14 +19,34 @@ export function parseYtDlpVersionOutput(output) {
   return null;
 }
 
-export function parseGitHubLatestRelease(output) {
+export function parseGitHubRelease(output) {
   let payload;
   try {
     payload = JSON.parse(String(output || ""));
   } catch {
     return null;
   }
-  return normalizedVersion(payload?.tag_name)?.text || null;
+  const tag = typeof payload?.tag_name === "string" ? payload.tag_name.trim() : "";
+  if (!/^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(tag)) return null;
+  const assets = {};
+  for (const raw of Array.isArray(payload?.assets) ? payload.assets : []) {
+    const name = typeof raw?.name === "string" ? raw.name.trim() : "";
+    if (!name || name.length > 255 || name.includes("/") || name.includes("\\")) continue;
+    const digest = typeof raw?.digest === "string" ? raw.digest.trim().toLowerCase() : "";
+    assets[name] = {
+      name,
+      sha256: /^sha256:[a-f0-9]{64}$/.test(digest) ? digest.slice("sha256:".length) : "",
+    };
+  }
+  return {
+    tag,
+    version: normalizedVersion(tag)?.text || null,
+    assets,
+  };
+}
+
+export function parseGitHubLatestRelease(output) {
+  return parseGitHubRelease(output)?.version || null;
 }
 
 export function compareYtDlpVersions(installed, latest) {
