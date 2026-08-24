@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 2,
+  "id": "video-download",
+  "version": "0.9.1",
+  "title": {
+    "default": "Mimi Download",
+    "en": "Mimi Download",
+    "zh-CN": "Mimi Download"
+  },
+  "description": "Resolve the latest yt-dlp from GitHub, use an official binary when Python is unavailable, then prepare ffmpeg and download locally. AI is used only for setup and error analysis.",
+  "entry": "app/index.html",
+  "icon": "activity",
+  "placement": "right-dock",
+  "singleton": true,
+  "permissions": ["process", "agent.task"],
+  "agent": {
+    "tools": [
+      {
+        "name": "inspect_video",
+        "description": "Set an optional video URL in the panel and use local yt-dlp to inspect its metadata. Call this when the user supplies a URL or the panel has not inspected its current URL yet.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "Optional complete http or https video URL. Omit it to inspect the URL already shown in the panel."
+            },
+            "playlist": {
+              "type": "boolean",
+              "description": "Optional inspection mode. True inspects playlist entries; false inspects only the current video."
+            }
+          },
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "get_video_download_context",
+        "description": "Read the current URL, inspection and download status, inspected video metadata, destination, available local dependencies, and download configuration.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "refresh_video_download_dependencies",
+        "description": "Re-check whether yt-dlp and ffmpeg are visible to the running Mimi Download panel after initialization or repair. This never installs software or downloads media.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "apply_video_download_config",
+        "description": "Set the format, optional playlist range, and subtitle settings in the Mimi Download panel. This never starts the download.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "enum": ["best", "1080", "720", "audio"]
+            },
+            "playlist": { "type": "boolean" },
+            "playlistItems": {
+              "type": "string",
+              "maxLength": 120,
+              "description": "Optional yt-dlp playlist selection such as 1-5,8,10-12. Use an empty string to clear it."
+            },
+            "playlistEnd": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500,
+              "description": "Optional maximum playlist item number. Use 0 to clear it. Ignored when playlistItems is set."
+            },
+            "subtitles": { "type": "boolean" },
+            "subtitleLanguages": {
+              "type": "string",
+              "maxLength": 120,
+              "description": "Optional yt-dlp subtitle language expression such as zh-Hans,zh-Hant,en.*."
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 500
+            }
+          },
+          "required": ["format", "playlist", "subtitles"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "start_video_download",
+        "description": "Start downloading the current video URL with the configuration and destination shown in the panel. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "cancel_video_download",
+        "description": "Cancel the download currently running in the Mimi Download panel.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": false
+      }
+    ],
+    "skills": ["agent/skills/video-download-setup/SKILL.md"]
+  }
+}

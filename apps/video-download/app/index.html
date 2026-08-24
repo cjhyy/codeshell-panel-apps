@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mimi Download</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">
+          <img src="./assets/electron-video-dog.png" alt="" />
+        </div>
+        <div class="brand-copy">
+          <h1>Mimi Download</h1>
+          <p>Paste, choose, download.</p>
+        </div>
+        <span id="runtime-badge" class="runtime-badge" data-state="loading">
+          <i aria-hidden="true"></i>
+          <span>Checking</span>
+        </span>
+      </header>
+
+      <nav class="panel-tabs" role="tablist" aria-label="Mimi Download 页面">
+        <button
+          id="tab-download"
+          class="panel-tab"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="page-download"
+          tabindex="0"
+          data-tab="download"
+        >
+          <span class="panel-tab-icon" aria-hidden="true">↓</span>
+          <strong>下载</strong>
+          <small id="download-tab-indicator" hidden></small>
+        </button>
+        <button
+          id="tab-task"
+          class="panel-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="page-task"
+          tabindex="-1"
+          data-tab="task"
+        >
+          <span class="panel-tab-icon" aria-hidden="true">↻</span>
+          <strong>任务</strong>
+          <small id="task-tab-indicator" hidden></small>
+        </button>
+        <button
+          id="tab-history"
+          class="panel-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="page-history"
+          tabindex="-1"
+          data-tab="history"
+        >
+          <span class="panel-tab-icon" aria-hidden="true">✓</span>
+          <strong>记录</strong>
+          <small id="history-tab-indicator" hidden></small>
+        </button>
+      </nav>
+
+      <div
+        id="page-download"
+        class="tab-page"
+        role="tabpanel"
+        aria-labelledby="tab-download"
+        data-tab-page="download"
+      >
+        <section class="version-card" aria-labelledby="version-title">
+          <div class="version-card-heading">
+            <div>
+              <span class="step-label">YT-DLP VERSION</span>
+              <h2 id="version-title">版本状态</h2>
+            </div>
+            <button id="refresh-versions" class="text-button" type="button">刷新</button>
+          </div>
+          <div class="version-grid" aria-live="polite">
+            <div>
+              <span>本机版本</span>
+              <b id="installed-ytdlp-version">检查中…</b>
+            </div>
+            <div>
+              <span>官方最新版</span>
+              <b id="latest-ytdlp-version">检查中…</b>
+            </div>
+          </div>
+          <p id="version-comparison" class="version-comparison" data-state="checking">
+            正在读取 yt-dlp 与 GitHub Release…
+          </p>
+        </section>
+
+        <section id="setup-card" class="setup-card" aria-labelledby="setup-title" hidden>
+          <div class="setup-card-topline">
+            <span class="setup-card-icon" aria-hidden="true">⚙</span>
+            <div>
+              <span class="step-label">ONE-CLICK SETUP</span>
+              <h2 id="setup-title">初始化下载环境</h2>
+              <p id="setup-status">正在检查 yt-dlp 与 ffmpeg…</p>
+            </div>
+          </div>
+          <p id="setup-help" class="setup-help">
+            初始化在独立 Task 中运行；不会读取当前对话、链接或下载视频。
+          </p>
+          <ol id="setup-progress" class="setup-progress" aria-live="polite" hidden></ol>
+          <pre id="setup-result" class="task-result" hidden></pre>
+          <button id="setup-button" class="setup-button" type="button" disabled>
+            <span aria-hidden="true">↻</span>
+            <span id="setup-label">一键初始化</span>
+          </button>
+        </section>
+
+        <section class="download-card" aria-labelledby="download-heading">
+          <div class="section-heading">
+            <div>
+              <span class="step-label">01 · SOURCE</span>
+              <h2 id="download-heading">粘贴视频链接</h2>
+            </div>
+            <button id="clear-url" class="text-button" type="button">清空</button>
+          </div>
+
+          <div class="url-field">
+            <textarea
+              id="url-input"
+              rows="3"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="https://www.youtube.com/watch?v=…"
+              aria-describedby="url-help"
+            ></textarea>
+            <span class="link-corner" aria-hidden="true">↗</span>
+          </div>
+          <p id="url-help" class="field-help">
+            支持 yt-dlp 可识别的网站；链接只发送给本地下载程序。
+          </p>
+
+          <div class="inspect-row">
+            <button id="inspect-button" class="secondary-button" type="button" disabled>
+              获取视频信息
+            </button>
+            <span id="inspect-status">粘贴链接后先读取标题、时长和可用清晰度</span>
+          </div>
+
+          <section id="video-info" class="video-info" aria-live="polite" hidden>
+            <div class="video-info-heading">
+              <span class="video-info-icon" aria-hidden="true">▶</span>
+              <div>
+                <span id="video-platform" class="step-label">VIDEO</span>
+                <h3 id="video-title">等待获取信息</h3>
+                <p id="video-uploader">—</p>
+              </div>
+            </div>
+            <dl class="video-facts">
+              <div>
+                <dt>时长</dt>
+                <dd id="video-duration">—</dd>
+              </div>
+              <div>
+                <dt>最高画质</dt>
+                <dd id="video-quality">—</dd>
+              </div>
+              <div>
+                <dt>格式</dt>
+                <dd id="video-formats">—</dd>
+              </div>
+              <div>
+                <dt>发布日期</dt>
+                <dd id="video-date">—</dd>
+              </div>
+            </dl>
+          </section>
+
+          <div class="divider"></div>
+
+          <fieldset class="format-fieldset">
+            <legend>
+              <span class="step-label">02 · FORMAT</span>
+              <strong>选择输出</strong>
+            </legend>
+            <div class="format-grid">
+              <label class="format-option">
+                <input type="radio" name="format" value="best" checked />
+                <span class="format-box">
+                  <b>MAX</b>
+                  <strong>最佳画质</strong>
+                  <small>MP4 · 最高可用</small>
+                </span>
+              </label>
+              <label class="format-option">
+                <input type="radio" name="format" value="1080" />
+                <span class="format-box">
+                  <b>HD</b>
+                  <strong>1080p</strong>
+                  <small>MP4 · 兼容优先</small>
+                </span>
+              </label>
+              <label class="format-option">
+                <input type="radio" name="format" value="720" />
+                <span class="format-box">
+                  <b>SD</b>
+                  <strong>720p</strong>
+                  <small>MP4 · 节省空间</small>
+                </span>
+              </label>
+              <label class="format-option">
+                <input type="radio" name="format" value="audio" />
+                <span class="format-box">
+                  <b>♪</b>
+                  <strong>仅音频</strong>
+                  <small>MP3 · 高质量</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="option-list">
+            <label class="toggle-row">
+              <span>
+                <strong>下载播放列表</strong>
+                <small>关闭时只下载当前视频</small>
+              </span>
+              <input id="playlist-toggle" type="checkbox" />
+              <i aria-hidden="true"></i>
+            </label>
+            <div id="playlist-options" class="option-details" hidden>
+              <label>
+                <span>选集范围</span>
+                <input
+                  id="playlist-items"
+                  type="text"
+                  inputmode="numeric"
+                  maxlength="120"
+                  placeholder="例如 1-5,8,10-12"
+                />
+              </label>
+              <label>
+                <span>最多下载</span>
+                <input
+                  id="playlist-end"
+                  type="number"
+                  inputmode="numeric"
+                  min="1"
+                  max="500"
+                  placeholder="不限制"
+                />
+              </label>
+              <small>留空表示下载整个列表；选集范围优先于最多下载。</small>
+            </div>
+            <label class="toggle-row">
+              <span>
+                <strong>同时下载字幕</strong>
+                <small>字幕失败不会中断视频下载</small>
+              </span>
+              <input id="subtitle-toggle" type="checkbox" />
+              <i aria-hidden="true"></i>
+            </label>
+            <div id="subtitle-options" class="option-details" hidden>
+              <label class="wide">
+                <span>字幕语言</span>
+                <input
+                  id="subtitle-languages"
+                  type="text"
+                  maxlength="120"
+                  value="zh-Hans,zh-Hant,en.*"
+                  placeholder="例如 zh-Hans,zh-Hant,en.*"
+                />
+              </label>
+              <small>同时尝试人工字幕和自动字幕；有 ffmpeg 时转换为 SRT 并嵌入视频。</small>
+            </div>
+          </div>
+
+          <section
+            id="download-list"
+            class="download-list"
+            aria-labelledby="download-list-title"
+            hidden
+          >
+            <div class="download-list-heading">
+              <div>
+                <span class="step-label">DOWNLOAD LIST</span>
+                <strong id="download-list-title">下载列表</strong>
+              </div>
+              <span id="download-list-count">0 项</span>
+            </div>
+            <div id="download-list-items" class="download-list-items"></div>
+            <p id="download-list-note" class="download-list-note"></p>
+          </section>
+
+          <div class="destination-row">
+            <div class="destination-copy">
+              <span class="step-label">03 · SAVE TO</span>
+              <strong id="destination-name">Downloads</strong>
+              <small id="destination-path">正在获取默认下载目录…</small>
+            </div>
+            <button id="choose-directory" class="secondary-button" type="button">更改</button>
+          </div>
+
+          <button id="download-button" class="download-button" type="button" disabled>
+            <span class="button-icon" aria-hidden="true">↓</span>
+            <span class="button-label">开始下载</span>
+            <kbd>⌘↵</kbd>
+          </button>
+          <p id="form-error" class="form-error" role="alert" hidden></p>
+        </section>
+      </div>
+
+      <div
+        id="page-task"
+        class="tab-page"
+        role="tabpanel"
+        aria-labelledby="tab-task"
+        data-tab-page="task"
+        hidden
+      >
+        <section id="task-card" class="task-card" aria-labelledby="task-title">
+          <div class="task-topline">
+            <div class="task-state">
+              <span id="task-state-icon" class="task-state-icon" data-state="idle">↓</span>
+              <div>
+                <span id="task-kicker" class="step-label">CURRENT TASK</span>
+                <h2 id="task-title">还没有下载任务</h2>
+              </div>
+            </div>
+            <span id="task-percent" class="task-percent">—</span>
+          </div>
+          <div class="progress-track" aria-label="下载进度">
+            <span id="progress-bar"></span>
+          </div>
+          <div class="task-stats">
+            <span><i>速度</i><b id="task-speed">—</b></span>
+            <span><i>剩余</i><b id="task-eta">—</b></span>
+            <span><i>状态</i><b id="task-status">等待开始</b></span>
+          </div>
+          <div class="task-actions">
+            <button id="cancel-button" class="danger-button" type="button" hidden>取消任务</button>
+            <button id="open-directory" class="secondary-button" type="button" disabled>
+              打开文件夹
+            </button>
+            <button id="toggle-log" class="text-button" type="button">查看日志</button>
+          </div>
+          <pre id="task-log" class="task-log" hidden>等待任务输出…</pre>
+        </section>
+
+        <section
+          id="error-analysis"
+          class="error-analysis"
+          aria-labelledby="error-analysis-title"
+          hidden
+        >
+          <div>
+            <span class="error-analysis-icon" aria-hidden="true">!</span>
+            <p>
+              <strong id="error-analysis-title">任务遇到问题</strong>
+              <small id="error-analysis-help">可启动一个独立 AI Task 分析脱敏后的错误。</small>
+            </p>
+          </div>
+          <pre id="error-analysis-result" class="task-result" hidden></pre>
+          <button id="analyze-error-button" class="error-analysis-button" type="button" disabled>
+            <span aria-hidden="true">✦</span>
+            <span id="analyze-error-label">让 AI 分析错误</span>
+          </button>
+        </section>
+      </div>
+
+      <div
+        id="page-history"
+        class="tab-page"
+        role="tabpanel"
+        aria-labelledby="tab-history"
+        data-tab-page="history"
+        hidden
+      >
+        <section class="history-section" aria-labelledby="history-title">
+          <div class="section-heading compact">
+            <div>
+              <span class="step-label">RECENT</span>
+              <h2 id="history-title">最近下载</h2>
+            </div>
+            <button id="clear-history" class="text-button" type="button">清除</button>
+          </div>
+          <div id="history-list" class="history-list">
+            <div class="empty-history">
+              <span>↓</span>
+              <p>完成的任务会留在这里</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="runtime-footer">
+        <div>
+          <span id="ytdlp-dot" class="status-dot"></span>
+          <span>yt-dlp</span>
+          <b id="ytdlp-status">检查中</b>
+        </div>
+        <div>
+          <span id="ffmpeg-dot" class="status-dot"></span>
+          <span>ffmpeg</span>
+          <b id="ffmpeg-status">检查中</b>
+        </div>
+        <span class="local-only">LOCAL FIRST · AI ON ERROR</span>
+      </footer>
+    </main>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

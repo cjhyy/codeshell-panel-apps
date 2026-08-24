@@ -20,6 +20,7 @@ const packages = [
   "apps/design-studio",
   "apps/job-hunt-hq",
   "apps/quant-lab",
+  "apps/video-download",
   "templates/starter",
 ];
 const forbiddenNames = new Set([
@@ -235,9 +236,9 @@ async function validatePackage(packagePath) {
     const registeredToolNames = new Set(
       [...appScript.matchAll(/register\("([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
     );
-    const queriedIds = [
-      ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
-    ].map((match) => match[1]);
+    const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
+      (match) => match[1],
+    );
     assert.equal(manifest.version, "0.18.0", `${packagePath}: responsive-layout version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
@@ -247,11 +248,7 @@ async function validatePackage(packagePath) {
     for (const id of queriedIds) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
     }
-    for (const toolName of [
-      "read_product_brief",
-      "generate_frontend",
-      "compare_frontend",
-    ]) {
+    for (const toolName of ["read_product_brief", "generate_frontend", "compare_frontend"]) {
       assert(toolNames.has(toolName), `${packagePath}: ${toolName} tool is required`);
     }
     assert.match(html, /id="repo-files-tab-button"/, `${packagePath}: file tab is required`);
@@ -285,18 +282,15 @@ async function validatePackage(packagePath) {
       "utf8",
     );
     const snapshotSchema = JSON.parse(
-      await readFile(
-        join(root, "app", "formats", "job-hunt-panel-v2.schema.json"),
-        "utf8",
-      ),
+      await readFile(join(root, "app", "formats", "job-hunt-panel-v2.schema.json"), "utf8"),
     );
     const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
     const registeredToolNames = new Set(
       [...appScript.matchAll(/register\("([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
     );
-    const queriedIds = [
-      ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
-    ].map((match) => match[1]);
+    const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
+      (match) => match[1],
+    );
     assert.equal(manifest.version, "1.25.0", `${packagePath}: guided workflow version mismatch`);
     assert(
       manifest.permissions.includes("credentials.cookies"),
@@ -819,11 +813,7 @@ async function validatePackage(packagePath) {
       /id="interview-debrief-list"/,
       `${packagePath}: interview debrief view is required`,
     );
-    assert.match(
-      html,
-      /data-resume-mode="jd"/,
-      `${packagePath}: JD display mode is required`,
-    );
+    assert.match(html, /data-resume-mode="jd"/, `${packagePath}: JD display mode is required`);
     assert.match(
       appScript,
       /const PROJECT_STATE_PATH = "job-hunt-panel\.json"/,
@@ -885,11 +875,7 @@ async function validatePackage(packagePath) {
       /color-scheme:\s*light/,
       `${packagePath}: main panel theme must remain light`,
     );
-    assert.match(
-      html,
-      /id="job-search-query"/,
-      `${packagePath}: JD pool needs direct search`,
-    );
+    assert.match(html, /id="job-search-query"/, `${packagePath}: JD pool needs direct search`);
     assert.match(
       html,
       /id="job-detail-description"/,
@@ -1040,11 +1026,7 @@ async function validatePackage(packagePath) {
       `${packagePath}: Skill must not force fixed scenarios`,
     );
     assert.match(skill, /Base Resume/, `${packagePath}: Skill must define Base Resume first`);
-    assert.match(
-      skill,
-      /base_resume_id/,
-      `${packagePath}: Skill must preserve variant lineage`,
-    );
+    assert.match(skill, /base_resume_id/, `${packagePath}: Skill must preserve variant lineage`);
     assert.match(skill, /claim_evidence/, `${packagePath}: Skill must require resume sources`);
     assert.match(
       skill,
@@ -1062,7 +1044,11 @@ async function validatePackage(packagePath) {
       `${packagePath}: Skill must explain what every resume source proves`,
     );
     assert.match(skill, /Panel Trace ID/, `${packagePath}: Skill must preserve Trace correlation`);
-    assert.match(skill, /pass that exact ID to every non-readonly/, `${packagePath}: Skill must pass trace_id`);
+    assert.match(
+      skill,
+      /pass that exact ID to every non-readonly/,
+      `${packagePath}: Skill must pass trace_id`,
+    );
     assert.match(
       skill,
       /finish with `complete_execution_trace`/,
@@ -1182,8 +1168,7 @@ async function validatePackage(packagePath) {
       updatedAt: "2026-01-02T00:00:00.000Z",
     };
     const keyByUrl = (job) => job.url;
-    const keyByMetadata = (job) =>
-      [job.sourceId, job.company, job.title, job.location].join("|");
+    const keyByMetadata = (job) => [job.sourceId, job.company, job.title, job.location].join("|");
     const progressiveResult = upsertJobOpportunities([listing], [fullJd], {
       dedupeKey: keyByUrl,
       metadataKey: keyByMetadata,
@@ -1314,9 +1299,7 @@ async function validatePackage(packagePath) {
       normalizeDiscoveryPreferences,
       resolveChannelVerificationForSession,
       resolveJobRecency,
-    } = await import(
-      pathToFileURL(join(root, "app", "discovery-model.mjs"))
-    );
+    } = await import(pathToFileURL(join(root, "app", "discovery-model.mjs")));
     const customProviders = normalizeCustomProviders(
       [
         { label: "Acme Careers", url: "https://careers.acme.test/jobs?utm_source=x" },
@@ -1364,10 +1347,8 @@ async function validatePackage(packagePath) {
     assert.equal(fallbackDiscovery.keyword, "前端工程师");
     assert.deepEqual(fallbackDiscovery.providers, ["boss", "official"]);
     assert.deepEqual(
-      normalizeDiscoveryPreferences(
-        { providers: [] },
-        { validProviderIds: ["boss", "official"] },
-      ).providers,
+      normalizeDiscoveryPreferences({ providers: [] }, { validProviderIds: ["boss", "official"] })
+        .providers,
       [],
     );
     assert.equal(fallbackDiscovery.count, 8);
@@ -1398,11 +1379,8 @@ async function validatePackage(packagePath) {
     );
     assert.equal(normalizedVerifications.length, 1);
     assert.equal(
-      resolveChannelVerificationForSession(
-        "boss",
-        normalizedVerifications,
-        "session-current",
-      ).state,
+      resolveChannelVerificationForSession("boss", normalizedVerifications, "session-current")
+        .state,
       "ready",
     );
     assert.equal(
@@ -1507,14 +1485,8 @@ async function validatePackage(packagePath) {
       pathToFileURL(join(root, "app", "workflow-model.mjs"))
     );
     assert.equal(resolveCareerCurrentStep({ projectReady: false }), "materials");
-    assert.equal(
-      resolveCareerCurrentStep({ projectReady: true, hasBase: false }),
-      "base",
-    );
-    assert.equal(
-      resolveCareerCurrentStep({ projectReady: true, hasBase: true }),
-      "inbox",
-    );
+    assert.equal(resolveCareerCurrentStep({ projectReady: true, hasBase: false }), "base");
+    assert.equal(resolveCareerCurrentStep({ projectReady: true, hasBase: true }), "inbox");
     assert.equal(
       resolveCareerCurrentStep({
         projectReady: true,
@@ -1577,11 +1549,8 @@ async function validatePackage(packagePath) {
       "compose",
     );
 
-    const {
-      normalizePreparationGapKind,
-      normalizeRoadmapMilestone,
-      preparationGapCounts,
-    } = await import(pathToFileURL(join(root, "app", "roadmap-model.mjs")));
+    const { normalizePreparationGapKind, normalizeRoadmapMilestone, preparationGapCounts } =
+      await import(pathToFileURL(join(root, "app", "roadmap-model.mjs")));
     assert.equal(
       normalizePreparationGapKind(undefined, {
         area: "工作经历时间",
@@ -1668,14 +1637,14 @@ async function validatePackage(packagePath) {
       template: "editorial",
       density: "comfortable",
     });
-    assert.deepEqual(
-      normalizeResumeStyle({ template: "minimal", density: "compact" }),
-      { template: "minimal", density: "compact" },
-    );
-    assert.deepEqual(
-      normalizeResumeStyle({ template: "unknown", density: "tiny" }),
-      { template: "editorial", density: "comfortable" },
-    );
+    assert.deepEqual(normalizeResumeStyle({ template: "minimal", density: "compact" }), {
+      template: "minimal",
+      density: "compact",
+    });
+    assert.deepEqual(normalizeResumeStyle({ template: "unknown", density: "tiny" }), {
+      template: "editorial",
+      density: "comfortable",
+    });
     assert.deepEqual(
       normalizeResumeRecord({
         markdown: "# Resume",
@@ -1698,9 +1667,10 @@ async function validatePackage(packagePath) {
     );
     const resumeRecords = collectResumeRecords(legacyVariant, [legacyBase, legacyVariant]);
     assert.equal(resumeRecords.length, 2);
-    assert.deepEqual(baseResumeRecords(resumeRecords).map((resume) => resume.versionId), [
-      "resume-base",
-    ]);
+    assert.deepEqual(
+      baseResumeRecords(resumeRecords).map((resume) => resume.versionId),
+      ["resume-base"],
+    );
     assert.equal(selectBaseResume(resumeRecords, "resume-base")?.versionId, "resume-base");
     assert.equal(isSupportedResumePhoto("data:image/jpeg;base64,Zm9v"), true);
     assert.equal(isSupportedResumePhoto("https://example.test/photo.jpg"), false);
@@ -1715,7 +1685,9 @@ async function validatePackage(packagePath) {
       "Reduced long-session rendering work",
     ]);
     assert.deepEqual(
-      extractResumeClaims("# Candidate\n## Professional Summary\nFrontend engineer with agent runtime experience."),
+      extractResumeClaims(
+        "# Candidate\n## Professional Summary\nFrontend engineer with agent runtime experience.",
+      ),
       ["Frontend engineer with agent runtime experience."],
     );
     assert.deepEqual(
@@ -1774,10 +1746,7 @@ async function validatePackage(packagePath) {
       }).state,
       "ready",
     );
-    assert.equal(
-      resolveProjectBootstrapStatus({ snapshotUnreadable: true }).state,
-      "blocked",
-    );
+    assert.equal(resolveProjectBootstrapStatus({ snapshotUnreadable: true }).state, "blocked");
     const bootstrapTask = buildProjectBootstrapTask({
       workspace: "/current/job-project",
       projectName: "My Job Project",
@@ -1888,11 +1857,8 @@ async function validatePackage(packagePath) {
     );
     assert.equal(trace.status, "partial");
 
-    const {
-      PANEL_LOCAL_STORAGE_TARGET_BYTES,
-      compactPanelLocalState,
-      encodedJsonBytes,
-    } = await import(pathToFileURL(join(root, "app", "storage-model.mjs")));
+    const { PANEL_LOCAL_STORAGE_TARGET_BYTES, compactPanelLocalState, encodedJsonBytes } =
+      await import(pathToFileURL(join(root, "app", "storage-model.mjs")));
     const oversizedLocalState = {
       selectedJobId: "job-existing",
       activeView: "interviews",
@@ -1931,9 +1897,207 @@ async function validatePackage(packagePath) {
     assert(compactedLocalState.sessionActivity.length > 0);
     assert.equal(compactedLocalState.sessionActivity[0].outcome.status, "completed");
     assert.equal(compactedLocalState.sessionActivity[0].outcome.outputRefs[0], "resume:resume-1");
+    assert.equal(compactedLocalState.sessionActivity[0].completedAt, "2026-01-01T00:00:03.000Z");
+  }
+  if (manifest.id === "video-download") {
+    const appScript = await readFile(join(root, "app", "app.js"), "utf8");
+    const setupSkill = await readFile(
+      join(root, "agent", "skills", "video-download-setup", "SKILL.md"),
+      "utf8",
+    );
+    const setupReference = await readFile(
+      join(root, "agent", "skills", "video-download-setup", "references", "platform-install.md"),
+      "utf8",
+    );
+    const githubReleaseReference = await readFile(
+      join(root, "agent", "skills", "video-download-setup", "references", "github-release.md"),
+      "utf8",
+    );
+    const toolNames = new Set(manifest.agent.tools.map((tool) => tool.name));
+    const registeredToolNames = new Set(
+      [...appScript.matchAll(/registerTool\("([a-z][a-z0-9_]*)"/g)].map((match) => match[1]),
+    );
+    const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
+      (match) => match[1],
+    );
+    const versionHelpers = await import(
+      `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
+    );
+    assert.equal(manifest.version, "0.9.1", `${packagePath}: download engine version mismatch`);
     assert.equal(
-      compactedLocalState.sessionActivity[0].completedAt,
-      "2026-01-01T00:00:03.000Z",
+      versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
+      "2026.07.04",
+      `${packagePath}: installed version parser mismatch`,
+    );
+    assert.equal(
+      versionHelpers.parseGitHubLatestRelease('{"tag_name":"2026.08.19"}'),
+      "2026.08.19",
+      `${packagePath}: GitHub release parser mismatch`,
+    );
+    assert.equal(
+      versionHelpers.compareYtDlpVersions("2026.07.04", "2026.08.19"),
+      -1,
+      `${packagePath}: version comparison mismatch`,
+    );
+    assert.equal(
+      versionHelpers.shouldOfferSetup({
+        dependenciesChecked: true,
+        hasYtDlp: true,
+        hasFfmpeg: true,
+        installedYtDlpVersion: "2026.07.04",
+        latestYtDlpVersion: "2026.08.19",
+      }),
+      true,
+      `${packagePath}: an outdated yt-dlp must keep one-click setup visible`,
+    );
+    assert.equal(
+      versionHelpers.shouldOfferSetup({
+        dependenciesChecked: true,
+        hasYtDlp: true,
+        hasFfmpeg: true,
+        installedYtDlpVersion: "2026.08.19",
+        latestYtDlpVersion: "2026.08.19",
+      }),
+      false,
+      `${packagePath}: current dependencies must hide one-click setup`,
+    );
+    assert.match(
+      appScript,
+      /https:\/\/api\.github\.com\/repos\/yt-dlp\/yt-dlp\/releases\/latest/,
+      `${packagePath}: latest version lookup must use the fixed official GitHub API`,
+    );
+    assert(
+      manifest.permissions.includes("process"),
+      `${packagePath}: process permission is required`,
+    );
+    assert(
+      manifest.permissions.includes("agent.task"),
+      `${packagePath}: isolated Task permission is required`,
+    );
+    assert(
+      !manifest.permissions.includes("context.session") &&
+        !manifest.permissions.includes("agent.submitPrompt"),
+      `${packagePath}: setup and analysis must not depend on the current Session`,
+    );
+    assert.deepEqual(
+      [...registeredToolNames].sort(),
+      [...toolNames].sort(),
+      `${packagePath}: manifest tools and registered handlers must match`,
+    );
+    for (const id of queriedIds) {
+      assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
+    }
+    const applyTool = manifest.agent.tools.find(
+      (tool) => tool.name === "apply_video_download_config",
+    );
+    assert(
+      applyTool.inputSchema.properties.format.enum.includes("720"),
+      `${packagePath}: 720p preset is required`,
+    );
+    for (const expected of [
+      "--continue",
+      "--fragment-retries",
+      "exp=1:30",
+      "--playlist-items",
+      "--convert-subs",
+      "friendlyYtDlpError",
+      "sanitizeMediaUrl",
+      "renderDownloadList",
+      "requestAiErrorAnalysis",
+      "requestSetup",
+      "refreshRuntimeDependencies",
+      'panel.call("agent.task.start"',
+      'panel.call("agent.task.list"',
+      'panel.on("agent.task.changed"',
+    ]) {
+      assert(appScript.includes(expected), `${packagePath}: missing ${expected}`);
+    }
+    assert.match(html, /id="download-list"/, `${packagePath}: download list is required`);
+    assert.match(html, /id="setup-button"/, `${packagePath}: one-click setup is required`);
+    assert.match(
+      html,
+      /id="analyze-error-button"/,
+      `${packagePath}: failure analysis action is required`,
+    );
+    assert.match(
+      html,
+      /id="error-analysis-result"/,
+      `${packagePath}: Task analysis result must render in the panel`,
+    );
+    assert(
+      !html.includes("让 AI 帮我选配置"),
+      `${packagePath}: normal flow must not include AI configuration UI`,
+    );
+    assert(
+      !appScript.includes("requestAiConfiguration"),
+      `${packagePath}: configuration prompt flow must be removed`,
+    );
+    assert.deepEqual(
+      manifest.agent.skills,
+      ["agent/skills/video-download-setup/SKILL.md"],
+      `${packagePath}: setup Skill must ship with the Panel App`,
+    );
+    assert.match(
+      setupSkill,
+      /refresh_video_download_dependencies/,
+      `${packagePath}: setup Skill must verify through the panel`,
+    );
+    assert.match(
+      setupSkill,
+      /Always handle `yt-dlp` first/,
+      `${packagePath}: setup Skill must update or install yt-dlp first`,
+    );
+    assert.match(
+      appScript,
+      /即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新/,
+      `${packagePath}: one-click prompt must preserve dependency order`,
+    );
+    assert.match(
+      appScript,
+      /api\.github\.com\/repos\/yt-dlp\/yt-dlp\/releases\/latest/,
+      `${packagePath}: one-click prompt must resolve the official GitHub release`,
+    );
+    assert.match(
+      appScript,
+      /SHA2-256SUMS/,
+      `${packagePath}: one-click prompt must require binary checksum verification`,
+    );
+    assert.match(
+      setupSkill,
+      /Never start a video inspection or download/,
+      `${packagePath}: setup Skill must not start media work`,
+    );
+    assert.match(
+      setupReference,
+      /brew install yt-dlp/,
+      `${packagePath}: setup Skill needs a macOS route`,
+    );
+    assert.match(
+      setupReference,
+      /execution order is non-negotiable/,
+      `${packagePath}: platform reference must preserve setup order`,
+    );
+    assert.match(
+      setupSkill,
+      /api\.github\.com\/repos\/yt-dlp\/yt-dlp\/releases\/latest/,
+      `${packagePath}: setup Skill must use GitHub latest as its version authority`,
+    );
+    for (const expected of [
+      "yt-dlp_macos",
+      "yt-dlp_linux_aarch64",
+      "yt-dlp_musllinux_aarch64",
+      "yt-dlp_arm64.exe",
+      "SHA2-256SUMS",
+    ]) {
+      assert(
+        githubReleaseReference.includes(expected),
+        `${packagePath}: GitHub release reference is missing ${expected}`,
+      );
+    }
+    assert.match(
+      githubReleaseReference,
+      /still needs Python/,
+      `${packagePath}: generic yt-dlp artifact must not be treated as standalone`,
     );
   }
   return { id: manifest.id, files: files.length };
@@ -2109,8 +2273,7 @@ indexedDesignInput.pages.push({
   children: [{ ...baseNode("page-2-rect", "rectangle", "Page 2 rectangle") }],
 });
 const indexedDesign = designCodec.normalizeDesignDocument(indexedDesignInput);
-const hashDesignSource = async (source) =>
-  createHash("sha256").update(source).digest("hex");
+const hashDesignSource = async (source) => createHash("sha256").update(source).digest("hex");
 const indexedPlan = await designIndex.createDesignIndexPersistencePlan({
   document: indexedDesign,
   sha256: hashDesignSource,
@@ -2145,9 +2308,7 @@ const incrementalIndexedPlan = await designIndex.createDesignIndexPersistencePla
   previousManifest: indexedPlan.manifest,
 });
 assert.equal(incrementalIndexedPlan.changedPageCount, 1);
-assert(
-  incrementalIndexedPlan.parts.every((part) => part.pageId === "page-2"),
-);
+assert(incrementalIndexedPlan.parts.every((part) => part.pageId === "page-2"));
 const loadedPageRecords = new Map([
   ["page-1", designCodec.repositoryDesignPage(indexedDesign, "page-1")],
 ]);
@@ -2159,10 +2320,7 @@ const lazySavePlan = await designIndex.createIncrementalDesignIndexPersistencePl
 });
 assert.equal(lazySavePlan.changedPageCount, 0);
 assert.equal(lazySavePlan.parts.length, 0);
-assert.equal(
-  lazySavePlan.manifest.pages[1].sha256,
-  indexedPlan.manifest.pages[1].sha256,
-);
+assert.equal(lazySavePlan.manifest.pages[1].sha256, indexedPlan.manifest.pages[1].sha256);
 const componentContainer = (id, name, children = []) => ({
   ...baseNode(id, "component", name),
   layout: "none",
@@ -2258,19 +2416,12 @@ const operationRecord = designOperationLog.createDesignOperationRecord(
 assert.equal(designOperationLog.isEmptyDesignOperationRecord(operationRecord), false);
 const operationReplay = structuredClone(indexedDesign);
 designOperationLog.applyDesignOperationRecord(operationReplay, operationRecord, "forward");
-assert.deepEqual(
-  designOperationLog.captureDesignOperationState(operationReplay),
-  operationAfter,
-);
+assert.deepEqual(designOperationLog.captureDesignOperationState(operationReplay), operationAfter);
 designOperationLog.applyDesignOperationRecord(operationReplay, operationRecord, "reverse");
-assert.deepEqual(
-  designOperationLog.captureDesignOperationState(operationReplay),
-  operationBefore,
-);
+assert.deepEqual(designOperationLog.captureDesignOperationState(operationReplay), operationBefore);
 const pixelBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-const hashDesignBytes = async (bytes) =>
-  createHash("sha256").update(bytes).digest("hex");
+const hashDesignBytes = async (bytes) => createHash("sha256").update(bytes).digest("hex");
 const pixelResource = await designResources.createDesignResourcePersistencePlan({
   id: "pixel-image",
   kind: "image",
@@ -2278,34 +2429,28 @@ const pixelResource = await designResources.createDesignResourcePersistencePlan(
   base64: pixelBase64,
   sha256Bytes: hashDesignBytes,
 });
-const duplicatePixelResource =
-  await designResources.createDesignResourcePersistencePlan({
-    id: "pixel-image-copy",
-    kind: "image",
-    mime: "image/png",
-    base64: pixelBase64,
-    sha256Bytes: hashDesignBytes,
-  });
-assert.equal(
-  pixelResource.descriptor.sha256,
-  duplicatePixelResource.descriptor.sha256,
-);
+const duplicatePixelResource = await designResources.createDesignResourcePersistencePlan({
+  id: "pixel-image-copy",
+  kind: "image",
+  mime: "image/png",
+  base64: pixelBase64,
+  sha256Bytes: hashDesignBytes,
+});
+assert.equal(pixelResource.descriptor.sha256, duplicatePixelResource.descriptor.sha256);
 assert.deepEqual(
   pixelResource.parts.map((part) => part.path),
   duplicatePixelResource.parts.map((part) => part.path),
 );
 const resolvedPixel = await designResources.resolveDesignResource({
   descriptor: pixelResource.descriptor,
-  readText: async (path) =>
-    pixelResource.parts.find((part) => part.path === path)?.content,
+  readText: async (path) => pixelResource.parts.find((part) => part.path === path)?.content,
   sha256Bytes: hashDesignBytes,
 });
 assert.equal(resolvedPixel.base64, pixelBase64);
 assert(resolvedPixel.dataUrl.startsWith("data:image/png;base64,"));
 const resourceCache = new designResources.DesignResourceCache({
   resources: [pixelResource.descriptor, duplicatePixelResource.descriptor],
-  readText: async (path) =>
-    pixelResource.parts.find((part) => part.path === path)?.content,
+  readText: async (path) => pixelResource.parts.find((part) => part.path === path)?.content,
   sha256Bytes: hashDesignBytes,
 });
 await resourceCache.load("pixel-image");
@@ -2409,29 +2554,16 @@ const recoveryPlan = await designRecovery.createRecoveryPersistencePlan({
 });
 assert.equal(recoveryPlan.mode, "external");
 assert(recoveryPlan.parts.length >= 1);
-assert(
-  new TextEncoder().encode(JSON.stringify(recoveryPlan.value)).length <
-    256 * 1024,
-);
+assert(new TextEncoder().encode(JSON.stringify(recoveryPlan.value)).length < 256 * 1024);
 const resolvedRecovery = await designRecovery.resolveRecoveryPersistence({
   value: recoveryPlan.value,
-  readText: async (path) =>
-    recoveryPlan.parts.find((part) => part.path === path)?.content,
+  readText: async (path) => recoveryPlan.parts.find((part) => part.path === path)?.content,
   sha256: hashDesignSource,
 });
-assert.equal(
-  resolvedRecovery.record.operations[0].after.length,
-  220 * 1024,
-);
-const indexedCheckerWorkspace = await mkdtemp(
-  join(tmpdir(), "codeshell-design-index-"),
-);
+assert.equal(resolvedRecovery.record.operations[0].after.length, 220 * 1024);
+const indexedCheckerWorkspace = await mkdtemp(join(tmpdir(), "codeshell-design-index-"));
 try {
-  const primaryPath = join(
-    indexedCheckerWorkspace,
-    "designs",
-    "indexed.codesign.json",
-  );
+  const primaryPath = join(indexedCheckerWorkspace, "designs", "indexed.codesign.json");
   await mkdir(dirname(primaryPath), { recursive: true });
   await writeFile(primaryPath, indexedPlan.primarySource);
   for (const part of indexedPlan.parts) {
@@ -2445,10 +2577,7 @@ try {
   assert.equal(checkerResolved.mode, "indexed");
   assert.equal(checkerResolved.document.pages.length, 2);
   assert.equal(checkerResolved.primaryCanonical, true);
-  const corruptedPartPath = join(
-    indexedCheckerWorkspace,
-    ...indexedPlan.parts[0].path.split("/"),
-  );
+  const corruptedPartPath = join(indexedCheckerWorkspace, ...indexedPlan.parts[0].path.split("/"));
   await writeFile(corruptedPartPath, `${indexedPlan.parts[0].content}corrupt`);
   await assert.rejects(
     () =>
@@ -2476,10 +2605,7 @@ assert(
       new TextEncoder().encode(part.content).length === part.bytes,
   ),
 );
-assert.equal(
-  largeDesignPlan.parts.map((part) => part.content).join(""),
-  largeDesignSource,
-);
+assert.equal(largeDesignPlan.parts.map((part) => part.content).join(""), largeDesignSource);
 const resolvedLargeDesign = await designBundle.resolveDesignPersistenceSource({
   primarySource: largeDesignPlan.primarySource,
   readText: async (path) => largeDesignPlan.parts.find((part) => part.path === path)?.content,
@@ -2507,10 +2633,7 @@ try {
 }
 const unsafeLargeManifest = structuredClone(largeDesignPlan.manifest);
 unsafeLargeManifest.parts[0].path = "designs/other.txt";
-assert.throws(
-  () => designBundle.normalizeDesignBundleManifest(unsafeLargeManifest),
-  /路径无效/,
-);
+assert.throws(() => designBundle.normalizeDesignBundleManifest(unsafeLargeManifest), /路径无效/);
 const intentionalClipDesign = structuredClone(nestedDesign);
 intentionalClipDesign.pages[0].children[0].clipContent = true;
 intentionalClipDesign.pages[0].children[0].contentClipping = "intentional";
