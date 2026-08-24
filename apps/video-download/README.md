@@ -1,13 +1,20 @@
 # Mimi Download
 
-Mimi Download is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.11 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
 official standalone binary for the current platform. The binary is verified
-against `SHA2-256SUMS` before it is installed into CodeShell's Host-managed
-per-user executable directory. The same flow then prepares ffmpeg with an
-available non-interactive package manager and verifies both dependencies.
+against the Release API's official `sha256:` asset digest, with
+`SHA2-256SUMS` as a compatibility fallback, before it is installed into
+CodeShell's Host-managed per-user executable directory. Windows and Linux use
+the verified `yt-dlp/FFmpeg-Builds` GitHub Release when ffmpeg is missing;
+macOS keeps the Homebrew route. Both dependencies are verified after install.
+
+On Windows, setup tries curl first and automatically falls back to PowerShell
+when curl's Schannel transport cannot complete a GitHub TLS handshake. Both
+yt-dlp and the GitHub ffmpeg fallback land in the Host-managed directory, so
+the panel can detect them immediately without restarting CodeShell.
 
 Unusual environments have a separate **AI Initialize / Repair** action. Before
 starting it, the user explicitly chooses a configured Provider and model. The
@@ -18,10 +25,11 @@ to the panel. Neither setup path inspects a video or starts a download.
 
 The Download tab always shows the installed yt-dlp version beside the latest
 stable tag from the official GitHub Releases API. Both checks are deterministic
-local-process operations and never start an AI Task. The GitHub lookup uses an
-available `curl` executable with a fixed API URL; a timeout, missing `curl`, or
-an unavailable GitHub response leaves only the latest-version field unavailable
-and never blocks downloading.
+local-process operations and never start an AI Task. The passive version badge
+uses an available `curl` executable with a fixed API URL; a timeout, missing
+`curl`, or an unavailable GitHub response leaves only the latest-version field
+unavailable and never blocks downloading. The setup action additionally uses
+wget or Windows PowerShell as HTTPS fallbacks.
 
 After initialization, paste a supported video URL, inspect its title, duration,
 source, and available quality, then choose a preset and download without
