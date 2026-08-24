@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
     "zh-CN": "Mimi Download"
   },
-  "description": "Resolve the latest yt-dlp from GitHub, use an official binary when Python is unavailable, then prepare ffmpeg and download locally. AI is used only for setup and error analysis.",
+  "description": "Install or update yt-dlp and ffmpeg deterministically without AI, then inspect and download locally. An optional model-selected AI Task handles unusual setup failures and error analysis.",
   "entry": "app/index.html",
   "icon": "activity",
   "placement": "right-dock",

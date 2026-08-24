@@ -19,9 +19,15 @@ const elements = {
   setupStatus: document.querySelector("#setup-status"),
   setupHelp: document.querySelector("#setup-help"),
   setupProgress: document.querySelector("#setup-progress"),
-  setupButton: document.querySelector("#setup-button"),
-  setupLabel: document.querySelector("#setup-label"),
+  setupUpdateButton: document.querySelector("#setup-update-button"),
+  setupUpdateLabel: document.querySelector("#setup-update-label"),
+  setupAiButton: document.querySelector("#setup-ai-button"),
+  setupAiLabel: document.querySelector("#setup-ai-label"),
   setupResult: document.querySelector("#setup-result"),
+  taskModelPickers: [...document.querySelectorAll("[data-task-model-picker]")],
+  taskProviderSelects: [...document.querySelectorAll("[data-task-provider]")],
+  taskModelSelects: [...document.querySelectorAll("[data-task-model]")],
+  taskModelHelp: [...document.querySelectorAll("[data-task-model-help]")],
   urlInput: document.querySelector("#url-input"),
   clearUrl: document.querySelector("#clear-url"),
   formError: document.querySelector("#form-error"),
@@ -91,7 +97,9 @@ const NETWORK_RETRIES = 5;
 const NETWORK_SOCKET_TIMEOUT = 30;
 const PANEL_SCOPE_WAIT_MS = 4_000;
 const VERSION_PROBE_TIMEOUT_MS = 75_000;
+const SETUP_PROCESS_TIMEOUT_MS = 45 * 60_000;
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+const YT_DLP_RELEASE_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download";
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
@@ -106,6 +114,9 @@ let dependenciesChecked = false;
 let dependencyRefreshPending = false;
 let dependencyErrorActive = false;
 let setupSubmissionPending = false;
+let directSetupRunning = false;
+let directSetupProcessJob = null;
+let directSetupCancelled = false;
 let setupTaskId = "";
 let setupTaskStatus = "";
 let setupRequestError = "";
@@ -118,6 +129,8 @@ let history = loadHistory();
 let dependencyProbeJob = null;
 let versionRefreshPending = false;
 let versionRefreshError = "";
+let taskModelCatalog = { defaultModel: "", models: [] };
+let selectedTaskModelId = "";
 const ignoredProbeProcessIds = new Set();
 const outputBuffers = { stdout: "", stderr: "" };
 
@@ -128,6 +141,163 @@ function storedTab() {
   } catch {
     return "download";
   }
+}
+
+function storedTaskModel() {
+  try {
+    return localStorage.getItem("video-download.task-model.v1") || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveTaskModel(id) {
+  try {
+    if (id) localStorage.setItem("video-download.task-model.v1", id);
+    else localStorage.removeItem("video-download.task-model.v1");
+  } catch {
+    // Model preference is optional and must never block a Task.
+  }
+}
+
+function normalizedTaskModels(raw) {
+  const models = Array.isArray(raw?.models)
+    ? raw.models.filter(
+        (item) =>
+          item &&
+          typeof item.id === "string" &&
+          item.id &&
+          typeof item.providerId === "string" &&
+          item.providerId &&
+          typeof item.provider === "string" &&
+          typeof item.model === "string" &&
+          typeof item.label === "string",
+      )
+    : [];
+  const ids = new Set(models.map((item) => item.id));
+  return {
+    defaultModel:
+      typeof raw?.defaultModel === "string" && ids.has(raw.defaultModel) ? raw.defaultModel : "",
+    models,
+  };
+}
+
+function selectedTaskModel() {
+  return taskModelCatalog.models.find((item) => item.id === selectedTaskModelId) || null;
+}
+
+function chooseTaskModel(id) {
+  const next = taskModelCatalog.models.find((item) => item.id === id);
+  selectedTaskModelId =
+    next?.id || taskModelCatalog.defaultModel || taskModelCatalog.models[0]?.id || "";
+  saveTaskModel(selectedTaskModelId);
+  renderTaskModelPickers();
+}
+
+function chooseTaskProvider(providerId) {
+  const current = selectedTaskModel();
+  if (current?.providerId === providerId) return;
+  const preferred = taskModelCatalog.models.find(
+    (item) => item.providerId === providerId && item.id === taskModelCatalog.defaultModel,
+  );
+  chooseTaskModel(
+    preferred?.id ||
+      taskModelCatalog.models.find((item) => item.providerId === providerId)?.id ||
+      "",
+  );
+}
+
+function renderTaskModelPickers() {
+  const models = taskModelCatalog.models;
+  const selected = selectedTaskModel();
+  const providers = [];
+  const seenProviders = new Set();
+  for (const item of models) {
+    if (seenProviders.has(item.providerId)) continue;
+    seenProviders.add(item.providerId);
+    providers.push({ id: item.providerId, label: item.provider });
+  }
+  const supported = previewMode || Number(context.apiVersion) >= 9;
+  for (const picker of elements.taskModelPickers) picker.hidden = !supported;
+  for (const select of elements.taskProviderSelects) {
+    select.replaceChildren();
+    if (providers.length === 0) {
+      const option = document.createElement("option");
+      option.textContent = "未配置";
+      select.append(option);
+    }
+    for (const provider of providers) {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.label;
+      select.append(option);
+    }
+    select.value = selected?.providerId || providers[0]?.id || "";
+    select.disabled = providers.length < 2;
+  }
+  for (const select of elements.taskModelSelects) {
+    const providerId = selected?.providerId || providers[0]?.id || "";
+    select.replaceChildren();
+    const providerModels = models.filter((candidate) => candidate.providerId === providerId);
+    if (providerModels.length === 0) {
+      const option = document.createElement("option");
+      option.textContent = "未配置";
+      select.append(option);
+    }
+    for (const item of providerModels) {
+      const option = document.createElement("option");
+      option.value = item.id;
+      option.textContent = item.label === item.model ? item.label : `${item.label} · ${item.model}`;
+      option.title = item.id;
+      select.append(option);
+    }
+    select.value = selected?.id || "";
+    select.disabled = providerModels.length < 2;
+  }
+  const help = selected
+    ? `${selected.provider} · ${selected.label}；只用于隔离 Task，不继承聊天上下文。`
+    : "没有可用的文本模型连接，请先在 CodeShell 设置中添加。";
+  for (const element of elements.taskModelHelp) element.textContent = help;
+}
+
+async function loadTaskModels() {
+  if (previewMode) {
+    taskModelCatalog = {
+      defaultModel: "preview-openai",
+      models: [
+        {
+          id: "preview-openai",
+          providerId: "openai",
+          provider: "OpenAI",
+          model: "gpt-5.5",
+          label: "GPT-5.5",
+        },
+        {
+          id: "preview-anthropic",
+          providerId: "anthropic",
+          provider: "Anthropic",
+          model: "claude-sonnet-4-6",
+          label: "Claude Sonnet 4.6",
+        },
+      ],
+    };
+  } else {
+    try {
+      taskModelCatalog = normalizedTaskModels(await panel.call("agent.task.models"));
+    } catch {
+      taskModelCatalog = { defaultModel: "", models: [] };
+    }
+  }
+  const stored = storedTaskModel();
+  const initial = taskModelCatalog.models.some((item) => item.id === stored)
+    ? stored
+    : taskModelCatalog.defaultModel || taskModelCatalog.models[0]?.id || "";
+  selectedTaskModelId = initial;
+  renderTaskModelPickers();
+}
+
+function taskModelStartFields() {
+  return selectedTaskModelId ? { model: selectedTaskModelId } : {};
 }
 
 function activateTab(name, options = {}) {
@@ -234,7 +404,7 @@ function renderVersionInfo() {
     elements.versionComparison.textContent = "已是 GitHub 官方最新稳定版。";
   } else if (comparison === -1) {
     elements.versionComparison.dataset.state = "update";
-    elements.versionComparison.textContent = "发现新版本，可以使用一键初始化更新。";
+    elements.versionComparison.textContent = "发现新版本，可以直接一键更新。";
   } else if (comparison === 1) {
     elements.versionComparison.dataset.state = "current";
     elements.versionComparison.textContent = "本机版本比当前稳定版更新。";
@@ -697,7 +867,7 @@ function renderSetupCard() {
     installedYtDlpVersion: runtime.ytDlp?.version,
     latestYtDlpVersion: runtime.latestYtDlpVersion,
   });
-  const setupActive = Boolean(setupTaskId);
+  const setupActive = Boolean(setupTaskId) || directSetupRunning;
   const showSetupCard = Boolean(
     setupNeeded ||
     setupActive ||
@@ -728,24 +898,42 @@ function renderSetupCard() {
     inspectionJob?.running ||
     (dependencyProbeJob?.running && !dependencyProbeJob.id),
   );
-  elements.setupButton.disabled =
-    !setupActive && (processBusy || dependencyRefreshPending || setupSubmissionPending);
-  elements.setupLabel.textContent = setupSubmissionPending
-    ? "正在创建初始化 Task…"
-    : setupActive
+  elements.setupUpdateButton.disabled =
+    Boolean(setupTaskId) ||
+    setupSubmissionPending ||
+    (!directSetupRunning && (processBusy || dependencyRefreshPending));
+  elements.setupUpdateLabel.textContent = directSetupRunning
+    ? "取消安装 / 更新"
+    : dependencyRefreshPending
+      ? "正在复检…"
+      : missingYtDlp || missingFfmpeg
+        ? "一键安装"
+        : updateAvailable
+          ? "一键更新"
+          : "重新检查";
+  elements.setupAiButton.disabled =
+    directSetupRunning ||
+    (!setupTaskId &&
+      (processBusy ||
+        dependencyRefreshPending ||
+        setupSubmissionPending ||
+        taskModelCatalog.models.length === 0));
+  elements.setupAiLabel.textContent = setupSubmissionPending
+    ? "正在创建 AI Task…"
+    : setupTaskId
       ? setupTaskStatus === "cancelling"
         ? "正在取消…"
-        : "取消初始化"
-      : dependencyRefreshPending
-        ? "正在复检…"
-        : "一键初始化";
+        : "取消 AI 初始化"
+      : "AI 初始化 / 修复";
 
   elements.setupResult.textContent = setupTaskResult;
   elements.setupResult.hidden = !setupTaskResult;
   renderSetupProgress();
 
   if (setupRequestError) {
-    elements.setupHelp.textContent = `初始化 Task 失败：${setupRequestError}`;
+    elements.setupHelp.textContent = `初始化失败：${setupRequestError}`;
+  } else if (directSetupRunning) {
+    elements.setupHelp.textContent = "正在执行确定性的本地安装/更新流程，不会调用 AI。";
   } else if (setupActive) {
     const currentStep = setupTaskActivity.at(-1);
     elements.setupHelp.textContent =
@@ -756,7 +944,7 @@ function renderSetupCard() {
           : "独立 Task 正在使用内置 Skill 检查并修复依赖；完成后面板会自动复检。";
   } else {
     elements.setupHelp.textContent =
-      "独立 Task 会先查 GitHub 官方最新版；没有 Python 就安装官方二进制，再处理 ffmpeg。";
+      "一键安装/更新不使用 AI；特殊环境可选择上方 Provider 和模型，让隔离 AI Task 修复。";
   }
 }
 
@@ -768,12 +956,17 @@ function updateActionAvailability() {
     inspectionJob?.running ||
     (dependencyProbeJob?.running && !dependencyProbeJob.id),
   );
-  const setupActive = Boolean(setupTaskId);
+  const setupActive = Boolean(setupTaskId) || directSetupRunning;
   elements.downloadButton.disabled = !ready || !validUrl || processBusy || setupActive;
   elements.inspectButton.disabled = !ready || !validUrl || processBusy || setupActive;
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
-  const canAnalyze = Boolean(lastFailure) && !processBusy && !analysisPending && !setupActive;
+  const canAnalyze =
+    Boolean(lastFailure) &&
+    !processBusy &&
+    !analysisPending &&
+    !setupActive &&
+    taskModelCatalog.models.length > 0;
   elements.analyzeErrorButton.disabled = !canAnalyze;
   elements.analyzeErrorLabel.textContent = analysisPending
     ? "AI Task 分析中…"
@@ -1588,7 +1781,408 @@ async function cancelDownloadForAgent() {
   return { cancelRequested: true, title: currentJob?.title || null };
 }
 
-async function requestSetup() {
+function pushSetupActivity(message, status = "running", kind = "tool", toolName = "") {
+  setupTaskActivity = [
+    ...setupTaskActivity,
+    {
+      kind,
+      status,
+      message: sanitizeDiagnosticText(message, 300),
+      ...(toolName ? { toolName } : {}),
+      at: Date.now(),
+    },
+  ].slice(-12);
+  updateActionAvailability();
+}
+
+function finishDirectSetupProcess(job, result, error = null) {
+  if (!job?.running) return;
+  job.running = false;
+  if (job.timer) clearTimeout(job.timer);
+  if (directSetupProcessJob === job) directSetupProcessJob = null;
+  if (error) job.reject(error);
+  else job.resolve(result);
+}
+
+function runDirectSetupProcess(executable, directory, args, label) {
+  if (directSetupProcessJob?.running) {
+    return Promise.reject(new Error("已有安装命令正在执行"));
+  }
+  if (directSetupCancelled) return Promise.reject(new Error("安装 / 更新已取消"));
+  pushSetupActivity(label, "running", "process", executable.name || label);
+  return new Promise((resolve, reject) => {
+    const job = {
+      id: "",
+      label,
+      stdout: "",
+      stderr: "",
+      running: true,
+      timer: null,
+      resolve,
+      reject,
+    };
+    directSetupProcessJob = job;
+    panel
+      .call("process.spawn", {
+        executableHandle: executable.handle,
+        directoryHandle: directory.handle,
+        args,
+      })
+      .then(
+        (result) => {
+          if (!job.running) return;
+          job.id ||= result.processId;
+          if (directSetupCancelled) {
+            void panel.call("process.cancel", { processId: job.id }).catch(() => undefined);
+          }
+          job.timer = setTimeout(() => {
+            if (!job.running) return;
+            if (job.id)
+              void panel.call("process.cancel", { processId: job.id }).catch(() => undefined);
+            finishDirectSetupProcess(job, null, new Error(`${label}超时`));
+          }, SETUP_PROCESS_TIMEOUT_MS);
+        },
+        (error) => finishDirectSetupProcess(job, null, error),
+      );
+  }).then((result) => {
+    pushSetupActivity(`${label}完成`, "completed", "process", executable.name || label);
+    return result;
+  });
+}
+
+function requireSuccessfulProcess(result, label) {
+  if (result?.code === 0) return result;
+  const detail = sanitizeDiagnosticText(result?.stderr || result?.stdout || "", 500);
+  throw new Error(`${label}失败${detail ? `：${detail}` : ""}`);
+}
+
+async function requireSetupExecutable(name) {
+  const executable = await panel.call("process.find", { name });
+  if (!executable?.available || !executable.handle) throw new Error(`没有找到 ${name}`);
+  return executable;
+}
+
+async function readLatestYtDlpRelease(directory) {
+  const curl = await requireSetupExecutable("curl");
+  const response = await runDirectSetupProcess(
+    curl,
+    directory,
+    [
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--location",
+      "--max-time",
+      "20",
+      "--header",
+      "Accept: application/vnd.github+json",
+      "--header",
+      "User-Agent: Mimi-Download-Panel",
+      GITHUB_LATEST_RELEASE_API,
+    ],
+    "查询 yt-dlp 官方最新版",
+  );
+  requireSuccessfulProcess(response, "查询 yt-dlp 官方最新版");
+  const latest = parseGitHubLatestRelease(response.stdout);
+  if (!latest) throw new Error("GitHub 最新版响应无法识别");
+  runtime.latestYtDlpVersion = latest;
+  renderVersionInfo();
+  return { latest, curl };
+}
+
+function ytDlpAssetFor(platform, arch, libc) {
+  if (platform === "darwin") return { asset: "yt-dlp_macos", installedName: "yt-dlp" };
+  if (platform === "win32") {
+    if (arch === "arm64") return { asset: "yt-dlp_arm64.exe", installedName: "yt-dlp.exe" };
+    if (arch === "ia32") return { asset: "yt-dlp_x86.exe", installedName: "yt-dlp.exe" };
+    return { asset: "yt-dlp.exe", installedName: "yt-dlp.exe" };
+  }
+  if (platform === "linux") {
+    if (arch === "x64") {
+      return {
+        asset: libc === "musl" ? "yt-dlp_musllinux" : "yt-dlp_linux",
+        installedName: "yt-dlp",
+      };
+    }
+    if (arch === "arm64") {
+      return {
+        asset: libc === "musl" ? "yt-dlp_musllinux_aarch64" : "yt-dlp_linux_aarch64",
+        installedName: "yt-dlp",
+      };
+    }
+    if (arch === "arm") return { asset: "yt-dlp_linux_armv7l", installedName: "yt-dlp" };
+  }
+  throw new Error(`当前平台没有匹配的 yt-dlp 官方二进制：${platform}/${arch}`);
+}
+
+function checksumFromReleaseList(text, asset) {
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = /^([a-fA-F0-9]{64})\s+\*?(.+)$/.exec(line.trim());
+    if (match && match[2] === asset) return match[1].toLowerCase();
+  }
+  return "";
+}
+
+function checksumFromToolOutput(text) {
+  return (
+    String(text || "")
+      .match(/\b[a-fA-F0-9]{64}\b/)?.[0]
+      ?.toLowerCase() || ""
+  );
+}
+
+async function installOfficialYtDlpBinary(platform, arch, libc, latest, curl, directory) {
+  const { asset, installedName } = ytDlpAssetFor(platform, arch, libc);
+  const temporaryName = `${installedName}.download`;
+  const checksumResult = await runDirectSetupProcess(
+    curl,
+    directory,
+    [
+      "--fail",
+      "--silent",
+      "--show-error",
+      "--location",
+      `${YT_DLP_RELEASE_BASE}/${latest}/SHA2-256SUMS`,
+    ],
+    "读取官方 SHA-256 校验表",
+  );
+  requireSuccessfulProcess(checksumResult, "读取官方 SHA-256 校验表");
+  const expected = checksumFromReleaseList(checksumResult.stdout, asset);
+  if (!expected) throw new Error(`官方校验表中没有 ${asset}`);
+  const downloadResult = await runDirectSetupProcess(
+    curl,
+    directory,
+    [
+      "--fail",
+      "--show-error",
+      "--location",
+      "--retry",
+      "3",
+      "--output",
+      temporaryName,
+      `${YT_DLP_RELEASE_BASE}/${latest}/${asset}`,
+    ],
+    `下载官方 ${asset}`,
+  );
+  requireSuccessfulProcess(downloadResult, `下载官方 ${asset}`);
+
+  let actual = "";
+  if (platform === "win32") {
+    const certutil = await requireSetupExecutable("certutil.exe");
+    const result = await runDirectSetupProcess(
+      certutil,
+      directory,
+      ["-hashfile", temporaryName, "SHA256"],
+      "校验 yt-dlp SHA-256",
+    );
+    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
+  } else {
+    let hashTool = await panel.call("process.find", { name: "sha256sum" });
+    let args = [temporaryName];
+    if (!hashTool?.available) {
+      hashTool = await requireSetupExecutable("shasum");
+      args = ["-a", "256", temporaryName];
+    }
+    const result = await runDirectSetupProcess(hashTool, directory, args, "校验 yt-dlp SHA-256");
+    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
+  }
+  if (!actual || actual !== expected) throw new Error("yt-dlp SHA-256 校验失败，已拒绝安装");
+
+  if (platform !== "win32") {
+    const chmod = await requireSetupExecutable("chmod");
+    const chmodResult = await runDirectSetupProcess(
+      chmod,
+      directory,
+      ["755", temporaryName],
+      "设置临时 yt-dlp 可执行权限",
+    );
+    requireSuccessfulProcess(chmodResult, "设置临时 yt-dlp 可执行权限");
+  }
+  const temporaryExecutable = await requireSetupExecutable(temporaryName);
+  const temporaryVersion = await runDirectSetupProcess(
+    temporaryExecutable,
+    directory,
+    ["--ignore-config", "--version"],
+    "验证临时 yt-dlp 二进制",
+  );
+  requireSuccessfulProcess(temporaryVersion, "验证临时 yt-dlp 二进制");
+  if (parseYtDlpVersionOutput(temporaryVersion.stdout) !== latest) {
+    throw new Error("临时 yt-dlp 二进制版本与 GitHub Release 不一致");
+  }
+
+  if (platform === "win32") {
+    const command = await requireSetupExecutable("cmd.exe");
+    const moveResult = await runDirectSetupProcess(
+      command,
+      directory,
+      ["/d", "/c", "move", "/Y", temporaryName, installedName],
+      "安装 yt-dlp 官方二进制",
+    );
+    requireSuccessfulProcess(moveResult, "安装 yt-dlp 官方二进制");
+  } else {
+    const move = await requireSetupExecutable("mv");
+    const moveResult = await runDirectSetupProcess(
+      move,
+      directory,
+      ["-f", temporaryName, installedName],
+      "安装 yt-dlp 官方二进制",
+    );
+    requireSuccessfulProcess(moveResult, "安装 yt-dlp 官方二进制");
+  }
+}
+
+async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
+  const { latest, curl } = await readLatestYtDlpRelease(managedBin);
+  if (runtime.ytDlp?.handle) {
+    const installed = runtime.ytDlp.version || "";
+    if (compareYtDlpVersions(installed, latest) === 0) {
+      pushSetupActivity(`yt-dlp 已是最新版 ${latest}`, "completed", "plan");
+      return;
+    }
+    try {
+      const updated = await runDirectSetupProcess(
+        runtime.ytDlp,
+        managedBin,
+        ["--ignore-config", "-U"],
+        "更新现有 yt-dlp",
+      );
+      if (updated.code === 0) {
+        const verified = await runDirectSetupProcess(
+          runtime.ytDlp,
+          managedBin,
+          ["--ignore-config", "--version"],
+          "验证 yt-dlp 版本",
+        );
+        if (verified.code === 0 && parseYtDlpVersionOutput(verified.stdout) === latest) return;
+      }
+      pushSetupActivity("现有安装无法自更新，改用官方二进制", "completed", "plan");
+    } catch {
+      pushSetupActivity("现有安装无法自更新，改用官方二进制", "completed", "plan");
+    }
+  }
+  await installOfficialYtDlpBinary(platform, arch, libc, latest, curl, managedBin);
+  const installed = await requireSetupExecutable("yt-dlp");
+  const verified = await runDirectSetupProcess(
+    installed,
+    managedBin,
+    ["--ignore-config", "--version"],
+    "验证 yt-dlp 版本",
+  );
+  const version = parseYtDlpVersionOutput(verified.stdout);
+  if (version !== latest) throw new Error(`yt-dlp 版本验证失败：${version || "没有输出"}`);
+  runtime.ytDlp = { ...installed, version };
+}
+
+async function ensureFfmpeg(platform, directory) {
+  if (platform === "darwin" || platform === "linux") {
+    const brew = await panel.call("process.find", { name: "brew" });
+    if (brew?.available) {
+      const action = runtime.ffmpeg?.handle ? "upgrade" : "install";
+      const result = await runDirectSetupProcess(
+        brew,
+        directory,
+        [action, "ffmpeg"],
+        `${action === "upgrade" ? "更新" : "安装"} ffmpeg（Homebrew）`,
+      );
+      if (result.code !== 0)
+        throw new Error(sanitizeDiagnosticText(result.stderr || "Homebrew 执行失败", 500));
+      return;
+    }
+  }
+  if (platform === "win32") {
+    const winget = await panel.call("process.find", { name: "winget.exe" });
+    if (winget?.available) {
+      const common = [
+        "--id",
+        "Gyan.FFmpeg",
+        "--exact",
+        "--accept-source-agreements",
+        "--accept-package-agreements",
+        "--silent",
+      ];
+      let result = await runDirectSetupProcess(
+        winget,
+        directory,
+        [runtime.ffmpeg?.handle ? "upgrade" : "install", ...common],
+        `${runtime.ffmpeg?.handle ? "更新" : "安装"} ffmpeg（winget）`,
+      );
+      if (result.code !== 0 && runtime.ffmpeg?.handle) {
+        result = await runDirectSetupProcess(
+          winget,
+          directory,
+          ["install", ...common],
+          "安装 ffmpeg（winget）",
+        );
+      }
+      if (result.code !== 0)
+        throw new Error(sanitizeDiagnosticText(result.stderr || "winget 执行失败", 500));
+      return;
+    }
+  }
+  if (runtime.ffmpeg?.handle) {
+    pushSetupActivity("ffmpeg 已安装；没有可用的自动更新器，保留当前版本", "completed", "plan");
+    return;
+  }
+  throw new Error("没有找到可安全无交互运行的 ffmpeg 安装器，请使用 AI 初始化 / 修复");
+}
+
+async function requestDirectSetup() {
+  if (directSetupRunning) {
+    directSetupCancelled = true;
+    const processId = directSetupProcessJob?.id;
+    if (processId) await panel.call("process.cancel", { processId }).catch(() => undefined);
+    return;
+  }
+  if (setupTaskId || setupSubmissionPending || currentJob?.running || inspectionJob?.running)
+    return;
+  if (previewMode) {
+    setupTaskActivity = [
+      { kind: "plan", status: "completed", message: "已查询 yt-dlp 官方最新版", at: Date.now() },
+      { kind: "tool", status: "completed", message: "yt-dlp 与 ffmpeg 已更新", at: Date.now() },
+    ];
+    setupTaskResult = "预览：确定性安装 / 更新流程已完成，没有调用 AI。";
+    updateActionAvailability();
+    return;
+  }
+  directSetupRunning = true;
+  directSetupCancelled = false;
+  setupRequestError = "";
+  setupTaskResult = "";
+  setupTaskActivity = [
+    { kind: "plan", status: "running", message: "正在准备确定性安装 / 更新流程…", at: Date.now() },
+  ];
+  updateActionAvailability();
+  try {
+    if (Number(context.apiVersion) < 9) {
+      throw new Error("一键安装 / 更新需要 CodeShell Panel API v9，请先更新 CodeShell");
+    }
+    const [system, managedBin] = await Promise.all([
+      panel.call("process.info"),
+      panel.call("filesystem.getKnownDirectory", { name: "user-bin" }),
+    ]);
+    await ensureLatestYtDlp(system.platform, system.arch, system.libc, managedBin);
+    if (directSetupCancelled) throw new Error("安装 / 更新已取消");
+    await ensureFfmpeg(system.platform, managedBin);
+    if (directSetupCancelled) throw new Error("安装 / 更新已取消");
+    await refreshRuntimeDependencies();
+    setupTaskResult = `本地安装 / 更新完成。yt-dlp ${runtime.ytDlp?.version || "已验证"}；ffmpeg ${runtime.ffmpeg?.handle ? "已就绪" : "需要处理"}。`;
+    pushSetupActivity("下载环境复检完成", "completed", "plan");
+  } catch (error) {
+    setupRequestError = sanitizeDiagnosticText(
+      error instanceof Error ? error.message : String(error),
+      500,
+    );
+    pushSetupActivity(setupRequestError, "failed", "error");
+  } finally {
+    directSetupRunning = false;
+    directSetupProcessJob = null;
+    updateActionAvailability();
+  }
+}
+
+async function requestAiSetup() {
   if (setupTaskId) {
     try {
       setupTaskStatus = "cancelling";
@@ -1614,7 +2208,7 @@ async function requestSetup() {
     "使用 video-download:video-download-setup Skill 初始化或修复 Mimi Download 面板的本地依赖。",
     "先读取 panel-app:video-download 的工具列表，并调用 get_video_download_context 确认面板状态。",
     `面板当前检测到需要处理：${missing || "重新检查 yt-dlp 与 ffmpeg"}。`,
-    "这是我点击面板“一键初始化”发起的请求。第一步必须先处理 yt-dlp：从 https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest 读取官方最新稳定版，比较已安装版本，不得把 PyPI 或包管理器显示的 latest 当作版本基准。",
+    "这是我点击面板“AI 初始化 / 修复”发起的请求。第一步必须先处理 yt-dlp：从 https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest 读取官方最新稳定版，比较已安装版本，不得把 PyPI 或包管理器显示的 latest 当作版本基准。",
     "如果没有受支持的 Python，不要安装 Python 包；按系统、CPU 架构和 Linux libc 下载该 GitHub Release 的官方独立二进制，使用 SHA2-256SUMS 校验后安装到用户可写的 PATH 目录，并验证版本。",
     "第二步处理 ffmpeg：已安装就更新，没有就安装，并验证版本。即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新。",
     "完成后调用 refresh_video_download_dependencies，再次读取面板状态并告诉我结果。",
@@ -1631,7 +2225,8 @@ async function requestSetup() {
     const task = await panel.call("agent.task.start", {
       key: "setup",
       prompt,
-      label: `一键初始化 Mimi Download 环境（${missing || "yt-dlp、ffmpeg"}）`,
+      label: `AI 初始化 / 修复 Mimi Download 环境（${missing || "yt-dlp、ffmpeg"}）`,
+      ...taskModelStartFields(),
       skill: "video-download:video-download-setup",
       toolNames: ["Panel", "Bash", "BashOutput", "ListShells", "KillShell", "Read"],
       maxTurns: 12,
@@ -1700,6 +2295,7 @@ async function requestAiErrorAnalysis() {
       key: "error-analysis",
       prompt,
       label: `分析视频${failure.operation}失败：${failure.message.slice(0, 180)}`,
+      ...taskModelStartFields(),
       toolNames: [],
       maxTurns: 3,
       maxContextTokens: 8192,
@@ -1734,7 +2330,7 @@ function agentTaskFailure(task, fallback) {
   if (!reason || reason === "completed") return "";
   const reasonMessage =
     reason === "model_error"
-      ? "AI 模型请求失败，请检查 CodeShell 默认文本模型的 API 密钥。"
+      ? "AI 模型请求失败，请检查所选模型连接的 Provider、模型和 API 密钥。"
       : reason === "prompt_too_long"
         ? "Task 内容超过模型上下文限制。"
         : reason === "max_turns"
@@ -2013,7 +2609,7 @@ async function refreshRuntimeDependencies() {
     if (!runtime.ytDlp) {
       dependencyErrorActive = true;
       setRuntimeBadge("error", "Setup needed");
-      showError("没有找到 yt-dlp；可以使用上方的一键初始化。");
+      showError("没有找到 yt-dlp；可以使用上方的一键安装。");
     } else {
       setRuntimeBadge(
         runtime.ffmpeg ? "ready" : "loading",
@@ -2085,7 +2681,8 @@ async function initializeRuntime() {
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "Ready");
     dependenciesChecked = true;
     setRuntimeBadge("ready", "Preview");
-    updateSessionContext({ apiVersion: 8 });
+    updateSessionContext({ apiVersion: 9 });
+    await loadTaskModels();
     await refreshVersionInfo();
     updateActionAvailability();
     return;
@@ -2096,6 +2693,7 @@ async function initializeRuntime() {
     if (Number(initialContext.apiVersion) < 8) {
       throw new Error("Mimi Download requires CodeShell Panel API v8 or newer.");
     }
+    await loadTaskModels();
     const tasks = await panel.call("agent.task.list");
     if (Array.isArray(tasks)) {
       const activeSetup = tasks.find((task) => task?.key === "setup" && taskIsActive(task));
@@ -2166,8 +2764,15 @@ elements.downloadButton.addEventListener("click", startDownload);
 elements.refreshVersions.addEventListener("click", () => {
   void refreshVersionInfo();
 });
-elements.setupButton.addEventListener("click", requestSetup);
+elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
+elements.setupAiButton.addEventListener("click", requestAiSetup);
 elements.analyzeErrorButton.addEventListener("click", requestAiErrorAnalysis);
+elements.taskProviderSelects.forEach((select) => {
+  select.addEventListener("change", () => chooseTaskProvider(select.value));
+});
+elements.taskModelSelects.forEach((select) => {
+  select.addEventListener("change", () => chooseTaskModel(select.value));
+});
 elements.cancelButton.addEventListener("click", cancelCurrentJob);
 elements.openDirectory.addEventListener("click", async () => {
   if (!runtime.directory?.handle || previewMode) return;
@@ -2212,6 +2817,18 @@ if (panel) {
     if (typeof payload?.processId === "string" && ignoredProbeProcessIds.has(payload.processId)) {
       return;
     }
+    if (directSetupProcessJob?.running && typeof payload?.processId === "string") {
+      if (!directSetupProcessJob.id || payload.processId === directSetupProcessJob.id) {
+        directSetupProcessJob.id ||= payload.processId;
+        const stream = payload.stream === "stderr" ? "stderr" : "stdout";
+        if (typeof payload.text === "string") {
+          directSetupProcessJob[stream] = `${directSetupProcessJob[stream]}${payload.text}`.slice(
+            -4_000_000,
+          );
+        }
+        return;
+      }
+    }
     if (dependencyProbeJob?.running && typeof payload?.processId === "string") {
       if (!dependencyProbeJob.id || payload.processId === dependencyProbeJob.id) {
         dependencyProbeJob.id ||= payload.processId;
@@ -2244,6 +2861,17 @@ if (panel) {
     if (typeof payload?.processId === "string" && ignoredProbeProcessIds.has(payload.processId)) {
       ignoredProbeProcessIds.delete(payload.processId);
       return;
+    }
+    if (directSetupProcessJob?.running && typeof payload?.processId === "string") {
+      if (!directSetupProcessJob.id || payload.processId === directSetupProcessJob.id) {
+        directSetupProcessJob.id ||= payload.processId;
+        finishDirectSetupProcess(directSetupProcessJob, {
+          code: Number.isInteger(payload.code) ? payload.code : null,
+          stdout: directSetupProcessJob.stdout,
+          stderr: directSetupProcessJob.stderr,
+        });
+        return;
+      }
     }
     if (dependencyProbeJob?.running && typeof payload?.processId === "string") {
       if (!dependencyProbeJob.id || payload.processId === dependencyProbeJob.id) {
