@@ -167,6 +167,25 @@
             支持 yt-dlp 可识别的网站；链接只发送给本地下载程序。
           </p>
 
+          <div class="cookie-picker" aria-labelledby="cookie-picker-title">
+            <div class="cookie-picker-heading">
+              <span>
+                <strong id="cookie-picker-title">登录 Cookie</strong>
+                <small>用于需要登录、会员或年龄验证的视频</small>
+              </span>
+              <button id="cookie-refresh" class="text-button" type="button">刷新账号</button>
+            </div>
+            <div class="cookie-picker-controls">
+              <select id="cookie-select" aria-label="选择登录 Cookie" disabled>
+                <option value="">不使用 Cookie</option>
+              </select>
+              <button id="cookie-login" class="secondary-button" type="button" disabled>
+                登录并保存
+              </button>
+            </div>
+            <small id="cookie-help">粘贴链接后会显示与该网站匹配的已保存账号。</small>
+          </div>
+
           <div class="inspect-row">
             <button id="inspect-button" class="secondary-button" type="button" disabled>
               获取视频信息
@@ -205,46 +224,26 @@
 
           <div class="divider"></div>
 
-          <fieldset class="format-fieldset">
-            <legend>
+          <section class="format-fieldset" aria-labelledby="quality-title">
+            <div class="format-heading">
               <span class="step-label">02 · FORMAT</span>
-              <strong>选择输出</strong>
-            </legend>
-            <div class="format-grid">
-              <label class="format-option">
-                <input type="radio" name="format" value="best" checked />
-                <span class="format-box">
-                  <b>MAX</b>
-                  <strong>最佳画质</strong>
-                  <small>MP4 · 最高可用</small>
-                </span>
-              </label>
-              <label class="format-option">
-                <input type="radio" name="format" value="1080" />
-                <span class="format-box">
-                  <b>HD</b>
-                  <strong>1080p</strong>
-                  <small>MP4 · 兼容优先</small>
-                </span>
-              </label>
-              <label class="format-option">
-                <input type="radio" name="format" value="720" />
-                <span class="format-box">
-                  <b>SD</b>
-                  <strong>720p</strong>
-                  <small>MP4 · 节省空间</small>
-                </span>
-              </label>
-              <label class="format-option">
-                <input type="radio" name="format" value="audio" />
-                <span class="format-box">
-                  <b>♪</b>
-                  <strong>仅音频</strong>
-                  <small>MP3 · 高质量</small>
-                </span>
-              </label>
+              <strong id="quality-title">选择画质</strong>
             </div>
-          </fieldset>
+            <label class="quality-picker">
+              <span>视频画质</span>
+              <select id="quality-select">
+                <option value="best">自动 · 最高可用画质</option>
+                <option value="2160">2160p · 4K</option>
+                <option value="1440">1440p · 2K</option>
+                <option value="1080">1080p · Full HD</option>
+                <option value="720">720p · HD</option>
+                <option value="480">480p · 标清</option>
+                <option value="360">360p · 节省空间</option>
+                <option value="audio">仅音频 · MP3</option>
+              </select>
+              <small id="quality-help">获取视频信息后，会根据实际可用清晰度更新选项。</small>
+            </label>
+          </section>
 
           <div class="option-list">
             <label class="toggle-row">
@@ -288,8 +287,27 @@
               <i aria-hidden="true"></i>
             </label>
             <div id="subtitle-options" class="option-details" hidden>
-              <label class="wide">
+              <label>
+                <span>字幕来源</span>
+                <select id="subtitle-mode">
+                  <option value="manual">仅人工字幕</option>
+                  <option value="auto">仅自动字幕</option>
+                  <option value="both" selected>人工 + 自动字幕</option>
+                </select>
+              </label>
+              <label>
                 <span>字幕语言</span>
+                <select id="subtitle-language-preset">
+                  <option value="zh-en" selected>中文 + 英文</option>
+                  <option value="zh-hans">简体中文</option>
+                  <option value="zh-hant">繁体中文</option>
+                  <option value="en">英文</option>
+                  <option value="all">全部可用语言</option>
+                  <option value="custom">自定义…</option>
+                </select>
+              </label>
+              <label id="subtitle-custom-row" class="wide" hidden>
+                <span>自定义语言代码</span>
                 <input
                   id="subtitle-languages"
                   type="text"
@@ -298,7 +316,15 @@
                   placeholder="例如 zh-Hans,zh-Hant,en.*"
                 />
               </label>
-              <small>同时尝试人工字幕和自动字幕；有 ffmpeg 时转换为 SRT 并嵌入视频。</small>
+              <label class="toggle-row compact wide">
+                <span>
+                  <strong>嵌入视频文件</strong>
+                  <small>关闭后保留独立字幕文件，不写入视频</small>
+                </span>
+                <input id="subtitle-embed" type="checkbox" checked />
+                <i aria-hidden="true"></i>
+              </label>
+              <small id="subtitle-help">默认转换为 SRT；没有 ffmpeg 时会保留原字幕文件。</small>
             </div>
           </div>
 

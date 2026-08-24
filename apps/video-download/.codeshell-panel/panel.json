@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
@@ -12,7 +12,7 @@
   "icon": "activity",
   "placement": "right-dock",
   "singleton": true,
-  "permissions": ["process", "agent.task"],
+  "permissions": ["process", "credentials.cookies", "agent.task"],
   "agent": {
     "tools": [
       {
@@ -57,13 +57,13 @@
       },
       {
         "name": "apply_video_download_config",
-        "description": "Set the format, optional playlist range, and subtitle settings in the Mimi Download panel. This never starts the download.",
+        "description": "Set the quality, optional playlist range, and subtitle source/language/embed settings in the Mimi Download panel. This never starts the download and never selects a Cookie account.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "format": {
               "type": "string",
-              "enum": ["best", "1080", "720", "audio"]
+              "enum": ["best", "2160", "1440", "1080", "720", "480", "360", "audio"]
             },
             "playlist": { "type": "boolean" },
             "playlistItems": {
@@ -78,10 +78,23 @@
               "description": "Optional maximum playlist item number. Use 0 to clear it. Ignored when playlistItems is set."
             },
             "subtitles": { "type": "boolean" },
+            "subtitleMode": {
+              "type": "string",
+              "enum": ["manual", "auto", "both"],
+              "description": "Choose human-provided subtitles, automatic subtitles, or both."
+            },
+            "subtitleLanguagePreset": {
+              "type": "string",
+              "enum": ["zh-en", "zh-hans", "zh-hant", "en", "all", "custom"]
+            },
             "subtitleLanguages": {
               "type": "string",
               "maxLength": 120,
               "description": "Optional yt-dlp subtitle language expression such as zh-Hans,zh-Hant,en.*."
+            },
+            "embedSubtitles": {
+              "type": "boolean",
+              "description": "True embeds subtitles into the video when ffmpeg is available; false keeps separate subtitle files."
             },
             "reason": {
               "type": "string",

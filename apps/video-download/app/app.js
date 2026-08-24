@@ -1,6 +1,7 @@
 import {
   compareYtDlpVersions,
   parseGitHubLatestRelease,
+  parseGitHubRelease,
   parseYtDlpVersionOutput,
   shouldOfferSetup,
 } from "./version.js";
@@ -30,6 +31,10 @@ const elements = {
   taskModelHelp: [...document.querySelectorAll("[data-task-model-help]")],
   urlInput: document.querySelector("#url-input"),
   clearUrl: document.querySelector("#clear-url"),
+  cookieSelect: document.querySelector("#cookie-select"),
+  cookieRefresh: document.querySelector("#cookie-refresh"),
+  cookieLogin: document.querySelector("#cookie-login"),
+  cookieHelp: document.querySelector("#cookie-help"),
   formError: document.querySelector("#form-error"),
   inspectButton: document.querySelector("#inspect-button"),
   inspectStatus: document.querySelector("#inspect-status"),
@@ -49,9 +54,16 @@ const elements = {
   playlistOptions: document.querySelector("#playlist-options"),
   playlistItems: document.querySelector("#playlist-items"),
   playlistEnd: document.querySelector("#playlist-end"),
+  qualitySelect: document.querySelector("#quality-select"),
+  qualityHelp: document.querySelector("#quality-help"),
   subtitles: document.querySelector("#subtitle-toggle"),
   subtitleOptions: document.querySelector("#subtitle-options"),
+  subtitleMode: document.querySelector("#subtitle-mode"),
+  subtitleLanguagePreset: document.querySelector("#subtitle-language-preset"),
+  subtitleCustomRow: document.querySelector("#subtitle-custom-row"),
   subtitleLanguages: document.querySelector("#subtitle-languages"),
+  subtitleEmbed: document.querySelector("#subtitle-embed"),
+  subtitleHelp: document.querySelector("#subtitle-help"),
   destinationName: document.querySelector("#destination-name"),
   destinationPath: document.querySelector("#destination-path"),
   chooseDirectory: document.querySelector("#choose-directory"),
@@ -100,10 +112,30 @@ const VERSION_PROBE_TIMEOUT_MS = 75_000;
 const SETUP_PROCESS_TIMEOUT_MS = 45 * 60_000;
 const GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 const YT_DLP_RELEASE_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download";
+const FFMPEG_LATEST_RELEASE_API =
+  "https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest";
+const FFMPEG_RELEASE_BASE = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download";
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-const SUPPORTED_FORMATS = new Set(["best", "1080", "720", "audio"]);
+const SUPPORTED_FORMATS = new Set([
+  "best",
+  "2160",
+  "1440",
+  "1080",
+  "720",
+  "480",
+  "360",
+  "audio",
+]);
+const SUBTITLE_MODES = new Set(["manual", "auto", "both"]);
+const SUBTITLE_LANGUAGE_PRESETS = {
+  "zh-en": "zh-Hans,zh-Hant,zh.*,en.*",
+  "zh-hans": "zh-Hans,zh-CN,zh.*",
+  "zh-hant": "zh-Hant,zh-TW",
+  en: "en.*",
+  all: "all",
+};
 const TAB_NAMES = ["download", "task", "history"];
 
 let currentJob = null;
@@ -131,6 +163,11 @@ let versionRefreshPending = false;
 let versionRefreshError = "";
 let taskModelCatalog = { defaultModel: "", models: [] };
 let selectedTaskModelId = "";
+let cookieAccounts = [];
+let cookieAccountsUrl = "";
+let cookieLoading = false;
+let cookieAuthorization = null;
+let cookieReloadTimer = null;
 const ignoredProbeProcessIds = new Set();
 const outputBuffers = { stdout: "", stderr: "" };
 
@@ -443,7 +480,9 @@ function saveHistory() {
 }
 
 function selectedFormat() {
-  return document.querySelector('input[name="format"]:checked')?.value || "best";
+  return SUPPORTED_FORMATS.has(elements.qualitySelect.value)
+    ? elements.qualitySelect.value
+    : "best";
 }
 
 function sanitizeMediaUrl(url, playlistMode) {
@@ -468,6 +507,191 @@ function normalizedUrl(options = {}) {
   } catch {
     return null;
   }
+}
+
+function cookieSite(urlValue) {
+  const url = new URL(urlValue);
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const base = host.split(".").slice(-2).join(".") || host;
+  const id = base
+    .split(".")[0]
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+  return {
+    id: id && /^[a-z]/.test(id) ? id : `site-${id || "login"}`,
+    label: host,
+  };
+}
+
+function invalidateCookieAuthorization() {
+  cookieAuthorization = null;
+}
+
+function renderCookieAccounts(message = "", preferredId = "") {
+  const selected = preferredId || elements.cookieSelect.value;
+  elements.cookieSelect.replaceChildren();
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "不使用 Cookie";
+  elements.cookieSelect.append(none);
+  for (const account of cookieAccounts) {
+    const option = document.createElement("option");
+    option.value = account.id;
+    option.textContent = account.health === "corrupted" ? `${account.label}（需要重新登录）` : account.label;
+    option.disabled = account.health === "corrupted";
+    elements.cookieSelect.append(option);
+  }
+  if (cookieAccounts.some((account) => account.id === selected && account.health !== "corrupted")) {
+    elements.cookieSelect.value = selected;
+  }
+  const validUrl = Boolean(normalizedUrl());
+  const available = Number(context.apiVersion) >= 10;
+  elements.cookieSelect.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieRefresh.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieLogin.disabled = cookieLoading || !validUrl || !available;
+  elements.cookieHelp.textContent = message
+    ? message
+    : !validUrl
+      ? "粘贴链接后会显示与该网站匹配的已保存账号。"
+      : !available
+        ? "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。"
+        : cookieLoading
+          ? "正在读取与该网站匹配的已保存账号…"
+          : cookieAccounts.length
+            ? `找到 ${cookieAccounts.length} 个匹配账号；Cookie 内容不会暴露给面板。`
+            : "没有匹配账号，可点击“登录并保存”创建一个。";
+}
+
+async function refreshCookieAccounts(options = {}) {
+  const url = normalizedUrl();
+  invalidateCookieAuthorization();
+  if (!url || Number(context.apiVersion) < 10) {
+    cookieAccounts = [];
+    cookieAccountsUrl = "";
+    renderCookieAccounts();
+    return [];
+  }
+  if (previewMode) {
+    cookieAccounts = [{ id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname }];
+    cookieAccountsUrl = url;
+    renderCookieAccounts("预览模式：已显示一个示例 Cookie 账号。");
+    return cookieAccounts;
+  }
+  cookieLoading = true;
+  renderCookieAccounts();
+  let finalMessage = "";
+  let preferredId = "";
+  try {
+    const result = await panel.call("credentials.cookies.list", { url });
+    if (normalizedUrl() !== url) return [];
+    cookieAccounts = Array.isArray(result?.accounts)
+      ? result.accounts.filter(
+          (account) =>
+            account &&
+            typeof account.id === "string" &&
+            typeof account.label === "string" &&
+            account.id.length <= 160,
+        )
+      : [];
+    cookieAccountsUrl = url;
+    if (
+      typeof options.selectId === "string" &&
+      cookieAccounts.some(
+        (account) => account.id === options.selectId && account.health !== "corrupted",
+      )
+    ) {
+      preferredId = options.selectId;
+    }
+    return cookieAccounts;
+  } catch (error) {
+    cookieAccounts = [];
+    cookieAccountsUrl = "";
+    finalMessage = `无法读取 Cookie 账号：${error instanceof Error ? error.message : String(error)}`;
+    return [];
+  } finally {
+    cookieLoading = false;
+    renderCookieAccounts(finalMessage, preferredId);
+    updateActionAvailability();
+  }
+}
+
+function scheduleCookieAccountsRefresh() {
+  if (cookieReloadTimer) clearTimeout(cookieReloadTimer);
+  renderCookieAccounts();
+  cookieReloadTimer = setTimeout(() => {
+    cookieReloadTimer = null;
+    void refreshCookieAccounts();
+  }, 450);
+}
+
+async function loginAndSaveCookie() {
+  const url = normalizedUrl();
+  if (!url) {
+    showError("请先粘贴要下载的网站链接，再登录并保存 Cookie。");
+    return;
+  }
+  if (Number(context.apiVersion) < 10 || previewMode) {
+    renderCookieAccounts(
+      previewMode ? "预览模式不会打开登录窗口。" : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+    );
+    return;
+  }
+  const site = cookieSite(url);
+  cookieLoading = true;
+  renderCookieAccounts("请在 CodeShell 打开的隔离窗口中完成登录，然后保存。 ");
+  let finalMessage = "";
+  try {
+    const result = await panel.call("credentials.cookies.loginAndSave", {
+      providerId: site.id,
+      providerLabel: site.label,
+      url,
+    });
+    if (!result?.ok) {
+      finalMessage = result?.cancelled ? "已取消登录。" : result?.error || "没有保存 Cookie，请重试。";
+      return;
+    }
+    await refreshCookieAccounts({ selectId: result.credential?.id });
+    finalMessage = `已保存并选择 ${result.credential?.label || "登录账号"}。`;
+  } catch (error) {
+    finalMessage = `登录失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    cookieLoading = false;
+    renderCookieAccounts(finalMessage);
+  }
+}
+
+async function cookieFileArguments(url) {
+  if (cookieAccountsUrl !== url) await refreshCookieAccounts();
+  const credentialId = elements.cookieSelect.value;
+  if (!credentialId) return [];
+  if (!runtime.ytDlp?.handle) throw new Error("yt-dlp 还没有准备好。");
+  if (previewMode) return ["preview-cookie"];
+  const host = new URL(url).hostname.toLowerCase();
+  if (
+    cookieAuthorization?.credentialId === credentialId &&
+    cookieAuthorization.executableHandle === runtime.ytDlp.handle &&
+    cookieAuthorization.host === host
+  ) {
+    return [cookieAuthorization.fileArgumentHandle];
+  }
+  const result = await panel.call("credentials.cookies.authorizeProcess", {
+    credentialId,
+    url,
+    executableHandle: runtime.ytDlp.handle,
+  });
+  if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
+    throw new Error(result?.invalid ? "这个 Cookie 已失效，请重新登录并保存。" : "已取消使用 Cookie。");
+  }
+  cookieAuthorization = {
+    credentialId,
+    executableHandle: runtime.ytDlp.handle,
+    host,
+    fileArgumentHandle: result.fileArgumentHandle,
+  };
+  const account = cookieAccounts.find((item) => item.id === credentialId);
+  elements.cookieHelp.textContent = `本次面板将使用 ${account?.label || "所选账号"}；关闭面板后授权自动失效。`;
+  return [result.fileArgumentHandle];
 }
 
 function networkArguments() {
@@ -518,9 +742,74 @@ function normalizedSubtitleLanguages(value = elements.subtitleLanguages.value) {
   return compact;
 }
 
+function selectedSubtitleMode() {
+  return SUBTITLE_MODES.has(elements.subtitleMode.value) ? elements.subtitleMode.value : "both";
+}
+
+function selectedSubtitleLanguages() {
+  const preset = elements.subtitleLanguagePreset.value;
+  if (preset === "custom") return normalizedSubtitleLanguages();
+  return SUBTITLE_LANGUAGE_PRESETS[preset] || SUBTITLE_LANGUAGE_PRESETS["zh-en"];
+}
+
+function renderQualityOptions(video = inspectedVideo) {
+  const previous = selectedFormat();
+  const standardHeights = [2160, 1440, 1080, 720, 480, 360];
+  const available = new Set(
+    Array.isArray(video?.availableHeights) && video.availableHeights.length
+      ? video.availableHeights
+      : standardHeights,
+  );
+  const choices = [
+    { value: "best", label: "自动 · 最高可用画质" },
+    ...standardHeights
+      .filter((height) => !video || available.has(height) || height <= Number(video.maxHeight || 0))
+      .map((height) => ({
+        value: String(height),
+        label:
+          height === 2160
+            ? "2160p · 4K"
+            : height === 1440
+              ? "1440p · 2K"
+              : height === 1080
+                ? "1080p · Full HD"
+                : height === 720
+                  ? "720p · HD"
+                  : height === 480
+                    ? "480p · 标清"
+                    : "360p · 节省空间",
+      })),
+    { value: "audio", label: "仅音频 · MP3" },
+  ];
+  elements.qualitySelect.replaceChildren();
+  for (const choice of choices) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    if (choice.value === "audio" && !runtime.ffmpeg?.handle) option.disabled = true;
+    elements.qualitySelect.append(option);
+  }
+  elements.qualitySelect.value = choices.some((choice) => choice.value === previous)
+    ? previous
+    : "best";
+  elements.qualityHelp.textContent = video
+    ? video.isPlaylist
+      ? "播放列表会按每条视频的实际可用画质下载。"
+      : `已按视频实际清晰度更新；最高 ${video.maxHeight ? `${video.maxHeight}p` : "未知"}。`
+    : "获取视频信息后，会根据实际可用清晰度更新选项。";
+}
+
 function updateConditionalOptions() {
   elements.playlistOptions.hidden = !elements.playlist.checked;
   elements.subtitleOptions.hidden = !elements.subtitles.checked;
+  elements.subtitleCustomRow.hidden = elements.subtitleLanguagePreset.value !== "custom";
+  const canEmbed = Boolean(runtime.ffmpeg?.handle) && selectedFormat() !== "audio";
+  elements.subtitleEmbed.disabled = !canEmbed || Boolean(currentJob?.running);
+  elements.subtitleHelp.textContent = !runtime.ffmpeg?.handle
+    ? "当前没有 ffmpeg，将保留网站提供的独立字幕文件。"
+    : elements.subtitleEmbed.checked
+      ? "字幕会转换为 SRT 并嵌入视频；也会保留下载流程所需的字幕文件。"
+      : "字幕会转换为 SRT 并作为独立文件保留，不嵌入视频。";
 }
 
 function formatDuration(value) {
@@ -551,6 +840,9 @@ function normalizeInspectedVideo(raw, url) {
     .filter((height) => Number.isFinite(height) && height > 0);
   const videoFormats = formats.filter((format) => format?.vcodec && format.vcodec !== "none");
   const audioFormats = formats.filter((format) => format?.acodec && format.acodec !== "none");
+  const availableHeights = [...new Set(heights.map((height) => Math.round(height)))].sort(
+    (left, right) => right - left,
+  );
   return {
     id: String(raw.id || "").slice(0, 200),
     url,
@@ -561,6 +853,7 @@ function normalizeInspectedVideo(raw, url) {
     uploadDate: String(raw.upload_date || "").slice(0, 20),
     viewCount: Number(raw.view_count) || 0,
     maxHeight: heights.length ? Math.max(...heights) : 0,
+    availableHeights,
     formatCount: formats.length,
     videoFormatCount: videoFormats.length,
     audioFormatCount: audioFormats.length,
@@ -675,6 +968,7 @@ function renderDownloadList() {
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
   inspectedVideo = null;
   elements.videoInfo.hidden = true;
+  renderQualityOptions(null);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "idle";
   elements.inspectStatus.textContent = message;
@@ -703,6 +997,7 @@ function renderInspectedVideo(video) {
       : "未知";
   elements.videoDate.textContent = formatUploadDate(video.uploadDate);
   elements.videoInfo.hidden = false;
+  renderQualityOptions(video);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "ready";
   elements.inspectStatus.textContent = "信息已获取；链接变化后需要重新获取";
@@ -716,7 +1011,7 @@ function currentConfiguration() {
   try {
     playlistItems = normalizedPlaylistItems();
     playlistEnd = normalizedPlaylistEnd();
-    subtitleLanguages = normalizedSubtitleLanguages();
+    subtitleLanguages = selectedSubtitleLanguages();
   } catch {
     // Return the editable values to the Session; startDownload performs strict validation.
     playlistItems = elements.playlistItems.value.trim();
@@ -729,7 +1024,14 @@ function currentConfiguration() {
     playlistItems,
     playlistEnd,
     subtitles: elements.subtitles.checked,
+    subtitleMode: selectedSubtitleMode(),
     subtitleLanguages,
+    subtitleLanguagePreset: elements.subtitleLanguagePreset.value,
+    embedSubtitles: elements.subtitleEmbed.checked && Boolean(runtime.ffmpeg?.handle),
+    cookieAccount: elements.cookieSelect.value
+      ? cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label ||
+        "已选择账号"
+      : null,
   };
 }
 
@@ -1001,11 +1303,17 @@ function setControlsBusy(busy, operation = "download") {
   elements.playlist.disabled = busy;
   elements.playlistItems.disabled = busy;
   elements.playlistEnd.disabled = busy;
-  document.querySelectorAll('input[name="format"]').forEach((input) => {
-    input.disabled = busy || (input.value === "audio" && !runtime.ffmpeg?.handle);
-  });
+  elements.qualitySelect.disabled = busy;
+  const cookieUnavailable =
+    busy || cookieLoading || !normalizedUrl() || Number(context.apiVersion) < 10;
+  elements.cookieSelect.disabled = cookieUnavailable;
+  elements.cookieRefresh.disabled = cookieUnavailable;
+  elements.cookieLogin.disabled = cookieUnavailable;
   elements.subtitles.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleMode.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleLanguagePreset.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguages.disabled = busy || selectedFormat() === "audio";
+  elements.subtitleEmbed.disabled = busy || selectedFormat() === "audio" || !runtime.ffmpeg?.handle;
   elements.inspectButton.textContent =
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
   elements.downloadLabel.textContent = busy && operation === "download" ? "正在下载…" : "开始下载";
@@ -1114,7 +1422,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
   const cleaned = String(stderr || "").replace(/\u001b\[[0-9;]*m/g, "");
   const lower = cleaned.toLowerCase();
   if (lower.includes("http error 403") || lower.includes("403 forbidden")) {
-    return "站点拒绝了请求（403）。可先更新本机 yt-dlp 或更换网络；需要登录的视频还需 Cookie，而当前面板暂不支持 Cookie。";
+    return "站点拒绝了请求（403）。可先更新 yt-dlp；如果视频需要登录，请在下载页选择匹配的 Cookie 账号后重试。";
   }
   if (
     lower.includes("sign in") ||
@@ -1122,13 +1430,13 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     lower.includes("confirm you're not a bot") ||
     lower.includes("confirm you’re not a bot")
   ) {
-    return "这个视频需要登录验证。当前面板暂不支持向 yt-dlp 提供 Cookie，因此无法下载此类视频。";
+    return "这个视频需要登录验证。请在下载页选择匹配的 Cookie 账号，或点击“登录并保存”。";
   }
   if (lower.includes("private video") || lower.includes("members-only")) {
-    return "这是私密或会员视频，需要有访问权限的登录 Cookie。当前面板暂不支持此能力。";
+    return "这是私密或会员视频，需要选择一个确实有访问权限的 Cookie 账号。";
   }
   if (lower.includes("age-restricted") || lower.includes("age restricted")) {
-    return "这个视频需要年龄验证，匿名下载不可用；当前面板暂不支持登录 Cookie。";
+    return "这个视频需要年龄验证；请选择已完成验证的 Cookie 账号后重试。";
   }
   if (lower.includes("not available in your country") || lower.includes("geo-restricted")) {
     return "这个视频在当前地区不可用，请遵守站点规则并换用可访问的来源。";
@@ -1149,7 +1457,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     return "所选画质不可用，请改选“最佳画质”或较低画质后重试。";
   }
   if (lower.includes("ffmpeg not found") || lower.includes("ffprobe not found")) {
-    return "需要 ffmpeg 才能合并或转换当前格式。安装 ffmpeg 后请重新打开面板。";
+    return "需要 ffmpeg 才能合并或转换当前格式。可使用一键安装；完成后面板会立即复检。";
   }
   if (
     lower.includes("timed out") ||
@@ -1303,9 +1611,11 @@ async function inspectVideo() {
   }
 
   try {
+    const fileArgumentHandles = await cookieFileArguments(url);
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
+      fileArgumentHandles,
       args: inspectionArguments(url),
     });
     if (!inspectionJob?.running) return;
@@ -1342,7 +1652,7 @@ function buildArguments(url) {
   ];
   if (format === "audio") {
     args.push("--extract-audio", "--audio-format", "mp3", "--audio-quality", "0");
-  } else if (format === "1080" || format === "720") {
+  } else if (/^\d{3,4}$/.test(format)) {
     args.push("--format");
     const height = format;
     if (runtime.ffmpeg?.handle) {
@@ -1372,16 +1682,13 @@ function buildArguments(url) {
     args.push("--no-playlist");
   }
   if (elements.subtitles.checked && format !== "audio") {
-    args.push(
-      "--write-subs",
-      "--write-auto-subs",
-      "--sub-format",
-      "vtt",
-      "--sub-langs",
-      normalizedSubtitleLanguages(),
-    );
+    const subtitleMode = selectedSubtitleMode();
+    if (subtitleMode === "manual" || subtitleMode === "both") args.push("--write-subs");
+    if (subtitleMode === "auto" || subtitleMode === "both") args.push("--write-auto-subs");
+    args.push("--sub-format", "vtt", "--sub-langs", selectedSubtitleLanguages());
     if (runtime.ffmpeg?.handle) {
-      args.push("--convert-subs", "srt", "--embed-subs");
+      args.push("--convert-subs", "srt");
+      if (elements.subtitleEmbed.checked) args.push("--embed-subs");
     }
     args.push("--ignore-errors");
   }
@@ -1410,7 +1717,7 @@ async function startDownload() {
     return;
   }
   if (selectedFormat() === "audio" && !runtime.ffmpeg?.handle) {
-    showError("仅音频模式需要 ffmpeg。安装后请重新打开面板。");
+    showError("仅音频模式需要 ffmpeg。可使用一键安装；完成后面板会立即复检。");
     return;
   }
   try {
@@ -1419,7 +1726,7 @@ async function startDownload() {
       normalizedPlaylistEnd();
     }
     if (elements.subtitles.checked && selectedFormat() !== "audio") {
-      normalizedSubtitleLanguages();
+      selectedSubtitleLanguages();
     }
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
@@ -1459,9 +1766,11 @@ async function startDownload() {
   }
 
   try {
+    const fileArgumentHandles = await cookieFileArguments(url);
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
+      fileArgumentHandles,
       args: buildArguments(url),
     });
     if (!currentJob?.running) return;
@@ -1598,10 +1907,11 @@ function applyConfiguration(input) {
   if (format === "audio" && !runtime.ffmpeg?.handle) {
     throw new Error("当前没有 ffmpeg，无法应用仅音频配置");
   }
-  const formatInput = document.querySelector(`input[name="format"][value="${format}"]`);
-  if (!formatInput) throw new Error("目标格式不可用");
   const inspectionModeChanged = elements.playlist.checked !== input.playlist;
-  formatInput.checked = true;
+  if (![...elements.qualitySelect.options].some((option) => option.value === format)) {
+    renderQualityOptions(null);
+  }
+  elements.qualitySelect.value = format;
   elements.playlist.checked = input.playlist;
   if (typeof input.playlistItems === "string") {
     elements.playlistItems.value = normalizedPlaylistItems(input.playlistItems);
@@ -1610,8 +1920,24 @@ function applyConfiguration(input) {
     elements.playlistEnd.value = normalizedPlaylistEnd(input.playlistEnd) || "";
   }
   elements.subtitles.checked = format === "audio" ? false : input.subtitles;
+  if (typeof input.subtitleMode === "string" && SUBTITLE_MODES.has(input.subtitleMode)) {
+    elements.subtitleMode.value = input.subtitleMode;
+  }
+  if (
+    typeof input.subtitleLanguagePreset === "string" &&
+    (input.subtitleLanguagePreset === "custom" ||
+      Object.hasOwn(SUBTITLE_LANGUAGE_PRESETS, input.subtitleLanguagePreset))
+  ) {
+    elements.subtitleLanguagePreset.value = input.subtitleLanguagePreset;
+  }
   if (typeof input.subtitleLanguages === "string") {
     elements.subtitleLanguages.value = normalizedSubtitleLanguages(input.subtitleLanguages);
+    if (typeof input.subtitleLanguagePreset !== "string") {
+      elements.subtitleLanguagePreset.value = "custom";
+    }
+  }
+  if (typeof input.embedSubtitles === "boolean") {
+    elements.subtitleEmbed.checked = input.embedSubtitles;
   }
   elements.subtitles.disabled = format === "audio" || Boolean(currentJob?.running);
   updateConditionalOptions();
@@ -1694,9 +2020,25 @@ function videoContextForAgent() {
       },
       ffmpeg: Boolean(runtime.ffmpeg?.handle),
       audioAvailable: Boolean(runtime.ffmpeg?.handle),
-      formats: ["best", "1080", "720", ...(runtime.ffmpeg?.handle ? ["audio"] : [])],
-      cookies: false,
-      cookieNote: "当前 Panel Host 没有安全的 Cookie 文件句柄能力，登录受限视频暂不支持。",
+      formats: [
+        "best",
+        "2160",
+        "1440",
+        "1080",
+        "720",
+        "480",
+        "360",
+        ...(runtime.ffmpeg?.handle ? ["audio"] : []),
+      ],
+      cookies: Number(context.apiVersion) >= 10,
+      selectedCookieAccount: elements.cookieSelect.value
+        ? cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label ||
+          "已选择账号"
+        : null,
+      cookieNote:
+        Number(context.apiVersion) >= 10
+          ? "Cookie 由 Host 以不透明临时文件授权给 yt-dlp，内容和路径不会暴露给面板。"
+          : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
     },
   };
 }
@@ -1845,7 +2187,12 @@ function runDirectSetupProcess(executable, directory, args, label) {
         (error) => finishDirectSetupProcess(job, null, error),
       );
   }).then((result) => {
-    pushSetupActivity(`${label}完成`, "completed", "process", executable.name || label);
+    pushSetupActivity(
+      result?.code === 0 ? `${label}完成` : `${label}未成功，正在尝试备用路线`,
+      result?.code === 0 ? "completed" : "failed",
+      "process",
+      executable.name || label,
+    );
     return result;
   });
 }
@@ -1862,32 +2209,175 @@ async function requireSetupExecutable(name) {
   return executable;
 }
 
-async function readLatestYtDlpRelease(directory) {
-  const curl = await requireSetupExecutable("curl");
-  const response = await runDirectSetupProcess(
-    curl,
+async function optionalSetupExecutable(...names) {
+  for (const name of names) {
+    const executable = await panel.call("process.find", { name });
+    if (executable?.available && executable.handle) return executable;
+  }
+  return null;
+}
+
+function curlTransferArgs(platform) {
+  return [
+    "--fail",
+    "--show-error",
+    "--location",
+    "--http1.1",
+    "--retry",
+    "4",
+    "--retry-all-errors",
+    "--connect-timeout",
+    "20",
+    ...(platform === "win32" ? ["--ssl-revoke-best-effort"] : []),
+  ];
+}
+
+function powershellLiteral(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+async function findPowerShell() {
+  return optionalSetupExecutable("pwsh.exe", "pwsh", "powershell.exe", "powershell");
+}
+
+async function fetchTextWithAvailableClient(platform, directory, url, label) {
+  const failures = [];
+  const curl = await optionalSetupExecutable("curl.exe", "curl");
+  if (curl) {
+    const result = await runDirectSetupProcess(
+      curl,
+      directory,
+      [
+        ...curlTransferArgs(platform),
+        "--silent",
+        "--max-time",
+        "60",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "User-Agent: Mimi-Download-Panel",
+        url,
+      ],
+      label,
+    );
+    if (result.code === 0 && result.stdout.trim()) return result.stdout;
+    failures.push(sanitizeDiagnosticText(result.stderr || "curl 请求失败", 240));
+  }
+
+  const wget = await optionalSetupExecutable("wget");
+  if (wget) {
+    const result = await runDirectSetupProcess(
+      wget,
+      directory,
+      [
+        "--quiet",
+        "--output-document=-",
+        "--timeout=30",
+        "--tries=4",
+        "--header=Accept: application/vnd.github+json",
+        "--user-agent=Mimi-Download-Panel",
+        url,
+      ],
+      `${label}（wget 备用通道）`,
+    );
+    if (result.code === 0 && result.stdout.trim()) return result.stdout;
+    failures.push(sanitizeDiagnosticText(result.stderr || "wget 请求失败", 240));
+  }
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (powershell) {
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "$ProgressPreference='SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+        `$response=Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(url)} -Headers @{'Accept'='application/vnd.github+json';'User-Agent'='Mimi-Download-Panel'}`,
+        "[Console]::Out.Write($response.Content)",
+      ].join("; ");
+      const result = await runDirectSetupProcess(
+        powershell,
+        directory,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        `${label}（PowerShell 备用通道）`,
+      );
+      if (result.code === 0 && result.stdout.trim()) return result.stdout;
+      failures.push(sanitizeDiagnosticText(result.stderr || "PowerShell 请求失败", 240));
+    }
+  }
+
+  const detail = failures.filter(Boolean).join("；");
+  throw new Error(`${label}失败${detail ? `：${detail}` : "：没有可用的 HTTPS 下载器"}`);
+}
+
+async function downloadWithAvailableClient(platform, directory, url, filename, label) {
+  const failures = [];
+  const curl = await optionalSetupExecutable("curl.exe", "curl");
+  if (curl) {
+    const result = await runDirectSetupProcess(
+      curl,
+      directory,
+      [...curlTransferArgs(platform), "--max-time", "1800", "--output", filename, url],
+      label,
+    );
+    if (result.code === 0) return;
+    failures.push(sanitizeDiagnosticText(result.stderr || "curl 下载失败", 240));
+  }
+
+  const wget = await optionalSetupExecutable("wget");
+  if (wget) {
+    const result = await runDirectSetupProcess(
+      wget,
+      directory,
+      ["--output-document", filename, "--timeout=30", "--tries=4", url],
+      `${label}（wget 备用通道）`,
+    );
+    if (result.code === 0) return;
+    failures.push(sanitizeDiagnosticText(result.stderr || "wget 下载失败", 240));
+  }
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (powershell) {
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "$ProgressPreference='SilentlyContinue'",
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12",
+        `Invoke-WebRequest -UseBasicParsing -Uri ${powershellLiteral(url)} -OutFile ${powershellLiteral(filename)} -Headers @{'User-Agent'='Mimi-Download-Panel'}`,
+      ].join("; ");
+      const result = await runDirectSetupProcess(
+        powershell,
+        directory,
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        `${label}（PowerShell 备用通道）`,
+      );
+      if (result.code === 0) return;
+      failures.push(sanitizeDiagnosticText(result.stderr || "PowerShell 下载失败", 240));
+    }
+  }
+
+  const detail = failures.filter(Boolean).join("；");
+  throw new Error(`${label}失败${detail ? `：${detail}` : "：没有可用的 HTTPS 下载器"}`);
+}
+
+async function readGitHubRelease(platform, directory, apiUrl, label) {
+  const text = await fetchTextWithAvailableClient(platform, directory, apiUrl, label);
+  const release = parseGitHubRelease(text);
+  if (!release) throw new Error(`${label}响应无法识别`);
+  return release;
+}
+
+async function readLatestYtDlpRelease(platform, directory) {
+  const release = await readGitHubRelease(
+    platform,
     directory,
-    [
-      "--fail",
-      "--silent",
-      "--show-error",
-      "--location",
-      "--max-time",
-      "20",
-      "--header",
-      "Accept: application/vnd.github+json",
-      "--header",
-      "User-Agent: Mimi-Download-Panel",
-      GITHUB_LATEST_RELEASE_API,
-    ],
+    GITHUB_LATEST_RELEASE_API,
     "查询 yt-dlp 官方最新版",
   );
-  requireSuccessfulProcess(response, "查询 yt-dlp 官方最新版");
-  const latest = parseGitHubLatestRelease(response.stdout);
-  if (!latest) throw new Error("GitHub 最新版响应无法识别");
+  const latest = release.version;
+  if (!latest) throw new Error("GitHub yt-dlp 最新版标签无法识别");
   runtime.latestYtDlpVersion = latest;
   renderVersionInfo();
-  return { latest, curl };
+  return { latest, release };
 }
 
 function ytDlpAssetFor(platform, arch, libc) {
@@ -1931,64 +2421,57 @@ function checksumFromToolOutput(text) {
   );
 }
 
-async function installOfficialYtDlpBinary(platform, arch, libc, latest, curl, directory) {
-  const { asset, installedName } = ytDlpAssetFor(platform, arch, libc);
-  const temporaryName = `${installedName}.download`;
-  const checksumResult = await runDirectSetupProcess(
-    curl,
-    directory,
-    [
-      "--fail",
-      "--silent",
-      "--show-error",
-      "--location",
-      `${YT_DLP_RELEASE_BASE}/${latest}/SHA2-256SUMS`,
-    ],
-    "读取官方 SHA-256 校验表",
-  );
-  requireSuccessfulProcess(checksumResult, "读取官方 SHA-256 校验表");
-  const expected = checksumFromReleaseList(checksumResult.stdout, asset);
-  if (!expected) throw new Error(`官方校验表中没有 ${asset}`);
-  const downloadResult = await runDirectSetupProcess(
-    curl,
-    directory,
-    [
-      "--fail",
-      "--show-error",
-      "--location",
-      "--retry",
-      "3",
-      "--output",
-      temporaryName,
-      `${YT_DLP_RELEASE_BASE}/${latest}/${asset}`,
-    ],
-    `下载官方 ${asset}`,
-  );
-  requireSuccessfulProcess(downloadResult, `下载官方 ${asset}`);
-
+async function verifyDownloadedSha256(platform, directory, filename, expected, label) {
   let actual = "";
   if (platform === "win32") {
     const certutil = await requireSetupExecutable("certutil.exe");
     const result = await runDirectSetupProcess(
       certutil,
       directory,
-      ["-hashfile", temporaryName, "SHA256"],
-      "校验 yt-dlp SHA-256",
+      ["-hashfile", filename, "SHA256"],
+      label,
     );
-    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    requireSuccessfulProcess(result, label);
     actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
   } else {
     let hashTool = await panel.call("process.find", { name: "sha256sum" });
-    let args = [temporaryName];
+    let args = [filename];
     if (!hashTool?.available) {
       hashTool = await requireSetupExecutable("shasum");
-      args = ["-a", "256", temporaryName];
+      args = ["-a", "256", filename];
     }
-    const result = await runDirectSetupProcess(hashTool, directory, args, "校验 yt-dlp SHA-256");
-    requireSuccessfulProcess(result, "校验 yt-dlp SHA-256");
+    const result = await runDirectSetupProcess(hashTool, directory, args, label);
+    requireSuccessfulProcess(result, label);
     actual = checksumFromToolOutput(`${result.stdout}\n${result.stderr}`);
   }
-  if (!actual || actual !== expected) throw new Error("yt-dlp SHA-256 校验失败，已拒绝安装");
+  if (!actual || actual !== expected) throw new Error(`${label}失败，已拒绝安装`);
+}
+
+async function installOfficialYtDlpBinary(platform, arch, libc, latest, release, directory) {
+  const { asset, installedName } = ytDlpAssetFor(platform, arch, libc);
+  const temporaryName = platform === "win32" ? "yt-dlp.download.exe" : `${installedName}.download`;
+  let expected = release.assets?.[asset]?.sha256 || "";
+  if (expected) {
+    pushSetupActivity("已从 GitHub Release API 读取 yt-dlp SHA-256", "completed", "plan");
+  } else {
+    const checksumText = await fetchTextWithAvailableClient(
+      platform,
+      directory,
+      `${YT_DLP_RELEASE_BASE}/${latest}/SHA2-256SUMS`,
+      "读取官方 SHA-256 校验表",
+    );
+    expected = checksumFromReleaseList(checksumText, asset);
+  }
+  if (!expected) throw new Error(`官方校验表中没有 ${asset}`);
+  await downloadWithAvailableClient(
+    platform,
+    directory,
+    `${YT_DLP_RELEASE_BASE}/${latest}/${asset}`,
+    temporaryName,
+    `下载官方 ${asset}`,
+  );
+
+  await verifyDownloadedSha256(platform, directory, temporaryName, expected, "校验 yt-dlp SHA-256");
 
   if (platform !== "win32") {
     const chmod = await requireSetupExecutable("chmod");
@@ -2034,7 +2517,7 @@ async function installOfficialYtDlpBinary(platform, arch, libc, latest, curl, di
 }
 
 async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
-  const { latest, curl } = await readLatestYtDlpRelease(managedBin);
+  const { latest, release } = await readLatestYtDlpRelease(platform, managedBin);
   if (runtime.ytDlp?.handle) {
     const installed = runtime.ytDlp.version || "";
     if (compareYtDlpVersions(installed, latest) === 0) {
@@ -2062,7 +2545,7 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
       pushSetupActivity("现有安装无法自更新，改用官方二进制", "completed", "plan");
     }
   }
-  await installOfficialYtDlpBinary(platform, arch, libc, latest, curl, managedBin);
+  await installOfficialYtDlpBinary(platform, arch, libc, latest, release, managedBin);
   const installed = await requireSetupExecutable("yt-dlp");
   const verified = await runDirectSetupProcess(
     installed,
@@ -2075,57 +2558,119 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
   runtime.ytDlp = { ...installed, version };
 }
 
-async function ensureFfmpeg(platform, directory) {
-  if (platform === "darwin" || platform === "linux") {
+function ffmpegAssetFor(platform, arch) {
+  if (platform === "win32") {
+    if (arch === "arm64") return "ffmpeg-master-latest-winarm64-gpl.zip";
+    if (arch === "ia32") return "ffmpeg-master-latest-win32-gpl.zip";
+    if (arch === "x64") return "ffmpeg-master-latest-win64-gpl.zip";
+  }
+  if (platform === "linux") {
+    if (arch === "arm64") return "ffmpeg-master-latest-linuxarm64-gpl.tar.xz";
+    if (arch === "x64") return "ffmpeg-master-latest-linux64-gpl.tar.xz";
+  }
+  return "";
+}
+
+async function installGitHubFfmpeg(platform, arch, directory) {
+  const asset = ffmpegAssetFor(platform, arch);
+  if (!asset) return false;
+  const release = await readGitHubRelease(
+    platform,
+    directory,
+    FFMPEG_LATEST_RELEASE_API,
+    "查询 ffmpeg GitHub 最新版",
+  );
+  const expected = release.assets?.[asset]?.sha256 || "";
+  if (!expected) throw new Error(`ffmpeg GitHub Release 缺少 ${asset} 的 SHA-256`);
+  const archive = platform === "win32" ? "ffmpeg.download.zip" : "ffmpeg.download.tar.xz";
+  await downloadWithAvailableClient(
+    platform,
+    directory,
+    `${FFMPEG_RELEASE_BASE}/${release.tag}/${asset}`,
+    archive,
+    `从 GitHub 下载 ${asset}`,
+  );
+  await verifyDownloadedSha256(platform, directory, archive, expected, "校验 ffmpeg SHA-256");
+
+  if (platform === "win32") {
+    const powershell = await findPowerShell();
+    if (!powershell) throw new Error("解压 ffmpeg GitHub 版本需要 Windows PowerShell");
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      "$target='ffmpeg.download'",
+      "if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Recurse -Force}",
+      `Expand-Archive -LiteralPath ${powershellLiteral(archive)} -DestinationPath $target -Force`,
+      "$ffmpeg=Get-ChildItem -LiteralPath $target -Filter 'ffmpeg.exe' -File -Recurse | Select-Object -First 1",
+      "$ffprobe=Get-ChildItem -LiteralPath $target -Filter 'ffprobe.exe' -File -Recurse | Select-Object -First 1",
+      "if($null -eq $ffmpeg -or $null -eq $ffprobe){throw 'ffmpeg archive is missing required binaries'}",
+      "Copy-Item -LiteralPath $ffmpeg.FullName -Destination 'ffmpeg.exe' -Force",
+      "Copy-Item -LiteralPath $ffprobe.FullName -Destination 'ffprobe.exe' -Force",
+      "Remove-Item -LiteralPath $target -Recurse -Force",
+      `Remove-Item -LiteralPath ${powershellLiteral(archive)} -Force`,
+    ].join("; ");
+    const extracted = await runDirectSetupProcess(
+      powershell,
+      directory,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      "安装 GitHub ffmpeg 二进制",
+    );
+    requireSuccessfulProcess(extracted, "安装 GitHub ffmpeg 二进制");
+  } else {
+    const tar = await requireSetupExecutable("tar");
+    const root = asset.replace(/\.tar\.xz$/, "");
+    const extracted = await runDirectSetupProcess(
+      tar,
+      directory,
+      ["-xJf", archive, "--strip-components", "2", `${root}/bin/ffmpeg`, `${root}/bin/ffprobe`],
+      "安装 GitHub ffmpeg 二进制",
+    );
+    requireSuccessfulProcess(extracted, "安装 GitHub ffmpeg 二进制");
+    const chmod = await requireSetupExecutable("chmod");
+    const executable = await runDirectSetupProcess(
+      chmod,
+      directory,
+      ["755", "ffmpeg", "ffprobe"],
+      "设置 ffmpeg 可执行权限",
+    );
+    requireSuccessfulProcess(executable, "设置 ffmpeg 可执行权限");
+    const rm = await requireSetupExecutable("rm");
+    const removed = await runDirectSetupProcess(
+      rm,
+      directory,
+      ["-f", archive],
+      "清理 ffmpeg 安装包",
+    );
+    requireSuccessfulProcess(removed, "清理 ffmpeg 安装包");
+  }
+
+  const installed = await requireSetupExecutable("ffmpeg");
+  const verified = await runDirectSetupProcess(installed, directory, ["-version"], "验证 ffmpeg");
+  requireSuccessfulProcess(verified, "验证 ffmpeg");
+  runtime.ffmpeg = installed;
+  return true;
+}
+
+async function ensureFfmpeg(platform, arch, directory) {
+  if (runtime.ffmpeg?.handle) {
+    pushSetupActivity("ffmpeg 已就绪，保留当前可用版本", "completed", "plan");
+    return;
+  }
+  if (await installGitHubFfmpeg(platform, arch, directory)) return;
+  if (platform === "darwin") {
     const brew = await panel.call("process.find", { name: "brew" });
     if (brew?.available) {
-      const action = runtime.ffmpeg?.handle ? "upgrade" : "install";
       const result = await runDirectSetupProcess(
         brew,
         directory,
-        [action, "ffmpeg"],
-        `${action === "upgrade" ? "更新" : "安装"} ffmpeg（Homebrew）`,
+        ["install", "ffmpeg"],
+        "安装 ffmpeg（Homebrew）",
       );
       if (result.code !== 0)
         throw new Error(sanitizeDiagnosticText(result.stderr || "Homebrew 执行失败", 500));
       return;
     }
   }
-  if (platform === "win32") {
-    const winget = await panel.call("process.find", { name: "winget.exe" });
-    if (winget?.available) {
-      const common = [
-        "--id",
-        "Gyan.FFmpeg",
-        "--exact",
-        "--accept-source-agreements",
-        "--accept-package-agreements",
-        "--silent",
-      ];
-      let result = await runDirectSetupProcess(
-        winget,
-        directory,
-        [runtime.ffmpeg?.handle ? "upgrade" : "install", ...common],
-        `${runtime.ffmpeg?.handle ? "更新" : "安装"} ffmpeg（winget）`,
-      );
-      if (result.code !== 0 && runtime.ffmpeg?.handle) {
-        result = await runDirectSetupProcess(
-          winget,
-          directory,
-          ["install", ...common],
-          "安装 ffmpeg（winget）",
-        );
-      }
-      if (result.code !== 0)
-        throw new Error(sanitizeDiagnosticText(result.stderr || "winget 执行失败", 500));
-      return;
-    }
-  }
-  if (runtime.ffmpeg?.handle) {
-    pushSetupActivity("ffmpeg 已安装；没有可用的自动更新器，保留当前版本", "completed", "plan");
-    return;
-  }
-  throw new Error("没有找到可安全无交互运行的 ffmpeg 安装器，请使用 AI 初始化 / 修复");
+  throw new Error(`当前平台没有可验证的 ffmpeg 自动安装路线：${platform}/${arch}`);
 }
 
 async function requestDirectSetup() {
@@ -2164,7 +2709,7 @@ async function requestDirectSetup() {
     ]);
     await ensureLatestYtDlp(system.platform, system.arch, system.libc, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
-    await ensureFfmpeg(system.platform, managedBin);
+    await ensureFfmpeg(system.platform, system.arch, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
     await refreshRuntimeDependencies();
     setupTaskResult = `本地安装 / 更新完成。yt-dlp ${runtime.ytDlp?.version || "已验证"}；ffmpeg ${runtime.ffmpeg?.handle ? "已就绪" : "需要处理"}。`;
@@ -2209,8 +2754,8 @@ async function requestAiSetup() {
     "先读取 panel-app:video-download 的工具列表，并调用 get_video_download_context 确认面板状态。",
     `面板当前检测到需要处理：${missing || "重新检查 yt-dlp 与 ffmpeg"}。`,
     "这是我点击面板“AI 初始化 / 修复”发起的请求。第一步必须先处理 yt-dlp：从 https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest 读取官方最新稳定版，比较已安装版本，不得把 PyPI 或包管理器显示的 latest 当作版本基准。",
-    "如果没有受支持的 Python，不要安装 Python 包；按系统、CPU 架构和 Linux libc 下载该 GitHub Release 的官方独立二进制，使用 SHA2-256SUMS 校验后安装到用户可写的 PATH 目录，并验证版本。",
-    "第二步处理 ffmpeg：已安装就更新，没有就安装，并验证版本。即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新。",
+    "如果没有受支持的 Python，不要安装 Python 包；按系统、CPU 架构和 Linux libc 下载该 GitHub Release 的官方独立二进制，优先使用 Release API 的 sha256: 资产摘要校验，旧 Release 缺少摘要时才读取 SHA2-256SUMS，然后安装到用户可写的 PATH 目录并验证版本。",
+    "第二步处理 ffmpeg：保留可用版本；缺少时在 Windows/Linux 优先使用 yt-dlp/FFmpeg-Builds 的 GitHub Release 并校验资产 SHA-256，在 macOS 使用现有 Homebrew。即使面板只报告缺少 ffmpeg，也不能跳过前面的 yt-dlp 更新。",
     "完成后调用 refresh_video_download_dependencies，再次读取面板状态并告诉我结果。",
     "不要读取当前视频链接，不要检查 Cookie，不要获取视频信息，也不要开始下载。",
   ].join("\n");
@@ -2283,7 +2828,7 @@ async function requestAiErrorAnalysis() {
     "</untrusted_diagnostics>",
     "说明最可能的原因，并给出按优先级排列、用户可以直接照做的解决步骤。",
     "你没有工具。不要修改面板配置，不要开始或重试下载，也不要重新访问该网址。",
-    "如果错误与登录或 Cookie 有关，请明确说明当前 Panel Host 暂不支持把 Cookie 安全地交给 yt-dlp。",
+    "如果错误与登录或 Cookie 有关，请建议用户回到下载页选择匹配账号或重新登录保存；不要要求用户粘贴 Cookie 内容。",
   ].join("\n");
   lastFailure.analysisError = "";
   elements.errorAnalysisResult.hidden = true;
@@ -2588,10 +3133,12 @@ async function refreshRuntimeDependencies() {
     ]);
     runtime.ytDlp = ytDlp.available ? ytDlp : null;
     runtime.ffmpeg = ffmpeg.available ? ffmpeg : null;
+    invalidateCookieAuthorization();
+    renderQualityOptions(inspectedVideo);
     dependenciesChecked = true;
     setupRequestError = "";
     if (!runtime.ffmpeg && selectedFormat() === "audio") {
-      document.querySelector('input[name="format"][value="best"]').checked = true;
+      elements.qualitySelect.value = "best";
     }
     setDependency(
       elements.ytdlpDot,
@@ -2624,7 +3171,7 @@ async function refreshRuntimeDependencies() {
       ytDlp: Boolean(runtime.ytDlp),
       ffmpeg: Boolean(runtime.ffmpeg),
       versions,
-      restartMayBeRequired: !runtime.ytDlp || !runtime.ffmpeg,
+      restartMayBeRequired: false,
     };
   } catch (error) {
     const message = sanitizeDiagnosticText(
@@ -2681,7 +3228,9 @@ async function initializeRuntime() {
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "Ready");
     dependenciesChecked = true;
     setRuntimeBadge("ready", "Preview");
-    updateSessionContext({ apiVersion: 9 });
+    updateSessionContext({ apiVersion: 10 });
+    renderQualityOptions(null);
+    renderCookieAccounts();
     await loadTaskModels();
     await refreshVersionInfo();
     updateActionAvailability();
@@ -2702,6 +3251,7 @@ async function initializeRuntime() {
     const directory = await panel.call("filesystem.getKnownDirectory", { name: "downloads" });
     setDestination(directory);
     await refreshRuntimeDependencies();
+    await refreshCookieAccounts();
   } catch (error) {
     dependenciesChecked = true;
     setRuntimeBadge("error", "Unavailable");
@@ -2715,7 +3265,9 @@ async function initializeRuntime() {
 elements.urlInput.addEventListener("input", () => {
   showError("");
   clearFailure();
+  invalidateCookieAuthorization();
   clearInspectedVideo("链接已变化，请重新获取视频信息");
+  scheduleCookieAccountsRefresh();
   updateActionAvailability();
 });
 elements.tabs.forEach((button, index) => {
@@ -2736,11 +3288,27 @@ elements.clearUrl.addEventListener("click", () => {
   elements.urlInput.value = "";
   showError("");
   clearFailure();
+  cookieAccounts = [];
+  cookieAccountsUrl = "";
+  invalidateCookieAuthorization();
+  renderCookieAccounts();
   clearInspectedVideo();
   elements.urlInput.focus();
   updateActionAvailability();
 });
 elements.inspectButton.addEventListener("click", inspectVideo);
+elements.cookieRefresh.addEventListener("click", () => void refreshCookieAccounts());
+elements.cookieLogin.addEventListener("click", () => void loginAndSaveCookie());
+elements.cookieSelect.addEventListener("change", () => {
+  invalidateCookieAuthorization();
+  clearFailure();
+  clearInspectedVideo("Cookie 账号已变化，请重新获取视频信息");
+  renderCookieAccounts(
+    elements.cookieSelect.value
+      ? `已选择 ${cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；首次使用时 CodeShell 会确认授权。`
+      : "不会向 yt-dlp 提供 Cookie。",
+  );
+});
 elements.playlist.addEventListener("change", () => {
   updateConditionalOptions();
   clearFailure();
@@ -2758,7 +3326,16 @@ elements.subtitles.addEventListener("change", () => {
   updateConditionalOptions();
   showError("");
 });
+elements.subtitleMode.addEventListener("change", () => showError(""));
+elements.subtitleLanguagePreset.addEventListener("change", () => {
+  updateConditionalOptions();
+  showError("");
+});
 elements.subtitleLanguages.addEventListener("input", () => showError(""));
+elements.subtitleEmbed.addEventListener("change", () => {
+  updateConditionalOptions();
+  showError("");
+});
 elements.chooseDirectory.addEventListener("click", chooseDirectory);
 elements.downloadButton.addEventListener("click", startDownload);
 elements.refreshVersions.addEventListener("click", () => {
@@ -2791,15 +3368,15 @@ elements.clearHistory.addEventListener("click", () => {
   saveHistory();
   renderHistory();
 });
-document.querySelectorAll('input[name="format"]').forEach((input) => {
-  input.addEventListener("change", () => {
-    const audioOnly = selectedFormat() === "audio";
-    if (audioOnly) elements.subtitles.checked = false;
-    elements.subtitles.disabled = audioOnly || Boolean(currentJob?.running);
-    elements.subtitleLanguages.disabled = audioOnly || Boolean(currentJob?.running);
-    updateConditionalOptions();
-    updateActionAvailability();
-  });
+elements.qualitySelect.addEventListener("change", () => {
+  const audioOnly = selectedFormat() === "audio";
+  if (audioOnly) elements.subtitles.checked = false;
+  elements.subtitles.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleMode.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleLanguagePreset.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitleLanguages.disabled = audioOnly || Boolean(currentJob?.running);
+  updateConditionalOptions();
+  updateActionAvailability();
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {

@@ -21,7 +21,8 @@ Check `yt-dlp --version` and `ffmpeg -version`. Also inspect:
 
 - macOS: `/opt/homebrew/bin`, `/usr/local/bin`, and the active login-shell PATH;
 - Linux: `~/.local/bin`, `/usr/local/bin`, `/usr/bin`, and `pipx list`;
-- Windows: `where.exe`, winget package state, and the current user PATH;
+- Windows: `where.exe`, CodeShell's managed user bin, WinGet Links, winget
+  package state, and the current user PATH;
 - Python fallback: `python3 -m yt_dlp --version` or
   `py -m yt_dlp --version`.
 
@@ -55,21 +56,26 @@ ffmpeg still needs a trusted package source.
 ## Windows
 
 When winget already owns yt-dlp, run `winget upgrade --id yt-dlp.yt-dlp
---exact`. When it is missing, run:
+--exact`. Otherwise prefer the exact SHA-256-verified standalone asset described
+in [github-release.md](github-release.md).
+
+The winget install command remains a fallback:
 
 ```powershell
 winget install --id yt-dlp.yt-dlp --exact
 ```
 
-Verify yt-dlp, then update an existing ffmpeg with `winget upgrade --id
-Gyan.FFmpeg --exact`, or install it when missing:
+Verify yt-dlp, then preserve an already working ffmpeg. When ffmpeg is missing,
+prefer the matching archive from the latest `yt-dlp/FFmpeg-Builds` GitHub
+Release, verify the Release API `sha256:` digest, and copy `ffmpeg.exe` plus
+`ffprobe.exe` into CodeShell's managed user bin. Use winget only as a fallback:
 
 ```powershell
 winget install --id Gyan.FFmpeg --exact
 ```
 
-Confirm both commands are visible from a newly opened shell. A CodeShell
-restart may be needed after PATH changes.
+Ask the panel to refresh immediately. CodeShell scans its managed bin and
+WinGet Links without requiring a restart.
 
 ## Linux
 
@@ -82,11 +88,12 @@ pipx upgrade yt-dlp
 pipx install yt-dlp
 ```
 
-Verify yt-dlp before touching ffmpeg. Then update or install ffmpeg with only
-the command appropriate to the detected distribution, such as `apt install
---only-upgrade ffmpeg` / `apt install ffmpeg`, `dnf upgrade ffmpeg` / `dnf
-install ffmpeg`, or `pacman -S ffmpeg`. Do not run a privileged command without
-the host/user approval required for that system.
+Verify yt-dlp before touching ffmpeg. Preserve a working ffmpeg. When it is
+missing on x64 or ARM64, prefer the matching SHA-256-verified Linux archive
+from `yt-dlp/FFmpeg-Builds` and install only `ffmpeg` plus `ffprobe` into
+CodeShell's managed user bin. Distribution package managers remain a fallback;
+do not run a privileged command without the host/user approval required for
+that system.
 
 ## Verification
 

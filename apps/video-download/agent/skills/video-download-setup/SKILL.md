@@ -30,15 +30,20 @@ current conversation and it does not download media.
    its owner or install the exact GitHub release, then verify that the result
    matches the tag. When no supported Python is available, do not attempt a
    Python package install: select the official standalone asset for the exact
-   OS, CPU architecture, and libc, verify it against the release's
-   `SHA2-256SUMS`, make it executable where required, and install it into a
-   user-writable PATH directory. Verify `yt-dlp --version` before continuing.
-5. **Handle `ffmpeg` second.** If it exists, update it through its owning
-   package manager. If it does not exist, install it. Verify `ffmpeg -version`.
+   OS, CPU architecture, and libc, verify it against the Release API asset's
+   `sha256:` digest (or `SHA2-256SUMS` for an older Release), make it executable
+   where required, and install it into a user-writable PATH directory. Verify
+   `yt-dlp --version` before continuing.
+5. **Handle `ffmpeg` second.** Preserve a working installation. When it is
+   missing on Windows or Linux, prefer the matching SHA-256-verified asset from
+   `https://github.com/yt-dlp/FFmpeg-Builds/releases/latest` and place `ffmpeg`
+   plus `ffprobe` in CodeShell's Host-managed user bin. On macOS, use an
+   existing Homebrew installation. Verify `ffmpeg -version`.
 6. Invoke `refresh_video_download_dependencies`, then invoke
    `get_video_download_context` again. Report exactly what is ready, what
-   remains unavailable, and whether CodeShell must be restarted to refresh its
-   login-shell PATH.
+   remains unavailable. Do not claim that a restart is required until the
+   panel refresh has checked both CodeShell's managed bin and Host-known
+   package-manager link directories.
 
 The panel's one-click initialization request is explicit permission to install
 or upgrade these two core dependencies with an already installed package
@@ -64,5 +69,6 @@ required.
 - Do not claim that the panel sees a dependency until
   `refresh_video_download_dependencies` confirms it.
 - If installation succeeds but the panel still cannot resolve the executable,
-  explain that the running CodeShell process has an older PATH snapshot and ask
-  the user to restart CodeShell once.
+  rerun the panel refresh first. Recommend a restart only for a third-party
+  package manager that installed outside both CodeShell's managed bin and the
+  Host-known executable directories.
