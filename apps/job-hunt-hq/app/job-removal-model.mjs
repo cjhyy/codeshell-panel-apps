@@ -1,9 +1,39 @@
+import { questionBankCurationGaps } from "./interview-bank-model.mjs";
+
 function recordId(record = {}) {
   return String(record.versionId || record.id || "").trim();
 }
 
 function linkedToJob(record, jobId) {
-  return String(record?.jobId || "") === jobId;
+  return (
+    String(record?.jobId || "") === jobId ||
+    (Array.isArray(record?.jobIds) && record.jobIds.some((id) => String(id) === jobId))
+  );
+}
+
+function interviewSetAfterJobRemoval(set = {}, jobId = "") {
+  if (!linkedToJob(set, jobId)) return set;
+  const remainingJobIds = [
+    ...new Set(
+      [
+        ...(Array.isArray(set.jobIds) ? set.jobIds : []),
+        set.jobId,
+      ]
+        .map((id) => String(id || "").trim())
+        .filter((id) => id && id !== jobId),
+    ),
+  ];
+  if (!remainingJobIds.length) return null;
+  const sourceMode =
+    set.sourceMode === "aggregate" && remainingJobIds.length === 1
+      ? "jd"
+      : set.sourceMode || "jd";
+  return {
+    ...set,
+    sourceMode,
+    jobId: sourceMode === "aggregate" ? "" : remainingJobIds[0],
+    jobIds: remainingJobIds,
+  };
 }
 
 export function jobRemovalPreview(state = {}, jobId = "") {
@@ -12,18 +42,35 @@ export function jobRemovalPreview(state = {}, jobId = "") {
     ? state.jobs.find((item) => String(item?.id || "") === id)
     : null;
   if (!job) return null;
+  const reScopedInterviewSetIds = new Set(
+    (state.interviewSets || [])
+      .filter((set) => linkedToJob(set, id) && interviewSetAfterJobRemoval(set, id))
+      .map((set) => set.id),
+  );
+  const removedInterviewSetIds = new Set(
+    (state.interviewSets || [])
+      .filter((set) => linkedToJob(set, id) && !interviewSetAfterJobRemoval(set, id))
+      .map((set) => set.id),
+  );
   const counts = {
     research: (state.jobResearch || []).filter((item) => linkedToJob(item, id)).length,
     resumes:
       (linkedToJob(state.resume, id) ? 1 : 0) +
       (state.versions || []).filter((item) => linkedToJob(item, id)).length,
-    interviewSets: (state.interviewSets || []).filter((item) => linkedToJob(item, id)).length,
+    interviewSets: removedInterviewSetIds.size,
+    mockInterviewSessions: (state.mockInterviewSessions || []).filter((session) =>
+      removedInterviewSetIds.has(session.interviewSetId),
+    ).length,
     preparationPlans: (state.preparationPlans || []).filter((item) => linkedToJob(item, id)).length,
-    interviewDebriefs: (state.interviewDebriefs || []).filter((item) => linkedToJob(item, id)).length,
+    interviewDebriefs: (state.interviewDebriefs || []).filter((item) => linkedToJob(item, id))
+      .length,
   };
   return {
     job,
     counts,
+    adjustments: {
+      interviewSetsReScoped: reScopedInterviewSetIds.size,
+    },
     linkedArtifactCount: Object.values(counts).reduce((sum, count) => sum + count, 0),
   };
 }
@@ -56,7 +103,18 @@ export function removeJobAndLinkedArtifacts(state = {}, jobId = "", emptyResume 
     }
   }
 
-  const interviewSets = (state.interviewSets || []).filter((item) => !linkedToJob(item, id));
+  const interviewSets = (state.interviewSets || [])
+    .map((item) => interviewSetAfterJobRemoval(item, id))
+    .filter(Boolean);
+  const retainedInterviewSetIds = new Set(interviewSets.map((item) => item.id));
+  const removedDebriefSourceRefs = new Set(
+    (state.interviewDebriefs || [])
+      .filter((item) => linkedToJob(item, id))
+      .map((item) => `real-interview:${item.id}`),
+  );
+  const interviewDebriefs = (state.interviewDebriefs || []).filter(
+    (item) => !linkedToJob(item, id),
+  );
   const selectedInterviewSetId = interviewSets.some(
     (item) => item.id === state.selectedInterviewSetId,
   )
@@ -67,21 +125,38 @@ export function removeJobAndLinkedArtifacts(state = {}, jobId = "", emptyResume 
     next: {
       ...state,
       jobs,
-      selectedJobId:
-        state.selectedJobId === id ? jobs[0]?.id || "" : state.selectedJobId,
+      selectedJobId: state.selectedJobId === id ? jobs[0]?.id || "" : state.selectedJobId,
       workflowJobIds: (state.workflowJobIds || []).filter((item) => item !== id),
       jobResearch: (state.jobResearch || []).filter((item) => !linkedToJob(item, id)),
       resume,
       selectedBaseResumeId,
       versions,
       interviewSets,
+      questionBank: (state.questionBank || []).map((item) => {
+        const nextQuestion = {
+          ...item,
+          jobIds: (item.jobIds || []).filter((itemJobId) => itemJobId !== id),
+          sourceSetIds: (item.sourceSetIds || []).filter((setId) =>
+            retainedInterviewSetIds.has(setId),
+          ),
+          sourceRefs: (item.sourceRefs || []).filter(
+            (sourceRef) => !removedDebriefSourceRefs.has(sourceRef),
+          ),
+        };
+        if (
+          ["ready", "mastered"].includes(nextQuestion.status) &&
+          questionBankCurationGaps(nextQuestion).length
+        ) {
+          nextQuestion.status = "inbox";
+        }
+        return nextQuestion;
+      }),
+      mockInterviewSessions: (state.mockInterviewSessions || []).filter((item) =>
+        retainedInterviewSetIds.has(item.interviewSetId),
+      ),
       selectedInterviewSetId,
-      preparationPlans: (state.preparationPlans || []).filter(
-        (item) => !linkedToJob(item, id),
-      ),
-      interviewDebriefs: (state.interviewDebriefs || []).filter(
-        (item) => !linkedToJob(item, id),
-      ),
+      preparationPlans: (state.preparationPlans || []).filter((item) => !linkedToJob(item, id)),
+      interviewDebriefs,
       jdIntakeItems: (state.jdIntakeItems || []).map((item) => {
         const jobIds = (item.jobIds || []).filter((itemJobId) => itemJobId !== id);
         if (jobIds.length === (item.jobIds || []).length) return item;

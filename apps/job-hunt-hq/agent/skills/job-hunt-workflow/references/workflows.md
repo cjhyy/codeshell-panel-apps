@@ -11,7 +11,8 @@ not evidence of user interest.
 Use this module when the Panel target kind is `project-bootstrap` or the user
 asks the Panel to initialize, repair, scan, or complete the current project.
 
-1. Invoke `get_job_search_context`, inspect the root listing, and read the
+1. Invoke `get_job_search_context` with `scope=candidate`, inspect its bounded
+   source and resume indexes, and read the
    current `CODESHELL.md` when present. Scan only obvious resume, biography,
    work-history, portfolio, project-summary, and interview-note files. Exclude
    dependencies, build output, caches, generated bundles, and large binaries.
@@ -27,8 +28,8 @@ asks the Panel to initialize, repair, scan, or complete the current project.
    - `career-data/projects.md`
    - `career-data/interview-notes.md`
    - `career-data/jd/README.md`
-   Keep incoming JD text, screenshots, PDFs, documents, and chat exports under
-   `career-data/jd/inbox/`; do not mix them into candidate evidence files.
+     Keep incoming JD text, screenshots, PDFs, documents, and chat exports under
+     `career-data/jd/inbox/`; do not mix them into candidate evidence files.
 5. Write explicit `TODO` prompts into new templates. Never present a template,
    example, inferred metric, or guessed employment detail as candidate fact.
 6. Inspect Git history read-only when it belongs to the current project. A Repo
@@ -50,7 +51,8 @@ Use this module when the Panel target kind is `jd-intake` or the user asks to
 import JD files, screenshots, pasted chat text, PDFs, Word files, or the project
 JD inbox.
 
-1. Invoke `get_job_search_context` and process only the named `intakeId` /
+1. Invoke `get_job_search_context` with paginated `scope=intake` and process
+   only the named `intakeId` /
    `sourcePath` values under `career-data/jd/inbox/`. A project scan stays in
    that directory and must not scan another Repo.
 2. Read normal text files directly. For a Panel-staged
@@ -78,8 +80,9 @@ JD inbox.
   preparation, and follow-up—as state boundaries. They explain what is safe to
   do next; they are not a mandatory end-to-end scenario.
 - Discovery can run alone.
-- Company intelligence, match analysis, interview questions, and mock
-  interviews require a shortlisted formal job with a complete JD. A `jobLead`
+- Company intelligence, match analysis, JD-grounded interview questions, and
+  JD-grounded mocks require a shortlisted formal job with a complete JD. A
+  canonical bank import does not require a job. A `jobLead`
   never qualifies. An `inbox`
   record qualifies only when the user explicitly names or selects that job for
   the requested task.
@@ -92,9 +95,11 @@ JD inbox.
   repository with substantive, candidate-attributable commits.
 - Match analysis and preparation planning share `save_preparation_plan`; when
   both are requested, write one combined plan per job.
-- A mock interview should use a saved question set when available. If the user
-  requested both generation and simulation, save the set before asking the
-  first interactive question.
+- A normal Panel mock is self-contained and does not invoke the Agent per
+  answer. An explicitly requested direct-chat mock or post-hoc AI review should
+  use a saved practice set when available and retain the Panel-provided
+  practice Session ID. Finalize the mock separately from real interview
+  debriefs.
 - A real interview debrief requires user-provided interview facts. After saving
   it, update a preparation plan or resume only when those tasks were also
   selected.
@@ -105,7 +110,8 @@ Use this module when the Panel target kind is `channel-verification`.
 
 1. Resolve exactly one provider from the Panel payload. Do not open, verify, or
    search any other provider during this run.
-2. Invoke `get_job_search_context`, confirm the current Session, and open only
+2. Invoke `get_job_search_context` with `scope=discovery`, confirm the current
+   Session, and open only
    that provider in the connected visible browser. Do not search for jobs.
 3. Treat Panel-managed login as already resolved by the CodeShell Host. The
    Panel may have opened an isolated login window, saved the Cookie, and
@@ -199,7 +205,7 @@ Use this module when the prompt contains
 
 ## Research company and interview intelligence
 
-For every selected job:
+For a single selected job:
 
 1. Inspect the official company site, careers site, product pages, and reliable
    current public sources.
@@ -235,7 +241,10 @@ For every selected job, or once without a job for general preparation:
 
 ## Build, tailor, or revise a resume
 
-Start by resolving the requested layer:
+Start by resolving the requested layer. The durable flow is: verified candidate
+facts and Source evidence → broad Base Resume → JD Variant → public application
+file. Do not skip a prior layer or leak internal evidence notes into the public
+Markdown/PDF.
 
 1. Read [resume-quality.md](resume-quality.md), `baseResumes`,
    `selectedBaseResumeId`, `resume`, `resumeVersions`, and all verified
@@ -249,8 +258,12 @@ Start by resolving the requested layer:
    - map the professional summary and every capability, work, and project
      bullet to source-backed `claim_evidence` using the exact rendered text;
      explain what each source proves and add point-specific interview questions;
+   - save the usable draft first, then add 3–8 private `candidate_questions`
+     targeting high-value facts the user may have forgotten; do not block the
+     draft or confuse these with interviewer questions;
    - invoke `save_resume_draft` with `resume_kind: "base"`, `category`,
-     `claim_evidence`, and no `job_id` or `base_resume_id`.
+     `claim_evidence`, `candidate_questions`, and no `job_id` or
+     `base_resume_id`.
 3. For a JD Variant:
    - require an applicable saved base; create it first if missing;
    - read that complete base before the JD;
@@ -261,9 +274,24 @@ Start by resolving the requested layer:
    - re-rank the 3–6 `core` claims for this JD and preserve or update exact
      claim-to-source mappings; never use the JD as the only source for a
      candidate capability;
+   - preserve answered candidate QA and generate focused new questions only
+     for unresolved facts that could strengthen this JD match;
    - invoke `save_resume_draft` with `resume_kind: "variant"`, the base's
      `category`, `base_resume_id`, `job_id`, and complete `claim_evidence`.
 4. Put uncertain or missing facts in `notes` instead of filling them in.
+5. Treat a Markdown/PDF export as an application file derived from one exact
+   resume version. Export does not create new facts, alter the Base, or imply
+   that the user applied. Do not cross this boundary while any public claim is
+   `needs_review`, lacks a concrete evidence explanation, or lacks an interview
+   defense. Keep the internal evidence ledger and private QA out of the public
+   file.
+
+For private resume QA, ask one saved question at a time. After the user's
+answer, invoke `save_resume_qa_answer` with the exact resume and question IDs.
+Treat explicit user confirmation as `user:resume-qa:<question-id>`; use
+`needs_source` when a metric, date, ownership boundary, or outcome still needs
+stable support. Do not change the public resume until the user separately asks
+to apply answered QA.
 
 Default section order:
 
@@ -283,33 +311,74 @@ For every selected job:
 2. Cover technical foundations, project depth, system design, behavioral
    evidence, and material gaps unless a narrower focus was requested.
 3. Give every question a reason, evidence references, grounded answer points,
+   a practice-ready `recommended_answer` using only verified candidate facts,
    and realistic follow-ups.
-4. Invoke `save_interview_question_set`.
+4. Invoke `save_interview_question_set` with `source_mode: "jd"` and the exact
+   `job_id`.
 
-## Generate commit deep-dive questions
+For a role-family aggregate:
 
-1. Run without a job unless the user also selected JD tailoring.
-2. Use read-only Git inspection. Start with the relevant Repo's log, exclude
-   trivial merge/format-only commits, and verify candidate attribution before
-   treating a change as evidence.
-3. Inspect selected commits and key diffs. Ask about problem framing,
-   implementation decisions, alternatives, tests, failure handling,
-   compatibility, rollout, and rollback.
-4. Give every question at least one evidence reference formatted as
-   `commit:<sha> · <subject> · <key path>`.
-5. Invoke `save_interview_question_set` with `source_mode: "commits"` and no
-   `job_id`. Use `source_mode: "mixed"` with a valid `job_id` only when the user
-   explicitly wants commit evidence cross-referenced with a JD.
+1. Require 2–8 exact selected job IDs and cross-reference every complete JD.
+2. Merge synonymous requirements and rank hiring signals by recurrence across
+   the selected JDs. Distinguish shared signals from one-off requirements.
+3. Build one coherent role-family set. Record JD coverage for recurring signals
+   in the reason or evidence reference; never concatenate separate single-job
+   sets.
+4. Cross-reference candidate experience, Base Resume, repositories, commits,
+   and known gaps. Every question still requires a source-backed
+   `recommended_answer`, answer points, and a non-duplicative follow-up.
+5. Invoke `save_interview_question_set` with `source_mode: "aggregate"`, exact
+   `job_ids`, and no `job_id`.
 
-## Run a mock interview
+Every saved practice set is a target-specific selection. The Panel links its
+questions into the canonical question bank; do not create a second independent
+long-term bank in the set itself.
 
-1. Read the selected job and saved question set.
-2. Ask one question at a time and withhold answer points until the user
-   answers.
-3. Give brief feedback on evidence, clarity, technical depth, and job
-   relevance, then ask one follow-up or continue.
-4. Never turn an unsupported answer into a candidate fact.
-5. End with strengths, risks, and the next practice focus. Save another
+## Import questions from the current Session
+
+1. Read only the current Session content supplied by the Panel action. Do not
+   claim access to another task or Session.
+2. Extract questions that were actually asked or explicitly listed as
+   interview questions. Exclude candidate answers, assistant analysis,
+   headings, meta-instructions, and invented variants.
+3. Preserve the question's meaning, then classify type, category, competency,
+   difficulty, priority, origin, tags, and Source when the transcript supports
+   them. Leave unsupported enrichment empty.
+4. Invoke `save_interview_question_bank_items` once with 1–50 items and
+   `origin: "session"`. The Panel fingerprints and merges duplicates and puts
+   new Session questions in `inbox` for the user to review and edit.
+5. Do not generate a practice set or start a mock unless the user separately
+   requested it.
+
+## Run or review a mock interview
+
+The normal Panel mock is local: the Panel asks, records/transcribes, saves the
+raw answer into the project, and advances without invoking this workflow. Do
+not expect or manufacture a Session task for every Panel answer.
+
+Only continue below when the user explicitly asks for a direct-chat mock or AI
+review of answers already saved by the Panel.
+
+1. Read the selected job when applicable, saved practice set, canonical bank
+   items, and the Panel-provided practice Session ID. Use only the exact
+   canonical `questionIds` captured for the Session; the Panel excludes
+   `inbox` and `archived` items even if the saved set still references them.
+2. For a direct-chat mock, ask one question at a time and withhold answer points
+   until the user answers. For a post-hoc Panel review, use the raw saved answer
+   and do not ask or advance questions in chat.
+3. Score evidence and ownership, structure, answer depth, and role relevance
+   from 0–100 according to the interview-coach rubric. Give concise strengths,
+   prioritized improvements, and an optimized answer using verified facts.
+4. Invoke `save_interview_practice_review` with the exact `bank_question_id`,
+   `practice_session_id`, and available `interview_set_id` / `question_id`, then
+   ask one follow-up or continue only in an explicitly requested direct-chat
+   mock. In a post-hoc review, save feedback and stop at the requested scope.
+5. Never turn an unsupported answer into a candidate fact.
+6. End with strengths, risks, and the next practice focus. Invoke
+   `save_mock_interview_session` with `completed`; use `abandoned` when the user
+   explicitly stops. Include the summary, strengths, improvements, and
+   observable next actions; do not send reviewed IDs or score totals because
+   the Panel derives them from the saved per-question reviews. Save another
    artifact only if the user selected it.
 
 ## Update application progress
@@ -347,8 +416,7 @@ offer or rejection, withdraws, archives a role, or asks to set a follow-up.
 
 ## Long combinations
 
-Use `save_workflow_progress` for multi-job or multi-stage work. Planned steps
-may include discovery, JD verification, company research, reviews, interviews,
-resume, preparation, debrief, and final artifacts. Save useful partial writes
-early, reuse the returned `workflowId`, and finish with `completed`, `partial`,
-or `failed`.
+Planned steps may include discovery, JD verification, company research,
+reviews, interviews, resume, preparation, debrief, and final artifacts. Save
+useful business artifacts early; every tool call is already visible in the
+active Trace. Finish that Trace with `completed`, `partial`, or `failed`.

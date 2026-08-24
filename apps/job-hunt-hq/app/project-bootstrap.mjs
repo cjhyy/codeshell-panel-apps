@@ -22,8 +22,8 @@ export function resolveProjectBootstrapStatus({
   const profileName = text(profile?.name);
   const profileReady = Boolean(
     profileName &&
-      !["等待 Agent 识别", "当前项目"].includes(profileName) &&
-      (text(profile?.target) || text(profile?.summary) || text(profile?.role)),
+    !["等待 Agent 识别", "当前项目"].includes(profileName) &&
+    (text(profile?.target) || text(profile?.summary) || text(profile?.role)),
   );
   const repositoryCount = Array.isArray(repositories) ? repositories.length : 0;
   const experienceCount = Array.isArray(experiences) ? experiences.length : 0;
@@ -53,7 +53,8 @@ export function resolveProjectBootstrapStatus({
       state: "partial",
       label: "数据结构已建立 · 待识别资料",
       title: "继续让 Agent 识别数据源",
-      detail: "基础文件已经存在，但还没有可用于简历的经历或项目证据。Agent 会继续扫描并留下待补项。",
+      detail:
+        "基础文件已经存在，但还没有可用于简历的经历或项目证据。Agent 会继续扫描并留下待补项。",
       button: "继续识别资料",
     };
   }
@@ -77,7 +78,7 @@ export function buildProjectBootstrapTask({
   const prompt = [
     "请使用 job-hunt-hq:job-hunt-workflow skill 和 panel-app:job-hunt-hq 工具，初始化当前 CodeShell 项目为可持续维护的求职数据项目。",
     "这是用户从面板明确发起的项目内初始化。只处理当前项目，不打开、切换或修改其他 Repo。",
-    "先调用 get_job_search_context，再检查当前项目根目录、明显的简历/经历/项目说明文件以及当前 Git 仓库的只读元数据。不要无目的遍历依赖目录、构建产物或大型二进制文件。",
+    '先调用 get_job_search_context，参数使用 {"scope":"candidate","limit":25}，再检查当前项目根目录、明显的简历/经历/项目说明文件以及当前 Git 仓库的只读元数据。不要无目的遍历依赖目录、构建产物或大型二进制文件。',
     "按以下规则初始化：",
     "1. 优先复用已有文件和目录，不复制同一份资料，不改变现有项目结构。",
     "2. 如果没有 CODESHELL.md，创建它；如果已经存在，只在必要时增加或更新一个清晰的 Job Hunt HQ 小节，保留其他项目指令。该小节写明资料路径、目标方向和事实边界，明确禁止编造指标。",

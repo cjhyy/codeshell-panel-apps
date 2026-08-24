@@ -11,11 +11,19 @@ const LOCAL_FIELDS = [
   "jobFilter",
   "jobSourceFilter",
   "interviewCategoryFilter",
+  "interviewWorkspaceMode",
+  "resumeWorkspaceMode",
+  "dataWorkspaceMode",
+  "interviewBankSearch",
+  "interviewBankStatusFilter",
+  "interviewBankTypeFilter",
   "sessionTraceFilter",
 ];
 
 function boundedText(value, maxLength) {
-  return String(value || "").trim().slice(0, maxLength);
+  return String(value || "")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function compactValue(value, depth = 0) {
@@ -46,6 +54,7 @@ function compactTrace(activity) {
     instruction: boundedText(activity?.instruction, 2000),
     requestPrompt: boundedText(activity?.requestPrompt, 12000),
     parentTraceId: boundedText(activity?.parentTraceId, 100),
+    externalTraceId: boundedText(activity?.externalTraceId, 100),
     workspace: boundedText(activity?.workspace, 2000),
     status: boundedText(activity?.status, 20),
     outcome: outcome
@@ -83,6 +92,44 @@ function compactTrace(activity) {
   };
 }
 
+function compactInterviewDraft(draft) {
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    return {
+      questionId: "",
+      practiceSessionId: "",
+      answer: "",
+      inputMode: "typed",
+      updatedAt: "",
+    };
+  }
+  return {
+    questionId: boundedText(draft.questionId, 100),
+    practiceSessionId: boundedText(draft.practiceSessionId, 100),
+    answer: String(draft.answer || "").slice(0, 6000),
+    inputMode: ["typed", "voice", "mixed"].includes(draft.inputMode)
+      ? draft.inputMode
+      : "typed",
+    updatedAt: boundedText(draft.updatedAt, 80),
+  };
+}
+
+function compactResumeDraft(draft) {
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    return {
+      resumeVersionId: "",
+      parentVersionId: "",
+      markdown: "",
+      updatedAt: "",
+    };
+  }
+  return {
+    resumeVersionId: boundedText(draft.resumeVersionId, 100),
+    parentVersionId: boundedText(draft.parentVersionId, 100),
+    markdown: String(draft.markdown || "").slice(0, 50_000),
+    updatedAt: boundedText(draft.updatedAt, 80),
+  };
+}
+
 export function encodedJsonBytes(value) {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }
@@ -96,6 +143,8 @@ export function compactPanelLocalState(state, maxBytes = PANEL_LOCAL_STORAGE_TAR
   payload.sessionActivity = Array.isArray(source.sessionActivity)
     ? source.sessionActivity.slice(0, 24).map(compactTrace)
     : [];
+  payload.interviewDraft = compactInterviewDraft(source.interviewDraft);
+  payload.resumeDraft = compactResumeDraft(source.resumeDraft);
 
   if (encodedJsonBytes(payload) <= maxBytes) return payload;
   payload.sessionActivity = payload.sessionActivity.map((activity) => ({

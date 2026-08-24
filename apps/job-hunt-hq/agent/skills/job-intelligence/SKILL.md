@@ -14,8 +14,9 @@ it and does not yet mean a real job was collected.
 - Use `job-hunt-hq:job-hunt-workflow` for Panel context, explicit target jobs,
   Trace correlation, structured writes, and completion.
 - Invoke `get_job_search_context` before searching when Panel tools are
-  available. Respect the submitted providers, filters, count, and selected
-  job IDs as the execution boundary.
+  available. Use `scope=discovery` for providers and filters, paginated
+  `scope=jobs` for comparison indexes, and `scope=job` with an exact `job_id`
+  for verification or research. Respect the submitted execution boundary.
 - Read [references/source-quality.md](references/source-quality.md) before
   saving discovery or research results.
 

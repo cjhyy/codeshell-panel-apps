@@ -1,6 +1,6 @@
 ---
 name: job-hunt-workflow
-description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use whenever the user asks to initialize or repair a project-local job-search workspace; import JD text, screenshots, PDFs, Word files, chat exports, or project files; find, select, or compare jobs; collect or verify JDs; research companies, reviews, or interview reports; build or revise a source-backed Base Resume; derive a job-specific resume from a saved base; trace resume claims to experience, repositories, files, or commits; generate interview questions from JDs or Git commit history; analyze JD fit; create preparation plans; run mock interviews; save real interview debriefs; iterate materials from feedback; update application progress; or execute any user-selected combination of these tasks.
+description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use whenever the user asks to initialize or repair a project-local job-search workspace; import JD text, screenshots, PDFs, Word files, chat exports, or project files; find, select, or compare jobs; collect or verify JDs; research companies, reviews, or interview reports; build or revise a source-backed Base Resume; derive a job-specific resume from a saved base; trace resume claims to experience, repositories, files, or commits; curate or import a canonical interview question bank; generate practice sets and recommended answers from one JD or an aggregate of multiple JDs; analyze JD fit; create preparation plans; run mock interviews; save real interview debriefs; iterate materials from feedback; update application progress; or execute any user-selected combination of these tasks.
 ---
 
 # Job Hunt Workflow
@@ -66,6 +66,9 @@ explicit user-selected module.
   not tied to a company or `job_id`.
 - Treat a JD Variant as a derivative. It must identify both the saved
   `base_resume_id` and target `job_id`.
+- Treat an exported application file as a public derivative of one exact Base
+  or JD Variant. It must not expose private QA, Source notes, or the evidence
+  ledger, and exporting it never implies that the user applied.
 - Never jump from raw candidate files straight to a JD Variant when no
   applicable Base Resume exists. Build and save the Base Resume first, then
   derive the requested variant.
@@ -92,8 +95,9 @@ Load only the specialized Skills required by the selected modules:
 - `job-hunt-hq:resume-design` for every generated resume's template and visual
   gate, and whenever the request involves layout, photo, density, A4, PDF,
   ATS extraction, or export;
-- `job-hunt-hq:interview-coach` for question sets, commit deep dives, mock
-  interviews, debriefs, gap classification, preparation plans, or roadmaps.
+- `job-hunt-hq:interview-coach` for canonical-bank curation or Session import,
+  JD-grounded practice sets, mock interviews, debriefs, gap
+  classification, preparation plans, or roadmaps.
 
 Do not load a specialist merely because its output could be useful later. For
 example, discovery loads Job Intelligence but does not load resume or interview
@@ -108,10 +112,23 @@ structured write whose fields are not already clear from the Panel tool schema.
 1. Use `Panel` with `action: "tools"` and
    `panel_id: "panel-app:job-hunt-hq"` as the first useful tool call unless the
    current tool contract is already visible.
-2. Invoke `get_job_search_context` before browsing or drafting.
-   Inspect `baseResumes`, `selectedBaseResumeId`, `resume`, and
-   `resumeVersions` before any resume write. Preserve existing
-   `claimEvidence` when its claims remain unchanged.
+2. Invoke `get_job_search_context` before browsing or drafting, but never ask
+   it for a full project dump. With no arguments it returns only counts,
+   selected-object summaries, available scopes, and policy. Then read the
+   smallest sufficient slice:
+   - `candidate` for profile, repositories, work history, and a paginated
+     resume index;
+   - `jobs` or exact `job_id` with `scope=job`;
+   - `resumes` or exact `resume_id` with `scope=resume`;
+   - `questions` for the paginated question index, `scope=practice` with an
+     exact `bank_question_id` and `practice_attempt_id` for scoring, or
+     `scope=interview` for a complete set / mock Session relationship;
+   - `discovery` for providers and search preferences; `intake` for the JD
+     inbox.
+     Follow `nextCursor` for a catalog only when the requested task genuinely
+     needs the rest of that catalog. Do not bypass a bounded Panel read by loading
+     the entire project snapshot file. Preserve existing `claimEvidence` when
+     its claims remain unchanged.
 3. Check once for the active project's root `CODESHELL.md`. If present, follow
    it and read only the candidate files it identifies. Its absence is not a
    blocker and must not trigger repeated searches.
@@ -168,15 +185,10 @@ success.
 - Treat a `Panel Trace ID` in the submitted prompt as opaque correlation
   metadata. Do not rewrite it or ask the user to manage it. When the current
   Panel tool schema exposes `trace_id`, pass that exact ID to every non-readonly
-  Panel invocation, including `report_execution_trace`, every `save_*`
-  invocation, and `complete_execution_trace`. This keeps sources, failures,
-  written artifacts, and the final output attached to the execution that
-  produced them.
-- Use `report_execution_trace` only for observable milestones: one `source`
-  event after resolving the important project files, commits, or web pages;
-  one `stage` event when a long workflow materially changes phase; and one
-  `warning` event for an access or evidence limitation. Include compact source
-  locators. Never report hidden reasoning, chain-of-thought, or routine steps.
+  Panel invocation, including every `save_*` invocation and
+  `complete_execution_trace`. The Panel records each tool invocation and its
+  written artifacts automatically, keeping failures and the final output
+  attached to the execution that produced them.
 - Make progress in batches. Do not narrate each click, page read, or tool call.
   Give one short start update, then only report a material result or blocker.
 - Produce the first useful panel write early. For discovery, write verified
@@ -188,8 +200,6 @@ success.
   Persistence never means the user is interested, applying, or ready to prepare.
 - Continue automatically through the selected task combination. Do not stop after
   announcing the next step.
-- Use `save_workflow_progress` only for genuinely long multi-job or multi-task
-  work. A quick discovery or single artifact does not need a workflow run.
 - For a task launched from the Panel, invoke `complete_execution_trace` after
   the last useful structured write and before the final response. Use
   `completed` when the selected work finished, `partial` when useful output was
@@ -217,10 +227,8 @@ success.
   `interview_questions`. Use questions to verify ownership, technical depth,
   tradeoffs, results, or failures. Put a specific next improvement in
   `improvement` when scope, outcome, attribution, or evidence is weak.
-- When deriving questions from Git, start from the visible commit log, inspect
-  only substantive candidate-attributable commits, then read the relevant
-  diff. Do not infer authorship from repository presence. Cite commit questions
-  as `commit:<sha> · <subject> · <key path>`.
+- Verified Commit references may support a JD-grounded question or resume claim,
+  but the interview workflow does not create a separate Commit-only question set.
 - Prefer official company and careers pages for company and role facts.
 - Search current public pages only. Never bypass login, CAPTCHA, robots,
   paywalls, rate limits, or other access controls.

@@ -14,7 +14,9 @@
     "workflowRuns",
     "resume",
     "versions",
+    "questionBank",
     "interviewSets",
+    "mockInterviewSessions",
     "preparationPlans",
     "interviewDebriefs"
   ],
@@ -24,6 +26,64 @@
     },
     "updatedAt": {
       "type": "string"
+    },
+    "artifactStorage": {
+      "description": "Optional A/B shard index used when the complete project snapshot exceeds the Host's safe single-file size. Root fields remain schema-valid placeholders and are hydrated from every listed shard before use.",
+      "type": "object",
+      "required": ["schemaVersion", "generation", "shards"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "generation": { "type": "string", "enum": ["a", "b"] },
+        "shards": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "required": ["path", "field", "kind", "part", "total", "count", "bytes"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^career-data/panel-shards/[ab]/[A-Za-z]+-[0-9]{3}\\.json$",
+                "maxLength": 200
+              },
+              "field": {
+                "type": "string",
+                "enum": [
+                  "jdIntakeItems",
+                  "jobLeads",
+                  "jobs",
+                  "repos",
+                  "experiences",
+                  "jobResearch",
+                  "workflowRuns",
+                  "resume",
+                  "versions",
+                  "questionBank",
+                  "interviewSets",
+                  "mockInterviewSessions",
+                  "preparationPlans",
+                  "interviewDebriefs"
+                ]
+              },
+              "kind": { "type": "string", "enum": ["array", "value"] },
+              "part": { "type": "integer", "minimum": 1, "maximum": 128 },
+              "total": { "type": "integer", "minimum": 1, "maximum": 128 },
+              "count": { "type": "integer", "minimum": 0 },
+              "bytes": { "type": "integer", "minimum": 1, "maximum": 368640 }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "field": { "const": "resume" } } },
+                "then": { "properties": { "kind": { "const": "value" } } },
+                "else": { "properties": { "kind": { "const": "array" } } }
+              }
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "selectedJobId": {
       "type": "string"
@@ -129,7 +189,16 @@
           "id": { "type": "string" },
           "sourceKind": {
             "type": "string",
-            "enum": ["pasted_text", "image", "pdf", "document", "file", "project_file", "project_scan", "chat_export"]
+            "enum": [
+              "pasted_text",
+              "image",
+              "pdf",
+              "document",
+              "file",
+              "project_file",
+              "project_scan",
+              "chat_export"
+            ]
           },
           "originalName": { "type": "string" },
           "sourcePath": { "type": "string" },
@@ -182,20 +251,766 @@
     "workflowRuns": {
       "type": "array"
     },
-    "resume": {
-      "type": "object"
-    },
+    "resume": { "$ref": "#/$defs/resumeRecord" },
     "versions": {
-      "type": "array"
+      "type": "array",
+      "maxItems": 30,
+      "items": { "$ref": "#/$defs/resumeRecord" }
+    },
+    "questionBank": {
+      "description": "Canonical, deduplicated interview questions. Sets reference these records through bankQuestionId.",
+      "type": "array",
+      "maxItems": 600,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "fingerprint",
+          "fingerprintAliases",
+          "question",
+          "category",
+          "competency",
+          "type",
+          "difficulty",
+          "priority",
+          "status",
+          "origin",
+          "tags",
+          "sourceRefs",
+          "answerPoints",
+          "recommendedAnswer",
+          "followUps",
+          "notes",
+          "jobIds",
+          "sourceSetIds",
+          "practiceAttempts",
+          "practiceReviews",
+          "lastPracticedAt",
+          "revision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "fingerprint": { "type": "string", "maxLength": 100 },
+          "fingerprintAliases": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "question": { "type": "string", "minLength": 1, "maxLength": 1200 },
+          "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "competency": { "type": "string", "maxLength": 120 },
+          "type": {
+            "type": "string",
+            "enum": [
+              "behavioral",
+              "technical",
+              "system_design",
+              "project_deep_dive",
+              "resume_probe",
+              "scenario",
+              "role_knowledge",
+              "other"
+            ]
+          },
+          "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
+          "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+          "status": {
+            "type": "string",
+            "enum": ["inbox", "ready", "mastered", "archived"]
+          },
+          "origin": {
+            "type": "string",
+            "enum": ["generated", "session", "manual", "real_interview", "imported"]
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 16,
+            "items": { "type": "string", "maxLength": 80 },
+            "uniqueItems": true
+          },
+          "sourceRefs": {
+            "type": "array",
+            "maxItems": 16,
+            "items": { "type": "string", "maxLength": 500 },
+            "uniqueItems": true
+          },
+          "answerPoints": {
+            "type": "array",
+            "maxItems": 12,
+            "items": { "type": "string", "maxLength": 500 },
+            "uniqueItems": true
+          },
+          "recommendedAnswer": { "type": "string", "maxLength": 5000 },
+          "followUps": {
+            "type": "array",
+            "maxItems": 10,
+            "items": { "type": "string", "maxLength": 800 },
+            "uniqueItems": true
+          },
+          "notes": { "type": "string", "maxLength": 3000 },
+          "jobIds": {
+            "type": "array",
+            "maxItems": 12,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "sourceSetIds": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "practiceAttempts": {
+            "description": "Candidate answers saved directly by the Panel before any optional AI review.",
+            "type": "array",
+            "maxItems": 40,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "answer",
+                "inputMode",
+                "practiceSessionId",
+                "interviewSetId",
+                "createdAt",
+                "updatedAt"
+              ],
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "answer": { "type": "string", "minLength": 1, "maxLength": 6000 },
+                "inputMode": { "type": "string", "enum": ["typed", "voice", "mixed"] },
+                "practiceSessionId": { "type": "string", "maxLength": 100 },
+                "interviewSetId": { "type": "string", "maxLength": 100 },
+                "createdAt": { "type": "string", "maxLength": 80 },
+                "updatedAt": { "type": "string", "maxLength": 80 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "practiceReviews": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "answerSummary",
+                "overallScore",
+                "dimensions",
+                "strengths",
+                "improvements",
+                "optimizedAnswer",
+                "followUp",
+                "practiceSessionId",
+                "createdAt"
+              ],
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "answerSummary": { "type": "string", "maxLength": 1600 },
+                "overallScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "dimensions": {
+                  "type": "object",
+                  "required": ["evidence", "structure", "depth", "relevance"],
+                  "properties": {
+                    "evidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "structure": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "depth": { "type": "integer", "minimum": 0, "maximum": 100 },
+                    "relevance": { "type": "integer", "minimum": 0, "maximum": 100 }
+                  },
+                  "additionalProperties": false
+                },
+                "strengths": {
+                  "type": "array",
+                  "maxItems": 5,
+                  "items": { "type": "string", "maxLength": 400 },
+                  "uniqueItems": true
+                },
+                "improvements": {
+                  "type": "array",
+                  "maxItems": 3,
+                  "items": { "type": "string", "maxLength": 500 },
+                  "uniqueItems": true
+                },
+                "optimizedAnswer": { "type": "string", "maxLength": 3000 },
+                "followUp": { "type": "string", "maxLength": 600 },
+                "practiceSessionId": { "type": "string", "maxLength": 100 },
+                "practiceAttemptId": { "type": "string", "maxLength": 100 },
+                "traceId": { "type": "string", "maxLength": 100 },
+                "createdAt": { "type": "string", "maxLength": 80 }
+              },
+              "additionalProperties": false
+            }
+          },
+          "lastPracticedAt": { "type": "string", "maxLength": 80 },
+          "revision": { "type": "integer", "minimum": 1 },
+          "createdAt": { "type": "string", "maxLength": 80 },
+          "updatedAt": { "type": "string", "maxLength": 80 }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "status": { "enum": ["ready", "mastered"] } },
+              "required": ["status"]
+            },
+            "then": {
+              "properties": {
+                "question": { "type": "string", "minLength": 8 },
+                "category": { "type": "string", "not": { "const": "待分类" } },
+                "competency": { "type": "string", "minLength": 1 },
+                "sourceRefs": { "type": "array", "minItems": 1 }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "origin": { "enum": ["session", "imported", "real_interview"] }
+              },
+              "required": ["origin"]
+            },
+            "then": {
+              "properties": { "status": { "const": "inbox" } }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
     },
     "interviewSets": {
-      "type": "array"
+      "description": "Bounded goal-specific practice selections that reference canonical bank items.",
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "jobId",
+          "jobIds",
+          "sourceMode",
+          "title",
+          "mode",
+          "difficulty",
+          "createdAt",
+          "questions"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "jobId": { "type": "string", "maxLength": 100 },
+          "jobIds": {
+            "type": "array",
+            "maxItems": 12,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "sourceMode": {
+            "type": "string",
+            "enum": ["jd", "aggregate", "commits", "mixed"]
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "mode": { "type": "string", "minLength": 1, "maxLength": 40 },
+          "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
+          "createdAt": { "type": "string", "maxLength": 80 },
+          "questions": {
+            "description": "Compact practice-set references. Canonical wording, answers, sources and practice history are hydrated from questionBank through bankQuestionId. Legacy materialized fields remain readable during migration.",
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "object",
+              "required": ["id", "bankQuestionId", "why"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "bankQuestionId": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "question": { "type": "string", "minLength": 1, "maxLength": 1200 },
+                "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+                "competency": { "type": "string", "maxLength": 120 },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "behavioral",
+                    "technical",
+                    "system_design",
+                    "project_deep_dive",
+                    "resume_probe",
+                    "scenario",
+                    "role_knowledge",
+                    "other"
+                  ]
+                },
+                "tags": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": { "type": "string", "maxLength": 80 },
+                  "uniqueItems": true
+                },
+                "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
+                "why": { "type": "string", "maxLength": 1200 },
+                "sourceRefs": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": { "type": "string", "maxLength": 500 },
+                  "uniqueItems": true
+                },
+                "evidenceRefs": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": { "type": "string", "maxLength": 500 },
+                  "uniqueItems": true
+                },
+                "answerPoints": {
+                  "type": "array",
+                  "maxItems": 12,
+                  "items": { "type": "string", "maxLength": 500 },
+                  "uniqueItems": true
+                },
+                "recommendedAnswer": { "type": "string", "maxLength": 5000 },
+                "followUps": {
+                  "type": "array",
+                  "maxItems": 10,
+                  "items": { "type": "string", "maxLength": 800 },
+                  "uniqueItems": true
+                },
+                "practiceAttempts": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "$ref": "#/properties/questionBank/items/properties/practiceAttempts/items"
+                  }
+                },
+                "practiceReviews": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "$ref": "#/properties/questionBank/items/properties/practiceReviews/items"
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "mockInterviewSessions": {
+      "description": "Panel-owned practice sessions that track saved answers independently from optional AI reviews.",
+      "type": "array",
+      "maxItems": 80,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "interviewSetId",
+          "title",
+          "status",
+          "questionCount",
+          "questionIds",
+          "answeredQuestionIds",
+          "reviewedQuestionIds",
+          "summary",
+          "strengths",
+          "improvements",
+          "nextSteps",
+          "scoreSummary",
+          "startedAt",
+          "completedAt"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "interviewSetId": { "type": "string", "maxLength": 100 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "status": {
+            "type": "string",
+            "enum": ["in_progress", "completed", "abandoned"]
+          },
+          "questionCount": { "type": "integer", "minimum": 0, "maximum": 40 },
+          "questionIds": {
+            "description": "Canonical bank question IDs included in this mock.",
+            "type": "array",
+            "maxItems": 40,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "answeredQuestionIds": {
+            "description": "Canonical bank question IDs with an answer saved directly from the Panel.",
+            "type": "array",
+            "maxItems": 40,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "reviewedQuestionIds": {
+            "description": "Canonical bank question IDs with a saved score in this mock.",
+            "type": "array",
+            "maxItems": 40,
+            "items": { "type": "string", "maxLength": 100 },
+            "uniqueItems": true
+          },
+          "summary": { "type": "string", "maxLength": 3000 },
+          "strengths": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 500 }
+          },
+          "improvements": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 500 }
+          },
+          "nextSteps": {
+            "type": "array",
+            "maxItems": 8,
+            "items": { "type": "string", "maxLength": 500 }
+          },
+          "scoreSummary": {
+            "type": "object",
+            "required": ["reviewedCount", "averageScore", "dimensions"],
+            "properties": {
+              "reviewedCount": { "type": "integer", "minimum": 0, "maximum": 40 },
+              "averageScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+              "dimensions": {
+                "type": "object",
+                "required": ["evidence", "structure", "depth", "relevance"],
+                "properties": {
+                  "evidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+                  "structure": { "type": "integer", "minimum": 0, "maximum": 100 },
+                  "depth": { "type": "integer", "minimum": 0, "maximum": 100 },
+                  "relevance": { "type": "integer", "minimum": 0, "maximum": 100 }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "startedAt": { "type": "string", "maxLength": 80 },
+          "completedAt": { "type": "string", "maxLength": 80 }
+        },
+        "additionalProperties": false
+      }
     },
     "preparationPlans": {
       "type": "array"
     },
     "interviewDebriefs": {
-      "type": "array"
+      "type": "array",
+      "maxItems": 80,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "jobId",
+          "round",
+          "interviewedAt",
+          "outcome",
+          "summary",
+          "questions",
+          "strengths",
+          "gaps",
+          "nextActions",
+          "createdAt",
+          "sample"
+        ],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "jobId": { "type": "string", "maxLength": 80 },
+          "round": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "interviewedAt": { "type": "string", "maxLength": 80 },
+          "outcome": {
+            "type": "string",
+            "enum": ["pending", "pass", "reject", "unknown"]
+          },
+          "summary": { "type": "string", "minLength": 1, "maxLength": 5000 },
+          "questions": {
+            "type": "array",
+            "maxItems": 30,
+            "items": {
+              "type": "object",
+              "required": [
+                "question",
+                "answerSummary",
+                "signal",
+                "reportedFeedback",
+                "analysis",
+                "betterAnswerPoints"
+              ],
+              "properties": {
+                "question": { "type": "string", "minLength": 1, "maxLength": 1000 },
+                "answerSummary": { "type": "string", "maxLength": 2000 },
+                "signal": {
+                  "type": "string",
+                  "enum": ["strong", "mixed", "weak", "unknown"]
+                },
+                "reportedFeedback": { "type": "string", "maxLength": 2000 },
+                "analysis": { "type": "string", "maxLength": 2000 },
+                "betterAnswerPoints": {
+                  "type": "array",
+                  "maxItems": 10,
+                  "items": { "type": "string", "maxLength": 500 },
+                  "uniqueItems": true
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "strengths": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "maxLength": 500 },
+            "uniqueItems": true
+          },
+          "gaps": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "maxLength": 800 },
+            "uniqueItems": true
+          },
+          "nextActions": {
+            "type": "array",
+            "maxItems": 20,
+            "items": { "type": "string", "maxLength": 800 },
+            "uniqueItems": true
+          },
+          "createdAt": { "type": "string", "maxLength": 80 },
+          "sample": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "resumeRecord": {
+      "type": "object",
+      "required": [
+        "kind",
+        "parentVersionId",
+        "revisionReason",
+        "category",
+        "baseResumeId",
+        "jobId",
+        "style",
+        "pdfExports",
+        "title",
+        "markdown",
+        "claimEvidence",
+        "candidateQuestions",
+        "notes",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "maxLength": 100 },
+        "versionId": { "type": "string", "maxLength": 100 },
+        "parentVersionId": { "type": "string", "maxLength": 100 },
+        "revisionReason": { "type": "string", "maxLength": 160 },
+        "kind": { "type": "string", "enum": ["base", "variant"] },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "baseResumeId": { "type": "string", "maxLength": 100 },
+        "jobId": { "type": "string", "maxLength": 80 },
+        "style": {
+          "type": "object",
+          "required": ["template", "density"],
+          "properties": {
+            "template": { "type": "string", "enum": ["editorial", "minimal", "technical"] },
+            "density": { "type": "string", "enum": ["comfortable", "compact"] }
+          },
+          "additionalProperties": false
+        },
+        "pdfExports": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": ["path", "exportedAt", "size"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "\\.[pP][dD][fF]$"
+              },
+              "exportedAt": { "type": "string", "maxLength": 80 },
+              "size": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "title": { "type": "string", "maxLength": 120 },
+        "markdown": { "type": "string", "maxLength": 50000 },
+        "claimEvidence": {
+          "type": "array",
+          "maxItems": 120,
+          "items": { "$ref": "#/$defs/resumeClaimEvidence" }
+        },
+        "candidateQuestions": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/resumeCandidateQuestion" }
+        },
+        "variantChanges": {
+          "type": "array",
+          "maxItems": 120,
+          "items": { "$ref": "#/$defs/resumeVariantChange" }
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "maxLength": 300 },
+          "uniqueItems": true
+        },
+        "updatedAt": { "type": "string", "maxLength": 80 }
+      },
+      "additionalProperties": false
+    },
+    "resumeVariantChange": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "section",
+        "before",
+        "after",
+        "beforeMarkdown",
+        "afterMarkdown",
+        "reason",
+        "jobRequirementRefs",
+        "sourceRefs",
+        "status",
+        "userEdited",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "type": { "type": "string", "enum": ["rewrite", "addition", "removal"] },
+        "section": { "type": "string", "maxLength": 160 },
+        "before": { "type": "string", "maxLength": 800 },
+        "after": { "type": "string", "maxLength": 800 },
+        "beforeMarkdown": { "type": "string", "maxLength": 1200 },
+        "afterMarkdown": { "type": "string", "maxLength": 1200 },
+        "reason": { "type": "string", "maxLength": 500 },
+        "jobRequirementRefs": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "type": "string", "maxLength": 500 },
+          "uniqueItems": true
+        },
+        "sourceRefs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "maxLength": 500 },
+          "uniqueItems": true
+        },
+        "status": { "type": "string", "enum": ["pending", "kept", "reverted"] },
+        "userEdited": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 80 }
+      },
+      "additionalProperties": false
+    },
+    "resumeClaimEvidence": {
+      "type": "object",
+      "required": [
+        "claim",
+        "status",
+        "importance",
+        "whyItMatters",
+        "sources",
+        "interviewQuestions",
+        "improvement"
+      ],
+      "properties": {
+        "claim": { "type": "string", "minLength": 1, "maxLength": 800 },
+        "status": { "type": "string", "enum": ["verified", "needs_review"] },
+        "importance": { "type": "string", "enum": ["core", "supporting"] },
+        "whyItMatters": { "type": "string", "maxLength": 400 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["kind", "label", "locator", "evidence"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["experience", "repository", "commit", "file", "user", "other"]
+              },
+              "label": { "type": "string", "minLength": 1, "maxLength": 160 },
+              "locator": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "evidence": { "type": "string", "maxLength": 800 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "interviewQuestions": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["question", "focus"],
+            "properties": {
+              "question": { "type": "string", "minLength": 1, "maxLength": 500 },
+              "focus": { "type": "string", "maxLength": 240 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "improvement": { "type": "string", "maxLength": 800 }
+      },
+      "additionalProperties": false
+    },
+    "resumeCandidateQuestion": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "priority",
+        "question",
+        "why",
+        "relatedClaim",
+        "sourceHints",
+        "status",
+        "answer",
+        "sourceRefs",
+        "suggestedChange",
+        "answeredAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "ownership",
+            "scope",
+            "impact",
+            "decision",
+            "collaboration",
+            "failure",
+            "context"
+          ]
+        },
+        "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+        "question": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "why": { "type": "string", "maxLength": 500 },
+        "relatedClaim": { "type": "string", "maxLength": 800 },
+        "sourceHints": {
+          "type": "array",
+          "maxItems": 6,
+          "items": { "type": "string", "maxLength": 300 },
+          "uniqueItems": true
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "answered", "needs_source", "skipped"]
+        },
+        "answer": { "type": "string", "maxLength": 3000 },
+        "sourceRefs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "maxLength": 500 },
+          "uniqueItems": true
+        },
+        "suggestedChange": { "type": "string", "maxLength": 1000 },
+        "answeredAt": { "type": "string", "maxLength": 80 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

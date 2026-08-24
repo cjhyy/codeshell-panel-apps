@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "job-hunt-hq",
-  "version": "1.25.0",
+  "version": "4.1.0",
   "title": {
     "default": "Job Hunt HQ",
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Bind a dedicated career-data workspace, verify profile, experience, repository evidence, Base Resume and job sources, then turn selected JDs into traceable job-search artifacts in the current Session.",
+  "description": "Run an evidence-backed resume pipeline and a durable interview system that separates the canonical question bank, practice sets, mock sessions, and real interview debriefs.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -21,6 +21,7 @@
     "storage",
     "external.open",
     "agent.submitPrompt",
+    "audio.transcribe",
     "credentials.cookies",
     "automations.manage"
   ],
@@ -28,52 +29,84 @@
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read the active project binding, candidate evidence, optional target JDs, resume versions, interview intelligence, preparation plans, question sets, and interview debriefs.",
-        "inputSchema": {
-          "type": "object",
-          "properties": {},
-          "additionalProperties": false
-        },
-        "readOnly": true
-      },
-      {
-        "name": "report_execution_trace",
-        "description": "Record one meaningful source, stage, or warning in the active Panel execution trace. Use this sparingly for observable milestones, not hidden reasoning or narration.",
+        "description": "Read a bounded slice of Job Hunt HQ state. Defaults to a lightweight summary; use scope plus opaque IDs for exact jobs, resumes, interview sets, questions, sessions, discovery, or paginated catalogs.",
         "inputSchema": {
           "type": "object",
           "properties": {
-            "trace_id": {
-              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+            "scope": {
               "type": "string",
-              "maxLength": 100
+              "enum": [
+                "summary",
+                "candidate",
+                "jobs",
+                "job",
+                "resumes",
+                "resume",
+                "questions",
+                "interviews",
+                "interview",
+                "practice",
+                "discovery",
+                "intake"
+              ],
+              "description": "Bounded context view. Omit for a lightweight index and counts."
             },
-            "event_type": {
-              "type": "string",
-              "enum": ["source", "stage", "warning"]
-            },
-            "label": {
+            "job_id": {
               "type": "string",
               "minLength": 1,
-              "maxLength": 160
+              "maxLength": 100
             },
-            "detail": {
+            "resume_id": {
               "type": "string",
-              "maxLength": 1000
+              "minLength": 1,
+              "maxLength": 100
             },
-            "source_refs": {
-              "type": "array",
-              "maxItems": 8,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 500
-              }
+            "interview_set_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "bank_question_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "mock_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "practice_attempt_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact saved answer ID for scope=practice."
+            },
+            "status": {
+              "type": "string",
+              "enum": ["active", "all", "inbox", "ready", "mastered", "archived", "practiced"],
+              "description": "Question status filter for scope=questions."
+            },
+            "search": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Question text, category, competency, or tag filter for scope=questions."
+            },
+            "cursor": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "description": "Catalog page size. scope=interview is additionally capped at 5 full questions per response and returns nextCursor."
             }
           },
-          "required": ["event_type", "label", "source_refs"],
           "additionalProperties": false
         },
-        "readOnly": false
+        "readOnly": true
       },
       {
         "name": "complete_execution_trace",
@@ -172,7 +205,16 @@
                   "original_name": { "type": "string", "minLength": 1, "maxLength": 240 },
                   "source_kind": {
                     "type": "string",
-                    "enum": ["pasted_text", "image", "pdf", "document", "file", "project_file", "project_scan", "chat_export"]
+                    "enum": [
+                      "pasted_text",
+                      "image",
+                      "pdf",
+                      "document",
+                      "file",
+                      "project_file",
+                      "project_scan",
+                      "chat_export"
+                    ]
                   },
                   "status": {
                     "type": "string",
@@ -186,7 +228,14 @@
                   },
                   "error": { "type": "string", "maxLength": 2000 }
                 },
-                "required": ["source_path", "original_name", "source_kind", "status", "summary", "job_ids"],
+                "required": [
+                  "source_path",
+                  "original_name",
+                  "source_kind",
+                  "status",
+                  "summary",
+                  "job_ids"
+                ],
                 "additionalProperties": false
               }
             }
@@ -451,73 +500,6 @@
         "readOnly": false
       },
       {
-        "name": "save_workflow_progress",
-        "description": "Create or update the current session's job-hunt workflow progress so the project-bound panel can visualize long-running work.",
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "trace_id": {
-              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
-              "type": "string",
-              "maxLength": 100
-            },
-            "workflow_id": {
-              "type": "string",
-              "maxLength": 100
-            },
-            "status": {
-              "type": "string",
-              "enum": ["running", "completed", "partial", "failed"]
-            },
-            "current_step": {
-              "type": "string",
-              "enum": [
-                "discover",
-                "verify-jd",
-                "company",
-                "reviews",
-                "interviews",
-                "resume",
-                "prepare",
-                "debrief",
-                "artifacts"
-              ]
-            },
-            "message": {
-              "type": "string",
-              "maxLength": 1000
-            },
-            "steps": {
-              "type": "array",
-              "maxItems": 12,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 80
-                  },
-                  "status": {
-                    "type": "string",
-                    "enum": ["pending", "running", "completed", "skipped", "failed"]
-                  },
-                  "message": {
-                    "type": "string",
-                    "maxLength": 500
-                  }
-                },
-                "required": ["id", "status"],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": ["status", "current_step"],
-          "additionalProperties": false
-        },
-        "readOnly": false
-      },
-      {
         "name": "save_job_research",
         "description": "Save sourced company facts, public review summaries, interview intelligence, risks, and source records for one saved job.",
         "inputSchema": {
@@ -771,7 +753,7 @@
       },
       {
         "name": "save_interview_question_set",
-        "description": "Save an evidence-grounded interview question set derived from a JD, verified candidate materials, or substantive Git commits.",
+        "description": "Save a target-specific practice set derived from one JD or an aggregate of multiple JDs, grounded in verified candidate materials. Questions link into the canonical bank and every recommended answer remains source-backed.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -784,9 +766,19 @@
               "type": "string",
               "maxLength": 80
             },
+            "job_ids": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
             "source_mode": {
               "type": "string",
-              "enum": ["jd", "commits", "mixed"]
+              "enum": ["jd", "aggregate", "mixed"]
             },
             "title": {
               "type": "string",
@@ -812,6 +804,29 @@
                   "difficulty": {
                     "type": "string",
                     "enum": ["基础", "进阶", "挑战"]
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "behavioral",
+                      "technical",
+                      "system_design",
+                      "project_deep_dive",
+                      "resume_probe",
+                      "scenario",
+                      "role_knowledge",
+                      "other"
+                    ]
+                  },
+                  "competency": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "tags": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
                   },
                   "question": {
                     "type": "string",
@@ -842,6 +857,12 @@
                       "maxLength": 300
                     }
                   },
+                  "recommended_answer": {
+                    "description": "A practice-ready answer draft using only verified candidate facts. Explicitly mark anything the user still needs to supply.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2400
+                  },
                   "follow_ups": {
                     "type": "array",
                     "maxItems": 5,
@@ -852,12 +873,244 @@
                     }
                   }
                 },
-                "required": ["category", "difficulty", "question", "why", "evidence_refs"],
+                "required": [
+                  "category",
+                  "competency",
+                  "difficulty",
+                  "question",
+                  "why",
+                  "evidence_refs",
+                  "answer_points",
+                  "recommended_answer",
+                  "follow_ups"
+                ],
                 "additionalProperties": false
               }
             }
           },
           "required": ["source_mode", "title", "mode", "questions"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_interview_question_bank_items",
+        "description": "Normalize and upsert questions from the current Session, a real interview, or another verified source into the canonical interview question bank. Session, imported, and real-interview items are always forced into the curation inbox; only an explicit user edit can make them practice-ready. Exact and normalized duplicates are merged instead of creating another copy.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "questions": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "question": { "type": "string", "minLength": 8, "maxLength": 1200 },
+                  "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+                  "competency": { "type": "string", "maxLength": 120 },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "behavioral",
+                      "technical",
+                      "system_design",
+                      "project_deep_dive",
+                      "resume_probe",
+                      "scenario",
+                      "role_knowledge",
+                      "other"
+                    ]
+                  },
+                  "difficulty": { "type": "string", "enum": ["基础", "进阶", "挑战"] },
+                  "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+                  "status": {
+                    "type": "string",
+                    "enum": ["inbox", "ready", "mastered", "archived"]
+                  },
+                  "origin": {
+                    "type": "string",
+                    "enum": ["session", "real_interview", "imported", "generated"]
+                  },
+                  "tags": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 80 }
+                  },
+                  "source_refs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 16,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                  },
+                  "job_ids": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+                  },
+                  "answer_points": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                  },
+                  "recommended_answer": { "type": "string", "maxLength": 5000 },
+                  "follow_ups": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 800 }
+                  },
+                  "notes": { "type": "string", "maxLength": 3000 }
+                },
+                "required": [
+                  "question",
+                  "category",
+                  "type",
+                  "difficulty",
+                  "status",
+                  "origin",
+                  "source_refs"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["questions"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_interview_practice_review",
+        "description": "Optionally save one AI-scored review for an answer that is already stored by the Panel, against either an exact set question or a canonical bank question. The Panel computes the overall score from four dimensions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "interview_set_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "question_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "bank_question_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "practice_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "practice_attempt_id": {
+              "description": "Exact saved Panel answer ID. Panel-initiated reviews provide this so a detached Trace can be recovered without scoring the wrong answer.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "answer_summary": {
+              "description": "Concise summary of what the candidate actually said; do not invent omitted facts.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1600
+            },
+            "dimensions": {
+              "type": "object",
+              "properties": {
+                "evidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "structure": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "depth": { "type": "integer", "minimum": 0, "maximum": 100 },
+                "relevance": { "type": "integer", "minimum": 0, "maximum": 100 }
+              },
+              "required": ["evidence", "structure", "depth", "relevance"],
+              "additionalProperties": false
+            },
+            "strengths": {
+              "type": "array",
+              "maxItems": 5,
+              "items": { "type": "string", "minLength": 1, "maxLength": 400 }
+            },
+            "improvements": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "optimized_answer": {
+              "description": "Improved practice answer using only verified candidate facts and visibly marking unsupported details.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 3000
+            },
+            "follow_up": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 600
+            }
+          },
+          "required": [
+            "answer_summary",
+            "dimensions",
+            "strengths",
+            "improvements",
+            "optimized_answer",
+            "follow_up"
+          ],
+          "anyOf": [
+            { "required": ["bank_question_id"] },
+            { "required": ["interview_set_id", "question_id"] }
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_mock_interview_session",
+        "description": "Optionally enrich or stop one mock interview session with an evidence-grounded AI summary, strengths, improvements, and next practice steps. Panel answer progress is stored independently.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": { "type": "string", "maxLength": 100 },
+            "practice_session_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "status": { "type": "string", "enum": ["completed", "abandoned"] },
+            "summary": { "type": "string", "minLength": 1, "maxLength": 3000 },
+            "strengths": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "improvements": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "next_steps": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            }
+          },
+          "required": [
+            "practice_session_id",
+            "status",
+            "summary",
+            "strengths",
+            "improvements",
+            "next_steps"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
@@ -1155,14 +1408,22 @@
               }
             }
           },
-          "required": ["round", "outcome", "summary", "questions", "strengths", "gaps", "next_actions"],
+          "required": [
+            "round",
+            "outcome",
+            "summary",
+            "questions",
+            "strengths",
+            "gaps",
+            "next_actions"
+          ],
           "additionalProperties": false
         },
         "readOnly": false
       },
       {
         "name": "save_resume_draft",
-        "description": "Save a direction-level Base Resume or a JD-specific variant with an exact record for every rendered resume point: priority, why it matters, source locator, what the source proves, related interview questions, and an optional improvement. Create the base first; variants must identify both base_resume_id and job_id.",
+        "description": "Save a direction-level Base Resume or a JD-specific variant with exact claim evidence plus 3–12 private candidate memory questions. Create the base first; variants must identify both base_resume_id and job_id. Candidate questions never appear in public Markdown or PDF.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -1290,6 +1551,56 @@
                 "additionalProperties": false
               }
             },
+            "candidate_questions": {
+              "description": "Private memory-jogging questions for the candidate. They do not appear in the public resume or PDF and must target missing ownership, scope, impact, decisions, collaboration, failure, or context facts.",
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "maxLength": 100 },
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "ownership",
+                      "scope",
+                      "impact",
+                      "decision",
+                      "collaboration",
+                      "failure",
+                      "context"
+                    ]
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": ["high", "medium", "low"]
+                  },
+                  "question": { "type": "string", "minLength": 1, "maxLength": 600 },
+                  "why": { "type": "string", "minLength": 1, "maxLength": 500 },
+                  "related_claim": { "type": "string", "maxLength": 800 },
+                  "source_hints": {
+                    "type": "array",
+                    "maxItems": 6,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": ["open", "answered", "needs_source", "skipped"]
+                  },
+                  "answer": { "type": "string", "maxLength": 3000 },
+                  "source_refs": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+                  },
+                  "suggested_change": { "type": "string", "maxLength": 1000 },
+                  "answered_at": { "type": "string", "maxLength": 80 }
+                },
+                "required": ["category", "priority", "question", "why"],
+                "additionalProperties": false
+              }
+            },
             "notes": {
               "type": "array",
               "maxItems": 12,
@@ -1300,7 +1611,53 @@
               }
             }
           },
-          "required": ["resume_kind", "category", "title", "markdown", "claim_evidence"],
+          "required": [
+            "resume_kind",
+            "category",
+            "title",
+            "markdown",
+            "claim_evidence",
+            "candidate_questions"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "save_resume_qa_answer",
+        "description": "Save the candidate's actual answer to one private resume memory-check question. This updates internal evidence only and never edits the public resume automatically.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "trace_id": {
+              "description": "Exact opaque Panel Trace ID from the submitted prompt.",
+              "type": "string",
+              "maxLength": 100
+            },
+            "resume_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "question_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "status": {
+              "type": "string",
+              "enum": ["answered", "needs_source", "skipped"]
+            },
+            "answer": {
+              "description": "Faithful summary of what the candidate actually answered, including uncertainty or a skip reason.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 3000
+            },
+            "source_refs": {
+              "type": "array",
+              "maxItems": 8,
+              "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "suggested_change": {
+              "description": "Optional resume wording or evidence improvement; it is not applied automatically.",
+              "type": "string",
+              "maxLength": 1000
+            }
+          },
+          "required": ["resume_id", "question_id", "status", "answer", "source_refs"],
           "additionalProperties": false
         },
         "readOnly": false

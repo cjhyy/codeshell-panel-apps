@@ -8,11 +8,15 @@ Pass that exact value as `trace_id` to every non-readonly Panel tool exposed by
 the current schema. This explicitly associates telemetry and write-back
 artifacts with the correct execution even when older traces are still visible.
 The read-only `get_job_search_context` call does not require `trace_id` and
-returns the currently active ID for inspection.
+returns the currently active ID for inspection. It is a bounded query API, not
+a snapshot export. Its default `summary` response contains counts and selected
+IDs; use `scope` plus exact opaque IDs for full objects, and `cursor` / `limit`
+for catalogs. Never read the whole `job-hunt-panel.json` merely to compensate
+for an overly broad context call.
 
-`report_execution_trace` accepts `source`, `stage`, or `warning`. Use
-`source_refs` for concise locators such as project paths, `commit:<sha>`, or
-public URLs. It is execution telemetry, not a place for hidden reasoning.
+Each business-tool invocation and written artifact is recorded automatically
+in the active Trace. Keep Source locators on the durable artifact itself; do
+not create duplicate telemetry or expose hidden reasoning.
 
 For a Panel-launched run, call `complete_execution_trace` last. Its status is
 the explicit run outcome:
@@ -49,12 +53,26 @@ outcome remains Panel-local telemetry; do not duplicate it into
   "jobResearch": [],
   "resume": {},
   "versions": [],
+  "questionBank": [],
   "interviewSets": [],
+  "mockInterviewSessions": [],
   "preparationPlans": [],
   "interviewDebriefs": [],
   "workflowRuns": []
 }
 ```
+
+When this complete object fits the Host's safe single-file budget,
+`job-hunt-panel.json` contains it directly. For a larger project, the root
+remains schema-valid but may replace one or more large fields with empty
+placeholders and add `artifactStorage`: an A/B generation plus an exact list of
+bounded JSON shards under `career-data/panel-shards/<generation>/`. The Panel
+hydrates every listed shard before exposing context. It writes the inactive
+generation first and switches the root index last, so an interrupted update
+continues to read the previous complete generation. Never edit, truncate, or
+invent shard files manually; use `get_job_search_context` and the Panel write
+tools. A missing or mismatched shard is a hard read failure, not an empty
+question bank.
 
 `discoveryPreferences` stores the current project's last user-confirmed job
 search criteria: keyword, location, seniority, count, provider IDs, freshness
@@ -129,6 +147,17 @@ the same shape:
   "category": "Frontend engineering",
   "baseResumeId": "base-id-or-empty",
   "jobId": "job-id-or-empty",
+  "style": {
+    "template": "editorial | minimal | technical",
+    "density": "comfortable | compact"
+  },
+  "pdfExports": [
+    {
+      "path": "career-data/resumes/resume.pdf",
+      "exportedAt": "ISO-8601",
+      "size": 12345
+    }
+  ],
   "title": "Resume title",
   "markdown": "# Complete Markdown resume",
   "claimEvidence": [
@@ -154,6 +183,22 @@ the same shape:
       "improvement": "Specific evidence or wording improvement, or empty"
     }
   ],
+  "candidateQuestions": [
+    {
+      "id": "resume-qa-id",
+      "category": "ownership | scope | impact | decision | collaboration | failure | context",
+      "priority": "high | medium | low",
+      "question": "One private question that helps the candidate remember a missing fact",
+      "why": "Why this answer could materially improve the resume",
+      "relatedClaim": "Exact public claim or empty",
+      "sourceHints": ["Likely project file, PR, Commit, report, or user confirmation"],
+      "status": "open | answered | needs_source | skipped",
+      "answer": "Candidate's actual answer or empty",
+      "sourceRefs": ["user:resume-qa:<id> or stable source locator"],
+      "suggestedChange": "Possible evidence or wording improvement; not auto-applied",
+      "answeredAt": "ISO-8601 or empty"
+    }
+  ],
   "notes": ["Unverified fact to resolve"],
   "updatedAt": "ISO-8601"
 }
@@ -163,13 +208,17 @@ the same shape:
   `baseResumeId` / `jobId`.
 - A variant has `kind: "variant"`, inherits its base's `category`, and
   requires valid `baseResumeId` and `jobId`.
-- Treat IDs as opaque. Read `baseResumes` from `get_job_search_context`
-  before deriving a variant.
+- Treat IDs as opaque. Read the resume index with `scope=resumes`, then read the
+  selected base with `scope=resume` and its exact `resume_id` before deriving a
+  variant.
 - `claimEvidence.claim` must match its rendered professional-summary paragraph,
   capability-section line, or Markdown bullet after removing the bullet marker
-  and Markdown emphasis. Every such claim requires at least one source. A
+  and Markdown emphasis. Pure Repo/portfolio URLs and contact metadata remain
+  public text but are not evidence claims or interview prompts. Every actual
+  claim requires at least one source. A
   `needs_review` source preserves a trace without presenting it as fully
-  verified.
+  verified. Matching is stable across punctuation, whitespace, width, and case
+  changes, but a substantive wording change needs a new verification pass.
 - On Panel tool input, use snake_case names `why_it_matters` and
   `interview_questions`; the snapshot normalizes them to the camelCase shape
   above.
@@ -177,17 +226,174 @@ the same shape:
   `why_it_matters`, at least one question, and a non-empty `evidence`
   explanation for every source. A stable locator says where to look;
   `evidence` says what the material proves.
+- A resume with `needs_review` public claims may be saved as an editable draft,
+  but it must not be saved as an application Markdown file or exported to PDF.
+  The public name, role, and actionable contact must also be present in both the
+  candidate profile and the rendered document header. Placeholder copy such as
+  `待补充`, `TBD`, or `TODO` may remain in a private draft but cannot cross the
+  publication boundary. Every public claim must be both structurally complete
+  and `verified` before publication.
+- Save 3–8 private `candidateQuestions` with every generated resume. They are
+  internal memory prompts and must never appear in the public Markdown or PDF.
+  Preserve exact matches and their real answers across revisions. The active
+  version may additionally carry at most four unmatched resolved prompts so
+  historical answers cannot crowd out every current gap; the archived prior
+  resume version remains the complete historical record. Use
+  `save_resume_qa_answer` for one answer at a time, and never treat an
+  unanswered or `needs_source` item as a public fact.
+- The user may mark a private question `skipped` or reopen it directly in the
+  Panel. A skipped item stops blocking the current pipeline but remains in the
+  exact resume version for later review.
 
-## Interview question set
+## Interview system
 
-Use `sourceMode: "jd | commits | mixed"`. JD and mixed sets require a valid
-`jobId`; commit-only sets use an empty `jobId`. Every question needs at least
-one evidence reference. For commit-only sets, at least one reference per
-question must use:
+The interview workspace has four different durable layers. Do not collapse
+them into one collection:
 
-```text
-commit:<7-40 character SHA> · <subject> · <key path>
+1. `questionBank` is the canonical, long-lived knowledge base. One equivalent
+   question appears once even when several JDs, generated sets, or Sessions
+   reference it.
+2. `interviewSets` are disposable, goal-specific practice selections. A set
+   references canonical items through `bankQuestionId` and may preserve its
+   local question ID for backward-compatible tool calls.
+3. `mockInterviewSessions` are practice events: the exact set, questions
+   reviewed, deterministic score summary, strengths, improvements, and next
+   actions from one completed or abandoned simulation.
+4. `interviewDebriefs` are real recruiting events reported by the user. Never
+   write a mock session into this collection or advance an application stage
+   because a practice session finished.
+
+A canonical bank item uses this normalized shape:
+
+```json
+{
+  "id": "bank-question-id",
+  "fingerprint": "normalized-question-hash",
+  "fingerprintAliases": ["historical-hash-before-a-user-rewrite"],
+  "question": "One interview question",
+  "category": "Architecture",
+  "competency": "Trade-off judgment",
+  "type": "behavioral | technical | system_design | project_deep_dive | resume_probe | scenario | role_knowledge | other",
+  "difficulty": "基础 | 进阶 | 挑战",
+  "priority": "high | medium | low",
+  "status": "inbox | ready | mastered | archived",
+  "origin": "generated | session | manual | real_interview | imported",
+  "tags": ["distributed-systems"],
+  "sourceRefs": ["commit:abc1234 or public URL"],
+  "answerPoints": ["Context", "Decision", "Result"],
+  "recommendedAnswer": "Verified-facts-only practice draft",
+  "followUps": ["What would you change now?"],
+  "notes": "Private candidate notes",
+  "jobIds": ["job-id"],
+  "sourceSetIds": ["set-id"],
+  "practiceAttempts": [
+    {
+      "id": "practice-attempt-id",
+      "answer": "The candidate's raw editable answer",
+      "inputMode": "typed | voice | mixed",
+      "practiceSessionId": "mock-session-id or empty",
+      "interviewSetId": "set-id or empty",
+      "createdAt": "ISO-8601",
+      "updatedAt": "ISO-8601"
+    }
+  ],
+  "practiceReviews": [],
+  "lastPracticedAt": "ISO-8601 or empty",
+  "revision": 1,
+  "createdAt": "ISO-8601",
+  "updatedAt": "ISO-8601"
+}
 ```
+
+Questions imported from a Session or external file enter `inbox`. Only actual
+questions visible in the supplied Session content may be imported; do not turn
+assistant suggestions, user answers, or surrounding discussion into questions.
+Use `session:current` as the minimum honest Source for current-Session imports;
+add a file, Commit, JD, or URL only when that Source is actually present.
+Normalize full-width forms, case, whitespace, punctuation, and symbols before
+fingerprinting. On a duplicate, merge Source, tags, job links, set links, and
+practice history. Never overwrite a user-curated question, answer, note,
+status, or mastery decision with newly generated wording. The user may edit
+bank items directly without invoking the Agent. When a direct edit changes the
+question fingerprint, preserve the previous value in `fingerprintAliases` so a
+later set using the old wording still resolves to the edited canonical item.
+Treat a set-local question `id` as local to that set unless `bankQuestionId` is
+already present; local IDs reused across sets must never merge unrelated
+questions.
+
+Once `bankQuestionId` resolves to a canonical input record, that record is the
+only content authority. A stored set shadow may add the set/job reverse link,
+but must not restore an older question, competency, tag, Source, answer, or
+review that the user removed from the canonical item. Newly generated set
+questions without a canonical ID may still enrich a semantic duplicate during
+their first upsert.
+
+An `inbox` item can move to `ready` only after it has a clear question, a real
+category, the competency it evaluates, and at least one honest Source. New
+mock sessions and standalone practice select only `ready` or `mastered`
+canonical items. Set references to `inbox` or `archived` items remain useful
+for provenance but are omitted from the live practice event.
+
+Questions recorded in a real `interviewDebrief` also enter the canonical bank
+as `origin: "real_interview"`, `status: "inbox"`, with a stable
+`real-interview:<debrief-id>` Source. This promotion enriches an existing item
+with provenance and answer points but must not downgrade a manual rewrite,
+mastery decision, notes, or practice history. The debrief remains the durable
+record of the real recruiting event; the bank item is only the reusable
+practice representation.
+
+Questions extracted from the current Session use `session:current` as their
+minimum honest input reference. On write, the Panel replaces that alias with
+the active Trace ID, or the bound Session ID when no Trace exists, and inserts
+the stable Session reference if the caller omitted it. Other file, Commit, JD,
+or public URL references remain supplemental provenance.
+
+Use `sourceMode: "jd | aggregate | mixed"` for a new practice set. JD and mixed
+sets require a valid `jobId`; aggregate sets require 2–8 valid `jobIds` and use
+an empty `jobId`. Legacy snapshots may still contain `sourceMode: "commits"`;
+the Panel keeps those sets readable and practiceable but does not generate new ones. Every generated
+question needs a non-empty `competency`, at least one evidence reference, a
+non-empty answer structure, a source-backed `recommendedAnswer`, and at least
+one non-duplicative follow-up.
+Unsupported facts in a recommended answer must remain explicit gaps for the
+user to fill. Verified Commit locators may remain supplemental evidence in a
+JD-grounded set.
+
+Each canonical question may retain up to 40 raw `practiceAttempts`, saved
+directly by the Panel before any optional AI work. The raw answer, input mode,
+mock-session relation, and timestamps are authoritative; a review must never
+replace or rewrite them. `mockInterviewSessions.answeredQuestionIds` tracks
+Panel progress independently from `reviewedQuestionIds`, so a candidate can
+complete a mock without invoking the Agent. Historical reviewed IDs migrate
+into answered IDs for backward compatibility.
+
+Each canonical question may also retain up to 20 recent optional reviews. A review contains
+`answerSummary`, four 0–100 integer `dimensions` (`evidence`, `structure`,
+`depth`, and `relevance`), the Panel-computed `overallScore`, concise
+`strengths`, prioritized `improvements`, an `optimizedAnswer` limited to
+verified candidate facts, a `followUp`, and a timestamp. Use
+`save_interview_practice_review`; never save an answer that the candidate did
+not actually give, and never score an `inbox` or `archived` item. Pass
+`practice_session_id` during a mock, then finish the event with
+`save_mock_interview_session` for a direct-chat mock or an explicitly requested
+AI summary. A completed or abandoned Panel session may receive a post-hoc
+review only for a question with a saved raw attempt; do not add answers or
+overwrite Panel progress.
+
+The Panel computes `scoreSummary` from the reviews actually saved with the same
+practice Session ID: reviewed-question count, overall arithmetic mean, and the
+mean of evidence, structure, depth, and relevance. The Agent must not supply or
+estimate these numbers in the final session summary. Completed and abandoned
+sessions keep this score snapshot and a bounded `questionCount` even after a
+question trims older reviews from its 20-attempt history or an archived
+canonical item is eventually evicted.
+
+The snapshot bounds `questionBank` at 600 items and `interviewSets` at 20 sets
+of at most 30 questions. On migration, active questions are retained before
+archived records, set-local IDs are resolved in the scope of their own set,
+and dangling set/session references are removed. Never silently replace an
+active canonical item to make room; a new write must ask the user to archive
+old material when no archived capacity remains.
 
 ## Formal job
 

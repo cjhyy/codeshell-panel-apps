@@ -17,7 +17,7 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <button class="brand" type="button" data-view-target="dashboard" aria-label="回到求职看板">
+        <button class="brand" type="button" data-view-target="today" aria-label="回到今日工作台">
           <span class="brand-mark" aria-hidden="true">J</span>
           <span class="brand-copy">
             <strong>JOB HUNT HQ</strong>
@@ -31,21 +31,17 @@
         </div>
 
         <div class="top-actions">
-          <button id="open-search" class="button button-primary" type="button">
-            <span aria-hidden="true">⌕</span>
-            找岗位
-          </button>
           <button id="open-job-form" class="button button-quiet" type="button">
             <span aria-hidden="true">＋</span>
-            导入 JD
+            添加 JD
           </button>
           <button
             id="open-session-bridge"
             class="button button-quiet session-trigger-button"
             type="button"
           >
-            <span aria-hidden="true">↗</span>
-            Session / Trace
+            <span aria-hidden="true">◷</span>
+            <span class="session-trigger-label">活动</span>
             <b id="top-trace-count" class="top-trace-count">0</b>
           </button>
         </div>
@@ -53,79 +49,41 @@
 
       <aside class="sidebar">
         <nav class="side-nav" aria-label="求职工作区">
-          <p class="nav-label">求职主线</p>
-          <button class="nav-item active" type="button" data-view-target="dashboard">
+          <p class="nav-label">工作区</p>
+          <button class="nav-item active" type="button" data-view-target="today">
             <span class="nav-icon" aria-hidden="true">⌂</span>
-            <span>岗位池</span>
-            <span id="job-nav-count" class="nav-count">3</span>
+            <span>今日</span>
           </button>
-          <button class="nav-item" type="button" data-view-target="materials">
-            <span class="nav-icon" aria-hidden="true">◇</span>
-            <span>数据源</span>
-            <span id="source-nav-count" class="nav-count">1</span>
-          </button>
-          <button class="nav-item" type="button" data-view-target="channels">
+          <button class="nav-item" type="button" data-view-target="dashboard" data-nav-group="jobs">
             <span class="nav-icon" aria-hidden="true">⌕</span>
-            <span>渠道管理</span>
-            <span id="channel-nav-count" class="nav-count">0</span>
-          </button>
-          <button class="nav-item" type="button" data-view-target="research">
-            <span class="nav-icon" aria-hidden="true">◎</span>
-            <span>公司情报</span>
-            <span id="research-nav-count" class="nav-count">1</span>
+            <span>岗位</span>
+            <span id="job-nav-count" class="nav-count">3</span>
           </button>
           <button class="nav-item" type="button" data-view-target="resumes">
             <span class="nav-icon" aria-hidden="true">▤</span>
-            <span>简历版本</span>
+            <span>简历</span>
             <span id="resume-nav-count" class="nav-count">1</span>
           </button>
           <button class="nav-item" type="button" data-view-target="interviews">
             <span class="nav-icon" aria-hidden="true">?</span>
-            <span>面试训练</span>
+            <span>面试</span>
             <span id="interview-nav-count" class="nav-count">1</span>
           </button>
-
-          <p class="nav-label nav-label-spaced">投递阶段</p>
-          <button class="nav-item stage-filter active-soft" type="button" data-status-filter="all">
-            <span class="status-seed all" aria-hidden="true"></span>
-            <span>全部机会</span>
-            <span id="all-count" class="nav-count">3</span>
+          <button class="nav-item" type="button" data-view-target="materials">
+            <span class="nav-icon" aria-hidden="true">◇</span>
+            <span>数据</span>
+            <span id="source-nav-count" class="nav-count">1</span>
           </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="inbox">
-            <span class="status-seed inbox" aria-hidden="true"></span>
-            <span>待筛选</span>
-            <span id="inbox-count" class="nav-count">0</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="saved">
-            <span class="status-seed saved" aria-hidden="true"></span>
-            <span>感兴趣</span>
-            <span id="saved-count" class="nav-count">2</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="tailoring">
-            <span class="status-seed tailoring" aria-hidden="true"></span>
-            <span>准备中</span>
-            <span id="tailoring-count" class="nav-count">1</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="applied">
-            <span class="status-seed applied" aria-hidden="true"></span>
-            <span>已投递</span>
-            <span id="applied-count" class="nav-count">0</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="interview">
-            <span class="status-seed interviewing" aria-hidden="true"></span>
-            <span>沟通 / 面试</span>
-            <span id="interviewing-count" class="nav-count">0</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="offer">
-            <span class="status-seed offer" aria-hidden="true"></span>
-            <span>Offer</span>
-            <span id="offer-count" class="nav-count">0</span>
-          </button>
-          <button class="nav-item stage-filter" type="button" data-status-filter="closed">
-            <span class="status-seed closed" aria-hidden="true"></span>
-            <span>已结束</span>
-            <span id="closed-count" class="nav-count">0</span>
-          </button>
+          <span id="channel-nav-count" hidden>0</span>
+          <span id="research-nav-count" hidden>0</span>
+          <span id="all-count" hidden>0</span>
+          <span id="inbox-count" hidden>0</span>
+          <span id="saved-count" hidden>0</span>
+          <span id="tailoring-count" hidden>0</span>
+          <span id="applied-count" hidden>0</span>
+          <span id="interviewing-count" hidden>0</span>
+          <span id="offer-count" hidden>0</span>
+          <span id="closed-count" hidden>0</span>
         </nav>
 
         <section class="profile-compact">
@@ -146,12 +104,85 @@
       </aside>
 
       <section class="content">
-        <section id="view-dashboard" class="view active" aria-labelledby="dashboard-title">
+        <section
+          id="project-sync-conflict"
+          class="project-sync-conflict"
+          role="alert"
+          aria-live="assertive"
+          hidden
+        >
+          <span class="project-sync-conflict-icon" aria-hidden="true">!</span>
+          <div>
+            <strong>项目数据已在其他窗口或任务中更新</strong>
+            <p id="project-sync-conflict-detail">
+              为避免覆盖新内容，本次保存已经停止；当前面板中的修改仍然保留。
+            </p>
+          </div>
+          <div class="project-sync-conflict-actions">
+            <button id="review-project-conflict" class="button button-quiet" type="button">
+              查看数据源
+            </button>
+            <button id="reload-project-conflict" class="button button-primary" type="button">
+              放弃本次修改并重新读取
+            </button>
+          </div>
+        </section>
+
+        <section id="view-today" class="view active" aria-labelledby="today-title">
+          <header class="page-heading today-heading">
+            <div>
+              <span class="eyebrow">TODAY</span>
+              <h1 id="today-title">今天只推进一件最重要的事</h1>
+              <p id="today-summary">正在根据岗位、简历和面试记录整理下一步。</p>
+            </div>
+            <span id="today-date" class="meta-chip">今天</span>
+          </header>
+
+          <section class="today-focus" aria-labelledby="today-focus-title">
+            <div>
+              <span class="panel-kicker">NEXT BEST ACTION</span>
+              <h2 id="today-focus-title">正在检查求职进度</h2>
+              <p id="today-focus-detail">读取完成后，这里只保留一个可以立即执行的动作。</p>
+            </div>
+            <button id="today-focus-action" class="button button-primary" type="button">
+              查看下一步
+            </button>
+          </section>
+
+          <div class="today-grid">
+            <section class="today-panel" aria-labelledby="today-tasks-title">
+              <header>
+                <div>
+                  <span class="panel-kicker">QUEUE</span>
+                  <h2 id="today-tasks-title">待办</h2>
+                </div>
+                <span id="today-task-count" class="tiny-badge">0 项</span>
+              </header>
+              <div id="today-task-list" class="today-task-list"></div>
+            </section>
+            <section class="today-panel" aria-labelledby="today-activity-title">
+              <header>
+                <div>
+                  <span class="panel-kicker">RECENT</span>
+                  <h2 id="today-activity-title">最近变化</h2>
+                </div>
+                <button class="button button-quiet compact" type="button" data-today-action="activity">
+                  查看活动
+                </button>
+              </header>
+              <div id="today-activity-list" class="today-activity-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-dashboard" class="view" aria-labelledby="dashboard-title" hidden>
           <header class="page-heading">
             <div>
               <span class="eyebrow">JD POOL</span>
               <h1 id="dashboard-title">岗位池</h1>
-              <p id="dashboard-subtitle">只负责收集、筛选、阅读 JD 和更新投递阶段，不在这里管理简历与个人资料。</p>
+              <p id="dashboard-subtitle">
+                只负责收集、筛选、阅读 JD 和更新投递阶段，不在这里管理简历与个人资料。
+              </p>
             </div>
             <div class="heading-meta">
               <span class="meta-chip"><i aria-hidden="true"></i> 本地优先</span>
@@ -159,59 +190,11 @@
             </div>
           </header>
 
-          <section class="source-overview" aria-labelledby="source-overview-title">
-            <header>
-              <div>
-                <span class="panel-kicker">DATA SOURCES</span>
-                <h2 id="source-overview-title">数据源总览</h2>
-              </div>
-              <button class="button button-quiet compact" type="button" data-view-target="materials">
-                管理数据源
-              </button>
-            </header>
-            <div class="source-overview-grid">
-              <button class="source-overview-card primary" type="button" data-view-target="materials">
-                <span class="source-overview-icon" aria-hidden="true">◇</span>
-                <span>
-                  <small>求职数据项目</small>
-                  <strong id="source-workspace-name">正在读取</strong>
-                  <em id="source-workspace-state">检查绑定状态</em>
-                </span>
-              </button>
-              <button class="source-overview-card" type="button" data-view-target="materials">
-                <span class="source-overview-icon" aria-hidden="true">人</span>
-                <span>
-                  <small>个人与经历</small>
-                  <strong id="source-profile-state">正在识别</strong>
-                  <em id="source-experience-state">检查工作经历</em>
-                </span>
-              </button>
-              <button class="source-overview-card" type="button" data-view-target="materials">
-                <span class="source-overview-icon" aria-hidden="true">⌘</span>
-                <span>
-                  <small>Repo 与证据</small>
-                  <strong id="source-repo-state">正在识别</strong>
-                  <em>只采用已核验的贡献</em>
-                </span>
-              </button>
-              <button class="source-overview-card" type="button" data-view-target="resumes">
-                <span class="source-overview-icon" aria-hidden="true">▤</span>
-                <span>
-                  <small>Base Resume</small>
-                  <strong id="source-base-state">正在检查</strong>
-                  <em>JD 定制版从这里派生</em>
-                </span>
-              </button>
-              <button id="source-channel-entry" class="source-overview-card" type="button" data-view-target="channels">
-                <span class="source-overview-icon" aria-hidden="true">⌕</span>
-                <span>
-                  <small>岗位来源</small>
-                  <strong id="source-channel-state">尚未配置</strong>
-                  <em id="source-jd-state">0 个 JD</em>
-                </span>
-              </button>
-            </div>
-          </section>
+          <nav class="section-tabs" aria-label="岗位工作区">
+            <button type="button" class="active" data-view-target="dashboard">机会</button>
+            <button type="button" data-view-target="job-inbox">JD 收件箱</button>
+            <button type="button" data-view-target="channels">获取岗位</button>
+          </nav>
 
           <nav class="career-flow" aria-label="求职工作流" hidden>
             <button type="button" data-career-flow-action="materials">
@@ -231,17 +214,25 @@
             </button>
             <button type="button" data-career-flow-action="prepare">
               <span>04</span>
-              <div><strong>岗位准备</strong><small id="flow-preparation-detail">0 个关注</small></div>
+              <div>
+                <strong>岗位准备</strong><small id="flow-preparation-detail">0 个关注</small>
+              </div>
               <b id="flow-preparation-state">待选岗位</b>
             </button>
             <button type="button" data-career-flow-action="followup">
               <span>05</span>
-              <div><strong>投递复盘</strong><small id="flow-followup-detail">0 个进行中</small></div>
+              <div>
+                <strong>投递复盘</strong><small id="flow-followup-detail">0 个进行中</small>
+              </div>
               <b id="flow-followup-state">尚未投递</b>
             </button>
           </nav>
 
-          <section id="dashboard-project-bootstrap" class="dashboard-project-bootstrap workflow-focus" hidden>
+          <section
+            id="dashboard-project-bootstrap"
+            class="dashboard-project-bootstrap workflow-focus"
+            hidden
+          >
             <div>
               <span id="dashboard-focus-kicker" class="panel-kicker">NEXT BEST ACTION</span>
               <strong id="dashboard-project-bootstrap-title">先建立求职数据源</strong>
@@ -265,7 +256,9 @@
                 <span class="panel-kicker">ADD TO JD POOL</span>
                 <h2>岗位从哪里进入池子？</h2>
               </div>
-              <span class="intake-guide-summary-copy">招聘网站、聊天转发或项目文件 <b>展开</b></span>
+              <span class="intake-guide-summary-copy"
+                >招聘网站、聊天转发或项目文件 <b>展开</b></span
+              >
             </summary>
             <div class="intake-guide-grid">
               <article>
@@ -274,8 +267,12 @@
                   <strong>招聘网站</strong>
                   <p>BOSS、智联、猎聘等；需要登录时，在当前 Session 的浏览器里由你完成一次登录。</p>
                 </div>
-                <button id="intake-search-sites" class="button button-primary compact" type="button">
-                  选择渠道找岗位
+                <button
+                  id="intake-search-sites"
+                  class="button button-primary compact"
+                  type="button"
+                >
+                  选择渠道并找岗位
                 </button>
               </article>
               <article>
@@ -284,7 +281,11 @@
                   <strong>微信、猎头或朋友转发</strong>
                   <p>支持粘贴文字、截图、PDF、Word 和聊天导出文件，先进入 JD 收件箱再识别。</p>
                 </div>
-                <button id="intake-import-message" class="button button-quiet compact" type="button">
+                <button
+                  id="intake-import-message"
+                  class="button button-quiet compact"
+                  type="button"
+                >
                   添加文字 / 文件 / 截图
                 </button>
               </article>
@@ -300,6 +301,32 @@
               </article>
             </div>
           </details>
+
+          <section id="jd-inbox-panel" class="jd-inbox-panel" aria-labelledby="jd-inbox-title">
+            <header>
+              <div>
+                <span class="panel-kicker">JD INBOX</span>
+                <h2 id="jd-inbox-title">JD 收件箱</h2>
+                <p>微信截图、PDF、Word、聊天文字和项目文件先进入这里；识别成功后才进入岗位池。</p>
+                <code>career-data/jd/inbox/</code>
+              </div>
+              <div class="jd-inbox-actions">
+                <button id="add-jd-intake" class="button button-primary compact" type="button">
+                  添加 JD
+                </button>
+                <button id="scan-jd-inbox" class="button button-quiet compact" type="button">
+                  扫描项目收件箱
+                </button>
+              </div>
+            </header>
+            <div class="jd-inbox-summary" aria-label="JD 导入状态">
+              <span><strong id="jd-inbox-total">0</strong>全部来源</span>
+              <span><strong id="jd-inbox-pending">0</strong>等待处理</span>
+              <span><strong id="jd-inbox-imported">0</strong>已导入</span>
+              <span><strong id="jd-inbox-attention">0</strong>需要确认</span>
+            </div>
+            <div id="jd-intake-list" class="jd-intake-list"></div>
+          </section>
 
           <section class="stat-grid dashboard-metrics" aria-label="岗位池状态">
             <article class="stat-card">
@@ -352,6 +379,19 @@
                     autocomplete="off"
                   />
                 </label>
+                <label class="job-stage-field" for="job-status-filter">
+                  <span class="sr-only">投递阶段</span>
+                  <select id="job-status-filter" aria-label="按投递阶段筛选">
+                    <option value="all">全部阶段</option>
+                    <option value="inbox">待筛选</option>
+                    <option value="saved">感兴趣</option>
+                    <option value="tailoring">准备中</option>
+                    <option value="applied">已投递</option>
+                    <option value="interview">沟通 / 面试</option>
+                    <option value="offer">Offer</option>
+                    <option value="closed">已结束</option>
+                  </select>
+                </label>
                 <label class="sr-only" for="job-sort">岗位排序</label>
                 <select id="job-sort" class="job-sort" aria-label="岗位排序">
                   <option value="added">最近收集</option>
@@ -361,9 +401,15 @@
                 </select>
               </div>
               <div class="filter-row" role="group" aria-label="职位筛选">
-                <button class="filter-pill" type="button" data-job-status-shortcut="inbox">待筛选</button>
-                <button class="filter-pill" type="button" data-job-status-shortcut="active">关注中</button>
-                <button class="filter-pill active" type="button" data-job-status-shortcut="all">全部</button>
+                <button class="filter-pill" type="button" data-job-status-shortcut="inbox">
+                  待筛选
+                </button>
+                <button class="filter-pill" type="button" data-job-status-shortcut="active">
+                  关注中
+                </button>
+                <button class="filter-pill active" type="button" data-job-status-shortcut="all">
+                  全部
+                </button>
                 <button class="filter-pill" type="button" data-job-filter="90">90%+</button>
                 <label class="sr-only" for="job-source-filter">按招聘渠道筛选</label>
                 <select id="job-source-filter" class="source-filter" aria-label="按招聘渠道筛选">
@@ -398,7 +444,7 @@
                   <button type="button" data-resume-mode="jd">职位 JD</button>
                 </div>
                 <button id="save-resume" class="button button-quiet compact" type="button">
-                  保存到当前项目
+                  导出 Markdown + 证据
                 </button>
                 <button id="print-resume" class="button button-quiet compact" type="button">
                   保存 PDF
@@ -461,7 +507,10 @@
                   </button>
                 </div>
                 <div class="resume-photo-actions">
-                  <label class="button button-quiet compact resume-photo-upload" for="resume-photo-input">
+                  <label
+                    class="button button-quiet compact resume-photo-upload"
+                    for="resume-photo-input"
+                  >
                     贴照片
                     <input
                       id="resume-photo-input"
@@ -470,7 +519,11 @@
                       hidden
                     />
                   </label>
-                  <button id="remove-resume-photo" class="button button-quiet compact" type="button">
+                  <button
+                    id="remove-resume-photo"
+                    class="button button-quiet compact"
+                    type="button"
+                  >
                     移除照片
                   </button>
                 </div>
@@ -482,10 +535,73 @@
                 <span id="resume-updated">未生成</span>
                 <span id="resume-export-status">尚未导出 PDF</span>
               </div>
+              <details id="resume-variant-review" class="resume-variant-review" hidden>
+                <summary>
+                  <div>
+                    <span class="panel-kicker">BASE → JOB DIFF</span>
+                    <strong>逐条审核岗位版变化</strong>
+                    <small>每条都可恢复 Base，也可随时再次采用；不会改动基础简历。</small>
+                  </div>
+                  <span class="resume-variant-review-count"
+                    ><b id="resume-variant-review-count">0</b> 条待确认</span
+                  >
+                </summary>
+                <div class="resume-variant-review-body">
+                  <header>
+                    <p id="resume-variant-review-summary">
+                      岗位版变化会在这里显示 Base 原文、建议表述和 Source。
+                    </p>
+                    <button
+                      id="keep-all-resume-variant-changes"
+                      class="button button-quiet compact"
+                      type="button"
+                    >
+                      确认保留全部
+                    </button>
+                  </header>
+                  <div id="resume-variant-review-list" class="resume-variant-review-list"></div>
+                </div>
+              </details>
+              <details id="resume-qa-panel" class="resume-qa-panel">
+                <summary>
+                  <div>
+                    <span class="panel-kicker">MEMORY CHECK QA</span>
+                    <strong>待你补充的简历事实</strong>
+                    <small
+                      >用于找回容易忘记的职责、范围、结果和取舍；不会进入公开简历或 PDF。</small
+                    >
+                  </div>
+                  <span class="resume-qa-count"><b id="resume-qa-open-count">0</b> 个待回答</span>
+                </summary>
+                <div class="resume-qa-body">
+                  <header>
+                    <p id="resume-qa-summary">
+                      生成简历后，Agent 会把最值得回忆和核验的问题放在这里。
+                    </p>
+                    <div class="resume-qa-actions">
+                      <button
+                        id="answer-resume-qa"
+                        class="button button-primary compact"
+                        type="button"
+                      >
+                        在面板逐题补充
+                      </button>
+                      <button
+                        id="apply-resume-qa"
+                        class="button button-quiet compact"
+                        type="button"
+                      >
+                        用已回答内容优化简历
+                      </button>
+                    </div>
+                  </header>
+                  <div id="resume-qa-list" class="resume-qa-list"></div>
+                </div>
+              </details>
               <details id="resume-evidence-ledger" class="resume-evidence-ledger">
                 <summary>
                   <span>要点质量总览</span>
-                  <strong id="resume-evidence-coverage">0 / 0</strong>
+                  <strong id="resume-evidence-coverage">Source 0 / 0 · 可发布 0</strong>
                   <small id="resume-evidence-summary">每条要点都应说明重点、证据和面试追问</small>
                 </summary>
                 <div id="resume-evidence-list" class="resume-evidence-list"></div>
@@ -499,8 +615,12 @@
                   spellcheck="false"
                   hidden
                 ></textarea>
-                <article id="jd-preview" class="resume-paper jd-paper" aria-label="职位 JD" hidden>
-                </article>
+                <article
+                  id="jd-preview"
+                  class="resume-paper jd-paper"
+                  aria-label="职位 JD"
+                  hidden
+                ></article>
               </div>
             </section>
 
@@ -627,6 +747,7 @@
 
               <footer class="job-detail-actions">
                 <div id="job-detail-triage" class="job-detail-triage" hidden>
+                  <span class="direct-action-note">直接保存 · 不调用 Agent</span>
                   <button id="job-detail-ignore" class="button button-quiet" type="button">
                     忽略
                   </button>
@@ -656,89 +777,143 @@
             <summary>
               <span>
                 <b>需要更进一步？</b>
-                <small>选择感兴趣的岗位，再组合简历、公司调研、题库或复盘任务</small>
+                <small>选择感兴趣的岗位，再组合简历、公司调研、面试题单或复盘任务</small>
               </span>
               <strong>打开任务编排</strong>
             </summary>
-          <section id="workflow-builder" class="workflow-builder" aria-labelledby="workflow-builder-title">
-            <header>
-              <div>
-                <span class="panel-kicker">AGENT TASK COMPOSER</span>
-                <h2 id="workflow-builder-title">选好岗位后，再组合这次的准备任务</h2>
-                <p id="workflow-builder-description">岗位和任务分开选择；只执行本次勾选的内容，结果写回当前 Panel。</p>
-              </div>
-              <div class="workflow-presets" aria-label="任务预设">
-                <button type="button" data-workflow-preset="resume">简历优化</button>
-                <button type="button" data-workflow-preset="interview">面试训练</button>
-                <button type="button" data-workflow-preset="debrief">面试复盘</button>
-                <button type="button" data-workflow-preset="full">完整岗位包</button>
-              </div>
-            </header>
+            <section
+              id="workflow-builder"
+              class="workflow-builder"
+              aria-labelledby="workflow-builder-title"
+            >
+              <header>
+                <div>
+                  <span class="panel-kicker">AGENT TASK COMPOSER</span>
+                  <h2 id="workflow-builder-title">选好岗位后，再组合这次的准备任务</h2>
+                  <p id="workflow-builder-description">
+                    岗位和任务分开选择；只执行本次勾选的内容，结果写回当前 Panel。
+                  </p>
+                </div>
+                <div class="workflow-presets" aria-label="任务预设">
+                  <button type="button" data-workflow-preset="resume">简历优化</button>
+                  <button type="button" data-workflow-preset="interview">面试训练</button>
+                  <button type="button" data-workflow-preset="debrief">面试复盘</button>
+                  <button type="button" data-workflow-preset="full">完整岗位包</button>
+                </div>
+              </header>
 
-            <div class="workflow-builder-grid">
-              <section class="workflow-picker-section">
-                <div class="workflow-section-title">
-                  <span>01</span>
-                  <div>
-                    <strong>选择已关注岗位</strong>
-                    <small>可多选；不选时只处理 Base Resume 等通用材料</small>
+              <div class="workflow-builder-grid">
+                <section class="workflow-picker-section">
+                  <div class="workflow-section-title">
+                    <span>01</span>
+                    <div>
+                      <strong>选择已关注岗位</strong>
+                      <small>可多选；不选时只处理 Base Resume 等通用材料</small>
+                    </div>
                   </div>
-                </div>
-                <div id="workflow-job-picker" class="workflow-job-picker"></div>
-              </section>
+                  <div id="workflow-job-picker" class="workflow-job-picker"></div>
+                </section>
 
-              <section class="workflow-picker-section">
-                <div class="workflow-section-title">
-                  <span>02</span>
-                  <div>
-                    <strong>选择本次任务</strong>
-                    <small>带“需岗位”的任务要先选岗位</small>
+                <section class="workflow-picker-section">
+                  <div class="workflow-section-title">
+                    <span>02</span>
+                    <div>
+                      <strong>选择本次任务</strong>
+                      <small>带“需岗位”的任务要先选岗位</small>
+                    </div>
                   </div>
-                </div>
-                <div id="workflow-task-picker" class="workflow-task-picker">
-                  <button type="button" data-workflow-task="resume">简历优化<small>Base / JD 定制</small></button>
-                  <button type="button" data-workflow-task="match">JD 匹配<small>需岗位 · 要求与缺口</small></button>
-                  <button type="button" data-workflow-task="intel">公司情报<small>需岗位 · 官网、评价、流程</small></button>
-                  <button type="button" data-workflow-task="questions">定制题库<small>需岗位 · 问题与追问</small></button>
-                  <button type="button" data-workflow-task="commits">Commit 深挖题<small>不需 JD · 真实改动</small></button>
-                  <button type="button" data-workflow-task="prepare">补强计划<small>资料、证据、能力 Roadmap</small></button>
-                  <button type="button" data-workflow-task="mock">模拟面试<small>需岗位 · 逐题练习</small></button>
-                  <button type="button" data-workflow-task="debrief">真实复盘<small>不编造 · 记录真实结果</small></button>
-                </div>
-              </section>
-            </div>
+                  <div id="workflow-task-picker" class="workflow-task-picker">
+                    <button type="button" data-workflow-task="resume">
+                      简历优化<small>Base / JD 定制</small>
+                    </button>
+                    <button type="button" data-workflow-task="match">
+                      JD 匹配<small>需岗位 · 要求与缺口</small>
+                    </button>
+                    <button type="button" data-workflow-task="intel">
+                      公司情报<small>需岗位 · 官网、评价、流程</small>
+                    </button>
+                    <button type="button" data-workflow-task="questions">
+                      面试题单<small>需岗位 · 问题与追问</small>
+                    </button>
+                    <button type="button" data-workflow-task="prepare">
+                      补强计划<small>资料、证据、能力 Roadmap</small>
+                    </button>
+                    <button type="button" data-workflow-task="mock">
+                      模拟面试<small>需岗位 · 逐题练习</small>
+                    </button>
+                    <button type="button" data-workflow-task="debrief">
+                      真实复盘<small>不编造 · 记录真实结果</small>
+                    </button>
+                  </div>
+                </section>
+              </div>
 
-            <footer>
-              <span id="workflow-selection-summary">尚未选择任务</span>
-              <button id="run-custom-workflow" class="button button-primary" type="button">
-                <span aria-hidden="true">✦</span>
-                发送到当前 Session
-              </button>
-            </footer>
-          </section>
+              <footer>
+                <span id="workflow-selection-summary">尚未选择任务</span>
+                <button id="run-custom-workflow" class="button button-primary" type="button">
+                  <span aria-hidden="true">✦</span>
+                  发送到当前 Session
+                </button>
+              </footer>
+            </section>
           </details>
+        </section>
+
+        <section id="view-job-inbox" class="view" aria-labelledby="job-inbox-page-title" hidden>
+          <header class="page-heading compact-heading">
+            <div>
+              <span class="eyebrow">JD INBOX</span>
+              <h1 id="job-inbox-page-title">JD 收件箱</h1>
+              <p>先接住截图、文件和聊天文字，确认识别结果后再进入岗位池。</p>
+            </div>
+            <button id="job-inbox-add-shortcut" class="button button-primary" type="button">
+              ＋ 添加 JD
+            </button>
+          </header>
+          <nav class="section-tabs" aria-label="岗位工作区">
+            <button type="button" data-view-target="dashboard">机会</button>
+            <button type="button" class="active" data-view-target="job-inbox">JD 收件箱</button>
+            <button type="button" data-view-target="channels">获取岗位</button>
+          </nav>
+          <section id="jd-inbox-workspace-slot" class="workspace-relocation-slot"></section>
         </section>
 
         <section id="view-channels" class="view" aria-labelledby="channels-title" hidden>
           <header class="page-heading compact-heading channel-page-heading">
             <div>
-              <span class="eyebrow">CHANNEL REGISTRY</span>
-              <h1 id="channels-title">渠道管理</h1>
-              <p>先添加渠道，再完成登录与验证。这里只管理入口和登录态，不搜索岗位、不写入 JD。</p>
+              <span class="eyebrow">JOB ACQUISITION</span>
+              <h1 id="channels-title">获取岗位</h1>
+              <p>从招聘渠道、聊天转发或项目文件获取 JD；需要登录时再由你完成授权。</p>
             </div>
             <div class="heading-meta channel-heading-meta">
-              <span id="channel-page-summary" class="meta-chip"><i aria-hidden="true"></i> 等待检查</span>
-              <button id="show-add-channel" class="button button-primary" type="button">
+              <span id="channel-page-summary" class="meta-chip"
+                ><i aria-hidden="true"></i> 等待检查</span
+              >
+              <button id="open-search" class="button button-primary" type="button">
+                选择渠道并找岗位
+              </button>
+              <button id="show-add-channel" class="button button-quiet" type="button">
                 ＋ 添加渠道
               </button>
             </div>
           </header>
 
+          <nav class="section-tabs" aria-label="岗位工作区">
+            <button type="button" data-view-target="dashboard">机会</button>
+            <button type="button" data-view-target="job-inbox">JD 收件箱</button>
+            <button type="button" class="active" data-view-target="channels">获取岗位</button>
+          </nav>
+
+          <section id="job-intake-guide-slot" class="workspace-relocation-slot"></section>
+
           <section class="channel-security-note" aria-label="Cookie 安全说明">
             <span class="channel-security-icon" aria-hidden="true">⌾</span>
             <div>
               <strong>登录与 Cookie 由 CodeShell 托管</strong>
-              <p>先点“验证渠道”；确实需要登录时，再用“登录并保存”。Cookie 直接进入 CodeShell 凭证库，再恢复到当前任务并自动验证；面板只能看到脱敏账号名称和“可抓取”状态。</p>
+              <p>
+                先点“验证渠道”；确实需要登录时，再用“登录并保存”。Cookie 直接进入 CodeShell
+                凭证库，再恢复到当前任务并自动验证；面板只能看到脱敏账号名称和“可抓取”状态。
+              </p>
             </div>
           </section>
 
@@ -754,20 +929,41 @@
                 <p>每条渠道独立管理：入口、是否参与搜索、保存的登录和当前任务验证结果互不混淆。</p>
               </div>
               <div class="channel-verification-header-actions">
-                <strong id="channel-verification-summary" class="channel-verification-summary">0 / 0 已通过</strong>
+                <strong id="channel-verification-summary" class="channel-verification-summary"
+                  >0 / 0 已通过</strong
+                >
               </div>
             </header>
             <form id="add-channel-form" class="add-channel-form" hidden>
               <label>
                 渠道名称
-                <input id="custom-channel-name" name="channelName" maxlength="80" placeholder="例如：某公司招聘官网" required />
+                <input
+                  id="custom-channel-name"
+                  name="channelName"
+                  maxlength="80"
+                  placeholder="例如：某公司招聘官网"
+                  required
+                />
               </label>
               <label>
                 招聘页面网址
-                <input id="custom-channel-url" name="channelUrl" type="url" maxlength="1000" placeholder="https://careers.example.com" required />
+                <input
+                  id="custom-channel-url"
+                  name="channelUrl"
+                  type="url"
+                  maxlength="1000"
+                  placeholder="https://careers.example.com"
+                  required
+                />
               </label>
               <div class="add-channel-actions">
-                <button id="cancel-add-channel" class="button button-quiet button-compact" type="button">取消</button>
+                <button
+                  id="cancel-add-channel"
+                  class="button button-quiet button-compact"
+                  type="button"
+                >
+                  取消
+                </button>
                 <button class="button button-primary button-compact" type="submit">保存渠道</button>
               </div>
               <p id="add-channel-error" class="add-channel-error" role="alert" hidden></p>
@@ -775,7 +971,11 @@
             <div id="channel-verification-list" class="channel-verification-list"></div>
           </section>
 
-          <section id="discovery-automation-panel" class="discovery-automation-panel" aria-labelledby="discovery-automation-title">
+          <section
+            id="discovery-automation-panel"
+            class="discovery-automation-panel"
+            aria-labelledby="discovery-automation-title"
+          >
             <header>
               <div>
                 <span class="panel-kicker">RECURRING DISCOVERY</span>
@@ -805,14 +1005,36 @@
                   <option value="10">10 个完整 JD</option>
                 </select>
               </label>
-              <button id="save-discovery-automation" class="button button-primary" type="submit">开启定时抓取</button>
+              <button id="save-discovery-automation" class="button button-primary" type="submit">
+                开启定时抓取
+              </button>
             </form>
             <div id="discovery-automation-actions" class="discovery-automation-actions" hidden>
-              <button id="toggle-discovery-automation" class="button button-quiet button-compact" type="button">暂停</button>
-              <button id="run-discovery-automation" class="button button-quiet button-compact" type="button">立即运行</button>
-              <button id="delete-discovery-automation" class="button button-danger-quiet button-compact" type="button">删除任务</button>
+              <button
+                id="toggle-discovery-automation"
+                class="button button-quiet button-compact"
+                type="button"
+              >
+                暂停
+              </button>
+              <button
+                id="run-discovery-automation"
+                class="button button-quiet button-compact"
+                type="button"
+              >
+                立即运行
+              </button>
+              <button
+                id="delete-discovery-automation"
+                class="button button-danger-quiet button-compact"
+                type="button"
+              >
+                删除任务
+              </button>
             </div>
-            <p id="discovery-automation-detail" class="discovery-automation-detail">先初始化项目并连接至少一个渠道。</p>
+            <p id="discovery-automation-detail" class="discovery-automation-detail">
+              先初始化项目并连接至少一个渠道。
+            </p>
           </section>
         </section>
 
@@ -821,20 +1043,13 @@
             <div>
               <span class="eyebrow">SOURCE REGISTRY</span>
               <h1 id="materials-title">求职数据源</h1>
-              <p>
-                只负责项目绑定、个人资料、经历、Repo 证据和 Base 来源；
-                不在这里筛选岗位或生成面试题。
-              </p>
+              <p>看当前项目里有哪些可用资料、是否足以支撑 Base Resume，以及还缺什么。</p>
             </div>
             <div class="heading-meta">
               <span id="project-bootstrap-summary" class="meta-chip">
                 <i aria-hidden="true"></i> 等待检查
               </span>
-              <button
-                id="initialize-job-hunt-project"
-                class="button button-primary"
-                type="button"
-              >
+              <button id="initialize-job-hunt-project" class="button button-primary" type="button">
                 ✦ 初始化数据源
               </button>
               <button id="reset-job-hunt-project" class="button button-danger-quiet" type="button">
@@ -843,123 +1058,285 @@
             </div>
           </header>
 
-          <div id="materials-source-overview-slot"></div>
+          <nav class="interview-workspace-tabs data-workspace-tabs" aria-label="求职数据工作区">
+            <button type="button" data-data-workspace="profile" class="active">
+              <span>个人档案</span>
+              <small>定位、联系方式与基线完整度</small>
+            </button>
+            <button type="button" data-data-workspace="evidence">
+              <span>经历与项目</span>
+              <small>工作经历、Repo 与证据来源</small>
+            </button>
+            <button type="button" data-data-workspace="sync">
+              <span>文件与同步</span>
+              <small>项目绑定、存储与冲突处理</small>
+            </button>
+          </nav>
 
-          <section id="jd-inbox-panel" class="jd-inbox-panel" aria-labelledby="jd-inbox-title">
-            <header>
+          <div id="data-profile-workspace" class="data-workspace"></div>
+          <div id="data-evidence-workspace" class="data-workspace" hidden></div>
+          <div id="data-sync-workspace" class="data-workspace" hidden>
+            <section class="data-sync-actions">
               <div>
-                <span class="panel-kicker">JD INBOX</span>
-                <h2 id="jd-inbox-title">JD 收件箱</h2>
-                <p>
-                  微信截图、PDF、Word、聊天文字和手动放入项目的文件都先进入这里；识别成功后才进入岗位池。
-                </p>
-                <code>career-data/jd/inbox/</code>
+                <span class="panel-kicker">PROJECT STORAGE</span>
+                <h2>项目文件与同步</h2>
+                <p>长期业务内容写入项目文件；界面偏好和未提交草稿留在本地小状态。</p>
               </div>
-              <div class="jd-inbox-actions">
-                <button id="add-jd-intake" class="button button-primary compact" type="button">
-                  添加 JD
-                </button>
-                <button id="scan-jd-inbox" class="button button-quiet compact" type="button">
-                  扫描项目收件箱
-                </button>
-              </div>
-            </header>
-            <div class="jd-inbox-summary" aria-label="JD 导入状态">
-              <span><strong id="jd-inbox-total">0</strong>全部来源</span>
-              <span><strong id="jd-inbox-pending">0</strong>等待处理</span>
-              <span><strong id="jd-inbox-imported">0</strong>已导入</span>
-              <span><strong id="jd-inbox-attention">0</strong>需要确认</span>
-            </div>
-            <div id="jd-intake-list" class="jd-intake-list"></div>
-          </section>
+              <div id="data-sync-action-buttons"></div>
+            </section>
+          </div>
 
-          <section class="materials-grid">
-            <article class="material-card project-context-card">
+          <section class="source-readiness" aria-labelledby="source-readiness-title">
+            <article class="source-readiness-score">
+              <div class="source-readiness-heading">
+                <div>
+                  <span class="panel-kicker">CAREER BASELINE</span>
+                  <h2 id="source-readiness-title">求职基线完整度</h2>
+                </div>
+                <strong id="source-readiness-score">0%</strong>
+              </div>
+              <div class="source-readiness-bar" aria-hidden="true">
+                <i id="source-readiness-progress"></i>
+              </div>
+              <strong id="source-readiness-label">正在检查</strong>
+              <p id="source-readiness-detail">正在从当前项目核对个人资料与证据。</p>
+              <div
+                id="source-readiness-signals"
+                class="source-readiness-signals"
+                aria-label="关键数据源状态"
+              ></div>
+            </article>
+            <article class="source-gap-card">
               <header>
                 <div>
-                  <span class="panel-kicker">CAREER WORKSPACE</span>
-                  <h2 id="project-context-name">正在读取求职数据项目</h2>
+                  <span class="panel-kicker">WHAT'S MISSING</span>
+                  <h2>还需要补什么</h2>
                 </div>
-                <span id="project-context-state" class="card-index">检测中</span>
+                <span id="source-gap-count" class="tiny-badge">0 项</span>
               </header>
-              <div class="project-context-row">
-                <span>工作区范围</span>
-                <strong>仅绑定的求职数据项目</strong>
-              </div>
-              <div class="project-context-row">
-                <span>Session</span>
-                <strong id="project-session-state">正在绑定</strong>
-              </div>
-              <div class="project-context-row">
-                <span>绑定方式</span>
-                <strong>跟随当前 Session 工作区</strong>
-              </div>
-              <div class="project-context-row">
-                <span>CODESHELL.md</span>
-                <strong id="codeshell-file-state">正在检测</strong>
-              </div>
-              <div class="project-context-row">
-                <span>面板数据</span>
-                <strong id="project-snapshot-state">等待同步</strong>
-              </div>
-              <div class="project-bootstrap-callout">
-                <span class="panel-kicker">AUTO SETUP</span>
-                <strong id="project-bootstrap-title">让 Agent 建立数据源索引</strong>
-                <p id="project-bootstrap-detail">
-                  自动识别已有简历、工作经历、Repo 引用和 Git 证据；只创建缺失内容，不覆盖已有文件。
-                </p>
-              </div>
-              <p>
-                求职数据项目是资料容器；简历、JD、工作经历和 Repo 证据都是独立数据源，不互相替代。
-              </p>
-              <p class="project-readonly-note">
-                直接在当前 Session 里说“找岗位”“调研公司”“生成简历”即可，面板不会创建另一套聊天记录。
-              </p>
-              <p id="project-snapshot-error" class="project-snapshot-error" hidden></p>
-              <button id="sync-project-context" class="button button-quiet" type="button">
-                重新读取数据源
-              </button>
-              <button id="save-project-snapshot" class="button button-primary" type="button" hidden>
-                保存未同步修改
+              <div id="source-gap-list" class="source-gap-list"></div>
+              <button id="complete-source-gaps" class="button button-primary" type="button">
+                让 Agent 补齐 / 重新扫描
               </button>
             </article>
+          </section>
 
-            <article class="material-card profile-card">
+          <section
+            class="source-overview candidate-source-overview"
+            aria-labelledby="source-overview-title"
+          >
+            <header>
+              <div>
+                <span class="panel-kicker">RECOGNIZED SOURCES</span>
+                <h2 id="source-overview-title">已识别的资料</h2>
+              </div>
+              <small>从原始资料到可核验简历</small>
+            </header>
+            <div class="source-overview-grid">
+              <button
+                class="source-overview-card primary"
+                type="button"
+                data-source-section="project-details"
+              >
+                <span class="source-overview-icon" aria-hidden="true">◇</span>
+                <span>
+                  <small>当前项目</small>
+                  <strong id="source-workspace-name">正在读取</strong>
+                  <em id="source-workspace-state">检查绑定状态</em>
+                </span>
+              </button>
+              <button class="source-overview-card" type="button" data-source-section="profile-card">
+                <span class="source-overview-icon" aria-hidden="true">人</span>
+                <span>
+                  <small>个人与经历</small>
+                  <strong id="source-profile-state">正在识别</strong>
+                  <em id="source-experience-state">检查工作经历</em>
+                </span>
+              </button>
+              <button
+                class="source-overview-card"
+                type="button"
+                data-source-section="repo-source-card"
+              >
+                <span class="source-overview-icon" aria-hidden="true">⌘</span>
+                <span>
+                  <small>Repo 与证据</small>
+                  <strong id="source-repo-state">正在识别</strong>
+                  <em>只采用已核验的个人贡献</em>
+                </span>
+              </button>
+              <button class="source-overview-card" type="button" data-view-target="resumes">
+                <span class="source-overview-icon" aria-hidden="true">▤</span>
+                <span>
+                  <small>Base Resume</small>
+                  <strong id="source-base-state">正在检查</strong>
+                  <em>JD 定制版从这里派生</em>
+                </span>
+              </button>
+            </div>
+          </section>
+
+          <ol class="source-provenance-flow" aria-label="资料到简历的处理流程">
+            <li><span>01</span><strong>原始资料</strong><small>文件、经历、Repo</small></li>
+            <li><span>02</span><strong>结构化事实</strong><small>个人定位与真实贡献</small></li>
+            <li>
+              <span>03</span><strong>Source 证据</strong><small>路径、Commit 与可核验结果</small>
+            </li>
+            <li>
+              <span>04</span><strong>Base Resume</strong><small>稳定基线，再派生 JD 版本</small>
+            </li>
+          </ol>
+
+          <section class="materials-grid">
+            <details
+              id="project-details"
+              class="material-card project-context-card source-technical-details"
+            >
+              <summary>
+                <div>
+                  <span class="panel-kicker">PROJECT BINDING</span>
+                  <h2 id="project-context-name">正在读取当前项目</h2>
+                  <p>项目绑定、CODESHELL.md 与面板快照的技术细节</p>
+                </div>
+                <span><b id="project-context-state">检测中</b><i aria-hidden="true">⌄</i></span>
+              </summary>
+              <div class="source-technical-details-body">
+                <div class="project-context-row">
+                  <span>工作区范围</span>
+                  <strong>仅绑定的求职数据项目</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>Session</span>
+                  <strong id="project-session-state">正在绑定</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>绑定方式</span>
+                  <strong>跟随当前 Session 工作区</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>CODESHELL.md</span>
+                  <strong id="codeshell-file-state">正在检测</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>面板数据</span>
+                  <strong id="project-snapshot-state">等待同步</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>结构化主库</span>
+                  <strong>job-hunt-panel.json</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>保存保护</span>
+                  <strong>内容变化才写入 · 外部更新先停写</strong>
+                </div>
+                <div class="project-context-row">
+                  <span>编辑恢复</span>
+                  <strong>未同步回答与简历正文保留本地草稿</strong>
+                </div>
+                <div class="project-bootstrap-callout">
+                  <span class="panel-kicker">AUTO SETUP</span>
+                  <strong id="project-bootstrap-title">让 Agent 建立数据源索引</strong>
+                  <p id="project-bootstrap-detail">
+                    自动识别已有简历、工作经历、Repo 引用和 Git
+                    证据；只创建缺失内容，不覆盖已有文件。
+                  </p>
+                </div>
+                <p>
+                  求职数据项目既是资料容器，也是面板的本地数据库：简历、JD、工作经历和 Repo
+                  证据保留为独立数据源，job-hunt-panel.json 只保存结构化索引、题库、回答、评分和版本关系。
+                </p>
+                <p class="project-readonly-note">
+                  直接在当前 Session
+                  里说“找岗位”“调研公司”“生成简历”即可，面板不会创建另一套聊天记录。
+                </p>
+                <p id="project-snapshot-error" class="project-snapshot-error" hidden></p>
+                <button id="sync-project-context" class="button button-quiet" type="button">
+                  重新读取数据源
+                </button>
+                <button
+                  id="save-project-snapshot"
+                  class="button button-primary"
+                  type="button"
+                  hidden
+                >
+                  保存未同步修改
+                </button>
+              </div>
+            </details>
+
+            <article id="profile-card" class="material-card profile-card">
               <header>
                 <div>
                   <span class="panel-kicker">PROFILE</span>
                   <h2>个人定位</h2>
                 </div>
-                <span class="card-index">01</span>
+                <div class="profile-card-actions">
+                  <span class="card-index">01</span>
+                  <button id="edit-candidate-profile" class="button button-quiet compact" type="button">
+                    编辑资料
+                  </button>
+                  <button
+                    id="cancel-candidate-profile"
+                    class="button button-quiet compact"
+                    type="button"
+                    hidden
+                  >
+                    取消
+                  </button>
+                  <button
+                    id="save-candidate-profile"
+                    class="button button-primary compact"
+                    type="button"
+                    hidden
+                  >
+                    保存资料
+                  </button>
+                </div>
               </header>
               <div class="profile-form-grid">
                 <label>
                   姓名
-                  <input id="profile-name" value="林默" readonly />
+                  <input id="profile-name" maxlength="100" value="林默" readonly />
                 </label>
                 <label>
                   目标角色
-                  <input id="profile-role" value="前端 / AI 产品工程师" readonly />
+                  <input id="profile-role" maxlength="120" value="前端 / AI 产品工程师" readonly />
                 </label>
                 <label>
                   联系方式
-                  <input id="profile-contact" value="linmo@example.com · 上海" readonly />
+                  <input
+                    id="profile-contact"
+                    maxlength="300"
+                    value="linmo@example.com · 上海"
+                    readonly
+                  />
                 </label>
                 <label>
                   求职方向
-                  <input id="profile-target" value="AI 应用、开发者工具、前端平台" readonly />
+                  <input
+                    id="profile-target"
+                    maxlength="500"
+                    value="AI 应用、开发者工具、前端平台"
+                    readonly
+                  />
                 </label>
                 <label class="span-2">
                   职业简介
-                  <textarea id="profile-summary" rows="4" readonly>
-5 年前端与产品工程经验，擅长把复杂工作流做成清晰、可靠的产品体验，近期聚焦 AI Agent、开发者工具与跨端应用。</textarea
-                  >
+                  <textarea id="profile-summary" rows="4" maxlength="3000" readonly>
+5 年前端与产品工程经验，擅长把复杂工作流做成清晰、可靠的产品体验，近期聚焦 AI Agent、开发者工具与跨端应用。</textarea>
                 </label>
               </div>
-              <p class="project-readonly-note">由 Agent 从已绑定的数据源中提取并同步。</p>
+              <p
+                id="candidate-profile-note"
+                class="project-readonly-note"
+                role="status"
+                aria-live="polite"
+              >
+                由 Agent 从已绑定的数据源中提取；你也可以在这里直接修正，保存后写入当前项目。
+              </p>
             </article>
 
-            <article class="material-card">
+            <article id="repo-source-card" class="material-card">
               <header>
                 <div>
                   <span class="panel-kicker">REPOSITORIES</span>
@@ -971,7 +1348,7 @@
               <p class="project-readonly-note">这里只展示 Repo 引用与已经核验的个人贡献证据。</p>
             </article>
 
-            <article class="material-card">
+            <article id="experience-source-card" class="material-card">
               <header>
                 <div>
                   <span class="panel-kicker">EXPERIENCE</span>
@@ -981,23 +1358,6 @@
               </header>
               <div id="experience-list" class="material-list"></div>
               <p class="project-readonly-note">这里展示从简历和经历资料中识别出的工作经历。</p>
-            </article>
-
-            <article class="material-card readiness-card">
-              <header>
-                <div>
-                  <span class="panel-kicker">READINESS</span>
-                  <h2>数据源状态</h2>
-                </div>
-                <span class="card-index">72%</span>
-              </header>
-              <div class="readiness-bar"><i></i></div>
-              <ul>
-                <li class="done">只使用绑定的求职数据项目</li>
-                <li class="done">岗位和 JD 会写入项目快照</li>
-                <li class="done">Resume 与面试题按岗位关联</li>
-                <li>内容优化规则来自 CODESHELL.md</li>
-              </ul>
             </article>
           </section>
         </section>
@@ -1010,15 +1370,45 @@
               <p>只保存公司官网事实、公开评价、招聘流程和公开面经；预测题进入“面试训练”。</p>
             </div>
             <div class="heading-meta">
-              <span id="workflow-status" class="meta-chip"><i aria-hidden="true"></i> 尚未运行</span>
+              <span id="workflow-status" class="meta-chip"
+                ><i aria-hidden="true"></i> 尚未运行</span
+              >
               <button id="continue-research-session" class="button button-quiet" type="button">
                 问 Agent ↗
               </button>
-              <button id="run-company-research" class="button button-primary" type="button">
-                交给当前 Session 调研
-              </button>
             </div>
           </header>
+          <nav class="section-tabs contextual-tabs" aria-label="岗位上下文">
+            <button type="button" data-view-target="dashboard">返回岗位</button>
+            <button type="button" class="active" data-view-target="research">公司情报</button>
+          </nav>
+
+          <section class="research-launch-panel" aria-labelledby="research-launch-title">
+            <div class="research-launch-copy">
+              <span class="research-launch-index" aria-hidden="true">01</span>
+              <div>
+                <span class="panel-kicker">SELECT & RESEARCH</span>
+                <h2 id="research-launch-title">选择一个关注岗位开始调研</h2>
+                <p id="research-launch-detail">
+                  公司官网、公开评价、招聘流程和公开面经会保存为一份可追溯报告。
+                </p>
+              </div>
+            </div>
+            <label class="research-job-picker" for="research-job-select">
+              <span>本次调研岗位</span>
+              <select id="research-job-select" aria-label="选择公司情报调研岗位">
+                <option value="">选择关注岗位</option>
+              </select>
+            </label>
+            <div class="research-launch-actions">
+              <button id="run-company-research" class="button button-primary" type="button">
+                开始公司与面经调研
+              </button>
+              <button id="research-go-job-pool" class="button button-quiet" type="button">
+                去岗位池选择
+              </button>
+            </div>
+          </section>
 
           <section class="research-shell">
             <aside class="research-list-panel">
@@ -1051,7 +1441,9 @@
 
               <div id="research-empty" class="research-empty">
                 <strong>还没有调研报告</strong>
-                <p>运行完整调研后，这里会展示公司官网、评价、风险、面试流程和公开面经。</p>
+                <p>
+                  先在上方选择岗位并点击“开始公司与面经调研”。完成后，这里会展示官网事实、评价、风险、流程和公开面经。
+                </p>
               </div>
 
               <div id="research-content" class="research-content" hidden>
@@ -1128,22 +1520,112 @@
           <header class="page-heading compact-heading">
             <div>
               <span class="eyebrow">VERSIONS</span>
-              <h1 id="resumes-title">简历版本</h1>
-              <p>只维护 Base Resume、岗位定制版、逐条 Source 证据与 PDF，不承载公司调研。</p>
+              <h1 id="resumes-title">简历</h1>
+              <p>先把真实经历变成可核验事实，再维护 Base、JD 定制版与最终投递文件。</p>
             </div>
-            <button class="button button-quiet" type="button" data-view-target="materials">
-              检查基础资料
-            </button>
+            <div class="heading-meta">
+              <button class="button button-quiet" type="button" data-view-target="materials">
+                检查基础资料
+              </button>
+              <button id="resume-open-files" class="button button-primary" type="button">
+                打开已保存文件
+              </button>
+            </div>
           </header>
-          <section id="resume-workspace-slot" class="resume-workspace-slot" aria-label="简历工作台"></section>
+          <nav class="interview-workspace-tabs resume-workspace-tabs" aria-label="简历工作区">
+            <button type="button" data-resume-workspace="content" class="active">
+              <span>内容</span>
+              <small>事实核对、编辑与预览</small>
+            </button>
+            <button type="button" data-resume-workspace="versions">
+              <span>版本</span>
+              <small>Base 与岗位定制关系</small>
+            </button>
+            <button type="button" data-resume-workspace="files">
+              <span>文件与打开</span>
+              <small>Markdown、PDF 与文件夹</small>
+            </button>
+          </nav>
+          <div id="resume-content-workspace">
+          <section id="resume-pipeline" class="resume-pipeline" aria-label="简历生产流程">
+            <article data-resume-stage="evidence">
+              <span>01</span>
+              <div>
+                <small>FACTS &amp; EVIDENCE</small>
+                <strong>事实与证据</strong>
+                <p id="resume-stage-evidence">核对工作经历、项目、个人贡献和结果口径</p>
+              </div>
+              <b id="resume-stage-evidence-count">0</b>
+            </article>
+            <article data-resume-stage="base">
+              <span>02</span>
+              <div>
+                <small>MASTER RESUME</small>
+                <strong>方向级 Base</strong>
+                <p id="resume-stage-base">保留完整可信的职业叙事，不绑定单一 JD</p>
+              </div>
+              <b id="resume-stage-base-count">0</b>
+            </article>
+            <article data-resume-stage="variant">
+              <span>03</span>
+              <div>
+                <small>JOB VARIANTS</small>
+                <strong>岗位定制版</strong>
+                <p id="resume-stage-variant">从 Base 派生，只调整相关性和优先级</p>
+              </div>
+              <b id="resume-stage-variant-count">0</b>
+            </article>
+            <article data-resume-stage="export">
+              <span>04</span>
+              <div>
+                <small>APPLICATION FILE</small>
+                <strong>核验与导出</strong>
+                <p id="resume-stage-export">检查 ATS、A4、Source 覆盖和投递版本</p>
+              </div>
+              <b id="resume-stage-export-count">0</b>
+            </article>
+          </section>
+          <section class="resume-command-center" aria-label="当前简历建议">
+            <div>
+              <span class="panel-kicker">CURRENT DECISION</span>
+              <strong id="resume-next-action-title">先建立一份方向级 Base Resume</strong>
+              <p id="resume-next-action-detail">
+                Base 是稳定母版；岗位版只从母版派生，不覆盖原始事实。
+              </p>
+            </div>
+            <button id="resume-next-action" class="button button-primary" type="button">
+              开始处理
+            </button>
+          </section>
+          <section
+            id="resume-workspace-slot"
+            class="resume-workspace-slot"
+            aria-label="简历工作台"
+          ></section>
+          </div>
+          <div id="resume-versions-workspace" hidden>
           <header class="version-library-heading">
             <div>
               <span class="panel-kicker">VERSION LIBRARY</span>
               <h2>历史版本</h2>
             </div>
-            <small>Base 与岗位定制版都会保留来源关系</small>
+            <small>Base 与岗位定制版都会保留来源关系；非当前历史版本可安全删除</small>
           </header>
           <section id="resume-version-list" class="resume-version-grid"></section>
+          </div>
+          <div id="resume-files-workspace" class="resume-files-workspace" hidden>
+            <section class="resume-files-summary">
+              <div>
+                <span class="panel-kicker">APPLICATION FILES</span>
+                <h2>投递文件</h2>
+                <p>Markdown 与每次 PDF 导出都可直接打开，也可以在系统文件夹中定位。</p>
+              </div>
+              <button id="resume-open-content" class="button button-primary" type="button">
+                打开当前简历并导出
+              </button>
+            </section>
+            <div id="resume-file-list" class="resume-file-list"></div>
+          </div>
         </section>
 
         <section id="view-interviews" class="view" aria-labelledby="interviews-title" hidden>
@@ -1151,121 +1633,655 @@
             <div>
               <span class="eyebrow">INTERVIEW LAB</span>
               <h1 id="interviews-title">面试训练</h1>
-              <p>只负责定制题库、能力缺口、学习 Roadmap、模拟练习与真实面试复盘。</p>
-            </div>
-            <div class="heading-actions">
-              <button id="generate-commit-interview" class="button button-quiet" type="button">
-                从 Commit 出题
-              </button>
-              <button id="open-interview-form" class="button button-primary" type="button">
-                <span aria-hidden="true">✦</span>
-                从 JD 生成题库
-              </button>
+              <p>
+                选择一个 JD 做专项准备，或聚合多个相似 JD 找共性考点；回答建议只引用你的真实数据源。
+              </p>
             </div>
           </header>
 
-          <section class="interview-shell">
-            <aside class="interview-sets-panel">
+          <nav class="interview-workspace-tabs" aria-label="面试训练工作区">
+            <button type="button" data-interview-workspace="practice" class="active">
+              <span>练习</span>
+              <small>单题或整套，直接作答评分</small>
+            </button>
+            <button type="button" data-interview-workspace="bank">
+              <span>题库</span>
+              <small>整理、编辑、去重与复用</small>
+            </button>
+            <button type="button" data-interview-workspace="history">
+              <span>记录</span>
+              <small>能力趋势、场次与复盘</small>
+            </button>
+          </nav>
+
+          <div id="interview-practice-workspace">
+            <section
+              id="interview-quick-start"
+              class="interview-quick-start"
+              data-state="loading"
+              aria-labelledby="interview-quick-start-title"
+            >
+              <div class="interview-quick-start-copy">
+                <span class="panel-kicker">TODAY'S PRACTICE</span>
+                <h2 id="interview-quick-start-title">正在读取可练习题</h2>
+                <p id="interview-quick-start-detail">
+                  已有题单会直接出现在这里，不需要先生成新题，也不需要进入 Session。
+                </p>
+                <div class="interview-quick-start-meta">
+                  <span><strong id="interview-quick-start-count">0</strong> 道可直接练</span>
+                  <span><strong id="interview-quick-start-due-count">0</strong> 道今日待练</span>
+                  <span><strong id="interview-quick-start-weak-count">0</strong> 道待加强</span>
+                  <span
+                    ><strong id="interview-quick-start-repair-count">0</strong> 道可快速整理</span
+                  >
+                  <span id="interview-quick-start-set">尚未选择题单</span>
+                </div>
+              </div>
+              <div class="interview-quick-start-actions">
+                <button
+                  id="continue-interview-session"
+                  class="button button-primary"
+                  type="button"
+                  hidden
+                >
+                  继续上次
+                </button>
+                <button
+                  id="quick-practice-interview-question"
+                  class="button button-primary"
+                  type="button"
+                >
+                  练今天第 1 题
+                </button>
+                <button id="quick-ten-minute-interview" class="button button-quiet" type="button">
+                  10 分钟 · 3 题
+                </button>
+                <button id="quick-start-interview" class="button button-quiet" type="button">
+                  整套模拟
+                </button>
+              </div>
+            </section>
+
+            <section
+              id="interview-readiness"
+              class="interview-readiness"
+              aria-labelledby="interview-readiness-title"
+            >
+              <header class="interview-readiness-head">
+                <div>
+                  <span class="panel-kicker">READY CHECK</span>
+                  <strong id="interview-readiness-title">开练前检查</strong>
+                </div>
+                <button
+                  id="recheck-interview-readiness"
+                  class="button button-quiet compact"
+                  type="button"
+                >
+                  重新检测
+                </button>
+              </header>
+              <div class="interview-readiness-grid">
+                <article id="interview-readiness-questions" data-state="checking">
+                  <span class="interview-readiness-mark" aria-hidden="true">题</span>
+                  <div>
+                    <strong id="interview-readiness-questions-title">正在检查题目</strong>
+                    <p id="interview-readiness-questions-detail">确认题库中是否有可直接练习的题目。</p>
+                  </div>
+                </article>
+                <article id="interview-readiness-voice" data-state="checking">
+                  <span class="interview-readiness-mark" aria-hidden="true">声</span>
+                  <div>
+                    <strong id="interview-readiness-voice-title">正在检查语音</strong>
+                    <p id="interview-readiness-voice-detail">键盘回答始终可用。</p>
+                  </div>
+                  <button
+                    id="test-interview-microphone"
+                    class="button button-quiet compact interview-readiness-action"
+                    type="button"
+                    hidden
+                  >
+                    测试麦克风
+                  </button>
+                </article>
+                <article id="interview-readiness-score" data-state="checking">
+                  <span class="interview-readiness-mark" aria-hidden="true">评</span>
+                  <div>
+                    <strong id="interview-readiness-score-title">正在检查评分回写</strong>
+                    <p id="interview-readiness-score-detail">确认项目和评分任务能否正确关联。</p>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section
+              id="interview-training-insights"
+              class="interview-training-insights"
+              aria-labelledby="interview-training-insights-title"
+              hidden
+            >
               <header>
                 <div>
-                  <span class="panel-kicker">QUESTION SETS</span>
-                  <h2>题库版本</h2>
+                  <span class="panel-kicker">TRAINING INSIGHTS</span>
+                  <h2 id="interview-training-insights-title">能力趋势</h2>
                 </div>
-                <span id="interview-set-count" class="tiny-badge">0 份</span>
-              </header>
-              <div id="interview-set-list" class="interview-set-list"></div>
-            </aside>
-
-            <section class="interview-main">
-              <header class="interview-toolbar">
-                <div>
-                  <span id="interview-job-label" class="panel-kicker">尚未绑定职位</span>
-                  <h2 id="interview-set-title">选择或生成一套面试题</h2>
-                </div>
-                <div class="interview-toolbar-actions">
-                  <button id="simulate-interview" class="button button-quiet" type="button">
-                    模拟面试
-                  </button>
-                  <button id="start-interview-debrief" class="button button-quiet" type="button">
-                    记录真实面试
-                  </button>
-                  <button id="regenerate-interview" class="button button-primary" type="button">
-                    重新生成
-                  </button>
+                <div class="interview-insight-summary" aria-label="训练统计">
+                  <span><strong id="interview-training-average">--</strong> 当前均分</span>
+                  <span id="interview-training-trend">首次评分</span>
+                  <span><strong id="interview-training-reviewed">0</strong> 道已评分</span>
                 </div>
               </header>
-
-              <section class="interview-stats" aria-label="面试题概览">
-                <article>
-                  <span>题目数量</span>
-                  <strong id="interview-question-count">0</strong>
-                </article>
-                <article>
-                  <span>证据关联</span>
-                  <strong id="interview-evidence-count">0</strong>
-                </article>
-                <article>
-                  <span>能力覆盖</span>
-                  <strong id="interview-category-count">0 类</strong>
-                </article>
-              </section>
-
-              <section class="interview-loop-grid" aria-label="准备计划与真实面试复盘">
-                <article class="preparation-card">
-                  <header>
-                    <div>
-                      <span class="panel-kicker">PREPARATION PLAN</span>
-                      <h3 id="preparation-title">等待生成补强计划</h3>
-                    </div>
+              <div class="interview-insight-layout">
+                <section aria-labelledby="interview-dimension-title">
+                  <div class="interview-insight-section-head">
+                    <strong id="interview-dimension-title">四维表现</strong>
+                    <small>按每道题最近一次评分计算</small>
+                  </div>
+                  <div id="interview-dimension-list" class="interview-dimension-list"></div>
+                </section>
+                <section aria-labelledby="interview-competency-title">
+                  <div class="interview-insight-section-head">
+                    <strong id="interview-competency-title">优先补强能力</strong>
+                    <small>低分项优先，不用平均用力</small>
+                  </div>
+                  <div id="interview-competency-list" class="interview-competency-list"></div>
+                </section>
+                <article class="interview-latest-feedback">
+                  <span class="panel-kicker">RECENT FEEDBACK</span>
+                  <strong id="interview-latest-feedback-question">最近一次评分</strong>
+                  <p id="interview-latest-feedback-meta">完成评分后显示最需要改进的回答。</p>
+                  <p id="interview-latest-feedback-improvement"></p>
+                  <div class="interview-latest-feedback-actions">
                     <button
-                      id="refresh-preparation-plan"
+                      id="retry-latest-interview-question"
+                      class="button button-primary compact"
+                      type="button"
+                    >
+                      再答一次
+                    </button>
+                    <button
+                      id="practice-latest-interview-follow-up"
                       class="button button-quiet compact"
                       type="button"
                     >
-                      更新计划
+                      练动态追问
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section id="interview-library-health" class="interview-library-health" hidden>
+              <div>
+                <span class="panel-kicker">QUESTION BANK HEALTH</span>
+                <strong id="interview-library-health-title">有旧题可以安全整理</strong>
+                <p id="interview-library-health-detail">
+                  只补充由题型和分类推断的能力标签，不修改题干、Source、答案或笔记。
+                </p>
+              </div>
+              <button id="repair-interview-library" class="button button-quiet" type="button">
+                修复并确认
+              </button>
+            </section>
+
+            <section class="interview-generation-hub" aria-label="选择面试题生成方式">
+              <article class="interview-generation-card primary">
+                <span class="interview-generation-index">01</span>
+                <div>
+                  <span class="panel-kicker">ONE JD</span>
+                  <h2>单岗位专项训练</h2>
+                  <p>围绕一个具体 JD 追问匹配度、项目细节、技术取舍和显性缺口。</p>
+                  <small id="single-interview-state">正在检查可用 JD</small>
+                </div>
+                <button id="generate-single-interview" class="button button-primary" type="button">
+                  选择 1 个 JD
+                </button>
+              </article>
+              <article class="interview-generation-card">
+                <span class="interview-generation-index">02</span>
+                <div>
+                  <span class="panel-kicker">JD CLUSTER</span>
+                  <h2>多岗位聚合训练</h2>
+                  <p>聚合 2–8 个相似 JD，提取高频要求和共性面试信号，适合准备一类岗位。</p>
+                  <small id="aggregate-interview-state">正在检查可聚合 JD</small>
+                </div>
+                <button id="generate-aggregate-interview" class="button button-quiet" type="button">
+                  选择多个 JD
+                </button>
+              </article>
+            </section>
+
+            <section class="interview-shell">
+              <aside class="interview-sets-panel">
+                <header>
+                  <div>
+                    <span class="panel-kicker">QUESTION SETS</span>
+                    <h2>练习题单</h2>
+                  </div>
+                  <span id="interview-set-count" class="tiny-badge">0 份</span>
+                </header>
+                <div id="interview-set-list" class="interview-set-list"></div>
+              </aside>
+
+              <section class="interview-main">
+                <header class="interview-toolbar">
+                  <div>
+                    <span id="interview-job-label" class="panel-kicker">尚未绑定职位</span>
+                    <h2 id="interview-set-title">选择或生成一套面试题</h2>
+                  </div>
+                  <div class="interview-toolbar-actions">
+                    <button id="regenerate-interview" class="button button-quiet" type="button">
+                      重新生成题单
+                    </button>
+                    <button id="simulate-interview" class="button button-primary" type="button">
+                      开始整套模拟
+                    </button>
+                  </div>
+                </header>
+
+                <section class="interview-stats" aria-label="面试题概览">
+                  <article>
+                    <span>题目数量</span>
+                    <strong id="interview-question-count">0</strong>
+                  </article>
+                  <article>
+                    <span>证据关联</span>
+                    <strong id="interview-evidence-count">0</strong>
+                  </article>
+                  <article>
+                    <span>能力覆盖</span>
+                    <strong id="interview-category-count">0 类</strong>
+                  </article>
+                </section>
+
+                <section
+                  id="panel-interview-stage"
+                  class="panel-interview-stage"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="panel-interview-question"
+                  aria-describedby="panel-interview-hint"
+                  hidden
+                >
+                  <header class="panel-interview-stage-head">
+                    <div>
+                      <span class="panel-kicker">LIVE PANEL INTERVIEW</span>
+                      <strong id="panel-interview-progress">面板模拟面试</strong>
+                    </div>
+                    <button
+                      id="close-panel-interview"
+                      class="button button-quiet compact"
+                      type="button"
+                    >
+                      退出本次练习 · Esc
                     </button>
                   </header>
-                  <p id="preparation-summary" class="preparation-summary">
-                    选择岗位后，可让 Agent 对照真实经历识别优势、证据缺口和下一步行动。
-                  </p>
-                  <div id="preparation-strengths" class="tag-cloud"></div>
-                  <div
-                    id="preparation-gap-summary"
-                    class="preparation-gap-summary"
-                    aria-label="缺口分类统计"
-                  ></div>
-                  <div class="preparation-section-heading">
-                    <strong>缺口诊断</strong>
-                    <span>先分清缺资料、缺证据还是缺能力</span>
-                  </div>
-                  <div id="preparation-gap-list" class="preparation-gap-list"></div>
-                  <div class="preparation-section-heading">
-                    <strong>学习 Roadmap</strong>
-                    <span id="preparation-roadmap-count">0 阶段</span>
-                  </div>
-                  <div id="preparation-roadmap-list" class="preparation-roadmap-list"></div>
-                  <div class="preparation-section-heading">
-                    <strong>立即行动</strong>
-                    <span>按优先级推进</span>
-                  </div>
-                  <div id="preparation-action-list" class="preparation-action-list"></div>
-                </article>
-
-                <article class="debrief-card">
-                  <header>
-                    <div>
-                      <span class="panel-kicker">REAL INTERVIEWS</span>
-                      <h3>真实面试记录</h3>
+                  <div class="panel-interview-question-wrap">
+                    <div id="panel-interview-question-meta" class="panel-interview-question-meta">
+                      等待选题
                     </div>
-                    <span id="debrief-count" class="tiny-badge">0 次</span>
-                  </header>
-                  <div id="interview-debrief-list" class="interview-debrief-list"></div>
-                </article>
-              </section>
+                    <h3 id="panel-interview-question">选择一道可练习的题目</h3>
+                    <p id="panel-interview-hint" role="status" aria-live="polite">
+                      参考答案会保持隐藏。先用自己的话回答，保存后直接进入下一题。
+                    </p>
+                  </div>
+                  <section class="panel-interview-prep" aria-label="回答辅助">
+                    <div class="panel-interview-prep-status">
+                      <span id="panel-interview-speech-estimate" data-state="empty">尚未作答</span>
+                      <span id="panel-interview-draft-state" aria-live="polite"
+                        >草稿会自动保留</span
+                      >
+                    </div>
+                    <ol id="panel-interview-answer-guide" class="panel-interview-answer-guide"></ol>
+                    <details
+                      id="panel-interview-reference"
+                      class="panel-interview-reference"
+                    >
+                      <summary>卡住了？查看结合项目资料生成的参考稿</summary>
+                      <p id="panel-interview-reference-answer"></p>
+                      <button
+                        id="panel-interview-use-reference-answer"
+                        class="button button-quiet compact"
+                        type="button"
+                      >
+                        放入新草稿继续修改
+                      </button>
+                      <small>请先核对职责、指标和【待确认】内容，再改成自己的表达。</small>
+                    </details>
+                  </section>
+                  <label class="panel-interview-answer-label" for="panel-interview-answer">
+                    你的回答
+                    <span id="panel-interview-answer-count">0 / 6000</span>
+                  </label>
+                  <textarea
+                    id="panel-interview-answer"
+                    rows="7"
+                    maxlength="6000"
+                    placeholder="可以直接打字，也可以点麦克风说完后校对转写。"
+                  ></textarea>
+                  <div class="panel-interview-controls">
+                    <div class="panel-interview-voice">
+                      <button id="panel-interview-mic" class="button button-quiet" type="button">
+                        <span class="mic-dot" aria-hidden="true"></span>
+                        <span id="panel-interview-mic-label">语音回答</span>
+                      </button>
+                      <span id="panel-interview-voice-status" role="status" aria-live="polite"
+                        >正在检查语音转写</span
+                      >
+                    </div>
+                    <button
+                      id="submit-panel-interview-answer"
+                      class="button button-primary"
+                      type="button"
+                    >
+                      保存回答
+                    </button>
+                  </div>
+                  <p class="panel-interview-privacy">
+                    未提交文字会作为一份本地草稿保留；录音只用于本次转写，不保存音频。点击保存后，回答才写入当前项目，不发送到 Session。
+                  </p>
+                  <div id="panel-interview-feedback" class="panel-interview-feedback" hidden></div>
+                  <section
+                    id="panel-interview-follow-up"
+                    class="panel-interview-follow-up"
+                    hidden
+                  >
+                    <div>
+                      <span class="panel-kicker">DYNAMIC FOLLOW-UP</span>
+                      <strong id="panel-interview-follow-up-question">继续追问</strong>
+                    </div>
+                    <div class="panel-interview-follow-up-actions">
+                      <button
+                        id="save-panel-interview-follow-up"
+                        class="button button-quiet"
+                        type="button"
+                      >
+                        保存到题库
+                      </button>
+                      <button
+                        id="practice-panel-interview-follow-up"
+                        class="button button-primary"
+                        type="button"
+                      >
+                        直接练追问
+                      </button>
+                    </div>
+                  </section>
+                  <footer
+                    id="panel-interview-next-actions"
+                    class="panel-interview-next-actions"
+                    hidden
+                  >
+                    <div class="panel-interview-flow" aria-label="回答处理进度">
+                      <span id="panel-interview-flow-answer" data-state="complete">1 · 回答已保存</span>
+                      <i aria-hidden="true">→</i>
+                      <span
+                        id="panel-interview-flow-score"
+                        data-state="current"
+                        aria-live="polite"
+                        >2 · AI 评分</span
+                      >
+                      <i aria-hidden="true">→</i>
+                      <span id="panel-interview-flow-improve" data-state="pending">3 · 优化重练</span>
+                    </div>
+                    <div class="panel-interview-review-action">
+                      <button
+                        id="panel-interview-score-answer"
+                        class="button button-primary"
+                        type="button"
+                      >
+                        AI 评分并优化回答
+                      </button>
+                      <small id="panel-interview-score-note"
+                        >读取当前题目、已保存回答和项目证据，生成评分与优化稿</small
+                      >
+                    </div>
+                    <div class="panel-interview-navigation-actions">
+                      <button
+                        id="panel-interview-use-optimized-answer"
+                        class="button button-primary"
+                        type="button"
+                        hidden
+                      >
+                        用优化稿做新草稿
+                      </button>
+                      <button
+                        id="panel-interview-retry-answer"
+                        class="button button-quiet"
+                        type="button"
+                      >
+                        再答一次
+                      </button>
+                      <button
+                        id="panel-interview-next-question"
+                        class="button button-quiet"
+                        type="button"
+                      >
+                        下一题
+                      </button>
+                    </div>
+                  </footer>
+                </section>
 
-              <div id="interview-category-filters" class="interview-filters"></div>
-              <div id="interview-question-list" class="interview-question-list"></div>
+                <div class="interview-practice-guide">
+                  <span class="interview-practice-step">01</span>
+                  <div>
+                    <strong>选一道题，先用自己的话回答</strong>
+                    <small
+                      >回答会直接保存到当前项目并形成可编辑练习记录；不需要等待或切换到
+                      Session。</small
+                    >
+                  </div>
+                </div>
+                <div id="interview-category-filters" class="interview-filters"></div>
+                <div id="interview-question-list" class="interview-question-list"></div>
+
+                <details class="interview-followup-panel">
+                  <summary>
+                    <div>
+                      <span class="panel-kicker">AFTER PRACTICE</span>
+                      <strong>补强计划与真实面试复盘</strong>
+                      <small>练完题目后，再处理能力缺口、学习 Roadmap 和真实面试反馈。</small>
+                    </div>
+                    <span class="interview-followup-toggle">展开</span>
+                  </summary>
+                  <section class="interview-loop-grid" aria-label="准备计划与真实面试复盘">
+                    <article class="preparation-card">
+                      <header>
+                        <div>
+                          <span class="panel-kicker">PREPARATION PLAN</span>
+                          <h3 id="preparation-title">等待生成补强计划</h3>
+                        </div>
+                        <button
+                          id="refresh-preparation-plan"
+                          class="button button-quiet compact"
+                          type="button"
+                        >
+                          更新计划
+                        </button>
+                      </header>
+                      <p id="preparation-summary" class="preparation-summary">
+                        选择岗位后，可让 Agent 对照真实经历识别优势、证据缺口和下一步行动。
+                      </p>
+                      <div id="preparation-strengths" class="tag-cloud"></div>
+                      <div
+                        id="preparation-gap-summary"
+                        class="preparation-gap-summary"
+                        aria-label="缺口分类统计"
+                      ></div>
+                      <div class="preparation-section-heading">
+                        <strong>缺口诊断</strong>
+                        <span>先分清缺资料、缺证据还是缺能力</span>
+                      </div>
+                      <div id="preparation-gap-list" class="preparation-gap-list"></div>
+                      <div class="preparation-section-heading">
+                        <strong>学习 Roadmap</strong>
+                        <span id="preparation-roadmap-count">0 阶段</span>
+                      </div>
+                      <div id="preparation-roadmap-list" class="preparation-roadmap-list"></div>
+                      <div class="preparation-section-heading">
+                        <strong>立即行动</strong>
+                        <span>按优先级推进</span>
+                      </div>
+                      <div id="preparation-action-list" class="preparation-action-list"></div>
+                    </article>
+
+                    <article class="debrief-card">
+                      <header>
+                        <div>
+                          <span class="panel-kicker">REAL INTERVIEWS</span>
+                          <h3>真实面试记录</h3>
+                        </div>
+                        <div class="interview-loop-actions">
+                          <span id="debrief-count" class="tiny-badge">0 次</span>
+                          <button
+                            id="start-interview-debrief"
+                            class="button button-quiet compact"
+                            type="button"
+                          >
+                            记录一次
+                          </button>
+                        </div>
+                      </header>
+                      <div id="interview-debrief-list" class="interview-debrief-list"></div>
+                    </article>
+                  </section>
+                </details>
+              </section>
             </section>
+            <section class="mock-session-history" aria-labelledby="mock-session-history-title">
+              <header>
+                <div>
+                  <span class="panel-kicker">MOCK INTERVIEW SESSIONS</span>
+                  <h2 id="mock-session-history-title">模拟面试场次</h2>
+                </div>
+                <span id="mock-session-count" class="tiny-badge">0 场</span>
+              </header>
+              <div id="mock-session-list" class="mock-session-list"></div>
+              <footer id="mock-session-list-footer" class="mock-session-list-footer" hidden>
+                <span id="mock-session-visible-count" aria-live="polite">显示 0 / 0</span>
+                <button id="mock-session-load-more" class="button button-quiet" type="button">
+                  再显示 12 场
+                </button>
+              </footer>
+            </section>
+          </div>
+
+          <section id="interview-bank-workspace" class="interview-bank-workspace" hidden>
+            <header class="question-bank-header">
+              <div>
+                <span class="panel-kicker">CANONICAL QUESTION BANK</span>
+                <h2>长期面试题库</h2>
+                <p>
+                  Session 与真实面试先进入“待整理”；确认题干、分类、评估能力和 Source
+                  后再进入练习，逐题评分会持续累积。
+                </p>
+              </div>
+              <div class="heading-actions">
+                <button id="import-session-questions" class="button button-quiet" type="button">
+                  从当前 Session 整理
+                </button>
+                <button id="add-bank-question" class="button button-primary" type="button">
+                  手动加题
+                </button>
+                <button id="open-interview-generator" class="button button-primary" type="button">
+                  新建题单
+                </button>
+              </div>
+            </header>
+            <div id="interview-bank-health-slot"></div>
+            <section class="question-bank-stats" aria-label="题库状态">
+              <button type="button" data-question-bank-filter="active">
+                <span>有效题目</span><strong id="question-bank-total">0</strong><small>查看全部</small>
+              </button>
+              <button type="button" data-question-bank-filter="inbox">
+                <span>待整理</span><strong id="question-bank-inbox">0</strong><small>优先补全</small>
+              </button>
+              <button type="button" data-question-bank-filter="ready">
+                <span>可练习</span><strong id="question-bank-ready">0</strong><small>直接开练</small>
+              </button>
+              <button type="button" data-question-bank-filter="practiced">
+                <span>已练过</span><strong id="question-bank-practiced">0</strong><small>查看记录</small>
+              </button>
+              <button type="button" data-question-bank-filter="needs_work">
+                <span>待加强</span><strong id="question-bank-needs-work">0</strong><small>低于 70 分</small>
+              </button>
+              <button type="button" data-question-bank-filter="mastered">
+                <span>已掌握</span><strong id="question-bank-mastered">0</strong><small>复习归档</small>
+              </button>
+            </section>
+            <section class="question-bank-toolbar" aria-label="题库筛选">
+              <label class="question-bank-search">
+                <span>搜索</span>
+                <input
+                  id="question-bank-search"
+                  type="search"
+                  placeholder="搜索问题、标签、能力或 Source"
+                />
+              </label>
+              <label>
+                <span>状态</span>
+                <select id="question-bank-status-filter">
+                  <option value="active">全部有效</option>
+                  <option value="inbox">待整理</option>
+                  <option value="ready">可练习</option>
+                  <option value="practiced">已练过</option>
+                  <option value="needs_work">待加强（最近低于 70）</option>
+                  <option value="mastered">已掌握</option>
+                  <option value="archived">已归档</option>
+                  <option value="all">全部</option>
+                </select>
+              </label>
+              <label>
+                <span>题型</span>
+                <select id="question-bank-type-filter">
+                  <option value="all">全部题型</option>
+                  <option value="behavioral">行为与协作</option>
+                  <option value="technical">技术基础</option>
+                  <option value="system_design">系统设计</option>
+                  <option value="project_deep_dive">项目深挖</option>
+                  <option value="resume_probe">简历追问</option>
+                  <option value="scenario">情景判断</option>
+                  <option value="role_knowledge">岗位与业务</option>
+                  <option value="other">其他</option>
+                </select>
+              </label>
+              <label>
+                <span>排序</span>
+                <select id="question-bank-sort">
+                  <option value="smart">智能排序</option>
+                  <option value="due">到期复习优先</option>
+                  <option value="weak">低分优先</option>
+                  <option value="recent">最近更新</option>
+                  <option value="type">按题型</option>
+                </select>
+              </label>
+              <div class="question-bank-toolbar-summary">
+                <span id="question-bank-result-summary" aria-live="polite">正在读取题库</span>
+                <button id="question-bank-reset-filters" class="button button-quiet compact" type="button">
+                  清空筛选
+                </button>
+              </div>
+            </section>
+            <div id="question-bank-list" class="question-bank-list"></div>
+            <footer id="question-bank-list-footer" class="question-bank-list-footer" hidden>
+              <span id="question-bank-visible-count" aria-live="polite">显示 0 / 0</span>
+              <button id="question-bank-load-more" class="button button-quiet" type="button">
+                继续显示
+              </button>
+            </footer>
+          </section>
+
+          <section id="interview-history-workspace" class="interview-history-workspace" hidden>
+            <header class="question-bank-header interview-history-header">
+              <div>
+                <span class="panel-kicker">PRACTICE HISTORY</span>
+                <h2>训练记录与能力趋势</h2>
+                <p>评分、模拟场次、补强计划和真实面试复盘集中在这里，不打断当前作答。</p>
+              </div>
+            </header>
+            <div id="interview-insights-slot"></div>
+            <div id="interview-followup-slot"></div>
+            <div id="interview-mock-history-slot"></div>
           </section>
         </section>
       </section>
@@ -1406,7 +2422,13 @@
           </label>
           <label>
             原始链接（可选）
-            <input id="jd-intake-url" name="url" type="url" placeholder="https://..." maxlength="1000" />
+            <input
+              id="jd-intake-url"
+              name="url"
+              type="url"
+              placeholder="https://..."
+              maxlength="1000"
+            />
           </label>
           <label class="span-2">
             粘贴文字（可选）
@@ -1418,10 +2440,16 @@
               maxlength="50000"
             ></textarea>
           </label>
-          <div id="jd-file-dropzone" class="jd-file-dropzone span-2" tabindex="0">
+          <div
+            id="jd-file-dropzone"
+            class="jd-file-dropzone span-2"
+            role="group"
+            aria-label="JD 文件拖放区"
+          >
             <input
               id="jd-file-input"
               type="file"
+              aria-label="选择要导入的 JD 文件或截图"
               multiple
               accept="image/*,.pdf,.doc,.docx,.txt,.md,.json,.csv,.tsv,.html"
               hidden
@@ -1466,10 +2494,15 @@
           </button>
         </header>
         <p class="dialog-lead">
-          先初始化数据源，并在“渠道管理”逐个连接所选渠道。数量只统计包含完整岗位职责与任职要求的 JD；列表卡片会暂存为待补全线索。
+          先初始化数据源，并在“渠道管理”逐个连接所选渠道。数量只统计包含完整岗位职责与任职要求的
+          JD；列表卡片会暂存为待补全线索。
         </p>
         <section class="search-preflight" aria-label="搜索前检查">
-          <article id="search-project-preflight" class="search-preflight-item" data-state="checking">
+          <article
+            id="search-project-preflight"
+            class="search-preflight-item"
+            data-state="checking"
+          >
             <div class="search-preflight-heading">
               <span><i aria-hidden="true"></i>数据源</span>
               <strong id="search-project-preflight-status" aria-live="polite">正在校验</strong>
@@ -1502,11 +2535,7 @@
         <div class="dialog-grid">
           <label>
             关键词
-            <input
-              name="keyword"
-              placeholder="从个人定位与 Base Resume 自动填充"
-              maxlength="120"
-            />
+            <input name="keyword" placeholder="从个人定位与 Base Resume 自动填充" maxlength="120" />
           </label>
           <label>
             地点
@@ -1591,7 +2620,8 @@
           <p id="delete-job-impact-summary">只删除岗位记录。</p>
         </div>
         <p class="delete-job-warning">
-          该操作会重写当前项目的 job-hunt-panel.json，无法从面板撤销；不会删除你放在项目中的原始 JD 文件。
+          该操作会重写当前项目的 job-hunt-panel.json，无法从面板撤销；不会删除你放在项目中的原始 JD
+          文件。
         </p>
         <footer>
           <button class="button button-quiet" type="button" data-close-dialog="delete-job-dialog">
@@ -1604,6 +2634,46 @@
       </form>
     </dialog>
 
+    <dialog id="delete-resume-version-dialog" class="dialog">
+      <form method="dialog" class="dialog-card dialog-card-small">
+        <header>
+          <div>
+            <span class="panel-kicker">REMOVE RESUME REVISION</span>
+            <h2>删除这份历史版本？</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="delete-resume-version-dialog"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </header>
+        <p id="delete-resume-version-target" class="dialog-lead">正在读取简历版本。</p>
+        <div class="delete-job-impact">
+          <strong>删除影响</strong>
+          <p id="delete-resume-version-impact">只删除历史版本记录。</p>
+        </div>
+        <p class="delete-job-warning">
+          该操作会重写当前项目的 job-hunt-panel.json，无法从面板撤销；不会删除项目目录中已经保存的
+          Markdown 或 PDF 文件。
+        </p>
+        <footer>
+          <button
+            class="button button-quiet"
+            type="button"
+            data-close-dialog="delete-resume-version-dialog"
+          >
+            取消
+          </button>
+          <button id="confirm-delete-resume-version" class="button button-danger" type="button">
+            确认删除版本
+          </button>
+        </footer>
+      </form>
+    </dialog>
+
     <dialog id="reset-dialog" class="dialog">
       <form method="dialog" class="dialog-card dialog-card-small">
         <header>
@@ -1611,15 +2681,26 @@
             <span class="panel-kicker">START OVER</span>
             <h2>清空求职面板并重新开始？</h2>
           </div>
-          <button class="icon-button" type="button" data-close-dialog="reset-dialog" aria-label="关闭">×</button>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="reset-dialog"
+            aria-label="关闭"
+          >
+            ×
+          </button>
         </header>
         <p class="dialog-lead">
-          将清空岗位池、简历版本、公司调研、题库、准备计划和面试复盘，并重写当前项目的
+          将清空岗位池、简历版本、公司调研、长期题库、练习题单、准备计划和面试复盘，并重写当前项目的
           job-hunt-panel.json。你的原始简历、工作经历、Repo、CODESHELL.md 和其他项目文件不会被删除。
         </p>
         <footer>
-          <button class="button button-quiet" type="button" data-close-dialog="reset-dialog">取消</button>
-          <button id="confirm-reset-job-hunt" class="button button-danger" type="button">确认清空</button>
+          <button class="button button-quiet" type="button" data-close-dialog="reset-dialog">
+            取消
+          </button>
+          <button id="confirm-reset-job-hunt" class="button button-danger" type="button">
+            确认清空
+          </button>
         </footer>
       </form>
     </dialog>
@@ -1657,12 +2738,294 @@
       </form>
     </dialog>
 
+    <dialog id="resume-qa-dialog" class="dialog resume-qa-dialog">
+      <form id="resume-qa-form" method="dialog" class="dialog-card dialog-card-small">
+        <header>
+          <div>
+            <span class="panel-kicker">PRIVATE RESUME EVIDENCE</span>
+            <h2 id="resume-qa-dialog-title">补充简历事实</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="resume-qa-dialog"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </header>
+        <input id="resume-qa-id" name="question_id" type="hidden" />
+        <section class="resume-qa-dialog-context">
+          <strong id="resume-qa-dialog-question"></strong>
+          <p id="resume-qa-dialog-related" hidden></p>
+          <small id="resume-qa-dialog-hints" hidden></small>
+        </section>
+        <label class="full-span">
+          你的实际回答
+          <textarea
+            id="resume-qa-answer"
+            name="answer"
+            rows="7"
+            minlength="5"
+            maxlength="3000"
+            placeholder="只写你确定的事实；不确定的数字、职责或结果可以明确标出来。"
+            required
+          ></textarea>
+        </label>
+        <label class="full-span">
+          可信状态
+          <select id="resume-qa-status" name="status">
+            <option value="needs_source">已回答，仍需补 Source</option>
+            <option value="answered">我确认属实，可供后续优化使用</option>
+          </select>
+        </label>
+        <label class="full-span">
+          Source（可选，每行一条）
+          <textarea
+            id="resume-qa-source-refs"
+            name="source_refs"
+            rows="3"
+            maxlength="4000"
+            placeholder="例如：commit:abc1234 · path，或 file:career-data/..."
+          ></textarea>
+          <small
+            >选择“我确认属实”时，面板会自动记录本次用户确认；有文件或 Commit 时仍建议补上。</small
+          >
+        </label>
+        <label class="full-span">
+          可用于简历的建议措辞（可选）
+          <textarea
+            id="resume-qa-suggested-change"
+            name="suggested_change"
+            rows="4"
+            maxlength="1000"
+            placeholder="这里只是内部建议，不会自动改写公开简历。"
+          ></textarea>
+        </label>
+        <p id="resume-qa-dialog-error" class="form-error" role="alert" hidden></p>
+        <footer>
+          <span>回答直接写入当前项目；不会发送到 Session，也不会自动进入公开简历或 PDF。</span>
+          <div>
+            <button class="button button-quiet" type="submit" name="after_save" value="close">
+              仅保存
+            </button>
+            <button class="button button-primary" type="submit" name="after_save" value="next">
+              保存并下一题
+            </button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="question-bank-dialog" class="dialog question-bank-dialog">
+      <form id="question-bank-form" method="dialog" class="dialog-card">
+        <header>
+          <div>
+            <span class="panel-kicker">QUESTION CURATION</span>
+            <h2 id="question-bank-dialog-title">整理面试题</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            data-close-dialog="question-bank-dialog"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </header>
+        <input id="question-bank-id" name="id" type="hidden" />
+        <div class="question-bank-editor-body">
+          <section id="question-bank-editor-readiness" class="question-bank-editor-readiness" data-state="pending">
+            <span aria-hidden="true">✓</span>
+            <div>
+              <strong id="question-bank-editor-readiness-title">正在检查题目信息</strong>
+              <p id="question-bank-editor-readiness-detail">补齐题干、分类、核心能力和 Source 后即可直接练习。</p>
+            </div>
+          </section>
+
+          <section class="question-bank-editor-section" aria-labelledby="question-bank-editor-core-title">
+            <div class="question-bank-editor-section-head">
+              <span>01</span>
+              <div>
+                <strong id="question-bank-editor-core-title">题目与练习状态</strong>
+                <small>决定面试官问什么、重点评估什么，以及是否进入训练队列。</small>
+              </div>
+            </div>
+            <label class="full-span question-bank-question-field">
+              问题
+              <textarea
+                id="question-bank-question"
+                name="question"
+                rows="3"
+                maxlength="1200"
+                placeholder="写成面试官会直接问出口的一道完整问题"
+                required
+              ></textarea>
+            </label>
+            <div class="question-bank-form-grid">
+              <label>
+                分类
+                <input
+                  id="question-bank-category"
+                  name="category"
+                  maxlength="80"
+                  placeholder="例如：项目深挖"
+                />
+              </label>
+              <label>
+                核心能力
+                <input
+                  id="question-bank-competency"
+                  name="competency"
+                  maxlength="120"
+                  placeholder="例如：状态建模与恢复"
+                />
+              </label>
+              <label>
+                题型
+                <select id="question-bank-type" name="type">
+                  <option value="behavioral">行为与协作</option>
+                  <option value="technical">技术基础</option>
+                  <option value="system_design">系统设计</option>
+                  <option value="project_deep_dive">项目深挖</option>
+                  <option value="resume_probe">简历追问</option>
+                  <option value="scenario">情景判断</option>
+                  <option value="role_knowledge">岗位与业务</option>
+                  <option value="other">其他</option>
+                </select>
+              </label>
+              <label>
+                难度
+                <select id="question-bank-difficulty" name="difficulty">
+                  <option value="基础">基础</option>
+                  <option value="进阶" selected>进阶</option>
+                  <option value="挑战">挑战</option>
+                </select>
+              </label>
+              <label>
+                优先级
+                <select id="question-bank-priority" name="priority">
+                  <option value="high">优先练习</option>
+                  <option value="medium" selected>正常</option>
+                  <option value="low">低优先级</option>
+                </select>
+              </label>
+              <label>
+                状态
+                <select id="question-bank-status" name="status">
+                  <option value="inbox">待整理</option>
+                  <option value="ready">可练习</option>
+                  <option value="mastered">已掌握</option>
+                  <option value="archived">已归档</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="question-bank-editor-section" aria-labelledby="question-bank-editor-answer-title">
+            <div class="question-bank-editor-section-head">
+              <span>02</span>
+              <div>
+                <strong id="question-bank-editor-answer-title">回答准备</strong>
+                <small>先整理回答骨架和追问，再把参考稿改成自己的真实表达。</small>
+              </div>
+            </div>
+            <label class="full-span">
+              回答要点（每行一条）
+              <textarea
+                id="question-bank-answer-points"
+                name="answer_points"
+                rows="4"
+                maxlength="4000"
+                placeholder="背景与约束&#10;我的职责和动作&#10;技术难点与取舍&#10;结果和复盘"
+              ></textarea>
+            </label>
+            <label class="full-span">
+              参考回答（只保留可核验事实）
+              <textarea
+                id="question-bank-recommended-answer"
+                name="recommended_answer"
+                rows="5"
+                maxlength="5000"
+                placeholder="用于练习前参考，不会替代你的真实回答"
+              ></textarea>
+            </label>
+            <label class="full-span">
+              可能追问（每行一条）
+              <textarea
+                id="question-bank-follow-ups"
+                name="follow_ups"
+                rows="3"
+                maxlength="8000"
+                placeholder="面试官可能继续追问什么？"
+              ></textarea>
+            </label>
+          </section>
+
+          <section class="question-bank-editor-section" aria-labelledby="question-bank-editor-source-title">
+            <div class="question-bank-editor-section-head">
+              <span>03</span>
+              <div>
+                <strong id="question-bank-editor-source-title">来源与个人笔记</strong>
+                <small>Source 用来约束事实边界；标签和笔记用于检索与下次复习。</small>
+              </div>
+            </div>
+            <div class="question-bank-form-grid">
+              <label>
+                标签（逗号分隔）
+                <input
+                  id="question-bank-tags"
+                  name="tags"
+                  maxlength="800"
+                  placeholder="React, 性能, 长会话"
+                />
+              </label>
+              <label class="question-bank-source-field">
+                Source（每行一条）
+                <textarea
+                  id="question-bank-source-refs"
+                  name="source_refs"
+                  rows="3"
+                  maxlength="8000"
+                  placeholder="例如：session:&lt;trace-id&gt; 或 commit:abc1234 · subject · path"
+                ></textarea>
+              </label>
+            </div>
+            <label class="full-span">
+              我的优化笔记
+              <textarea
+                id="question-bank-notes"
+                name="notes"
+                rows="3"
+                maxlength="3000"
+                placeholder="记录表达结构、需要补证据的地方或下次练习目标"
+              ></textarea>
+            </label>
+          </section>
+        </div>
+        <footer>
+          <span>“保存并返回题库”只更新题目；“保存并立即练习”还会把待整理题确认成可练习并打开单题作答。</span>
+          <div>
+            <button class="button button-quiet" type="button" data-close-dialog="question-bank-dialog">
+              取消
+            </button>
+            <button class="button button-quiet" type="submit" name="after_save" value="save">
+              保存并返回题库
+            </button>
+            <button class="button button-primary" type="submit" name="after_save" value="practice">
+              保存并立即练习
+            </button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
     <dialog id="interview-dialog" class="dialog">
-      <form id="interview-form" method="dialog" class="dialog-card dialog-card-small">
+      <form id="interview-form" method="dialog" class="dialog-card interview-generator-card">
         <header>
           <div>
             <span class="panel-kicker">INTERVIEW GENERATOR</span>
-            <h2>生成岗位定制面试题</h2>
+            <h2 id="interview-dialog-title">生成面试题单</h2>
           </div>
           <button
             class="icon-button"
@@ -1674,12 +3037,44 @@
           </button>
         </header>
         <p class="dialog-lead">
-          当前职位的 JD 会决定考察方向，工作经历与 Repo
-          会决定项目追问。材料里没有的事实不会被写进参考答案。
+          JD 决定考察信号，你的工作经历、Repo / Commit 和 Base Resume 决定推荐回答。
+          材料里没有的事实会明确标为待补，不会编造。
         </p>
+
+        <div class="interview-scope-picker" role="radiogroup" aria-label="面试题范围">
+          <label>
+            <input type="radio" name="scope" value="single" checked />
+            <span><strong>单岗位</strong><small>针对 1 个 JD 深挖</small></span>
+          </label>
+          <label>
+            <input type="radio" name="scope" value="aggregate" />
+            <span><strong>多岗位聚合</strong><small>提取 2–8 个 JD 共性</small></span>
+          </label>
+        </div>
+
+        <section id="interview-single-job-field" class="interview-job-field">
+          <label for="interview-single-job-select">选择目标 JD</label>
+          <select id="interview-single-job-select" name="job_id"></select>
+        </section>
+
+        <section id="interview-aggregate-job-field" class="interview-job-field" hidden>
+          <div class="interview-job-field-heading">
+            <strong>选择要聚合的 JD</strong>
+            <span id="interview-aggregate-selection">0 / 8</span>
+          </div>
+          <div id="interview-aggregate-job-picker" class="interview-aggregate-job-picker"></div>
+          <small>建议选相同岗位大类；题单会标出每个考点在多少个 JD 中出现。</small>
+        </section>
+
+        <aside class="interview-candidate-context">
+          <span class="panel-kicker">YOUR DATA SOURCES</span>
+          <strong id="interview-candidate-source-summary">正在检查个人资料</strong>
+          <p>每道题都会给出可引用 Source、推荐回答草稿、表达结构和可能追问。</p>
+        </aside>
+
         <div class="dialog-grid">
           <label>
-            题库类型
+            题单类型
             <select name="mode">
               <option value="balanced">综合面试</option>
               <option value="technical">技术深挖</option>
@@ -1722,9 +3117,12 @@
             ></textarea>
           </label>
         </div>
+        <p id="interview-generation-error" class="form-error" hidden></p>
         <footer>
-          <span>会先生成可用的基础题库，安装在 CodeShell 后由 Agent 进一步深挖。</span>
-          <button class="button button-primary" type="submit">生成题库</button>
+          <span>生成后可直接逐题练习；模拟面试时不会提前展示参考答案。</span>
+          <button id="submit-interview-generation" class="button button-primary" type="submit">
+            生成题单
+          </button>
         </footer>
       </form>
     </dialog>

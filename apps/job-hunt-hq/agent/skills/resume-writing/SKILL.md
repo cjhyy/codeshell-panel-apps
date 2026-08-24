@@ -14,8 +14,9 @@ material, and keep every public claim defensible in an interview.
 - Use `job-hunt-hq:job-hunt-workflow` for Panel context, Trace correlation,
   project reads, and structured writes. Use this Skill for editorial judgment.
 - Invoke `get_job_search_context` before drafting when the Job Hunt HQ tools are
-  available. Read the applicable Base Resume, candidate sources, and JD only
-  when the requested mode needs them.
+  available. Use `scope=candidate` for source evidence, `scope=resume` with the
+  exact `resume_id` for a full draft, and `scope=job` with the exact `job_id`
+  for a Variant. Read only the slices required by the selected mode.
 - Build or repair a direction-level Base Resume before deriving a JD Variant.
   Do not make a base resume generic; give it one broad category and one clear
   candidate thesis.
@@ -32,6 +33,17 @@ Choose exactly one primary mode:
 3. **Revision** — preserve the current layer and fix a stated weakness.
 4. **Audit** — diagnose focus, evidence, relevance, scanability, and credibility
    before proposing changes.
+
+The public application file is an export of one exact version, not a fifth
+writing mode. If that version changes after its latest export, treat the PDF as
+stale and regenerate it after evidence, ATS text order, and A4 checks. A saved
+draft may contain `needs_review` ledger entries, but an application Markdown or
+PDF may not: verify every public claim and its concrete Source explanation
+before publication. The exported document itself must contain a real name and
+an actionable email, phone number, portfolio, or professional profile in its
+header. Remove `待补充`, `TBD`, `TODO`, and similar placeholder copy from every
+public section; keeping complete information only in the private profile is not
+enough.
 
 Do not require a JD for Base, Revision, or Audit. Do not produce a Variant
 without a saved base and target job.
@@ -142,6 +154,35 @@ project bullet:
 If a claim cannot survive a five-minute interview deep dive, do not present it
 as a core strength.
 
+## Create private candidate memory QA
+
+Save a usable draft first from verified evidence. Do not block the draft by
+asking a long discovery questionnaire. Alongside every Base or Variant, create
+3–8 private `candidate_questions` that help the candidate remember facts which
+could materially improve the resume but are absent or unclear in current
+Sources.
+
+- These are candidate memory prompts, not `interview_questions` and not public
+  resume content.
+- Prioritize personal ownership, scope or scale, observable impact, decisions
+  and rejected alternatives, collaboration, and failure or recovery details.
+- Tie a question to an exact public claim when possible, explain why the answer
+  matters, and suggest likely Sources such as a project file, release record,
+  issue, PR, attributable Commit, report, or explicit user confirmation.
+- Target a substantive summary or achievement, not a bare skill keyword such
+  as “React” or “TypeScript.” Ask about the real decision or outcome in which a
+  technology was used, so the user can give a coherent and verifiable answer.
+- Do not ask a question whose answer is already clear in a verified Source.
+- Preserve answered questions and their Source references across revisions;
+  remove or replace only questions that are genuinely resolved or no longer
+  relevant.
+
+During a QA session, ask one question at a time. Save the candidate's actual
+answer with `save_resume_qa_answer`. Mark it `needs_source` when ownership,
+metrics, dates, or outcomes remain uncertain. Never edit the public resume from
+an answer automatically; apply it only in a separate revision after evidence
+verification.
+
 ## Run the focus gate
 
 Score the draft with the bundled rubric. Revise before saving when any blocker
@@ -163,9 +204,9 @@ improvement instead.
 ## Write back through the Panel
 
 When Job Hunt HQ is active, invoke `save_resume_draft` with the complete public
-Markdown, complete `claim_evidence`, unresolved `notes`, and the correct resume
-hierarchy fields. Preserve the Panel Trace ID on the write and finish the Trace
-through the workflow Skill.
+Markdown, complete `claim_evidence`, 3–8 private `candidate_questions`,
+unresolved `notes`, and the correct resume hierarchy fields. Preserve the Panel
+Trace ID on the write and finish the Trace through the workflow Skill.
 
 For an Audit without requested revision, explain the hiring thesis currently
 visible, the three strongest signals, the competing noise, unsupported claims,
