@@ -7,12 +7,13 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 
 ## Included apps
 
-| App           | Subdirectory         | Purpose                                                                                          |
-| ------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
-| Design Studio | `apps/design-studio` | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison |
-| Job Hunt HQ   | `apps/job-hunt-hq`   | Project/session-bound job discovery, company research, resume, and interview visualization          |
-| Quant Lab     | `apps/quant-lab`     | Local-first stock data research, strategy backtesting, and Markdown reports                      |
-| Starter       | `templates/starter`  | Minimal template for creating another Panel App                                                  |
+| App            | Subdirectory          | Purpose                                                                                            |
+| -------------- | --------------------- | -------------------------------------------------------------------------------------------------- |
+| Design Studio  | `apps/design-studio`  | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison |
+| Job Hunt HQ    | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization         |
+| Quant Lab      | `apps/quant-lab`      | Local-first stock data research, strategy backtesting, and Markdown reports                        |
+| Video Download | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                |
+| Starter        | `templates/starter`   | Minimal template for creating another Panel App                                                    |
 
 ## Install from GitHub
 
@@ -20,13 +21,14 @@ In CodeShell, open **Extensions → Panel Apps → From GitHub**, then enter:
 
 - Repository: `https://github.com/cjhyy/codeshell-panel-apps`
 - Branch or tag: `main`
-- App subdirectory: `apps/design-studio`, `apps/job-hunt-hq`, or `apps/quant-lab`
+- App subdirectory: `apps/design-studio`, `apps/job-hunt-hq`, `apps/quant-lab`, or `apps/video-download`
 
 You can also paste a complete tree URL and leave the other two fields empty:
 
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/design-studio`
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/job-hunt-hq`
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/quant-lab`
+- `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/video-download`
 
 CodeShell clones the source into a temporary directory, validates the package,
 shows its Host permissions, and installs an immutable snapshot. After new
@@ -60,6 +62,9 @@ apps/
     app/
     agent/skills/
   quant-lab/
+    .codeshell-panel/panel.json
+    app/
+  video-download/
     .codeshell-panel/panel.json
     app/
 templates/
