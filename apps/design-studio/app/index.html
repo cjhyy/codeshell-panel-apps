@@ -156,6 +156,19 @@
           >
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14M12 5v14M8 19h8" /></svg>
           </button>
+          <button
+            class="tool"
+            data-tool="comment"
+            type="button"
+            title="评论给 AI (C)"
+            aria-label="评论给 AI"
+            aria-pressed="false"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.5h14v10H9l-4 3v-13Z" />
+              <path d="M9 9h6M9 12h4" />
+            </svg>
+          </button>
           <span class="tool-separator"></span>
           <button
             class="tool"
@@ -224,6 +237,45 @@
             <rect id="grid" width="100%" height="100%" fill="url(#dot-grid)" />
             <g id="scene"></g>
           </svg>
+          <textarea
+            id="inline-text-editor"
+            class="inline-text-editor"
+            aria-label="直接编辑画布文字"
+            maxlength="4000"
+            spellcheck="true"
+            hidden
+          ></textarea>
+          <div id="element-comment" class="element-comment" role="dialog" hidden>
+            <header>
+              <span class="comment-spark" aria-hidden="true">✦</span>
+              <div>
+                <strong>评论给 AI</strong>
+                <small id="element-comment-target">当前图层</small>
+              </div>
+              <button
+                id="close-element-comment"
+                class="comment-close"
+                type="button"
+                aria-label="关闭评论"
+              >
+                ×
+              </button>
+            </header>
+            <textarea
+              id="element-comment-request"
+              rows="4"
+              maxlength="2000"
+              placeholder="例如：把这段标题改得更直接，并保持当前字号与对齐。"
+              aria-label="针对当前图层给 AI 的评论"
+            ></textarea>
+            <footer>
+              <span id="element-comment-context">将携带图层 ID、内容和布局上下文</span>
+              <button id="submit-element-comment" class="ai-button" type="button">
+                <span class="ai-spark">✦</span>
+                发到会话
+              </button>
+            </footer>
+          </div>
           <div class="canvas-meta">
             <button id="zoom-out" type="button" aria-label="缩小">−</button>
             <button id="zoom-value" type="button" title="适应画布">100%</button>
@@ -379,13 +431,27 @@
               <div class="section-heading">
                 <input id="prop-name" class="layer-name-input" aria-label="图层名称" />
                 <div class="inline-actions">
-                  <button id="toggle-lock" type="button" title="锁定">锁</button>
-                  <button id="toggle-visible" type="button" title="显示或隐藏">眼</button>
+                  <button
+                    id="comment-selection"
+                    class="comment-selection"
+                    type="button"
+                    title="评论此图层，让当前会话里的 AI 修改"
+                    aria-label="评论此图层给 AI"
+                  >
+                    ✦
+                  </button>
+                  <button id="toggle-lock" type="button" title="锁定图层" aria-label="锁定图层"></button>
+                  <button
+                    id="toggle-visible"
+                    type="button"
+                    title="隐藏图层"
+                    aria-label="隐藏图层"
+                  ></button>
                 </div>
               </div>
 
               <div class="property-section">
-                <div class="section-label">位置与尺寸</div>
+                <div class="section-label">位置和大小</div>
                 <div class="property-grid">
                   <label
                     ><span>X</span
@@ -405,7 +471,7 @@
                   /></label>
                 </div>
                 <label id="prop-parent-field" class="stacked-field">
-                  <span>所属容器</span>
+                  <span>父级</span>
                   <select id="prop-parent"></select>
                 </label>
                 <div class="align-row">
@@ -423,10 +489,10 @@
               </div>
 
               <div id="text-section" class="property-section" hidden>
-                <div class="section-label">文字</div>
+                <div class="section-label">文本</div>
                 <textarea id="prop-text" rows="3" aria-label="文字内容"></textarea>
                 <label class="stacked-field">
-                  <span>字体族</span>
+                  <span>字体</span>
                   <input
                     id="prop-font-family"
                     type="text"
@@ -453,7 +519,7 @@
                     </select>
                   </label>
                   <label>
-                    <span>字形</span>
+                    <span>样式</span>
                     <select id="prop-font-style">
                       <option value="normal">常规</option>
                       <option value="italic">斜体</option>
@@ -490,156 +556,234 @@
                 <div id="container-section-label" class="section-label">画板</div>
                 <label id="clip-content-field" class="checkbox-field">
                   <input id="prop-clip-content" type="checkbox" />
-                  <span id="clip-content-label">裁剪超出画板的内容</span>
+                  <span id="clip-content-label">裁剪内容</span>
                 </label>
                 <button id="release-frame" class="wide-action" type="button">
-                  <span id="release-container-label">解除画板，保留内容</span>
+                  <span id="release-container-label">移出画板，保留内容</span>
                   <kbd>⇧⌘G</kbd>
                 </button>
               </div>
 
               <div id="layout-section" class="property-section" hidden>
-                <div class="section-label">自动布局</div>
+                <div class="section-label-row">
+                  <div>
+                    <div class="section-label">自动布局</div>
+                    <p id="layout-context-help" class="property-help">
+                      先选排列方向，再用九宫格决定子项靠哪里。
+                    </p>
+                  </div>
+                  <span id="layout-status-chip" class="property-chip">自由</span>
+                </div>
                 <div id="container-layout-controls" class="layout-controls">
-                  <label class="stacked-field">
-                    <span>方向</span>
-                    <select id="prop-layout">
+                  <div class="control-group">
+                    <span class="control-group-label">排列方式</span>
+                    <div
+                      class="layout-direction-picker"
+                      role="group"
+                      aria-label="子项排列方式"
+                    >
+                      <button data-layout-direction="none" type="button">
+                        <span class="direction-icon">⌖</span><span>自由</span>
+                      </button>
+                      <button data-layout-direction="horizontal" type="button">
+                        <span class="direction-icon">→</span><span>水平</span>
+                      </button>
+                      <button data-layout-direction="vertical" type="button">
+                        <span class="direction-icon">↓</span><span>垂直</span>
+                      </button>
+                      <button data-layout-direction="grid" type="button">
+                        <span class="direction-icon">▦</span><span>网格</span>
+                      </button>
+                    </div>
+                    <select id="prop-layout" class="layout-value-select" aria-label="排列方式">
                       <option value="none">自由布局</option>
                       <option value="horizontal">水平排列</option>
                       <option value="vertical">垂直排列</option>
                       <option value="grid">网格</option>
                     </select>
-                  </label>
-                  <label id="layout-reverse-field" class="checkbox-field">
-                    <input id="prop-layout-reverse" type="checkbox" />
-                    <span>反向排列子项</span>
-                  </label>
-                  <div class="property-grid layout-sizing-grid">
-                    <label
-                      ><span>换行</span
-                      ><select id="prop-layout-wrap">
-                        <option value="none">不换行</option>
-                        <option value="wrap">自动换行</option>
-                        <option value="wrap-reverse">反向换行</option>
-                      </select></label
-                    >
-                    <label
-                      ><span>网格列数</span
-                      ><input
-                        id="prop-grid-columns"
-                        type="number"
-                        min="1"
-                        max="24"
-                      /></label
-                    >
                   </div>
-                  <div class="property-grid">
-                    <label
-                      ><span>统一间距</span
-                      ><input id="prop-layout-gap" type="number" min="0" max="2000"
-                    /></label>
-                    <label
-                      ><span>内边距</span
-                      ><input id="prop-layout-padding" type="number" min="0" max="2000"
-                    /></label>
+                  <div id="layout-detail-controls" class="layout-detail-controls">
+                    <div class="control-group">
+                      <span class="control-group-label">间距</span>
+                      <div class="property-grid">
+                        <label
+                          ><span>子项</span
+                          ><input id="prop-layout-gap" type="number" min="0" max="2000"
+                        /></label>
+                        <label
+                          ><span>内边距</span
+                          ><input id="prop-layout-padding" type="number" min="0" max="2000"
+                        /></label>
+                      </div>
+                    </div>
+                    <div id="layout-alignment-group" class="control-group">
+                      <span class="control-group-label">子项对齐</span>
+                      <div class="alignment-control">
+                        <div
+                          class="alignment-picker"
+                          role="group"
+                          aria-label="子项在容器中的对齐位置"
+                        >
+                          <button data-layout-align="start:start" type="button" aria-label="左上">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="center:start" type="button" aria-label="上中">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="end:start" type="button" aria-label="右上">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="start:center" type="button" aria-label="左中">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="center:center" type="button" aria-label="居中">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="end:center" type="button" aria-label="右中">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="start:end" type="button" aria-label="左下">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="center:end" type="button" aria-label="下中">
+                            <span></span>
+                          </button>
+                          <button data-layout-align="end:end" type="button" aria-label="右下">
+                            <span></span>
+                          </button>
+                        </div>
+                        <button
+                          id="layout-space-between"
+                          class="layout-distribute-button"
+                          type="button"
+                          title="沿排列方向把首尾子项贴边，其余等距分布"
+                        >
+                          <span aria-hidden="true">↔</span>
+                          两端分布
+                        </button>
+                      </div>
+                      <p class="property-help">九宫格同时设置水平和垂直位置。</p>
+                    </div>
+                    <details class="layout-advanced">
+                      <summary>高级布局</summary>
+                      <div class="layout-advanced-body">
+                        <label id="layout-reverse-field" class="checkbox-field">
+                          <input id="prop-layout-reverse" type="checkbox" />
+                          <span>反向排列</span>
+                        </label>
+                        <div class="property-grid layout-sizing-grid">
+                          <label
+                            ><span>换行</span
+                            ><select id="prop-layout-wrap">
+                              <option value="none">不换行</option>
+                              <option value="wrap">自动换行</option>
+                              <option value="wrap-reverse">反向换行</option>
+                            </select></label
+                          >
+                          <label
+                            ><span>网格列数</span
+                            ><input id="prop-grid-columns" type="number" min="1" max="24"
+                          /></label>
+                        </div>
+                        <div class="property-grid">
+                          <label
+                            ><span>行距</span
+                            ><input
+                              id="prop-layout-row-gap"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同子项"
+                            /></label
+                          >
+                          <label
+                            ><span>列距</span
+                            ><input
+                              id="prop-layout-column-gap"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同子项"
+                            /></label
+                          >
+                        </div>
+                        <div class="property-grid" aria-label="独立内边距">
+                          <label
+                            ><span>上</span
+                            ><input
+                              id="prop-layout-padding-top"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同容器"
+                          /></label>
+                          <label
+                            ><span>右</span
+                            ><input
+                              id="prop-layout-padding-right"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同容器"
+                          /></label>
+                          <label
+                            ><span>下</span
+                            ><input
+                              id="prop-layout-padding-bottom"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同容器"
+                          /></label>
+                          <label
+                            ><span>左</span
+                            ><input
+                              id="prop-layout-padding-left"
+                              type="number"
+                              min="0"
+                              max="2000"
+                              placeholder="同容器"
+                          /></label>
+                        </div>
+                        <div class="property-grid">
+                          <label>
+                            <span>跨轴</span>
+                            <select id="prop-align-items">
+                              <option value="start">起点</option>
+                              <option value="center">居中</option>
+                              <option value="end">终点</option>
+                              <option value="stretch">拉伸</option>
+                              <option value="baseline">文字基线</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span>主轴</span>
+                            <select id="prop-justify-content">
+                              <option value="start">起点</option>
+                              <option value="center">居中</option>
+                              <option value="end">终点</option>
+                              <option value="space-between">两端分布</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label class="stacked-field">
+                          <span>多行与网格对齐</span>
+                          <select id="prop-align-content">
+                            <option value="start">起点</option>
+                            <option value="center">居中</option>
+                            <option value="end">终点</option>
+                            <option value="space-between">两端分布</option>
+                            <option value="stretch">拉伸</option>
+                          </select>
+                        </label>
+                      </div>
+                    </details>
                   </div>
-                  <div class="property-grid">
-                    <label
-                      ><span>行间距</span
-                      ><input
-                        id="prop-layout-row-gap"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                      /></label
-                    >
-                    <label
-                      ><span>列间距</span
-                      ><input
-                        id="prop-layout-column-gap"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                      /></label
-                    >
-                  </div>
-                  <div class="property-grid" aria-label="独立内边距">
-                    <label
-                      ><span>上</span
-                      ><input
-                        id="prop-layout-padding-top"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                        title="留空时使用统一内边距"
-                    /></label>
-                    <label
-                      ><span>右</span
-                      ><input
-                        id="prop-layout-padding-right"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                        title="留空时使用统一内边距"
-                    /></label>
-                    <label
-                      ><span>下</span
-                      ><input
-                        id="prop-layout-padding-bottom"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                        title="留空时使用统一内边距"
-                    /></label>
-                    <label
-                      ><span>左</span
-                      ><input
-                        id="prop-layout-padding-left"
-                        type="number"
-                        min="0"
-                        max="2000"
-                        placeholder="统一"
-                        title="留空时使用统一内边距"
-                    /></label>
-                  </div>
-                  <div class="property-grid">
-                    <label>
-                      <span>交叉轴</span>
-                      <select id="prop-align-items">
-                        <option value="start">起点</option>
-                        <option value="center">居中</option>
-                        <option value="end">终点</option>
-                        <option value="stretch">拉伸</option>
-                        <option value="baseline">文字基线</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>主轴</span>
-                      <select id="prop-justify-content">
-                        <option value="start">起点</option>
-                        <option value="center">居中</option>
-                        <option value="end">终点</option>
-                        <option value="space-between">两端对齐</option>
-                      </select>
-                    </label>
-                  </div>
-                  <label class="stacked-field">
-                    <span>多行 / 网格对齐</span>
-                    <select id="prop-align-content">
-                      <option value="start">起点</option>
-                      <option value="center">居中</option>
-                      <option value="end">终点</option>
-                      <option value="space-between">两端对齐</option>
-                      <option value="stretch">拉伸</option>
-                    </select>
-                  </label>
                 </div>
                 <div id="child-layout-controls" class="layout-controls" hidden>
+                  <p class="property-help">
+                    当前图层位于自动布局容器中。这里决定它如何占用父容器空间。
+                  </p>
                   <label class="stacked-field">
                     <span>定位</span>
                     <select id="prop-layout-positioning">
@@ -649,7 +793,7 @@
                   </label>
                   <div class="property-grid layout-sizing-grid">
                     <label>
-                      <span>水平尺寸</span>
+                      <span>宽度</span>
                       <select id="prop-layout-sizing-horizontal">
                         <option value="fixed">固定</option>
                         <option value="hug">适应内容</option>
@@ -657,7 +801,7 @@
                       </select>
                     </label>
                     <label>
-                      <span>垂直尺寸</span>
+                      <span>高度</span>
                       <select id="prop-layout-sizing-vertical">
                         <option value="fixed">固定</option>
                         <option value="hug">适应内容</option>
@@ -772,7 +916,7 @@
                 <p id="paintless-layer-hint" class="component-status" hidden></p>
                 <div class="property-grid">
                   <label
-                    ><span>透明</span><input id="prop-opacity" type="number" min="0" max="100"
+                    ><span>透明度</span><input id="prop-opacity" type="number" min="0" max="100"
                   /></label>
                   <label
                     ><span>旋转</span><input id="prop-rotation" type="number" min="-360" max="360"
@@ -826,13 +970,13 @@
               </div>
 
               <div class="property-section">
-                <div class="section-label">开发备注</div>
+                <div class="section-label">开发说明</div>
                 <textarea
                   id="prop-notes"
                   rows="3"
                   maxlength="2000"
                   placeholder="交互、响应式、无障碍或实现说明…"
-                  aria-label="图层开发备注"
+                  aria-label="图层开发说明"
                 ></textarea>
               </div>
             </div>
@@ -1005,6 +1149,14 @@
         <p class="dialog-description">
           当前设计会先保存，再把文件路径和你的要求交给当前 CodeShell 会话。
         </p>
+        <div id="ai-target-context" class="ai-target-context" hidden>
+          <span class="comment-spark" aria-hidden="true">✦</span>
+          <div>
+            <strong id="ai-target-title">已关联当前图层</strong>
+            <small id="ai-target-details"></small>
+          </div>
+          <button id="clear-ai-target" type="button">移除</button>
+        </div>
         <textarea
           id="ai-request"
           rows="6"
@@ -1092,7 +1244,8 @@
               <span>矩形 / 椭圆</span><span><kbd>R</kbd> <kbd>O</kbd></span>
             </div>
             <div>
-              <span>文字 / 抓手</span><span><kbd>T</kbd> <kbd>H</kbd></span>
+              <span>文字 / 评论 / 抓手</span
+              ><span><kbd>T</kbd> <kbd>C</kbd> <kbd>H</kbd></span>
             </div>
             <div><span>临时抓手</span><kbd>Space</kbd></div>
           </section>
@@ -1125,8 +1278,8 @@
         </div>
         <footer>
           <p>
-            双击文字可直接跳到文字属性；Shift 点击或框选可多选。图层列表中用方向键移动，按 V
-            切换显示。
+            双击文字可在画布直接编辑，⌘Enter 完成、Esc 取消；Shift 点击或框选可多选。图层列表中用方向键移动，按
+            V 切换显示。
           </p>
           <button class="button" value="cancel" type="submit">完成</button>
         </footer>

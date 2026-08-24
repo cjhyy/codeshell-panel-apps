@@ -994,7 +994,7 @@ async function submitAgentRequest() {
       "",
       `我的要求：${request}`,
     ].join("\n");
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", { prompt, displayText: request });
     if (operationWorkspaceEpoch !== workspaceEpoch) return;
     elements.agentDialog.close();
     notify("已提交给当前 Agent");

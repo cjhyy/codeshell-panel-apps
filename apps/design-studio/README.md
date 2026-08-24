@@ -1,6 +1,6 @@
 # Design Studio Panel App
 
-Design Studio 0.18 is an Agent-native CodeShell Desktop Panel App. One reviewed
+Design Studio 0.19 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: thirteen declared design/delivery tools plus a repository-design Skill.
 
@@ -10,6 +10,16 @@ surface: thirteen declared design/delivery tools plus a repository-design Skill.
   distribution, snapping, rotation, zoom, pan, undo, and redo.
 - A Figma-like three-column workspace: persistent pages and layers on the left, canvas in the
   center, and **设计 / 开发 / 文件** inspector tabs on the right.
+- Direct canvas text editing on creation or double-click, with Escape rollback and one undoable
+  history entry when the edit is committed.
+- Consistent in-app select menus instead of browser-native dropdown popups, including keyboard
+  navigation and live option refresh for pages, parents, typography, and layout controls.
+- A plain-language Auto Layout inspector with direction presets, a nine-point alignment picker,
+  two-edge distribution, concise live guidance, and advanced Wrap/Grid/padding controls kept one
+  disclosure away.
+- Node-anchored AI comments from either the comment tool or the selected-layer action. The current
+  page, stable node ID, breadcrumb, text, geometry, sizing, and layout context are sent to the
+  current Agent so it can edit the intended subtree instead of guessing by layer name.
 - A PRD delivery flow that reads workspace Markdown/MDX/text into goals, users, stable requirement
   IDs, screens, acceptance criteria, and constraints before handing the structured brief to the
   current Agent.

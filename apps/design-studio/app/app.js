@@ -103,6 +103,7 @@ const TOOL_SHORTCUTS = {
   r: "rectangle",
   o: "ellipse",
   t: "text",
+  c: "comment",
   h: "hand",
 };
 const DEFAULT_PATH = DEFAULT_DESIGN_PATH;
@@ -227,6 +228,23 @@ const elements = {
   toggleLock: document.querySelector("#toggle-lock"),
   toggleVisible: document.querySelector("#toggle-visible"),
   toast: document.querySelector("#toast"),
+  inlineTextEditor: document.querySelector("#inline-text-editor"),
+  elementComment: document.querySelector("#element-comment"),
+  elementCommentTarget: document.querySelector("#element-comment-target"),
+  elementCommentRequest: document.querySelector("#element-comment-request"),
+  elementCommentContext: document.querySelector("#element-comment-context"),
+  closeElementComment: document.querySelector("#close-element-comment"),
+  submitElementComment: document.querySelector("#submit-element-comment"),
+  commentSelection: document.querySelector("#comment-selection"),
+  layoutContextHelp: document.querySelector("#layout-context-help"),
+  layoutStatusChip: document.querySelector("#layout-status-chip"),
+  layoutDetailControls: document.querySelector("#layout-detail-controls"),
+  layoutAlignmentGroup: document.querySelector("#layout-alignment-group"),
+  layoutSpaceBetween: document.querySelector("#layout-space-between"),
+  aiTargetContext: document.querySelector("#ai-target-context"),
+  aiTargetTitle: document.querySelector("#ai-target-title"),
+  aiTargetDetails: document.querySelector("#ai-target-details"),
+  clearAiTarget: document.querySelector("#clear-ai-target"),
 };
 
 const propertyInputs = {
@@ -301,6 +319,9 @@ let design = createBlankDocument();
 let selectedId = null;
 let selectedIds = new Set();
 let activeTool = "select";
+let inlineTextEdit = null;
+let commentTargetId = null;
+let agentTargetIds = new Set();
 let zoom = 0.7;
 const pan = { x: 60, y: 50 };
 let interaction = null;
@@ -354,6 +375,8 @@ let workspaceInfo = null;
 const collapsedLayerIds = new Set();
 const resourceDataUrls = new Map();
 const loadedFontResourceIds = new Set();
+const enhancedSelects = new Map();
+let openSelectState = null;
 
 function scopedStorageKey(base, workspaceRoot = context.cwd ?? "preview") {
   let primary = 2_166_136_261;
@@ -1192,6 +1215,89 @@ function svgElement(name, attributes = {}) {
   return element;
 }
 
+function createUiIcon(name, className = "") {
+  const icon = svgElement("svg", {
+    viewBox: "0 0 16 16",
+    fill: "none",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  icon.classList.add("ui-icon");
+  if (className) icon.classList.add(className);
+  const stroke = (tag, attributes) => {
+    const part = svgElement(tag, {
+      stroke: "currentColor",
+      "stroke-width": 1.35,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      ...attributes,
+    });
+    icon.append(part);
+    return part;
+  };
+
+  if (name === "chevron-down") {
+    stroke("path", { d: "m4.25 6.25 3.75 3.5 3.75-3.5" });
+  } else if (name === "chevron-right") {
+    stroke("path", { d: "m6.25 4.25 3.5 3.75-3.5 3.75" });
+  } else if (name === "check") {
+    stroke("path", { d: "m3.5 8.25 2.75 2.75 6.25-6.25" });
+  } else if (name === "eye" || name === "eye-off") {
+    stroke("path", { d: "M1.75 8s2.1-3.5 6.25-3.5S14.25 8 14.25 8 12.15 11.5 8 11.5 1.75 8 1.75 8Z" });
+    stroke("circle", { cx: 8, cy: 8, r: 1.6 });
+    if (name === "eye-off") stroke("path", { d: "m3 3 10 10" });
+  } else if (name === "lock" || name === "unlock") {
+    stroke("rect", { x: 3.75, y: 7, width: 8.5, height: 6.25, rx: 1.25 });
+    stroke("path", {
+      d:
+        name === "lock"
+          ? "M5.25 7V5.5a2.75 2.75 0 0 1 5.5 0V7"
+          : "M5.25 7V5.5a2.75 2.75 0 0 1 5.2-1.25",
+    });
+  } else if (name === "text") {
+    stroke("path", { d: "M3 4V2.75h10V4M8 2.75v10.5M5.75 13.25h4.5" });
+  } else if (name === "rectangle") {
+    stroke("rect", { x: 2.75, y: 3.25, width: 10.5, height: 9.5, rx: 0.75 });
+  } else if (name === "ellipse") {
+    stroke("circle", { cx: 8, cy: 8, r: 5.25 });
+  } else if (name === "image") {
+    stroke("rect", { x: 2.5, y: 3, width: 11, height: 10, rx: 1 });
+    stroke("circle", { cx: 5.5, cy: 6.25, r: 1 });
+    stroke("path", { d: "m3.75 11 2.75-2.75 1.75 1.75 1.75-1.5 2.25 2.5" });
+  } else if (name === "group") {
+    stroke("rect", { x: 2.75, y: 2.75, width: 8.5, height: 8.5, rx: 0.5 });
+    stroke("path", { d: "M5 11.25v2h8.25V5h-2" });
+  } else if (name === "component" || name === "instance") {
+    stroke("path", { d: "M8 2.25 13.75 8 8 13.75 2.25 8 8 2.25Z" });
+    if (name === "instance") {
+      const center = svgElement("path", {
+        d: "M8 5.25 10.75 8 8 10.75 5.25 8 8 5.25Z",
+        fill: "currentColor",
+      });
+      icon.append(center);
+    }
+  } else if (name === "align-left") {
+    stroke("path", { d: "M3 2.75v10.5M5.5 4.5h7M5.5 8h4.5M5.5 11.5h6" });
+  } else if (name === "align-center") {
+    stroke("path", { d: "M8 2.75v10.5M3.5 4.5h9M5 8h6M4 11.5h8" });
+  } else if (name === "align-right") {
+    stroke("path", { d: "M13 2.75v10.5M3.5 4.5h7M6 8h4.5M4.5 11.5h6" });
+  } else if (name === "align-top") {
+    stroke("path", { d: "M2.75 3h10.5M4.5 5.5v7M8 5.5V10M11.5 5.5v6" });
+  } else if (name === "align-middle") {
+    stroke("path", { d: "M2.75 8h10.5M4.5 3.5v9M8 5v6M11.5 4v8" });
+  } else if (name === "align-bottom") {
+    stroke("path", { d: "M2.75 13h10.5M4.5 3.5v7M8 6v4.5M11.5 4.5v6" });
+  } else if (name === "layer-down") {
+    stroke("path", { d: "M8 2.75v9.5M4.75 9 8 12.25 11.25 9" });
+  } else if (name === "layer-up") {
+    stroke("path", { d: "M8 13.25v-9.5M4.75 7 8 3.75 11.25 7" });
+  } else {
+    stroke("path", { d: "M5 2.75H2.75V5M11 2.75h2.25V5M5 13.25H2.75V11M11 13.25h2.25V11" });
+  }
+  return icon;
+}
+
 function shouldRenderCanvasLabel(node, options = {}) {
   return (
     options.suppressLabel !== true && zoom >= 0.65 && (!node.parentId || selectedIds.has(node.id))
@@ -1485,6 +1591,8 @@ function renderNode(node, clipIds, shadowIds, options = {}) {
       span.textContent = line || " ";
       visual.append(span);
     });
+    visual.dataset.textNodeId = node.id;
+    if (inlineTextEdit?.nodeId === node.id) visual.style.visibility = "hidden";
   } else if (node.type === "image") {
     const source = resourceDataUrls.get(node.imageRef);
     visual = source
@@ -1669,6 +1777,340 @@ function renderSelectionSize(nodes) {
   elements.selectionSize.hidden = false;
 }
 
+function setSelectValue(select, value) {
+  if (!select || select.value === value) return;
+  select.value = value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function closeCustomSelect({ focus = false } = {}) {
+  if (!openSelectState) return;
+  const { trigger, menu } = openSelectState;
+  trigger.setAttribute("aria-expanded", "false");
+  menu.remove();
+  openSelectState = null;
+  if (focus) trigger.focus();
+}
+
+function rebuildCustomSelectMenu(state) {
+  const { select, menu } = state;
+  menu.replaceChildren();
+  for (const option of select.options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "studio-select-option";
+    button.dataset.value = option.value;
+    button.dataset.active = String(option.value === select.value);
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(option.value === select.value));
+    button.disabled = option.disabled;
+    const check = document.createElement("span");
+    check.className = "studio-select-check";
+    if (option.value === select.value) check.append(createUiIcon("check"));
+    const label = document.createElement("span");
+    label.textContent = option.textContent;
+    button.append(check, label);
+    button.addEventListener("pointerdown", (event) => event.stopPropagation());
+    button.addEventListener("click", () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      closeCustomSelect({ focus: true });
+    });
+    menu.append(button);
+  }
+}
+
+function positionCustomSelectMenu(state) {
+  const { trigger, menu } = state;
+  const rect = trigger.getBoundingClientRect();
+  const gap = 4;
+  const width = rect.width;
+  menu.style.width = `${width}px`;
+  menu.style.left = `${clamp(
+    rect.left,
+    8,
+    Math.max(8, window.innerWidth - width - 8),
+  )}px`;
+  const menuHeight = Math.min(menu.scrollHeight || 280, 280);
+  const roomBelow = window.innerHeight - rect.bottom - 8;
+  const top =
+    roomBelow >= Math.min(menuHeight, 160)
+      ? rect.bottom + gap
+      : Math.max(8, rect.top - menuHeight - gap);
+  menu.style.top = `${top}px`;
+}
+
+function openCustomSelect(select) {
+  const state = enhancedSelects.get(select);
+  if (!state || select.disabled) return;
+  if (openSelectState?.select === select) {
+    closeCustomSelect({ focus: true });
+    return;
+  }
+  closeCustomSelect();
+  rebuildCustomSelectMenu(state);
+  const portal = state.trigger.closest("dialog[open]") ?? document.body;
+  portal.append(state.menu);
+  state.trigger.setAttribute("aria-expanded", "true");
+  openSelectState = state;
+  positionCustomSelectMenu(state);
+  state.menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+}
+
+function moveCustomSelectChoice(select, delta) {
+  const options = [...select.options].filter((option) => !option.disabled);
+  if (options.length === 0) return;
+  const current = Math.max(
+    0,
+    options.findIndex((option) => option.value === select.value),
+  );
+  const next = options[clamp(current + delta, 0, options.length - 1)];
+  select.value = next.value;
+  select.dispatchEvent(new Event("input", { bubbles: true }));
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function enhanceSelect(select) {
+  if (
+    enhancedSelects.has(select) ||
+    select.classList.contains("layout-value-select")
+  ) {
+    return;
+  }
+  const wrapper = document.createElement("div");
+  wrapper.className = "studio-select";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "studio-select-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  const value = document.createElement("span");
+  value.className = "studio-select-value";
+  const chevron = document.createElement("span");
+  chevron.className = "studio-select-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.append(createUiIcon("chevron-down"));
+  trigger.append(value, chevron);
+  select.before(wrapper);
+  wrapper.append(select, trigger);
+  select.dataset.studioSelectEnhanced = "true";
+  select.setAttribute("aria-hidden", "true");
+  select.tabIndex = -1;
+  const menu = document.createElement("div");
+  menu.className = "studio-select-menu";
+  menu.setAttribute("role", "listbox");
+  const state = { select, wrapper, trigger, value, menu };
+  enhancedSelects.set(select, state);
+  trigger.addEventListener("pointerdown", (event) => event.stopPropagation());
+  trigger.addEventListener("click", () => openCustomSelect(select));
+  trigger.addEventListener("keydown", (event) => {
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const options = [...select.options].filter((option) => !option.disabled);
+      if (options.length === 0) return;
+      if (event.key === "Home") moveCustomSelectChoice(select, -options.length);
+      else if (event.key === "End") moveCustomSelectChoice(select, options.length);
+      else moveCustomSelectChoice(select, event.key === "ArrowDown" ? 1 : -1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openCustomSelect(select);
+      return;
+    }
+    if (event.key === "Escape") closeCustomSelect({ focus: true });
+  });
+}
+
+function initializeCustomSelects() {
+  for (const select of document.querySelectorAll("select")) enhanceSelect(select);
+  document.addEventListener("pointerdown", (event) => {
+    if (
+      openSelectState &&
+      !openSelectState.menu.contains(event.target) &&
+      !openSelectState.trigger.contains(event.target)
+    ) {
+      closeCustomSelect();
+    }
+  });
+  window.addEventListener("scroll", () => closeCustomSelect(), true);
+}
+
+function initializeInspectorActionIcons() {
+  const alignmentIcons = {
+    left: "align-left",
+    center: "align-center",
+    right: "align-right",
+    top: "align-top",
+    middle: "align-middle",
+    bottom: "align-bottom",
+  };
+  for (const button of document.querySelectorAll(".align-row button[data-align]")) {
+    const iconName = alignmentIcons[button.dataset.align];
+    if (!iconName) continue;
+    button.setAttribute("aria-label", button.title);
+    button.replaceChildren(createUiIcon(iconName));
+  }
+  for (const button of document.querySelectorAll(".align-row button[data-order]")) {
+    button.setAttribute("aria-label", button.title);
+    button.replaceChildren(
+      createUiIcon(button.dataset.order === "down" ? "layer-down" : "layer-up"),
+    );
+  }
+}
+
+function refreshCustomSelects() {
+  for (const select of document.querySelectorAll("select")) enhanceSelect(select);
+  for (const [select, state] of enhancedSelects) {
+    const selectedOption = select.selectedOptions[0];
+    state.value.textContent = selectedOption?.textContent ?? "请选择";
+    state.trigger.disabled = select.disabled;
+    state.trigger.setAttribute(
+      "aria-label",
+      select.getAttribute("aria-label") || selectedOption?.textContent || "选择",
+    );
+    state.wrapper.hidden =
+      select.hidden || state.wrapper.parentElement?.closest("[hidden]") !== null;
+    if (openSelectState?.select === select) rebuildCustomSelectMenu(state);
+  }
+  if (openSelectState) positionCustomSelectMenu(openSelectState);
+}
+
+function updateLayoutControlState() {
+  const node = selectedNode();
+  const isContainer = Boolean(node && isContainerNode(node));
+  const layout = isContainer ? node.layout ?? "none" : "none";
+  const directionLabels = {
+    none: "自由",
+    horizontal: "水平",
+    vertical: "垂直",
+    grid: "网格",
+  };
+  elements.layoutStatusChip.textContent = directionLabels[layout] ?? "自由";
+  for (const button of document.querySelectorAll("[data-layout-direction]")) {
+    const active = isContainer && button.dataset.layoutDirection === layout;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = !isContainer || isEffectivelyLocked(node);
+  }
+  const childCount = isContainer
+    ? design.nodes.filter((candidate) => candidate.parentId === node.id).length
+    : 0;
+  elements.layoutContextHelp.textContent = isContainer
+    ? layout === "none"
+      ? `${childCount} 个子项可自由摆放；选择方向后会自动排列。`
+      : `${childCount} 个子项由${directionLabels[layout]}布局管理；九宫格设置整体位置。`
+    : "宽高与位置由父级自动布局管理。";
+  elements.layoutDetailControls.hidden = !isContainer || layout === "none";
+  const flexLayout = ["horizontal", "vertical"].includes(layout);
+  elements.layoutAlignmentGroup.hidden = !flexLayout;
+  elements.layoutSpaceBetween.disabled = !flexLayout || isEffectivelyLocked(node);
+  const horizontal =
+    layout === "horizontal" ? node?.justifyContent : node?.alignItems;
+  const vertical =
+    layout === "horizontal" ? node?.alignItems : node?.justifyContent;
+  for (const button of document.querySelectorAll("[data-layout-align]")) {
+    const [targetHorizontal, targetVertical] = button.dataset.layoutAlign.split(":");
+    const active =
+      flexLayout &&
+      node?.justifyContent !== "space-between" &&
+      horizontal === targetHorizontal &&
+      vertical === targetVertical;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = !flexLayout || isEffectivelyLocked(node);
+  }
+  const distributed = flexLayout && node?.justifyContent === "space-between";
+  elements.layoutSpaceBetween.classList.toggle("active", distributed);
+  elements.layoutSpaceBetween.setAttribute("aria-pressed", String(distributed));
+}
+
+function updateInlineTextEditorPosition() {
+  if (!inlineTextEdit) {
+    elements.inlineTextEditor.hidden = true;
+    return;
+  }
+  const node = nodeById(inlineTextEdit.nodeId);
+  if (!node || node.type !== "text") {
+    inlineTextEdit = null;
+    elements.inlineTextEditor.hidden = true;
+    return;
+  }
+  const stageRect = elements.stageWrap.getBoundingClientRect();
+  const textVisual = [...elements.stage.querySelectorAll("[data-text-node-id]")].find(
+    (candidate) => candidate.dataset.textNodeId === node.id,
+  );
+  const textRect = textVisual?.getBoundingClientRect();
+  const left = textRect ? textRect.left - stageRect.left : pan.x + node.x * zoom;
+  const top = textRect ? textRect.top - stageRect.top : pan.y + node.y * zoom;
+  const parentRotation = nodeTransform(node)
+    ?.match(/rotate\(([-\d.]+)/)?.[1];
+  Object.assign(elements.inlineTextEditor.style, {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${Math.max(28, node.width * zoom)}px`,
+    height: `${Math.max(24, node.height * zoom)}px`,
+    color: node.fill,
+    fontFamily: node.fontFamily ?? "Inter, ui-sans-serif, system-ui, sans-serif",
+    fontSize: `${Math.max(8, node.fontSize * zoom)}px`,
+    fontStyle: node.fontStyle ?? "normal",
+    fontWeight: String(node.fontWeight),
+    letterSpacing: `${(node.letterSpacing ?? 0) * zoom}px`,
+    lineHeight: String(node.lineHeight ?? 1.2),
+    textAlign: node.textAlign ?? "left",
+    opacity: String(node.opacity ?? 1),
+    transform: parentRotation ? `rotate(${parentRotation}deg)` : "none",
+  });
+  elements.inlineTextEditor.hidden = false;
+}
+
+function finishInlineTextEdit({ cancel = false, focusStage = false } = {}) {
+  if (!inlineTextEdit) return;
+  const edit = inlineTextEdit;
+  const node = nodeById(edit.nodeId);
+  inlineTextEdit = null;
+  elements.inlineTextEditor.hidden = true;
+  if (cancel && node) {
+    node.text = edit.originalText;
+    if (edit.hadTextSource) node.textSource = edit.originalTextSource;
+    reflowParent(node);
+    markChanged();
+  } else if (edit.changed) {
+    commitHistory();
+    markChanged();
+  } else {
+    renderAll();
+  }
+  if (focusStage) elements.stage.focus({ preventScroll: true });
+}
+
+function beginInlineTextEdit(node, { selectText = true } = {}) {
+  if (!node || node.type !== "text" || isEffectivelyLocked(node)) return;
+  if (inlineTextEdit?.nodeId !== node.id) finishInlineTextEdit();
+  selectOnly(node.id);
+  setActiveTool("select");
+  inlineTextEdit = {
+    nodeId: node.id,
+    originalText: String(node.text ?? ""),
+    originalTextSource: node.textSource,
+    hadTextSource: Object.prototype.hasOwnProperty.call(node, "textSource"),
+    changed: false,
+  };
+  elements.inlineTextEditor.value = String(node.text ?? "");
+  document.querySelector('[data-tab="design"]')?.click();
+  renderAll();
+  requestAnimationFrame(() => {
+    updateInlineTextEditorPosition();
+    elements.inlineTextEditor.focus({ preventScroll: true });
+    if (selectText) elements.inlineTextEditor.select();
+    else {
+      const end = elements.inlineTextEditor.value.length;
+      elements.inlineTextEditor.setSelectionRange(end, end);
+    }
+  });
+}
+
 function renderProperties() {
   const nodes = selectedNodes();
   const node = selectedNode();
@@ -1707,8 +2149,12 @@ function renderProperties() {
   elements.toggleVisible.classList.toggle("active", single.visible);
   elements.toggleLock.setAttribute("aria-pressed", String(single.locked));
   elements.toggleVisible.setAttribute("aria-pressed", String(single.visible));
-  elements.toggleLock.textContent = single.locked ? "解" : "锁";
-  elements.toggleVisible.textContent = single.visible ? "眼" : "隐";
+  elements.toggleLock.title = single.locked ? "解锁图层" : "锁定图层";
+  elements.toggleVisible.title = single.visible ? "隐藏图层" : "显示图层";
+  elements.toggleLock.setAttribute("aria-label", elements.toggleLock.title);
+  elements.toggleVisible.setAttribute("aria-label", elements.toggleVisible.title);
+  elements.toggleLock.replaceChildren(createUiIcon(single.locked ? "unlock" : "lock"));
+  elements.toggleVisible.replaceChildren(createUiIcon(single.visible ? "eye" : "eye-off"));
   const container = isContainerNode(single);
   const parent = single.parentId ? nodeById(single.parentId) : null;
   const autoLayoutChild = isAutoLayoutContainer(parent);
@@ -1724,12 +2170,11 @@ function renderProperties() {
   elements.frameSection.hidden = !["frame", "group", "component"].includes(single.type);
   elements.containerSectionLabel.textContent =
     single.type === "component" ? "主组件" : single.type === "group" ? "编组" : "画板";
-  elements.clipContentLabel.textContent =
-    single.type === "component" ? "裁剪超出组件的内容" : "裁剪超出画板的内容";
+  elements.clipContentLabel.textContent = "裁剪内容";
   elements.clipContentField.hidden = single.type === "group";
   elements.releaseFrame.hidden = single.type === "component";
   elements.releaseContainerLabel.textContent =
-    single.type === "group" ? "解除编组，保留内容" : "解除画板，保留内容";
+    single.type === "group" ? "取消编组" : "移出画板，保留内容";
   propertyInputs.clipContent.checked = single.clipContent === true;
   elements.layoutSection.hidden = !container && !autoLayoutChild;
   elements.containerLayoutControls.hidden = !container;
@@ -1909,7 +2354,11 @@ function renderLayers() {
     disclosure.tabIndex = -1;
     disclosure.disabled = !hasChildren;
     disclosure.style.visibility = hasChildren ? "visible" : "hidden";
-    disclosure.textContent = collapsedLayerIds.has(node.id) ? "›" : "⌄";
+    disclosure.append(
+      createUiIcon(
+        collapsedLayerIds.has(node.id) ? "chevron-right" : "chevron-down",
+      ),
+    );
     disclosure.title = collapsedLayerIds.has(node.id) ? "展开图层" : "折叠图层";
     disclosure.setAttribute("aria-label", `${disclosure.title}：${node.name}`);
     disclosure.setAttribute("aria-expanded", String(!collapsedLayerIds.has(node.id)));
@@ -1922,22 +2371,17 @@ function renderLayers() {
     });
     const kind = document.createElement("span");
     kind.className = "layer-kind";
-    kind.textContent =
-      node.type === "rectangle"
-        ? "▭"
-        : node.type === "ellipse"
-          ? "○"
-          : node.type === "text"
-            ? "T"
-            : node.type === "image"
-              ? "▧"
-            : node.type === "group"
-              ? "▣"
-              : node.type === "component"
-                ? "◇"
-                : node.type === "instance"
-                  ? "◆"
-                  : "F";
+    const layerIconName = {
+      frame: "frame",
+      rectangle: "rectangle",
+      ellipse: "ellipse",
+      text: "text",
+      image: "image",
+      group: "group",
+      component: "component",
+      instance: "instance",
+    }[node.type] ?? "frame";
+    kind.append(createUiIcon(layerIconName));
     const title = document.createElement("span");
     title.className = "layer-title";
     title.textContent = node.name;
@@ -1949,7 +2393,7 @@ function renderLayers() {
     visibility.setAttribute("aria-label", `${visibility.title}：${node.name}`);
     visibility.setAttribute("aria-pressed", String(node.visible));
     visibility.tabIndex = -1;
-    visibility.textContent = node.visible ? "◉" : "○";
+    visibility.append(createUiIcon(node.visible ? "eye" : "eye-off"));
     visibility.addEventListener("click", (event) => {
       event.stopPropagation();
       toggleNodeVisibility(node);
@@ -2303,6 +2747,10 @@ function renderAll() {
   renderLayers();
   renderTokens();
   renderAuditStatus();
+  updateLayoutControlState();
+  refreshCustomSelects();
+  updateInlineTextEditorPosition();
+  updateElementCommentPosition();
   elements.zoomValue.textContent = `${Math.round(zoom * 100)}%`;
   elements.grid.style.display = showGrid ? "" : "none";
   elements.toggleGrid.classList.toggle("active", showGrid);
@@ -2332,6 +2780,8 @@ function updateCursor() {
     ? "grabbing"
     : activeTool === "hand" || spacePressed
       ? "grab"
+      : activeTool === "comment"
+        ? "comment"
       : activeTool === "select"
         ? "select"
         : "crosshair";
@@ -2351,6 +2801,28 @@ function pointerDown(event) {
   const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
   const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
   const shouldPan = activeTool === "hand" || spacePressed || event.button === 1;
+
+  if (activeTool === "select" && targetId && event.detail >= 2) {
+    const node = nodeById(targetId);
+    if (node?.type === "text") {
+      event.preventDefault();
+      interaction = null;
+      beginInlineTextEdit(node, { selectText: false });
+      return;
+    }
+  }
+
+  if (activeTool === "comment" && !shouldPan) {
+    event.preventDefault();
+    if (!targetId) {
+      notify("请点在要评论的图层上", "error");
+      return;
+    }
+    const node = nodeById(targetId);
+    if (!node) return;
+    openElementComment(node);
+    return;
+  }
 
   if (shouldPan) {
     interaction = {
@@ -2426,10 +2898,7 @@ function pointerDown(event) {
       setActiveTool("select");
       commitHistory();
       markChanged();
-      requestAnimationFrame(() => {
-        propertyInputs.text.focus();
-        propertyInputs.text.select();
-      });
+      requestAnimationFrame(() => beginInlineTextEdit(node));
       return;
     }
     selectOnly(node.id);
@@ -3136,6 +3605,8 @@ function mockHostCall(method, params = {}) {
     });
   }
   if (method === "agent.submitPrompt") {
+    globalThis.__designStudioMockPrompts ??= [];
+    globalThis.__designStudioMockPrompts.push(params.prompt);
     return Promise.resolve({ accepted: true });
   }
   return Promise.resolve(null);
@@ -3886,7 +4357,10 @@ async function submitProductBriefToAgent() {
     const prompt = productBriefPrompt(brief, {
       designPath: elements.path.value.trim(),
     });
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", {
+      prompt,
+      displayText: `根据 ${sourcePath} 生成并完善产品设计`,
+    });
     elements.productBriefStatus.dataset.kind = "success";
     elements.productBriefStatus.textContent = `${brief.requirements.length} 条需求 · ${brief.screens.length} 个页面线索 · 已交给 Agent`;
     notify("PRD 已结构化并交给当前 Agent");
@@ -4645,37 +5119,194 @@ async function exportSvg() {
   }
 }
 
-async function submitToAgent() {
+function nodeBreadcrumb(node) {
+  const parts = [];
+  const seen = new Set();
+  let current = node;
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    parts.unshift(current.name || current.id);
+    current = current.parentId ? nodeById(current.parentId) : null;
+  }
+  return parts.join(" / ");
+}
+
+function agentNodeContext(node) {
+  const contextValue = {
+    id: node.id,
+    type: node.type,
+    name: node.name,
+    path: nodeBreadcrumb(node),
+    parentId: node.parentId ?? null,
+    x: round(node.x),
+    y: round(node.y),
+    width: round(node.width),
+    height: round(node.height),
+  };
+  for (const property of [
+    "layout",
+    "layoutWrap",
+    "layoutPositioning",
+    "layoutSizingHorizontal",
+    "layoutSizingVertical",
+    "alignItems",
+    "justifyContent",
+    "alignContent",
+    "layoutAlignSelf",
+  ]) {
+    if (node[property] !== undefined) contextValue[property] = node[property];
+  }
+  if (node.type === "text") contextValue.text = String(node.text ?? "").slice(0, 1_000);
+  if (node.notes) contextValue.notes = String(node.notes).slice(0, 500);
+  return contextValue;
+}
+
+function buildAgentTargetContext(targetIds) {
+  const targets = [...targetIds]
+    .map((id) => nodeById(id))
+    .filter(Boolean)
+    .slice(0, 20);
+  if (targets.length === 0) return "";
+  const page = design.pages.find((candidate) => candidate.id === design.activePageId);
+  return [
+    "",
+    "这条要求已锚定到当前画布中的具体图层。优先只修改这些图层及必要的父级/子级，不要凭名称猜测目标：",
+    `页面：${page?.name ?? design.activePageId} (${design.activePageId})`,
+    JSON.stringify(targets.map(agentNodeContext), null, 2),
+    "先用上述稳定 node id 读取相关子树；若需要扩大修改范围，请说明原因并保持无关图层不变。",
+  ].join("\n");
+}
+
+function updateAgentTargetContext() {
+  const targets = [...agentTargetIds].map((id) => nodeById(id)).filter(Boolean);
+  elements.aiTargetContext.hidden = targets.length === 0;
+  if (targets.length === 0) return;
+  elements.aiTargetTitle.textContent =
+    targets.length === 1 ? `已关联「${targets[0].name}」` : `已关联 ${targets.length} 个图层`;
+  elements.aiTargetDetails.textContent =
+    targets.length === 1
+      ? `${nodeBreadcrumb(targets[0])} · ${targets[0].id}`
+      : targets.map((node) => node.name).join("、");
+}
+
+function openAgentDialog({ targetIds = selectedIds } = {}) {
+  agentTargetIds = new Set([...targetIds].filter((id) => nodeById(id)));
+  updateAgentTargetContext();
+  elements.aiDialog.showModal();
+  requestAnimationFrame(() => elements.aiRequest.focus());
+}
+
+function closeElementComment({ clearTarget = false } = {}) {
+  elements.elementComment.hidden = true;
+  if (clearTarget) {
+    commentTargetId = null;
+    elements.elementCommentRequest.value = "";
+  }
+}
+
+function updateElementCommentPosition() {
+  if (elements.elementComment.hidden || !commentTargetId) return;
+  const node = nodeById(commentTargetId);
+  if (!node) {
+    closeElementComment({ clearTarget: true });
+    return;
+  }
+  const bounds = visualSelectionBounds([node], design.nodes);
+  if (!bounds) return;
+  const width = elements.elementComment.offsetWidth || 320;
+  const height = elements.elementComment.offsetHeight || 230;
+  const stageWidth = elements.stageWrap.clientWidth;
+  const stageHeight = elements.stageWrap.clientHeight;
+  const preferredRight = pan.x + (bounds.x + bounds.width) * zoom + 12;
+  const left =
+    preferredRight + width <= stageWidth - 12
+      ? preferredRight
+      : pan.x + bounds.x * zoom - width - 12;
+  Object.assign(elements.elementComment.style, {
+    left: `${clamp(left, 12, Math.max(12, stageWidth - width - 12))}px`,
+    top: `${clamp(
+      pan.y + bounds.y * zoom,
+      12,
+      Math.max(12, stageHeight - height - 12),
+    )}px`,
+  });
+}
+
+function openElementComment(node) {
+  if (!node) return notify("先点选一个要评论的图层", "error");
+  finishInlineTextEdit();
+  selectOnly(node.id);
+  commentTargetId = node.id;
+  agentTargetIds = new Set([node.id]);
+  elements.elementCommentTarget.textContent = `${nodeBreadcrumb(node)} · ${node.id}`;
+  elements.elementCommentContext.textContent =
+    node.type === "text"
+      ? `将附带文字内容、图层 ID 与布局上下文`
+      : `将附带图层 ID、尺寸与布局上下文`;
+  elements.elementComment.hidden = false;
+  renderAll();
+  requestAnimationFrame(() => {
+    updateElementCommentPosition();
+    elements.elementCommentRequest.focus({ preventScroll: true });
+  });
+}
+
+function agentDesignPrompt(request, targetIds) {
+  return [
+    "请使用 design-studio:repo-design skill 和 panel-app:design-studio 的结构化工具处理当前仓库设计。",
+    `设计源文件：${elements.path.value.trim()}`,
+    `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${design.version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
+    "所有嵌套节点的 x/y 都是画布绝对坐标；自动布局容器的流式直接子节点省略 x/y，layoutPositioning:absolute 的子节点仍必须提供 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
+    "不要把 SVG 当作源文件。完成前必须达到零校验问题并实际检查完整画布截图；最后总结变更图层、设计理由和实现影响。",
+    buildAgentTargetContext(targetIds),
+    "",
+    `我的要求：${request}`,
+  ].join("\n");
+}
+
+async function submitAgentRequest(request, targetIds, { fromElementComment = false } = {}) {
   const operationWorkspaceEpoch = workspaceEpoch;
-  const request = elements.aiRequest.value.trim();
   if (!request) return notify("先写下你希望 Agent 做什么", "error");
   if (context.busy) return notify("当前会话正在运行，请稍后再提交", "error");
   elements.submitAi.disabled = true;
+  elements.submitElementComment.disabled = true;
   try {
+    const prompt = agentDesignPrompt(request, targetIds);
     await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    const path = elements.path.value.trim();
-    const prompt = [
-      "请使用 design-studio:repo-design skill 和 panel-app:design-studio 的结构化工具处理当前仓库设计。",
-      `设计源文件：${path}`,
-      `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${design.version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
-      "所有嵌套节点的 x/y 都是画布绝对坐标；自动布局容器的流式直接子节点省略 x/y，layoutPositioning:absolute 的子节点仍必须提供 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
-      "不要把 SVG 当作源文件。完成前必须达到零校验问题并实际检查完整画布截图；最后总结变更图层、设计理由和实现影响。",
-      "",
-      `我的要求：${request}`,
-    ].join("\n");
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", { prompt, displayText: request });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    elements.aiDialog.close();
-    notify("已交给当前 Agent；文件写入 Repo 后画布会自动同步");
+    if (elements.aiDialog.open) elements.aiDialog.close();
+    if (fromElementComment) {
+      closeElementComment({ clearTarget: true });
+      setActiveTool("select");
+    }
+    notify(
+      targetIds.size > 0
+        ? "已把图层评论发给当前 Agent；修改写入 Repo 后画布会自动同步"
+        : "已交给当前 Agent；文件写入 Repo 后画布会自动同步",
+    );
   } catch (error) {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     notify(error instanceof Error ? error.message : "提交失败", "error");
   } finally {
     if (workspaceEpoch === operationWorkspaceEpoch) {
       elements.submitAi.disabled = Boolean(context.busy) || context.trusted !== true;
+      elements.submitElementComment.disabled =
+        Boolean(context.busy) || context.trusted !== true;
     }
   }
+}
+
+async function submitToAgent() {
+  const request = elements.aiRequest.value.trim();
+  await submitAgentRequest(request, new Set(agentTargetIds));
+}
+
+async function submitElementComment() {
+  const request = elements.elementCommentRequest.value.trim();
+  const targetIds = commentTargetId ? new Set([commentTargetId]) : new Set();
+  await submitAgentRequest(request, targetIds, { fromElementComment: true });
 }
 
 function bindPropertyInput(input, update, eventName = "input", layoutEffect = "none") {
@@ -4785,7 +5416,12 @@ bindPropertyInput(propertyInputs.notes, (node, value) => {
   else delete node.notes;
 });
 bindPropertyInput(propertyInputs.text, (node, value) => {
-  if (node.type === "text") node.text = value.slice(0, 4000);
+  if (node.type !== "text") return;
+  node.text = value.slice(0, 4000);
+  if (Object.prototype.hasOwnProperty.call(node, "textSource")) node.textSource = node.text;
+  delete node.textFlowWidth;
+  delete node.textMeasurement;
+  reflowParent(node);
 });
 bindPropertyInput(propertyInputs.fontSize, (node, value) => {
   if (node.type === "text") node.fontSize = clamp(Number(value) || 6, 6, 240);
@@ -5170,6 +5806,54 @@ for (const button of document.querySelectorAll("[data-order]")) {
 for (const button of document.querySelectorAll("[data-distribute]")) {
   button.addEventListener("click", () => distributeSelected(button.dataset.distribute));
 }
+for (const button of document.querySelectorAll("[data-layout-direction]")) {
+  button.addEventListener("click", () => {
+    const node = selectedNode();
+    if (!node || !isContainerNode(node) || isEffectivelyLocked(node)) return;
+    setSelectValue(propertyInputs.layout, button.dataset.layoutDirection);
+  });
+}
+for (const button of document.querySelectorAll("[data-layout-align]")) {
+  button.addEventListener("click", () => {
+    const node = selectedNode();
+    if (
+      !node ||
+      !isContainerNode(node) ||
+      !["horizontal", "vertical"].includes(node.layout) ||
+      isEffectivelyLocked(node)
+    ) {
+      return;
+    }
+    const [horizontal, vertical] = button.dataset.layoutAlign.split(":");
+    ensureDesignV3();
+    if (node.layout === "horizontal") {
+      node.justifyContent = horizontal;
+      node.alignItems = vertical;
+    } else {
+      node.alignItems = horizontal;
+      node.justifyContent = vertical;
+    }
+    applyAutoLayouts(design.nodes, new Set([node.id]));
+    commitHistory();
+    markChanged();
+  });
+}
+elements.layoutSpaceBetween.addEventListener("click", () => {
+  const node = selectedNode();
+  if (
+    !node ||
+    !isContainerNode(node) ||
+    !["horizontal", "vertical"].includes(node.layout) ||
+    isEffectivelyLocked(node)
+  ) {
+    return;
+  }
+  ensureDesignV3();
+  node.justifyContent = node.justifyContent === "space-between" ? "center" : "space-between";
+  applyAutoLayouts(design.nodes, new Set([node.id]));
+  commitHistory();
+  markChanged();
+});
 const inspectorTabs = [...document.querySelectorAll(".inspector-tab")];
 function activateInspectorTab(button, { focus = false } = {}) {
   for (const tab of inspectorTabs) {
@@ -5247,13 +5931,36 @@ elements.stage.addEventListener("dblclick", (event) => {
   const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
   const node = design.nodes.find((candidate) => candidate.id === targetId);
   if (node?.type !== "text") return;
-  selectOnly(node.id);
-  document.querySelector('[data-tab="design"]').click();
-  renderAll();
-  requestAnimationFrame(() => {
-    propertyInputs.text.focus();
-    propertyInputs.text.select();
-  });
+  event.preventDefault();
+  beginInlineTextEdit(node, { selectText: false });
+});
+elements.inlineTextEditor.addEventListener("input", () => {
+  if (!inlineTextEdit) return;
+  const node = nodeById(inlineTextEdit.nodeId);
+  if (!node || isEffectivelyLocked(node)) return;
+  node.text = elements.inlineTextEditor.value.slice(0, 4000);
+  if (Object.prototype.hasOwnProperty.call(node, "textSource")) {
+    node.textSource = node.text;
+  }
+  delete node.textFlowWidth;
+  delete node.textMeasurement;
+  inlineTextEdit.changed = node.text !== inlineTextEdit.originalText;
+  reflowParent(node);
+  markChanged();
+});
+elements.inlineTextEditor.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    finishInlineTextEdit({ cancel: true, focusStage: true });
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    finishInlineTextEdit({ focusStage: true });
+  }
+});
+elements.inlineTextEditor.addEventListener("blur", () => {
+  if (inlineTextEdit) finishInlineTextEdit();
 });
 elements.stage.addEventListener(
   "wheel",
@@ -5329,7 +6036,7 @@ elements.openHtmlImport.addEventListener("click", () => {
 elements.runHtmlImport.addEventListener("click", () => void runHtmlImportFromDialog());
 elements.openShortcuts.addEventListener("click", () => elements.shortcutsDialog.showModal());
 elements.newDocument.addEventListener("click", newDocument);
-elements.openAi.addEventListener("click", () => elements.aiDialog.showModal());
+elements.openAi.addEventListener("click", () => openAgentDialog());
 elements.openDelivery.addEventListener("click", () => {
   const deliveryTab = document.querySelector('[data-tab="delivery"]');
   activateInspectorTab(deliveryTab, { focus: true });
@@ -5346,6 +6053,28 @@ elements.toggleInspector.addEventListener("click", () => {
   elements.toggleInspector.setAttribute("aria-label", elements.toggleInspector.title);
 });
 elements.submitAi.addEventListener("click", () => void submitToAgent());
+elements.commentSelection.addEventListener("click", () => openElementComment(selectedNode()));
+elements.closeElementComment.addEventListener("click", () =>
+  closeElementComment({ clearTarget: true }),
+);
+elements.submitElementComment.addEventListener("click", () => void submitElementComment());
+elements.elementCommentRequest.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeElementComment({ clearTarget: true });
+    setActiveTool("select");
+    elements.stage.focus({ preventScroll: true });
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    void submitElementComment();
+  }
+});
+elements.clearAiTarget.addEventListener("click", () => {
+  agentTargetIds = new Set();
+  updateAgentTargetContext();
+});
 elements.path.addEventListener("change", () => {
   const path = elements.path.value.trim();
   if (path !== currentSourcePath) warnedExternalVersion = null;
@@ -5445,6 +6174,12 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (event.key === "Escape") {
+    if (!elements.elementComment.hidden) {
+      closeElementComment({ clearTarget: true });
+      setActiveTool("select");
+      return;
+    }
+    closeCustomSelect({ focus: true });
     clearSelection();
     setActiveTool("select");
     renderAll();
@@ -5500,7 +6235,7 @@ window.addEventListener("blur", () => {
   finishInteraction();
   updateCursor();
 });
-window.addEventListener("resize", () => renderScene());
+window.addEventListener("resize", () => renderAll());
 window.addEventListener("focus", () => void checkExternalChange());
 window.addEventListener("beforeunload", (event) => {
   if (externalSyncTimer) window.clearInterval(externalSyncTimer);
@@ -5566,6 +6301,7 @@ function updateContext(next) {
   elements.saveAuditReport.disabled = workspaceUnavailable;
   elements.openAi.disabled = Boolean(context.busy) || workspaceUnavailable;
   elements.submitAi.disabled = Boolean(context.busy) || workspaceUnavailable;
+  elements.submitElementComment.disabled = Boolean(context.busy) || workspaceUnavailable;
   elements.aiContextState.textContent = context.busy
     ? "当前会话忙碌中"
     : context.trusted === false
@@ -7589,6 +8325,8 @@ function registerAgentTools(ready) {
 }
 
 async function initialize() {
+  initializeCustomSelects();
+  initializeInspectorActionIcons();
   resetHistory();
   renderAll();
   requestAnimationFrame(fitCanvas);

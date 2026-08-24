@@ -238,7 +238,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [
       ...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g),
     ].map((match) => match[1]);
-    assert.equal(manifest.version, "0.18.0", `${packagePath}: responsive-layout version mismatch`);
+    assert.equal(manifest.version, "0.19.0", `${packagePath}: editor UX version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -269,6 +269,36 @@ async function validatePackage(packagePath) {
     );
     assert.match(html, /id="sidebar-pages-list"/, `${packagePath}: persistent pages are required`);
     assert.match(html, /id="delivery-tab"/, `${packagePath}: delivery workflow is required`);
+    assert.match(
+      html,
+      /id="inline-text-editor"/,
+      `${packagePath}: direct canvas text editor is required`,
+    );
+    assert.match(
+      appScript,
+      /function beginInlineTextEdit/,
+      `${packagePath}: direct canvas text editing is required`,
+    );
+    assert.match(
+      html,
+      /class="alignment-picker"/,
+      `${packagePath}: visual auto-layout alignment is required`,
+    );
+    assert.match(
+      appScript,
+      /function initializeCustomSelects/,
+      `${packagePath}: in-app select menus are required`,
+    );
+    assert.match(
+      html,
+      /id="element-comment"/,
+      `${packagePath}: node-anchored Agent comments are required`,
+    );
+    assert.match(
+      appScript,
+      /buildAgentTargetContext/,
+      `${packagePath}: Agent comments must include stable node context`,
+    );
   }
   if (manifest.id === "job-hunt-hq") {
     const appScript = await readFile(join(root, "app", "app.js"), "utf8");

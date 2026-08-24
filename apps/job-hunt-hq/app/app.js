@@ -2412,7 +2412,12 @@ async function generateDraft() {
     "完成后必须调用 save_resume_draft，把完整 Markdown 写回面板。",
   ].join("\n");
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", {
+      prompt,
+      displayText: job
+        ? `为 ${job.company} · ${job.title} 生成一份可编辑简历`
+        : "生成一份通用候选人基线简历",
+    });
     notify("Agent 正在读取当前项目并生成简历，完成后会自动显示");
   } catch (error) {
     notify(error instanceof Error ? error.message : "提交简历生成失败", "error");
@@ -2484,7 +2489,10 @@ async function submitJobSearch(form) {
   ].join("\n");
 
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", {
+      prompt,
+      displayText: `搜索岗位：${keyword || "根据项目资料推荐"} · ${city || "不限城市"} · 最多 ${count} 个`,
+    });
     closeDialog("agent-dialog");
     notify(
       window.codeshellPanel?.call
@@ -2507,7 +2515,7 @@ async function submitResumeRevision(request) {
     `我的调整要求：${request}`,
   ].join("\n");
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", { prompt, displayText: request });
     closeDialog("resume-agent-dialog");
     notify(
       window.codeshellPanel?.call
@@ -2724,7 +2732,10 @@ async function generateInterviewSet(form) {
     "完成后必须调用 save_interview_question_set 写回面板。",
   ].join("\n");
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", {
+      prompt,
+      displayText: `为 ${job.company} · ${job.title} 生成 ${options.count} 道${INTERVIEW_MODE_LABELS[options.mode] || "定制"}面试题`,
+    });
     notify("Agent 正在读取当前项目并生成面试题，完成后会自动显示");
   } catch (error) {
     notify(error instanceof Error ? error.message : "提交面试题生成失败", "error");
@@ -2746,20 +2757,23 @@ async function simulateInterviewSession() {
     "若我的回答超出已有材料，提醒我核实，不要替我补造事实。全部结束后给出优势、风险和下一轮练习建议。",
   ].join("\n");
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", {
+      prompt,
+      displayText: `开始 ${job.company} · ${job.title} 的互动模拟面试`,
+    });
     notify("模拟面试已开始，Agent 会从第一题逐步追问");
   } catch (error) {
     notify(error instanceof Error ? error.message : "启动模拟面试失败", "error");
   }
 }
 
-async function submitSessionTask(prompt, successMessage) {
+async function submitSessionTask(prompt, successMessage, displayText = prompt) {
   if (context.busy) {
     notify("当前 Session 的 Agent 正在执行，请稍后再试", "error");
     return false;
   }
   try {
-    await hostCall("agent.submitPrompt", { prompt });
+    await hostCall("agent.submitPrompt", { prompt, displayText });
     notify(
       window.codeshellPanel?.call
         ? successMessage
@@ -2812,6 +2826,7 @@ function runCustomWorkflowInSession(taskIds = state.workflowTaskIds, jobs = sele
   return submitSessionTask(
     prompt,
     "组合任务已发送到当前 Session；结果会按岗位写回面板",
+    `执行求职组合任务：${tasks.map((id) => WORKFLOW_TASKS[id].label).join("、")}`,
   );
 }
 
@@ -2827,6 +2842,7 @@ function runCompanyResearchInSession() {
       "保存来源、时间、置信度与核验缺口，并通过 save_job_research 写回面板。",
     ].join("\n"),
     "公司调研已发送到当前 Session；结果会写回调研页",
+    `调研 ${job.company} · ${job.title}`,
   );
 }
 
@@ -3549,11 +3565,12 @@ function bindEvents() {
     try {
       const sent = await submitSessionTask(
         buildSessionBridgePrompt(instruction),
-        "当前 Session 已完成这条指令；发送内容已保留在面板",
+        "已发送到当前 Session；输入内容已保留在面板",
+        instruction,
       );
-      updateSessionSubmission(submissionId, sent ? "completed" : "failed");
+      updateSessionSubmission(submissionId, sent ? "submitted" : "failed");
       elements.sessionBridgeStateLabel.textContent = sent
-        ? "Agent 已完成；可在当前 Session 查看回复"
+        ? "已发送；可在当前 Session 查看输入、过程与回复"
         : "发送失败；可以从最近发送重新尝试";
     } finally {
       sessionSubmissionPending = false;
