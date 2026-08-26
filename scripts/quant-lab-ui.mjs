@@ -2088,11 +2088,11 @@ const newsSubscriptions = parseNewsSubscriptions(JSON.stringify({
     { symbol: "AAPL", market: "us", origins: ["watch"] },
   ],
   secContact: "Investment Desk contact@example.com",
-  updatedAt: "2026-08-24T13:00:00.000Z",
+  updatedAt: "2026-08-26T13:00:00.000Z",
 }));
 const makeNews = (input) => normalizeNewsItem({
   sourceId: input.id,
-  fetchedAt: "2026-08-24T13:20:00.000Z",
+  fetchedAt: "2026-08-26T13:20:00.000Z",
   availableAt: input.publishedAt,
   stale: false,
   form: null,
@@ -2108,7 +2108,7 @@ const newsStock = makeNews({
   market: "cn",
   symbol: "SH600519",
   association: "confirmed",
-  publishedAt: "2026-08-24T12:45:00.000Z",
+  publishedAt: "2026-08-26T12:45:00.000Z",
   sourceTier: 2,
 });
 const newsFast = makeNews({
@@ -2119,7 +2119,7 @@ const newsFast = makeNews({
   market: "cn",
   symbol: "SH600519",
   association: "confirmed",
-  publishedAt: "2026-08-24T13:00:00.000Z",
+  publishedAt: "2026-08-26T13:00:00.000Z",
   sourceTier: 2,
 });
 const newsWeak = makeNews({
@@ -2130,7 +2130,7 @@ const newsWeak = makeNews({
   market: "cn",
   symbol: "SH600519",
   association: "weak",
-  publishedAt: "2026-08-24T13:02:00.000Z",
+  publishedAt: "2026-08-26T13:02:00.000Z",
   sourceTier: 2,
 });
 const newsSec = makeNews({
@@ -2143,18 +2143,18 @@ const newsSec = makeNews({
   association: "confirmed",
   kind: "filing",
   form: "8-K",
-  publishedAt: "2026-08-24T13:05:00.000Z",
+  publishedAt: "2026-08-26T13:05:00.000Z",
   sourceTier: 1,
 });
 const newsCacheOk = mergeNewsCache(
-  emptyNewsCache("2026-08-24T12:00:00.000Z"),
+  emptyNewsCache("2026-08-26T12:00:00.000Z"),
   [
     { source: "eastmoney-stock", status: "ok", items: [newsStock] },
     { source: "eastmoney-724", status: "ok", items: [newsFast, newsWeak] },
     { source: "sec-edgar", status: "ok", items: [newsSec] },
   ],
   newsSubscriptions,
-  "2026-08-24T13:10:00.000Z",
+  "2026-08-26T13:10:00.000Z",
 );
 const newsCachePartial = mergeNewsCache(
   newsCacheOk,
@@ -2164,9 +2164,9 @@ const newsCachePartial = mergeNewsCache(
     { source: "sec-edgar", status: "ok", items: [newsSec] },
   ],
   newsSubscriptions,
-  "2026-08-24T13:20:00.000Z",
+  "2026-08-26T13:20:00.000Z",
 );
-const newsFeed = buildNewsFeed(newsCachePartial, newsSubscriptions, "2026-08-24T13:20:00.000Z");
+const newsFeed = buildNewsFeed(newsCachePartial, newsSubscriptions, "2026-08-26T13:20:00.000Z");
 const currentNewsCard = newsFeed.items.find((item) => item.symbol === "AAPL");
 assert(currentNewsCard, "news fixture must produce an AAPL feed card");
 const newsPlans = buildNewsAutomations(newsSubscriptions);
