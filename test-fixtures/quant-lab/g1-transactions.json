@@ -1,0 +1,154 @@
+{
+  "format": "codeshell.portfolio-transactions",
+  "version": 1,
+  "baseCurrency": "CNY",
+  "accounts": [
+    {
+      "id": "cn-main",
+      "name": "A股主账户",
+      "broker": "manual",
+      "currencies": ["CNY"]
+    },
+    {
+      "id": "us-main",
+      "name": "美股账户",
+      "broker": "manual",
+      "currencies": ["USD", "CNY"]
+    }
+  ],
+  "instruments": [
+    {
+      "id": "xshg-600519",
+      "type": "stock",
+      "market": "cn",
+      "currency": "CNY",
+      "symbol": "SH600519",
+      "name": "贵州茅台",
+      "aliases": []
+    },
+    {
+      "id": "xnas-aapl",
+      "type": "stock",
+      "market": "us",
+      "currency": "USD",
+      "symbol": "AAPL",
+      "name": "Apple Inc.",
+      "aliases": []
+    }
+  ],
+  "transactions": [
+    {
+      "id": "t1",
+      "type": "cash-in",
+      "accountId": "cn-main",
+      "currency": "CNY",
+      "amount": "100000.00",
+      "valuationDate": "2026-03-05",
+      "timing": "begin",
+      "createdAt": "2026-03-05T08:00:00+08:00"
+    },
+    {
+      "id": "t2",
+      "type": "cash-in",
+      "accountId": "us-main",
+      "currency": "USD",
+      "amount": "10000.00",
+      "valuationDate": "2026-03-05",
+      "timing": "begin",
+      "createdAt": "2026-03-05T08:01:00+08:00"
+    },
+    {
+      "id": "t3",
+      "type": "buy",
+      "accountId": "cn-main",
+      "instrumentId": "xshg-600519",
+      "tradeDate": "2026-03-05",
+      "quantity": "500",
+      "price": "100.00",
+      "commission": "5.00",
+      "tax": "0.00",
+      "otherFees": "1.00",
+      "createdAt": "2026-03-05T14:30:00+08:00"
+    },
+    {
+      "id": "t4",
+      "type": "buy",
+      "accountId": "us-main",
+      "instrumentId": "xnas-aapl",
+      "tradeDate": "2026-03-05",
+      "quantity": "20",
+      "price": "150.00",
+      "commission": "1.00",
+      "tax": "0.00",
+      "otherFees": "0.00",
+      "createdAt": "2026-03-06T03:12:00+08:00"
+    },
+    {
+      "id": "t5",
+      "type": "dividend",
+      "accountId": "us-main",
+      "instrumentId": "xnas-aapl",
+      "exDate": "2026-03-09",
+      "payDate": "2026-03-12",
+      "gross": "5.00",
+      "withholding": "1.00",
+      "net": "4.00",
+      "createdAt": "2026-03-12T16:00:00+08:00"
+    },
+    {
+      "id": "t6",
+      "type": "fx-conversion",
+      "accountId": "us-main",
+      "effectiveDate": "2026-03-10",
+      "fromCurrency": "USD",
+      "fromAmount": "1000.00",
+      "toCurrency": "CNY",
+      "toAmount": "7150.00",
+      "feeCurrency": "USD",
+      "fee": "0.00",
+      "createdAt": "2026-03-10T10:00:00+08:00"
+    },
+    {
+      "id": "t7",
+      "type": "sell",
+      "accountId": "cn-main",
+      "instrumentId": "xshg-600519",
+      "tradeDate": "2026-03-11",
+      "quantity": "200",
+      "price": "99.00",
+      "commission": "5.00",
+      "tax": "9.90",
+      "otherFees": "1.00",
+      "createdAt": "2026-03-11T14:20:00+08:00"
+    },
+    {
+      "id": "t8",
+      "type": "split",
+      "accountId": "us-main",
+      "instrumentId": "xnas-aapl",
+      "effectiveDate": "2026-03-12",
+      "factor": "2",
+      "createdAt": "2026-03-12T00:00:00-04:00"
+    },
+    {
+      "id": "t9",
+      "type": "cash-out",
+      "accountId": "cn-main",
+      "currency": "CNY",
+      "amount": "20000.00",
+      "valuationDate": "2026-03-16",
+      "timing": "end",
+      "createdAt": "2026-03-16T16:20:00+08:00"
+    },
+    {
+      "id": "t10",
+      "type": "cash-out",
+      "accountId": "us-main",
+      "currency": "USD",
+      "amount": "2000.00",
+      "valuationDate": "2026-03-17",
+      "timing": "end",
+      "createdAt": "2026-03-17T16:20:00+08:00"
+    }
+  ]
+}

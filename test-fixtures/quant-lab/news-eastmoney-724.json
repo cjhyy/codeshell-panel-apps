@@ -1,0 +1,20 @@
+{
+  "data": {
+    "fastNewsList": [
+      {
+        "code": "724-20260826-1",
+        "title": "平安银行发布公告",
+        "showTime": "2026-08-26 06:21:00",
+        "url": "https://finance.eastmoney.com/a/724-20260826-1.html",
+        "stockList": [{ "code": "000001", "market": "0" }]
+      },
+      {
+        "code": "724-unlinked",
+        "title": "市场快讯",
+        "showTime": "2026-08-26 06:22:00",
+        "url": "https://finance.eastmoney.com/a/724-unlinked.html",
+        "stockList": []
+      }
+    ]
+  }
+}

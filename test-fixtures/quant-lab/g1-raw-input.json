@@ -1,0 +1,81 @@
+{
+  "startDate": "2026-03-05",
+  "endDate": "2026-03-17",
+  "prices": {
+    "xshg-600519": {
+      "path": "data/market-raw/SH600519.csv",
+      "sidecar": {
+        "format": "codeshell.market-data",
+        "version": 1,
+        "symbol": "SH600519",
+        "market": "cn",
+        "adjust": "none",
+        "purpose": "portfolio-valuation",
+        "source": "fixture",
+        "fingerprint": "fixture:sh600519",
+        "syncedAt": "2026-03-18T09:00:00+08:00"
+      },
+      "observations": [
+        { "date": "2026-03-05", "close": "101.00" },
+        { "date": "2026-03-06", "close": "102.00" },
+        { "date": "2026-03-10", "close": "98.00" },
+        { "date": "2026-03-11", "close": "99.00" },
+        { "date": "2026-03-12", "close": "99.50" },
+        { "date": "2026-03-13", "close": "101.00" },
+        { "date": "2026-03-16", "close": "100.00" },
+        { "date": "2026-03-17", "close": "100.50" }
+      ]
+    },
+    "xnas-aapl": {
+      "path": "data/market-raw/AAPL.csv",
+      "sidecar": {
+        "format": "codeshell.market-data",
+        "version": 1,
+        "symbol": "AAPL",
+        "market": "us",
+        "adjust": "none",
+        "purpose": "portfolio-valuation",
+        "source": "fixture",
+        "fingerprint": "fixture:aapl",
+        "syncedAt": "2026-03-18T09:00:00+08:00"
+      },
+      "observations": [
+        { "date": "2026-03-05", "close": "152.00" },
+        { "date": "2026-03-06", "close": "155.00" },
+        { "date": "2026-03-09", "close": "154.75" },
+        { "date": "2026-03-10", "close": "156.00" },
+        { "date": "2026-03-11", "close": "158.00" },
+        { "date": "2026-03-12", "close": "80.00" },
+        { "date": "2026-03-13", "close": "81.00" },
+        { "date": "2026-03-16", "close": "82.00" }
+      ]
+    }
+  },
+  "fx": {
+    "USD": {
+      "path": "data/market-raw/USDCNY.csv",
+      "sidecar": {
+        "format": "codeshell.market-data",
+        "version": 1,
+        "symbol": "USDCNY",
+        "market": "fx",
+        "adjust": "none",
+        "purpose": "portfolio-valuation",
+        "source": "yahoo-chart",
+        "fingerprint": "fixture:usdcny",
+        "syncedAt": "2026-03-18T09:00:00+08:00"
+      },
+      "observations": [
+        { "date": "2026-03-04", "close": "7.0000" },
+        { "date": "2026-03-05", "close": "7.0500" },
+        { "date": "2026-03-06", "close": "7.1000" },
+        { "date": "2026-03-09", "close": "7.2000" },
+        { "date": "2026-03-10", "close": "7.1500" },
+        { "date": "2026-03-11", "close": "7.1000" },
+        { "date": "2026-03-12", "close": "7.0500" },
+        { "date": "2026-03-13", "close": "7.0000" },
+        { "date": "2026-03-16", "close": "6.9500" }
+      ]
+    }
+  }
+}

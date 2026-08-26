@@ -202,6 +202,19 @@ export function relativeStrengthIndex(values, period = 14) {
   return result;
 }
 
+// Converts state signals ("is long") into edge signals ("just crossed").
+// A state signal is true on every bar the condition holds, so an all-in engine
+// re-enters only after an exit; edge mode instead fires once at the crossing,
+// which is what "buy on the golden cross" conventionally means.
+function withEdges(signals) {
+  for (let index = 0; index < signals.length; index += 1) {
+    const previous = index > 0 ? signals[index - 1] : { enter: false, exit: false };
+    signals[index].enterSignal = signals[index].enter && !previous.enter;
+    signals[index].exitSignal = signals[index].exit && !previous.exit;
+  }
+  return signals;
+}
+
 function strategySignals(bars, strategy) {
   const closes = bars.map((bar) => bar.close);
   const signals = bars.map(() => ({ enter: false, exit: false }));
@@ -215,7 +228,7 @@ function strategySignals(bars, strategy) {
         exit: fast[index] <= slow[index],
       };
     }
-    return { signals, indicators: { fast, slow } };
+    return { signals: withEdges(signals), indicators: { fast, slow } };
   }
   if (strategy.type === "rsi-reversion") {
     const rsi = relativeStrengthIndex(closes, strategy.period);
@@ -226,7 +239,7 @@ function strategySignals(bars, strategy) {
         exit: rsi[index] > strategy.overbought,
       };
     }
-    return { signals, indicators: { rsi } };
+    return { signals: withEdges(signals), indicators: { rsi } };
   }
   if (strategy.type === "breakout") {
     const lookback = Math.max(2, Math.floor(strategy.lookback));
@@ -241,7 +254,7 @@ function strategySignals(bars, strategy) {
         exit: bars[index].close < lower[index],
       };
     }
-    return { signals, indicators: { upper, lower } };
+    return { signals: withEdges(signals), indicators: { upper, lower } };
   }
   throw new Error(`unknown strategy type: ${strategy.type}`);
 }
@@ -254,7 +267,7 @@ function standardDeviation(values) {
   return Math.sqrt(variance);
 }
 
-function metricsFor(equity, initialCapital, trades, exposureDays, benchmarkReturn) {
+function metricsFor(equity, initialCapital, trades, exposureDays, benchmarkReturn, riskFreeRate = 0) {
   const finalEquity = equity.at(-1)?.value ?? initialCapital;
   const totalReturn = finalEquity / initialCapital - 1;
   const years = Math.max(equity.length / TRADING_DAYS, 1 / TRADING_DAYS);
@@ -278,7 +291,10 @@ function metricsFor(equity, initialCapital, trades, exposureDays, benchmarkRetur
       ? dailyReturns.reduce((sum, value) => sum + value, 0) / dailyReturns.length
       : 0;
   const volatility = standardDeviation(dailyReturns);
-  const sharpe = volatility === 0 ? 0 : (meanDaily / volatility) * Math.sqrt(TRADING_DAYS);
+  // Excess-return Sharpe. A zero risk-free rate reproduces the v1 behaviour.
+  const dailyRiskFree = (1 + riskFreeRate) ** (1 / TRADING_DAYS) - 1;
+  const sharpe =
+    volatility === 0 ? 0 : ((meanDaily - dailyRiskFree) / volatility) * Math.sqrt(TRADING_DAYS);
   const winners = trades.filter((trade) => trade.pnl > 0).length;
   const grossProfit = trades.reduce((sum, trade) => sum + Math.max(0, trade.pnl), 0);
   const grossLoss = trades.reduce((sum, trade) => sum + Math.max(0, -trade.pnl), 0);
@@ -377,6 +393,57 @@ export function analyzeDataset(bars) {
   return { missingVolume, weekendBars, largestGapDays, largeJumps, warnings };
 }
 
+function validateSizer(sizer) {
+  if (sizer == null) return { type: "all-in" };
+  if (typeof sizer !== "object") throw new Error("sizer must be an object");
+  if (sizer.type === "all-in") return { type: "all-in" };
+  if (sizer.type === "fixed-fraction") {
+    const pct = finiteNumber(sizer.pct, "sizer percentage");
+    if (pct <= 0 || pct > 100) throw new Error("sizer percentage must be within (0, 100]");
+    return { type: "fixed-fraction", pct };
+  }
+  if (sizer.type === "volatility-target") {
+    const annual = finiteNumber(sizer.annual, "volatility target");
+    const lookback = sizer.lookback == null ? 20 : finiteNumber(sizer.lookback, "sizer lookback");
+    if (annual <= 0 || annual > 500) throw new Error("volatility target must be within (0, 500]");
+    if (!Number.isInteger(lookback) || lookback < 2) {
+      throw new Error("sizer lookback must be an integer >= 2");
+    }
+    const maxLeverage =
+      sizer.maxLeverage == null ? 1 : finiteNumber(sizer.maxLeverage, "sizer max leverage");
+    if (maxLeverage <= 0 || maxLeverage > 1) {
+      throw new Error("sizer max leverage must be within (0, 1]; the engine does not borrow");
+    }
+    return { type: "volatility-target", annual, lookback, maxLeverage };
+  }
+  throw new Error(`unknown sizer type: ${sizer.type}`);
+}
+
+// Fraction of available cash to commit on this entry.
+function sizerFraction(sizer, bars, index) {
+  if (sizer.type === "all-in") return 1;
+  if (sizer.type === "fixed-fraction") return sizer.pct / 100;
+  const lookback = sizer.lookback;
+  const returns = [];
+  const start = Math.max(1, index - lookback + 1);
+  for (let i = start; i <= index; i += 1) {
+    const previous = bars[i - 1]?.close;
+    if (previous > 0) returns.push(bars[i].close / previous - 1);
+  }
+  // Without enough history to measure volatility the target is undefined.
+  // Report that instead of returning 0, which would silently consume an entry
+  // signal -- in edge mode that signal never fires again.
+  if (returns.length < 2) return null;
+  const realized = standardDeviation(returns) * Math.sqrt(TRADING_DAYS);
+  if (!Number.isFinite(realized)) return null;
+  // A flat window implies zero measured risk; the ratio would be unbounded, so
+  // clamp at maxLeverage rather than dividing by ~0.
+  if (realized <= 0) return sizer.maxLeverage;
+  // Scale exposure down when realized volatility exceeds the target. Never
+  // scale above maxLeverage, since the engine has no borrowing model.
+  return Math.min(sizer.maxLeverage, sizer.annual / 100 / realized);
+}
+
 function validateStrategy(strategy, barCount) {
   if (!strategy || typeof strategy !== "object") throw new Error("strategy is required");
   if (strategy.type === "sma-cross") {
@@ -473,6 +540,22 @@ export function runBacktest(bars, configuration) {
     throw new Error("stop loss must be between 0% (inclusive) and 100% (exclusive)");
   }
   validateStrategy(configuration.strategy, bars.length);
+  const sizer = validateSizer(configuration.sizer);
+  const signalMode = configuration.signalMode ?? "state";
+  if (signalMode !== "state" && signalMode !== "edge") {
+    throw new Error('signalMode must be "state" or "edge"');
+  }
+  const riskFreeRate = finiteNumber(configuration.riskFreeRate ?? 0, "risk-free rate");
+  // Bars before this index feed indicator warm-up only; no orders may execute
+  // there. Walk-forward needs history at the fold boundary without letting
+  // later-chosen parameters trade in the past.
+  const tradingFromIndex = Math.floor(configuration.tradingFromIndex ?? 0);
+  if (!Number.isInteger(tradingFromIndex) || tradingFromIndex < 0 || tradingFromIndex > bars.length) {
+    throw new Error("tradingFromIndex must be an integer within [0, bars.length]");
+  }
+  if (riskFreeRate < -1 || riskFreeRate > 1) {
+    throw new Error("risk-free rate must be a decimal within [-1, 1] (0.02 means 2%)");
+  }
 
   const { signals, indicators } = strategySignals(bars, configuration.strategy);
   let cash = initialCapital;
@@ -481,6 +564,7 @@ export function runBacktest(bars, configuration) {
   let exposureDays = 0;
   const trades = [];
   const equity = [];
+  const skippedEntries = [];
 
   const exitPosition = (bar, price, reason) => {
     const proceeds = shares * price;
@@ -504,7 +588,7 @@ export function runBacktest(bars, configuration) {
   for (let index = 0; index < bars.length; index += 1) {
     const bar = bars[index];
     let exposedThisBar = shares > 0;
-    if (index > 0) {
+    if (index > 0 && index >= tradingFromIndex) {
       const previousSignal = signals[index - 1];
       let exitedThisBar = false;
       if (shares > 0) {
@@ -513,15 +597,28 @@ export function runBacktest(bars, configuration) {
           const executableStop = Math.min(bar.open, stopPrice) * (1 - slippageRate);
           exitPosition(bar, executableStop, "stop");
           exitedThisBar = true;
-        } else if (previousSignal.exit) {
+        } else if (signalMode === "edge" ? previousSignal.exitSignal : previousSignal.exit) {
           exitPosition(bar, bar.open * (1 - slippageRate), "signal");
           exitedThisBar = true;
         }
       }
-      if (shares === 0 && !exitedThisBar && previousSignal.enter) {
+      const wantsEntry = signalMode === "edge" ? previousSignal.enterSignal : previousSignal.enter;
+      if (shares === 0 && !exitedThisBar && wantsEntry) {
         const entryPrice = bar.open * (1 + slippageRate);
         const cashBefore = cash;
-        shares = cash / (entryPrice * (1 + feeRate));
+        // Size off the signal bar, so the decision uses only closed data.
+        const fraction = sizerFraction(sizer, bars, index - 1);
+        const committed = fraction == null ? 0 : cash * fraction;
+        shares = committed > 0 ? committed / (entryPrice * (1 + feeRate)) : 0;
+        if (shares <= 0) {
+          // Record the skip so an unsized signal is visible rather than silent.
+          skippedEntries.push({
+            date: bar.date,
+            reason: fraction == null ? "sizer-unavailable" : "sizer-zero",
+          });
+          equity.push({ date: bar.date, value: cash });
+          continue;
+        }
         const cost = shares * entryPrice;
         const entryFee = cost * feeRate;
         cash -= cost + entryFee;
@@ -534,6 +631,10 @@ export function runBacktest(bars, configuration) {
           exitPosition(bar, stopPrice * (1 - slippageRate), "stop");
         }
       }
+    }
+    if (index < tradingFromIndex) {
+      equity.push({ date: bar.date, value: initialCapital });
+      continue;
     }
     if (exposedThisBar) exposureDays += 1;
     equity.push({ date: bar.date, value: cash + shares * bar.close });
@@ -550,7 +651,14 @@ export function runBacktest(bars, configuration) {
     value: initialCapital * (bar.close / bars[0].close),
   }));
   const benchmarkReturn = bars.at(-1).close / bars[0].close - 1;
-  const metrics = metricsFor(equity, initialCapital, trades, exposureDays, benchmarkReturn);
+  const metrics = metricsFor(
+    equity,
+    initialCapital,
+    trades,
+    exposureDays,
+    benchmarkReturn,
+    riskFreeRate,
+  );
   const finiteMetrics = [
     "finalEquity",
     "totalReturn",
@@ -581,6 +689,7 @@ export function runBacktest(bars, configuration) {
     trades,
     indicators,
     metrics,
+    skippedEntries,
   };
 }
 
@@ -618,4 +727,480 @@ export function generateDemoBars(count = 520) {
     date.setUTCDate(date.getUTCDate() + 1);
   }
   return bars;
+}
+
+// --- Research layer -------------------------------------------------------
+// A single backtest reports how one parameter set behaved on data it was
+// chosen against. These helpers exist to answer the harder question: would it
+// have held up out of sample, and is the neighbourhood stable?
+
+// Annualized Sharpe over a return series, matching metricsFor's convention.
+function sharpeOf(returns, riskFreeRate = 0) {
+  if (!Array.isArray(returns) || returns.length < 2) return 0;
+  const meanDaily = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const volatility = standardDeviation(returns);
+  if (volatility === 0) return 0;
+  const dailyRiskFree = (1 + riskFreeRate) ** (1 / TRADING_DAYS) - 1;
+  return ((meanDaily - dailyRiskFree) / volatility) * Math.sqrt(TRADING_DAYS);
+}
+
+function strategyWithParameters(base, parameters) {
+  return { ...base, ...parameters };
+}
+
+// Cartesian product of the supplied parameter ranges.
+export function parameterGrid(ranges) {
+  const keys = Object.keys(ranges);
+  if (keys.length === 0) throw new Error("parameter grid needs at least one range");
+  let combinations = [{}];
+  for (const key of keys) {
+    const values = ranges[key];
+    if (!Array.isArray(values) || values.length === 0) {
+      throw new Error(`parameter range ${key} must be a non-empty array`);
+    }
+    const next = [];
+    for (const combination of combinations) {
+      for (const value of values) next.push({ ...combination, [key]: value });
+    }
+    combinations = next;
+    if (combinations.length > 4_096) throw new Error("parameter grid exceeds 4096 combinations");
+  }
+  return combinations;
+}
+
+// Sweeps a parameter grid. Invalid combinations (fast >= slow, warm-up longer
+// than the sample) are reported rather than thrown, so a grid edge does not
+// abort the whole sweep.
+export function parameterSweep(bars, configuration, ranges, options = {}) {
+  const combinations = parameterGrid(ranges);
+  const results = [];
+  for (const parameters of combinations) {
+    try {
+      const result = runBacktest(bars, {
+        ...configuration,
+        strategy: strategyWithParameters(configuration.strategy, parameters),
+      });
+      results.push({
+        parameters,
+        ok: true,
+        metrics: result.metrics,
+        trades: result.trades.length,
+      });
+    } catch (error) {
+      results.push({ parameters, ok: false, error: error.message });
+    }
+  }
+  const usable = results.filter((entry) => entry.ok);
+  // A parameter set that never trades has flat equity and therefore Sharpe 0,
+  // which would outrank every genuinely traded but losing candidate. Zero-trade
+  // runs stay reportable but are ineligible to win unless nothing traded at all.
+  const minimumTrades = Math.max(1, Math.floor(options.minimumTrades ?? 1));
+  const eligible = usable.filter((entry) => entry.trades >= minimumTrades);
+  const sharpes = eligible.map((entry) => entry.metrics.sharpe);
+  const best = eligible.reduce(
+    (winner, entry) => (winner == null || entry.metrics.sharpe > winner.metrics.sharpe ? entry : winner),
+    null,
+  );
+  return {
+    results,
+    evaluated: results.length,
+    usable: usable.length,
+    eligible: eligible.length,
+    minimumTrades,
+    best,
+    // Neighbourhood stability. A high peak surrounded by poor scores is the
+    // signature of an overfit parameter choice.
+    sharpeMean: sharpes.length ? sharpes.reduce((sum, v) => sum + v, 0) / sharpes.length : null,
+    sharpeStdDev: sharpes.length > 1 ? standardDeviation(sharpes) : null,
+    sharpeMin: sharpes.length ? Math.min(...sharpes) : null,
+    sharpeMax: sharpes.length ? Math.max(...sharpes) : null,
+  };
+}
+
+// Rolling walk-forward. Each fold selects parameters on the in-sample window
+// and scores them on the untouched window that follows, so the out-of-sample
+// figures never saw the data used to pick them.
+export function walkForward(bars, configuration, ranges, options = {}) {
+  const inSampleBars = Math.floor(options.inSampleBars ?? 504);
+  const outOfSampleBars = Math.floor(options.outOfSampleBars ?? 126);
+  if (!Number.isInteger(inSampleBars) || inSampleBars < 30) {
+    throw new Error("inSampleBars must be an integer >= 30");
+  }
+  if (!Number.isInteger(outOfSampleBars) || outOfSampleBars < 10) {
+    throw new Error("outOfSampleBars must be an integer >= 10");
+  }
+  // Coerce here too: runBacktest accepts numeric strings, but this value also
+  // feeds sharpeOf directly, where "0.03" would make 1 + rate string-concatenate.
+  const riskFreeRate = Number(configuration.riskFreeRate ?? 0);
+  if (!Number.isFinite(riskFreeRate)) throw new Error("risk-free rate must be a finite number");
+  if (bars.length < inSampleBars + outOfSampleBars) {
+    throw new Error(
+      `walk-forward needs at least ${inSampleBars + outOfSampleBars} bars, received ${bars.length}`,
+    );
+  }
+
+  // Indicators need history before the first scored bar. Prepending the tail of
+  // the in-sample window is legitimate -- that data is already known at the
+  // boundary -- and without it a valid parameter set can fail purely because its
+  // lookback exceeds the fold length.
+  // Default warm-up must cover the longest lookback in the grid, otherwise a
+  // parameter set that is valid in-sample fails every fold for lack of history.
+  const longestLookback = Math.max(
+    0,
+    ...parameterGrid(ranges).map((parameters) => {
+      const merged = { ...configuration.strategy, ...parameters };
+      const candidates = [merged.slow, merged.fast, merged.period, merged.lookback]
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value));
+      return candidates.length ? Math.max(...candidates) : 0;
+    }),
+  );
+  const defaultWarmup = Math.max(Math.min(inSampleBars, outOfSampleBars), longestLookback + 2);
+  const warmupBars = Math.min(
+    inSampleBars,
+    Math.max(0, Math.floor(options.warmupBars ?? defaultWarmup)),
+  );
+
+  const folds = [];
+  let lastScoredIndex = 0;
+  for (let start = 0; start + inSampleBars + outOfSampleBars <= bars.length; start += outOfSampleBars) {
+    const inSample = bars.slice(start, start + inSampleBars);
+    const scoredFrom = start + inSampleBars;
+    const scoredTo = scoredFrom + outOfSampleBars;
+    const outOfSample = bars.slice(scoredFrom, scoredTo);
+    // Warm-up bars precede the scored window and never extend past it, so no
+    // future information enters the evaluation.
+    const evaluationSlice = bars.slice(scoredFrom - warmupBars, scoredTo);
+    lastScoredIndex = scoredTo;
+    const sweep = parameterSweep(inSample, configuration, ranges);
+    if (!sweep.best) {
+      folds.push({
+        from: outOfSample[0].date,
+        to: outOfSample.at(-1).date,
+        ok: false,
+        error: "no valid parameter set in sample",
+      });
+      continue;
+    }
+    const chosen = sweep.best.parameters;
+    try {
+      const result = runBacktest(evaluationSlice, {
+        ...configuration,
+        strategy: strategyWithParameters(configuration.strategy, chosen),
+        // Warm-up bars prime the indicators but must not trade: a position
+        // opened there would use parameters chosen from later data.
+        tradingFromIndex: warmupBars,
+      });
+      // Score only the out-of-sample portion: drop the warm-up prefix from the
+      // equity curve before deriving returns.
+      const scoredEquity = result.equity.slice(warmupBars);
+      // Warm-up equity is flat initial capital by construction, so the scored
+      // window always starts from an untraded portfolio.
+      const equityBase = configuration.initialCapital;
+      const scoredReturns = [];
+      for (let i = 0; i < scoredEquity.length; i += 1) {
+        const previous = i === 0 ? equityBase : scoredEquity[i - 1].value;
+        if (previous > 0) scoredReturns.push(scoredEquity[i].value / previous - 1);
+      }
+      const scoredReturn =
+        equityBase > 0 && scoredEquity.length
+          ? scoredEquity.at(-1).value / equityBase - 1
+          : 0;
+      const benchmarkReturn = outOfSample.at(-1).close / outOfSample[0].close - 1;
+      folds.push({
+        from: outOfSample[0].date,
+        to: outOfSample.at(-1).date,
+        ok: true,
+        parameters: chosen,
+        warmupBars,
+        inSampleSharpe: sweep.best.metrics.sharpe,
+        inSampleReturn: sweep.best.metrics.totalReturn,
+        outOfSampleSharpe: sharpeOf(scoredReturns, riskFreeRate),
+        outOfSampleReturn: scoredReturn,
+        benchmarkReturn,
+        returns: scoredReturns,
+        trades: result.trades.length,
+      });
+    } catch (error) {
+      folds.push({
+        from: outOfSample[0].date,
+        to: outOfSample.at(-1).date,
+        ok: false,
+        error: error.message,
+      });
+    }
+  }
+
+  const usable = folds.filter((fold) => fold.ok);
+  const mean = (values) =>
+    values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const meanInSampleFoldSharpe = mean(usable.map((fold) => fold.inSampleSharpe));
+  const meanOutOfSampleFoldSharpe = mean(usable.map((fold) => fold.outOfSampleSharpe));
+  // The mean of per-fold ratios is not the Sharpe of the combined series. Pool
+  // the out-of-sample returns and compute one ratio over the whole stream.
+  const pooledReturns = usable.flatMap((fold) => fold.returns ?? []);
+  const pooledOutOfSampleSharpe = pooledReturns.length > 1 ? sharpeOf(pooledReturns, riskFreeRate) : null;
+  for (const fold of usable) delete fold.returns;
+  return {
+    folds,
+    inSampleBars,
+    outOfSampleBars,
+    warmupBars,
+    usableFolds: usable.length,
+    failedFolds: folds.length - usable.length,
+    // Bars after the last scored fold are never evaluated; report the omission
+    // rather than letting recent data disappear silently.
+    untestedTailBars: bars.length - lastScoredIndex,
+    testedThrough: usable.length ? usable.at(-1).to : null,
+    meanInSampleFoldSharpe,
+    meanOutOfSampleFoldSharpe,
+    pooledOutOfSampleSharpe,
+    // Sharpe routinely collapses out of sample; a large gap means the in-sample
+    // figure was largely parameter selection, not signal.
+    degradation:
+      meanInSampleFoldSharpe == null || pooledOutOfSampleSharpe == null
+        ? null
+        : meanInSampleFoldSharpe - pooledOutOfSampleSharpe,
+    outOfSampleWinRate: usable.length
+      ? usable.filter((fold) => fold.outOfSampleReturn > 0).length / usable.length
+      : null,
+    beatBenchmarkRate: usable.length
+      ? usable.filter((fold) => fold.outOfSampleReturn > fold.benchmarkReturn).length / usable.length
+      : null,
+  };
+}
+
+// Locates the worst peak-to-trough stretch so a research prompt can ask what
+// actually happened during it, rather than quoting a bare drawdown number.
+export function drawdownEpisodes(equity, limit = 3) {
+  if (!Array.isArray(equity) || equity.length === 0) return [];
+  const episodes = [];
+  let peak = equity[0];
+  let trough = equity[0];
+  let inDrawdown = false;
+  const close = () => {
+    if (!inDrawdown || peak.value <= 0) return;
+    episodes.push({
+      peakDate: peak.date,
+      troughDate: trough.date,
+      depth: trough.value / peak.value - 1,
+    });
+    inDrawdown = false;
+  };
+  for (const point of equity) {
+    if (point.value >= peak.value) {
+      close();
+      peak = point;
+      trough = point;
+      continue;
+    }
+    inDrawdown = true;
+    if (point.value < trough.value) trough = point;
+  }
+  close();
+  return episodes
+    .sort((a, b) => a.depth - b.depth)
+    .slice(0, Math.max(0, Math.floor(limit)));
+}
+
+// Assembles everything a reviewer needs to judge a result. Every number here
+// comes from the engine; the agent explains it and never recomputes it.
+export function researchEvidence(result, options = {}) {
+  const { metrics, equity, trades, bars } = result;
+  const episodes = drawdownEpisodes(equity, 3);
+  const walk = options.walkForward ?? null;
+  const sweep = options.sweep ?? null;
+
+  const concerns = [];
+  if (metrics.trades < 30) {
+    concerns.push(
+      `only ${metrics.trades} closed trades; per-trade statistics are not statistically meaningful`,
+    );
+  }
+  if (metrics.totalReturn <= metrics.benchmarkReturn) {
+    concerns.push("strategy underperforms buy-and-hold before any further adjustment");
+  }
+  if (walk && walk.usableFolds === 0) {
+    concerns.push(
+      "walk-forward produced no usable folds; the out-of-sample figures are unavailable, not favourable",
+    );
+  }
+  if (walk && walk.failedFolds > 0 && walk.usableFolds > 0) {
+    concerns.push(
+      `${walk.failedFolds} of ${walk.folds.length} walk-forward folds failed and are excluded from the summary`,
+    );
+  }
+  if (walk && walk.untestedTailBars > 0) {
+    concerns.push(
+      `${walk.untestedTailBars} most recent bars fall outside the last scored fold and were never validated`,
+    );
+  }
+  if (walk && walk.degradation != null && walk.degradation > 0.5) {
+    concerns.push(
+      `Sharpe falls ${walk.degradation.toFixed(2)} from in-sample to pooled out-of-sample, indicating parameter overfitting`,
+    );
+  }
+  if (walk && walk.beatBenchmarkRate != null && walk.beatBenchmarkRate < 0.5) {
+    concerns.push(
+      `beats benchmark in only ${(walk.beatBenchmarkRate * 100).toFixed(0)}% of out-of-sample folds`,
+    );
+  }
+  if (sweep && sweep.sharpeStdDev != null && sweep.sharpeMean != null) {
+    if (sweep.sharpeMax - sweep.sharpeMean > 2 * sweep.sharpeStdDev) {
+      concerns.push(
+        "best parameter set is an isolated peak in the sweep; the neighbourhood does not support it",
+      );
+    }
+  }
+  if (result.skippedEntries?.length) {
+    const unavailable = result.skippedEntries.filter(
+      (entry) => entry.reason === "sizer-unavailable",
+    ).length;
+    concerns.push(
+      `${result.skippedEntries.length} entry signals were skipped because the sizer produced no position` +
+        (unavailable ? ` (${unavailable} lacked volatility history)` : ""),
+    );
+  }
+  if (sweep && sweep.eligible === 0 && sweep.usable > 0) {
+    concerns.push("no swept parameter set produced a trade; the sweep has no valid winner");
+  }
+  if (!walk) concerns.push("no out-of-sample validation was run");
+
+  return {
+    sample: bars.length ? { bars: bars.length, from: bars[0].date, to: bars.at(-1).date } : null,
+    metrics,
+    worstDrawdowns: episodes,
+    tradeCount: trades.length,
+    walkForward: walk,
+    sweep: sweep
+      ? {
+          evaluated: sweep.evaluated,
+          usable: sweep.usable,
+          eligible: sweep.eligible,
+          best: sweep.best?.parameters ?? null,
+          sharpeMean: sweep.sharpeMean,
+          sharpeStdDev: sweep.sharpeStdDev,
+          sharpeMin: sweep.sharpeMin,
+          sharpeMax: sweep.sharpeMax,
+        }
+      : null,
+    concerns,
+  };
+}
+
+// --- Watchlist -------------------------------------------------------------
+// Evaluates the latest bar of a tracked symbol against the same signal rules
+// the backtester uses, so an alert can be validated by the same walk-forward
+// machinery rather than being an unbacktestable heuristic.
+
+const ALERT_RULES = ["signal-entry", "rsi-oversold", "price-below", "drawdown-from-high"];
+
+export function validateAlertRule(rule) {
+  if (!rule || typeof rule !== "object") throw new Error("alert rule is required");
+  if (!ALERT_RULES.includes(rule.type)) throw new Error(`unknown alert rule: ${rule.type}`);
+  if (rule.type === "price-below") {
+    const price = finiteNumber(rule.price, "alert price");
+    if (price <= 0) throw new Error("alert price must be positive");
+    return { type: rule.type, price };
+  }
+  if (rule.type === "rsi-oversold") {
+    const period = Math.floor(finiteNumber(rule.period ?? 14, "RSI period"));
+    const threshold = finiteNumber(rule.threshold ?? 30, "RSI threshold");
+    if (period < 2) throw new Error("RSI period must be >= 2");
+    if (threshold <= 0 || threshold >= 100) throw new Error("RSI threshold must be within (0, 100)");
+    return { type: rule.type, period, threshold };
+  }
+  if (rule.type === "drawdown-from-high") {
+    const pct = finiteNumber(rule.pct ?? 20, "drawdown threshold");
+    const lookback = Math.floor(finiteNumber(rule.lookback ?? 252, "drawdown lookback"));
+    if (pct <= 0 || pct >= 100) throw new Error("drawdown threshold must be within (0, 100)");
+    if (lookback < 2) throw new Error("drawdown lookback must be >= 2");
+    return { type: rule.type, pct, lookback };
+  }
+  return { type: rule.type, strategy: rule.strategy ?? null };
+}
+
+// Evaluates one symbol. Returns a structured verdict rather than a message, so
+// the caller decides how to present it and the agent never invents numbers.
+export function evaluateWatchItem(bars, item) {
+  if (!Array.isArray(bars) || bars.length < 2) throw new Error("need at least two bars");
+  const rule = validateAlertRule(item.rule);
+  const last = bars.at(-1);
+  const closes = bars.map((bar) => bar.close);
+  const base = {
+    symbol: item.symbol,
+    asOf: last.date,
+    close: last.close,
+    changePct: closes.at(-2) > 0 ? last.close / closes.at(-2) - 1 : 0,
+    rule: rule.type,
+  };
+
+  if (rule.type === "price-below") {
+    return {
+      ...base,
+      triggered: last.close <= rule.price,
+      detail: `收盘 ${last.close.toFixed(2)}，触发线 ${rule.price.toFixed(2)}`,
+      distance: rule.price > 0 ? last.close / rule.price - 1 : null,
+    };
+  }
+
+  if (rule.type === "rsi-oversold") {
+    const rsi = relativeStrengthIndex(closes, rule.period);
+    const value = rsi.at(-1);
+    if (value == null) {
+      return { ...base, triggered: false, detail: "历史不足，无法计算 RSI", distance: null };
+    }
+    return {
+      ...base,
+      triggered: value <= rule.threshold,
+      detail: `RSI(${rule.period}) ${value.toFixed(1)}，阈值 ${rule.threshold}`,
+      distance: (value - rule.threshold) / 100,
+    };
+  }
+
+  if (rule.type === "drawdown-from-high") {
+    const window = closes.slice(-rule.lookback);
+    const high = Math.max(...window);
+    const drawdown = high > 0 ? last.close / high - 1 : 0;
+    return {
+      ...base,
+      triggered: drawdown <= -rule.pct / 100,
+      detail: `距 ${rule.lookback} 日高点 ${(drawdown * 100).toFixed(1)}%，阈值 -${rule.pct}%`,
+      distance: drawdown + rule.pct / 100,
+    };
+  }
+
+  // signal-entry: fires on the same edge the backtester would trade.
+  const strategy = rule.strategy ?? item.strategy;
+  if (!strategy) throw new Error("signal-entry alert needs a strategy");
+  const { signals } = strategySignals(bars, strategy);
+  const lastSignal = signals.at(-1);
+  return {
+    ...base,
+    triggered: Boolean(lastSignal?.enterSignal),
+    detail: lastSignal?.enterSignal
+      ? `${strategyRuleLabel(strategy)} 今日出现买入信号`
+      : lastSignal?.enter
+        ? `${strategyRuleLabel(strategy)} 处于持有区间，但今日无新信号`
+        : `${strategyRuleLabel(strategy)} 未触发`,
+    distance: null,
+  };
+}
+
+function strategyRuleLabel(strategy) {
+  if (strategy.type === "sma-cross") return `SMA ${strategy.fast}/${strategy.slow}`;
+  if (strategy.type === "rsi-reversion") return `RSI ${strategy.period}`;
+  if (strategy.type === "breakout") return `突破 ${strategy.lookback}`;
+  return strategy.type;
+}
+
+// Ranks evaluated items so triggered ones surface first, then those closest to
+// triggering. Sorting by proximity keeps a long watchlist scannable.
+export function rankWatchResults(results) {
+  return [...results].sort((a, b) => {
+    if (a.triggered !== b.triggered) return a.triggered ? -1 : 1;
+    const left = a.distance == null ? Number.POSITIVE_INFINITY : Math.abs(a.distance);
+    const right = b.distance == null ? Number.POSITIVE_INFINITY : Math.abs(b.distance);
+    return left - right;
+  });
 }

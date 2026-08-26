@@ -11,6 +11,11 @@ optional timestamp after `T` or a space is ignored when assigning the daily bar.
 positive. Rows are sorted ascending, duplicate dates are rejected, and duplicate required/volume
 columns are rejected rather than interpreted ambiguously.
 
+The bundled `app/tools/fetch-market-data.mjs` writes conforming CSVs and records the adjustment
+basis in a `<SYMBOL>.meta.json` sidecar (`qfq`, `hfq`, `adj` or `none`). Prefer an adjusted basis;
+when a dataset carries `adjust: none`, treat its results as raw-price behavior and state that
+limitation in the report. A-share volume from the sync tool is converted from lots to shares.
+
 Use split- and dividend-adjusted OHLC data when evaluating total-return-like behavior. If raw data
 is used, document that limitation in the report.
 

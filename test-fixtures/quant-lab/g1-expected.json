@@ -1,0 +1,68 @@
+{
+  "checkpoints": [
+    { "date": "2026-03-05", "cnCash": "49994.00", "shValue": "50500.00", "usdCash": "10000.00", "aaplUsdValue": "0.00", "usdReceivable": "0.00", "usdBaseValue": "70000.00", "usCnyCash": "0.00", "value": "170494.00", "beginFlow": "170000.00", "endFlow": "0.00", "return": "0.0029058824", "cnObservation": "2026-03-05", "cnAge": 0, "usObservation": null, "usAge": null, "fxObservation": "2026-03-04", "fxAge": 1 },
+    { "date": "2026-03-06", "cnCash": "49994.00", "shValue": "51000.00", "usdCash": "6999.00", "aaplUsdValue": "3040.00", "usdReceivable": "0.00", "usdBaseValue": "70774.95", "usCnyCash": "0.00", "value": "171768.95", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0074779758", "cnObservation": "2026-03-06", "cnAge": 0, "usObservation": "2026-03-05", "usAge": 1, "fxObservation": "2026-03-05", "fxAge": 1 },
+    { "date": "2026-03-07", "cnCash": "49994.00", "shValue": "51000.00", "usdCash": "6999.00", "aaplUsdValue": "3100.00", "usdReceivable": "0.00", "usdBaseValue": "71702.90", "usCnyCash": "0.00", "value": "172696.90", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0054023151", "cnObservation": "2026-03-06", "cnAge": 1, "usObservation": "2026-03-06", "usAge": 1, "fxObservation": "2026-03-06", "fxAge": 1 },
+    { "date": "2026-03-08", "cnCash": "49994.00", "shValue": "51000.00", "usdCash": "6999.00", "aaplUsdValue": "3100.00", "usdReceivable": "0.00", "usdBaseValue": "71702.90", "usCnyCash": "0.00", "value": "172696.90", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0000000000", "cnObservation": "2026-03-06", "cnAge": 2, "usObservation": "2026-03-06", "usAge": 2, "fxObservation": "2026-03-06", "fxAge": 2 },
+    { "date": "2026-03-09", "cnCash": "49994.00", "shValue": "51000.00", "usdCash": "6999.00", "aaplUsdValue": "3100.00", "usdReceivable": "0.00", "usdBaseValue": "71702.90", "usCnyCash": "0.00", "value": "172696.90", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0000000000", "cnObservation": "2026-03-06", "cnAge": 3, "usObservation": "2026-03-06", "usAge": 3, "fxObservation": "2026-03-06", "fxAge": 3 },
+    { "date": "2026-03-10", "cnCash": "49994.00", "shValue": "49000.00", "usdCash": "5999.00", "aaplUsdValue": "3095.00", "usdReceivable": "4.00", "usdBaseValue": "65505.60", "usCnyCash": "7150.00", "value": "171649.60", "beginFlow": "0.00", "endFlow": "0.00", "return": "-0.0060643822", "cnObservation": "2026-03-10", "cnAge": 0, "usObservation": "2026-03-09", "usAge": 1, "fxObservation": "2026-03-09", "fxAge": 1 },
+    { "date": "2026-03-11", "cnCash": "69778.10", "shValue": "29700.00", "usdCash": "5999.00", "aaplUsdValue": "3120.00", "usdReceivable": "4.00", "usdBaseValue": "65229.45", "usCnyCash": "7150.00", "value": "171857.55", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0012114797", "cnObservation": "2026-03-11", "cnAge": 0, "usObservation": "2026-03-10", "usAge": 1, "fxObservation": "2026-03-10", "fxAge": 1 },
+    { "date": "2026-03-12", "cnCash": "69778.10", "shValue": "29850.00", "usdCash": "5999.00", "aaplUsdValue": "3160.00", "usdReceivable": "4.00", "usdBaseValue": "65057.30", "usCnyCash": "7150.00", "value": "171835.40", "beginFlow": "0.00", "endFlow": "0.00", "return": "-0.0001288858", "cnObservation": "2026-03-12", "cnAge": 0, "usObservation": "2026-03-11", "usAge": 1, "fxObservation": "2026-03-11", "fxAge": 1 },
+    { "date": "2026-03-13", "cnCash": "69778.10", "shValue": "30300.00", "usdCash": "6003.00", "aaplUsdValue": "3200.00", "usdReceivable": "0.00", "usdBaseValue": "64881.15", "usCnyCash": "7150.00", "value": "172109.25", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0015936763", "cnObservation": "2026-03-13", "cnAge": 0, "usObservation": "2026-03-12", "usAge": 1, "fxObservation": "2026-03-12", "fxAge": 1 },
+    { "date": "2026-03-14", "cnCash": "69778.10", "shValue": "30300.00", "usdCash": "6003.00", "aaplUsdValue": "3240.00", "usdReceivable": "0.00", "usdBaseValue": "64701.00", "usCnyCash": "7150.00", "value": "171929.10", "beginFlow": "0.00", "endFlow": "0.00", "return": "-0.0010467189", "cnObservation": "2026-03-13", "cnAge": 1, "usObservation": "2026-03-13", "usAge": 1, "fxObservation": "2026-03-13", "fxAge": 1 },
+    { "date": "2026-03-15", "cnCash": "69778.10", "shValue": "30300.00", "usdCash": "6003.00", "aaplUsdValue": "3240.00", "usdReceivable": "0.00", "usdBaseValue": "64701.00", "usCnyCash": "7150.00", "value": "171929.10", "beginFlow": "0.00", "endFlow": "0.00", "return": "0.0000000000", "cnObservation": "2026-03-13", "cnAge": 2, "usObservation": "2026-03-13", "usAge": 2, "fxObservation": "2026-03-13", "fxAge": 2 },
+    { "date": "2026-03-16", "cnCash": "49778.10", "shValue": "30000.00", "usdCash": "6003.00", "aaplUsdValue": "3240.00", "usdReceivable": "0.00", "usdBaseValue": "64701.00", "usCnyCash": "7150.00", "value": "151629.10", "beginFlow": "0.00", "endFlow": "-20000.00", "return": "-0.0017449053", "cnObservation": "2026-03-16", "cnAge": 0, "usObservation": "2026-03-13", "usAge": 3, "fxObservation": "2026-03-13", "fxAge": 3 },
+    { "date": "2026-03-17", "cnCash": "49778.10", "shValue": "30150.00", "usdCash": "4003.00", "aaplUsdValue": "3280.00", "usdReceivable": "0.00", "usdBaseValue": "50616.85", "usCnyCash": "7150.00", "value": "137694.95", "beginFlow": "0.00", "endFlow": "-13900.00", "return": "-0.0002252206", "cnObservation": "2026-03-17", "cnAge": 0, "usObservation": "2026-03-16", "usAge": 1, "fxObservation": "2026-03-16", "fxAge": 1 }
+  ],
+  "holdings": {
+    "cnCash": "49778.10",
+    "shQuantity": "300",
+    "shCostBasisLocal": "30003.60",
+    "shAvgCostLocal": "100.012",
+    "shRealizedPnlLocal": "-218.30",
+    "shUnrealizedPnlLocal": "146.40",
+    "usUsdCash": "4003.00",
+    "usCnyCash": "7150.00",
+    "aaplQuantity": "40",
+    "aaplCostBasisLocal": "3001.00",
+    "aaplAvgCostLocal": "75.025",
+    "aaplCostBasisBase": "21157.05",
+    "aaplNetIncomeLocal": "4.00",
+    "aaplNetIncomeBase": "28.80",
+    "aaplUnrealizedPnlLocal": "279.00"
+  },
+  "cumulativeTwr": "0.0093555623",
+  "forcedAnnualizedTwr": "0.3274265340",
+  "xirr": "0.3321943242",
+  "positionXirr": "18.91713526",
+  "xirrFlows": [
+    { "date": "2026-03-05", "amount": "-170000.00" },
+    { "date": "2026-03-16", "amount": "20000.00" },
+    { "date": "2026-03-17", "amount": "151594.95" }
+  ],
+  "attribution": {
+    "externalFlowSum": "136100.00",
+    "economicPnl": "1594.95",
+    "localPrice": "1867.15",
+    "shLocalPrice": "-71.90",
+    "aaplLocalPrice": "1939.05",
+    "instrumentFx": "-300.10",
+    "netIncome": "28.80",
+    "cashFx": "49.10",
+    "conversionSpread": "-50.00",
+    "identityDifference": "0.00"
+  },
+  "hhi": {
+    "shWeight": "0.5694481169",
+    "aaplWeight": "0.4305518831",
+    "raw": "0.5096460819",
+    "normalized": "0.0192921638"
+  },
+  "negative": {
+    "n1Jump": "-0.4936708861",
+    "n3FirstReturn": "0.0049400000",
+    "n3CumulativeTwr": "0.0114027613",
+    "n5AgeAllowed": 10,
+    "n5AgeBlocked": 11
+  }
+}

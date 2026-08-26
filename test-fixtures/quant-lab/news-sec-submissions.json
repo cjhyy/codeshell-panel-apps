@@ -1,0 +1,14 @@
+{
+  "name": "Apple Inc.",
+  "tickers": ["AAPL"],
+  "filings": {
+    "recent": {
+      "accessionNumber": ["0000320193-26-000081", "0000320193-26-000080"],
+      "filingDate": ["2026-08-25", "2026-08-24"],
+      "acceptanceDateTime": ["20260825163000", "20260824120000"],
+      "form": ["8-K", "4"],
+      "primaryDocument": ["aapl-20260825.htm", "xslF345X06/form4.xml"],
+      "primaryDocDescription": ["Current report", "Ownership report"]
+    }
+  }
+}

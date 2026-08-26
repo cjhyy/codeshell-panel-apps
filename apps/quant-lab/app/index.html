@@ -1,10 +1,10 @@
 <!doctype html>
-<!-- Quant Lab Panel App -->
+<!-- Investment Desk Panel App -->
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Quant Lab</title>
+    <title>投资工作台</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
@@ -13,30 +13,351 @@
         <div class="brand">
           <span class="brand-mark"> <i></i><i></i><i></i> </span>
           <div>
-            <strong>QUANT LAB</strong>
-            <span>LOCAL RESEARCH DESK</span>
+            <strong>投资工作台</strong>
+            <span>INVESTMENT DESK</span>
           </div>
         </div>
-        <div class="data-loader">
-          <span class="path-prefix">repo:/</span>
-          <input
-            id="data-path"
-            value="data/market/AAPL.csv"
-            aria-label="OHLCV CSV 相对路径"
-            spellcheck="false"
-          />
-          <button id="load-data" type="button">加载</button>
-        </div>
+        <nav class="module-tabs" role="tablist" aria-label="投资工作台模块">
+          <button
+            id="module-tab-today"
+            type="button"
+            role="tab"
+            data-module-tab="today"
+            aria-controls="module-today"
+            aria-selected="true"
+            aria-current="page"
+          >今日</button>
+          <button
+            id="module-tab-holdings"
+            type="button"
+            role="tab"
+            data-module-tab="holdings"
+            aria-controls="module-holdings"
+            aria-selected="false"
+            tabindex="-1"
+          >持仓</button>
+          <button
+            id="module-tab-watch"
+            type="button"
+            role="tab"
+            data-module-tab="watch"
+            aria-controls="module-watch"
+            aria-selected="false"
+            tabindex="-1"
+          >关注</button>
+          <button
+            id="module-tab-research"
+            type="button"
+            role="tab"
+            data-module-tab="research"
+            aria-controls="module-research"
+            aria-selected="false"
+            tabindex="-1"
+          >研究</button>
+          <button
+            id="module-tab-news"
+            type="button"
+            role="tab"
+            data-module-tab="news"
+            aria-controls="module-news"
+            aria-selected="false"
+            tabindex="-1"
+          >资讯</button>
+          <button
+            id="module-tab-notes"
+            type="button"
+            role="tab"
+            data-module-tab="notes"
+            aria-controls="module-notes"
+            aria-selected="false"
+            tabindex="-1"
+          >笔记</button>
+        </nav>
         <button id="ask-agent" class="agent-button" type="button">
           <span>✦</span>
           Agent
         </button>
       </header>
 
+      <div class="module-panels">
+        <section
+          id="module-today"
+          class="module-panel"
+          data-module="today"
+          role="tabpanel"
+          aria-labelledby="module-tab-today"
+        >
+          <header class="module-heading">
+            <span class="eyebrow">TODAY</span>
+            <h1 id="module-today-title" tabindex="-1">今日</h1>
+            <p>先确认最值得处理的一件事；账本或行情缺失时不伪造收益数字。</p>
+          </header>
+          <div class="today-shell">
+            <section class="today-market-strip" aria-labelledby="today-market-title">
+              <div>
+                <span class="eyebrow">MARKET WINDOWS</span>
+                <h2 id="today-market-title">常规市场窗口</h2>
+              </div>
+              <p id="today-market-cn" data-state="closed">A 股 · 读取中</p>
+              <p id="today-market-us" data-state="closed">美股 · 读取中</p>
+              <small id="today-market-basis">固定北京时间常规窗口；未校验交易所节假日</small>
+            </section>
+            <article class="today-primary">
+              <span class="eyebrow">NEXT ACTION</span>
+              <h2 id="today-primary-title">建立第一条投资上下文</h2>
+              <p id="today-primary-detail">正在聚合账本、规则与关注检查结果。</p>
+              <p id="today-primary-evidence" class="today-primary-evidence" aria-live="polite"></p>
+              <button
+                id="today-primary-action"
+                class="module-action"
+                type="button"
+                data-module-link="holdings"
+              >
+                添加持仓
+              </button>
+            </article>
+            <div
+              id="today-summary-list"
+              class="today-summary-list"
+              aria-label="最多三项今日摘要与最近变化"
+              aria-live="polite"
+            ></div>
+          </div>
+        </section>
+
+        <section
+          id="module-holdings"
+          class="module-panel"
+          data-module="holdings"
+          role="tabpanel"
+          aria-labelledby="module-tab-holdings"
+          hidden
+        >
+          <header class="module-heading">
+            <span class="eyebrow">PORTFOLIO</span>
+            <h1 id="module-holdings-title" tabindex="-1">持仓</h1>
+            <p>账本为唯一权威；本币明细与基准币分析分别标注可用状态。</p>
+          </header>
+          <p id="portfolio-status" class="portfolio-status" role="status" aria-live="polite">
+            正在读取持仓账本…
+          </p>
+          <article id="portfolio-empty" class="stage-empty" hidden>
+            <span class="stage-label">LEDGER</span>
+            <h2>尚未建立持仓账本</h2>
+            <p>首次保存会以 create-only 写入 portfolio/transactions.json；若文件已被其他进程建立，不会覆盖。</p>
+            <button id="portfolio-create" class="module-action" type="button" data-module-next-action>
+              建立持仓账本
+            </button>
+          </article>
+          <div id="portfolio-workspace" class="portfolio-workspace" hidden>
+            <section class="portfolio-summary" aria-labelledby="portfolio-summary-title">
+              <div>
+                <span class="eyebrow">PORTFOLIO VALUE</span>
+                <h2 id="portfolio-summary-title">组合概览</h2>
+              </div>
+              <dl>
+                <div><dt>总资产 · CNY 基准</dt><dd id="portfolio-total-base">unavailable</dd></div>
+                <div><dt>本币口径</dt><dd id="portfolio-local-state">complete</dd></div>
+                <div><dt>基准币口径</dt><dd id="portfolio-base-state">unavailable</dd></div>
+              </dl>
+              <p id="portfolio-summary-note">只有价格与 FX 全部 complete 时显示总资产。</p>
+              <p id="portfolio-fx-source" class="portfolio-fx-source">FX · not required</p>
+            </section>
+
+            <section
+              id="portfolio-analysis"
+              class="portfolio-card portfolio-analysis"
+              aria-labelledby="portfolio-analysis-title"
+              tabindex="-1"
+            >
+              <header class="portfolio-card-head">
+                <div>
+                  <span class="eyebrow">P0—P3 · PURE RULES</span>
+                  <h2 id="portfolio-analysis-title">持仓分析</h2>
+                </div>
+                <span>引擎判定 · Agent 只解释</span>
+              </header>
+              <p
+                id="portfolio-analysis-status"
+                class="portfolio-analysis-status"
+                role="status"
+                aria-live="polite"
+              >正在计算规则…</p>
+              <div id="portfolio-analysis-list" class="portfolio-analysis-list"></div>
+              <footer class="portfolio-analysis-footer">
+                <p>所有 actual / threshold 来自纯规则引擎；无法判断时保留精确原因，不补零。</p>
+                <button id="portfolio-analysis-agent" class="ghost-button" type="button">
+                  让 Agent 解释结构化证据
+                </button>
+                <span id="portfolio-analysis-agent-state" role="status" aria-live="polite"></span>
+              </footer>
+            </section>
+
+            <section class="portfolio-card" aria-labelledby="portfolio-holdings-title">
+              <header class="portfolio-card-head">
+                <div>
+                  <span class="eyebrow">LATEST KNOWN</span>
+                  <h2 id="portfolio-holdings-title">持仓明细</h2>
+                </div>
+                <button id="portfolio-refresh" class="ghost-button" type="button">重新读取</button>
+              </header>
+              <div id="portfolio-holdings-list" class="portfolio-holdings-list"></div>
+            </section>
+
+            <section class="portfolio-card portfolio-entry" aria-labelledby="portfolio-entry-title">
+              <header class="portfolio-card-head">
+                <div>
+                  <span class="eyebrow">MANUAL ENTRY</span>
+                  <h2 id="portfolio-entry-title">手动录入交易</h2>
+                </div>
+                <span>移动加权 · 非税务成本</span>
+              </header>
+              <form id="portfolio-transaction-form" novalidate>
+                <div class="portfolio-form-grid">
+                  <label>账户<input id="portfolio-account" name="account" required maxlength="64" autocomplete="off" placeholder="如 cn-main" /></label>
+                  <label>市场<select id="portfolio-market" name="market"><option value="cn">A 股</option><option value="us">美股</option></select></label>
+                  <label>代码<input id="portfolio-symbol" name="symbol" required maxlength="12" autocomplete="off" placeholder="SH600519" /></label>
+                  <label>名称<input id="portfolio-name" name="name" maxlength="80" autocomplete="off" placeholder="可选" /></label>
+                  <label>方向<select id="portfolio-side" name="side"><option value="buy">买入</option><option value="sell">卖出</option></select></label>
+                  <label>交易日期<input id="portfolio-date" name="date" type="date" required /></label>
+                  <label>数量<input id="portfolio-quantity" name="quantity" inputmode="decimal" required placeholder="100" /></label>
+                  <label>成交价<input id="portfolio-price" name="price" inputmode="decimal" required placeholder="0.00" /></label>
+                  <label>币种<select id="portfolio-currency" name="currency"><option value="CNY">CNY</option><option value="USD">USD</option></select></label>
+                  <label>佣金<input id="portfolio-commission" name="commission" inputmode="decimal" value="0.00" /></label>
+                  <label>税<input id="portfolio-tax" name="tax" inputmode="decimal" value="0.00" /></label>
+                  <label>其他费用<input id="portfolio-other-fees" name="otherFees" inputmode="decimal" value="0.00" /></label>
+                </div>
+                <p id="portfolio-form-error" class="portfolio-form-error" role="alert" aria-live="assertive" hidden></p>
+                <button id="portfolio-save" class="module-action" type="submit">保存交易</button>
+              </form>
+            </section>
+
+            <section class="portfolio-card" aria-labelledby="portfolio-transactions-title">
+              <header class="portfolio-card-head">
+                <div>
+                  <span class="eyebrow">AUTHORITATIVE LEDGER</span>
+                  <h2 id="portfolio-transactions-title">交易流水</h2>
+                </div>
+                <span id="portfolio-transaction-count">0 笔</span>
+              </header>
+              <div id="portfolio-transactions-list" class="portfolio-transactions-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section
+          id="module-watch"
+          class="module-panel"
+          data-module="watch"
+          role="tabpanel"
+          aria-labelledby="module-tab-watch"
+          hidden
+        >
+          <header class="module-heading">
+            <span class="eyebrow">WATCH</span>
+            <h1 id="module-watch-title" tabindex="-1">关注</h1>
+            <p>沿用现有关注列表、立即检查与每日提醒。</p>
+          </header>
+          <p id="watch-migration-state" class="migration-state" role="status" hidden></p>
+          <article id="watchlist-card" class="trades-card watchlist-card">
+            <header class="card-header">
+              <div>
+                <span class="eyebrow">WATCHLIST</span>
+                <h2>关注与提醒</h2>
+              </div>
+              <span id="watchlist-summary" class="trade-summary">未添加</span>
+            </header>
+            <div class="watchlist-body">
+              <div class="watchlist-add">
+                <input
+                  id="watch-symbol"
+                  type="text"
+                  placeholder="代码，如 600519 或 AAPL"
+                  maxlength="24"
+                />
+                <select id="watch-rule">
+                  <option value="signal-entry">策略买入信号</option>
+                  <option value="rsi-oversold">RSI 超卖</option>
+                  <option value="drawdown-from-high">回撤到位</option>
+                  <option value="price-below">跌破价格</option>
+                </select>
+                <input
+                  id="watch-threshold"
+                  type="number"
+                  step="0.01"
+                  placeholder="阈值"
+                  hidden
+                />
+                <button id="watch-add" class="ghost-button" type="button">添加</button>
+              </div>
+              <div id="watchlist-items" class="watchlist-items"></div>
+              <div class="watchlist-actions">
+                <button id="watch-check" class="ghost-button" type="button">立即检查</button>
+                <button id="watch-schedule" class="ghost-button" type="button">开启分市场提醒</button>
+                <span id="watch-schedule-state" class="watchlist-schedule-state"></span>
+              </div>
+              <div class="watch-market-automations" aria-label="双市场提醒状态">
+                <section id="watch-automation-cn" data-market="cn" data-state="off">
+                  <div>
+                    <b>A 股提醒</b>
+                    <span id="watch-automation-cn-time"></span>
+                    <span id="watch-automation-cn-status" role="status" aria-live="polite"></span>
+                  </div>
+                  <button id="watch-automation-cn-action" class="ghost-button" type="button">开启</button>
+                </section>
+                <section id="watch-automation-us" data-market="us" data-state="off">
+                  <div>
+                    <b>美股提醒</b>
+                    <span id="watch-automation-us-time"></span>
+                    <span id="watch-automation-us-status" role="status" aria-live="polite"></span>
+                  </div>
+                  <button id="watch-automation-us-action" class="ghost-button" type="button">开启</button>
+                </section>
+              </div>
+              <section id="watch-legacy-automation" class="watch-legacy-automation" hidden>
+                <p id="watch-legacy-state" role="status" aria-live="polite"></p>
+                <button id="watch-legacy-remove" class="ghost-button" type="button">
+                  确认移除旧提醒
+                </button>
+              </section>
+              <p class="block-hint">
+                提醒复用现有 fetch 工具与 watch 引擎，只陈述触发条件、数值和数据时间，不构成投资建议。
+                Automation 由 Host 以 full permission 运行并绑定当前 session；会话删除、设备休眠或通知配额
+                （面板每窗口最多 5 条）会影响送达。开启不会请求凭证，后台完成也不等于数据源成功。
+              </p>
+            </div>
+          </article>
+        </section>
+
+        <section
+          id="module-research"
+          class="module-panel research-panel"
+          data-module="research"
+          role="tabpanel"
+          aria-labelledby="module-tab-research"
+          hidden
+        >
+          <header class="research-module-header">
+            <div>
+              <span class="eyebrow">QUANT RESEARCH</span>
+              <h1 id="module-research-title" tabindex="-1">研究</h1>
+            </div>
+            <div class="data-loader">
+              <span class="path-prefix">repo:/</span>
+              <input
+                id="data-path"
+                value="data/market/AAPL.csv"
+                aria-label="OHLCV CSV 相对路径"
+                spellcheck="false"
+              />
+              <button id="load-data" type="button">加载</button>
+            </div>
+          </header>
+
       <section class="desk-header">
         <div class="instrument">
           <div class="instrument-row">
-            <h1 id="instrument-name">DEMO / SYNTHETIC</h1>
+            <h2 id="instrument-name">DEMO / SYNTHETIC</h2>
             <span id="dataset-badge" class="badge demo">DEMO</span>
           </div>
           <p id="dataset-meta">520 daily bars · 2023-01-03 → 2024-12-30 · synthetic sample</p>
@@ -122,6 +443,69 @@
             </label>
           </div>
 
+          <div class="control-block">
+            <div class="block-label">SIZING &amp; SIGNAL</div>
+            <label class="select-field">
+              <span>信号模式</span>
+              <select id="signal-mode">
+                <option value="state">持续持有（状态）</option>
+                <option value="edge">交叉当日（事件）</option>
+              </select>
+            </label>
+            <label class="select-field">
+              <span>仓位</span>
+              <select id="sizer-type">
+                <option value="all-in">满仓</option>
+                <option value="fixed-fraction">固定比例</option>
+                <option value="volatility-target">波动率目标</option>
+              </select>
+            </label>
+            <div id="sizer-fraction-params" class="parameter-group" hidden>
+              <label
+                ><span>仓位比例</span
+                ><input id="sizer-pct" type="number" min="1" max="100" step="1" value="50"
+              /></label>
+            </div>
+            <div id="sizer-volatility-params" class="parameter-group" hidden>
+              <label
+                ><span>年化波动目标</span
+                ><input id="sizer-annual" type="number" min="1" max="200" step="1" value="15"
+              /></label>
+              <label
+                ><span>回看窗口</span
+                ><input id="sizer-lookback" type="number" min="2" step="1" value="20"
+              /></label>
+            </div>
+            <label>
+              <span>无风险利率</span>
+              <span class="input-with-suffix"
+                ><input id="risk-free-rate" type="number" min="0" max="20" step="0.1" value="0" /><b
+                  >%</b
+                ></span
+              >
+            </label>
+          </div>
+
+          <div class="control-block">
+            <div class="block-label">VALIDATION</div>
+            <div class="parameter-group">
+              <label
+                ><span>样本内长度</span
+                ><input id="wf-in-sample" type="number" min="30" step="1" value="504"
+              /></label>
+              <label
+                ><span>样本外长度</span
+                ><input id="wf-out-sample" type="number" min="10" step="1" value="126"
+              /></label>
+            </div>
+            <button id="run-validation" class="ghost-button full-width" type="button">
+              运行样本外验证
+            </button>
+            <p class="block-hint">
+              在参数网格上滚动优化，样本内选参、样本外打分，用于识别过拟合。
+            </p>
+          </div>
+
           <div class="method-note">
             <span class="method-icon">T+1</span>
             <p>收盘生成信号，下一根 K 线开盘成交；包含费用与滑点，不使用未来数据。</p>
@@ -130,34 +514,43 @@
         </aside>
 
         <section class="results">
+          <article id="verdict" class="verdict" data-state="unvalidated">
+            <div class="verdict-main">
+              <span id="verdict-badge" class="verdict-badge">未验证</span>
+              <p id="verdict-line">运行样本外验证后才能判断这个策略是否可用。</p>
+            </div>
+            <ul id="verdict-reasons" class="verdict-reasons"></ul>
+            <p id="verdict-action" class="verdict-action"></p>
+          </article>
+
           <div class="metrics" aria-label="回测指标">
             <article class="metric primary">
-              <span>总收益</span>
+              <span title="策略在整段样本上的累计收益。若未做样本外验证，这个数字包含参数拟合，不代表未来表现。">总收益 <b class="metric-scope">样本内</b></span>
               <strong id="metric-return">—</strong>
               <small id="metric-final-equity">—</small>
             </article>
             <article class="metric">
-              <span>年化收益</span>
+              <span title="把总收益折算成每年的复合增长率，便于跨不同时间长度比较。">年化收益</span>
               <strong id="metric-cagr">—</strong>
               <small id="metric-cagr-detail">CAGR</small>
             </article>
             <article class="metric negative">
-              <span>最大回撤</span>
+              <span title="从历史最高净值跌到最低点的幅度。衡量最坏情况下你要承受多少浮亏。">最大回撤</span>
               <strong id="metric-drawdown">—</strong>
               <small id="metric-drawdown-detail">Peak → trough</small>
             </article>
             <article class="metric">
-              <span>Sharpe</span>
+              <span title="风险调整后收益：每承担一单位波动获得的超额回报。1 以上算不错，但样本内的 Sharpe 会被参数拟合抬高。">Sharpe</span>
               <strong id="metric-sharpe">—</strong>
               <small id="metric-sharpe-detail">252D · rf 0%</small>
             </article>
-            <article class="metric">
-              <span>胜率 / 交易</span>
+            <article class="metric secondary">
+              <span title="盈利交易占已平仓交易的比例。交易笔数少于 30 时，胜率没有统计意义。">胜率 / 交易</span>
               <strong id="metric-win-rate">—</strong>
               <small id="metric-trades">—</small>
             </article>
-            <article class="metric">
-              <span>市场暴露</span>
+            <article class="metric secondary">
+              <span title="持仓时间占总时间的比例。暴露越低，同样收益的资金效率越高。">市场暴露</span>
               <strong id="metric-exposure">—</strong>
               <small>Long only</small>
             </article>
@@ -228,6 +621,17 @@
             <footer id="chart-legend" class="chart-legend"></footer>
           </article>
 
+          <article id="validation-card" class="trades-card" hidden>
+            <header class="card-header">
+              <div>
+                <span class="eyebrow">OUT-OF-SAMPLE</span>
+                <h2>样本外验证</h2>
+              </div>
+              <span id="validation-summary" class="trade-summary">未运行</span>
+            </header>
+            <div id="validation-body" class="validation-body"></div>
+          </article>
+
           <article class="trades-card">
             <header class="card-header">
               <div>
@@ -236,31 +640,151 @@
               </div>
               <span id="trade-summary" class="trade-summary">0 笔已平仓交易</span>
             </header>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>入场</th>
-                    <th>出场</th>
-                    <th>入场价</th>
-                    <th>出场价</th>
-                    <th>原因</th>
-                    <th>收益</th>
-                    <th>P&L</th>
-                  </tr>
-                </thead>
-                <tbody id="trades-body"></tbody>
-              </table>
-            </div>
+            <details class="trades-detail">
+              <summary>展开逐笔记录</summary>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>入场</th>
+                      <th>出场</th>
+                      <th>入场价</th>
+                      <th>出场价</th>
+                      <th>原因</th>
+                      <th>收益</th>
+                      <th>P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody id="trades-body"></tbody>
+                </table>
+              </div>
+            </details>
           </article>
 
           <p class="disclaimer">
-            研究工具，不构成投资建议。合成示例不代表真实市场表现；实盘前需处理复权、流动性、税费、
-            生存者偏差和样本外验证。
+            记账、资讯聚合与研究工具，不构成投资建议。合成示例不代表真实市场表现；研究结论需核对
+            复权、流动性、税费、生存者偏差和样本外验证。
           </p>
         </section>
       </section>
+        </section>
+
+        <section
+          id="module-news"
+          class="module-panel"
+          data-module="news"
+          role="tabpanel"
+          aria-labelledby="module-tab-news"
+          hidden
+        >
+          <header class="module-heading">
+            <span class="eyebrow">NEWS &amp; FILINGS</span>
+            <h1 id="module-news-title" tabindex="-1">资讯与申报</h1>
+            <p>A 股为东财 opt-in 二级资讯；美股仅覆盖 SEC 官方申报，不提供一般美股新闻。</p>
+          </header>
+          <p id="news-live-status" class="news-live-status" role="status" aria-live="polite">正在读取本地资讯状态…</p>
+          <article id="news-enable-card" class="news-card news-enable-card" hidden>
+            <span class="stage-label">EXPLICIT OPT-IN</span>
+            <h2>启用自动推送信息流</h2>
+            <p>启用后写入项目订阅文件，并按有订阅标的的市场建立 A/US 两个独立任务。任务以 full permission 运行、绑定当前 session，依赖设备在线与外部网络。</p>
+            <div class="news-source-options">
+              <label><input id="news-source-stock" type="checkbox" checked /> 东方财富个股 · 二级资讯、无 SLA</label>
+              <label><input id="news-source-724" type="checkbox" checked /> 东方财富 7×24 · 二级资讯、仅保留明确关联</label>
+              <label><input id="news-source-sec" type="checkbox" checked /> SEC EDGAR · 官方申报元数据、不是新闻</label>
+            </div>
+            <label class="news-contact-field" for="news-sec-contact">
+              <span>SEC User-Agent 联络信息</span>
+              <input id="news-sec-contact" type="text" autocomplete="off" placeholder="Investment Desk contact@example.com" />
+              <small>普通项目配置（非秘密）；会写入仓库并随 SEC 请求发送，不从环境变量猜测。</small>
+            </label>
+            <p id="news-enable-error" class="news-error" role="alert" hidden></p>
+            <button id="news-enable" class="module-action" type="button" data-module-next-action>启用自动资讯</button>
+          </article>
+          <div id="news-workspace" class="news-workspace" hidden>
+            <section class="news-coverage" aria-label="来源覆盖说明">
+              <p><b>A 股</b><span>东方财富个股 + 7×24 · 二级资讯 · 用户 opt-in</span></p>
+              <p><b>美股 · 仅申报</b><span>SEC EDGAR 官方申报 · 无一般新闻覆盖</span></p>
+            </section>
+            <section class="news-card news-toolbar" aria-label="资讯操作">
+              <label for="news-symbol-filter">按标的过滤</label>
+              <select id="news-symbol-filter"><option value="all">全部订阅标的</option></select>
+              <button id="news-refresh" class="ghost-button" type="button">请求立即刷新</button>
+              <button id="news-reload" class="ghost-button" type="button">重新读取本地结果</button>
+              <button id="news-update-subscriptions" class="ghost-button" type="button" hidden>更新订阅标的</button>
+              <p id="news-refresh-state" aria-live="polite"></p>
+            </section>
+            <section class="news-card" aria-labelledby="news-automation-title">
+              <h2 id="news-automation-title">自动化状态</h2>
+              <div class="news-automations">
+                <article id="news-automation-cn" data-state="empty">
+                  <div><b>A 股资讯</b><span id="news-automation-cn-time">—</span><p id="news-automation-cn-status">读取中</p></div>
+                  <button id="news-automation-cn-action" class="ghost-button" type="button">—</button>
+                </article>
+                <article id="news-automation-us" data-state="empty">
+                  <div><b>美股 SEC</b><span id="news-automation-us-time">—</span><p id="news-automation-us-status">读取中</p></div>
+                  <button id="news-automation-us-action" class="ghost-button" type="button">—</button>
+                </article>
+              </div>
+            </section>
+            <section class="news-card" aria-labelledby="news-sources-title">
+              <h2 id="news-sources-title">来源状态</h2>
+              <div id="news-source-statuses" class="news-source-statuses"></div>
+            </section>
+            <section class="news-card" aria-labelledby="news-feed-title">
+              <div class="news-card-head"><h2 id="news-feed-title">自动信息流</h2><span id="news-feed-count">0 条</span></div>
+              <p id="news-feed-empty" class="news-feed-empty">尚未抓取，等待定时任务或点击刷新。</p>
+              <div id="news-feed-list" class="news-feed-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section
+          id="module-notes"
+          class="module-panel"
+          data-module="notes"
+          role="tabpanel"
+          aria-labelledby="module-tab-notes"
+          hidden
+        >
+          <header class="module-heading notes-heading">
+            <div>
+              <span class="eyebrow">LOCAL DECISION RECORD</span>
+              <h1 id="module-notes-title" tabindex="-1">笔记</h1>
+              <p>正文按纯文本保存；关联只引用稳定 id，资讯标题始终按不可信外部文本显示。</p>
+            </div>
+            <button id="notes-new" type="button" class="primary-button">新建笔记</button>
+          </header>
+          <p id="notes-live" class="notes-live" role="status" aria-live="polite">正在读取 portfolio/journal.json…</p>
+          <form id="notes-form" class="notes-form" hidden>
+            <input id="notes-edit-id" type="hidden" />
+            <label>标题 <input id="notes-title" maxlength="160" required /></label>
+            <label>正文（纯文本） <textarea id="notes-body" rows="6" maxlength="100000"></textarea></label>
+            <label>标签（逗号分隔） <input id="notes-tags" maxlength="300" placeholder="AAPL, 复盘" /></label>
+            <div><span class="field-label">关联</span><div id="notes-draft-links" class="notes-link-list"></div></div>
+            <p id="notes-form-error" class="form-error" role="alert" tabindex="-1"></p>
+            <div class="notes-form-actions">
+              <button id="notes-save" type="submit" class="primary-button">确认保存</button>
+              <button id="notes-cancel" type="button" class="ghost-button">取消</button>
+            </div>
+          </form>
+          <div class="notes-filters" aria-label="笔记筛选">
+            <label>标的 <input id="notes-filter-instrument" placeholder="全部" /></label>
+            <label>tag <input id="notes-filter-tag" placeholder="全部" /></label>
+            <label>关联类型 <select id="notes-filter-link"><option value="all">全部</option><option value="instrument">标的</option><option value="transaction">交易</option><option value="news">资讯</option><option value="rule">规则</option></select></label>
+          </div>
+          <section class="notes-panel" aria-labelledby="notes-list-title">
+            <div class="section-title-row"><h2 id="notes-list-title">笔记列表</h2><span id="notes-count">0 条</span></div>
+            <p id="notes-empty" class="portfolio-empty-line">尚无笔记。使用本页唯一“新建笔记”动作开始记录。</p>
+            <div id="notes-list" class="notes-list"></div>
+          </section>
+          <section class="notes-panel" aria-labelledby="notes-timeline-title">
+            <div class="section-title-row"><h2 id="notes-timeline-title">复盘时间线</h2><span>较新在前 · 同时点按 type/id</span></div>
+            <p class="module-note">只陈列当时记录、当前关联状态、source/time；不把盈利解释为正确，也不把亏损解释为错误。</p>
+            <div id="notes-timeline" class="notes-timeline"></div>
+          </section>
+        </section>
+      </div>
     </main>
 
     <dialog id="agent-dialog">
@@ -278,7 +802,7 @@
           </button>
           <button
             type="button"
-            data-prompt="为这个标的准备符合 Quant Lab 格式的日线 OHLCV CSV，并记录数据来源和截止日期。"
+            data-prompt="为这个标的准备符合投资工作台研究格式的日线 OHLCV CSV，并记录数据来源和截止日期。"
           >
             准备数据
           </button>

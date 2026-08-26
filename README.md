@@ -11,7 +11,7 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 | -------------- | --------------------- | -------------------------------------------------------------------------------------------------- |
 | Design Studio  | `apps/design-studio`  | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison |
 | Job Hunt HQ    | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization         |
-| Quant Lab      | `apps/quant-lab`      | Local-first stock data research, strategy backtesting, and Markdown reports                        |
+| Quant Lab      | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                |
 | Starter        | `templates/starter`   | Minimal template for creating another Panel App                                                    |
 
