@@ -5639,8 +5639,9 @@ function drawCaptionPng(request) {
   return canvas.toDataURL("image/png");
 }
 async function findCaptionBrowser() {
-  const names = process.platform === "win32" ? ["chrome.exe", "msedge.exe"] : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
-  const candidates = (process.env.PATH ?? "").split(delimiter3).filter(Boolean).flatMap((path) => names.map((name) => join11(path, name)));
+  const names = process.platform === "win32" ? ["chrome.exe", "msedge.exe"] : process.platform === "linux" ? ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
+  const directories = (process.env.PATH ?? "").split(delimiter3).filter(Boolean);
+  const candidates = process.platform === "linux" ? names.flatMap((name) => directories.map((path) => join11(path, name))) : directories.flatMap((path) => names.map((name) => join11(path, name)));
   if (process.platform === "darwin")
     candidates.push(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -5760,6 +5761,8 @@ ${exit}`.slice(
     });
   }
   failure(message) {
+    if (this.diagnostic.message.includes("No usable sandbox"))
+      message = "字幕浏览器的安全环境不可用，请安装或选择可用的系统版 Chrome 后重试";
     return new Error(message, { cause: this.diagnostic });
   }
   fail(error) {

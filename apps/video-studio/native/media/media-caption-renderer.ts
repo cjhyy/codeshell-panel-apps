@@ -106,11 +106,16 @@ export async function findCaptionBrowser(): Promise<string | undefined> {
   const names =
     process.platform === "win32"
       ? ["chrome.exe", "msedge.exe"]
-      : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
-  const candidates = (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter(Boolean)
-    .flatMap((path) => names.map((name) => join(path, name)));
+      : process.platform === "linux"
+        ? ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+        : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
+  // Ubuntu's AppArmor policy permits the packaged Chrome sandbox. A Chromium
+  // snapshot on the same PATH can be executable yet unable to create a sandbox.
+  const directories = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const candidates =
+    process.platform === "linux"
+      ? names.flatMap((name) => directories.map((path) => join(path, name)))
+      : directories.flatMap((path) => names.map((name) => join(path, name)));
   if (process.platform === "darwin")
     candidates.push(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -236,6 +241,8 @@ class CaptionBrowser {
   private failure(message: string): Error {
     // Native diagnostics stay in the internal cause; the public job result only
     // receives the stable, path-free message through runMediaRequest.
+    if (this.diagnostic.message.includes("No usable sandbox"))
+      message = "字幕浏览器的安全环境不可用，请安装或选择可用的系统版 Chrome 后重试";
     return new Error(message, { cause: this.diagnostic });
   }
   private fail(error: Error) {

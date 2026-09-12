@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import ts from "typescript";
@@ -19,7 +19,7 @@ const nativeFile = new URL(
 // platform. The production renderer/session/cleanup code remains intact; actual
 // Chromium pixels and complete video output have separate tests below and in
 // native/media/tests/media-runtime.test.mjs.
-async function captionTransportFixture(t) {
+async function captionTransportFixture(t, define = {}) {
   const workDir = await mkdtemp(join(tmpdir(), "caption-pipe-test-"));
   t.after(() => rm(workDir, { recursive: true, force: true }));
   const output = join(workDir, "caption.mjs");
@@ -64,7 +64,7 @@ async function captionTransportFixture(t) {
   `;
   await build({
     stdin: {
-      contents: `export { MediaCaptionRenderer } from ${JSON.stringify(fileURLToPath(nativeFile))};
+      contents: `export { MediaCaptionRenderer, findCaptionBrowser } from ${JSON.stringify(fileURLToPath(nativeFile))};
         export { children, control } from "node:child_process";`,
       resolveDir: repository,
     },
@@ -73,6 +73,7 @@ async function captionTransportFixture(t) {
     platform: "node",
     format: "esm",
     target: "node20",
+    define,
     plugins: [
       {
         name: "controlled-caption-pipes",
@@ -103,6 +104,27 @@ async function captionTransportFixture(t) {
     request: { width: 320, height: 180, fontSize: 18, texts: ["字幕"] },
   };
 }
+
+test("Linux caption discovery prefers packaged Chrome and retains Chromium fallback", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "caption-browser-path-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const earlier = join(directory, "snapshot"),
+    later = join(directory, "packaged");
+  await mkdir(earlier);
+  await mkdir(later);
+  await writeFile(join(earlier, "chromium"), "fixture", { mode: 0o700 });
+  for (const name of ["google-chrome", "google-chrome-stable"])
+    await writeFile(join(later, name), "fixture", { mode: 0o700 });
+  const fixture = await captionTransportFixture(t, {
+    "process.platform": JSON.stringify("linux"),
+    "process.env.PATH": JSON.stringify([earlier, later].join(delimiter)),
+  });
+  assert.equal(await fixture.findCaptionBrowser(), join(later, "google-chrome"));
+  await rm(join(later, "google-chrome"));
+  assert.equal(await fixture.findCaptionBrowser(), join(later, "google-chrome-stable"));
+  await rm(join(later, "google-chrome-stable"));
+  assert.equal(await fixture.findCaptionBrowser(), join(earlier, "chromium"));
+});
 
 for (const fd of [3, 4])
   test(`caption transport rejects active pipe ${fd} failure and waits for browser cleanup`, async (t) => {
@@ -155,6 +177,31 @@ test("caption shutdown contains expected pipe resets and concurrent close waits 
     code: "ENOENT",
   });
   await access(png);
+});
+
+test("caption sandbox startup failure offers system Chrome guidance without exposing diagnostics", async (t) => {
+  const fixture = await captionTransportFixture(t);
+  const rendering = fixture.renderer.render(fixture.request, fixture.context);
+  const rejected = assert.rejects(rendering, (error) => {
+    assert.equal(
+      error.message,
+      "字幕浏览器的安全环境不可用，请安装或选择可用的系统版 Chrome 后重试",
+    );
+    assert.equal(error.message.includes("/private/"), false);
+    assert.equal(error.message.includes("--no-sandbox"), false);
+    return true;
+  });
+  const deadline = Date.now() + 2000;
+  while (!fixture.children.length && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(fixture.children.length, 1);
+  fixture.children[0].stderr.write("/private/browser: FATAL No usable sandbox! --no-sandbox");
+  fixture.children[0].stdio[4].emit(
+    "error",
+    Object.assign(new Error("reset"), { code: "ECONNRESET" }),
+  );
+  await rejected;
+  assert.deepEqual(fixture.children[0].kills, ["SIGTERM"]);
 });
 
 test(
