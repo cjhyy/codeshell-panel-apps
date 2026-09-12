@@ -1,3 +1,4 @@
+import type { BridgeResult } from "./sdk/panel-runtime";
 import { validateProject, type Project, type EditOperation } from "./model";
 
 export interface PanelTask {
@@ -11,6 +12,7 @@ export interface PanelTask {
 export interface PanelBridge {
   getContext(): Promise<{ cwd?: string; theme?: string }>;
   call(method: string, params?: unknown): Promise<unknown>;
+  callResult?(method: string, params?: unknown): Promise<BridgeResult>;
   registerTool(name: string, handler: (args: Record<string, unknown>) => unknown): () => void;
   on(name: string, callback: (payload: unknown) => void): () => void;
 }

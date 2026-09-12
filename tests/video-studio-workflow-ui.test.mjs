@@ -1,3 +1,4 @@
+import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
@@ -122,6 +123,7 @@ async function openPage({ host = true, width = 1440, workflow } = {}) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(
     ({ seed, sourceId, host, workflow }) => {
       const initial = { ...seed, ...(workflow ? { workflow } : {}) };

@@ -279,7 +279,9 @@ function productionDocument(value: unknown): ProductionDocument {
     const jobId = raw.jobId ?? key;
     if (
       !text(jobId) ||
-      !/^job-[a-zA-Z0-9-]+$/.test(jobId) ||
+      !/^(?:job-[a-zA-Z0-9-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(
+        jobId,
+      ) ||
       !text(raw.projectId, 128) ||
       ![
         "import",
@@ -363,7 +365,13 @@ function productionDocument(value: unknown): ProductionDocument {
       (auto.preparationJobIds !== undefined &&
         (!Array.isArray(auto.preparationJobIds) ||
           auto.preparationJobIds.length > 1000 ||
-          auto.preparationJobIds.some((id) => !text(id) || !/^job-[a-zA-Z0-9-]+$/.test(id))))
+          auto.preparationJobIds.some(
+            (id) =>
+              !text(id) ||
+              !/^(?:job-[a-zA-Z0-9-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(
+                id,
+              ),
+          )))
     )
       return bad();
     if (auto.voice !== undefined) {
@@ -888,9 +896,21 @@ export class ProductionController {
     await this.refresh();
   }
   async retry(id: string): Promise<void> {
-    await this.requireHost().call("media.jobs.retry", { id });
-    for (const binding of Object.values(this.document.bindings))
-      if (binding.jobId === id) binding.consumed = false;
+    const retried = (await this.requireHost().call("media.jobs.retry", { id })) as
+      | MediaJob
+      | undefined;
+    for (const [key, binding] of Object.entries(this.document.bindings)) {
+      if (binding.jobId !== id) continue;
+      binding.consumed = false;
+      if (retried?.id && retried.id !== id) {
+        delete this.document.bindings[key];
+        this.document.bindings[`${retried.id}:${binding.projectId}`] = {
+          ...binding,
+          jobId: retried.id,
+          createdAt: retried.createdAt,
+        };
+      }
+    }
     await this.persist();
     await this.refresh();
   }

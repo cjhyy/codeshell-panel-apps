@@ -14,8 +14,9 @@ export const suites = [
   {
     id: "quant-lab",
     label: "Quant Lab data, portfolio and market workflows",
-    commands: ["portfolio", "portfolio-rules", "portfolio-data", "today", "news", "notes"]
-      .map((name) => [`scripts/quant-lab-${name}.mjs`]),
+    commands: ["portfolio", "portfolio-rules", "portfolio-data", "today", "news", "notes"].map(
+      (name) => [`scripts/quant-lab-${name}.mjs`],
+    ),
   },
   {
     id: "video-studio",
@@ -24,6 +25,7 @@ export const suites = [
       [
         "scripts/run-typescript-tests.mjs",
         "tests/video-studio-local-voice.test.ts",
+        "tests/video-studio-media-task-bridge.test.ts",
         "apps/video-studio/native/tests/audio8.test.ts",
         "apps/video-studio/native/tests/qwen.test.ts",
         "tests/video-studio-model.test.ts",

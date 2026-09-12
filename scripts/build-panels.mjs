@@ -175,6 +175,23 @@ async function stageProject(project, directory) {
     await writeFile(destination, source);
     nativeModules.set(name, { source, sha256: createHash("sha256").update(source).digest("hex") });
   }
+  if (nativeModules.size) {
+    assert(
+      project.manifest.permissions?.includes("process"),
+      "Native tool entries require process permission",
+    );
+    const manifest = structuredClone(project.manifest);
+    manifest.nativeEntries = Object.fromEntries(
+      [...nativeModules].map(([name, tool]) => [
+        name,
+        { entry: `app/tools/${name}.mjs`, sha256: tool.sha256 },
+      ]),
+    );
+    await writeFile(
+      join(directory, ".codeshell-panel/panel.json"),
+      JSON.stringify(manifest, null, 2) + "\n",
+    );
+  }
   const bundle = await build({
     absWorkingDir: project.source,
     entryPoints: { main: project.config.entry },

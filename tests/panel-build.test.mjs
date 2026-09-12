@@ -45,6 +45,11 @@ async function fixture(t, entry = "src/main.ts") {
 
 test("native tools bundle independently and expose their exact source/hash to the Panel", async (t) => {
   const { root, source } = await fixture(t);
+  const sourceManifest = JSON.parse(
+    await readFile(join(source, ".codeshell-panel/panel.json"), "utf8"),
+  );
+  sourceManifest.permissions.push("process");
+  await writeFile(join(source, ".codeshell-panel/panel.json"), JSON.stringify(sourceManifest));
   await mkdir(join(source, "native"));
   await writeFile(
     join(source, "native/worker.ts"),
@@ -61,6 +66,15 @@ test("native tools bundle independently and expose their exact source/hash to th
   const project = (await discoverProjects(root))[0];
   await buildProject(project, { log: false });
   const worker = await readFile(join(project.output, "app/tools/worker.mjs"), "utf8");
+  const installed = JSON.parse(
+    await readFile(join(project.output, ".codeshell-panel/panel.json"), "utf8"),
+  );
+  assert.deepEqual(installed.nativeEntries, {
+    worker: {
+      entry: "app/tools/worker.mjs",
+      sha256: createHash("sha256").update(worker).digest("hex"),
+    },
+  });
   const browser = await readFile(join(project.output, "app/main.mjs"), "utf8");
   assert(browser.includes(createHash("sha256").update(worker).digest("hex")));
   assert(worker.includes('from "node:os"'));
@@ -92,6 +106,21 @@ test("TypeScript builds an independent, deterministic ESM installation package",
   assert(files.includes("app/main.mjs"));
   assert(files.some((file) => file.startsWith("app/chunks/") && file.endsWith(".mjs")));
   assert(files.includes("app/build-manifest.json"));
+  const installedManifest = JSON.parse(
+    await readFile(join(project.output, ".codeshell-panel/panel.json"), "utf8"),
+  );
+  if (project.config.nativeEntries) {
+    for (const name of Object.keys(project.config.nativeEntries)) {
+      const declared = installedManifest.nativeEntries[name];
+      assert.equal(declared.entry, `app/tools/${name}.mjs`);
+      assert.equal(
+        declared.sha256,
+        createHash("sha256")
+          .update(await readFile(join(project.output, declared.entry)))
+          .digest("hex"),
+      );
+    }
+  }
   assert(files.includes("app/tools/info.mjs"));
   assert(!files.some((file) => /src\/|public\/|\.ts$|\.map$|panel\.build\.json/.test(file)));
   assert.equal(
@@ -186,4 +215,28 @@ test("package checks reject missing assets, import escapes, and public output co
   await writeFile(join(source, "public/tools/info.mjs"), 'console.log("ok");');
   await writeFile(join(source, "public/main.mjs"), 'console.log("shadow");');
   await assert.rejects(buildProject(project, { log: false }), /public\/ shadows a generated asset/);
+});
+
+test("native entries require process permission and package validation rejects changed executable bytes", async (t) => {
+  const { root, source } = await fixture(t);
+  await mkdir(join(source, "native"));
+  await writeFile(join(source, "native/worker.ts"), "export const ready = true;");
+  await writeFile(
+    join(source, "panel.build.json"),
+    JSON.stringify({ entry: "src/main.ts", nativeEntries: { worker: "native/worker.ts" } }),
+  );
+  let project = (await discoverProjects(root))[0];
+  await assert.rejects(buildProject(project, { log: false }), /process permission/);
+  const manifestFile = join(source, ".codeshell-panel/panel.json");
+  const manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  manifest.permissions.push("process");
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  project = (await discoverProjects(root))[0];
+  await buildProject(project, { log: false });
+  await validatePackage(relative(repositoryRoot, project.output));
+  await writeFile(join(project.output, "app/tools/worker.mjs"), "export const ready = false;");
+  await assert.rejects(
+    validatePackage(relative(repositoryRoot, project.output)),
+    /native tool digest changed/,
+  );
 });

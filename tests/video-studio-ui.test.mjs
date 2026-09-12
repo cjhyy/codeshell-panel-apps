@@ -1,3 +1,4 @@
+import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
@@ -76,7 +77,7 @@ after(async () => {
   assert.deepEqual(errors, [], "No runtime errors or CSP violations");
 });
 
-async function pageWithBridge(mock = false) {
+async function pageWithBridge(mock = false, generic = true) {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 960 },
     acceptDownloads: true,
@@ -86,7 +87,8 @@ async function pageWithBridge(mock = false) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
-  if (mock)
+  if (mock) {
+    if (generic) await page.addInitScript(installGenericMediaTaskMock);
     await page.addInitScript(() => {
       const storage = {};
       window.__panelTools = {};
@@ -132,6 +134,7 @@ async function pageWithBridge(mock = false) {
         },
       };
     });
+  }
   await page.goto(url);
   await page.locator("#preview").waitFor();
   return page;
@@ -166,6 +169,22 @@ test("failed desktop media connection explains unavailable AI production without
       await page.locator(".conflict").textContent(),
       /Unexpected host call: media.status/,
     );
+  } finally {
+    await page.close();
+  }
+});
+
+test("an older Host without generic task capabilities explains the upgrade while preserving local editing", async () => {
+  const page = await pageWithBridge(true, false);
+  try {
+    await page.locator('[data-tab="ai"]').click();
+    await page.waitForFunction(() =>
+      document.body.textContent.includes("缺少通用本地任务或资源接口"),
+    );
+    assert.match(await page.locator(".library-panel > .host-required").textContent(), /更新主程序/);
+    await page.locator('[data-tab="media"]').click();
+    await demo(page);
+    assert.ok((await readProject(page)).clips.length > 0);
   } finally {
     await page.close();
   }
@@ -234,7 +253,10 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
     await page.getByRole("button", { name: "生成配音并加入音轨", exact: true }).isDisabled(),
     true,
   );
-  assert.match(await page.locator(".voiceover-section .host-required").textContent(), /浏览器可听内置示例旁白/);
+  assert.match(
+    await page.locator(".voiceover-section .host-required").textContent(),
+    /浏览器可听内置示例旁白/,
+  );
   await page.locator('[data-tab="media"]').click();
   await page.screenshot({ path: resolve(screenshots, "studio-desktop.png"), fullPage: true });
 
@@ -253,7 +275,10 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
     await page.getByRole("button", { name: "开始全流程制作", exact: true }).isDisabled(),
     true,
   );
-  assert.match(await page.locator(".library-panel > .host-required").textContent(), /CodeShell.*自动制作和后台 MP4/);
+  assert.match(
+    await page.locator(".library-panel > .host-required").textContent(),
+    /CodeShell.*自动制作和后台 MP4/,
+  );
   await page.getByRole("button", { name: "创建规则草案", exact: true }).click();
   assert.equal((await readProject(page)).clips.length, 3, "Review does not mutate the project");
   await page.screenshot({ path: resolve(screenshots, "studio-ai-review.png"), fullPage: true });
@@ -500,6 +525,7 @@ test("project switching blocks concurrent media import and export", async () => 
 test("persistent media, versioned automatic edits, real tool contract and reload recovery", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   page.on("pageerror", (error) => errors.push(error.message));
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(() => {
     const assetId = "asset-" + "a".repeat(64),
       videoId = "asset-" + "b".repeat(64);
@@ -731,6 +757,7 @@ test("persistent media, versioned automatic edits, real tool contract and reload
 
 test("actual preview button sends narrated demo audio to speakers, including reopening a pristine legacy demo", async () => {
   const page = await pageWithBridge();
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(() => {
     window.__speakerTaps = [];
     const connect = AudioNode.prototype.connect;
@@ -796,6 +823,7 @@ test("actual preview button sends narrated demo audio to speakers, including reo
   await page.waitForFunction(() => !document.querySelector(".warning-dot"));
   await audible();
   // A delayed Host restore must not rerender/stop playback started by the user.
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(() => {
     let release;
     const gate = new Promise((resolve) => {
@@ -884,6 +912,7 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
   ];
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   page.on("pageerror", (error) => errors.push(error.message));
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(
     ({ initial, speechId }) => {
       const models = [
@@ -1088,7 +1117,10 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
     await page.getByRole("button", { name: "生成配音并加入音轨", exact: true }).isDisabled(),
     true,
   );
-  assert.match(await page.locator(".voiceover-section .host-required").textContent(), /连接缺少凭据/);
+  assert.match(
+    await page.locator(".voiceover-section .host-required").textContent(),
+    /连接缺少凭据/,
+  );
   await page.locator("#voiceover-model").selectOption("browser-speech");
   assert.equal(
     await page.getByRole("button", { name: "生成配音并加入音轨", exact: true }).isDisabled(),
@@ -1114,8 +1146,13 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
     "Draft survives switching tabs",
   );
   await page.locator('[data-audio-clip="old-voice-clip"]').click();
-  await page.getByRole("button", { name: "修改文案 / 重新配音", exact: true }).scrollIntoViewIfNeeded();
-  await page.screenshot({ path: resolve(screenshots, "voiceover-track-editing.png"), fullPage: true });
+  await page
+    .getByRole("button", { name: "修改文案 / 重新配音", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: resolve(screenshots, "voiceover-track-editing.png"),
+    fullPage: true,
+  });
   await page.getByRole("button", { name: "修改文案 / 重新配音", exact: true }).click();
   assert.equal(await page.locator("#voiceover-model").inputValue(), "configured-speech");
   assert.equal(await page.locator("#voiceover-voice").inputValue(), "cloud-a");
@@ -1209,7 +1246,12 @@ test("local voice cloning validates its own recording, uses real model preview, 
   ];
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(installLocalVoiceProcessMock, { installed: true, outputAssetId: speechId, durationSeconds: 8 });
+  await page.addInitScript(installLocalVoiceProcessMock, {
+    installed: true,
+    outputAssetId: speechId,
+    durationSeconds: 8,
+  });
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(
     ({ initial }) => {
       const documents = JSON.parse(localStorage.getItem("clone-test-documents") || "null") || {
@@ -1336,10 +1378,17 @@ test("local voice cloning validates its own recording, uses real model preview, 
     const draftEditor = await page.locator("#voiceover-text").elementHandle();
     const referenceEditor = await page.locator("#voiceover-reference-text").elementHandle();
     await page.locator('[data-action="voiceover-retry"]').click();
-    await page.waitForFunction(() => !document.querySelector('[data-action="sample-voiceover"]')?.disabled);
+    await page.waitForFunction(
+      () => !document.querySelector('[data-action="sample-voiceover"]')?.disabled,
+    );
     for (const editor of [draftEditor, referenceEditor])
-      assert.equal(await editor.evaluate((element) => element.isConnected && document.getElementById(element.id) === element), true,
-        "Refreshing the model catalog keeps the live text editor connected for input events");
+      assert.equal(
+        await editor.evaluate(
+          (element) => element.isConnected && document.getElementById(element.id) === element,
+        ),
+        true,
+        "Refreshing the model catalog keeps the live text editor connected for input events",
+      );
     await page.locator("#voiceover-reference-text").evaluate((element) => {
       element.value = "字".repeat(1001);
       element.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1360,15 +1409,28 @@ test("local voice cloning validates its own recording, uses real model preview, 
     assert.equal(await generate.isDisabled(), true);
     await page.locator("#voiceover-text").fill("新文案内容。".repeat(30));
     await sample.click();
-    await page.waitForFunction(() => window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length === 1);
-    assert.deepEqual(await page.evaluate(() => window.__documents["video-studio-local-voice-v1"].data.entries[0].input), {
-      action: "generate",
-      text: "新文案内容。".repeat(30).slice(0, 120),
-      engine: "qwen3-tts",
-      rate: 1,
-      referenceAssetId: referenceId,
-      referenceText,
-    });
+    await page.waitForFunction(
+      () =>
+        window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length ===
+        1,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        () =>
+          window.__genericHostCalls.find(
+            (call) =>
+              call.method === "tasks.start" && call.args.input.request.action === "tts-clone",
+          ).args.input.request.params,
+      ),
+      {
+        voiceId: "reference",
+        text: "新文案内容。".repeat(30).slice(0, 120),
+        modelId: "qwen3-tts",
+        rate: 1,
+        referenceAssetId: referenceId,
+        referenceText,
+      },
+    );
     const sampleBinding = await page.evaluate(
       () => Object.values(window.__documents["video-studio-production"].data.bindings)[0],
     );
@@ -1406,15 +1468,28 @@ test("local voice cloning validates its own recording, uses real model preview, 
     });
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.getByRole("button", { name: "重新生成并替换配音", exact: true }).click();
-    await page.waitForFunction(() => window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length === 1);
-    assert.deepEqual(await page.evaluate(() => window.__documents["video-studio-local-voice-v1"].data.entries[0].input), {
-      action: "generate",
-      text: speech.text,
-      engine: "qwen3-tts",
-      rate: 1,
-      referenceAssetId: referenceId,
-      referenceText,
-    });
+    await page.waitForFunction(
+      () =>
+        window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length ===
+        1,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        () =>
+          window.__genericHostCalls.find(
+            (call) =>
+              call.method === "tasks.start" && call.args.input.request.action === "tts-clone",
+          ).args.input.request.params,
+      ),
+      {
+        voiceId: "reference",
+        text: speech.text,
+        modelId: "qwen3-tts",
+        rate: 1,
+        referenceAssetId: referenceId,
+        referenceText,
+      },
+    );
     const replacementBinding = await page.evaluate(() =>
       Object.values(window.__documents["video-studio-production"].data.bindings).find(
         (binding) => binding.replaceClip,
@@ -1432,7 +1507,10 @@ test("local voice cloning validates its own recording, uses real model preview, 
     assert.equal(await page.locator("#voiceover-reference-text").inputValue(), "");
     assert.equal(await page.locator('[data-action="sample-voiceover"]').isDisabled(), true);
     assert.equal(
-      await page.evaluate(() => window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length),
+      await page.evaluate(
+        () =>
+          window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length,
+      ),
       1,
       "Switching projects must never reuse the other project's voice reference",
     );

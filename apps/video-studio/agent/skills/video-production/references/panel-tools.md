@@ -43,7 +43,7 @@
 ## 录制、原声与配音引擎
 
 - `get_video_voices {}`：模型与声音目录，也包含固定引擎的安装/验证状态及 online/offline 模式。
-- `setup_video_tts {projectId,requestToken,providerId}`：providerId 为 edge-tts、kokoro、audio8-tts 或 qwen3-tts，返回任务；等待完成后刷新声音目录。Audio8 / Qwen 是面板管理的本地引擎，通过通用进程接口运行，关闭面板会中断任务，重开可重试。qwen3-tts 是 Apple Silicon Mac 本地本人声音克隆；使用 `create_video_voiceover` 时指定 `modelId: "qwen3-tts"`、`voiceId: "reference"`、当前工程中 3–30 秒本人音频的 `referenceAssetId` 和对应逐字稿 `referenceText`，要新读的 `text` 最多 2000 字。详细安装流程见 tts-setup。
+- `setup_video_tts {projectId,requestToken,providerId}`：providerId 为 edge-tts、kokoro、audio8-tts 或 qwen3-tts，返回任务；等待完成后刷新声音目录。所有配音引擎由面板管理，通过通用持久任务运行，关闭面板后继续；重开读取实际状态与产物，中断后仅按实际 retryable 决定重试。qwen3-tts 是 Apple Silicon Mac 本地本人声音克隆；使用 `create_video_voiceover` 时指定 `modelId: "qwen3-tts"`、`voiceId: "reference"`、当前工程中 3–30 秒本人音频的 `referenceAssetId` 和对应逐字稿 `referenceText`，要新读的 `text` 最多 2000 字。详细安装流程见 tts-setup。
 - `enhance_video_audio {projectId,requestToken,assetId,preset?,denoise?,normalize?}`：preset 为 light/balanced，返回完整优化音频任务，不自动改音轨。结果入库后复用源片段的时间范围并静音原声。
 - `set_video_script {projectId,requestToken,baseRevision,text,finish?}`：保存润色文稿，保留原录音；仅文稿任务可 finish:true 停止制作循环。
 

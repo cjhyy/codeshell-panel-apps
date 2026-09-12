@@ -1,0 +1,439 @@
+/** Browser fixture adapter: existing media fixtures simulate the Panel tool, while
+ * production code sees only the real tasks/resources Host contract. No runtime
+ * implementation is replaced; deterministic completion controls remain explicit. */
+export function installGenericMediaTaskMock() {
+  if (window.__genericMediaTaskMockInstalled) return;
+  window.__genericMediaTaskMockInstalled = true;
+  const listeners = new Map();
+  const copy = (value) => (value === undefined ? undefined : structuredClone(value));
+  const persisted = JSON.parse(localStorage.getItem("test-generic-media-tasks") || "{}");
+  const localJobs = new Map(
+      Object.entries(JSON.parse(localStorage.getItem("test-generic-local-media-jobs") || "{}")),
+    ),
+    resources = new Map(),
+    documents = new Map();
+  window.__genericHostCalls = [];
+  window.__nativeCaptures = [];
+  const emit = (event, value) => {
+    for (const listener of listeners.get(event) || []) listener(copy(value));
+  };
+  const persist = () => {
+    localStorage.setItem("test-generic-media-tasks", JSON.stringify(persisted));
+    localStorage.setItem(
+      "test-generic-local-media-jobs",
+      JSON.stringify(Object.fromEntries(localJobs)),
+    );
+  };
+  const methodFor = (action) =>
+    ({
+      status: "media.status",
+      voices: "media.tts.voices",
+      prepare: "media.prepare",
+      transcribe: "media.transcribe",
+      "audio-extract": "media.audio.extract",
+      "audio-enhance": "media.audio.enhance",
+      scene: "media.scene",
+      render: "media.render",
+      tts: "media.tts",
+      "tts-setup": "media.tts.setup",
+    })[action];
+  const terminal = (status) => ["succeeded", "failed", "cancelled", "interrupted"].includes(status);
+  const preparedKey = (id) => `video-studio-prepared-${id}`;
+  function wrap(raw) {
+    if (!raw || raw.__genericTaskFixture) return raw;
+    async function fixture(method, params = {}) {
+      return raw.call(method, params);
+    }
+    async function fixtureData(method, args) {
+      // Hydrate pre-existing native document fixtures, not a new UI operation.
+      const index = window.__calls?.length;
+      try {
+        return await fixture(method, args);
+      } finally {
+        const call = window.__calls?.[index];
+        if (call?.method === method) window.__calls.splice(index, 1);
+      }
+    }
+    async function existingPreparation(id) {
+      const current = await fixture("media.assets.get", { id });
+      resources.set(current.asset.id, copy(current.asset));
+      const prep = copy(current.preparation);
+      if (prep && !Array.isArray(prep.transcription?.segments)) {
+        try {
+          prep.transcription = { ...prep.transcription, ...(await transcript(id, true)) };
+        } catch {
+          /* Fixture intentionally has no transcript. */
+        }
+      }
+      if (prep && !prep.silence) {
+        try {
+          prep.silence = await fixtureData("media.analysis", {
+            assetId: id,
+            kind: "silence",
+            offset: 0,
+            limit: 100,
+          });
+        } catch {}
+      }
+      return prep;
+    }
+    async function transcript(id, hydrate = false) {
+      const segments = [];
+      let offset = 0,
+        total;
+      do {
+        const page = await (hydrate ? fixtureData : fixture)("media.transcript", {
+          assetId: id,
+          offset,
+          limit: 100,
+        });
+        total = page.total;
+        if (!Array.isArray(page.segments) || !page.segments.length) break;
+        segments.push(...page.segments);
+        offset += page.segments.length;
+      } while (offset < total);
+      return { assetId: id, segments };
+    }
+    async function enrich(job, meta) {
+      const value = copy(job);
+      if (value.status === "succeeded" && value.result) {
+        const result = value.result;
+        if (
+          meta.action === "prepare" &&
+          meta.request.params.transcribe &&
+          result.transcription &&
+          !Array.isArray(result.transcription.segments)
+        ) {
+          try {
+            result.transcription = {
+              ...result.transcription,
+              ...(await transcript(meta.request.params.assetId)),
+            };
+          } catch {
+            /* Preserve deliberate missing transcript fixtures. */
+          }
+        }
+        if (meta.action === "transcribe" && !Array.isArray(result.segments))
+          Object.assign(result, await transcript(meta.request.params.assetId));
+        if (meta.action === "prepare") {
+          for (const kind of ["silence", "scenes"])
+            if (
+              result[kind] &&
+              !Array.isArray(result[kind][kind === "silence" ? "intervals" : "cuts"])
+            ) {
+              try {
+                result[kind] = {
+                  ...result[kind],
+                  ...(await fixture("media.analysis", {
+                    assetId: meta.request.params.assetId,
+                    kind,
+                    offset: 0,
+                    limit: 100,
+                  })),
+                };
+              } catch {
+                /* Optional analysis remains absent. */
+              }
+            }
+        }
+        for (const asset of [
+          result.asset,
+          result.video?.asset,
+          result.proxy?.asset,
+          result.thumbnail?.asset,
+        ])
+          if (asset?.id) resources.set(asset.id, copy(asset));
+      }
+      const { type, ...base } = value;
+      return {
+        ...base,
+        entry: { name: "media-runtime", sha256: "a".repeat(64) },
+        input: { request: copy(meta.request) },
+        recovery: meta.recovery,
+        sequence: value.updatedAt ?? Date.now(),
+        ...(value.result === undefined ? {} : { result: { result: value.result, artifacts: [] } }),
+      };
+    }
+    async function nativeGet(id) {
+      const meta = persisted[id];
+      if (!meta) throw Error("Task not found");
+      const job = localJobs.get(id) ?? (await fixture("media.jobs.get", { id }));
+      if (!job) throw Error("Task not found");
+      return enrich(job, meta);
+    }
+    async function changed(job) {
+      if (!persisted[job.id]) {
+        emit("media.job.changed", job);
+        return;
+      }
+      const result = await enrich(job, persisted[job.id]);
+      const { input, result: output, ...summary } = result;
+      emit("tasks.changed", summary);
+    }
+    raw.on("media.job.changed", (job) => {
+      void changed(job);
+    });
+    const localSettings = () => window.__localVoiceTaskMockOptions;
+    window.__completeLocalVoice = (action, error = "") => {
+      const entry = [...localJobs].find(
+        ([id, j]) => persisted[id]?.voiceAction === action && !terminal(j.status),
+      );
+      if (!entry) throw Error("No running local voice action " + action);
+      const [id, job] = entry,
+        meta = persisted[id],
+        params = meta.request.params,
+        settings = localSettings();
+      job.status = error ? "failed" : "succeeded";
+      job.updatedAt = Date.now();
+      if (error) job.error = { code: "TEST_FAILURE", message: error, retryable: true };
+      else if (action === "setup") {
+        localStorage.setItem("local-voice-process-test-installed", "yes");
+        job.result = { providerId: params.providerId, available: true, state: "ready" };
+      } else {
+        const asset = {
+          id: settings.outputAssetId,
+          name: "本人声音真实试听.wav",
+          mimeType: "audio/wav",
+          bytes: 96,
+          createdAt: Date.now(),
+        };
+        resources.set(asset.id, asset);
+        window.__nativeCaptures.push(copy(asset));
+        job.result = {
+          asset,
+          inspection: {
+            kind: "audio",
+            durationSeconds: settings.durationSeconds,
+            audio: { sampleRate: 48000, channels: 1 },
+          },
+          speech: {
+            ...params,
+            engine: params.modelId,
+            rate: params.rate ?? 1,
+            voiceId: "reference",
+          },
+        };
+      }
+      persist();
+      void changed(job);
+    };
+    return {
+      ...raw,
+      __genericTaskFixture: true,
+      async getContext() {
+        return {
+          ...(await raw.getContext()),
+          apiVersion: 14,
+          availableMethods: [
+            "tasks.start",
+            "tasks.get",
+            "tasks.list",
+            "tasks.cancel",
+            "tasks.retry",
+            "resources.get",
+            "resources.list",
+            "resources.read",
+            "media.document.get",
+            "media.document.set",
+          ],
+          capabilities: {
+            tasks: { maxInputBytes: 2 * 1024 * 1024 + 8192 },
+            bridge: {
+              maxParamsBytes: 2 * 1024 * 1024,
+              maxCallsPerWindow: 10000,
+              maxTransferCallsPerWindow: 10000,
+              rateWindowMs: 1000,
+            },
+          },
+        };
+      },
+      on(event, listener) {
+        if (["tasks.changed", "media.job.changed"].includes(event)) {
+          const set = listeners.get(event) || new Set();
+          set.add(listener);
+          listeners.set(event, set);
+          return () => set.delete(listener);
+        }
+        return raw.on(event, listener);
+      },
+      async call(method, args = {}) {
+        window.__genericHostCalls.push({ method, args: copy(args) });
+        if (method === "tasks.start") {
+          if (args.entry !== "media-runtime" || !args.input?.request)
+            throw Error("Invalid reviewed task entry");
+          const request = copy(args.input.request),
+            action = request.action,
+            params = request.params ?? {};
+          for (const resource of args.input.resources ?? [])
+            if (
+              !/^asset-[a-f0-9]{64}$/.test(resource.assetId) ||
+              !/^inputs\/source-\d+\.bin$/.test(resource.path)
+            )
+              throw Error("Invalid task resource hand-off");
+          let job;
+          const local = localSettings(),
+            voiceAction =
+              local &&
+              (action === "tts-clone" ||
+                (action === "tts-setup" && ["audio8-tts", "qwen3-tts"].includes(params.providerId)))
+                ? action === "tts-setup"
+                  ? "setup"
+                  : "generate"
+                : null;
+          if (voiceAction) {
+            job = {
+              id: crypto.randomUUID(),
+              status: "queued",
+              attempt: 1,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            localJobs.set(job.id, job);
+            window.__voiceRuntimeRequests.push({
+              action: voiceAction,
+              engine: params.modelId ?? params.providerId,
+              ...copy(params),
+            });
+          } else if (action === "inspect") {
+            const preparation = await existingPreparation(params.assetId);
+            if (!preparation?.inspection) throw Error("Fixture requires actual source inspection");
+            job = {
+              id: crypto.randomUUID(),
+              status: "succeeded",
+              attempt: 1,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              result: { assetId: params.assetId, inspection: preparation.inspection },
+            };
+            localJobs.set(job.id, job);
+          } else {
+            const method = methodFor(action);
+            if (!method) throw Error("Unsupported fixture Panel tool action " + action);
+            const result = await fixture(
+              method,
+              action === "prepare"
+                ? { assetIds: [params.assetId], transcribe: params.transcribe }
+                : params,
+            );
+            job = action === "prepare" ? result.jobs[0] : result;
+            if (!job?.id || !job.status) {
+              if (action === "voices" && local) {
+                const installed =
+                  localStorage.getItem("local-voice-process-test-installed") === "yes" ||
+                  local.installed;
+                for (const model of result.models ?? [])
+                  if (["audio8-tts", "qwen3-tts"].includes(model.id)) {
+                    model.available = installed;
+                    model.state = installed ? "ready" : "not-installed";
+                    model.reason = installed ? undefined : "本地声音引擎尚未安装";
+                  }
+                result.available = result.models?.some((m) => m.available) ?? result.available;
+              }
+              job = {
+                id: crypto.randomUUID(),
+                status: "succeeded",
+                attempt: 1,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                result,
+              };
+              localJobs.set(job.id, job);
+            }
+          }
+          persisted[job.id] = {
+            action,
+            request,
+            recovery: args.recovery,
+            ...(voiceAction ? { voiceAction } : {}),
+          };
+          persist();
+          return enrich(job, persisted[job.id]);
+        }
+        if (method === "tasks.get") return nativeGet(args.id);
+        if (method === "tasks.list") {
+          const values = [];
+          for (const id of Object.keys(persisted)) {
+            try {
+              const { input, result, ...job } = await nativeGet(id);
+              values.push(job);
+            } catch {}
+          }
+          return values
+            .sort((a, b) => b.createdAt - a.createdAt)
+            .slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 50));
+        }
+        if (method === "tasks.cancel") {
+          if (!persisted[args.id]) throw Error("Task not found");
+          const local = localJobs.get(args.id);
+          if (local) {
+            local.status = "cancelled";
+            local.updatedAt = Date.now();
+            void changed(local);
+            return nativeGet(args.id);
+          }
+          const result = await fixture("media.jobs.cancel", args);
+          return enrich(result, persisted[args.id]);
+        }
+        if (method === "tasks.retry") {
+          const meta = persisted[args.id];
+          if (!meta || meta.recovery !== "retry") throw Error("Manual task requires a new request");
+          throw Error("Fixture requires explicit retry completion setup");
+        }
+        if (method === "resources.get") {
+          if (resources.has(args.id)) return { asset: copy(resources.get(args.id)) };
+          const found = await fixture("media.assets.get", args);
+          resources.set(found.asset.id, copy(found.asset));
+          return { asset: found.asset };
+        }
+        if (method === "resources.list") {
+          return {
+            assets: [...resources.values()].slice(
+              args.offset ?? 0,
+              (args.offset ?? 0) + (args.limit ?? 50),
+            ),
+            total: resources.size,
+          };
+        }
+        if (method === "media.jobs.list") {
+          const result = await fixture(method, args);
+          return { ...result, jobs: (result.jobs ?? []).filter((j) => !persisted[j.id]) };
+        }
+        if (method === "media.document.get" && args.key.startsWith("video-studio-prepared-")) {
+          const saved = await fixture(method, args);
+          if (saved.data) return saved;
+          try {
+            const data = await existingPreparation(args.key.slice("video-studio-prepared-".length));
+            if (data) return { revision: 0, data };
+          } catch {}
+          return saved;
+        }
+        if (
+          (method === "media.document.get" || method === "media.document.set") &&
+          args.key === "video-studio-native-media-v1"
+        ) {
+          try {
+            return await fixture(method, args);
+          } catch (error) {
+            if (!/Unexpected.*(?:call|method)/i.test(error.message)) throw error;
+            if (method.endsWith(".get"))
+              return copy(documents.get(args.key) ?? { revision: 0, data: null });
+            const saved = { revision: args.baseRevision + 1, data: copy(args.data) };
+            documents.set(args.key, saved);
+            return saved;
+          }
+        }
+        if (/^media\.(?:status|prepare|tts|render|scene|audio\.)/.test(method))
+          throw Error("Production business call reached raw Host: " + method);
+        return fixture(method, args);
+      },
+    };
+  }
+  let bridge = wrap(window.codeshellPanel);
+  Object.defineProperty(window, "codeshellPanel", {
+    configurable: true,
+    get: () => bridge,
+    set: (value) => {
+      bridge = wrap(value);
+    },
+  });
+}

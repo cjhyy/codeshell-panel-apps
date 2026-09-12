@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.4.7",
+  "version": "0.5.0",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -12,7 +12,16 @@
   "icon": "image",
   "placement": "right-dock",
   "singleton": true,
-  "permissions": ["context.workspace", "storage", "agent.task", "media", "media.capture", "process"],
+  "permissions": [
+    "context.workspace",
+    "storage",
+    "agent.task",
+    "media",
+    "media.capture",
+    "process",
+    "resources",
+    "credentials.connections"
+  ],
   "agent": {
     "tools": [
       {

@@ -7,15 +7,14 @@ import ts from "typescript";
 import { chromium } from "playwright";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
-// Both repositories can run independently. When the Host checkout is alongside
-// the Panel repo, also compare its actual serialized canvas function pixel for pixel.
-const hostFile = new URL(
-  "../../codeshell/packages/desktop/src/main/media/media-caption-renderer.ts",
+// Compare the actual shared native canvas implementation without a Host checkout.
+const nativeFile = new URL(
+  "../apps/video-studio/native/media/media-caption-renderer.ts",
   import.meta.url,
 );
 
 test(
-  "three real caption templates match frame compositing and the Host PNG renderer",
+  "three real caption templates match frame compositing and the panel-native PNG renderer",
   { timeout: 20000 },
   async (t) => {
     const browser = await chromium.launch({ headless: true });
@@ -39,12 +38,15 @@ test(
       logLevel: "silent",
     });
     await page.addScriptTag({ content: bundled.outputFiles[0].text });
-    const hostSource = await readFile(hostFile, "utf8").catch((error) => {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    });
-    if (hostSource) {
-      const ast = ts.createSourceFile("host-caption.ts", hostSource, ts.ScriptTarget.Latest, true);
+    const nativeSource = await readFile(nativeFile, "utf8");
+    assert.ok(nativeSource.trim(), "the packaged caption renderer must be present");
+    if (nativeSource) {
+      const ast = ts.createSourceFile(
+        "native-caption.ts",
+        nativeSource,
+        ts.ScriptTarget.Latest,
+        true,
+      );
       const names = new Set(["drawCaptionPng", "validateCaptionImageRequest"]);
       const actualFunctions = ast.statements
         .filter((node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
@@ -60,7 +62,7 @@ test(
         compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
       }).outputText;
       await page.addScriptTag({
-        content: `${code}\nwindow.hostCaption={drawCaptionPng,validateCaptionImageRequest};`,
+        content: `${code}\nwindow.nativeCaption={drawCaptionPng,validateCaptionImageRequest};`,
       });
     }
     const result = await page.evaluate(() => {
@@ -72,7 +74,7 @@ test(
         texts: ["同一段字幕，同一种呈现。\nKeep the story moving."],
       };
       const styles = {},
-        hostParity = {},
+        nativeParity = {},
         frameParity = {};
       const canvas = () => {
         const value = document.createElement("canvas");
@@ -96,10 +98,10 @@ test(
             white++;
         }
         styles[style] = { png: layer.toDataURL(), painted, yellow, white };
-        if (window.hostCaption) {
-          window.hostCaption.validateCaptionImageRequest({ ...request, style });
-          hostParity[style] =
-            window.hostCaption.drawCaptionPng({ ...request, style }) === layer.toDataURL();
+        if (window.nativeCaption) {
+          window.nativeCaption.validateCaptionImageRequest({ ...request, style });
+          nativeParity[style] =
+            window.nativeCaption.drawCaptionPng({ ...request, style }) === layer.toDataURL();
         }
         const project = {
           ...createDemoProject(),
@@ -124,16 +126,16 @@ test(
       const legacy = canvas();
       drawCaptionLayer(legacy.getContext("2d"), request);
       const invalid = [];
-      if (window.hostCaption)
+      if (window.nativeCaption)
         for (const style of ["color:red", "url(https://example.com)", {}, null]) {
           try {
-            window.hostCaption.validateCaptionImageRequest({ ...request, style });
+            window.nativeCaption.validateCaptionImageRequest({ ...request, style });
             invalid.push(false);
           } catch {
             invalid.push(true);
           }
         }
-      return { styles, hostParity, frameParity, legacy: legacy.toDataURL(), invalid };
+      return { styles, nativeParity, frameParity, legacy: legacy.toDataURL(), invalid };
     });
     assert.equal(result.legacy, result.styles.classic.png);
     assert.equal(new Set(Object.values(result.styles).map((style) => style.png)).size, 3);
@@ -148,12 +150,9 @@ test(
     // font, colour and wrapping must otherwise agree over the complete frame.
     for (const [style, delta] of Object.entries(result.frameParity))
       assert.ok(delta <= 3, `${style} compositing pixel delta ${delta}`);
-    if (hostSource) {
-      assert.deepEqual(result.hostParity, { classic: true, bold: true, minimal: true });
+    if (nativeSource) {
+      assert.deepEqual(result.nativeParity, { classic: true, bold: true, minimal: true });
       assert.deepEqual(result.invalid, [true, true, true, true]);
-    } else
-      t.diagnostic(
-        "Host checkout absent: standalone Panel rendering verified; cross-repository PNG parity skipped.",
-      );
+    }
   },
 );

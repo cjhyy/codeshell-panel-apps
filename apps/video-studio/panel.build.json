@@ -1,4 +1,7 @@
 {
   "entry": "src/main.ts",
-  "nativeEntries": { "voice-runtime": "native/voice-runtime.ts" }
+  "nativeEntries": {
+    "voice-runtime": "native/voice-runtime.ts",
+    "media-runtime": "native/media/cli.ts"
+  }
 }

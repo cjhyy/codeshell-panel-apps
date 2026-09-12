@@ -1,3 +1,4 @@
+import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
@@ -68,6 +69,7 @@ async function isolatedPage(mockHost = false, width = 1440) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
+  await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(() => {
     window.__deviceRequests = [];
     window.__capturedTracks = [];
@@ -591,6 +593,19 @@ test(
       const before = await readProject(page);
       await page.locator('[data-tab="spoken"]').click();
       await click(page, "读取已有结果");
+      await page.locator(".spoken-transcript summary").waitFor();
+      // Native inspection/document completion also schedules a background refresh.
+      // Open the disclosure after those updates settle, as a user would, without
+      // forcing a click through a replaced or offscreen control.
+      await page.waitForFunction(() => {
+        const markup = document.querySelector(".library-panel")?.innerHTML;
+        const previous = window.__stableSpokenFixture;
+        if (!previous || previous.markup !== markup) {
+          window.__stableSpokenFixture = { markup, since: performance.now() };
+          return false;
+        }
+        return performance.now() - previous.since >= 200;
+      });
       await page.locator(".spoken-transcript summary").click();
       await click(page, "让 AI 提供文稿建议");
       await page.waitForFunction(() => window.__taskCalls.length === 1);

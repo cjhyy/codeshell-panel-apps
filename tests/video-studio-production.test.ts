@@ -1377,3 +1377,40 @@ test("voice configuration validation preserves incomplete selections but rejects
   assert.match(reopened.controller.error, /保留/);
   await assert.rejects(reopened.controller.prepare(["source"]), /保留/);
 });
+
+test("retrying a legacy job preserves project publication under its new durable task UUID after reload", async () => {
+  const f = await fixture();
+  const preparedJob = (await f.controller.prepare(["source"])).jobs[0]!;
+  const original = f.host.jobs.get(preparedJob.id)!;
+  original.status = "failed";
+  original.error = { code: "FAILED", message: "旧运行中断", retryable: true };
+  const nextId = "08fb411a-d959-4c58-9b99-f38e285d3997";
+  f.host.handlers.set("media.jobs.retry", () => {
+    const next: MediaJob = {
+      ...original,
+      id: nextId,
+      status: "queued",
+      error: undefined,
+      createdAt: Date.now(),
+      result: prepared(),
+    };
+    f.host.jobs.set(nextId, next);
+    return structuredClone(next);
+  });
+  await f.controller.retry(original.id);
+  assert.equal(binding(f.host, original.id), undefined);
+  assert.equal(binding(f.host, nextId).purpose, "prepare");
+  assert.equal(binding(f.host, nextId).projectId, "project-a");
+  f.controller.dispose();
+  const reopened = await fixture(f.host);
+  await reopened.controller.refresh();
+  assert.equal(
+    reopened.controller.currentJobs.some((job) => job.id === nextId),
+    true,
+  );
+  f.host.jobs.get(nextId)!.status = "succeeded";
+  await reopened.controller.refresh();
+  assert.equal(reopened.published.length, 1);
+  assert.equal(reopened.published[0]!.projectId, "project-a");
+  assert.equal(binding(f.host, nextId).consumed, true);
+});

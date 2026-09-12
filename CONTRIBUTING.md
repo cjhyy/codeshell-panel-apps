@@ -20,7 +20,7 @@ and passes through `npm run build` unchanged.
 
 ## Source-built Video Studio
 
-Video Studio 0.4.7 is the source-built app in this release. Edit
+Video Studio 0.5.0 is the source-built app in this release. Edit
 `apps/video-studio/`; install and publish **`panels/video-studio/`**. Its GitHub
 installation subdirectory is `panels/video-studio`, not `apps/video-studio`.
 
@@ -79,7 +79,7 @@ generated files directly. The build checks validate them without replacing them.
 ```json
 {
   "entry": "src/main.ts",
-  "nativeEntries": { "voice-runtime": "native/voice-runtime.ts" }
+  "nativeEntries": { "media-runtime": "native/media/cli.ts" }
 }
 ```
 
@@ -91,11 +91,26 @@ are allowed in tools; browser imports must stay within installed browser assets.
 External programs and model files are checked and prepared by the Panel's own
 setup flow, not supplied by a development checkout.
 
-Browser modules can import `source` and `sha256` from `panel-native:<name>` to
-provision the exact bundled tool through the generic process API. Do not guess
-an installed package path or import CodeShell implementation files. Request the
-`process` permission and handle missing executables, approval, cancellation, and
-panel closure explicitly. Bundling a tool does not start it automatically.
+The builder emits each entry's installed path and SHA-256 in the generated
+manifest `nativeEntries`. CodeShell 0.9.11+ / Panel API 14 resolves that reviewed
+entry to an opaque handle, verifies the installed bytes, and authorizes its
+execution. Use `tasks.start({entry, input, recovery})` for durable work, with
+resource IDs materialized directly into the task directory. For short process
+work, use `process.resolveEntry` and its returned handle. Do not guess installed
+paths, transmit executable source through browser JSON, or import CodeShell
+implementation files. The optional `panel-native:<name>` source/hash import is
+retained for old callers; Video Studio uses reviewed entries and does not
+bootstrap executable files through the browser.
+
+Request the `process` permission. Keep model choices, dependency versions,
+workflows, and retry policy in the Panel; the Host enforces access, process
+lifecycle, and resource custody. Discover methods and limits through
+`getContext()`, prefer structured `callResult` errors, and use sequence cursors
+for process output. Handle missing executables, permission denial, cancellation,
+and interrupted task records. Closing the panel does not cancel durable tasks;
+explicit cancellation waits for process termination. Online work that might
+incur charges uses manual recovery and checks existing results before another
+request. Bundling an entry does not execute it automatically.
 
 ## System boundary
 

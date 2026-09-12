@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { repositoryRoot } from "../panel-projects.mjs";
@@ -67,6 +68,35 @@ export async function validatePackage(packagePath) {
   assert.equal(typeof manifest.title?.default, "string", `${packagePath}: title is required`);
   assert.match(manifest.entry, /^app\/[^/].*\.html$/, `${packagePath}: entry must be below app/`);
   assert(Array.isArray(manifest.permissions), `${packagePath}: permissions must be an array`);
+  if (manifest.nativeEntries !== undefined) {
+    assert(
+      manifest.nativeEntries &&
+        typeof manifest.nativeEntries === "object" &&
+        !Array.isArray(manifest.nativeEntries),
+      `${packagePath}: invalid native entries`,
+    );
+    assert(
+      manifest.permissions.includes("process"),
+      `${packagePath}: native entries require process permission`,
+    );
+    assert(
+      Object.keys(manifest.nativeEntries).length <= 16,
+      `${packagePath}: too many native entries`,
+    );
+    for (const [name, tool] of Object.entries(manifest.nativeEntries)) {
+      assert.match(name, /^[a-z][a-z0-9-]{0,63}$/);
+      assert.deepEqual(Object.keys(tool).sort(), ["entry", "sha256"]);
+      assert.match(tool.entry, /^app\/tools\/[a-z][a-z0-9-]{0,63}\.mjs$/);
+      assert.match(tool.sha256, /^[a-f0-9]{64}$/);
+      assert.equal(
+        createHash("sha256")
+          .update(await readFile(join(root, tool.entry)))
+          .digest("hex"),
+        tool.sha256,
+        `${packagePath}: native tool digest changed`,
+      );
+    }
+  }
   const declaredSkillRoots = new Set();
   if (manifest.schemaVersion === 2 && manifest.agent) {
     assert(Array.isArray(manifest.agent.tools), `${packagePath}: agent.tools must be an array`);

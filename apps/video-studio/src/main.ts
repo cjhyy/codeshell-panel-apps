@@ -59,19 +59,12 @@ import {
 } from "./narration";
 import { buildNarrationAlignment } from "./narration-alignment";
 import { syncNarrationDraftUI } from "./narration-ui";
-import { createLocalVoiceBridge } from "./local-voice-bridge";
-import {
-  source as voiceRuntimeSource,
-  sha256 as voiceRuntimeHash,
-} from "panel-native:voice-runtime";
+import { createMediaTaskBridge } from "./media-task-bridge";
 
 if (panel) {
-  const voiceBridge = createLocalVoiceBridge(panel, {
-    source: voiceRuntimeSource,
-    sha256: voiceRuntimeHash,
-  });
-  setPanelBridge(voiceBridge);
-  window.addEventListener("pagehide", () => voiceBridge.dispose(), { once: true });
+  const mediaBridge = createMediaTaskBridge(panel);
+  setPanelBridge(mediaBridge.bridge);
+  window.addEventListener("pagehide", () => mediaBridge.dispose(), { once: true });
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>

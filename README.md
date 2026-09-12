@@ -9,14 +9,14 @@ permission; their application logic belongs to the Panel package.
 
 ## Included apps
 
-| App            | Subdirectory          | Purpose                                                                                            |
-| -------------- | --------------------- | -------------------------------------------------------------------------------------------------- |
-| Design Studio  | `apps/design-studio`  | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison |
-| Job Hunt HQ    | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization         |
-| Quant Lab      | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
-| Video Download | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                |
-| Video Studio 0.4.7 | `panels/video-studio` | Local video editing, source rough cuts, captions, reviewable AI workflows, and panel-managed Audio8/Qwen voice cloning |
-| Starter        | `templates/starter`   | Minimal template for creating another Panel App                                                    |
+| App                | Subdirectory          | Purpose                                                                                                                            |
+| ------------------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Design Studio      | `apps/design-studio`  | Figma-like repo design with PRD handoff, responsive HTML generation, and implementation comparison                                 |
+| Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
+| Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
+| Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
+| Video Studio 0.5.0 | `panels/video-studio` | Local video editing, source rough cuts, captions, AI workflows, and fully panel-owned media and voice tools                        |
+| Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
 ## Install from GitHub
 
@@ -39,14 +39,16 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.4.7 is maintained in `apps/video-studio/` and installed from the
-prebuilt `panels/video-studio/` package. Its Audio8 and Qwen tools manage their
-own model setup and generation through CodeShell's general process and media
-interfaces. Voice setup requires Node.js 20+, supported local hardware, and an
-initial model download; keep the panel open while those tasks run. See the
-[Video Studio guide](apps/video-studio/README.md) for initialization, reference
-recordings, real voice previews, and export. GitHub installation itself does not
-compile the source or install voice models.
+Video Studio 0.5.0 is maintained in `apps/video-studio/` and installed from the
+prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
+Whisper transcription, HyperFrames rendering, and all voice adapters and model
+setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
+custody, and reviewed entry handles; submitted native tasks continue after the
+panel closes. Native tools require Node.js 20+ and their declared local
+dependencies; voice initialization downloads the selected models. See the
+[Video Studio guide](apps/video-studio/README.md) for requirements, reference
+recordings, real previews, and export. GitHub installation itself does not
+compile the source or install models.
 
 Design Studio 0.18 keeps the complete PRD → responsive design → editable frontend → measured
 comparison loop in one v3 layout model: Wrap/Wrap Reverse, Grid, independent axis gaps,
