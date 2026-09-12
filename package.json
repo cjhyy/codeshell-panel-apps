@@ -5,18 +5,31 @@
   "description": "Agent-native desktop Panel Apps for CodeShell",
   "type": "module",
   "scripts": {
-    "check": "node scripts/validate.mjs && node scripts/quant-lab-portfolio.mjs && node scripts/quant-lab-portfolio-rules.mjs && node scripts/quant-lab-portfolio-data.mjs && node scripts/quant-lab-today.mjs && node scripts/quant-lab-news.mjs && node scripts/quant-lab-notes.mjs",
-    "test": "node scripts/validate.mjs && node scripts/quant-lab-portfolio.mjs && node scripts/quant-lab-portfolio-rules.mjs && node scripts/quant-lab-portfolio-data.mjs && node scripts/quant-lab-today.mjs && node scripts/quant-lab-news.mjs && node scripts/quant-lab-notes.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node scripts/check.mjs --tests-only",
     "test:fidelity": "node scripts/design-studio-html-fidelity.mjs",
     "test:fidelity:delivery": "node scripts/design-studio-delivery-fidelity.mjs",
     "test:fidelity:cases": "node scripts/design-studio-html2figma-cases.mjs",
     "test:fidelity:real": "node scripts/design-studio-real-html-fidelity.mjs",
     "test:large-doc": "node scripts/design-studio-large-document.mjs",
-    "test:ui:quant-lab": "node scripts/quant-lab-ui.mjs"
+    "test:ui:quant-lab": "node scripts/quant-lab-ui.mjs",
+    "build": "node scripts/build-panels.mjs",
+    "build:check": "node scripts/build-panels.mjs --check",
+    "typecheck": "tsc --project tsconfig.json",
+    "dev": "node scripts/preview-panels.mjs --watch",
+    "preview": "node scripts/preview-panels.mjs",
+    "validate": "node scripts/validate.mjs",
+    "test:build": "node --test tests/panel-build.test.mjs",
+    "test:video-studio": "node scripts/run-typescript-tests.mjs tests/video-studio-local-voice.test.ts tests/video-studio-model.test.ts tests/video-studio-host.test.ts tests/video-studio-production.test.ts tests/video-studio-production-ui.test.ts tests/video-studio-production-tools.test.ts tests/video-studio-tts.test.ts tests/video-studio-voiceover-publication.test.ts tests/video-studio-spoken.test.ts tests/video-studio-enhancement.test.ts tests/video-studio-caption-style.test.ts tests/video-studio-workflow.test.ts tests/video-studio-narration.test.ts tests/video-studio-narration-alignment.test.ts tests/video-studio-rough-cut.test.ts tests/video-studio-rough-cut-controls.test.ts tests/video-studio-voice-preparation-ui.test.ts",
+    "test:ui:video-studio": "node --test --test-concurrency=1 tests/video-studio-ui.test.mjs tests/video-studio-recording.test.mjs tests/video-studio-spoken-ui.test.mjs tests/video-studio-capabilities-ui.test.mjs tests/video-studio-workflow-ui.test.mjs tests/video-studio-narration-ui.test.mjs tests/video-studio-rough-cut-ui.test.mjs tests/video-studio-voice-preparation-ui.test.mjs",
+    "test:media:video-studio": "node --test --test-concurrency=1 tests/video-studio-media.test.mjs tests/video-studio-caption-render.test.mjs"
   },
   "devDependencies": {
+    "es-module-lexer": "2.0.0",
+    "esbuild": "0.28.2",
     "playwright": "1.60.0",
-    "pngjs": "5.0.0"
+    "pngjs": "5.0.0",
+    "typescript": "5.9.3"
   },
   "license": "MIT"
 }

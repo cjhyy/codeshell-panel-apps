@@ -15,6 +15,10 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { discoverProjects } from "./panel-projects.mjs";
+import { validatePackage as validateSourcePackage } from "./validation/package.mjs";
+import { validateSyntax as validateSourceSyntax } from "./validation/syntax.mjs";
+import { runSchemaPatternTests } from "../tests/validation/schema-pattern.test.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packages = [
@@ -7235,3 +7239,15 @@ console.log("✓ Quant Lab sizer, signal-mode and risk-free-rate contract");
 console.log("✓ Quant Lab walk-forward and parameter sweep");
 console.log("✓ Quant Lab research evidence");
 console.log("✓ Quant Lab watchlist alert rules");
+
+// Preserve existing app regressions while validating new prebuilt packages with
+// the shared installer contract. Source directories are never install targets.
+runSchemaPatternTests();
+const sourcePackages = (await discoverProjects())
+  .filter((project) => project.mode === "source")
+  .map((project) => relative(repositoryRoot, project.output).split(sep).join("/"));
+for (const packagePath of sourcePackages) {
+  const result = await validateSourcePackage(packagePath);
+  console.log(`✓ ${result.id}: ${result.files} files`);
+}
+await validateSourceSyntax(sourcePackages);

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mimi 视频工作台</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./rough-cut.css" />
+    <script type="module" src="./main.mjs"></script>
+  </head>
+  <body>
+    <div id="studio"></div>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <input id="media-input" type="file" accept="video/*,audio/*,image/*" multiple hidden />
+    <input id="srt-input" type="file" accept=".srt" hidden />
+    <input id="project-input" type="file" accept=".json" hidden />
+  </body>
+</html>

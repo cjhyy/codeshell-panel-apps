@@ -3,7 +3,9 @@
 Desktop Panel Apps for [CodeShell](https://github.com/cjhyy/codeshell). A
 schema-v2 app may package its sandboxed UI, declared Agent tools, and read-only
 Skills behind one reviewed installation. General Agents, Commands, Hooks, MCP
-servers, and arbitrary plugin backends remain outside Panel Apps.
+servers, and arbitrary plugin backends remain outside Panel Apps. A Panel may
+include its own bounded Node tools, run through the reviewed Host `process`
+permission; their application logic belongs to the Panel package.
 
 ## Included apps
 
@@ -13,6 +15,7 @@ servers, and arbitrary plugin backends remain outside Panel Apps.
 | Job Hunt HQ    | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization         |
 | Quant Lab      | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                |
+| Video Studio 0.4.7 | `panels/video-studio` | Local video editing, source rough cuts, captions, reviewable AI workflows, and panel-managed Audio8/Qwen voice cloning |
 | Starter        | `templates/starter`   | Minimal template for creating another Panel App                                                    |
 
 ## Install from GitHub
@@ -21,7 +24,7 @@ In CodeShell, open **Extensions → Panel Apps → From GitHub**, then enter:
 
 - Repository: `https://github.com/cjhyy/codeshell-panel-apps`
 - Branch or tag: `main`
-- App subdirectory: `apps/design-studio`, `apps/job-hunt-hq`, `apps/quant-lab`, or `apps/video-download`
+- App subdirectory: `apps/design-studio`, `apps/job-hunt-hq`, `apps/quant-lab`, `apps/video-download`, or `panels/video-studio`
 
 You can also paste a complete tree URL and leave the other two fields empty:
 
@@ -29,11 +32,21 @@ You can also paste a complete tree URL and leave the other two fields empty:
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/job-hunt-hq`
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/quant-lab`
 - `https://github.com/cjhyy/codeshell-panel-apps/tree/main/apps/video-download`
+- `https://github.com/cjhyy/codeshell-panel-apps/tree/main/panels/video-studio`
 
 CodeShell clones the source into a temporary directory, validates the package,
 shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
+
+Video Studio 0.4.7 is maintained in `apps/video-studio/` and installed from the
+prebuilt `panels/video-studio/` package. Its Audio8 and Qwen tools manage their
+own model setup and generation through CodeShell's general process and media
+interfaces. Voice setup requires Node.js 20+, supported local hardware, and an
+initial model download; keep the panel open while those tasks run. See the
+[Video Studio guide](apps/video-studio/README.md) for initialization, reference
+recordings, real voice previews, and export. GitHub installation itself does not
+compile the source or install voice models.
 
 Design Studio 0.18 keeps the complete PRD → responsive design → editable frontend → measured
 comparison loop in one v3 layout model: Wrap/Wrap Reverse, Grid, independent axis gaps,
@@ -67,10 +80,24 @@ apps/
   video-download/
     .codeshell-panel/panel.json
     app/
+  video-studio/              # Source project: edit here
+    .codeshell-panel/panel.json
+    panel.build.json
+    src/
+    public/
+    native/
+    agent/skills/
+panels/
+  video-studio/              # Generated package: install this directory
+    .codeshell-panel/panel.json
+    app/
+    agent/skills/
 templates/
   starter/
 scripts/
   validate.mjs
+  build-panels.mjs
+  check.mjs
 ```
 
 Every Panel App is self-contained. Its manifest lives at
@@ -80,12 +107,56 @@ while tool handlers register through the sandboxed panel bridge.
 
 ## Develop
 
-The apps intentionally use browser-native HTML, CSS, and JavaScript, so installing them has no
-runtime dependency or bundling step.
+Existing apps and `templates/starter` keep browser-native HTML, CSS, and JavaScript
+directly in `app/` and install from their existing directories. They need no
+bundling step. Their existing validation command remains available:
 
 ```sh
 node scripts/validate.mjs
 ```
+
+Video Studio is the source-built app in this release. Its `panel.build.json`
+declares `src/main.ts`; the build bundles browser ESM, copies `public/` into
+`panels/video-studio/app/`, and includes the declared Skills. Entries under
+`native/` are bundled separately as Node tools. Source files and generated
+`panels/video-studio/` files are committed together; edit the source, then rebuild.
+Do not install `apps/video-studio/` or migrate the Starter template as part of this
+release. CodeShell installs the prebuilt package without running npm or a compiler.
+
+Use Node.js 20+ for development:
+
+```sh
+npm ci
+npm run typecheck
+npm run build -- --app video-studio
+npm run build:check -- --app video-studio
+npm run test:build
+npm run validate
+npm test -- --suite video-studio
+npm run check
+```
+
+`build:check` rebuilds twice in temporary directories and checks determinism and
+committed output without replacing it. `check` runs type checks, build checks,
+and the complete offline test catalog; `npm test` runs that catalog alone.
+The Video Studio suite includes native-tool and project/Host contract tests;
+it does not require downloading voice models or generating paid audio.
+
+For browser and media verification, install Chromium once and run the separate
+suites. They are not included in the default offline gate:
+
+```sh
+npx playwright install chromium
+npm run test:ui:video-studio
+npm run test:media:video-studio
+```
+
+`npm run dev -- --app video-studio` rebuilds on source changes; refresh the preview
+after a successful build. `npm run preview -- --app video-studio` serves the built
+package at `http://127.0.0.1:4173/`. Browser previews have no CodeShell Host bridge;
+test local process, recording, and persistent media features in the installed
+desktop panel. See [CONTRIBUTING.md](CONTRIBUTING.md) for `nativeEntries` and package
+boundaries.
 
 Design Studio also has a same-browser HTML fidelity gate. Install development dependencies once,
 then generate source, converted, side-by-side, amplified difference, and JSON metric artifacts:
@@ -122,7 +193,8 @@ the live page, measured/reflowed Design renders, pixel differences, editable des
 summaries, and per-page metrics. It is intentionally excluded from CI so external availability and
 changing page content cannot make repository validation flaky.
 
-For local iteration, clone this repository and use **Choose source folder**.
+For local iteration, clone this repository and use **Choose source folder** with
+the existing app directory, or `panels/video-studio/` for Video Studio.
 For remote iteration, push a commit and use **Update from source**.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before adding another app.

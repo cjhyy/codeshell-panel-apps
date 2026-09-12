@@ -1,0 +1,494 @@
+import { timelineClips, validateProject, type Project } from "./model";
+import type { TranscriptSegment } from "./production";
+import {
+  buildSpokenEditPlan,
+  findSpokenCandidates,
+  type SpokenCandidate,
+  type SpokenEditPlan,
+  type SpokenRange,
+  type SpokenSource,
+} from "./spoken-edit";
+import { escapeHtml as esc, html } from "./icons";
+import { button } from "./views";
+
+export interface SpokenContext {
+  project(): Project;
+  prepare?(assetId: string): Promise<void>;
+  fetchTranscript(assetId: string): Promise<TranscriptSegment[]>;
+  fetchSilence(assetId: string): Promise<{ start: number; end: number }[]>;
+  apply(plan: SpokenEditPlan): Promise<void>;
+  undo(): void;
+  canUndo(): boolean;
+  preview(range: SpokenRange): Promise<void>;
+  polish(text: string): void | Promise<void>;
+  enhance?(input: {
+    assetId: string;
+    preset: "light" | "balanced";
+    denoise: boolean;
+    normalize: boolean;
+  }): Promise<void>;
+  changed(): void;
+  toast?(message: string): void;
+}
+const labels = { pause: "长停顿", filler: "口头词", repetition: "重复句" };
+const precisionLabels = { detector: "静音检测", word: "词时间戳", segment: "整段时间戳" };
+const time = (frame: number) =>
+  `${Math.floor(frame / 1800)
+    .toString()
+    .padStart(2, "0")}:${((frame % 1800) / 30).toFixed(2).padStart(5, "0")}`;
+export function createSpokenUI(context: SpokenContext) {
+  let assetId = "",
+    candidates: SpokenCandidate[] = [],
+    sources: SpokenSource[] = [];
+  let selected = new Set<string>(),
+    skipped = new Set<string>(),
+    notes: string[] = [];
+  let analyzed: { id: string; revision: number } | null = null,
+    generation = 0,
+    disposed = false;
+  let pending = "",
+    error = "",
+    filter = "all",
+    visible = 40;
+  let preset: "light" | "balanced" = "balanced",
+    denoise = true,
+    normalize = true;
+  function assets() {
+    const project = context.project();
+    const used = new Set(
+      [...project.clips, ...(project.audioClips ?? [])].map((clip) => clip.assetId),
+    );
+    return project.assets.filter(
+      (asset) => used.has(asset.id) && (asset.kind === "audio" || asset.kind === "video"),
+    );
+  }
+  function currentAssetId() {
+    const available = assets();
+    if (!available.some((asset) => asset.id === assetId)) assetId = available[0]?.id ?? "";
+    return assetId;
+  }
+  function fresh() {
+    const project = context.project();
+    return !!analyzed && analyzed.id === project.id && analyzed.revision === project.revision;
+  }
+  function change() {
+    if (!disposed) context.changed();
+  }
+  function reset() {
+    generation++;
+    candidates = [];
+    sources = [];
+    selected.clear();
+    skipped.clear();
+    analyzed = null;
+    notes = [];
+    error = "";
+    visible = 40;
+  }
+  function assertGeneration(version: number, project: Project) {
+    if (
+      disposed ||
+      version !== generation ||
+      context.project().id !== project.id ||
+      context.project().revision !== project.revision
+    )
+      throw new Error("工程已变化，已丢弃旧的口播分析；请重新读取");
+  }
+  function editingState(project: Project) {
+    // Preparing may publish proxy/thumbnail metadata. Accept only those revision
+    // changes; timeline edits and different source durations invalidate analysis.
+    return JSON.stringify({
+      id: project.id,
+      name: project.name,
+      width: project.width,
+      height: project.height,
+      clips: project.clips,
+      audioClips: project.audioClips ?? [],
+      captions: project.captions,
+      assets: project.assets.map((asset) => ({
+        id: asset.id,
+        kind: asset.kind,
+        durationFrames: asset.durationFrames,
+        mediaId: asset.mediaId,
+      })),
+    });
+  }
+  async function analyze(prepare: boolean) {
+    if (pending) throw new Error("请等待当前口播操作完成");
+    const id = currentAssetId();
+    if (!id) throw new Error("请先把口播视频或录音加入时间轴");
+    reset();
+    const version = generation;
+    let snapshot = validateProject(context.project());
+    pending = prepare ? "正在准备素材和转写，真实任务继续在后台运行…" : "正在读取文稿和静音检测…";
+    change();
+    try {
+      if (prepare) {
+        if (!context.prepare) throw new Error("当前工作台不能转写，请在 CodeShell 桌面版打开");
+        await context.prepare(id);
+        const prepared = validateProject(context.project());
+        if (editingState(prepared) !== editingState(snapshot))
+          throw new Error("准备期间工程已变化，请重新读取口播分析");
+        snapshot = prepared;
+        assertGeneration(version, snapshot);
+      }
+      pending = "正在读取文稿和静音检测…";
+      change();
+      const [transcript, silence] = await Promise.allSettled([
+        context.fetchTranscript(id),
+        context.fetchSilence(id),
+      ]);
+      assertGeneration(version, snapshot);
+      const source: SpokenSource = { assetId: id };
+      if (transcript.status === "fulfilled") source.transcript = transcript.value;
+      else
+        notes.push(
+          `文稿未就绪：${String(transcript.reason instanceof Error ? transcript.reason.message : transcript.reason)}`,
+        );
+      if (silence.status === "fulfilled") source.silence = silence.value;
+      else
+        notes.push(
+          `静音检测未就绪：${String(silence.reason instanceof Error ? silence.reason.message : silence.reason)}`,
+        );
+      if (transcript.status === "rejected" && silence.status === "rejected")
+        throw new Error("尚无可用分析。请先准备口播，或查看后台任务中的失败原因。");
+      sources = [source];
+      candidates = findSpokenCandidates(snapshot, sources);
+      analyzed = { id: snapshot.id, revision: snapshot.revision };
+      if (source.transcript?.length && !source.transcript.some((segment) => segment.words?.length))
+        notes.push(
+          "这份转写没有词时间戳。包含正文的口头词只能定位试听，不能精确自动删词；长停顿仍使用真实静音检测。",
+        );
+      if (!source.transcript?.length) notes.push("尚无文稿，当前只显示实际静音检测候选。");
+      if (!candidates.length)
+        notes.push("没有发现符合保守阈值的候选。你仍可以试听文稿和手动剪辑。");
+    } finally {
+      if (version === generation) {
+        pending = "";
+        change();
+      }
+    }
+  }
+  function shown() {
+    return candidates.filter(
+      (candidate) => !skipped.has(candidate.id) && (filter === "all" || candidate.kind === filter),
+    );
+  }
+  function selectionText() {
+    if (!selected.size) return "勾选后才会删减；原素材始终保留。";
+    try {
+      const plan = buildSpokenEditPlan(context.project(), candidates, [...selected]);
+      return `已选 ${selected.size} 项，预计删去 ${(plan.removedFrames / 30).toFixed(2)} 秒`;
+    } catch (cause) {
+      return cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+  function updateSelection() {
+    const status = document.querySelector("#spoken-selection");
+    if (status) status.textContent = selectionText();
+    const apply = document.querySelector<HTMLButtonElement>('[data-action="spoken-apply"]');
+    if (apply) apply.disabled = !!pending || !fresh() || !selected.size;
+  }
+  function input(target: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean {
+    if (target.id === "spoken-asset") {
+      if (pending) return true;
+      assetId = target.value;
+      reset();
+      change();
+      return true;
+    }
+    if (target.id === "spoken-filter") {
+      filter = target.value;
+      visible = 40;
+      change();
+      return true;
+    }
+    if (target.dataset.spokenCandidate) {
+      if (pending || !fresh()) return true;
+      const candidate = candidates.find((item) => item.id === target.dataset.spokenCandidate);
+      if (candidate?.actionable) {
+        if ((target as HTMLInputElement).checked) selected.add(candidate.id);
+        else selected.delete(candidate.id);
+      }
+      updateSelection();
+      return true;
+    }
+    if (target.id === "spoken-preset") {
+      preset = target.value === "light" ? "light" : "balanced";
+      return true;
+    }
+    if (target.id === "spoken-denoise") {
+      denoise = (target as HTMLInputElement).checked;
+      return true;
+    }
+    if (target.id === "spoken-normalize") {
+      normalize = (target as HTMLInputElement).checked;
+      return true;
+    }
+    return false;
+  }
+  async function action(name: string): Promise<boolean> {
+    if (!name.startsWith("spoken-")) return false;
+    if (disposed) throw new Error("口播编辑器已关闭");
+    try {
+      error = "";
+      if (name === "spoken-analyze" || name === "spoken-prepare") {
+        await analyze(name === "spoken-prepare");
+        return true;
+      }
+      if (pending) throw new Error("请等待当前口播操作完成");
+      if (name === "spoken-undo") {
+        context.undo();
+        reset();
+        change();
+        return true;
+      }
+      if (name === "spoken-enhance") {
+        const id = currentAssetId();
+        if (!id) throw new Error("请先把口播素材加入时间轴");
+        if (!context.enhance) throw new Error("原声优化需要 CodeShell 桌面版");
+        if (!denoise && !normalize) throw new Error("请至少选择降噪或响度均衡");
+        pending = "正在提交原声优化任务…";
+        change();
+        try {
+          await context.enhance({ assetId: id, preset, denoise, normalize });
+        } finally {
+          pending = "";
+          change();
+        }
+        return true;
+      }
+      if (name === "spoken-more") {
+        visible += 40;
+        change();
+        return true;
+      }
+      if (!fresh()) throw new Error("工程已更新，请重新读取口播分析");
+      if (name === "spoken-select-pauses") {
+        for (const candidate of shown())
+          if (candidate.actionable && candidate.kind === "pause") selected.add(candidate.id);
+        change();
+        return true;
+      }
+      if (name === "spoken-clear") {
+        selected.clear();
+        change();
+        return true;
+      }
+      if (name === "spoken-restore-skipped") {
+        skipped.clear();
+        change();
+        return true;
+      }
+      if (name.startsWith("spoken-skip:")) {
+        const id = name.slice("spoken-skip:".length);
+        selected.delete(id);
+        skipped.add(id);
+        change();
+        return true;
+      }
+      if (name.startsWith("spoken-preview:")) {
+        const candidate = candidates.find(
+          (item) => item.id === name.slice("spoken-preview:".length),
+        );
+        if (!candidate) throw new Error("候选不存在");
+        const project = context.project();
+        const clip =
+          candidate.track === "main"
+            ? timelineClips(project).find((item) => item.id === candidate.clipId)
+            : project.audioClips?.find((item) => item.id === candidate.clipId);
+        if (!clip) throw new Error("片段已变化，请重新读取分析");
+        const before = Math.min(12, candidate.sourceStartFrame - clip.inFrame);
+        const after = Math.min(12, clip.outFrame - candidate.sourceEndFrame);
+        await context.preview({
+          ...candidate,
+          sourceStartFrame: candidate.sourceStartFrame - before,
+          sourceEndFrame: candidate.sourceEndFrame + after,
+          timelineStartFrame: candidate.timelineStartFrame - before,
+          timelineEndFrame: candidate.timelineEndFrame + after,
+        });
+        return true;
+      }
+      if (name.startsWith("spoken-segment:")) {
+        const segment = sources[0]?.transcript?.[Number(name.slice("spoken-segment:".length))];
+        if (!segment) throw new Error("文稿段落不存在");
+        const project = context.project();
+        const clip = [
+          ...timelineClips(project).map((item) => ({ ...item, track: "main" as const })),
+          ...(project.audioClips ?? []).map((item) => ({ ...item, track: "audio" as const })),
+        ].find(
+          (item) =>
+            item.assetId === currentAssetId() &&
+            item.inFrame < segment.end * 30 &&
+            item.outFrame > segment.start * 30,
+        );
+        if (!clip) throw new Error("这一段不在当前时间轴中");
+        const first = Math.max(clip.inFrame, Math.floor(segment.start * 30)),
+          last = Math.min(clip.outFrame, Math.ceil(segment.end * 30));
+        await context.preview({
+          track: clip.track,
+          clipId: clip.id,
+          assetId: clip.assetId,
+          sourceStartFrame: first,
+          sourceEndFrame: last,
+          timelineStartFrame: clip.startFrame + first - clip.inFrame,
+          timelineEndFrame: clip.startFrame + last - clip.inFrame,
+        });
+        return true;
+      }
+      if (name === "spoken-polish") {
+        const text = sources
+          .flatMap((source) => source.transcript?.map((segment) => segment.text) ?? [])
+          .join("\n");
+        if (!text.trim()) throw new Error("请先准备口播文稿");
+        pending = "正在提交文稿建议…";
+        change();
+        try {
+          await context.polish(text);
+        } finally {
+          pending = "";
+          change();
+        }
+        return true;
+      }
+      if (name === "spoken-apply") {
+        const plan = buildSpokenEditPlan(context.project(), candidates, [...selected]);
+        pending = "正在保存并应用删减…";
+        change();
+        try {
+          await context.apply(plan);
+          reset();
+          context.toast?.(`已删去 ${(plan.removedFrames / 30).toFixed(2)} 秒，可撤销恢复`);
+        } finally {
+          pending = "";
+          change();
+        }
+        return true;
+      }
+      return false;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+      change();
+      throw cause;
+    }
+  }
+  function render(): string {
+    const available = assets(),
+      id = currentAssetId(),
+      valid = fresh(),
+      items = shown(),
+      locked = !!pending;
+    const transcript = sources[0]?.transcript ?? [];
+    return html`<div class="section-heading">
+        <h2>口播精剪</h2>
+        <span class="tag">保留你的原声</span>
+      </div>
+      <p class="section-description">用真实文稿整理表达，试听后删掉停顿、口头词和重复句。</p>
+      <label class="input-label spoken-field"
+        >时间轴中的口播素材<select id="spoken-asset" ${locked ? "disabled" : ""}>
+          ${available.length
+            ? available
+                .map(
+                  (asset) =>
+                    `<option value="${esc(asset.id)}" ${asset.id === id ? "selected" : ""}>${esc(asset.name)}</option>`,
+                )
+                .join("")
+            : '<option value="">请先加入视频或录音</option>'}
+        </select></label
+      >
+      <div class="spoken-actions">
+        ${context.prepare
+          ? button("spoken-prepare", "准备口播并分析", "text", "primary full", locked || !id)
+          : ""}${button("spoken-analyze", "读取已有结果", "undo", "quiet full", locked || !id)}
+      </div>
+      ${!id
+        ? '<p class="small muted">先录制或导入口播，把素材加入主轨或独立音轨，再回来整理。</p>'
+        : ""}
+      ${pending ? `<p class="spoken-progress" role="status">${esc(pending)}</p>` : ""}
+      ${error ? `<p class="conflict" role="alert">${esc(error)}</p>` : ""}
+      ${analyzed && !valid
+        ? '<p class="conflict">工程已更新。请重新读取分析，再应用删减。</p>'
+        : ""}
+      ${notes.map((note) => `<p class="small muted">${esc(note)}</p>`).join("")}
+      <details class="spoken-enhance">
+        <summary>原声优化</summary>
+        <p class="small muted">降低稳定背景噪声，平衡音量。处理后的完整音频会保留，原片不覆盖。</p>
+        <label class="input-label spoken-field"
+          >处理强度<select id="spoken-preset" ${locked ? "disabled" : ""}>
+            <option value="light" ${preset === "light" ? "selected" : ""}>
+              轻度 · 尽量保留环境感
+            </option>
+            <option value="balanced" ${preset === "balanced" ? "selected" : ""}>
+              均衡 · 日常口播
+            </option>
+          </select></label
+        ><label class="spoken-check"
+          ><input
+            id="spoken-denoise"
+            type="checkbox"
+            ${denoise ? "checked" : ""}
+            ${locked ? "disabled" : ""}
+          />降低背景噪声</label
+        ><label class="spoken-check"
+          ><input
+            id="spoken-normalize"
+            type="checkbox"
+            ${normalize ? "checked" : ""}
+            ${locked ? "disabled" : ""}
+          />响度均衡</label
+        >${button(
+          "spoken-enhance",
+          "优化这份原声",
+          "volume",
+          "full",
+          locked || !id || !context.enhance,
+        )}
+      </details>
+      ${analyzed
+        ? `<div class="spoken-toolbar"><label class="input-label spoken-field">候选类型<select id="spoken-filter"><option value="all" ${filter === "all" ? "selected" : ""}>全部 · ${candidates.length} 项</option>${Object.entries(
+            labels,
+          )
+            .map(
+              ([value, label]) =>
+                `<option value="${value}" ${filter === value ? "selected" : ""}>${label}</option>`,
+            )
+            .join(
+              "",
+            )}</select></label><div class="spoken-actions">${button("spoken-select-pauses", "勾选长停顿", "check", "quiet", locked || !valid)}${button("spoken-clear", "清空选择", undefined, "quiet", locked)}${skipped.size ? button("spoken-restore-skipped", `恢复已跳过 ${skipped.size} 项`, undefined, "quiet", locked) : ""}</div></div>
+      <div class="spoken-candidates">${items
+        .slice(0, visible)
+        .map(
+          (candidate) =>
+            `<article class="spoken-candidate"><label><input type="checkbox" data-spoken-candidate="${candidate.id}" ${selected.has(candidate.id) ? "checked" : ""} ${!valid || locked || !candidate.actionable ? "disabled" : ""}/><span><strong>${labels[candidate.kind]}</strong><small>${time(candidate.timelineStartFrame)} · ${((candidate.timelineEndFrame - candidate.timelineStartFrame) / 30).toFixed(2)} 秒 · ${precisionLabels[candidate.precision]}</small></span></label><p>${esc(candidate.text)}</p><p class="small muted">${esc(candidate.reason)}</p><div class="spoken-actions">${button(`spoken-preview:${candidate.id}`, "试听定位", "play", "quiet", locked || !valid)}${button(`spoken-skip:${candidate.id}`, "跳过", undefined, "quiet", locked || !valid)}</div></article>`,
+        )
+        .join(
+          "",
+        )}</div>${items.length > visible ? button("spoken-more", `继续显示（还有 ${items.length - visible} 项）`, undefined, "quiet full") : ""}
+      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p>${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size)}<p class="small muted">同步剪去对应画面、原声和字幕时间；长停顿两端保留换气。建议先逐项试听。</p></div>`
+        : ""}
+      ${button("spoken-undo", "撤销上次编辑", "undo", "quiet full", locked || !context.canUndo())}
+      ${transcript.length
+        ? `<details class="spoken-transcript"><summary>原始转写 · ${transcript.length} 段</summary><p class="small muted">点击段落试听。转写可能有错字；文案润色只改变稿件，不改变录音中说出的内容。</p><div>${transcript
+            .slice(0, 500)
+            .map(
+              (segment, index) =>
+                `<button type="button" data-action="spoken-segment:${index}" ${locked || !valid ? "disabled" : ""}><time>${time(Math.floor(segment.start * 30))} 源时间</time><span>${esc(segment.text)}</span></button>`,
+            )
+            .join(
+              "",
+            )}</div>${transcript.length > 500 ? '<p class="small muted">当前展示前 500 段；候选分析涵盖已读取的全部文稿。</p>' : ""}${button("spoken-polish", "让 AI 提供文稿建议", "spark", "full", locked || !valid)}</details>`
+        : ""}`;
+  }
+  return {
+    render,
+    input,
+    action,
+    dispose: () => {
+      disposed = true;
+      generation++;
+    },
+    get busy() {
+      return !!pending;
+    },
+  };
+}

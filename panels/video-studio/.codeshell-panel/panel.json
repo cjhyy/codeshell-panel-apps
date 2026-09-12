@@ -1,0 +1,983 @@
+{
+  "schemaVersion": 2,
+  "id": "video-studio",
+  "version": "0.4.7",
+  "title": {
+    "default": "视频工作台",
+    "en": "Video Studio",
+    "zh-CN": "视频工作台"
+  },
+  "description": "AI video workbench for footage and ideas, editable script and video drafts, user-approved personal narration, real transcript alignment, installable TTS engines and recoverable MP4 export.",
+  "entry": "app/index.html",
+  "icon": "image",
+  "placement": "right-dock",
+  "singleton": true,
+  "permissions": ["context.workspace", "storage", "agent.task", "media", "media.capture", "process"],
+  "agent": {
+    "tools": [
+      {
+        "name": "read_video_project",
+        "description": "Read the project, frame ranges, persistent assets, preparation, jobs, requestToken, workflowMode, narration state and actual capabilities. Narration approval and recording selection belong to the user interface. Use inspect_video_frame for visual evidence and get_video_transcript for source-timestamped speech.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "propose_video_edit",
+        "description": "Validate and present an atomic edit proposal for user review; does not apply edits. Use the projectId and requestToken from the active video editing task to prevent stale submissions. Times are integer frames at 30 fps.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "explanation": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "trim",
+                      "split",
+                      "remove",
+                      "move",
+                      "volume",
+                      "add",
+                      "caption",
+                      "remove-caption",
+                      "settings",
+                      "audio-add",
+                      "audio-trim",
+                      "audio-move",
+                      "audio-volume",
+                      "audio-remove",
+                      "workflow"
+                    ]
+                  },
+                  "clipId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "assetId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "captionId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "inFrame": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outFrame": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "atFrame": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "toIndex": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3840
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3840
+                  },
+                  "caption": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "maxLength": 128
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      "startFrame": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "endFrame": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": ["id", "text", "startFrame", "endFrame"],
+                    "additionalProperties": false
+                  },
+                  "startFrame": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "captionStyle": {
+                    "type": "string",
+                    "enum": ["classic", "bold", "minimal"]
+                  },
+                  "workflow": {
+                    "type": "object",
+                    "properties": {
+                      "stage": {
+                        "type": "string",
+                        "enum": [
+                          "initialized",
+                          "selects",
+                          "rough-cut",
+                          "sound",
+                          "captions",
+                          "review"
+                        ]
+                      },
+                      "brief": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "outline": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      },
+                      "sources": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "assetId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": ["main", "broll", "voice", "music", "image", "hold"]
+                            },
+                            "note": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 800
+                            },
+                            "inFrame": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "outFrame": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          },
+                          "required": ["assetId", "role", "note"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "nextSteps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 12,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        }
+                      },
+                      "blockers": {
+                        "type": "array",
+                        "maxItems": 12,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        }
+                      }
+                    },
+                    "required": ["stage", "brief", "outline", "sources", "nextSteps", "blockers"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["projectId", "requestToken", "baseRevision", "title", "operations"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "apply_video_edit",
+        "description": "Apply atomic edits or save a workflow sheet with current projectId, requestToken and baseRevision. Initialization accepts only one initialized workflow after jobs finish. In draft mode, save script, footage and draft-narration-* captions, then workflow review to stop for user approval. In narration mode, workflow review verifies the selected recording and real transcript, replacing only temporary captions before export. Agent edits cannot grant narration approval.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "title": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "explanation": {
+              "type": "string",
+              "maxLength": 2000
+            },
+            "operations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "trim",
+                      "split",
+                      "remove",
+                      "move",
+                      "volume",
+                      "add",
+                      "caption",
+                      "remove-caption",
+                      "settings",
+                      "audio-add",
+                      "audio-trim",
+                      "audio-move",
+                      "audio-volume",
+                      "audio-remove",
+                      "workflow"
+                    ]
+                  },
+                  "clipId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "assetId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "captionId": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "inFrame": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "outFrame": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "atFrame": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "toIndex": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "volume": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 2
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 160
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3840
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3840
+                  },
+                  "caption": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "maxLength": 128
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 4000
+                      },
+                      "startFrame": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "endFrame": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    },
+                    "required": ["id", "text", "startFrame", "endFrame"],
+                    "additionalProperties": false
+                  },
+                  "startFrame": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "captionStyle": {
+                    "type": "string",
+                    "enum": ["classic", "bold", "minimal"]
+                  },
+                  "workflow": {
+                    "type": "object",
+                    "properties": {
+                      "stage": {
+                        "type": "string",
+                        "enum": [
+                          "initialized",
+                          "selects",
+                          "rough-cut",
+                          "sound",
+                          "captions",
+                          "review"
+                        ]
+                      },
+                      "brief": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2000
+                      },
+                      "outline": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000
+                      },
+                      "sources": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "assetId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": ["main", "broll", "voice", "music", "image", "hold"]
+                            },
+                            "note": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 800
+                            },
+                            "inFrame": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "outFrame": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          },
+                          "required": ["assetId", "role", "note"],
+                          "additionalProperties": false
+                        }
+                      },
+                      "nextSteps": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 12,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        }
+                      },
+                      "blockers": {
+                        "type": "array",
+                        "maxItems": 12,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        }
+                      }
+                    },
+                    "required": ["stage", "brief", "outline", "sources", "nextSteps", "blockers"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["projectId", "requestToken", "baseRevision", "title", "operations"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "prepare_video_assets",
+        "description": "Queue durable local preparation (inspection, preview proxy, thumbnail, waveform, silence and scene detection) and optional transcription; returns job IDs. Does not edit the sequence. Requires the projectId and requestToken from the current automatic production request; stale task writes are rejected.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "assetIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "minItems": 1,
+              "maxItems": 100
+            },
+            "transcribe": {
+              "type": "boolean"
+            },
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["assetIds", "projectId", "requestToken"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_video_jobs",
+        "description": "Read production jobs and results. Waits up to about 8 seconds for active status to change; reuse job IDs rather than resubmit. Successful scene/prepare assets are added to the current project.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "jobIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 128
+              },
+              "minItems": 1,
+              "maxItems": 50
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_video_transcript",
+        "description": "Read a page of actual speech transcript with source seconds (start/end), not sequence time. Use pagination to cover the source.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "assetId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": ["assetId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_video_analysis",
+        "description": "Read paginated source silence intervals or shot boundary timestamps. These are detector observations, not semantic judgments.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "assetId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "kind": {
+              "type": "string",
+              "enum": ["silence", "scenes"]
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100000
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "required": ["assetId", "kind"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "inspect_video_frame",
+        "description": "Inspect an actual image or video frame. Returns a JPEG image content block, at most 640 pixels. seconds refers to source time. Sample relevant frames before judging visual contents.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "assetId": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "seconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": ["assetId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "create_video_scene",
+        "description": "Generate saved HyperFrames source and render a real MP4 chapter card or explainer. Returns a durable job; wait for succeeded, then read the project to obtain the generated asset ID. Requires the projectId and requestToken from the current automatic production request; stale task writes are rejected.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["chapter", "explainer"]
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "subtitle": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "bullets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 140
+              },
+              "maxItems": 4
+            },
+            "durationSeconds": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 60
+            },
+            "background": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$"
+            },
+            "accent": {
+              "type": "string",
+              "pattern": "^#[0-9a-fA-F]{6}$"
+            },
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["title", "projectId", "requestToken"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "render_video_project",
+        "description": "Queue H.264 MP4 production from persistent assets, original sound, independent audio and burned captions. Requires current projectId, requestToken and baseRevision; returns a background job. Disabled in draft mode. Personal-narration production requires valid user approval and completed alignment using the selected recording's real transcript. Track the job to succeeded for an actual video result.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["projectId", "baseRevision", "requestToken"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "get_video_voices",
+        "description": "Read actual configured speech models, their voices, availability and defaults. Model IDs and voices must come from this catalog; credentials remain in the Host.",
+        "readOnly": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "create_video_voiceover",
+        "description": "Synthesize real narration to a durable audio asset using a model and voice from get_video_voices. Requires the active projectId/requestToken. Wait for success, read actual duration, fit visuals, and add the complete source with audio-add. Does not place narration automatically. Speech text, model, voice, supported instructions and rate are retained. For audio8-tts or qwen3-tts local voice cloning use voiceId reference, a current project audio asset ID in referenceAssetId (3–30 seconds), its verbatim referenceText, and at most 2000 characters of new speech. Reference audio stays on this Mac.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000
+            },
+            "voiceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "rate": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 2
+            },
+            "modelId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "instructions": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "Delivery style, only when the selected model supports instructions."
+            },
+            "referenceAssetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Current project audio asset ID for the user’s own 3–30 second recording; audio8-tts or qwen3-tts. The panel resolves its durable Host media ID."
+            },
+            "referenceText": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "description": "Verbatim transcript of the reference recording; required with referenceAssetId for audio8-tts or qwen3-tts. This is distinct from text to synthesize."
+            }
+          },
+          "required": ["projectId", "requestToken", "text"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "prepare_video_voice",
+        "description": "Generate one short real voice sample using the selected model and reference. Accepts 1–120 Unicode characters; saves a durable audio asset with speech recipe and never places it on the timeline. Allowed during initialization only for the user-selected voice configuration. Wait for succeeded, then read the actual asset. Setup readiness does not establish personal voice similarity.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "voiceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "rate": {
+              "type": "number",
+              "minimum": 0.5,
+              "maximum": 2
+            },
+            "modelId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "instructions": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "Delivery style, only when the selected model supports instructions."
+            },
+            "referenceAssetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Current project audio asset ID for the user’s own 3–30 second recording; audio8-tts or qwen3-tts. The panel resolves its durable Host media ID."
+            },
+            "referenceText": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "description": "Verbatim transcript of the reference recording; required with referenceAssetId for audio8-tts or qwen3-tts. This is distinct from text to synthesize."
+            }
+          },
+          "required": ["projectId", "requestToken", "text", "modelId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "extract_video_reference",
+        "description": "Extract the user-selected 3–30 second source interval into a real durable WAV reference asset. Rough-cut markers do not trim the source file. Takes current project audio/video asset ID and 30 fps half-open source frames; wait for succeeded and read the resulting audio asset before preparing a voice sample. Does not alter the timeline. During initialization the interval must match the user-selected voice configuration.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "assetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "inFrame": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2592000
+            },
+            "outFrame": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2592000
+            }
+          },
+          "required": ["projectId", "requestToken", "assetId", "inFrame", "outFrame"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "setup_video_tts",
+        "description": "Install and verify edge-tts, local Kokoro, Audio8 local voice cloning, or Qwen3-TTS local voice cloning on Apple Silicon when the user requests that provider or selects it in initialization. Audio8 and Qwen run as panel-managed local jobs with fixed dependencies through the generic process API; closing the panel interrupts them and reopening allows retry. Inspect get_video_jobs and refresh get_video_voices; a queued setup is not a ready voice.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "providerId": {
+              "type": "string",
+              "enum": ["edge-tts", "kokoro", "qwen3-tts", "audio8-tts"]
+            }
+          },
+          "required": ["projectId", "requestToken", "providerId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "enhance_video_audio",
+        "description": "Create a full-length denoised and loudness-normalized WAV from an original audio/video asset. Preserves the original and returns a new source after job completion. Does not place/mute tracks automatically; align source in/out/start frames and mute original when applying.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "assetId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "preset": {
+              "type": "string",
+              "enum": ["light", "balanced"]
+            },
+            "denoise": {
+              "type": "boolean"
+            },
+            "normalize": {
+              "type": "boolean"
+            }
+          },
+          "required": ["projectId", "requestToken", "assetId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "set_video_script",
+        "description": "Save editable narration text at the current revision and populate the voiceover editor without changing recorded speech. Draft mode requires finish=false, followed by footage, temporary captions and workflow review. Unavailable during narration alignment, which preserves the approved script. Use finish=true only for a script-editing-only request.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "baseRevision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10000
+            },
+            "finish": {
+              "type": "boolean"
+            }
+          },
+          "required": ["projectId", "requestToken", "baseRevision", "text"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "finish_video_tts_setup",
+        "description": "Finish an installation-only request after its tts-setup job succeeds with a real synthesis verification. Use only when the user asked for setup, without a video deliverable. Does not cancel unfinished work.",
+        "readOnly": false,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestToken": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "jobId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          "required": ["projectId", "requestToken", "jobId"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "skills": [
+      "agent/skills/video-production/SKILL.md",
+      "agent/skills/tts-setup/SKILL.md",
+      "agent/skills/video-init/SKILL.md",
+      "agent/skills/video-workflow/SKILL.md",
+      "agent/skills/narration-workflow/SKILL.md"
+    ]
+  }
+}

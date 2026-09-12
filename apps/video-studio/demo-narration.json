@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "file": "public/demo-narration.mp3",
+  "durationSeconds": 24,
+  "sampleRate": 48000,
+  "channels": 1,
+  "engine": "macos-say",
+  "voiceId": "Tingting",
+  "description": "系统已安装的中文声音；无账号、无外部素材。三段分别匹配默认示例的 0–6、6–16、16–24 秒画面。",
+  "regeneration": "使用 Host generateLocalTts 按每段 text/voiceId/rate 生成 WAV；按 startSeconds 延迟后混合，补静音至 24 秒，再编码为 48kHz/128kbps MP3。每段必须在 endBeforeSeconds 前读完，不能截断语句。MP3 含 gapless 元数据，解码后恰好 24 秒。",
+  "segments": [
+    {
+      "text": "从想法，到成片。留住值得讲述的瞬间。",
+      "startSeconds": 0.45,
+      "durationSeconds": 4.152063,
+      "endBeforeSeconds": 6,
+      "rate": 1
+    },
+    {
+      "text": "整理素材，让每一次剪辑都有依据。剪掉多余，留下故事。",
+      "startSeconds": 7,
+      "durationSeconds": 5.745583,
+      "endBeforeSeconds": 16,
+      "rate": 1
+    },
+    {
+      "text": "你的下一个好故事，现在开始。让每一帧，恰到好处。",
+      "startSeconds": 17,
+      "durationSeconds": 5.369708,
+      "endBeforeSeconds": 24,
+      "rate": 1
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "builder": "esbuild@0.28.2",
+  "entry": "src/main.ts",
+  "files": {
+    ".codeshell-panel/panel.json": "6ddd14b9903d514f4fb65b9825ea418781383abb22b9b50eb189ebf4f591214c",
+    "agent/skills/narration-workflow/SKILL.md": "9380787ffb90441db9af823e524a4e3781f1434180c99a8807501c7b5702579b",
+    "agent/skills/tts-setup/SKILL.md": "3b3ca66d31cd71ddb9eab6e56e64859f321315bf42a6c5d676d716202f6fd0f0",
+    "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
+    "agent/skills/video-init/references/workflow-state.md": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d",
+    "agent/skills/video-init/SKILL.md": "e2530f8c2a288f5537eb796ef35cfb166768df24823187144d15c3054b634d70",
+    "agent/skills/video-production/references/editing.md": "12bc5366b1b9e4a2994fde8c164ce106def3c2cbaf64e3dab8c376af50cb5e2b",
+    "agent/skills/video-production/references/panel-tools.md": "76317c5d9299baf77d04b6ea8edb8f7c6e1b775313dd9aafee8bd9861ab93573",
+    "agent/skills/video-production/SKILL.md": "cba63966bfbe852d7265d09cf4e00a6dbda09f1885aab38f7aac0e94bb000533",
+    "agent/skills/video-workflow/references/content-routes.md": "d05137d1506d96059fb3fe459e92d889db2438b798ed1ab3c46bde70c73f2185",
+    "agent/skills/video-workflow/SKILL.md": "709f107fbb33c6c8c7bae823b47441885b786b3636dc9b04e4f61bfdab89af7f",
+    "app/demo-narration.mp3": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
+    "app/index.html": "70950b0efccd543d79ebd9f82bd0b3a7eb1979ef0d9361e4bb78b69ee92e6945",
+    "app/main.mjs": "c3261bf804da6924667927d9f5beea09c6e5e4a45ce7f499754b4553c5cc175e",
+    "app/rough-cut.css": "4208af7d18585bd5ab8fe35f377df5fc8085035f0bc756c059573da60dff4922",
+    "app/style.css": "8af3387bb98b8477fd47fb208eaffbe262273b08fc48dc05ec549703a6f2b5f1",
+    "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
+    "README.md": "15e270f738217097489a1a23fc332ef8a2c701bc7c0907586da483afceefe90a"
+  }
+}
