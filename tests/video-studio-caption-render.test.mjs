@@ -19,7 +19,7 @@ const nativeFile = new URL(
 // platform. The production renderer/session/cleanup code remains intact; actual
 // Chromium pixels and complete video output have separate tests below and in
 // native/media/tests/media-runtime.test.mjs.
-async function captionTransportFixture(t, define = {}) {
+async function captionTransportFixture(t, define = {}, home) {
   const workDir = await mkdtemp(join(tmpdir(), "caption-pipe-test-"));
   t.after(() => rm(workDir, { recursive: true, force: true }));
   const output = join(workDir, "caption.mjs");
@@ -82,8 +82,16 @@ async function captionTransportFixture(t, define = {}) {
             path: "transport",
             namespace: "caption-test",
           }));
-          builder.onLoad({ filter: /.*/, namespace: "caption-test" }, () => ({
-            contents: transport,
+          if (home)
+            builder.onResolve({ filter: /^node:os$/ }, () => ({
+              path: "os",
+              namespace: "caption-test",
+            }));
+          builder.onLoad({ filter: /.*/, namespace: "caption-test" }, (args) => ({
+            contents:
+              args.path === "os"
+                ? `export const homedir = () => ${JSON.stringify(home)};`
+                : transport,
             loader: "js",
           }));
         },
@@ -125,6 +133,47 @@ test("Linux caption discovery prefers packaged Chrome and retains Chromium fallb
   await rm(join(later, "google-chrome-stable"));
   assert.equal(await fixture.findCaptionBrowser(), join(earlier, "chromium"));
 });
+
+for (const filtered of [false, true])
+  test(`Windows caption discovery finds standard browsers and cache with ${filtered ? "filtered" : "provided"} environment`, async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "caption-windows-path-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const home = join(directory, "user");
+    const local = filtered ? join(home, "AppData", "Local") : join(directory, "custom-local");
+    const program = join(directory, filtered ? "Program Files" : "custom-program");
+    const programX86 = join(directory, filtered ? "Program Files (x86)" : "custom-x86");
+    const pathBrowser = join(directory, "bin", "chrome.exe");
+    const files = [pathBrowser];
+    for (const root of [local, program, programX86])
+      files.push(
+        join(root, "Google/Chrome/Application/chrome.exe"),
+        join(root, "Microsoft/Edge/Application/msedge.exe"),
+      );
+    files.push(join(local, "ms-playwright/chromium-1234/chrome-win64/chrome.exe"));
+    for (const file of files) {
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, "fixture", { mode: 0o700 });
+    }
+    const fixture = await captionTransportFixture(
+      t,
+      {
+        "process.platform": JSON.stringify("win32"),
+        "process.env": JSON.stringify({
+          PATH: join(directory, "bin"),
+          SystemRoot: join(directory, "Windows"),
+          ...(filtered
+            ? {}
+            : { LOCALAPPDATA: local, PROGRAMFILES: program, "PROGRAMFILES(X86)": programX86 }),
+        }),
+      },
+      home,
+    );
+    for (const file of files) {
+      assert.equal(await fixture.findCaptionBrowser(), file);
+      await rm(file);
+    }
+    assert.equal(await fixture.findCaptionBrowser(), undefined);
+  });
 
 for (const fd of [3, 4])
   test(`caption transport rejects active pipe ${fd} failure and waits for browser cleanup`, async (t) => {

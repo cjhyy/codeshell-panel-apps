@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { CaptionImageRequest } from "./media-processors.js";
 import type { MediaJobContext } from "./media-types.js";
 import { mediaAbortError } from "./media-process-runner.js";
@@ -116,16 +116,31 @@ export async function findCaptionBrowser(): Promise<string | undefined> {
     process.platform === "linux"
       ? names.flatMap((name) => directories.map((path) => join(path, name)))
       : directories.flatMap((path) => names.map((name) => join(path, name)));
+  const home = homedir();
+  const localAppData = process.env.LOCALAPPDATA || join(home, "AppData", "Local");
+  if (process.platform === "win32") {
+    const systemDrive = dirname(process.env.SystemRoot || process.env.WINDIR || "C:\\Windows");
+    for (const root of [
+      localAppData,
+      process.env.PROGRAMFILES || join(systemDrive, "Program Files"),
+      process.env["PROGRAMFILES(X86)"] || join(systemDrive, "Program Files (x86)"),
+    ])
+      candidates.push(
+        join(root, "Google", "Chrome", "Application", "chrome.exe"),
+        join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+      );
+  }
   if (process.platform === "darwin")
     candidates.push(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      join(homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+      join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
     );
-  for (const root of [
-    join(homedir(), "Library/Caches/ms-playwright"),
-    join(homedir(), ".cache/ms-playwright"),
-  ]) {
+  const cacheRoots =
+    process.platform === "win32"
+      ? [join(localAppData, "ms-playwright")]
+      : [join(home, "Library/Caches/ms-playwright"), join(home, ".cache/ms-playwright")];
+  for (const root of cacheRoots) {
     for (const name of await readdir(root).catch(() => [])) {
       if (!/^chromium[-_]/.test(name)) continue;
       for (const binary of [
@@ -134,6 +149,7 @@ export async function findCaptionBrowser(): Promise<string | undefined> {
         "chrome-linux/chrome",
         "chrome-linux64/chrome",
         "chrome-win/chrome.exe",
+        "chrome-win64/chrome.exe",
       ])
         candidates.push(join(root, name, binary));
     }

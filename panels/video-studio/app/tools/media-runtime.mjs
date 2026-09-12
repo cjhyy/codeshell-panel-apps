@@ -5559,7 +5559,7 @@ import { createHash as createHash8 } from "node:crypto";
 import { constants as constants2 } from "node:fs";
 import { access as access3, mkdir as mkdir11, readdir as readdir4, rm as rm11, writeFile as writeFile8 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import { delimiter as delimiter3, join as join11 } from "node:path";
+import { delimiter as delimiter3, dirname as dirname2, join as join11 } from "node:path";
 function validateCaptionImageRequest(request) {
   if (!request || typeof request !== "object" || Object.keys(request).some(
     (key) => !["width", "height", "fontSize", "texts", "style"].includes(key)
@@ -5642,16 +5642,28 @@ async function findCaptionBrowser() {
   const names = process.platform === "win32" ? ["chrome.exe", "msedge.exe"] : process.platform === "linux" ? ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
   const directories = (process.env.PATH ?? "").split(delimiter3).filter(Boolean);
   const candidates = process.platform === "linux" ? names.flatMap((name) => directories.map((path) => join11(path, name))) : directories.flatMap((path) => names.map((name) => join11(path, name)));
+  const home = homedir3();
+  const localAppData = process.env.LOCALAPPDATA || join11(home, "AppData", "Local");
+  if (process.platform === "win32") {
+    const systemDrive = dirname2(process.env.SystemRoot || process.env.WINDIR || "C:\\Windows");
+    for (const root of [
+      localAppData,
+      process.env.PROGRAMFILES || join11(systemDrive, "Program Files"),
+      process.env["PROGRAMFILES(X86)"] || join11(systemDrive, "Program Files (x86)")
+    ])
+      candidates.push(
+        join11(root, "Google", "Chrome", "Application", "chrome.exe"),
+        join11(root, "Microsoft", "Edge", "Application", "msedge.exe")
+      );
+  }
   if (process.platform === "darwin")
     candidates.push(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      join11(homedir3(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+      join11(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
     );
-  for (const root of [
-    join11(homedir3(), "Library/Caches/ms-playwright"),
-    join11(homedir3(), ".cache/ms-playwright")
-  ]) {
+  const cacheRoots = process.platform === "win32" ? [join11(localAppData, "ms-playwright")] : [join11(home, "Library/Caches/ms-playwright"), join11(home, ".cache/ms-playwright")];
+  for (const root of cacheRoots) {
     for (const name of await readdir4(root).catch(() => [])) {
       if (!/^chromium[-_]/.test(name)) continue;
       for (const binary of [
@@ -5659,7 +5671,8 @@ async function findCaptionBrowser() {
         "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
         "chrome-linux/chrome",
         "chrome-linux64/chrome",
-        "chrome-win/chrome.exe"
+        "chrome-win/chrome.exe",
+        "chrome-win64/chrome.exe"
       ])
         candidates.push(join11(root, name, binary));
     }
