@@ -143,7 +143,9 @@ The Video Studio suite includes native-tool and project/Host contract tests;
 it does not require downloading voice models or generating paid audio.
 
 For browser and media verification, install Chromium once and run the separate
-suites. They are not included in the default offline gate:
+suites. Install FFmpeg (including `ffprobe`) on PATH as well: the rough-cut UI
+suite generates real source videos, and media tests inspect actual exports.
+These suites are not included in the default offline gate:
 
 ```sh
 npx playwright install chromium

@@ -62,7 +62,9 @@ provider and CLI tests without installing real voice models.
 
 Browser and media suites are separate: after `npx playwright install chromium`,
 run `npm run test:ui:video-studio` and `npm run test:media:video-studio` for the
-affected UI or playback/export behavior. `npm run dev -- --app video-studio`
+affected UI or playback/export behavior. Both require FFmpeg and `ffprobe` on
+PATH to generate and inspect real test media; CI installs these explicitly.
+`npm run dev -- --app video-studio`
 rebuilds on changes; refresh the browser after each successful build. Ordinary
 browsers do not expose `window.codeshellPanel`, so previews must state which Host
 features are unavailable. Verify those features in the installed desktop panel.

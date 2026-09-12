@@ -20,6 +20,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run build:check
       - run: npx playwright install --with-deps chromium
+      - name: Install media test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
       - run: npm test
       - run: npm run test:ui:video-studio
       - run: npm run test:media:video-studio
