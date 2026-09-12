@@ -196,7 +196,7 @@ mediaTest(
     await assertArtifacts(processed, enhance);
   },
 );
-mediaTest("real video render includes Unicode captions through independent Chromium", async () => {
+mediaTest("real video render includes Unicode captions through independent Chromium", async (t) => {
   const ctx = await context("render");
   const project = {
     schemaVersion: 1,
@@ -210,7 +210,16 @@ mediaTest("real video render includes Unicode captions through independent Chrom
     captionStyle: "bold",
     audioClips: [],
   };
-  const result = await api.runMediaRequest(input("render", { project }), ctx);
+  let result;
+  try {
+    result = await api.runMediaRequest(input("render", { project }), ctx);
+  } catch (error) {
+    // These generated fixtures have no user media or connection credentials.
+    // Retain bounded native causes only in the test runner's failure diagnostics.
+    for (let cause = error.cause, depth = 0; cause && depth < 3; cause = cause.cause, depth++)
+      t.diagnostic(String(cause.message ?? cause).slice(0, 12288));
+    throw error;
+  }
   assert.equal(result.result.frames, 90);
   assert.ok(result.result.inspection.audio);
   assert.equal(result.result.subtitleMode, "burn");

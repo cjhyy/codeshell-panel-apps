@@ -154,6 +154,7 @@ class CaptionBrowser {
   private closingStarted = false;
   private closing?: Promise<void>;
   private exited: Promise<void>;
+  private diagnostic = new Error("浏览器未提供启动诊断");
   constructor(executable: string, profile: string) {
     this.child = spawn(
       executable,
@@ -172,16 +173,30 @@ class CaptionBrowser {
       {
         detached: false,
         windowsHide: true,
-        stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"],
+        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
       },
     );
+    let stderr = Buffer.alloc(0);
+    this.diagnostic.name = "CaptionBrowserDiagnostics";
+    const updateDiagnostic = (exit = "") => {
+      this.diagnostic.message = `Browser: ${executable}\n${stderr.toString("utf8")}\n${exit}`.slice(
+        -12288,
+      );
+    };
+    updateDiagnostic();
+    this.child.stderr!.on("data", (chunk: Buffer) => {
+      stderr = Buffer.from(Buffer.concat([stderr, chunk]).subarray(-8192));
+      updateDiagnostic();
+    });
+    this.child.stderr!.on("error", () => {});
     this.exited = new Promise((resolve) =>
-      this.child.once("close", () => {
-        this.fail(new Error("字幕绘制进程已停止"));
+      this.child.once("close", (code, signal) => {
+        updateDiagnostic(`Exit code: ${code ?? "none"}; signal: ${signal ?? "none"}`);
+        this.fail(this.failure("字幕绘制进程已停止"));
         resolve();
       }),
     );
-    this.child.once("error", () => this.fail(new Error("无法启动字幕绘制浏览器")));
+    this.child.once("error", () => this.fail(this.failure("无法启动字幕绘制浏览器")));
     for (const pipe of [this.child.stdio[3]!, this.child.stdio[4]!])
       pipe.on("error", (error: NodeJS.ErrnoException) => {
         if (
@@ -189,7 +204,7 @@ class CaptionBrowser {
           ["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code ?? "")
         )
           return;
-        this.fail(new Error("字幕绘制连接已中断"));
+        this.fail(this.failure("字幕绘制连接已中断"));
         void this.close();
       });
     this.child.stdio[4]!.on("data", (chunk: Buffer) => {
@@ -217,6 +232,11 @@ class CaptionBrowser {
         else entry.resolve(message.result);
       }
     });
+  }
+  private failure(message: string): Error {
+    // Native diagnostics stay in the internal cause; the public job result only
+    // receives the stable, path-free message through runMediaRequest.
+    return new Error(message, { cause: this.diagnostic });
   }
   private fail(error: Error) {
     this.closed = true;

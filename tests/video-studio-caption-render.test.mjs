@@ -47,7 +47,8 @@ async function captionTransportFixture(t) {
         });
         done();
       }});
-      child.stdio = [null, null, null, input, output];
+      child.stderr = new PassThrough();
+      child.stdio = [null, null, child.stderr, input, output];
       child.kill = (signal) => {
         child.kills.push(signal); child.signalCode = signal;
         if (control.resetOnKill) {
@@ -107,11 +108,18 @@ for (const fd of [3, 4])
   test(`caption transport rejects active pipe ${fd} failure and waits for browser cleanup`, async (t) => {
     const fixture = await captionTransportFixture(t);
     const rendering = fixture.renderer.render(fixture.request, fixture.context);
-    const rejected = assert.rejects(rendering, { message: "字幕绘制连接已中断" });
+    const rejected = assert.rejects(rendering, (error) => {
+      assert.equal(error.message, "字幕绘制连接已中断");
+      assert.ok(error.cause.message.includes("controlled browser failure"));
+      assert.ok(error.cause.message.length <= 12288);
+      assert.equal(error.message.includes("/private/pipe"), false);
+      return true;
+    });
     const deadline = Date.now() + 2000;
     while (!fixture.children.length && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(fixture.children.length, 1, "the renderer must start its browser transport");
+    fixture.children[0].stderr.write("x".repeat(20000) + "controlled browser failure");
     fixture.children[0].stdio[fd].emit(
       "error",
       Object.assign(new Error("/private/pipe"), { code: "ECONNRESET" }),
