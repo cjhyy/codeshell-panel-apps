@@ -5677,6 +5677,8 @@ var CaptionBrowser = class {
   nextId = 0;
   buffer = Buffer.alloc(0);
   closed = false;
+  closingStarted = false;
+  closing;
   exited;
   constructor(executable, profile) {
     this.child = spawn3(
@@ -5706,6 +5708,13 @@ var CaptionBrowser = class {
       })
     );
     this.child.once("error", () => this.fail(new Error("无法启动字幕绘制浏览器")));
+    for (const pipe of [this.child.stdio[3], this.child.stdio[4]])
+      pipe.on("error", (error) => {
+        if (this.closingStarted && ["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code ?? ""))
+          return;
+        this.fail(new Error("字幕绘制连接已中断"));
+        void this.close();
+      });
     this.child.stdio[4].on("data", (chunk) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       if (this.buffer.length > 32 * 1024 * 1024) {
@@ -5753,15 +5762,21 @@ var CaptionBrowser = class {
       );
     });
   }
-  async close() {
+  close() {
+    if (this.closing) return this.closing;
+    this.closingStarted = true;
     this.fail(new Error("字幕绘制已取消"));
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill("SIGTERM");
-      const timer = setTimeout(() => this.child.kill("SIGKILL"), 1500);
-      timer.unref();
+    this.closing = Promise.resolve().then(async () => {
+      let timer;
+      if (this.child.exitCode === null && this.child.signalCode === null) {
+        this.child.kill("SIGTERM");
+        timer = setTimeout(() => this.child.kill("SIGKILL"), 1500);
+        timer.unref();
+      }
       await this.exited;
-      clearTimeout(timer);
-    }
+      if (timer) clearTimeout(timer);
+    });
+    return this.closing;
   }
 };
 var MediaCaptionRenderer = class {
@@ -5769,18 +5784,28 @@ var MediaCaptionRenderer = class {
     this.options = options;
   }
   options;
+  closing = /* @__PURE__ */ new Map();
   browsers = /* @__PURE__ */ new Map();
-  async close(jobId) {
+  close(jobId) {
+    const pending = this.closing.get(jobId);
+    if (pending) return pending;
     const entry = this.browsers.get(jobId);
-    if (!entry) return;
+    if (!entry) return Promise.resolve();
     this.browsers.delete(jobId);
     entry.signal.removeEventListener("abort", entry.onAbort);
-    await entry.browser.close();
-    await rm11(entry.profile, { recursive: true, force: true }).catch(() => {
+    const operation = (async () => {
+      await entry.browser.close();
+      await rm11(entry.profile, { recursive: true, force: true }).catch(() => {
+      });
+    })().finally(() => {
+      if (this.closing.get(jobId) === operation) this.closing.delete(jobId);
     });
+    this.closing.set(jobId, operation);
+    return operation;
   }
   async render(request, context) {
     validateCaptionImageRequest(request);
+    await this.closing.get(context.jobId);
     if (context.signal.aborted) throw mediaAbortError();
     let entry = this.browsers.get(context.jobId);
     if (!entry) {

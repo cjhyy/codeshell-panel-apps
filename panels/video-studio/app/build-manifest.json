@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "b4da2cf393c105fc349b5a006f6d2d7b6bd5a970db919a6613b9581493a2ddfe",
+    ".codeshell-panel/panel.json": "0ff9262c3f82c496b87863401c36a47451dc5fd05e0e3092d25b81696f6804d4",
     "agent/skills/narration-workflow/SKILL.md": "9380787ffb90441db9af823e524a4e3781f1434180c99a8807501c7b5702579b",
     "agent/skills/tts-setup/SKILL.md": "e42efa9489de37b060432279c75500ee39b2153c81fd9c746057199a8da39ebb",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
@@ -19,7 +19,7 @@
     "app/main.mjs": "5f765152a2c89f3b2f020a0481ed96e11d38fd0ab820e2ca2f2e8a5669d590b0",
     "app/rough-cut.css": "4208af7d18585bd5ab8fe35f377df5fc8085035f0bc756c059573da60dff4922",
     "app/style.css": "8af3387bb98b8477fd47fb208eaffbe262273b08fc48dc05ec549703a6f2b5f1",
-    "app/tools/media-runtime.mjs": "81af0fba3d40adfa7704683679eadc28ed47ed7ddf3f13cd046ff8181365c16a",
+    "app/tools/media-runtime.mjs": "b26c56397bbd6c77eec2709c4064b2f954beda21171b303e731adc7d6470493d",
     "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
     "README.md": "cdbf47112b66eb8188b00e06d53897fa9b1e772f8728c4614f9a87233e2934b1"
   }

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import ts from "typescript";
 import { chromium } from "playwright";
@@ -12,6 +14,140 @@ const nativeFile = new URL(
   "../apps/video-studio/native/media/media-caption-renderer.ts",
   import.meta.url,
 );
+
+// Replace only the subprocess transport to reproduce Linux pipe errors on every
+// platform. The production renderer/session/cleanup code remains intact; actual
+// Chromium pixels and complete video output have separate tests below and in
+// native/media/tests/media-runtime.test.mjs.
+async function captionTransportFixture(t) {
+  const workDir = await mkdtemp(join(tmpdir(), "caption-pipe-test-"));
+  t.after(() => rm(workDir, { recursive: true, force: true }));
+  const output = join(workDir, "caption.mjs");
+  const transport = `
+    import { EventEmitter } from "node:events";
+    import { Writable, PassThrough } from "node:stream";
+    export const children = [];
+    export const control = { reply: false, resetOnKill: false, holdClose: false };
+    export function spawn() {
+      const child = new EventEmitter();
+      child.exitCode = null; child.signalCode = null; child.kills = [];
+      const output = new PassThrough();
+      const input = new Writable({ write(chunk, encoding, done) {
+        const message = JSON.parse(chunk.toString().replace(/\\0$/, ""));
+        if (control.reply) queueMicrotask(() => {
+          let result = {};
+          if (message.method === "Target.createTarget") result = { targetId: "page" };
+          if (message.method === "Target.attachToTarget") result = { sessionId: "session" };
+          if (message.method === "Runtime.evaluate") {
+            const png = Buffer.alloc(24);
+            png.writeUInt32BE(320, 16); png.writeUInt32BE(180, 20);
+            result = { result: { value: "data:image/png;base64," + png.toString("base64") } };
+          }
+          output.write(JSON.stringify({ id: message.id, result }) + "\\0");
+        });
+        done();
+      }});
+      child.stdio = [null, null, null, input, output];
+      child.kill = (signal) => {
+        child.kills.push(signal); child.signalCode = signal;
+        if (control.resetOnKill) {
+          input.emit("error", Object.assign(new Error("private write pipe"), { code: "EPIPE" }));
+          output.emit("error", Object.assign(new Error("private read pipe"), { code: "ECONNRESET" }));
+        }
+        if (!control.holdClose) setImmediate(() => child.emit("close", null, signal));
+        return true;
+      };
+      children.push(child);
+      return child;
+    }
+  `;
+  await build({
+    stdin: {
+      contents: `export { MediaCaptionRenderer } from ${JSON.stringify(fileURLToPath(nativeFile))};
+        export { children, control } from "node:child_process";`,
+      resolveDir: repository,
+    },
+    outfile: output,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    plugins: [
+      {
+        name: "controlled-caption-pipes",
+        setup(builder) {
+          builder.onResolve({ filter: /^node:child_process$/ }, () => ({
+            path: "transport",
+            namespace: "caption-test",
+          }));
+          builder.onLoad({ filter: /.*/, namespace: "caption-test" }, () => ({
+            contents: transport,
+            loader: "js",
+          }));
+        },
+      },
+    ],
+  });
+  const api = await import(pathToFileURL(output).href);
+  const renderer = new api.MediaCaptionRenderer({
+    browserPath: "controlled-browser",
+    timeoutMs: 2000,
+  });
+  const context = { jobId: "caption-job", workDir, signal: new AbortController().signal };
+  t.after(() => renderer.close(context.jobId));
+  return {
+    ...api,
+    renderer,
+    context,
+    request: { width: 320, height: 180, fontSize: 18, texts: ["字幕"] },
+  };
+}
+
+for (const fd of [3, 4])
+  test(`caption transport rejects active pipe ${fd} failure and waits for browser cleanup`, async (t) => {
+    const fixture = await captionTransportFixture(t);
+    const rendering = fixture.renderer.render(fixture.request, fixture.context);
+    const rejected = assert.rejects(rendering, { message: "字幕绘制连接已中断" });
+    const deadline = Date.now() + 2000;
+    while (!fixture.children.length && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(fixture.children.length, 1, "the renderer must start its browser transport");
+    fixture.children[0].stdio[fd].emit(
+      "error",
+      Object.assign(new Error("/private/pipe"), { code: "ECONNRESET" }),
+    );
+    await rejected;
+    assert.deepEqual(fixture.children[0].kills, ["SIGTERM"]);
+    await assert.rejects(access(join(fixture.context.workDir, "caption-browser")), {
+      code: "ENOENT",
+    });
+  });
+
+test("caption shutdown contains expected pipe resets and concurrent close waits for exit", async (t) => {
+  const fixture = await captionTransportFixture(t);
+  fixture.control.reply = true;
+  const png = await fixture.renderer.render(fixture.request, fixture.context);
+  await access(png);
+  fixture.control.resetOnKill = true;
+  fixture.control.holdClose = true;
+  const first = fixture.renderer.close(fixture.context.jobId);
+  const second = fixture.renderer.close(fixture.context.jobId);
+  assert.equal(first, second, "all callers await the same in-flight browser cleanup");
+  let settled = false;
+  void second.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  await access(join(fixture.context.workDir, "caption-browser"));
+  fixture.children[0].emit("close", null, "SIGTERM");
+  await first;
+  assert.deepEqual(fixture.children[0].kills, ["SIGTERM"]);
+  await assert.rejects(access(join(fixture.context.workDir, "caption-browser")), {
+    code: "ENOENT",
+  });
+  await access(png);
+});
 
 test(
   "three real caption templates match frame compositing and the panel-native PNG renderer",

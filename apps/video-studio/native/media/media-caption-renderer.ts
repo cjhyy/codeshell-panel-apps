@@ -151,6 +151,8 @@ class CaptionBrowser {
   private nextId = 0;
   private buffer = Buffer.alloc(0);
   private closed = false;
+  private closingStarted = false;
+  private closing?: Promise<void>;
   private exited: Promise<void>;
   constructor(executable: string, profile: string) {
     this.child = spawn(
@@ -180,6 +182,16 @@ class CaptionBrowser {
       }),
     );
     this.child.once("error", () => this.fail(new Error("无法启动字幕绘制浏览器")));
+    for (const pipe of [this.child.stdio[3]!, this.child.stdio[4]!])
+      pipe.on("error", (error: NodeJS.ErrnoException) => {
+        if (
+          this.closingStarted &&
+          ["ECONNRESET", "EPIPE", "ERR_STREAM_DESTROYED"].includes(error.code ?? "")
+        )
+          return;
+        this.fail(new Error("字幕绘制连接已中断"));
+        void this.close();
+      });
     this.child.stdio[4]!.on("data", (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       if (this.buffer.length > 32 * 1024 * 1024) {
@@ -227,20 +239,27 @@ class CaptionBrowser {
       );
     });
   }
-  async close() {
+  close(): Promise<void> {
+    if (this.closing) return this.closing;
+    this.closingStarted = true;
     this.fail(new Error("字幕绘制已取消"));
-    if (this.child.exitCode === null && this.child.signalCode === null) {
-      this.child.kill("SIGTERM");
-      const timer = setTimeout(() => this.child.kill("SIGKILL"), 1500);
-      timer.unref();
+    this.closing = Promise.resolve().then(async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (this.child.exitCode === null && this.child.signalCode === null) {
+        this.child.kill("SIGTERM");
+        timer = setTimeout(() => this.child.kill("SIGKILL"), 1500);
+        timer.unref();
+      }
       await this.exited;
-      clearTimeout(timer);
-    }
+      if (timer) clearTimeout(timer);
+    });
+    return this.closing;
   }
 }
 
 /** Independent Chromium, connected over private pipes; no Host renderer or package dependency. */
 export class MediaCaptionRenderer {
+  private closing = new Map<string, Promise<void>>();
   private browsers = new Map<
     string,
     {
@@ -252,16 +271,25 @@ export class MediaCaptionRenderer {
     }
   >();
   constructor(private readonly options: { browserPath?: string; timeoutMs?: number } = {}) {}
-  async close(jobId: string): Promise<void> {
+  close(jobId: string): Promise<void> {
+    const pending = this.closing.get(jobId);
+    if (pending) return pending;
     const entry = this.browsers.get(jobId);
-    if (!entry) return;
+    if (!entry) return Promise.resolve();
     this.browsers.delete(jobId);
     entry.signal.removeEventListener("abort", entry.onAbort);
-    await entry.browser.close();
-    await rm(entry.profile, { recursive: true, force: true }).catch(() => {});
+    const operation = (async () => {
+      await entry.browser.close();
+      await rm(entry.profile, { recursive: true, force: true }).catch(() => {});
+    })().finally(() => {
+      if (this.closing.get(jobId) === operation) this.closing.delete(jobId);
+    });
+    this.closing.set(jobId, operation);
+    return operation;
   }
   async render(request: CaptionImageRequest, context: MediaJobContext): Promise<string> {
     validateCaptionImageRequest(request);
+    await this.closing.get(context.jobId);
     if (context.signal.aborted) throw mediaAbortError();
     let entry = this.browsers.get(context.jobId);
     if (!entry) {
