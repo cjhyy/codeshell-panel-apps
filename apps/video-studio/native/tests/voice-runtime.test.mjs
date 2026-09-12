@@ -12,7 +12,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -119,6 +119,11 @@ test("the standalone ESM imports without executing and status is a read-only off
   assert.equal(output[0].result.id, "audio8-tts");
   assert.equal(output[0].result.available, false);
   assert.equal(output[0].result.installed, false);
+  const supportedPlatform = process.platform === "darwin" && process.arch === "arm64";
+  const supportedHost = supportedPlatform && totalmem() >= 4 * 1024 ** 3;
+  assert.equal(output[0].result.state, supportedHost ? "not-installed" : "unavailable");
+  if (!supportedPlatform) assert.match(output[0].result.reason, /Apple Silicon Mac/);
+  else if (!supportedHost) assert.match(output[0].result.reason, /至少需要 4 GB 内存/);
   assert.deepEqual(await readdir(appData), []);
   assert.ok(!result.stdout.includes(appData));
   assert.equal(result.stderr, "");
@@ -129,8 +134,17 @@ test("the standalone ESM imports without executing and status is a read-only off
     JSON.stringify({ reason: `旧错误包含本地路径 ${appData}/private` }),
   );
   const failed = await invoke(request, appData);
+  assert.equal(failed.code, 0);
   assert.ok(!failed.stdout.includes(appData));
-  assert.match(events(failed.stdout)[0].result.reason, /重新准备/);
+  const failedStatus = events(failed.stdout)[0].result;
+  if (supportedHost) {
+    assert.equal(failedStatus.state, "failed");
+    assert.match(failedStatus.reason, /重新准备/);
+  } else {
+    // Platform requirements take precedence over stale installation errors.
+    assert.equal(failedStatus.state, "unavailable");
+    assert.equal(failedStatus.reason, output[0].result.reason);
+  }
 });
 
 test("task identifiers, runtime overrides, traversal and symlink references cannot escape the task", async () => {
