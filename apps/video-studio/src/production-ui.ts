@@ -134,7 +134,7 @@ export function createProductionUI(production: ProductionController, context: Pr
     else if (assetId && action === "save") await production.exportAsset(assetId);
     else if (assetId && action === "reveal") await production.revealAsset(assetId);
     else if (assetId && action === "play") {
-      const audio = ["tts", "tts-online", "tts-managed", "audio-enhance"].includes(
+      const audio = ["tts", "tts-online", "tts-managed", "tts-clone", "audio-enhance"].includes(
         production.jobs.find((job) => job.id === id)?.type ?? "",
       );
       const dialog = $<HTMLDialogElement>("#plan-dialog");

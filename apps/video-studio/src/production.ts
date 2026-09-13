@@ -1000,7 +1000,7 @@ export class ProductionController {
     await this.requireHost().call("media.jobs.cancel", { id });
     await this.refresh();
   }
-  async retry(id: string): Promise<void> {
+  async retry(id: string): Promise<MediaJob | undefined> {
     const retried = (await this.requireHost().call("media.jobs.retry", { id })) as
       | MediaJob
       | undefined;
@@ -1018,6 +1018,7 @@ export class ProductionController {
     }
     await this.persist();
     await this.refresh();
+    return retried;
   }
   async exportAsset(id: string): Promise<unknown> {
     return this.requireHost().call("media.export", { assetId: id });

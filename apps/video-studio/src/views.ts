@@ -39,6 +39,7 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly voiceoverMarkup?: string;
+  readonly voicePreparationActive?: boolean;
   readonly voicePreparationMarkup?: string;
   readonly roughcutMarkup?: string;
   readonly sourcePreview?: {
@@ -259,7 +260,12 @@ export function createViews(state: ViewState) {
     if (tab === "recording") return state.recordingMarkup ?? "";
     if (tab === "spoken") return state.spokenMarkup ?? "";
     if (tab === "voiceover")
-      return (state.voicePreparationMarkup ?? "") + (state.voiceoverMarkup ?? "");
+      return (
+        (state.voicePreparationMarkup ?? "") +
+        (state.voicePreparationActive
+          ? `<details class="voiceover-alternative"><summary>其他文字配音 · 使用预置音色</summary>${state.voiceoverMarkup ?? ""}</details>`
+          : (state.voiceoverMarkup ?? ""))
+      );
     if (tab === "jobs" && state.production) return renderProductionJobs(state.production);
     if (tab === "transcript")
       return html`<div class="section-title">

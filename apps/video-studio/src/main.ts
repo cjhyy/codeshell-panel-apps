@@ -45,7 +45,7 @@ import { registerProductionTools, registerProjectReadTool } from "./production-t
 import { createNarratedDemoProject, migratePristineDemoProject, isDemoNarration } from "./demo";
 import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
-import { createVoicePreparationUI } from "./voice-preparation-ui";
+import { createVoicePreparationUI, VOICE_REFERENCE_TEXT } from "./voice-preparation-ui";
 import { createRecordingUI } from "./recording-ui";
 import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
@@ -111,6 +111,9 @@ let aiMessage = "";
 let narrationScriptDraft: string | null = null;
 let narrationRecordingProjectId = "";
 let narrationRecordingSaved = false;
+let voiceReferenceRecording: { projectId: string; generation: number } | undefined;
+let voiceReferenceRecordingSaved = false;
+let voiceReferenceImport: { projectId: string; generation: number } | undefined;
 let workspace = panel ? "项目工作区" : "浏览器工作区";
 let workspaceScope = panel ? "" : "browser";
 const duration = () => timelineDuration(project);
@@ -229,6 +232,11 @@ const voicePreparation = createVoicePreparationUI(production, {
     tab = "voiceover";
     await voiceover.usePreparedVoice(value);
     render();
+    if (!voicePreparation.preparing()) {
+      const editor = document.querySelector<HTMLTextAreaElement>("#voiceover-text");
+      editor?.scrollIntoView({ block: "center" });
+      editor?.focus({ preventScroll: true });
+    }
   },
 });
 
@@ -265,16 +273,30 @@ const roughcut = createRoughCutUI({
 const recording = createRecordingUI({
   projectId: () => project.id,
   description: () =>
-    narrationRecordingProjectId === project.id
-      ? "照着已确认的文案录口播。保存后用实际录音重排画面与字幕。"
-      : "录下自己的声音或画面，原片会保留在素材库。",
+    voiceReferenceRecording?.projectId === project.id
+      ? "录下 3–30 秒清晰的本人声音。可以自然朗读下方文案；保存后会返回声音克隆，确认录音内容。"
+      : narrationRecordingProjectId === project.id
+        ? "照着已确认的文案录口播。保存后用实际录音重排画面与字幕。"
+        : "录下自己的声音或画面，原片会保留在素材库。",
   saveLabel: () =>
-    narrationRecordingProjectId === project.id ? "保存口播，继续制作" : "保存到素材库",
+    voiceReferenceRecording?.projectId === project.id
+      ? "保存录音，继续声音克隆"
+      : narrationRecordingProjectId === project.id
+        ? "保存口播，继续制作"
+        : "保存到素材库",
+  audioOnly: () => voiceReferenceRecording?.projectId === project.id,
   changed: () => {
     if (tab === "recording") render();
   },
   toast,
   saved: () => {
+    if (voiceReferenceRecordingSaved) {
+      voiceReferenceRecordingSaved = false;
+      voiceReferenceRecording = undefined;
+      tab = "voiceover";
+      render();
+      return;
+    }
     if (narrationRecordingSaved) {
       narrationRecordingSaved = false;
       narrationRecordingProjectId = "";
@@ -285,8 +307,10 @@ const recording = createRecordingUI({
   save: async (blob, name) => {
     assertEditable();
     const intended = narrationRecordingProjectId === project.id;
+    const voiceIntent = voiceReferenceRecording;
+    const forVoice = voiceIntent?.projectId === project.id && voiceIntent.generation === generation;
     let asset: Asset;
-    if (production.enabled)
+    if (production.enabled && !forVoice)
       asset = await production.importRecording(blob, name, (fraction) => {
         const status = document.querySelector(".recording-name + p");
         if (status) status.textContent = `正在保存原片 ${Math.round(fraction * 100)}%`;
@@ -307,15 +331,40 @@ const recording = createRecordingUI({
         }
         throw error;
       }
-      commit(
-        validateProject({
-          ...project,
-          revision: project.revision + 1,
-          assets: [...project.assets, asset],
-        }),
-      );
+      const savedProject = validateProject({
+        ...project,
+        revision: project.revision + 1,
+        assets: [...project.assets, asset],
+      });
+      if (forVoice) {
+        mediaImporting = true;
+        try {
+          await saveProject(savedProject, "保存声音参考");
+        } catch (error) {
+          if (imported && library.items.get(asset.id) === imported) {
+            library.release(imported);
+            library.items.delete(asset.id);
+          }
+          throw error;
+        } finally {
+          mediaImporting = false;
+        }
+      }
+      commit(savedProject, forVoice);
     }
-    if (intended) {
+    if (forVoice && voiceIntent.generation === generation && voiceIntent.projectId === project.id) {
+      try {
+        await voicePreparation.selectReference(asset.id);
+        voiceReferenceRecordingSaved = true;
+        toast("参考录音已保存，请确认这段录音实际说出的内容");
+      } catch (error) {
+        // The recording is already durable; keep it usable if the voice settings write fails.
+        voiceReferenceRecordingSaved = true;
+        toast(
+          `录音已保存，请在声音克隆中重新选择：${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else if (intended) {
       narrationRecordingSaved = true;
       try {
         await saveNarrationUpdate(
@@ -487,6 +536,7 @@ function views() {
     narrationScriptDraft,
     workspace,
     voiceoverMarkup: voiceover.render(),
+    voicePreparationActive: voicePreparation.preparing(),
     voicePreparationMarkup: voicePreparation.render(tab === "voiceover"),
     roughcutMarkup: tab === "roughcut" ? roughcut.render() : "",
     sourcePreview:
@@ -625,6 +675,9 @@ async function replace(next: Project): Promise<void> {
     project = validated;
     narrationScriptDraft = null;
     narrationRecordingProjectId = "";
+    voiceReferenceRecording = undefined;
+    voiceReferenceRecordingSaved = false;
+    voiceReferenceImport = undefined;
     voiceover.resetReplacement();
     voiceover.setText(project.script ?? "");
     generation++;
@@ -695,11 +748,14 @@ function render(): void {
   const voiceDisclosure = sameLibrary
     ? studio.querySelector<HTMLDetailsElement>(".voice-preparation-disclosure")?.open
     : undefined;
+  const alternativeVoiceOpen = sameLibrary
+    ? studio.querySelector<HTMLDetailsElement>(".voiceover-alternative")?.open
+    : undefined;
   const voiceEditors =
     sameLibrary && tab === "voiceover"
       ? [
           ...studio.querySelectorAll<HTMLTextAreaElement>(
-            "#voiceover-text, #voiceover-reference-text, #voiceover-instructions",
+            "#voiceover-text, #voiceover-reference-text, #voiceover-instructions, #voice-prep-transcript, #voice-prep-sample",
           ),
         ].map((element) => ({
           element,
@@ -732,6 +788,9 @@ function render(): void {
   );
   if (nextVoiceDisclosure && voiceDisclosure !== undefined)
     nextVoiceDisclosure.open = voiceDisclosure;
+  const alternativeVoice = studio.querySelector<HTMLDetailsElement>(".voiceover-alternative");
+  if (alternativeVoice && alternativeVoiceOpen !== undefined)
+    alternativeVoice.open = alternativeVoiceOpen;
   const nextSampleAudio = studio.querySelector<HTMLAudioElement>(".voice-preparation-audio");
   if (sameLibrary && sampleAudio && nextSampleAudio && sampleAudio.src === nextSampleAudio.src) {
     nextSampleAudio.replaceWith(sampleAudio);
@@ -994,6 +1053,7 @@ async function openNarrationRecorder(): Promise<void> {
   recording.assertSafeToLeave();
   recording.setScript(current.narration!.approvedScript!);
   narrationRecordingProjectId = project.id;
+  voiceReferenceRecording = undefined;
   stop();
   tab = "recording";
   render();
@@ -1081,7 +1141,11 @@ async function requestAI(
   }
 }
 
-async function importMedia(files: File[], reconnectId?: string): Promise<void> {
+async function importMedia(
+  files: File[],
+  reconnectId?: string,
+  audioReference = false,
+): Promise<Asset[]> {
   assertEditable();
   if (reconnectId && files.length !== 1) throw new Error("请只选择这个素材对应的一个原文件");
   stop();
@@ -1090,6 +1154,7 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
   const importGeneration = generation;
   const next = structuredClone(project);
   const imported = new Map<string, LocalMedia>();
+  const availableAssets: Asset[] = [];
   const releaseImported = (id: string) => {
     const item = imported.get(id);
     if (item && library.items.get(id) === item) {
@@ -1113,7 +1178,12 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
               asset.size === file.size &&
               asset.lastModified === file.lastModified,
           );
-      if (existing && library.items.has(existing.id)) continue;
+      if (existing && library.items.has(existing.id)) {
+        if (audioReference && existing.kind !== "audio")
+          throw new Error("请选择一段录音；视频请先提取声音片段");
+        availableAssets.push(existing);
+        continue;
+      }
       let importedId = "";
       try {
         if (
@@ -1125,6 +1195,8 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
         importedId = asset.id;
         const item = library.items.get(asset.id);
         if (item) imported.set(asset.id, item);
+        if (audioReference && asset.kind !== "audio")
+          throw new Error("请选择一段录音；视频请先提取声音片段");
         asset = await persistMediaFile(panel, file, asset, {
           isCurrent: () => importGeneration === generation,
           progress: (fraction) => {
@@ -1145,9 +1217,10 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
           next.assets = check.assets;
           added++;
         }
+        availableAssets.push(asset);
       } catch (error) {
         if (importedId) releaseImported(importedId);
-        if (importGeneration !== generation) throw error;
+        if (audioReference || importGeneration !== generation) throw error;
         fail(error);
       }
     }
@@ -1163,11 +1236,20 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
     releaseBatch();
     throw new Error("工程已切换，未应用旧工程的素材导入");
   }
-  tab = "media";
+  if (!audioReference) tab = "media";
   if (added || reconnected) {
     try {
       next.revision++;
-      commit(next);
+      if (audioReference) {
+        mediaImporting = true;
+        try {
+          await saveProject(validateProject(next), "保存声音参考");
+        } finally {
+          mediaImporting = false;
+        }
+        if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的声音参考");
+      }
+      commit(next, audioReference);
     } catch (error) {
       releaseBatch();
       throw error;
@@ -1177,6 +1259,7 @@ async function importMedia(files: File[], reconnectId?: string): Promise<void> {
     toast(
       `已导入 ${added} 个素材${reconnected ? `，重连 ${reconnected} 个素材` : ""}。点击 ＋ 加入时间轴。`,
     );
+  return availableAssets;
 }
 
 function quickPlan(): void {
@@ -1396,6 +1479,38 @@ async function action(name: string, id?: string): Promise<void> {
   const audioClip = project.audioClips?.find((item) => item.id === selected);
   const clip = project.clips.find((item) => item.id === selected) ?? audioClip;
   switch (name) {
+    case "voice-reference-record":
+      assertEditable();
+      recording.setScript(VOICE_REFERENCE_TEXT, "microphone");
+      voiceReferenceRecording = { projectId: project.id, generation };
+      narrationRecordingProjectId = "";
+      tab = "recording";
+      render();
+      break;
+    case "voice-reference-import":
+      assertEditable();
+      voiceReferenceImport = { projectId: project.id, generation };
+      $("#voice-reference-input").click();
+      break;
+    case "voice-reference-video": {
+      assertEditable();
+      const source =
+        project.assets.find((asset) => asset.kind === "video") ??
+        project.assets.find(
+          (asset) => asset.kind === "audio" && asset.durationFrames > 30 * project.fps,
+        );
+      if (source) await selectSource(source.id);
+      else {
+        tab = "roughcut";
+        render();
+      }
+      toast(
+        source
+          ? "标记 3–30 秒本人说话的片段，再点击“提取这段，用作本人声音参考”"
+          : "先导入带本人说话声音的视频，再标记 3–30 秒片段提取参考",
+      );
+      break;
+    }
     case "return-composition":
       tab = "media";
       render();
@@ -2101,6 +2216,28 @@ $("#media-input").addEventListener("change", (event) => {
 });
 $("#media-input").addEventListener("cancel", () => {
   reconnectAssetId = "";
+});
+$("#voice-reference-input").addEventListener("change", (event) => {
+  const input = event.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  const intent = voiceReferenceImport;
+  voiceReferenceImport = undefined;
+  input.value = "";
+  void (async () => {
+    if (!files.length) return;
+    if (!intent || intent.projectId !== project.id || intent.generation !== generation)
+      throw new Error("工程已切换，请在当前工程重新选择参考录音");
+    const assets = await importMedia(files.slice(0, 1), undefined, true);
+    if (!assets.length || intent.projectId !== project.id || intent.generation !== generation)
+      return;
+    tab = "voiceover";
+    await voicePreparation.selectReference(assets[0]!.id);
+    render();
+    toast("参考录音已保存，请确认这段录音实际说出的内容");
+  })().catch(fail);
+});
+$("#voice-reference-input").addEventListener("cancel", () => {
+  voiceReferenceImport = undefined;
 });
 $("#project-input").addEventListener("change", async (event) => {
   const input = event.target as HTMLInputElement;

@@ -14,6 +14,7 @@ interface RecordingContext {
   changed(): void;
   description?(): string;
   saveLabel?(): string;
+  audioOnly?(): boolean;
   toast?(message: string): void;
 }
 const elapsed = (seconds: number) =>
@@ -67,13 +68,18 @@ export function createRecordingUI(context: RecordingContext) {
   const changed = () => {
     if (!disposed) context.changed();
   };
-  function setScript(text: string): void {
+  function setScript(text: string, recordingMode?: RecordingMode): void {
     if (disposed) throw new Error("录制页面已关闭，无法载入提词稿");
     if (busy()) throw new Error("请先结束当前录制或保存，再载入提词稿");
     if (capture.snapshot.result) throw new Error("这次录制还未保存，请先保存或丢弃，再载入提词稿");
     if (typeof text !== "string" || text.length > 10000)
       throw new Error("提词稿需要是文字，且不超过 10000 字");
     script = text;
+    if (recordingMode) {
+      attempt++;
+      capture.cancelPreview();
+      mode = recordingMode;
+    }
     prompterRunning = false;
     lastTick = 0;
     changed();
@@ -216,6 +222,7 @@ export function createRecordingUI(context: RecordingContext) {
     if (!["recording-mode", "recording-microphone", "recording-camera"].includes(target.id))
       return false;
     if (busy() || capture.snapshot.result) return true;
+    if (target.id === "recording-mode" && context.audioOnly?.()) return true;
     attempt++;
     capture.cancelPreview();
     if (target.id === "recording-mode") mode = target.value as RecordingMode;
@@ -339,7 +346,7 @@ export function createRecordingUI(context: RecordingContext) {
       </p>
       <div class="recording-fields">
         <label class="input-label"
-          >录制方式<select id="recording-mode" ${locked ? "disabled" : ""}>
+          >录制方式<select id="recording-mode" ${locked || context.audioOnly?.() ? "disabled" : ""}>
             <option value="microphone" ${mode === "microphone" ? "selected" : ""}>
               麦克风 · 录声音
             </option>

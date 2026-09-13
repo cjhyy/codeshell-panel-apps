@@ -18,8 +18,10 @@ let browser, server, url;
 const errors = [];
 
 before(async () => {
-  const [project] = selectProjects(await discoverProjects(), "video-studio");
-  await buildProject(project);
+  if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
+    const [project] = selectProjects(await discoverProjects(), "video-studio");
+    await buildProject(project);
+  }
   await mkdir(artifacts, { recursive: true });
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;

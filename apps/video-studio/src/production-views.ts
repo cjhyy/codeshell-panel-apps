@@ -19,6 +19,7 @@ export function renderProductionJobs(state: ProductionViewState): string {
     tts: "文字配音",
     "tts-online": "在线配音",
     "tts-managed": "模型配音",
+    "tts-clone": "本人声音配音",
     "tts-setup": "安装配音引擎",
     "audio-enhance": "优化原声",
   };
@@ -64,11 +65,11 @@ export function renderProductionJobs(state: ProductionViewState): string {
             | undefined;
           const artifact =
             result?.video?.asset ??
-            (["tts", "tts-online", "tts-managed", "audio-enhance"].includes(job.type)
+            (["tts", "tts-online", "tts-managed", "tts-clone", "audio-enhance"].includes(job.type)
               ? result?.asset
               : undefined);
           const progress = Math.round(Math.max(0, Math.min(1, job.progress?.fraction ?? 0)) * 100);
-          return `<article class="job-card ${job.status}"><div class="job-heading"><strong>${labels[job.type] ?? esc(job.type)}</strong><span>${statuses[job.status]}</span></div><p>${esc(job.error?.message ?? job.progress?.message ?? "")}</p>${["queued", "running"].includes(job.status) ? `<progress max="100" value="${progress}"></progress><div class="job-footer"><span>${progress}%</span><button class="text-button" data-job-action="cancel" data-job-id="${esc(job.id)}">取消</button></div>` : ""}${job.status === "failed" && job.error?.retryable ? `<button class="full" data-job-action="retry" data-job-id="${esc(job.id)}">重试任务</button>` : ""}${artifact ? `<div class="job-result"><button data-job-action="play" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("play")}播放</button><button class="primary" data-job-action="save" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("download")}保存${["tts", "tts-online", "tts-managed", "audio-enhance"].includes(job.type) ? "音频" : " MP4"}</button></div>` : ""}</article>`;
+          return `<article class="job-card ${job.status}"><div class="job-heading"><strong>${labels[job.type] ?? esc(job.type)}</strong><span>${statuses[job.status]}</span></div><p>${esc(job.error?.message ?? job.progress?.message ?? "")}</p>${["queued", "running"].includes(job.status) ? `<progress max="100" value="${progress}"></progress><div class="job-footer"><span>${progress}%</span><button class="text-button" data-job-action="cancel" data-job-id="${esc(job.id)}">取消</button></div>` : ""}${job.status === "failed" && job.error?.retryable ? `<button class="full" data-job-action="retry" data-job-id="${esc(job.id)}">重试任务</button>` : ""}${artifact ? `<div class="job-result"><button data-job-action="play" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("play")}播放</button><button class="primary" data-job-action="save" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("download")}保存${["tts", "tts-online", "tts-managed", "tts-clone", "audio-enhance"].includes(job.type) ? "音频" : " MP4"}</button></div>` : ""}</article>`;
         })
         .join("") ||
       `<div class="empty-state">${icon("film", 32)}<h3>从素材，走向成片</h3><p>导入、分析、场景与导出的进度都在这里。</p>${button("import", "导入素材", "plus", "primary")}</div>`}

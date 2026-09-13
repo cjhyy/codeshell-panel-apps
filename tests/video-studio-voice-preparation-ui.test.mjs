@@ -51,7 +51,11 @@ before(async () => {
   url = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({
     headless: true,
-    args: ["--autoplay-policy=no-user-gesture-required"],
+    args: [
+      "--autoplay-policy=no-user-gesture-required",
+      "--use-fake-device-for-media-stream",
+      "--use-fake-ui-for-media-stream",
+    ],
   });
 });
 after(async () => {
@@ -60,8 +64,8 @@ after(async () => {
   assert.deepEqual(errors, [], "No app runtime or CSP errors");
 });
 
-async function pageWithHost() {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+async function pageWithHost({ width = 1440, installed = false } = {}) {
+  const page = await browser.newPage({ viewport: { width, height: 960 } });
   page.setDefaultTimeout(10_000);
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -72,6 +76,18 @@ async function pageWithHost() {
   await page.addInitScript(installLocalVoiceProcessMock, {
     outputAssetId: sampleId,
     durationSeconds: 24,
+    installed,
+  });
+  await page.addInitScript(() => {
+    window.__deviceRequests = [];
+    window.__capturedTracks = [];
+    const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = async (constraints) => {
+      window.__deviceRequests.push(structuredClone(constraints));
+      const stream = await acquire(constraints);
+      window.__capturedTracks.push(...stream.getTracks());
+      return stream;
+    };
   });
   // Jobs, installation and Agent calls are simulated at the Host boundary;
   // the full controller/UI run unchanged and audio playback decodes a real MP3.
@@ -280,6 +296,13 @@ async function pageWithHost() {
           throw Error("Unexpected Host method: " + method);
         },
       };
+      // Install fault injection before the real Panel bridge captures its call function.
+      const genericCall = window.codeshellPanel.call.bind(window.codeshellPanel);
+      window.codeshellPanel.call = async (method, args) => {
+        if (method === "resources.upload.begin" && window.__failReferenceUpload)
+          throw Error("参考录音上传失败：模拟磁盘已满");
+        return genericCall(method, args);
+      };
     },
     { sourceId, sampleId, extractedId },
   );
@@ -336,6 +359,15 @@ test(
         { providerId: "audio8-tts" },
       );
       assert.equal((await call(page, "media.tts.setup")).length, 0);
+      assert.equal(await page.locator('[data-action="voice-prep-setup"]').isDisabled(), true);
+      assert.equal(await page.locator("#voice-prep-model").isDisabled(), true);
+      await page.locator('[data-action="voice-prep-setup"]').evaluate((button) => button.click());
+      assert.equal(
+        await page.evaluate(
+          () => window.__voiceRuntimeRequests.filter((r) => r.action === "setup").length,
+        ),
+        1,
+      );
       await page.evaluate(() => window.__completeLocalVoice("setup"));
       await page.waitForFunction(
         () => !document.querySelector('[data-action="voice-prep-sample"]')?.disabled,
@@ -362,6 +394,15 @@ test(
         },
       );
       assert.equal((await call(page, "media.tts")).length, 0);
+      assert.equal(await page.locator('[data-action="voice-prep-sample"]').isDisabled(), true);
+      assert.equal(await page.locator("#voice-prep-reference").isDisabled(), true);
+      await page.locator('[data-action="voice-prep-sample"]').evaluate((button) => button.click());
+      assert.equal(
+        await page.evaluate(
+          () => window.__voiceRuntimeRequests.filter((r) => r.action === "generate").length,
+        ),
+        1,
+      );
       await page.evaluate(() => window.__completeLocalVoice("generate"));
       await page.locator('audio[aria-label="本人声音真实试听"]').waitFor();
       const after = await project(page);
@@ -394,7 +435,21 @@ test(
         window.__failVoiceSave = false;
       });
       await page.locator('[data-action="voice-prep-save"]').click();
-      await page.locator(".voice-preparation-recipes").waitFor();
+      await page.locator("#voiceover-model").waitFor();
+      assert.equal(await page.locator("#voiceover-model").inputValue(), "audio8-tts");
+      assert.equal(
+        await page.locator("#voiceover-reference").inputValue(),
+        "reference-project-asset",
+      );
+      assert.equal(
+        await page.locator("#voiceover-reference-text").inputValue(),
+        "这是我本人录下的参考声音。",
+      );
+      await page.locator("#voiceover-text").fill("这是确认声线后，准备生成的完整视频旁白。");
+      assert.equal(
+        await page.locator("#voiceover-text").inputValue(),
+        "这是确认声线后，准备生成的完整视频旁白。",
+      );
       await page.reload();
       await page.locator('[data-tab="ai"]').click();
       await page.locator(".voice-preparation-recipes").waitFor();
@@ -483,6 +538,365 @@ test(
       assert.deepEqual(after.clips, before.clips);
       assert.deepEqual(after.audioClips, before.audioClips);
       assert.equal((await call(page, "media.tts")).length, 0);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+const referenceWave = () => {
+  // A self-generated 4-second tone exercises actual file decoding and durable upload.
+  // It is not a user's voice and is never sent to an inference service by this suite.
+  const sampleRate = 16000,
+    frames = sampleRate * 4;
+  const bytes = Buffer.alloc(44 + frames * 2);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  bytes.write("WAVEfmt ", 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(sampleRate, 24);
+  bytes.writeUInt32LE(sampleRate * 2, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(frames * 2, 40);
+  for (let i = 0; i < frames; i++)
+    bytes.writeInt16LE(
+      Math.round(2000 * Math.sin((i * 2 * Math.PI * 220) / sampleRate)),
+      44 + i * 2,
+    );
+  return { name: "隔离测试参考.wav", mimeType: "audio/wav", buffer: bytes };
+};
+async function createMyVoice(page) {
+  await page.locator('[data-tab="voiceover"]').click();
+  await page.locator('[data-action="voice-prep-start"]').click();
+  await page.getByRole("heading", { name: "1. 提供本人录音", exact: true }).waitFor();
+  // Wait for the controller's debounced publication/catalog refresh to settle before geometry checks.
+  await page.waitForFunction(() => {
+    const markup = document.querySelector(".library-panel")?.innerHTML;
+    const previous = window.__voiceGuideSettled;
+    if (!previous || previous.markup !== markup) {
+      window.__voiceGuideSettled = { markup, since: performance.now() };
+      return false;
+    }
+    return performance.now() - previous.since >= 200;
+  });
+}
+
+test(
+  "creating a voice at 390px opens a guided microphone recording without requesting devices until Start",
+  { timeout: 45_000 },
+  async () => {
+    const page = await pageWithHost({ width: 390 });
+    try {
+      const before = await project(page);
+      assert.equal(await page.evaluate(() => window.__deviceRequests.length), 0);
+      await createMyVoice(page);
+      for (const name of ["1. 提供本人录音", "2. 准备模型", "3. 试听并保存"])
+        await page.getByRole("heading", { name, exact: true }).waitFor();
+      assert.equal(await page.locator("#voice-prep-model").inputValue(), "audio8-tts");
+      assert.equal(
+        await page.evaluate(() => window.__voiceRuntimeRequests.length),
+        0,
+        "Creating a guide does not install a model or generate speech without the next user action",
+      );
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      for (const action of [
+        "voice-reference-record",
+        "voice-reference-import",
+        "voice-reference-video",
+      ]) {
+        const button = page.locator(`[data-action="${action}"]`);
+        await button.scrollIntoViewIfNeeded();
+        const box = await button.boundingBox();
+        assert.ok(
+          box && box.x >= 0 && box.x + box.width <= 390,
+          `${action} fits the narrow screen`,
+        );
+      }
+      await page.locator(".voice-preparation h3").scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: resolve(artifacts, "voice-guide-first-create-390.png"),
+        fullPage: true,
+      });
+      await page.locator('[data-action="voice-reference-record"]').click();
+      assert.equal(await page.locator("#recording-mode").inputValue(), "microphone");
+      assert.equal(await page.locator("#recording-mode").isDisabled(), true);
+      const referenceText = await page.locator("#recording-script").inputValue();
+      assert.ok(referenceText.length > 30, "The optional reading prompt is ready before recording");
+      assert.equal(
+        await page.evaluate(() => window.__deviceRequests.length),
+        0,
+        "Opening the recording step never acquires a microphone or starts a recording",
+      );
+      await page.locator('[data-action="rec-start"]').click();
+      await page.locator('[data-action="rec-pause"]').waitFor();
+      await page.waitForTimeout(3300);
+      await page.locator('[data-action="rec-finish"]').click();
+      await page.locator('[data-action="rec-save"]').waitFor();
+      assert.equal(await page.evaluate(() => window.__deviceRequests.length), 1);
+      assert.equal(await page.evaluate(() => window.__deviceRequests[0].video), false);
+      assert.equal(
+        await page.evaluate(() =>
+          window.__capturedTracks.every((track) => track.readyState === "ended"),
+        ),
+        true,
+      );
+      await page.locator("#recording-name").fill("声音引导录制测试");
+      await page.locator('[data-action="rec-save"]').click();
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#voice-prep-reference")?.value &&
+          document.querySelector("#voice-prep-reference")?.value !== "reference-project-asset",
+      );
+      const after = await project(page);
+      const selected = after.assets.find(
+        (asset) => !before.assets.some((old) => old.id === asset.id),
+      );
+      assert.ok(
+        selected && selected.kind === "audio" && /^asset-[a-f0-9]{64}$/.test(selected.mediaId),
+      );
+      assert.ok(
+        selected.durationFrames >= 90 && selected.durationFrames <= 300,
+        JSON.stringify(selected),
+      );
+      assert.equal(await page.locator("#voice-prep-reference").inputValue(), selected.id);
+      assert.equal(
+        await page.locator("#voice-prep-transcript").inputValue(),
+        "",
+        "A suggested reading prompt is not evidence of what the recording actually says",
+      );
+      assert.equal(await page.locator('[data-action="voice-prep-sample"]').isDisabled(), true);
+      assert.deepEqual(after.clips, before.clips);
+      assert.deepEqual(after.audioClips, before.audioClips);
+      assert.equal(await page.evaluate(() => window.__voiceRuntimeRequests.length), 0);
+      await page.locator('[data-action="voice-prep-reference-text"]').click();
+      assert.equal(
+        await page.locator("#voice-prep-transcript").inputValue(),
+        referenceText,
+        "Only the explicit confirmation fills the optional reading prompt into the transcript",
+      );
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector("#toast")).opacity === "0",
+      );
+      await page.screenshot({
+        path: resolve(artifacts, "voice-guide-recording-return-390.png"),
+        fullPage: true,
+      });
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "importing a reference file selects the persisted audio and an installed engine without an installation task",
+  { timeout: 30_000 },
+  async () => {
+    const page = await pageWithHost({ installed: true });
+    try {
+      await createMyVoice(page);
+      const before = await project(page);
+      const chooserPromise = page.waitForEvent("filechooser");
+      await page.locator('[data-action="voice-reference-import"]').click();
+      await (await chooserPromise).setFiles(referenceWave());
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#voice-prep-reference")?.value &&
+          document.querySelector("#voice-prep-reference")?.value !== "reference-project-asset",
+      );
+      const after = await project(page);
+      const imported = after.assets.find(
+        (asset) => !before.assets.some((old) => old.id === asset.id),
+      );
+      assert.equal(imported?.name, "隔离测试参考.wav");
+      assert.equal(imported?.durationFrames, 120);
+      assert.match(imported?.mediaId, /^asset-[a-f0-9]{64}$/);
+      assert.equal(await page.locator("#voice-prep-reference").inputValue(), imported.id);
+      assert.equal(await page.locator("#voice-prep-transcript").inputValue(), "");
+      assert.ok(
+        await page.evaluate(
+          () =>
+            window.__genericHostCalls.filter((call) => call.method === "resources.upload.write")
+              .length > 1,
+        ),
+      );
+      assert.equal(await page.evaluate(() => window.__voiceRuntimeRequests.length), 0);
+      await page.locator("#voice-prep-transcript").fill("这是用户核对后提供的参考录音逐字稿。");
+      await page.locator("#voice-prep-sample").fill("你好，欢迎收看今天的视频。");
+      await page.locator('[data-action="voice-prep-sample"]').click();
+      await page.waitForFunction(() =>
+        window.__voiceRuntimeRequests.some((request) => request.action === "generate"),
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__voiceRuntimeRequests.filter((request) => request.action === "setup").length,
+        ),
+        0,
+      );
+      assert.equal(await page.locator('[data-action="voice-prep-sample"]').isDisabled(), true);
+      await page.locator('[data-action="voice-prep-sample"]').evaluate((button) => button.click());
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__voiceRuntimeRequests.filter((request) => request.action === "generate").length,
+        ),
+        1,
+      );
+      await page.evaluate(() => window.__completeLocalVoice("generate"));
+      await page.locator('audio[aria-label="本人声音真实试听"]').waitFor();
+      assert.equal(await page.locator('[data-action="voice-prep-save"]').isDisabled(), true);
+      await page.locator("#voice-prep-confirmed").check();
+      await page.locator("#voice-prep-name").fill("已确认的示例声线");
+      await page.locator('[data-action="voice-prep-save"]').click();
+      await page.locator("#voiceover-text").waitFor();
+      assert.equal(await page.locator("#voiceover-reference").inputValue(), imported.id);
+      assert.equal(
+        await page.locator("#voiceover-reference-text").inputValue(),
+        "这是用户核对后提供的参考录音逐字稿。",
+      );
+      await page
+        .locator("#voiceover-text")
+        .fill("这里填写完整视频旁白，已保存的声音将直接用于配音。");
+      assert.equal(await page.locator("#voiceover-model").inputValue(), "audio8-tts");
+      const finished = await project(page);
+      assert.deepEqual(finished.clips, before.clips);
+      assert.deepEqual(finished.audioClips, before.audioClips);
+      await page.waitForFunction(
+        () => getComputedStyle(document.querySelector("#toast")).opacity === "0",
+      );
+      await page.screenshot({
+        path: resolve(artifacts, "voice-guide-saved-ready-for-narration.png"),
+        fullPage: true,
+      });
+      await page.locator('[data-tab="jobs"]').click();
+      const cloneJob = page.locator(".job-card.succeeded").filter({ hasText: "本人声音配音" });
+      await cloneJob.locator('[data-job-action="play"]').waitFor();
+      assert.match(await cloneJob.locator('[data-job-action="save"]').innerText(), /保存音频/);
+      assert.equal(await cloneJob.locator('[data-job-action="save"]').isEnabled(), true);
+      await cloneJob.locator('[data-job-action="play"]').click();
+      const resultAudio = page.locator("#plan-dialog[open] audio.result-audio");
+      await resultAudio.waitFor();
+      assert.equal(
+        await page.locator("#plan-dialog[open] video").count(),
+        0,
+        "A tts-clone result uses an audio player, not an empty video surface",
+      );
+      assert.ok((await resultAudio.getAttribute("src")).endsWith(`/media/${sampleId}`));
+      assert.equal(
+        await page
+          .locator("#plan-dialog[open]")
+          .getByRole("button", { name: "保存音频", exact: true })
+          .isEnabled(),
+        true,
+      );
+      await resultAudio.evaluate((audio) => audio.play());
+      await page.waitForFunction(
+        () => document.querySelector("#plan-dialog audio")?.currentTime > 0,
+      );
+      await page.locator('#plan-dialog [data-action="close-dialog"]').click();
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "a reference picker opened in the previous project cannot import or select audio in a new project",
+  { timeout: 30_000 },
+  async () => {
+    const page = await pageWithHost({ installed: true });
+    try {
+      await createMyVoice(page);
+      const chooserPromise = page.waitForEvent("filechooser");
+      await page.locator('[data-action="voice-reference-import"]').click();
+      const chooser = await chooserPromise;
+      await page.locator('[data-action="new"]').click();
+      await page.waitForFunction(
+        () => window.__panelTools.read_video_project().project.id !== "voice-preparation-project",
+      );
+      const fresh = await project(page);
+      await chooser.setFiles(referenceWave());
+      await page
+        .locator("#toast")
+        .filter({ hasText: /工程已切换/ })
+        .waitFor();
+      await page.locator('[data-tab="voiceover"]').click();
+      assert.deepEqual((await project(page)).assets, fresh.assets);
+      assert.equal((await project(page)).assets.length, 0);
+      assert.equal(await page.locator("#voice-prep-reference").count(), 0);
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__genericHostCalls.filter((call) => call.method === "resources.upload.begin")
+              .length,
+        ),
+        0,
+      );
+      const staleWrites = await page.evaluate(
+        (id) =>
+          window.__calls.filter(
+            (call) =>
+              call.method === "storage.set" &&
+              call.args.key === `video-studio-voice-preparation-${id}` &&
+              call.args.value?.selection?.referenceAssetId,
+          ),
+        fresh.id,
+      );
+      assert.deepEqual(
+        staleWrites,
+        [],
+        "The old picker never writes a reference selection into a different project",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "a reference upload failure keeps the voice guide and lets the user choose the file again",
+  { timeout: 30_000 },
+  async () => {
+    const page = await pageWithHost({ installed: true });
+    try {
+      await createMyVoice(page);
+      const before = await project(page);
+      await page.evaluate(() => {
+        window.__failReferenceUpload = true;
+      });
+      let choosing = page.waitForEvent("filechooser");
+      await page.locator('[data-action="voice-reference-import"]').click();
+      await (await choosing).setFiles(referenceWave());
+      await page
+        .locator("#toast")
+        .filter({ hasText: /素材持久保存失败，尚未加入工程/ })
+        .waitFor();
+      await page.getByRole("heading", { name: "1. 提供本人录音", exact: true }).waitFor();
+      assert.equal(await page.locator('[data-action="voice-reference-import"]').isEnabled(), true);
+      assert.deepEqual((await project(page)).assets, before.assets);
+      assert.equal(await page.locator("#voice-prep-reference").inputValue(), "");
+      assert.equal(await page.evaluate(() => window.__voiceRuntimeRequests.length), 0);
+      await page.evaluate(() => {
+        window.__failReferenceUpload = false;
+      });
+      choosing = page.waitForEvent("filechooser");
+      await page.locator('[data-action="voice-reference-import"]').click();
+      await (await choosing).setFiles(referenceWave());
+      await page.waitForFunction(() =>
+        Boolean(document.querySelector("#voice-prep-reference")?.value),
+      );
+      assert.equal(
+        (await project(page)).assets.length,
+        before.assets.length + 1,
+        "Retrying the same file publishes one saved reference, without retaining the failed import",
+      );
     } finally {
       await page.close();
     }
