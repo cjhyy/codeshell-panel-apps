@@ -21,7 +21,7 @@ description: 为 Mimi 视频工作台初始化或更新制作单：盘点已导�
 
 声音准备必须在最后保存制作单之前完成：
 
-1. `get_video_voices` 检查所选模型。未就绪时 `setup_video_tts`，保留任务 ID，等待完成后刷新目录。Audio8 的模型 ID 为 `audio8-tts`，本人音色为 `reference`。
+1. `read_video_project({view:"voices"})` 检查所选模型。未就绪时 `setup_video_tts`，保留任务 ID，等待完成后刷新目录。Audio8 的模型 ID 为 `audio8-tts`，本人音色为 `reference`。
 2. 若用户选择了参考源区间，以 `extract_video_reference {projectId,requestToken,assetId,inFrame,outFrame}` 提取实际 3–30 秒音频；入出点是 30 fps 源半开区间。粗剪标记和时间线裁剪都不会改变原文件。等待成功后，重读工程，以返回 `result.asset.id` 匹配工程 `mediaId`，使用该新音频的工程 ID 作为参考。未经选择，不从其他素材挑选人物声音。
 3. 有完整参考音频和用户提供的实际逐字稿后，用 `prepare_video_voice {projectId,requestToken,modelId,voiceId:"reference",referenceAssetId,referenceText,text,rate:1}` 生成一次最多 120 字的真实短试听。采用用户选定的 sampleText；未给出则用“你好，这是我的声音试听。我会用自然的语气，介绍今天的视频内容。”。此工具只存素材，不入轨。初始化禁止调用完整 `create_video_voiceover`。
 4. 缺录音或逐字稿时保留已经完成的安装，在 `blockers` 和 `nextSteps` 明确录制/导入本人录音、选择 3–30 秒区间或补写实际逐字稿；不猜逐字稿，不用系统样例冒充本人。安装验证成功只说明引擎可运行，不能声称声音相似度已确认。
@@ -40,7 +40,7 @@ description: 为 Mimi 视频工作台初始化或更新制作单：盘点已导�
 | 图片、截图           | 查看尺寸和 `inspect_video_frame` 的 0 秒真实图像，判断画幅、文字可读性和停留时长；不做转写。                    |
 | 生成场景、TTS        | 查真实成功产物、时长及 `scene`/`speech`；复用符合当前目标的素材，不重复生成等待中的任务。合成文本不是精确转写。 |
 
-- `prepare_video_assets` 的每批 ID 均来自当前工程；需要口播选句或字幕的素材才设置 `transcribe:true`。保存实际返回的任务 ID，集中查询 `get_video_jobs`。图像不做转写，纯音乐不把识别出的零散文字当歌词。
+- `prepare_video_assets` 的每批 ID 均来自当前工程；需要口播选句或字幕的素材才设置 `transcribe:true`。保存实际返回的任务 ID，集中查询 `read_video_project({view:"jobs",jobIds})`。图像不做转写，纯音乐不把识别出的零散文字当歌词。
 - 多素材先记录已检查与未检查范围。每条候选视频可从约 2–3 个源时刻初筛，长片结合镜头变化；再读入选句前后文、检查候选动作起止。少数截图不能代表整条片。素材很多时按批推进，不盲目读完所有转写或逐帧扫描。
 - 将计划要用的源范围、可观察内容、来源证据和取舍理由记录到制作单；未知内容明确标为未审阅。文件名、静音点、镜头切点不能单独支持“精彩”“人物在做什么”或“可删”的结论。
 - 预处理异步运行时继续整理独立素材。缺少必要能力时记录实际阻塞和仍可做的工作，不宣称已安装依赖；已有失败必须根据错误修正后才重试。

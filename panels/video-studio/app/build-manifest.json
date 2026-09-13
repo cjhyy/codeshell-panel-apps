@@ -3,24 +3,24 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "5f6cbdd056c6cacce57615309212833e127b915f63677b7f1643d6886dfc13b7",
+    ".codeshell-panel/panel.json": "2c92b992adad979fab461d7ab032ea19c50575c1ee3ea7ac930243493fd5c2c1",
     "agent/skills/narration-workflow/SKILL.md": "9380787ffb90441db9af823e524a4e3781f1434180c99a8807501c7b5702579b",
-    "agent/skills/tts-setup/SKILL.md": "e42efa9489de37b060432279c75500ee39b2153c81fd9c746057199a8da39ebb",
+    "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
     "agent/skills/video-init/references/workflow-state.md": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d",
-    "agent/skills/video-init/SKILL.md": "682ca6f57434b97e2cede43ffbdb3b948ecf5fd0c0f8a3195432d8882ae327db",
+    "agent/skills/video-init/SKILL.md": "a2846ee8a9104aee03c87abe6fde79ae800ee4cf0fb1324b504fc2c9f17071bb",
     "agent/skills/video-production/references/editing.md": "12bc5366b1b9e4a2994fde8c164ce106def3c2cbaf64e3dab8c376af50cb5e2b",
-    "agent/skills/video-production/references/panel-tools.md": "8535d86fc85718f699db37eea44021581c8b9f742d402e621a8ef6ecb7ae618d",
-    "agent/skills/video-production/SKILL.md": "b0a6bcfa3aa23b476099b8195d71299ff6efc749bf39bbe04a5d6e2d57b34165",
+    "agent/skills/video-production/references/panel-tools.md": "baf20394a66a7fd459f91e24005097e99fcd613bca66e3c3ae8a24bc05bf9fdc",
+    "agent/skills/video-production/SKILL.md": "ebb75b14b0a451b28e2497e8536c4cb3ede815c306339ec9cb54a046c547789d",
     "agent/skills/video-workflow/references/content-routes.md": "d05137d1506d96059fb3fe459e92d889db2438b798ed1ab3c46bde70c73f2185",
     "agent/skills/video-workflow/SKILL.md": "709f107fbb33c6c8c7bae823b47441885b786b3636dc9b04e4f61bfdab89af7f",
     "app/demo-narration.mp3": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
     "app/index.html": "70950b0efccd543d79ebd9f82bd0b3a7eb1979ef0d9361e4bb78b69ee92e6945",
-    "app/main.mjs": "5f765152a2c89f3b2f020a0481ed96e11d38fd0ab820e2ca2f2e8a5669d590b0",
+    "app/main.mjs": "b172dd4ee1c93ae9438f22da7d6668f738c3d570bfd6821bc3119773fc5526c6",
     "app/rough-cut.css": "4208af7d18585bd5ab8fe35f377df5fc8085035f0bc756c059573da60dff4922",
     "app/style.css": "8af3387bb98b8477fd47fb208eaffbe262273b08fc48dc05ec549703a6f2b5f1",
     "app/tools/media-runtime.mjs": "a3eb7b88d6c8be1b5d212c4b4298bd1764ea3469fbb923f6869ff2e792291138",
     "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
-    "README.md": "cdbf47112b66eb8188b00e06d53897fa9b1e772f8728c4614f9a87233e2934b1"
+    "README.md": "d0e11698ffb704679eb4b7d3310b2d356d18f26209f023da7ed7fdb6f7d279ab"
   }
 }

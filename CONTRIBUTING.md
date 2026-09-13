@@ -20,7 +20,7 @@ and passes through `npm run build` unchanged.
 
 ## Source-built Video Studio
 
-Video Studio 0.5.0 is the source-built app in this release. Edit
+Video Studio 0.5.1 is the source-built app in this release. Edit
 `apps/video-studio/`; install and publish **`panels/video-studio/`**. Its GitHub
 installation subdirectory is `panels/video-studio`, not `apps/video-studio`.
 
@@ -41,6 +41,10 @@ Source discovery and packaging live in `scripts/panel-projects.mjs` and
 previous package and include a deterministic SHA-256 file inventory. Browser
 modules use inline source maps; standalone `.map` and `.ts` runtime assets are
 not supported by the Host.
+
+`@cjhyy/code-shell-core@0.9.11` is pinned as a development dependency for the
+published Host's manifest schema and read-only installation preflight. It is
+used only by package checks and is not bundled into the installed Panel runtime.
 
 With Node.js 20+ and development dependencies installed, run:
 

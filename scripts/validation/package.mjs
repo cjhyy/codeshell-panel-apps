@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { repositoryRoot } from "../panel-projects.mjs";
-import { assertHostSafeSchemaPatterns } from "./schema-pattern.mjs";
+import { PanelAppManifest, previewLocalPanelApp } from "@cjhyy/code-shell-core";
 
 const forbiddenNames = new Set([
   ".claude-plugin",
@@ -54,75 +53,17 @@ async function walk(directory, root = directory) {
 }
 
 export async function validatePackage(packagePath) {
-  const root = join(repositoryRoot, packagePath);
+  const root = resolve(repositoryRoot, packagePath);
   const rootRealPath = await realpath(root);
   const manifestPath = join(root, ".codeshell-panel", "panel.json");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-
-  assert(
-    manifest.schemaVersion === 1 || manifest.schemaVersion === 2,
-    `${packagePath}: schemaVersion must be 1 or 2`,
-  );
-  assert.match(manifest.id, /^[a-z][a-z0-9-]{0,63}$/, `${packagePath}: invalid id`);
-  assert.equal(typeof manifest.version, "string", `${packagePath}: version is required`);
-  assert.equal(typeof manifest.title?.default, "string", `${packagePath}: title is required`);
+  // The pinned, published Host owns the installation contract, including tool
+  // schemas, strict manifest fields and limits. Do not maintain a second schema.
+  const manifest = PanelAppManifest.parse(JSON.parse(await readFile(manifestPath, "utf8")));
   assert.match(manifest.entry, /^app\/[^/].*\.html$/, `${packagePath}: entry must be below app/`);
-  assert(Array.isArray(manifest.permissions), `${packagePath}: permissions must be an array`);
-  if (manifest.nativeEntries !== undefined) {
-    assert(
-      manifest.nativeEntries &&
-        typeof manifest.nativeEntries === "object" &&
-        !Array.isArray(manifest.nativeEntries),
-      `${packagePath}: invalid native entries`,
-    );
-    assert(
-      manifest.permissions.includes("process"),
-      `${packagePath}: native entries require process permission`,
-    );
-    assert(
-      Object.keys(manifest.nativeEntries).length <= 16,
-      `${packagePath}: too many native entries`,
-    );
-    for (const [name, tool] of Object.entries(manifest.nativeEntries)) {
-      assert.match(name, /^[a-z][a-z0-9-]{0,63}$/);
-      assert.deepEqual(Object.keys(tool).sort(), ["entry", "sha256"]);
-      assert.match(tool.entry, /^app\/tools\/[a-z][a-z0-9-]{0,63}\.mjs$/);
-      assert.match(tool.sha256, /^[a-f0-9]{64}$/);
-      assert.equal(
-        createHash("sha256")
-          .update(await readFile(join(root, tool.entry)))
-          .digest("hex"),
-        tool.sha256,
-        `${packagePath}: native tool digest changed`,
-      );
-    }
-  }
-  const declaredSkillRoots = new Set();
-  if (manifest.schemaVersion === 2 && manifest.agent) {
-    assert(Array.isArray(manifest.agent.tools), `${packagePath}: agent.tools must be an array`);
-    assert(Array.isArray(manifest.agent.skills), `${packagePath}: agent.skills must be an array`);
-    const toolNames = new Set();
-    for (const tool of manifest.agent.tools) {
-      assert.match(tool.name, /^[a-z][a-z0-9_]{0,63}$/, `${packagePath}: invalid tool name`);
-      assert(!toolNames.has(tool.name), `${packagePath}: duplicate tool ${tool.name}`);
-      toolNames.add(tool.name);
-      assert.equal(typeof tool.description, "string", `${packagePath}: tool description required`);
-      assert.equal(tool.inputSchema?.type, "object", `${packagePath}: tool schema must be object`);
-      assertHostSafeSchemaPatterns(tool.inputSchema, packagePath, tool.name);
-      assert.equal(typeof tool.readOnly, "boolean", `${packagePath}: tool readOnly required`);
-    }
-    for (const skill of manifest.agent.skills) {
-      assert.match(
-        skill,
-        /^agent\/skills\/[a-z][a-z0-9-]{0,63}\/SKILL\.md$/,
-        `${packagePath}: invalid Skill path`,
-      );
-      const skillInfo = await stat(join(root, ...skill.split("/")));
-      assert(skillInfo.isFile(), `${packagePath}: declared Skill is not a file`);
-      assert(skillInfo.size <= 256 * 1024, `${packagePath}: declared Skill exceeds 256 KiB`);
-      declaredSkillRoots.add(skill.slice(0, -"/SKILL.md".length));
-    }
-  }
+  const declaredSkillRoots = new Set(
+    (manifest.schemaVersion === 2 ? manifest.agent?.skills ?? [] : [])
+      .map((skill) => skill.slice(0, -"/SKILL.md".length)),
+  );
 
   const entry = resolve(root, ...manifest.entry.split("/"));
   const entryRealPath = await realpath(entry);
@@ -157,5 +98,8 @@ export async function validatePackage(packagePath) {
     !/<script(?![^>]*\bsrc=)[^>]*>/i.test(html),
     `${packagePath}: inline scripts are not allowed`,
   );
+  // Directory preview is read-only: it validates the actual installable tree,
+  // bounded file sizes and native-entry hashes without installing or executing it.
+  await previewLocalPanelApp({ kind: "dir", path: root });
   return { id: manifest.id, files: files.length, root, manifest, html, packagePath };
 }

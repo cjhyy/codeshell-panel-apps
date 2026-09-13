@@ -6,6 +6,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build, version as esbuildVersion } from "esbuild";
 import { init, parse } from "es-module-lexer";
+import { validatePackage } from "./validation/package.mjs";
 import {
   discoverProjects,
   exists,
@@ -46,6 +47,7 @@ async function assertLocalAsset(root, from, specifier) {
 // Validate the actual installation closure, including copied native Node tools.
 // Node builtins are permitted only below app/tools; browser imports must be local.
 export async function validateBuiltPackage(directory) {
+  await validatePackage(directory);
   await init;
   const manifest = JSON.parse(
     await readFile(join(directory, ".codeshell-panel/panel.json"), "utf8"),

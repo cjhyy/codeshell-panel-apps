@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -26,11 +26,32 @@
     "tools": [
       {
         "name": "read_video_project",
-        "description": "Read the project, frame ranges, persistent assets, preparation, jobs, requestToken, workflowMode, narration state and actual capabilities. Narration approval and recording selection belong to the user interface. Use inspect_video_frame for visual evidence and get_video_transcript for source-timestamped speech.",
+        "description": "Read the project by default: identity, revision, requestToken, workflowMode, assets, preparation, jobs and capabilities. Use view=jobs with optional jobIds for full results and up to 8 seconds of bounded waiting; reuse IDs instead of resubmitting. Use view=voices for actual models, voices, availability and defaults. Narration approval and recording selection remain user actions.",
         "readOnly": true,
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "view": {
+              "type": "string",
+              "enum": [
+                "project",
+                "jobs",
+                "voices"
+              ],
+              "description": "Defaults to project; jobs returns full task results, voices reads the live catalog."
+            },
+            "jobIds": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              "minItems": 1,
+              "maxItems": 50,
+              "description": "Only for view=jobs. Reuse IDs returned by production tools."
+            }
+          },
           "additionalProperties": false
         }
       },
@@ -587,27 +608,6 @@
         }
       },
       {
-        "name": "get_video_jobs",
-        "description": "Read production jobs and results. Waits up to about 8 seconds for active status to change; reuse job IDs rather than resubmit. Successful scene/prepare assets are added to the current project.",
-        "readOnly": true,
-        "inputSchema": {
-          "type": "object",
-          "properties": {
-            "jobIds": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "maxLength": 128
-              },
-              "minItems": 1,
-              "maxItems": 50
-            }
-          },
-          "required": [],
-          "additionalProperties": false
-        }
-      },
-      {
         "name": "get_video_transcript",
         "description": "Read a page of actual speech transcript with source seconds (start/end), not sequence time. Use pagination to cover the source.",
         "readOnly": true,
@@ -787,18 +787,8 @@
         }
       },
       {
-        "name": "get_video_voices",
-        "description": "Read actual configured speech models, their voices, availability and defaults. Model IDs and voices must come from this catalog; credentials remain in the Host.",
-        "readOnly": true,
-        "inputSchema": {
-          "type": "object",
-          "properties": {},
-          "additionalProperties": false
-        }
-      },
-      {
         "name": "create_video_voiceover",
-        "description": "Synthesize real narration to a durable audio asset using a model and voice from get_video_voices. Requires the active projectId/requestToken. Wait for success, read actual duration, fit visuals, and add the complete source with audio-add. Does not place narration automatically. Speech text, model, voice, supported instructions and rate are retained. For audio8-tts or qwen3-tts local voice cloning use voiceId reference, a current project audio asset ID in referenceAssetId (3–30 seconds), its verbatim referenceText, and at most 2000 characters of new speech. Reference audio stays on this Mac.",
+        "description": "Generate a saved narration asset using models and voices from read_video_project(view=voices). Requires current projectId/requestToken. After success, use actual duration to fit visuals and attach the complete audio with audio-add. For Audio8/Qwen cloning, use voiceId=reference, a current project referenceAssetId (3–30 seconds), verbatim referenceText, and at most 2000 characters of new speech. Local clone recordings stay on this computer.",
         "readOnly": false,
         "inputSchema": {
           "type": "object",
@@ -968,7 +958,7 @@
       },
       {
         "name": "setup_video_tts",
-        "description": "Install and verify edge-tts, local Kokoro, Audio8 local voice cloning, or Qwen3-TTS local voice cloning on Apple Silicon when the user requests that provider or selects it in initialization. Audio8 and Qwen run as panel-managed local jobs with fixed dependencies through the generic process API; closing the panel interrupts them and reopening allows retry. Inspect get_video_jobs and refresh get_video_voices; a queued setup is not a ready voice.",
+        "description": "Install and verify the selected Edge, Kokoro, Audio8 or Qwen engine when requested or selected during initialization. Models and fixed dependencies belong to the Panel. Native tasks continue after closing the panel. Query read_video_project(view=jobs), then refresh read_video_project(view=voices); a queued setup is not a ready voice. Audio8/Qwen initialization currently requires Apple Silicon macOS.",
         "readOnly": false,
         "inputSchema": {
           "type": "object",

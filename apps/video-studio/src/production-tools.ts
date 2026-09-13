@@ -28,6 +28,29 @@ const page = (value: unknown, fallback: number, max: number): number => {
     throw new Error("分页范围无效");
   return value;
 };
+export function registerProjectReadTool(
+  panel: PanelBridge | undefined,
+  production: ProductionController,
+  readProject: () => unknown,
+): void {
+  panel?.registerTool("read_video_project", (args = {}) => {
+    const view = args.view ?? "project";
+    if (typeof view !== "string" || !["project", "jobs", "voices"].includes(view))
+      throw new Error("请选择工程、制作任务或声音目录");
+    if (args.jobIds !== undefined && view !== "jobs") throw new Error("任务 ID 仅用于读取制作任务");
+    if (view === "project") return readProject();
+    if (view === "voices") return production.voices();
+    if (
+      args.jobIds !== undefined &&
+      (!Array.isArray(args.jobIds) ||
+        !args.jobIds.length ||
+        args.jobIds.length > 50 ||
+        args.jobIds.some((id) => typeof id !== "string" || !id.length || id.length > 128))
+    )
+      throw new Error("需要 1–50 个有效的制作任务 ID");
+    return production.waitForJobs(args.jobIds as string[] | undefined);
+  });
+}
 export function registerProductionTools(
   panel: PanelBridge | undefined,
   production: ProductionController,
@@ -81,7 +104,6 @@ export function registerProductionTools(
       throw new Error("文稿参数无效");
     return handlers.setScript(args.text, args.baseRevision as number, args.finish === true);
   });
-  panel?.registerTool("get_video_voices", () => production.voices());
   for (const name of ["create_video_voiceover", "prepare_video_voice"] as const)
     panel?.registerTool(name, (args) => {
       handlers.assertRequest(args, name);
@@ -130,9 +152,6 @@ export function registerProductionTools(
     handlers.assertRequest(args, "prepare_video_assets");
     return production.prepare(strings(args.assetIds), args.transcribe === true);
   });
-  panel?.registerTool("get_video_jobs", (args) =>
-    production.waitForJobs(args.jobIds === undefined ? undefined : strings(args.jobIds)),
-  );
   panel?.registerTool("get_video_transcript", (args) =>
     production.transcript(
       String(args.assetId),

@@ -40,7 +40,7 @@ import {
 import { ProductionController, type MediaJob } from "./production";
 import { createProductionUI } from "./production-ui";
 import { AutomaticProducer } from "./automatic";
-import { registerProductionTools } from "./production-tools";
+import { registerProductionTools, registerProjectReadTool } from "./production-tools";
 import { createNarratedDemoProject, migratePristineDemoProject, isDemoNarration } from "./demo";
 import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
@@ -2148,7 +2148,7 @@ window.addEventListener("pagehide", () => {
   spoken.dispose();
 });
 
-panel?.registerTool("read_video_project", () => ({
+registerProjectReadTool(panel, production, () => ({
   project: structuredClone(project),
   workflowMode: automatic.mode,
   requestToken: taskRequestToken || null,

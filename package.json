@@ -25,6 +25,7 @@
     "test:media:video-studio": "node --test --test-concurrency=1 tests/video-studio-media.test.mjs tests/video-studio-caption-render.test.mjs apps/video-studio/native/media/tests/media-runtime.test.mjs"
   },
   "devDependencies": {
+    "@cjhyy/code-shell-core": "0.9.11",
     "es-module-lexer": "2.0.0",
     "esbuild": "0.28.2",
     "playwright": "1.60.0",

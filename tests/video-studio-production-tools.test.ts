@@ -1,9 +1,98 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { registerProductionTools } from "../apps/video-studio/src/production-tools";
+import {
+  registerProductionTools,
+  registerProjectReadTool,
+} from "../apps/video-studio/src/production-tools";
 import { createProject } from "../apps/video-studio/src/model";
 import type { PanelBridge } from "../apps/video-studio/src/host";
 import type { ProductionController } from "../apps/video-studio/src/production";
+
+test("project reads stay synchronous while job and voice views preserve full results", async () => {
+  let read!: (args?: Record<string, unknown>) => unknown;
+  const snapshot = { project: createProject(), jobs: [{ id: "job-a", status: "succeeded" }] };
+  const result = { jobs: [{ id: "job-a", status: "succeeded", result: { assetId: "audio-a" } }] };
+  const catalog = {
+    available: true,
+    voices: [{ id: "reference" }],
+    models: [{ id: "audio8-tts" }],
+  };
+  const calls: unknown[] = [];
+  let finish!: (value: typeof result) => void;
+  const waiting = new Promise<typeof result>((resolve) => {
+    finish = resolve;
+  });
+  registerProjectReadTool(
+    {
+      registerTool(name, handler) {
+        assert.equal(name, "read_video_project");
+        read = handler;
+        return () => {};
+      },
+    } as PanelBridge,
+    {
+      waitForJobs: (ids?: string[]) => {
+        calls.push(ids);
+        return waiting;
+      },
+      voices: async () => {
+        calls.push("voices");
+        return catalog;
+      },
+    } as unknown as ProductionController,
+    () => snapshot,
+  );
+
+  assert.equal(read(), snapshot, "Existing UI reads must not become async");
+  assert.equal(read({ view: "project" }), snapshot);
+  assert.deepEqual(calls, [], "Project reads must not start a voice query or wait for jobs");
+  const jobRead = read({ view: "jobs", jobIds: ["job-a"] });
+  assert.equal(
+    jobRead,
+    waiting,
+    "Preserve the controller's bounded wait rather than returning a stale summary",
+  );
+  finish(result);
+  assert.deepEqual(await jobRead, result);
+  assert.deepEqual(await read({ view: "voices" }), catalog);
+  assert.deepEqual(calls, [["job-a"], "voices"]);
+});
+
+test("combined read rejects invalid views and task IDs before making a query", () => {
+  let read!: (args: Record<string, unknown>) => unknown;
+  let calls = 0;
+  registerProjectReadTool(
+    {
+      registerTool(_name, handler) {
+        read = handler;
+        return () => {};
+      },
+    } as PanelBridge,
+    {
+      waitForJobs: () => {
+        calls++;
+      },
+      voices: () => {
+        calls++;
+      },
+    } as unknown as ProductionController,
+    () => {
+      calls++;
+    },
+  );
+  for (const args of [
+    { view: "other" },
+    { view: [] },
+    { view: "voices", jobIds: ["job-a"] },
+    { jobIds: ["job-a"] },
+    ...[[], [1], [""], ["x".repeat(129)], Array(51).fill("job-a"), "job-a"].map((jobIds) => ({
+      view: "jobs",
+      jobIds,
+    })),
+  ])
+    assert.throws(() => read(args));
+  assert.equal(calls, 0);
+});
 
 test("Agent voice tools support local cloning without losing the source reference or transcript", async () => {
   const registered = new Map<string, (args: Record<string, unknown>) => unknown>();

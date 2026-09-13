@@ -328,7 +328,7 @@ export class AutomaticProducer {
             : initialization
               ? "初始化保留已有原声。用户已选择声音准备时，加载 tts-setup，检查并按需安装所选引擎；有用户选定的参考区间先 extract_video_reference，等待真实音频入库，再用 prepare_video_voice 生成最多120字的短试听，只保存素材。缺录音或逐字稿时保留已完成安装，在 blockers 写明录制或选择参考的下一步，不伪造本人音色。没有声音选择则仅盘点声音条件。"
               : "需要讲解而素材没有合适原声时，若 tts.available 为真，使用 create_video_voiceover 生成真实旁白。先取得实际音频时长再编排足够长的画面，用 audio-add 加入完整语音；禁止无提示截断句尾。用户明确要求静音或仅音乐时遵守。已有 asset.speech 可复用，不重复生成。",
-          "先读 project.workflow 与 preparation，复用已保存制作单和实际准备结果。对新增或缺少分析的素材按类型和目标分批准备；没有预先转写所有素材。未审阅的素材明确记为待审，不以文件名猜测内容。长任务使用 get_video_jobs 有界等待并复用已知任务 ID。",
+          "先读 project.workflow 与 preparation，复用已保存制作单和实际准备结果。对新增或缺少分析的素材按类型和目标分批准备；没有预先转写所有素材。未审阅的素材明确记为待审，不以文件名猜测内容。长任务使用 read_video_project({view:'jobs',jobIds}) 有界等待并读取完整 result，复用已知任务 ID；声音目录使用 read_video_project({view:'voices'})。",
           narrated
             ? "以apply_video_edit保存workflow stage:review作为本阶段收尾。draft要求已保存文稿/画面/草稿字幕且无待处理任务，保存后自动停到等待确认。narration要求本次录音音轨保留所有真实转写句子；协调层会用实际录音重建归属字幕并标aligned，之后才能render。不要自行写project.narration或伪造确认。"
             : initialization

@@ -6,14 +6,14 @@
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | `read_video_project`   | `{}`                                                                                                                                          | 读取当前工程、`requestToken`、播放位置、素材与可用能力。工程身份为 `project.id`，修订号为 `project.revision`。 |
 | `prepare_video_assets` | `{projectId: string, requestToken: string, assetIds: string[], transcribe?: boolean}`                                                         | 为选定工程素材创建预处理任务。根据返回值保存任务 ID；只对真实已导入素材调用。                                  |
-| `get_video_jobs`       | `{jobIds?: string[]}`                                                                                                                         | 查询制作任务；传本次任务 ID 避免无关记录。                                                                     |
+| `read_video_project`   | `{view:"jobs", jobIds?: string[]}`                                                                                                            | 查询任务与完整结果；传本次任务 ID，单次有界等待约 8 秒。                                                       |
 | `get_video_transcript` | `{assetId: string, offset?: number, limit?: number}`                                                                                          | 分页读取素材转写。时间戳是该素材源文件中的秒数，不是剪辑后序列位置。                                           |
 | `create_video_scene`   | `{projectId: string, requestToken: string, title: string, subtitle?: string, durationSeconds?: number, background?: string, accent?: string}` | 创建并真实渲染 HyperFrames 场景，返回制作任务。颜色使用 `#RRGGBB`，长度以用户目标为准。                        |
 | `apply_video_edit`     | `{projectId: string, requestToken: string, baseRevision: number, title: string, operations: EditOperation[]}`                                 | 自动制作模式下保存版本并原子应用修改。身份、令牌和修订号都必须来自本次工程读取。                               |
 | `render_video_project` | `{projectId: string, requestToken: string, baseRevision: number}`                                                                             | 导出当前版本的 MP4。结果通过制作任务返回。                                                                     |
 | `propose_video_edit`   | 与 `apply_video_edit` 相同，可含 `explanation: string`                                                                                        | 仅提交待审阅方案，适用于用户要求先确认或当前只开放提案能力。                                                   |
 
-`get_video_jobs` 的任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`。只有 `succeeded` 才读取 `result` 作为产物；失败看 `error`，取消不能报告成功。一次任务查询可以包含多个 ID。先完成独立的内容准备，再间隔查询；不要把等待写成数百次快速重复调用。
+`read_video_project({})` 默认读取工程快照；`view:"project"` 与省略 `view` 等价。工程中的 `jobs` 是摘要，完整任务结果通过 `read_video_project({view:"jobs",jobIds})` 读取，返回 `{jobs}`。`jobIds` 可省略，提供时为本次实际任务的 1–50 个 ID；单次有界等待约 8 秒。任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`。只有 `succeeded` 才读取 `result` 作为产物；失败看 `error`，取消不能报告成功。一次任务查询可以包含多个 ID。先完成独立的内容准备，再间隔查询；不要把等待写成数百次快速重复调用。
 
 所有写工具（预处理、创建场景、生成配音、应用剪辑、导出、提案）必须带入刚读取的 `projectId` 与本次 `requestToken`，不能复用旧任务或旧工程的令牌；应用/提案/导出另需匹配 `baseRevision`。身份错误时重新读取并检查任务是否仍有效，不盲目改字段重放。
 
@@ -35,14 +35,14 @@
 
 ## 真实文字配音
 
-- `get_video_voices({})` 返回 `{available,engine?,defaultVoiceId?,reason?,voices:[{id,name,language}],defaultModelId?,models:[{id,name,provider,available,reason?,voices,defaultVoiceId?,maxTextLength,supportsInstructions,supportsVoiceCloning?}]}`。模型和音色必须取自工具目录；换模型后重新选择对应声音。默认模型来自 defaultModelId。Audio8 / Qwen 条目由面板本地运行环境检查得到，不依赖 Host 内置模型；缺失或不可用时保留具体 reason，不能编造可用状态。
+- `read_video_project({view:"voices"})` 返回 `{available,engine?,defaultVoiceId?,reason?,voices:[{id,name,language}],defaultModelId?,models:[{id,name,provider,available,reason?,voices,defaultVoiceId?,maxTextLength,supportsInstructions,supportsVoiceCloning?}]}`。模型和音色必须取自工具目录；换模型后重新选择对应声音。默认模型来自 defaultModelId。Audio8 / Qwen 条目由面板本地运行环境检查得到，不依赖 Host 内置模型；缺失或不可用时保留具体 reason，不能编造可用状态。
 - `create_video_voiceover({projectId,requestToken,text,modelId?,voiceId?,rate?,instructions?,referenceAssetId?,referenceText?})` 提交持久配音任务；文案不超过模型 maxTextLength 与 5000 字的较小值，语速 0.5–2。仅 supportsInstructions 为真时传入风格说明。身份字段必须匹配本次自动任务。
 - 成功结果包含 `asset`、`inspection.durationSeconds`、`speech:{text,voiceId,engine,modelId?,instructions?,referenceAssetId?,referenceText?,rate}`。工作台将真实音频加入工程素材库。重新读取工程后用 `audio-add` 加入独立轨道，语音 `volume:1`；此工具不自动裁剪或放置语音。先根据真实时长安排画面，保留完整句尾。
 - 配音是实际音频素材，可预览、混入 MP4，也可单独保存音频。它没有真实 ASR 词级时间戳，不得将合成文本声称为精确转写。
 
 ## 录制、原声与配音引擎
 
-- `get_video_voices {}`：模型与声音目录，也包含固定引擎的安装/验证状态及 online/offline 模式。
+- `read_video_project({view:"voices"})`：模型与声音目录，也包含固定引擎的安装/验证状态及 online/offline 模式。
 - `setup_video_tts {projectId,requestToken,providerId}`：providerId 为 edge-tts、kokoro、audio8-tts 或 qwen3-tts，返回任务；等待完成后刷新声音目录。所有配音引擎由面板管理，通过通用持久任务运行，关闭面板后继续；重开读取实际状态与产物，中断后仅按实际 retryable 决定重试。qwen3-tts 是 Apple Silicon Mac 本地本人声音克隆；使用 `create_video_voiceover` 时指定 `modelId: "qwen3-tts"`、`voiceId: "reference"`、当前工程中 3–30 秒本人音频的 `referenceAssetId` 和对应逐字稿 `referenceText`，要新读的 `text` 最多 2000 字。详细安装流程见 tts-setup。
 - `enhance_video_audio {projectId,requestToken,assetId,preset?,denoise?,normalize?}`：preset 为 light/balanced，返回完整优化音频任务，不自动改音轨。结果入库后复用源片段的时间范围并静音原声。
 - `set_video_script {projectId,requestToken,baseRevision,text,finish?}`：保存润色文稿，保留原录音；仅文稿任务可 finish:true 停止制作循环。
