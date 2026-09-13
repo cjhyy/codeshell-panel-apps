@@ -26,6 +26,7 @@ export const suites = [
         "scripts/run-typescript-tests.mjs",
         "tests/video-studio-local-voice.test.ts",
         "tests/video-studio-media-task-bridge.test.ts",
+        "tests/video-studio-media-file-storage.test.ts",
         "apps/video-studio/native/tests/audio8.test.ts",
         "apps/video-studio/native/tests/qwen.test.ts",
         "tests/video-studio-model.test.ts",

@@ -214,7 +214,7 @@ export function createRoughCutUI(context: RoughCutContext) {
         ? `<div class="roughcut-empty">${icon("cut", 28)}<h3>${sources.length ? "选好素材，就能开始挑段" : "先导入视频或录音"}</h3><p>预览原素材，按 I 记开始、按 O 记结束，保留喜欢的部分。</p>${!sources.length ? '<button type="button" data-action="import" class="primary">导入素材</button>' : ""}</div>`
         : html`
             ${!usable
-              ? '<p class="roughcut-notice">素材尚未连接。重新导入同一文件后即可预览；已保存的保留段仍可查看。</p>'
+              ? `<p class="roughcut-notice">原片尚未连接，已保存的保留段仍在。请选择原文件，保存后会自动恢复。<button type="button" class="quiet" data-action="reconnect-media" data-id="${esc(source.id)}">重新连接原文件</button></p>`
               : ""}
             <div class="roughcut-transport">
               <div class="roughcut-time-readout">
@@ -339,10 +339,18 @@ export function createRoughCutUI(context: RoughCutContext) {
                   { className: "primary", disabled: !range },
                 )}
               </div>
-              ${context.extractReference ? button("reference", "提取这段，用作本人声音参考", "volume", {
-                className: "quiet full", disabled: !usable || !range || context.canExtractReference?.() === false || range.outFrame - range.inFrame < 90 || range.outFrame - range.inFrame > 900,
-                title: "提取 3–30 秒真实音频；视频必须包含声音",
-              }) : ""}
+              ${context.extractReference
+                ? button("reference", "提取这段，用作本人声音参考", "volume", {
+                    className: "quiet full",
+                    disabled:
+                      !usable ||
+                      !range ||
+                      context.canExtractReference?.() === false ||
+                      range.outFrame - range.inFrame < 90 ||
+                      range.outFrame - range.inFrame > 900,
+                    title: "提取 3–30 秒真实音频；视频必须包含声音",
+                  })
+                : ""}
             </div>
             <div class="roughcut-list-heading">
               <h3>保留段 <span>${entries.length}</span></h3>
@@ -474,8 +482,13 @@ export function createRoughCutUI(context: RoughCutContext) {
     for (const action of ["save", "preview", "reference"]) {
       const control = root.querySelector<HTMLButtonElement>(`[data-action="roughcut-${action}"]`);
       if (control)
-        control.disabled = !range || (["preview", "reference"].includes(action) && !context.available(source.id)) ||
-          (action === "reference" && (context.canExtractReference?.() === false || (!!range && (range.outFrame - range.inFrame < 90 || range.outFrame - range.inFrame > 900))));
+        control.disabled =
+          !range ||
+          (["preview", "reference"].includes(action) && !context.available(source.id)) ||
+          (action === "reference" &&
+            (context.canExtractReference?.() === false ||
+              (!!range &&
+                (range.outFrame - range.inFrame < 90 || range.outFrame - range.inFrame > 900))));
     }
   }
 

@@ -2,6 +2,7 @@ import { html, escapeHtml as esc, icon } from "./icons";
 import { button } from "./views";
 import type { MediaJob, AutoProduction, ProductionStatus, PreparedMedia } from "./production";
 export interface ProductionViewState {
+  connected?: boolean;
   status: ProductionStatus;
   jobs: MediaJob[];
   auto: AutoProduction | null;
@@ -35,7 +36,9 @@ export function renderProductionJobs(state: ProductionViewState): string {
     <p class="section-description">
       ${state.status.persistent
         ? "关闭面板后，已排队任务仍会继续。重新打开可恢复进度与结果。"
-        : "浏览器演示模式：持久素材与后台任务需要新版 CodeShell。"}
+        : state.connected
+          ? "制作工具尚未连接，已保存的素材与工程仍可恢复。"
+          : "浏览器模式：素材保存在此浏览器，后台制作需要 CodeShell 桌面。"}
     </p>
     <div class="capability-grid">
       <span class="${state.status.tts?.available ? "ready" : "unavailable"}"

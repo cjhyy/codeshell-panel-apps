@@ -649,3 +649,120 @@ test(
     }
   },
 );
+
+test("saved desktop project and original audio restore even when the native engine cannot start", async () => {
+  const { context, page } = await isolatedPage(true);
+  try {
+    await page.evaluate(
+      async ({ sourceId }) => {
+        const project = window.__panelTools.read_video_project().project;
+        project.name = "原片恢复不依赖制作引擎";
+        project.assets.push({
+          id: "legacy-original-audio",
+          name: "原声旁白.mp3",
+          kind: "audio",
+          mediaId: sourceId,
+          mimeType: "audio/mpeg",
+          durationFrames: 720,
+          size: 384865,
+        });
+        const saved = await window.codeshellPanel.call("media.document.get", {
+          key: "video-studio-current",
+        });
+        await window.codeshellPanel.call("media.document.set", {
+          key: "video-studio-current",
+          baseRevision: saved.revision,
+          data: project,
+        });
+        localStorage.removeItem("video-studio-project-v1");
+      },
+      { sourceId },
+    );
+    await page.addInitScript(() => {
+      const bridge = window.codeshellPanel;
+      const call = bridge.call.bind(bridge);
+      bridge.call = (method, params) => {
+        if (method === "tasks.start") throw new Error("测试：本地工具暂不可用");
+        return call(method, params);
+      };
+    });
+    await page.reload();
+    await page.waitForFunction(
+      () => window.__panelTools?.read_video_project().project.name === "原片恢复不依赖制作引擎",
+    );
+    await page.waitForFunction(
+      () =>
+        !window.__panelTools.read_video_project().missingAssetIds.includes("legacy-original-audio"),
+    );
+    await page.getByRole("button", { name: "任务", exact: true }).click();
+    await page.getByText(/测试：本地工具暂不可用/).waitFor();
+    assert.equal(
+      await page.evaluate(() => window.__panelTools.read_video_project().capabilities.autoApply),
+      false,
+    );
+    await page.locator("#project-name").fill("原片已恢复，工程继续保存");
+    await page.locator("#project-name").blur();
+    await saved(page);
+    const stored = await page.evaluate(() =>
+      window.codeshellPanel.call("media.document.get", { key: "video-studio-current" }),
+    );
+    assert.equal(stored.data.name, "原片已恢复，工程继续保存");
+    assert(
+      stored.data.assets.some(
+        (asset) => asset.id === "legacy-original-audio" && asset.mediaId === sourceId,
+      ),
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test("workspace discovery failure cannot select a different saved project or overwrite storage", async () => {
+  const { context, page } = await isolatedPage(true);
+  try {
+    const snapshot = await page.evaluate(async () => {
+      const bridge = window.codeshellPanel;
+      const project = window.__panelTools.read_video_project().project;
+      const stored = await bridge.call("media.document.get", { key: "video-studio-current" });
+      project.name = "文档中的真实工程";
+      await bridge.call("media.document.set", {
+        key: "video-studio-current",
+        baseRevision: stored.revision,
+        data: project,
+        label: "已保存真实工程",
+      });
+      await bridge.call("storage.set", {
+        key: "video-studio-project-v1",
+        value: { ...project, name: "旧缓存工程" },
+      });
+      return {
+        document: await bridge.call("media.document.get", { key: "video-studio-current" }),
+        legacy: await bridge.call("storage.get", { key: "video-studio-project-v1" }),
+      };
+    });
+    await page.addInitScript(() => {
+      window.codeshellPanel.getContext = async () => {
+        throw new Error("测试：工作区连接失败");
+      };
+    });
+    await page.reload();
+    await page.waitForFunction(
+      () => document.querySelector("#save-state")?.textContent === "恢复失败",
+    );
+    assert.notEqual((await readProject(page)).name, "旧缓存工程");
+    await page.locator("#project-name").fill("不应覆盖存档");
+    await page.locator("#project-name").blur();
+    await page.getByText("工程存储尚未连接，请重新打开面板后再编辑", { exact: true }).waitFor();
+    assert.deepEqual(
+      await page.evaluate(async () => ({
+        document: await window.codeshellPanel.call("media.document.get", {
+          key: "video-studio-current",
+        }),
+        legacy: await window.codeshellPanel.call("storage.get", { key: "video-studio-project-v1" }),
+      })),
+      snapshot,
+    );
+  } finally {
+    await context.close();
+  }
+});

@@ -10,7 +10,7 @@ export interface PanelTask {
 }
 
 export interface PanelBridge {
-  getContext(): Promise<{ cwd?: string; theme?: string }>;
+  getContext(): Promise<{ cwd?: string; theme?: string; availableMethods?: string[] }>;
   call(method: string, params?: unknown): Promise<unknown>;
   callResult?(method: string, params?: unknown): Promise<BridgeResult>;
   registerTool(name: string, handler: (args: Record<string, unknown>) => unknown): () => void;
@@ -251,7 +251,10 @@ async function readPersistentArchive(): Promise<Project[]> {
   persistentArchiveCache ??= panel!.call("media.document.get", { key: ARCHIVE_KEY }).then((raw) => {
     const document = raw as { revision: number; data: unknown };
     persistentArchiveRevision = document.revision;
-    if (document.data === null) return [];
+    // First use of the document store must retain projects archived by older versions.
+    // Read the legacy store directly: listArchivedProjects would await this queue itself.
+    // Cache failures as well, so unreadable history cannot be overwritten by a new archive.
+    if (document.data === null) return projectArchive.list();
     if (!Array.isArray(document.data) || document.data.length > 10)
       throw new Error("最近工程恢复失败，已保留原数据");
     return document.data.map(validateProject);

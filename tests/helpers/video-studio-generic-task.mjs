@@ -10,7 +10,13 @@ export function installGenericMediaTaskMock() {
   const localJobs = new Map(
       Object.entries(JSON.parse(localStorage.getItem("test-generic-local-media-jobs") || "{}")),
     ),
-    resources = new Map(),
+    uploads = new Map(
+      Object.entries(JSON.parse(localStorage.getItem("test-generic-resource-uploads") || "{}")),
+    ),
+    uploadedFiles = new Map(
+      Object.entries(JSON.parse(localStorage.getItem("test-generic-resource-files") || "{}")),
+    ),
+    resources = new Map([...uploadedFiles].map(([id, value]) => [id, copy(value.asset)])),
     documents = new Map();
   window.__genericHostCalls = [];
   window.__nativeCaptures = [];
@@ -18,6 +24,14 @@ export function installGenericMediaTaskMock() {
     for (const listener of listeners.get(event) || []) listener(copy(value));
   };
   const persist = () => {
+    localStorage.setItem(
+      "test-generic-resource-uploads",
+      JSON.stringify(Object.fromEntries(uploads)),
+    );
+    localStorage.setItem(
+      "test-generic-resource-files",
+      JSON.stringify(Object.fromEntries(uploadedFiles)),
+    );
     localStorage.setItem("test-generic-media-tasks", JSON.stringify(persisted));
     localStorage.setItem(
       "test-generic-local-media-jobs",
@@ -233,6 +247,10 @@ export function installGenericMediaTaskMock() {
             "resources.get",
             "resources.list",
             "resources.read",
+            "resources.upload.begin",
+            "resources.upload.write",
+            "resources.upload.finish",
+            "resources.upload.cancel",
             "media.document.get",
             "media.document.set",
           ],
@@ -258,6 +276,153 @@ export function installGenericMediaTaskMock() {
       },
       async call(method, args = {}) {
         window.__genericHostCalls.push({ method, args: copy(args) });
+        if (method === "resources.upload.begin") {
+          if (
+            typeof args.name !== "string" ||
+            !args.name ||
+            args.name.length > 240 ||
+            !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(args.mimeType) ||
+            !Number.isSafeInteger(args.expectedBytes) ||
+            args.expectedBytes < 1 ||
+            args.expectedBytes > 20 * 1024 ** 3
+          )
+            throw Error("Invalid resource upload metadata");
+          const sessionId = `upload-${crypto.randomUUID()}`;
+          const session = {
+            sessionId,
+            name: args.name,
+            mimeType: args.mimeType,
+            expectedBytes: args.expectedBytes,
+            state: "uploading",
+            receivedBytes: 0,
+            nextSequence: 0,
+            maxChunkBytes: 32768,
+            maxFileBytes: 20 * 1024 ** 3,
+            expiresAt: Date.now() + 86400000,
+            chunks: [],
+          };
+          uploads.set(sessionId, session);
+          persist();
+          const { chunks, ...result } = session;
+          return copy(result);
+        }
+        if (method.startsWith("resources.upload.")) {
+          const session = uploads.get(args.sessionId);
+          if (!session) throw Error("Unknown resource upload session");
+          if (method === "resources.upload.cancel") {
+            if (session.state === "finished")
+              throw Error("Resource upload is already a managed asset");
+            session.state = "cancelled";
+            session.chunks = [];
+            persist();
+            return { cancelled: true };
+          }
+          if (method === "resources.upload.finish" && session.state === "finished")
+            return { asset: copy(session.asset) };
+          if (session.state !== "uploading") throw Error("Upload no longer accepts input");
+          if (method === "resources.upload.write") {
+            if (
+              typeof args.dataBase64 !== "string" ||
+              args.dataBase64.length > Math.ceil(32768 / 3) * 4 ||
+              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+                args.dataBase64,
+              )
+            )
+              throw Error("Invalid bounded resource base64");
+            const bytes = atob(args.dataBase64);
+            if (
+              !bytes.length ||
+              bytes.length > session.maxChunkBytes ||
+              btoa(bytes) !== args.dataBase64
+            )
+              throw Error("Invalid resource chunk bytes");
+            const previous = session.chunks.at(-1);
+            if (
+              previous?.sequence === args.sequence &&
+              previous.offset === args.offset &&
+              previous.dataBase64 === args.dataBase64
+            ) {
+              const { chunks, ...result } = session;
+              return copy(result);
+            }
+            if (
+              args.sequence !== session.nextSequence ||
+              args.offset !== session.receivedBytes ||
+              args.offset + bytes.length > session.expectedBytes
+            )
+              throw Error("Resource chunks must arrive in order");
+            session.chunks.push({
+              sequence: args.sequence,
+              offset: args.offset,
+              dataBase64: args.dataBase64,
+            });
+            session.receivedBytes += bytes.length;
+            session.nextSequence++;
+            persist();
+            const { chunks, ...result } = session;
+            return copy(result);
+          }
+          if (method === "resources.upload.finish") {
+            if (!session.receivedBytes || session.receivedBytes !== session.expectedBytes)
+              throw Error("Resource upload is incomplete");
+            const bytes = new Uint8Array(session.receivedBytes);
+            for (const chunk of session.chunks) {
+              const decoded = atob(chunk.dataBase64);
+              for (let i = 0; i < decoded.length; i++)
+                bytes[chunk.offset + i] = decoded.charCodeAt(i);
+            }
+            const sha256 = Array.from(
+              new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+              (value) => value.toString(16).padStart(2, "0"),
+            ).join("");
+            const asset = {
+              id: `asset-${sha256}`,
+              name: session.name,
+              mimeType: session.mimeType,
+              bytes: bytes.length,
+              sha256,
+              createdAt: Date.now(),
+            };
+            resources.set(asset.id, copy(asset));
+            uploadedFiles.set(asset.id, { asset: copy(asset), chunks: copy(session.chunks) });
+            session.state = "finished";
+            session.asset = asset;
+            session.chunks = [];
+            persist();
+            return { asset: copy(asset) };
+          }
+          throw Error("Unsupported resource upload method");
+        }
+        if (method === "resources.read" && uploadedFiles.has(args.assetId)) {
+          const saved = uploadedFiles.get(args.assetId);
+          if (
+            !Number.isSafeInteger(args.offset) ||
+            args.offset < 0 ||
+            args.offset > saved.asset.bytes ||
+            !Number.isSafeInteger(args.length) ||
+            args.length < 1 ||
+            args.length > 32768
+          )
+            throw Error("Invalid resource read range");
+          const end = Math.min(saved.asset.bytes, args.offset + args.length);
+          let binary = "";
+          for (const chunk of saved.chunks) {
+            const decoded = atob(chunk.dataBase64);
+            const start = Math.max(args.offset, chunk.offset),
+              stop = Math.min(end, chunk.offset + decoded.length);
+            if (stop > start) binary += decoded.slice(start - chunk.offset, stop - chunk.offset);
+          }
+          return {
+            assetId: args.assetId,
+            offset: args.offset,
+            totalBytes: saved.asset.bytes,
+            mimeType: saved.asset.mimeType,
+            dataBase64: btoa(binary),
+            eof: end === saved.asset.bytes,
+          };
+        }
+        if (method === "media.assets.get" && uploadedFiles.has(args.id))
+          return { asset: copy(uploadedFiles.get(args.id).asset) };
         if (method === "tasks.start") {
           if (args.entry !== "media-runtime" || !args.input?.request)
             throw Error("Invalid reviewed task entry");

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
+import { createRequire } from "node:module";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   createProjectStore,
   createProjectArchiveStore,
@@ -318,4 +323,156 @@ test("archive reserves space for an existing autosave in the host's shared quota
   );
   await assert.rejects(archive.archive(captionHeavyProject(8)), /可用空间/);
   assert.equal(writes, 0);
+});
+
+// Exercise the production singleton exports with a fresh module for each legacy-storage scenario.
+async function persistentArchiveFixture(
+  t: TestContext,
+  options: {
+    document?: unknown;
+    legacy?: unknown;
+    documentError?: boolean;
+    failWrite?: boolean;
+  } = {},
+) {
+  const { build } = createRequire(join(process.cwd(), "package.json"))("esbuild");
+  const directory = await mkdtemp(join(tmpdir(), "video-studio-archive-test-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const bundled = await build({
+    entryPoints: [join(process.cwd(), "apps/video-studio/src/host.ts")],
+    bundle: true,
+    write: false,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    logLevel: "silent",
+  });
+  const path = join(directory, "host.mjs");
+  await writeFile(path, bundled.outputFiles[0].contents);
+  const host = await import(pathToFileURL(path).href);
+  const calls: { method: string; params: any }[] = [];
+  let archiveDocument: unknown =
+    options.document === undefined ? null : structuredClone(options.document);
+  let revision = 7;
+  let failWrite = Boolean(options.failWrite);
+  host.setPanelBridge({
+    async call(method: string, params: any) {
+      calls.push({ method, params: structuredClone(params) });
+      if (method === "media.document.get") {
+        if (params.key === "video-studio-current") return { revision: 1, data: createProject() };
+        assert.equal(params.key, "video-studio-recent-v1");
+        if (options.documentError) throw Error("document unavailable");
+        return { revision, data: structuredClone(archiveDocument) };
+      }
+      if (method === "storage.get") {
+        assert.equal(params.key, "video-studio-recent-v1");
+        if (options.legacy instanceof Error) throw options.legacy;
+        return structuredClone(options.legacy ?? null);
+      }
+      if (method === "media.document.set") {
+        assert.equal(params.key, "video-studio-recent-v1");
+        assert.equal(params.baseRevision, revision);
+        if (failWrite) {
+          failWrite = false;
+          throw Error("archive write failed");
+        }
+        archiveDocument = structuredClone(params.data);
+        return { revision: ++revision };
+      }
+      throw Error(`Unexpected migration write or method: ${method}`);
+    },
+  });
+  host.enablePersistentStorage(true);
+  return { host, calls, document: () => structuredClone(archiveDocument) };
+}
+
+test(
+  "an empty document archive reads legacy projects and the next archive migrates them without a queue deadlock",
+  { timeout: 5000 },
+  async (t) => {
+    const original = createProject();
+    original.name = "以前保存的工程";
+    const f = await persistentArchiveFixture(t, { legacy: [original] });
+    assert.deepEqual(await f.host.listArchivedProjects(), [original]);
+    assert.equal(
+      f.calls.filter((c) => c.method.endsWith(".set")).length,
+      0,
+      "Reading migration data must not overwrite either store",
+    );
+    const next = createProject();
+    next.name = "新的工程";
+    const writing = f.host.archiveProject(next);
+    const reading = f.host.listArchivedProjects();
+    await writing;
+    assert.deepEqual(await reading, [next, original]);
+    assert.deepEqual(f.document(), [next, original]);
+    assert.equal(f.calls.filter((c) => c.method === "storage.get").length, 1);
+    assert.equal(f.calls.filter((c) => c.method === "storage.set").length, 0);
+  },
+);
+
+test(
+  "archiving before listing still preserves legacy snapshots on the first durable write",
+  { timeout: 5000 },
+  async (t) => {
+    const original = createProject();
+    const next = createProject();
+    const f = await persistentArchiveFixture(t, { legacy: [original] });
+    await f.host.archiveProject(next);
+    assert.deepEqual(f.document(), [next, original]);
+    assert.deepEqual(await f.host.listArchivedProjects(), [next, original]);
+  },
+);
+
+test("an existing document archive including an empty list never reads or restores stale legacy history", async (t) => {
+  for (const document of [[], [createProject()]]) {
+    const f = await persistentArchiveFixture(t, {
+      document,
+      legacy: new Error("Legacy cache must not be read"),
+    });
+    assert.deepEqual(await f.host.listArchivedProjects(), document);
+    assert.equal(f.calls.filter((c) => c.method === "storage.get").length, 0);
+  }
+});
+
+test("unreadable or malformed legacy archives protect both stores from subsequent writes", async (t) => {
+  for (const legacy of [
+    new Error("legacy storage unavailable"),
+    { broken: true },
+    [createProject(), { schemaVersion: 99 }],
+  ]) {
+    const f = await persistentArchiveFixture(t, { legacy });
+    await assert.rejects(f.host.listArchivedProjects());
+    await assert.rejects(f.host.archiveProject(createProject()));
+    await assert.rejects(f.host.listArchivedProjects());
+    assert.equal(f.calls.filter((c) => c.method.endsWith(".set")).length, 0);
+    assert.equal(
+      f.calls.filter((c) => c.method === "storage.get").length,
+      1,
+      "A failed legacy read stays protected in the cache",
+    );
+    assert.equal(f.document(), null);
+  }
+});
+
+test("a failed document read never falls back to or overwrites legacy storage", async (t) => {
+  const f = await persistentArchiveFixture(t, { documentError: true, legacy: [createProject()] });
+  await assert.rejects(f.host.listArchivedProjects(), /document unavailable/);
+  await assert.rejects(f.host.archiveProject(createProject()), /document unavailable/);
+  assert.equal(
+    f.calls.filter((c) => c.method === "storage.get" || c.method.endsWith(".set")).length,
+    0,
+  );
+});
+
+test("a failed migration write retains old snapshots for a later successful retry", async (t) => {
+  const original = createProject();
+  const next = createProject();
+  const f = await persistentArchiveFixture(t, { legacy: [original], failWrite: true });
+  await assert.rejects(f.host.archiveProject(next), /archive write failed/);
+  assert.deepEqual(await f.host.listArchivedProjects(), [original]);
+  assert.equal(f.document(), null);
+  await f.host.archiveProject(next);
+  assert.deepEqual(f.document(), [next, original]);
+  assert.equal(f.calls.filter((c) => c.method === "storage.get").length, 1);
 });

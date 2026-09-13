@@ -199,7 +199,112 @@ interface ProductionDocument {
 export interface ProductionCallbacks {
   getProject(): Project;
   publishAssets(projectId: string, assets: Asset[], options?: AssetPublication): Promise<void>;
+  inspectImportedAsset?(asset: ManagedAsset): Promise<PreparedMedia["inspection"]>;
   changed(): void;
+}
+
+/** Inspect an authorized original with the browser, without starting a native processor. */
+export async function inspectImportedAsset(
+  asset: ManagedAsset,
+  isCurrent: () => boolean = () => true,
+): Promise<PreparedMedia["inspection"]> {
+  if (!/^asset-[a-f0-9]{64}$/.test(asset.id)) throw new Error("导入素材编号无效");
+  const kind = asset.mimeType.startsWith("image/")
+    ? "image"
+    : asset.mimeType.startsWith("audio/")
+      ? "audio"
+      : asset.mimeType.startsWith("video/")
+        ? "video"
+        : undefined;
+  if (!kind || typeof document === "undefined") throw new Error("浏览器无法直接预览此原片");
+  const element = kind === "image" ? new Image() : document.createElement(kind);
+  const media = element instanceof HTMLMediaElement ? element : undefined;
+  if (media) media.preload = "auto";
+  try {
+    return await new Promise<PreparedMedia["inspection"]>((resolve, reject) => {
+      let loaded = false,
+        seekingEnd = false,
+        settled = false;
+      const listeners = ["load", "loadeddata", "durationchange", "seeked"];
+      const finish = (value?: PreparedMedia["inspection"], error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        clearInterval(cancelCheck);
+        for (const event of listeners) element.removeEventListener(event, inspect);
+        element.removeEventListener("error", failed);
+        error ? reject(error) : resolve(value!);
+      };
+      const failed = () => finish(undefined, new Error("浏览器无法直接预览此原片，可尝试预处理"));
+      const inspect = (event: Event) => {
+        if (!isCurrent()) return finish(undefined, new Error("工程已切换，原片待返回原工程恢复"));
+        if (event.type === "load" || event.type === "loadeddata") loaded = true;
+        if (!loaded) return;
+        if (element instanceof HTMLImageElement) {
+          if (!element.naturalWidth || !element.naturalHeight) return failed();
+          finish({
+            kind: "image",
+            durationSeconds: null,
+            video: {
+              width: element.naturalWidth,
+              height: element.naturalHeight,
+              displayWidth: element.naturalWidth,
+              displayHeight: element.naturalHeight,
+            },
+          });
+          return;
+        }
+        const duration =
+          Number.isFinite(element.duration) && element.duration > 0
+            ? element.duration
+            : event.type === "seeked" && element.currentTime > 0 && element.currentTime < 1e10
+              ? element.currentTime
+              : undefined;
+        if (duration !== undefined) {
+          finish({
+            kind,
+            durationSeconds: duration,
+            ...(element instanceof HTMLVideoElement
+              ? {
+                  video: {
+                    width: element.videoWidth,
+                    height: element.videoHeight,
+                    displayWidth: element.videoWidth,
+                    displayHeight: element.videoHeight,
+                  },
+                }
+              : {}),
+          });
+        } else if (!seekingEnd) {
+          seekingEnd = true;
+          // Recorded WebM can omit Duration; asking the decoder for its end recovers it.
+          try {
+            element.currentTime = 1e10;
+          } catch {
+            failed();
+          }
+        }
+      };
+      const timeout = setTimeout(
+        () => finish(undefined, new Error("原片预览读取超时，可尝试预处理")),
+        15000,
+      );
+      const cancelCheck = setInterval(() => {
+        if (!isCurrent()) finish(undefined, new Error("工程已切换，原片待返回原工程恢复"));
+      }, 100);
+      for (const event of listeners) element.addEventListener(event, inspect);
+      element.addEventListener("error", failed, { once: true });
+      try {
+        element.src = `/media/${encodeURIComponent(asset.id)}`;
+      } catch {
+        failed();
+      }
+    });
+  } finally {
+    media?.pause();
+    element.removeAttribute("src");
+    media?.load();
+  }
 }
 const active = (job: MediaJob) => job.status === "queued" || job.status === "running";
 export const mediaUrl = (id: string) => new URL(`/media/${id}`, location.href).href;
@@ -435,7 +540,7 @@ export class ProductionController {
       this.status = status;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      this.error = `媒体服务连接失败：${reason}。请检查当前项目的视频工作台权限，并在更新桌面应用后重新打开面板。`;
+      this.error = `媒体服务连接失败：${reason}。请检查当前项目的素材与本地工具权限，再重新打开面板；工程与原片保存不依赖制作引擎。`;
       return;
     }
     try {
@@ -1005,6 +1110,11 @@ export class ProductionController {
       if (!binding || binding.consumed || binding.projectId !== this.callbacks.getProject().id)
         continue;
       if (job.status === "failed" || job.status === "cancelled") {
+        if (
+          binding.purpose === "prepare" &&
+          this.callbacks.getProject().assets.some((asset) => asset.mediaId === binding.assetId)
+        )
+          this.error = `原片已保留在素材库，可直接剪辑。预处理${job.status === "cancelled" ? "已取消" : "失败"}${job.error?.message ? `：${job.error.message}` : ""}；可在任务页重试。`;
         await this.consume(binding);
         continue;
       }
@@ -1012,16 +1122,61 @@ export class ProductionController {
       const result = job.result as Record<string, any>;
       if (binding.purpose === "import") {
         const assets = result.assets as ManagedAsset[];
-        const prepared = (await host.call("media.prepare", {
-          assetIds: assets.map((a) => a.id),
-          transcribe: false,
-        })) as { jobs: MediaJob[] };
-        for (const [i, child] of prepared.jobs.entries())
-          await this.track(child, {
-            projectId: binding.projectId,
-            purpose: "prepare",
-            assetId: assets[i]!.id,
-          });
+        const current = () => !this.disposed && this.callbacks.getProject().id === projectId;
+        for (const asset of assets) {
+          if (!current()) break;
+          if (this.callbacks.getProject().assets.some((source) => source.mediaId === asset.id))
+            continue;
+          let inspection: PreparedMedia["inspection"];
+          try {
+            inspection = await (this.callbacks.inspectImportedAsset
+              ? this.callbacks.inspectImportedAsset(asset)
+              : inspectImportedAsset(asset, current));
+          } catch {
+            // Formats the browser cannot decode can still use the existing native proxy path.
+            continue;
+          }
+          if (!current()) break;
+          await this.callbacks.publishAssets(
+            projectId,
+            [preparedAsset(asset, { assetId: asset.id, inspection }, this.callbacks.getProject())],
+            { label: "原片已持久保存" },
+          );
+        }
+        if (!current()) continue;
+        const originalsSaved = assets.every((asset) =>
+          this.callbacks.getProject().assets.some((source) => source.mediaId === asset.id),
+        );
+        const pending = assets.filter(
+          (asset) =>
+            !Object.values(this.document.bindings).some(
+              (known) =>
+                known.projectId === projectId &&
+                known.purpose === "prepare" &&
+                known.assetId === asset.id,
+            ),
+        );
+        if (originalsSaved && !this.status.ffmpeg.available) {
+          this.error =
+            "原片已保留在素材库，可直接剪辑。预处理工具尚未就绪，准备好后可继续生成代理和分析。";
+        } else if (pending.length) {
+          let prepared: { jobs: MediaJob[] } | undefined;
+          try {
+            prepared = (await host.call("media.prepare", {
+              assetIds: pending.map((asset) => asset.id),
+              transcribe: false,
+            })) as { jobs: MediaJob[] };
+          } catch (error) {
+            if (!originalsSaved) throw error;
+            this.error = `原片已保留在素材库，可直接剪辑。预处理未能启动：${error instanceof Error ? error.message : String(error)}`;
+          }
+          for (const [i, child] of (prepared?.jobs ?? []).entries())
+            await this.track(child, {
+              projectId: binding.projectId,
+              purpose: "prepare",
+              assetId: pending[i]!.id,
+            });
+        }
       } else if (binding.purpose === "prepare") {
         const preparation = result as PreparedMedia;
         const fetched = (await host.call("media.assets.get", { id: preparation.assetId })) as {

@@ -35,6 +35,7 @@ import {
   type Proposal,
   type PanelTask,
   enablePersistentStorage,
+  hasPersistentStorage,
 } from "./host";
 
 import { ProductionController, type MediaJob } from "./production";
@@ -48,7 +49,8 @@ import { createVoicePreparationUI } from "./voice-preparation-ui";
 import { createRecordingUI } from "./recording-ui";
 import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
-import { cacheRecording, cachedRecording } from "./recording-cache";
+import { cachedMediaFile } from "./recording-cache";
+import { persistMediaFile } from "./media-file-storage";
 import {
   approveNarration,
   bindNarrationRecording,
@@ -93,6 +95,7 @@ const processedTasks = new Set<string>();
 let playback: AbortController | null = null;
 let exporting: AbortController | null = null;
 let mediaImporting = false;
+let reconnectAssetId = "";
 let projectSwitching = false;
 let aiApplying = false;
 let productionBooted = false;
@@ -102,6 +105,7 @@ let saveVersion = 0;
 let toastTimer = 0;
 let saveText = "已就绪";
 let projectError = "";
+let storageDiscoveryError = "";
 let aiPrompt = "";
 let aiMessage = "";
 let narrationScriptDraft: string | null = null;
@@ -289,8 +293,20 @@ const recording = createRecordingUI({
       });
     else {
       const file = new File([blob], name, { type: blob.type });
+      const recordingGeneration = generation;
       asset = await library.import(file);
-      await cacheRecording(asset.id, file);
+      const imported = library.items.get(asset.id);
+      try {
+        asset = await persistMediaFile(panel, file, asset, {
+          isCurrent: () => recordingGeneration === generation,
+        });
+      } catch (error) {
+        if (imported && library.items.get(asset.id) === imported) {
+          library.release(imported);
+          library.items.delete(asset.id);
+        }
+        throw error;
+      }
       commit(
         validateProject({
           ...project,
@@ -434,7 +450,10 @@ async function restoreManagedMedia(): Promise<void> {
   const currentGeneration = generation;
   for (const asset of project.assets) {
     if (!asset.mediaId && !isDemoNarration(asset)) {
-      const file = await cachedRecording(asset.id).catch(() => null);
+      const file = await cachedMediaFile(asset.id).catch((error) => {
+        aiMessage = String(error);
+        return null;
+      });
       if (file && currentGeneration === generation) await library.import(file, asset).catch(fail);
       continue;
     }
@@ -489,7 +508,9 @@ function views() {
     canRedo: future.length > 0,
     playing: Boolean(playback),
     connected: Boolean(panel),
+    persistentStorage: hasPersistentStorage(),
     production: {
+      connected: Boolean(panel),
       status: production.status,
       jobs: production.currentJobs,
       auto: production.auto,
@@ -539,6 +560,7 @@ function stop(): void {
   library.pause();
 }
 function assertEditable(): void {
+  if (storageDiscoveryError) throw new Error("工程存储尚未连接，请重新打开面板后再编辑");
   if (projectSwitching) throw new Error("正在安全切换工程，请稍候");
   if (aiApplying) throw new Error("正在保存自动制作版本，请稍候");
   if (exporting || mediaImporting) throw new Error("请等待当前导入或导出完成");
@@ -1059,10 +1081,12 @@ async function requestAI(
   }
 }
 
-async function importMedia(files: File[]): Promise<void> {
+async function importMedia(files: File[], reconnectId?: string): Promise<void> {
   assertEditable();
+  if (reconnectId && files.length !== 1) throw new Error("请只选择这个素材对应的一个原文件");
   stop();
   mediaImporting = true;
+  const previousSaveText = saveText;
   const importGeneration = generation;
   const next = structuredClone(project);
   const imported = new Map<string, LocalMedia>();
@@ -1081,23 +1105,41 @@ async function importMedia(files: File[]): Promise<void> {
     reconnected = 0;
   try {
     for (const file of files) {
-      const existing = next.assets.find(
-        (asset) =>
-          asset.name === file.name &&
-          asset.size === file.size &&
-          asset.lastModified === file.lastModified,
-      );
+      const existing = reconnectId
+        ? next.assets.find((asset) => asset.id === reconnectId)
+        : next.assets.find(
+            (asset) =>
+              asset.name === file.name &&
+              asset.size === file.size &&
+              asset.lastModified === file.lastModified,
+          );
       if (existing && library.items.has(existing.id)) continue;
       let importedId = "";
       try {
-        const asset = await library.import(file, existing);
+        if (
+          reconnectId &&
+          (!existing || existing.name !== file.name || existing.size !== file.size)
+        )
+          throw new Error("所选文件与这个素材不匹配，请选择当时导入的原文件");
+        let asset = await library.import(file, existing);
         importedId = asset.id;
         const item = library.items.get(asset.id);
         if (item) imported.set(asset.id, item);
+        asset = await persistMediaFile(panel, file, asset, {
+          isCurrent: () => importGeneration === generation,
+          progress: (fraction) => {
+            saveText = `正在保存素材 ${Math.round(fraction * 100)}%`;
+            updateSave();
+          },
+        });
         if (importGeneration !== generation)
           throw new Error("导入期间工程已切换，已取消旧工程的素材导入");
-        if (existing) reconnected++;
-        else {
+        if (existing) {
+          next.assets = next.assets.map((previous) =>
+            previous.id === existing.id ? asset : previous,
+          );
+          reconnected++;
+        } else {
           // The file is decoded before publishing a reference in the project.
           const check = validateProject({ ...next, assets: [...next.assets, asset] });
           next.assets = check.assets;
@@ -1114,13 +1156,15 @@ async function importMedia(files: File[]): Promise<void> {
     throw error;
   } finally {
     mediaImporting = false;
+    saveText = previousSaveText;
+    updateSave();
   }
   if (importGeneration !== generation) {
     releaseBatch();
     throw new Error("工程已切换，未应用旧工程的素材导入");
   }
   tab = "media";
-  if (added) {
+  if (added || reconnected) {
     try {
       next.revision++;
       commit(next);
@@ -1357,6 +1401,7 @@ async function action(name: string, id?: string): Promise<void> {
       render();
       break;
     case "import":
+      reconnectAssetId = "";
       if (production.enabled) {
         const result = await production.importFiles();
         if (result.job) {
@@ -1365,6 +1410,13 @@ async function action(name: string, id?: string): Promise<void> {
           toast("素材正在持久导入并预处理，关闭面板后任务仍会继续");
         }
       } else $("#media-input").click();
+      break;
+    case "reconnect-media":
+      assertEditable();
+      if (!id || !project.assets.some((asset) => asset.id === id))
+        throw new Error("请先选择要重新连接的素材");
+      reconnectAssetId = id;
+      $("#media-input").click();
       break;
     case "demo":
       await replace(createNarratedDemoProject());
@@ -2042,8 +2094,13 @@ studio.addEventListener("drop", (event) => {
 
 $("#media-input").addEventListener("change", (event) => {
   const input = event.target as HTMLInputElement;
-  void importMedia([...(input.files || [])]).catch(fail);
+  const reconnectId = reconnectAssetId;
+  reconnectAssetId = "";
+  void importMedia([...(input.files || [])], reconnectId || undefined).catch(fail);
   input.value = "";
+});
+$("#media-input").addEventListener("cancel", () => {
+  reconnectAssetId = "";
 });
 $("#project-input").addEventListener("change", async (event) => {
   const input = event.target as HTMLInputElement;
@@ -2131,7 +2188,13 @@ document.addEventListener(
   true,
 );
 window.addEventListener("beforeunload", (event) => {
-  if (exporting || projectSwitching || saveText === "保存中…" || saveText === "保存失败") {
+  if (
+    exporting ||
+    projectSwitching ||
+    mediaImporting ||
+    saveText === "保存中…" ||
+    saveText === "保存失败"
+  ) {
     event.preventDefault();
     event.returnValue = "";
   }
@@ -2182,13 +2245,13 @@ registerProjectReadTool(panel, production, () => ({
     inspectFrames: true,
     hyperframes: production.status.hyperframes.available,
     tts: production.status.tts ?? { available: false },
-    persistentMedia: production.enabled,
+    persistentMedia: hasPersistentStorage(),
     originalAudioEnhancement: production.enabled && production.status.ffmpeg.available,
     ttsSetup: production.enabled,
     recording: {
       modes: ["microphone", "camera", "screen"],
       userInitiated: true,
-      persistent: production.enabled ? "host" : "indexeddb",
+      persistent: panel ? "host" : "indexeddb",
     },
     captionStyles: ["classic", "bold", "minimal"],
   },
@@ -2396,9 +2459,18 @@ panel?.on("agent.task.changed", (payload) => {
 });
 
 async function boot(): Promise<void> {
-  await production.initialize();
-  enablePersistentStorage(production.enabled);
+  let storageDiscovered = !panel;
   try {
+    const initialContext = await panel?.getContext();
+    // Native engine availability must not choose which saved project is restored.
+    // Discovery errors must preserve restore protection, never select a different store.
+    enablePersistentStorage(
+      Boolean(panel) &&
+        ["media.document.get", "media.document.set"].every((method) =>
+          initialContext?.availableMethods?.includes(method),
+        ),
+    );
+    storageDiscovered = true;
     project = (await loadProject()) || createProject();
     const narrated = migratePristineDemoProject(project);
     if (narrated) {
@@ -2407,6 +2479,7 @@ async function boot(): Promise<void> {
     }
     saveText = "已就绪";
   } catch (error) {
+    if (!storageDiscovered) storageDiscoveryError = String(error);
     projectError = String(error);
     saveText = "恢复失败";
     toast("原有工程无法恢复，尚未覆盖。请检查存储或打开工程备份。");
@@ -2422,9 +2495,12 @@ async function boot(): Promise<void> {
   selected = project.clips[0]?.id || "";
   voiceover.setText(project.script ?? "");
   render();
+  await restoreManagedMedia();
+  await production.initialize();
   productionBooted = true;
   await voicePreparation.load();
-  await restoreManagedMedia();
+  // The voice tab can be opened while the engine is still connecting.
+  if (tab === "voiceover") await voiceover.load().catch(fail);
   if (production.enabled) {
     await production.restorePreparation(project);
     await production.refresh().catch(fail);

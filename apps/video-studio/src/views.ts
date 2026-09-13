@@ -12,6 +12,7 @@ import { renderWorkflowSummary } from "./workflow";
 import { renderNarrationPanel } from "./narration-ui";
 import type { Proposal, PanelTask } from "./host";
 import { renderProductionJobs, type ProductionViewState } from "./production-views";
+import { version as panelVersion } from "../.codeshell-panel/panel.json";
 
 /** Data needed to render a view; no host calls, media controls or state mutations. */
 export interface ViewState {
@@ -36,6 +37,7 @@ export interface ViewState {
   readonly aiMessage: string;
   readonly workspace: string;
   readonly connected: boolean;
+  readonly persistentStorage?: boolean;
   readonly voiceoverMarkup?: string;
   readonly voicePreparationMarkup?: string;
   readonly roughcutMarkup?: string;
@@ -103,7 +105,7 @@ export function createViews(state: ViewState) {
     return html`<header class="topbar">
         <div class="brand">
           <span class="brand-mark">${icon("film", 21)}</span><strong>mimi<span>studio</span></strong
-          ><span class="version">0.4.7</span>
+          ><span class="version">${panelVersion}</span>
         </div>
         <div class="project-breadcrumb">
           <span>${esc(workspace)}</span>${icon("chevron", 13)}<input
@@ -116,7 +118,7 @@ export function createViews(state: ViewState) {
         <div class="header-actions">
           <span class="save-indicator"
             ><i></i><span id="save-state" title="${esc(projectError)}">${saveText}</span></span
-          >${persistent ? tool("versions", "工程历史版本", "undo") : ""}${tool(
+          >${state.persistentStorage ? tool("versions", "工程历史版本", "undo") : ""}${tool(
             "projects",
             "最近工程 / 打开工程",
             "folder",
@@ -129,7 +131,13 @@ export function createViews(state: ViewState) {
           )}
         </div>
       </header>
-      <main class="workspace ${tab === "roughcut" ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}">
+      <main
+        class="workspace ${tab === "roughcut"
+          ? "source-mode"
+          : tab === "voiceover"
+            ? "voice-mode"
+            : ""}"
+      >
         <nav class="rail" aria-label="工作台导航">
           ${[
             ["media", "素材", "folder"],
@@ -146,7 +154,9 @@ export function createViews(state: ViewState) {
                 `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph!, 22)}<span>${label}</span></button>`,
             )
             .join("")}
-          <div class="rail-bottom">${tool("new", "新建工程", "plus")}<span>v0.4.7</span></div>
+          <div class="rail-bottom">
+            ${tool("new", "新建工程", "plus")}<span>v${panelVersion}</span>
+          </div>
         </nav>
         <aside class="library-panel">${renderLibrary()}</aside>
         <section class="viewer-panel" aria-label="${source ? "原素材预览" : "视频预览"}">
@@ -248,7 +258,8 @@ export function createViews(state: ViewState) {
     if (tab === "roughcut") return state.roughcutMarkup ?? "";
     if (tab === "recording") return state.recordingMarkup ?? "";
     if (tab === "spoken") return state.spokenMarkup ?? "";
-    if (tab === "voiceover") return (state.voicePreparationMarkup ?? "") + (state.voiceoverMarkup ?? "");
+    if (tab === "voiceover")
+      return (state.voicePreparationMarkup ?? "") + (state.voiceoverMarkup ?? "");
     if (tab === "jobs" && state.production) return renderProductionJobs(state.production);
     if (tab === "transcript")
       return html`<div class="section-title">
@@ -450,7 +461,7 @@ ${esc(aiPrompt)}</textarea
           )
         : ""}
       <div class="library-label">
-        <span>素材库</span><span>${persistent ? "持久保存于本机" : "浏览器临时素材"}</span>
+        <span>素材库</span><span>${connected ? "素材保存于本机" : "素材保存在此浏览器"}</span>
       </div>
       <div class="asset-list">
         ${assets
@@ -491,6 +502,9 @@ ${esc(aiPrompt)}</textarea
                     ${asset.width ? " · " + asset.width + "×" + asset.height : ""}</span
                   >
                 </div>
+                ${missing
+                  ? `<button type="button" class="quiet" data-action="reconnect-media" data-id="${esc(asset.id)}">重新连接原文件</button>`
+                  : ""}
                 ${["video", "audio"].includes(asset.kind)
                   ? `<button type="button" class="quiet" data-rough-source="${esc(asset.id)}" title="预览原片并标记保留范围" aria-label="粗剪 ${esc(asset.name)}">粗剪</button>`
                   : ""}
@@ -510,9 +524,9 @@ ${esc(aiPrompt)}</textarea
       </div>
       <div class="library-note">
         ${icon("link", 14)}<span
-          >${persistent
+          >${connected
             ? "素材与预览由工作台持久保存，重新打开自动恢复。"
-            : "浏览器演示：工程保存剪辑信息，原文件需要重新连接。"}</span
+            : "导入素材保存在此浏览器，重新打开自动恢复；清除网站数据会移除本地副本。"}</span
         >
       </div>`;
   }

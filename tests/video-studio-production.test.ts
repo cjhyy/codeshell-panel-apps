@@ -139,6 +139,12 @@ async function fixture(host = new FakeHost()) {
   let beforePublish: (() => Promise<void>) | undefined;
   const controller = new ProductionController(host, {
     getProject: () => current,
+    inspectImportedAsset: async (asset) => {
+      const inspect = host.handlers.get("browser.inspect");
+      return inspect
+        ? ((await inspect(asset)) as PreparedMedia["inspection"])
+        : prepared(asset.id).inspection;
+    },
     changed: () => changed(),
     publishAssets: async (projectId, assets, options) => {
       await beforePublish?.();
@@ -347,21 +353,177 @@ test("failed publication and failed consumption writes leave completed jobs retr
   assert.equal(f.current.assets.length, 1);
 });
 
-test("import completion queues preparation and a reopened controller consumes its eventual asset", async () => {
+test("import publishes its original before optional preparation and a reopened controller preserves its identity", async () => {
   const f = await fixture();
   f.current = { ...project(), assets: [], clips: [] };
   const imported = await f.controller.importFiles();
   await f.controller.refresh();
   assert.equal(binding(f.host, imported.job!.id).consumed, true);
-  assert.equal(f.published.length, 0);
+  assert.equal(f.published.length, 1);
+  assert.equal(f.current.assets[0]!.mediaId, mediaId);
+  const original = structuredClone(f.current);
   const child = [...f.host.jobs.values()].find((job) => job.type === "prepare")!;
   child.status = "succeeded";
   f.controller.dispose();
   const reopened = await fixture(f.host);
-  reopened.current = { ...project(), assets: [], clips: [] };
+  reopened.current = original;
   await reopened.controller.refresh();
   assert.equal(reopened.current.assets[0]!.mediaId, mediaId);
+  assert.equal(reopened.current.assets[0]!.id, original.assets[0]!.id);
+  assert.equal(reopened.current.assets.length, 1);
   assert.equal(binding(f.host, child.id).consumed, true);
+});
+
+test("missing preprocessing tools do not block publishing browser-decodable originals", async () => {
+  const host = new FakeHost();
+  host.handlers.set("media.status", () => ({
+    persistent: true,
+    ffmpeg: { available: false },
+    transcription: { available: false },
+    hyperframes: { available: false },
+  }));
+  const f = await fixture(host);
+  f.current = { ...project(), assets: [], clips: [] };
+  const imported = await f.controller.importFiles();
+  await f.controller.refresh();
+  assert.equal(f.current.assets[0]!.mediaId, mediaId);
+  assert.equal(f.current.assets[0]!.durationFrames, 300);
+  assert.equal(binding(host, imported.job!.id).consumed, true);
+  assert.ok(!host.calls.some((call) => call.method === "media.prepare"));
+  assert.match(f.controller.error, /原片已保留.*预处理工具尚未就绪/);
+});
+
+test("preparation submission failure leaves the durable original visible and does not replay import", async () => {
+  const f = await fixture();
+  f.current = { ...project(), assets: [], clips: [] };
+  f.host.handlers.set("media.prepare", () => {
+    throw new Error("测试：运行权限尚未授权");
+  });
+  const imported = await f.controller.importFiles();
+  await f.controller.refresh();
+  const saved = structuredClone(f.current);
+  assert.equal(saved.assets[0]!.mediaId, mediaId);
+  assert.equal(binding(f.host, imported.job!.id).consumed, true);
+  assert.match(f.controller.error, /原片已保留.*测试：运行权限尚未授权/);
+  await f.controller.refresh();
+  assert.deepEqual(f.current, saved);
+  assert.equal(f.published.length, 1);
+  assert.equal(f.host.calls.filter((call) => call.method === "media.prepare").length, 1);
+});
+
+test("failed optional preparation retains original clips and rough-cut marks after reopening", async () => {
+  const f = await fixture();
+  f.current = {
+    ...project(),
+    roughCuts: [
+      {
+        id: "keep-source",
+        assetId: "source",
+        inFrame: 30,
+        outFrame: 120,
+        name: "保留段",
+        enabled: true,
+      },
+    ],
+  };
+  const before = structuredClone(f.current);
+  await f.controller.importFiles();
+  await f.controller.refresh();
+  const child = [...f.host.jobs.values()].find((job) => job.type === "prepare")!;
+  child.status = "failed";
+  child.error = { code: "PROCESSOR_FAILED", message: "测试：代理生成失败", retryable: true };
+  f.controller.dispose();
+  const reopened = await fixture(f.host);
+  reopened.current = before;
+  await reopened.controller.refresh();
+  assert.deepEqual(reopened.current, before);
+  assert.deepEqual(reopened.published, []);
+  assert.match(reopened.controller.error, /原片已保留.*测试：代理生成失败/);
+  assert.equal(binding(f.host, child.id).consumed, true);
+});
+
+test("unsupported browser formats still use native preparation before publishing", async () => {
+  const f = await fixture();
+  f.current = { ...project(), assets: [], clips: [] };
+  f.host.handlers.set("browser.inspect", () => {
+    throw new Error("不支持浏览器解码");
+  });
+  await f.controller.importFiles();
+  await f.controller.refresh();
+  assert.deepEqual(f.published, []);
+  const child = [...f.host.jobs.values()].find((job) => job.type === "prepare")!;
+  child.status = "succeeded";
+  child.updatedAt++;
+  await f.controller.refresh();
+  assert.equal(f.current.assets[0]!.mediaId, mediaId);
+});
+
+test("interrupted import consumption reuses its published source and already tracked preparation", async () => {
+  const f = await fixture();
+  f.current = { ...project(), assets: [], clips: [] };
+  let rejectConsumption = true;
+  f.host.handlers.set("media.document.set", (params) => {
+    if (
+      rejectConsumption &&
+      Object.values(params.data.bindings).some(
+        (row: any) => row.purpose === "import" && row.consumed,
+      )
+    )
+      throw new Error("测试：导入回执暂未保存");
+    f.host.document = structuredClone(params.data);
+    return { revision: ++f.host.revision };
+  });
+  const imported = await f.controller.importFiles();
+  await assert.rejects(f.controller.refresh(), /导入回执暂未保存/);
+  const saved = structuredClone(f.current);
+  assert.equal(saved.assets[0]!.mediaId, mediaId);
+  assert.equal(binding(f.host, imported.job!.id).consumed, undefined);
+  rejectConsumption = false;
+  f.controller.dispose();
+  const reopened = await fixture(f.host);
+  reopened.current = saved;
+  await reopened.controller.refresh();
+  assert.deepEqual(reopened.current, saved);
+  assert.deepEqual(reopened.published, []);
+  assert.equal(f.host.calls.filter((call) => call.method === "media.prepare").length, 1);
+  assert.equal(binding(f.host, imported.job!.id).consumed, true);
+});
+
+test("failed original publication preserves an unconsumed import and starts no preparation", async () => {
+  const f = await fixture();
+  f.current = { ...project(), assets: [], clips: [] };
+  f.beforePublish(async () => {
+    throw new Error("测试：工程原片引用保存失败");
+  });
+  const imported = await f.controller.importFiles();
+  await assert.rejects(f.controller.refresh(), /工程原片引用保存失败/);
+  assert.deepEqual(f.current.assets, []);
+  assert.deepEqual(f.published, []);
+  assert.equal(binding(f.host, imported.job!.id).consumed, undefined);
+  assert.ok(!f.host.calls.some((call) => call.method === "media.prepare"));
+  f.beforePublish(undefined);
+  await f.controller.refresh();
+  assert.equal(f.current.assets[0]!.mediaId, mediaId);
+  assert.equal(binding(f.host, imported.job!.id).consumed, true);
+});
+
+test("switching projects during original inspection leaves the import for its original project", async () => {
+  const f = await fixture();
+  const original = { ...project(), assets: [], clips: [] };
+  f.current = original;
+  f.host.handlers.set("browser.inspect", () => {
+    f.current = project("other-project");
+    return prepared().inspection;
+  });
+  const imported = await f.controller.importFiles();
+  await f.controller.refresh();
+  assert.deepEqual(f.published, []);
+  assert.equal(binding(f.host, imported.job!.id).consumed, undefined);
+  assert.ok(!f.host.calls.some((call) => call.method === "media.prepare"));
+  f.host.handlers.delete("browser.inspect");
+  f.current = original;
+  await f.controller.refresh();
+  assert.equal(f.current.assets[0]!.mediaId, mediaId);
 });
 
 test("recording upload returns its durable original even when preparation fails", async () => {

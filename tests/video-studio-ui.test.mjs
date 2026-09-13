@@ -107,6 +107,22 @@ async function pageWithBridge(mock = false, generic = true) {
           return () => {};
         },
         async call(method, params) {
+          if (method === "media.document.get")
+            return storage[`document:${params.key}`] || { revision: 0, data: null };
+          if (method === "media.document.set") {
+            if (params.key === "video-studio-recent-v1" && window.__holdArchive) {
+              window.__archiveStarted = true;
+              await new Promise((resolve) => {
+                window.__releaseArchive = resolve;
+              });
+            }
+            const previous = storage[`document:${params.key}`] || { revision: 0 };
+            if (params.baseRevision !== previous.revision)
+              throw new Error("Document revision changed");
+            const saved = { revision: previous.revision + 1, data: structuredClone(params.data) };
+            storage[`document:${params.key}`] = saved;
+            return saved;
+          }
           if (method === "storage.get") return storage[params.key] || null;
           if (method === "storage.set") {
             if (params.key === "video-studio-recent-v1" && window.__holdArchive) {
@@ -439,7 +455,7 @@ test("malformed portable project never replaces the current editable project", a
   await page.close();
 });
 
-test("import is undoable and original media can reconnect after reopening", async () => {
+test("import is undoable and original media automatically reconnects after reopening", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "video-studio-ui-"));
   const fixture = resolve(directory, "still.png");
   const page = await pageWithBridge();
@@ -468,16 +484,14 @@ test("import is undoable and original media can reconnect after reopening", asyn
     assert.equal((await readProject(page)).assets[0].id, asset.id);
     await page.locator("[data-add-asset]").click();
     await saved(page);
+    const before = await readProject(page);
     await page.reload();
-    await page.locator(".asset-card.missing").waitFor();
-    await page.locator("#media-input").setInputFiles(fixture);
-    await page.waitForFunction(() => document.querySelectorAll(".asset-card.missing").length === 0);
-    assert.equal(
-      (await readProject(page)).assets.length,
-      1,
-      "Reconnect must not duplicate metadata",
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll(".asset-card").length === 1 &&
+        document.querySelectorAll(".asset-card.missing").length === 0,
     );
-    assert.equal((await readProject(page)).assets[0].id, asset.id);
+    assert.deepEqual(await readProject(page), before, "Restoring bytes must not edit the project");
     const pixel = await page
       .locator("#preview")
       .evaluate((canvas) => [
@@ -489,6 +503,169 @@ test("import is undoable and original media can reconnect after reopening", asyn
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("original audio and rough-cut marks survive a complete browser restart", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "video-studio-persistent-cache-"));
+  let context;
+  const open = async () => {
+    context = await chromium.launchPersistentContext(directory, {
+      headless: true,
+      viewport: { width: 1440, height: 960 },
+    });
+    const page = await context.newPage();
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(url);
+    await page.locator("#preview").waitFor();
+    return page;
+  };
+  try {
+    let page = await open();
+    await page
+      .locator("#media-input")
+      .setInputFiles(resolve(root, "tests/fixtures/static-tone.wav"));
+    await page.waitForFunction(() => document.querySelectorAll(".asset-card").length === 1);
+    await saved(page);
+    const asset = (await readProject(page)).assets[0];
+    assert.equal(
+      asset.mediaId,
+      undefined,
+      "This exercises browser File custody, not Host resources",
+    );
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.locator('[data-roughcut-field="name"]').fill("保留原声");
+    await page.locator('[data-action="roughcut-save"]').click();
+    await saved(page);
+    const before = await readProject(page);
+    assert.equal(before.roughCuts.length, 1);
+    await context.close();
+    context = undefined;
+
+    page = await open();
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.waitForFunction(() => !document.querySelector(".roughcut-notice"));
+    assert.deepEqual(
+      await readProject(page),
+      before,
+      "The same source ID and exact marks are restored",
+    );
+    await page.locator('[data-action="roughcut-play"]').click();
+    await page.waitForFunction(
+      () => Number(document.querySelector("[data-roughcut-scrub]")?.value) > 0,
+    );
+    await page.locator('[data-action="roughcut-play"]').click();
+  } finally {
+    await context?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy uncached media can reconnect without changing its saved identity", async () => {
+  const page = await pageWithBridge();
+  const fixture = resolve(root, "tests/fixtures/static-tone.wav");
+  try {
+    await page.locator("#media-input").setInputFiles(fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".asset-card").length === 1);
+    await saved(page);
+    const asset = (await readProject(page)).assets[0];
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.locator('[data-roughcut-field="name"]').fill("旧工程保留段");
+    await page.locator('[data-action="roughcut-save"]').click();
+    await saved(page);
+    const before = await readProject(page);
+    await page.evaluate(
+      (id) =>
+        new Promise((resolve, reject) => {
+          const request = indexedDB.open("mimi-studio-recordings", 1);
+          request.onsuccess = () => {
+            const db = request.result;
+            const transaction = db.transaction("recordings", "readwrite");
+            transaction.objectStore("recordings").delete(id);
+            transaction.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            transaction.onabort = transaction.onerror = () => {
+              db.close();
+              reject(transaction.error);
+            };
+          };
+          request.onerror = () => reject(request.error);
+        }),
+      asset.id,
+    );
+    await page.reload();
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.locator(".roughcut-notice").waitFor();
+    await page.locator("#media-input").setInputFiles(fixture);
+    await page.waitForFunction(() =>
+      document.querySelector("#toast")?.textContent.includes("重连 1 个素材"),
+    );
+    await saved(page);
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.waitForFunction(() => !document.querySelector(".roughcut-notice"));
+    assert.deepEqual(
+      await readProject(page),
+      { ...before, revision: before.revision + 1 },
+      "Reconnection preserves IDs and ranges and saves one recovery revision",
+    );
+    await page.reload();
+    await page.locator(`[data-rough-source="${asset.id}"]`).click();
+    await page.waitForFunction(() => !document.querySelector(".roughcut-notice"));
+  } finally {
+    await page.close();
+  }
+});
+
+for (const failure of ["quota", "abort-after-put"]) {
+  test(`failed original-file cache ${failure} never publishes a successful import`, async () => {
+    const page = await pageWithBridge();
+    const fixture = resolve(root, "tests/fixtures/static-tone.wav");
+    try {
+      await page.evaluate((failure) => {
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function (...args) {
+          if (this.name !== "recordings") return put.apply(this, args);
+          IDBObjectStore.prototype.put = put;
+          if (failure === "quota") throw new DOMException("storage full", "QuotaExceededError");
+          const request = put.apply(this, args);
+          request.addEventListener("success", () => {
+            window.__successfulPutBeforeAbort = true;
+            this.transaction.abort();
+          });
+          return request;
+        };
+      }, failure);
+      await page.locator("#media-input").setInputFiles(fixture);
+      await page.waitForFunction(() =>
+        document.querySelector("#toast")?.textContent.includes("素材尚未保存"),
+      );
+      assert.deepEqual(
+        (await readProject(page))?.assets ?? [],
+        [],
+        "Metadata must wait for the Blob transaction to commit",
+      );
+      assert.equal(await page.locator(".asset-card").count(), 0);
+      if (failure === "abort-after-put")
+        assert.equal(
+          await page.evaluate(() => window.__successfulPutBeforeAbort),
+          true,
+          "The real IndexedDB put succeeded before rollback",
+        );
+      else assert.match(await page.locator("#toast").textContent(), /空间不足/);
+
+      await page.locator("#media-input").setInputFiles(fixture);
+      await page.waitForFunction(() => document.querySelectorAll(".asset-card").length === 1);
+      await saved(page);
+      assert.equal(
+        (await readProject(page)).assets.length,
+        1,
+        "Retry publishes only the durably saved source",
+      );
+    } finally {
+      await page.close();
+    }
+  });
+}
 
 test("project switching blocks concurrent media import and export", async () => {
   const page = await pageWithBridge(true);
