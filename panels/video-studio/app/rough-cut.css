@@ -47,6 +47,42 @@
 .roughcut-panel label {
   color: #b6bfc5;
 }
+.roughcut-panel [hidden] {
+  display: none !important;
+}
+.roughcut-bulk {
+  margin-top: 8px;
+  border-top: 1px solid #30383b;
+  padding-top: 8px;
+}
+.roughcut-panel .roughcut-tools-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 4px;
+  border: 0;
+  background: transparent;
+  color: #b6bfc5;
+  font-size: 11px;
+  text-align: left;
+}
+.roughcut-tools-toggle small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+.roughcut-tools-toggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.roughcut-tools-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.roughcut-tools-toggle:hover {
+  color: #e0e7eb;
+}
 .roughcut-source-label {
   margin-bottom: -6px;
   font-size: 11px;

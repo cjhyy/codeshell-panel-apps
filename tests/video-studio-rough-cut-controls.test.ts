@@ -94,6 +94,90 @@ function fixture() {
   };
 }
 
+function expectDisclosure(
+  ui: ReturnType<typeof createRoughCutUI>,
+  kind: "bulk" | "ai",
+  expanded: boolean,
+) {
+  const markup = ui.render();
+  const region = new RegExp(`id="roughcut-${kind}-panel"[^>]*`);
+  const panel = markup.match(region)?.[0];
+  assert.ok(panel, `${kind} remains available as a secondary tool`);
+  assert.equal(/\bhidden\b/.test(panel), !expanded);
+  assert.match(
+    markup,
+    new RegExp(`data-action="roughcut-${kind}-toggle"[^>]*aria-expanded="${expanded}"`),
+  );
+}
+
+test("ordinary source mode puts manual controls first and explicit batch mode opens only batch tools", async () => {
+  const f = fixture();
+  const before = f.project();
+  expectDisclosure(f.ui, "bulk", false);
+  expectDisclosure(f.ui, "ai", false);
+  const markup = f.ui.render();
+  for (const control of [
+    "roughcut-source",
+    "roughcut-mark-in",
+    "roughcut-mark-out",
+    "roughcut-save",
+    "roughcut-append",
+    "roughcut-csv",
+  ])
+    assert.ok(
+      markup.indexOf(control) < markup.indexOf("roughcut-bulk-toggle"),
+      `${control} precedes optional batch tools`,
+    );
+  f.ui.setMode("batch");
+  expectDisclosure(f.ui, "bulk", true);
+  expectDisclosure(f.ui, "ai", false);
+  await f.ui.action("roughcut-ai-toggle");
+  expectDisclosure(f.ui, "ai", true);
+  f.ui.setMode("single");
+  expectDisclosure(f.ui, "bulk", false);
+  expectDisclosure(f.ui, "ai", false);
+  assert.deepEqual(f.project(), before, "Disclosure and entry mode changes never edit the project");
+});
+
+test("optional tools keep their disclosure through source and draft updates and reset with the project", async () => {
+  const f = fixture();
+  f.ui.setMode("batch");
+  await f.ui.action("roughcut-ai-toggle");
+  f.input("in", "1");
+  f.input("out", "2");
+  await f.ui.action("roughcut-save");
+  f.ui.setQueue(["source-a", "source-b"]);
+  await f.ui.action("roughcut-queue-next");
+  expectDisclosure(f.ui, "bulk", true);
+  expectDisclosure(f.ui, "ai", true);
+  await f.ui.action("roughcut-batch-plan");
+  const candidate = f.ui
+    .render()
+    .match(/data-roughcut-field="candidate-enabled" data-id="([^"]+)"/)?.[1];
+  assert.ok(candidate);
+  f.ui.input({
+    dataset: { roughcutField: "candidate-enabled", id: candidate },
+    checked: false,
+  } as unknown as HTMLInputElement);
+  expectDisclosure(f.ui, "bulk", true);
+  expectDisclosure(f.ui, "ai", true);
+  await f.ui.action("roughcut-bulk-toggle");
+  expectDisclosure(f.ui, "bulk", false);
+  expectDisclosure(f.ui, "ai", true);
+  await f.ui.action("roughcut-bulk-toggle");
+  expectDisclosure(f.ui, "ai", true);
+  const changed = { ...f.project(), id: "different-project" };
+  f.replaceProject(changed);
+  expectDisclosure(f.ui, "bulk", false);
+  expectDisclosure(f.ui, "ai", false);
+  f.ui.setMode("batch");
+  await f.ui.action("roughcut-ai-toggle");
+  f.ui.setAsset("");
+  expectDisclosure(f.ui, "bulk", false);
+  expectDisclosure(f.ui, "ai", false);
+  assert.deepEqual(f.project(), changed, "Resetting optional controls retains saved marks");
+});
+
 test("uniform trimming drafts preserve manual I/O and require review before atomic save", async () => {
   const f = fixture();
   f.input("in", "2");

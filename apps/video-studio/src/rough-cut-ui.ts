@@ -96,6 +96,8 @@ export function createRoughCutUI(context: RoughCutContext) {
   let queueProjectId = "";
   let queueIds: string[] | undefined;
   let queueExpanded = false;
+  let bulkOpen = false;
+  let aiOpen = false;
   let batchMode = "trim",
     batchHead = "0",
     batchTail = "0",
@@ -123,6 +125,8 @@ export function createRoughCutUI(context: RoughCutContext) {
     queueProjectId = id;
     queueIds = undefined;
     queueExpanded = false;
+    bulkOpen = false;
+    aiOpen = false;
     batchDraft = null;
     unselectedCandidates.clear();
     drafts.clear();
@@ -253,7 +257,6 @@ export function createRoughCutUI(context: RoughCutContext) {
         <span class="roughcut-tag">先挑段，再成片</span>
       </div>
       <p class="section-description">素材先挑段，加入成片后继续剪辑。</p>
-      ${renderQueue(availableSources)}
       <label class="roughcut-source-label" for="roughcut-source">当前素材</label>
       <select id="roughcut-source" data-roughcut-field="asset" aria-label="选择粗剪素材">
         <option value="" ${!source ? "selected" : ""}>选择一段视频或音频</option>
@@ -453,7 +456,36 @@ export function createRoughCutUI(context: RoughCutContext) {
                 : ""}
             </details>
           `}
+      ${renderBulk(availableSources)}
     </section>`;
+  }
+
+  function aiSummary(): string {
+    const state = context.ai?.state;
+    if (state?.projectId !== context.project().id) return "";
+    if (context.ai?.busy) return "AI 分析中";
+    if (state.cuts.length) return `${state.cuts.length} 段待审阅`;
+    if (["failed", "cancelled"].includes(state.phase)) return "AI 进度待处理";
+    return "";
+  }
+
+  function renderBulk(available: Asset[]): string {
+    if (!available.length) return "";
+    const summary =
+      aiSummary() ||
+      (batchDraft?.cuts.length ? `${batchDraft.cuts.length} 段待审阅` : "多素材裁剪与 AI 辅助");
+    return html`<div class="roughcut-bulk">
+      <button
+        type="button"
+        class="roughcut-tools-toggle"
+        data-action="roughcut-bulk-toggle"
+        aria-expanded="${bulkOpen}"
+        aria-controls="roughcut-bulk-panel"
+      >
+        <span>批量工具</span><small>${esc(summary)}</small>${icon("chevron", 14)}
+      </button>
+      <div id="roughcut-bulk-panel" ${bulkOpen ? "" : "hidden"}>${renderQueue(available)}</div>
+    </div>`;
   }
 
   function renderQueue(available: Asset[]): string {
@@ -585,40 +617,51 @@ export function createRoughCutUI(context: RoughCutContext) {
           disabled: !queue.length || busy,
         })}
       </details>
-      <div class="roughcut-ai-controls">
-        <label
-          >AI 粗剪要求<textarea
-            data-roughcut-field="ai-goal"
-            rows="2"
-            maxlength="2000"
-            placeholder="例如：保留有主体的旅行镜头，口播保留完整的重点句子"
-          >
+      ${batchDraft ? renderCandidates(batchDraft.cuts, "batch", batchDraft.note) : ""}
+      <button
+        type="button"
+        class="roughcut-tools-toggle"
+        data-action="roughcut-ai-toggle"
+        aria-expanded="${aiOpen}"
+        aria-controls="roughcut-ai-panel"
+      >
+        <span>AI 辅助粗剪</span><small>${esc(aiSummary())}</small>${icon("chevron", 14)}
+      </button>
+      <div id="roughcut-ai-panel" ${aiOpen ? "" : "hidden"}>
+        <div class="roughcut-ai-controls">
+          <label
+            >AI 粗剪要求<textarea
+              data-roughcut-field="ai-goal"
+              rows="2"
+              maxlength="2000"
+              placeholder="例如：保留有主体的旅行镜头，口播保留完整的重点句子"
+            >
 ${esc(aiGoal)}</textarea
-          >
-        </label>
-        <p>AI 会实际查看多个时间点的画面，音频依据真实转写。先生成可预览的候选段。</p>
-        ${button("ai-start", `AI 批量粗剪 ${queue.length} 份素材`, "sparkles", {
-          disabled: !queue.length || busy || !context.ai || !!(aiCurrent && ai!.cuts.length),
-          className: "primary full",
-        })}
-        ${aiCurrent && ai!.cuts.length && !busy
-          ? "<p>先保存或丢弃下方候选段，再开始新的分析。</p>"
-          : ""}
-        ${!context.ai
-          ? '<p class="roughcut-notice">请在 CodeShell 面板内连接 AI 任务能力。</p>'
-          : ""}
-        ${aiCurrent && ai?.message
-          ? `<p class="roughcut-ai-status" role="status">${esc(ai.message)}</p>`
-          : ""}
-        ${aiCurrent && busy ? button("ai-cancel", "取消分析，保留已完成结果") : ""}
-        ${aiCurrent && ["failed", "cancelled"].includes(ai!.phase)
-          ? button("ai-retry", "继续未完成的素材")
+            >
+          </label>
+          <p>AI 会实际查看多个时间点的画面，音频依据真实转写。先生成可预览的候选段。</p>
+          ${button("ai-start", `AI 批量粗剪 ${queue.length} 份素材`, "sparkles", {
+            disabled: !queue.length || busy || !context.ai || !!(aiCurrent && ai!.cuts.length),
+            className: "primary full",
+          })}
+          ${aiCurrent && ai!.cuts.length && !busy
+            ? "<p>先保存或丢弃下方候选段，再开始新的分析。</p>"
+            : ""}
+          ${!context.ai
+            ? '<p class="roughcut-notice">请在 CodeShell 面板内连接 AI 任务能力。</p>'
+            : ""}
+          ${aiCurrent && ai?.message
+            ? `<p class="roughcut-ai-status" role="status">${esc(ai.message)}</p>`
+            : ""}
+          ${aiCurrent && busy ? button("ai-cancel", "取消分析，保留已完成结果") : ""}
+          ${aiCurrent && ["failed", "cancelled"].includes(ai!.phase)
+            ? button("ai-retry", "继续未完成的素材")
+            : ""}
+        </div>
+        ${aiCurrent && ai!.cuts.length
+          ? renderCandidates(ai!.cuts, "ai", ai!.explanations.filter(Boolean).join("\n"), busy)
           : ""}
       </div>
-      ${batchDraft ? renderCandidates(batchDraft.cuts, "batch", batchDraft.note) : ""}
-      ${aiCurrent && ai!.cuts.length
-        ? renderCandidates(ai!.cuts, "ai", ai!.explanations.filter(Boolean).join("\n"), busy)
-        : ""}
     </div>`;
   }
 
@@ -818,6 +861,17 @@ ${esc(aiGoal)}</textarea
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("roughcut-")) return false;
     const verb = name.slice("roughcut-".length);
+    if (verb === "bulk-toggle" || verb === "ai-toggle") {
+      ensureProject();
+      if (verb === "bulk-toggle") bulkOpen = !bulkOpen;
+      else aiOpen = !aiOpen;
+      context.changed();
+      if (typeof document !== "undefined")
+        document
+          .querySelector<HTMLButtonElement>(`[data-action="${name}"]`)
+          ?.focus({ preventScroll: true });
+      return true;
+    }
     if (verb.startsWith("batch-") || verb.startsWith("ai-") || verb === "candidate-preview") {
       try {
         ensureProject();
@@ -1154,6 +1208,8 @@ ${esc(aiGoal)}</textarea
       drafts.clear();
       queueIds = undefined;
       queueExpanded = false;
+      bulkOpen = false;
+      aiOpen = false;
       queueProjectId = context.project().id;
       batchDraft = null;
       unselectedCandidates.clear();
@@ -1163,5 +1219,12 @@ ${esc(aiGoal)}</textarea
     if (source) draft(source);
   }
 
-  return { render, input, action, key, selectedRange, setAsset, setQueue, sync };
+  function setMode(mode: "single" | "batch"): void {
+    ensureProject();
+    bulkOpen = mode === "batch";
+    aiOpen = false;
+    queueExpanded = false;
+  }
+
+  return { render, input, action, key, selectedRange, setAsset, setQueue, setMode, sync };
 }

@@ -551,7 +551,7 @@ ${esc(aiPrompt)}</textarea
         >
       </div>
       ${project.assets.length
-        ? `<div class="media-selection-bar"><div>${button("select-media", search || preferences.filter !== "all" ? "全选当前结果" : "全选", undefined, "quiet", !assets.length)}${button("clear-media-selection", "清空选择", undefined, "quiet", !selectedAssets.length)}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "primary", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger", !selectedAssets.length)}</div></div>`
+        ? `<div class="media-selection-bar"><div>${button("select-media", search || preferences.filter !== "all" ? "全选当前结果" : "全选", undefined, "quiet", !assets.length)}${button("clear-media-selection", "清空选择", undefined, "quiet", !selectedAssets.length)}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "quiet", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger", !selectedAssets.length)}</div></div>`
         : ""}
       <div class="asset-list" data-view="${preferences.view}">
         ${assets

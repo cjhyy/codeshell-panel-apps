@@ -129,9 +129,9 @@ after(async () => {
   assert.deepEqual(errors, [], "The rough cut workflow must not raise browser or CSP errors");
 });
 
-async function openPage() {
+async function openPage(viewport = { width: 1440, height: 1000 }) {
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
+    viewport,
     acceptDownloads: true,
   });
   page.on("pageerror", (error) => errors.push(error.message));
@@ -219,6 +219,25 @@ const state = (page) => page.evaluate(() => window.__roughCutTools.read_video_pr
 const saved = (page) =>
   page.waitForFunction(() => document.querySelector("#save-state")?.textContent === "已自动保存");
 
+async function disclosure(page, name, expanded = true) {
+  const toggle = page.locator(`[data-action="roughcut-${name}-toggle"]`);
+  if ((await toggle.getAttribute("aria-expanded")) !== String(expanded)) await toggle.click();
+  assert.equal(await toggle.getAttribute("aria-expanded"), String(expanded));
+  assert.equal(
+    await page.locator(`#roughcut-${name}-panel`).evaluate((element) => element.hidden),
+    !expanded,
+  );
+}
+async function openAI(page) {
+  await disclosure(page, "bulk");
+  await disclosure(page, "ai");
+}
+async function openUniform(page) {
+  await disclosure(page, "bulk");
+  if (!(await page.locator(".roughcut-uniform").evaluate((element) => element.open)))
+    await page.locator(".roughcut-uniform summary").click();
+}
+
 async function importedVideoQueue() {
   const page = await openPage();
   const bytes = await readFile(sourcePath);
@@ -234,7 +253,123 @@ async function importedVideoQueue() {
   for (const asset of project.assets)
     await page.locator(`[data-select-media="${asset.id}"]`).check();
   await page.locator('[data-action="batch-roughcut"]').click();
+  assert.equal(
+    await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
+    "true",
+    "Explicit batch entry opens its secondary controls",
+  );
+  assert.equal(
+    await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+    "false",
+    "Batch entry still leaves AI as an explicit choice",
+  );
+  assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 0);
   return { page, assets: project.assets };
+}
+
+for (const scenario of [
+  { name: "desktop", viewport: { width: 1440, height: 1000 }, entry: "source" },
+  { name: "390px", viewport: { width: 390, height: 844 }, entry: "sidebar" },
+]) {
+  test(
+    `${scenario.name} ordinary rough-cut entry shows manual I/O in the first screen and keeps AI optional`,
+    { timeout: 60_000 },
+    async () => {
+      const page = await openPage(scenario.viewport);
+      try {
+        await page.locator("#media-input").setInputFiles(sourcePath);
+        await page.waitForFunction(
+          () => window.__roughCutTools.read_video_project().project.assets.length === 1,
+        );
+        await saved(page);
+        const before = (await state(page)).project;
+        const video = before.assets[0];
+        if (scenario.entry === "source")
+          await page.locator(`[data-rough-source="${video.id}"]`).click();
+        else await page.locator('[data-tab="roughcut"]').click();
+        assert.equal(await page.locator("#roughcut-source").inputValue(), video.id);
+        assert.equal(await page.locator("#roughcut-bulk-panel").isVisible(), false);
+        assert.equal(await page.locator("#roughcut-ai-panel").isVisible(), false);
+        assert.equal(
+          await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
+          "false",
+        );
+        assert.equal(
+          await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+          "false",
+        );
+        const library = await page.locator(".library-panel").boundingBox();
+        for (const selector of [
+          "#roughcut-in",
+          "#roughcut-out",
+          '[data-action="roughcut-mark-in"]',
+          '[data-action="roughcut-mark-out"]',
+        ]) {
+          const bounds = await page.locator(selector).boundingBox();
+          assert.ok(
+            bounds &&
+              bounds.x >= 0 &&
+              bounds.x + bounds.width <= scenario.viewport.width + 1 &&
+              bounds.y >= Math.max(0, library.y) &&
+              bounds.y + bounds.height <=
+                Math.min(scenario.viewport.height, library.y + library.height) + 1,
+            `${selector} must be usable before any scrolling at ${scenario.name}`,
+          );
+        }
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
+        assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 0);
+        assert.deepEqual((await state(page)).project, before);
+        await page.waitForFunction(() => {
+          const toast = document.querySelector("#toast");
+          return !toast || getComputedStyle(toast).opacity === "0";
+        });
+        await page.screenshot({
+          path: resolve(artifacts, `rough-cut-manual-${scenario.name}.png`),
+        });
+        await openAI(page);
+        assert.equal(
+          await page.evaluate(() => window.__roughCutAgentTasks.length),
+          0,
+          "Opening optional controls never starts a model task",
+        );
+        await page.locator("#roughcut-in").fill("1");
+        await page.locator("#roughcut-out").fill("2");
+        await page.locator('[data-action="roughcut-save"]').click();
+        await saved(page);
+        assert.equal(
+          await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
+          "true",
+          "Saving a manual mark keeps the chosen disclosure state",
+        );
+        assert.equal(
+          await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+          "true",
+        );
+        assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 0);
+        await page.locator('[data-tab="media"]').click();
+        await page.locator(`[data-rough-source="${video.id}"]`).click();
+        assert.equal(
+          await page.locator("#roughcut-bulk-panel").isVisible(),
+          false,
+          "A new ordinary entry returns to the current source workflow",
+        );
+        assert.equal(
+          await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+          "false",
+        );
+        assert.equal(
+          (await state(page)).project.roughCuts.length,
+          1,
+          "Changing entry mode preserves manual work",
+        );
+      } finally {
+        await page.close();
+      }
+    },
+  );
 }
 
 test(
@@ -244,7 +379,7 @@ test(
     const { page, assets } = await importedVideoQueue();
     try {
       const before = (await state(page)).project;
-      await page.locator(".roughcut-uniform summary").click();
+      await openUniform(page);
       await page.locator('[data-roughcut-field="batch-head"]').fill("1");
       await page.locator('[data-roughcut-field="batch-tail"]').fill("2");
       await page.locator('[data-action="roughcut-batch-plan"]').click();
@@ -262,7 +397,7 @@ test(
       await page.locator('[data-action="roughcut-batch-discard"]').click();
       assert.equal(await page.locator('[data-roughcut-candidates="batch"]').count(), 0);
       assert.deepEqual((await state(page)).project, before);
-      await page.locator(".roughcut-uniform summary").click();
+      await openUniform(page);
       await page.locator('[data-action="roughcut-batch-plan"]').click();
       await page.locator('[data-action="roughcut-batch-save"]').click();
       await saved(page);
@@ -289,12 +424,17 @@ test(
     const { page, assets } = await importedVideoQueue();
     try {
       const before = (await state(page)).project;
+      await openAI(page);
       await page.locator('[data-roughcut-field="ai-goal"]').fill("保留有主体的中间段，先生成候选");
       await page.locator('[data-action="roughcut-ai-start"]').click();
       await page.waitForFunction(
         () =>
           window.__roughCutAgentTasks.length === 1 &&
           window.__roughCutTools.read_video_project().requestToken,
+      );
+      assert.match(
+        await page.locator('[data-action="roughcut-bulk-toggle"]').textContent(),
+        /AI 分析中/,
       );
       const unseen = await page.evaluate(async () => {
         const state = window.__roughCutTools.read_video_project();
@@ -375,6 +515,17 @@ test(
         () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
       );
       assert.deepEqual((await state(page)).project, before);
+      const candidateCheckbox = page.locator('[data-roughcut-field="candidate-enabled"]').first();
+      await candidateCheckbox.uncheck();
+      assert.equal(
+        await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
+        "true",
+      );
+      assert.equal(
+        await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+        "true",
+      );
+      await candidateCheckbox.check();
       await page.waitForFunction(() =>
         Object.keys(localStorage).some(
           (key) =>
@@ -385,6 +536,12 @@ test(
       await page.reload();
       await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
       await page.locator('[data-tab="roughcut"]').click();
+      await page.waitForFunction(() =>
+        document
+          .querySelector('[data-action="roughcut-bulk-toggle"]')
+          ?.textContent?.includes("2 段待审阅"),
+      );
+      await openAI(page);
       await page.locator('[data-roughcut-candidates="ai"]').waitFor();
       assert.match(
         await page.locator(".roughcut-ai-status").textContent(),
@@ -419,6 +576,7 @@ test(
       await page.reload();
       await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
       await page.locator('[data-tab="roughcut"]').click();
+      await openAI(page);
       await page.locator('[data-roughcut-candidates="ai"]').waitFor();
       assert.deepEqual((await state(page)).project, before);
       assert.equal(
@@ -452,6 +610,7 @@ test(
       assert.equal(result.roughCuts.length, 2);
       assert.equal(result.revision, before.revision + 1);
       assert.deepEqual(result.clips, []);
+      await disclosure(page, "bulk");
       await page.locator('[data-action="roughcut-queue-append"]').click();
       await saved(page);
       assert.equal((await state(page)).project.clips.length, 2);
@@ -525,6 +684,7 @@ test(
     const { page } = await importedVideoQueue();
     try {
       const before = (await state(page)).project;
+      await openAI(page);
       await page.locator('[data-action="roughcut-ai-start"]').click();
       await page.waitForFunction(
         () =>
@@ -854,6 +1014,15 @@ test(
       await page.locator('[data-roughcut-field="name"]').fill("第一份的草稿");
       await page.locator('[data-action="roughcut-queue-next"]').click();
       assert.equal(await page.locator("#roughcut-source").inputValue(), second.id);
+      assert.equal(
+        await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
+        "true",
+        "Internal source navigation preserves batch mode",
+      );
+      assert.equal(
+        await page.locator('[data-action="roughcut-ai-toggle"]').getAttribute("aria-expanded"),
+        "false",
+      );
       await seekSource(page, 0);
       await page.keyboard.press("i");
       await seekSource(page, 29);

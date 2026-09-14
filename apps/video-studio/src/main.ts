@@ -513,7 +513,7 @@ const roughcut = createRoughCutUI({
     roughcut.sync();
   },
   edit,
-  selectAsset: selectSource,
+  selectAsset: (id) => selectSource(id, "roughcut", "preserve"),
   seek: seekSource,
   play: playSource,
   toast,
@@ -1338,7 +1338,11 @@ function previewFrame(): number {
     : Math.min(frame, Math.max(0, duration() - 1));
 }
 
-async function selectSource(id: string, mode: "media" | "roughcut" = "roughcut"): Promise<void> {
+async function selectSource(
+  id: string,
+  mode: "media" | "roughcut" = "roughcut",
+  tools: "single" | "batch" | "preserve" = "single",
+): Promise<void> {
   if (exporting || projectSwitching) throw new Error("请等待当前导出或工程切换完成");
   recording.assertSafeToLeave();
   const asset = project.assets.find((item) => item.id === id);
@@ -1350,8 +1354,14 @@ async function selectSource(id: string, mode: "media" | "roughcut" = "roughcut")
   sourceAssetId = id;
   mediaPreview = mode === "media";
   tab = mode;
-  if (mode === "roughcut") roughcut.setAsset(id);
+  if (mode === "roughcut") {
+    roughcut.setAsset(id);
+    if (tools !== "preserve") roughcut.setMode(tools);
+  }
   render();
+  if (mode === "roughcut" && tools === "single") $(".library-panel").scrollTop = 0;
+  if (mode === "roughcut" && tools === "batch")
+    $("#roughcut-bulk-panel")?.scrollIntoView({ block: "start" });
 }
 
 function updateSourcePlayhead(next: number): void {
@@ -2066,7 +2076,7 @@ async function action(name: string, id?: string): Promise<void> {
         .map((asset) => asset.id);
       if (!ids.length) throw new Error("先勾选要一起粗剪的视频或音频");
       roughcut.setQueue(ids);
-      await selectSource(ids[0]!);
+      await selectSource(ids[0]!, "roughcut", "batch");
       break;
     }
     case "trim-source":
@@ -2612,7 +2622,9 @@ studio.addEventListener("click", (event) => {
     stop();
     mediaPreview = false;
     tab = nav.dataset.tab!;
+    if (tab === "roughcut") roughcut.setMode("single");
     render();
+    if (tab === "roughcut") $(".library-panel").scrollTop = 0;
     if (tab === "voiceover") void voiceover.load().catch(fail);
     return;
   }
