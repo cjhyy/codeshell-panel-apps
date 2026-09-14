@@ -15,7 +15,7 @@ permission; their application logic belongs to the Panel package.
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
-| Video Studio 0.5.8 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
+| Video Studio 0.5.9 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
 | Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
 ## Install from GitHub
@@ -39,12 +39,21 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.5.8 is maintained in `apps/video-studio/` and installed from the
+Video Studio 0.5.9 is maintained in `apps/video-studio/` and installed from the
 prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
 custody, and reviewed entry handles; submitted native tasks continue after the
-panel closes. Version 0.5.8 puts manual rough cuts for the current source first:
+panel closes. Version 0.5.9 fixes AI rough-cut requests rejected for exceeding the
+Host's supported turn limit, which could leave a queue at 0/4 without starting.
+Requests now use at most 20 turns, with up to three sources per batch to leave room
+for actual frame sampling, candidate checks, and result submission. The full queue
+still runs in sequence: four sources are processed as 3 + 1. After updating the
+Panel, reopen the original project and use **继续未完成的素材** (continue unfinished
+sources) under **粗剪 → 批量工具 → AI 辅助粗剪**. Completed candidates are retained;
+there is no need to reimport sources or upgrade the Host.
+
+Version 0.5.8 puts manual rough cuts for the current source first:
 source selection, playback and seeking, I/O marks, saved ranges, and insertion into
 the timeline. Batch tools sit below these controls and start collapsed; AI-assisted
 rough cuts require a separate expansion inside them. The explicit multi-selection

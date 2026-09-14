@@ -31,7 +31,10 @@ export interface RoughCutAIState {
   starting: boolean;
 }
 
-const BATCH_SIZE = 6;
+// Leave room for each source's required frame reads, candidate checks and proposal
+// within the released Panel task limit. The queue still covers every selected source.
+const BATCH_SIZE = 3;
+const MAX_TASK_TURNS = 20;
 const active = (phase: RoughCutAIPhase) => phase === "preparing" || phase === "running";
 const sourceSignature = (asset: Asset) =>
   JSON.stringify([
@@ -309,7 +312,7 @@ export class RoughCutAIController {
         key: "video-rough-cut",
         label: `AI 粗剪 ${this.value.completed + 1}–${this.value.completed + batch.length} / ${this.value.assetIds.length}`,
         toolNames: ["Panel"],
-        maxTurns: 32,
+        maxTurns: MAX_TASK_TURNS,
         maxContextTokens: 65536,
         prompt: buildRoughCutPrompt(project.id, this.token, assets, this.prompt),
       })) as PanelTask;

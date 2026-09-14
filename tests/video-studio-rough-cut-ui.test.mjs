@@ -163,6 +163,9 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
       },
       async call(method, params = {}) {
         if (method === "agent.task.start") {
+          const maxTurns = params.maxTurns === undefined ? 8 : Number(params.maxTurns);
+          if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 20)
+            throw new Error("agent.task.start maxTurns must be an integer from 1 to 20");
           const task = {
             id: `roughcut-ai-${window.__roughCutAgentTasks.length}`,
             status: "running",
