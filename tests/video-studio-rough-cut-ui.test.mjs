@@ -436,95 +436,6 @@ test(
         fullPage: true,
       });
 
-      test(
-        "same-ID project replacement clears old AI candidates durably and can retry a failed clear",
-        { timeout: 60_000 },
-        async () => {
-          const { page } = await importedVideoQueue();
-          try {
-            const before = (await state(page)).project;
-            await page.locator('[data-action="roughcut-ai-start"]').click();
-            await page.waitForFunction(
-              () =>
-                window.__roughCutAgentTasks.length === 1 &&
-                window.__roughCutTools.read_video_project().requestToken,
-            );
-            await page.evaluate(async () => {
-              let state = window.__roughCutTools.read_video_project();
-              for (const asset of state.project.assets)
-                for (const seconds of [0.3, 3, 5.7])
-                  await window.__roughCutTools.inspect_video_frame({ assetId: asset.id, seconds });
-              state = window.__roughCutTools.read_video_project();
-              await window.__roughCutTools.propose_video_edit({
-                projectId: state.project.id,
-                requestToken: state.requestToken,
-                baseRevision: state.project.revision,
-                title: "原工程的候选",
-                explanation: "已查看开中尾的真实测试图。",
-                operations: [
-                  {
-                    type: "rough-cuts",
-                    cuts: state.project.assets.map((asset, index) => ({
-                      id: `same-id-${index}`,
-                      assetId: asset.id,
-                      inFrame: 60,
-                      outFrame: 120,
-                      name: "原工程候选",
-                      enabled: true,
-                    })),
-                  },
-                ],
-              });
-              const task = window.__roughCutAgentTasks[0];
-              task.status = "completed";
-              window.__roughCutEmit("agent.task.changed", task);
-            });
-            await page.locator('[data-roughcut-candidates="ai"]').waitFor();
-            await page.waitForFunction(
-              () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
-            );
-            const replacement = { ...before, name: "同 ID 替换后的工程" };
-            const file = {
-              name: "replacement.json",
-              mimeType: "application/json",
-              buffer: Buffer.from(JSON.stringify(replacement)),
-            };
-            await page.evaluate(() => {
-              window.__roughCutRejectDraftClear = true;
-            });
-            await page.locator("#project-input").setInputFiles(file);
-            await page.waitForFunction(() =>
-              document.querySelector("#toast")?.textContent?.includes("模拟 AI 草稿清理失败"),
-            );
-            assert.deepEqual((await state(page)).project, before);
-            assert.equal(
-              await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
-              2,
-            );
-            await page.evaluate(() => {
-              window.__roughCutRejectDraftClear = false;
-            });
-            await page.locator("#project-input").setInputFiles(file);
-            await page.waitForFunction(
-              () =>
-                window.__roughCutTools.read_video_project().project.name === "同 ID 替换后的工程",
-            );
-            await saved(page);
-            assert.equal(await page.locator('[data-roughcut-candidates="ai"]').count(), 0);
-            await page.reload();
-            await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
-            await page.locator('[data-tab="roughcut"]').click();
-            assert.equal((await state(page)).project.name, replacement.name);
-            assert.equal(
-              await page.locator('[data-roughcut-candidates="ai"]').count(),
-              0,
-              "A restart must not resurrect the replaced document's old AI queue",
-            );
-          } finally {
-            await page.close();
-          }
-        },
-      );
       await page.setViewportSize({ width: 640, height: 960 });
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -606,6 +517,95 @@ async function download(page, selector) {
   assert.equal(await item.failure(), null);
   return { name: item.suggestedFilename(), bytes: await readFile(await item.path()) };
 }
+
+test(
+  "same-ID project replacement clears old AI candidates durably and can retry a failed clear",
+  { timeout: 60_000 },
+  async () => {
+    const { page } = await importedVideoQueue();
+    try {
+      const before = (await state(page)).project;
+      await page.locator('[data-action="roughcut-ai-start"]').click();
+      await page.waitForFunction(
+        () =>
+          window.__roughCutAgentTasks.length === 1 &&
+          window.__roughCutTools.read_video_project().requestToken,
+      );
+      await page.evaluate(async () => {
+        let state = window.__roughCutTools.read_video_project();
+        for (const asset of state.project.assets)
+          for (const seconds of [0.3, 3, 5.7])
+            await window.__roughCutTools.inspect_video_frame({ assetId: asset.id, seconds });
+        state = window.__roughCutTools.read_video_project();
+        await window.__roughCutTools.propose_video_edit({
+          projectId: state.project.id,
+          requestToken: state.requestToken,
+          baseRevision: state.project.revision,
+          title: "原工程的候选",
+          explanation: "已查看开中尾的真实测试图。",
+          operations: [
+            {
+              type: "rough-cuts",
+              cuts: state.project.assets.map((asset, index) => ({
+                id: `same-id-${index}`,
+                assetId: asset.id,
+                inFrame: 60,
+                outFrame: 120,
+                name: "原工程候选",
+                enabled: true,
+              })),
+            },
+          ],
+        });
+        const task = window.__roughCutAgentTasks[0];
+        task.status = "completed";
+        window.__roughCutEmit("agent.task.changed", task);
+      });
+      await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+      await page.waitForFunction(
+        () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
+      );
+      const replacement = { ...before, name: "同 ID 替换后的工程" };
+      const file = {
+        name: "replacement.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(replacement)),
+      };
+      await page.evaluate(() => {
+        window.__roughCutRejectDraftClear = true;
+      });
+      await page.locator("#project-input").setInputFiles(file);
+      await page.waitForFunction(() =>
+        document.querySelector("#toast")?.textContent?.includes("模拟 AI 草稿清理失败"),
+      );
+      assert.deepEqual((await state(page)).project, before);
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+        2,
+      );
+      await page.evaluate(() => {
+        window.__roughCutRejectDraftClear = false;
+      });
+      await page.locator("#project-input").setInputFiles(file);
+      await page.waitForFunction(
+        () => window.__roughCutTools.read_video_project().project.name === "同 ID 替换后的工程",
+      );
+      await saved(page);
+      assert.equal(await page.locator('[data-roughcut-candidates="ai"]').count(), 0);
+      await page.reload();
+      await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+      await page.locator('[data-tab="roughcut"]').click();
+      assert.equal((await state(page)).project.name, replacement.name);
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="ai"]').count(),
+        0,
+        "A restart must not resurrect the replaced document's old AI queue",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
 
 test(
   "clicking imported video previews and seeks its real frames without adding to an empty timeline",
