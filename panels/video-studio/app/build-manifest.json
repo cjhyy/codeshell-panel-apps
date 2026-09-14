@@ -16,12 +16,12 @@
     "agent/skills/video-workflow/SKILL.md": "709f107fbb33c6c8c7bae823b47441885b786b3636dc9b04e4f61bfdab89af7f",
     "app/demo-narration.mp3": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
     "app/index.html": "9f9cee3ee0826fed83e2f678021de6b3b51ba59f7a8a578b98b7ed0907cb02ed",
-    "app/main.mjs": "0c6ce8ecfd726df1fcdc5ddd4500fd82ceb102999fa6de04654feb0baaf1e2f4",
+    "app/main.mjs": "889de13604b2f674c56b65db2ee83c8bfe2c05a7c18413109a4de59d96ad784a",
     "app/rough-cut.css": "22936ddf7a509b73d726381e15b21682a35799f190b5544ab3e71a95e4b1ac60",
     "app/style.css": "0485806b12df191b806c51eb5e024bc657398066e41a24edb3e92cf0e4b88b2d",
     "app/tools/folder-scan.mjs": "d89b408c3893bc4c8ed913d6d755723564ee7717accf40b57df07a4aa2763407",
     "app/tools/media-runtime.mjs": "45d58c535f7a4976cc8beb41bda7936688d07f743d92bbac90194265d9447e2d",
     "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
-    "README.md": "44a12d855d8008b8154239a004d08ce4701a54ca81c33862cde9ec0b1f9e39ac"
+    "README.md": "d9da5936bb35aa843773e2d5254fd5914d0a4191d15394dc3be9f5924cf4bf99"
   }
 }

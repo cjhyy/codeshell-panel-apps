@@ -333,6 +333,156 @@ test(
       }
     });
 
+    await t.test("a seeked source is not published until its real frame notification arrives", async () => {
+      const result = await withMediaPage((page) =>
+        page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const library = new MediaLibrary();
+          let decoder, deliver, notify;
+          const notified = new Promise((resolve) => { notify = resolve; });
+          prototype.requestVideoFrameCallback = function (callback) {
+            decoder = this;
+            return request.call(this, (...args) => {
+              // Keep the real decoded frame, but deliver its notification late.
+              deliver = () => callback(...args);
+              notify();
+            });
+          };
+          try {
+            const pending = library.import(document.querySelector("#fixture").files[0]);
+            await notified;
+            if (decoder.seeking)
+              await new Promise((resolve) => decoder.addEventListener("seeked", resolve, { once: true }));
+            const before = { published: library.items.size, connected: decoder.isConnected,
+              paused: decoder.paused, time: decoder.currentTime };
+            deliver();
+            const asset = await pending;
+            const item = library.items.get(asset.id);
+            return { before, jpeg: item.thumbnail?.startsWith("data:image/jpeg;base64,"),
+              paused: item.element.paused, time: item.element.currentTime };
+          } finally {
+            prototype.requestVideoFrameCallback = request;
+            library.clear();
+          }
+        }),
+      );
+      assert.deepEqual(result.before, { published: 0, connected: false, paused: true, time: 0 });
+      assert.equal(result.jpeg, true);
+      assert.equal(result.paused, true);
+      assert.equal(result.time, 0);
+    });
+
+    await t.test("optional frame waits fall back without the API and clean up errors, timeout and cancellation", async () => {
+      const results = await withMediaPage((page) =>
+        page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const cancel = prototype.cancelVideoFrameCallback;
+          const results = [];
+          try {
+            for (const mode of ["absent", "throw", "error", "timeout", "cancel"]) {
+              const library = new MediaLibrary();
+              let cancelled = 0, requested;
+              const requestSeen = new Promise((resolve) => { requested = resolve; });
+              prototype.requestVideoFrameCallback = mode === "absent" ? undefined : function () {
+                requested();
+                if (mode === "throw") throw new Error("frame notifications unavailable");
+                if (mode === "error") queueMicrotask(() => this.dispatchEvent(new Event("error")));
+                return 999_999;
+              };
+              prototype.cancelVideoFrameCallback = function (handle) {
+                cancelled++;
+                cancel.call(this, handle);
+              };
+              const start = performance.now();
+              try {
+                const pending = library.import(document.querySelector("#fixture").files[0])
+                  .then((asset) => ({ asset }), (error) => ({ error: String(error) }));
+                if (mode === "cancel") {
+                  await requestSeen;
+                  library.clear();
+                }
+                const outcome = await pending;
+                const item = outcome.asset && library.items.get(outcome.asset.id);
+                if (item?.element.seeking)
+                  await new Promise((resolve) => item.element.addEventListener("seeked", resolve, { once: true }));
+                results.push({ mode, cancelled, elapsed: performance.now() - start,
+                  error: outcome.error, count: library.items.size,
+                  thumbnail: !!item?.thumbnail, paused: item?.element.paused,
+                  time: item?.element.currentTime, ready: item?.element.readyState });
+              } finally { library.clear(); }
+            }
+          } finally {
+            prototype.requestVideoFrameCallback = request;
+            prototype.cancelVideoFrameCallback = cancel;
+          }
+          return results;
+        }),
+      );
+      for (const result of results) {
+        assert.ok(result.elapsed < 3000, JSON.stringify(result));
+        if (result.mode === "cancel") {
+          assert.match(result.error, /素材读取已取消/);
+          assert.equal(result.count, 0);
+        } else {
+          assert.equal(result.error, undefined, result.mode);
+          assert.equal(result.count, 1, result.mode);
+          assert.equal(result.thumbnail, result.mode === "absent", result.mode);
+          assert.equal(result.paused, true, result.mode);
+          assert.equal(result.time, 0, result.mode);
+          assert.ok(result.ready >= 2, JSON.stringify(result));
+        }
+        assert.equal(result.cancelled, ["error", "timeout", "cancel"].includes(result.mode) ? 1 : 0, result.mode);
+      }
+    });
+
+    await t.test("a real black WebM first frame is a valid cover and stays paused at zero", async () => {
+      const result = await withMediaPage((page) =>
+        page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const source = document.createElement("canvas");
+          source.width = 160; source.height = 90;
+          const ctx = source.getContext("2d");
+          ctx.fillStyle = "black";
+          ctx.fillRect(0, 0, 160, 90);
+          const stream = source.captureStream(30);
+          const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+          const chunks = [];
+          recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+          const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
+          const library = new MediaLibrary();
+          try {
+            recorder.start();
+            for (let i = 0; i < 6; i++) {
+              ctx.fillRect(0, 0, 160, 90);
+              await new Promise((resolve) => setTimeout(resolve, 35));
+            }
+            recorder.stop(); await stopped;
+            const asset = await library.import(new File(chunks, "black.webm", { type: "video/webm" }));
+            const item = library.items.get(asset.id);
+            const image = new Image(); image.src = item.thumbnail; await image.decode();
+            ctx.drawImage(image, 0, 0, 160, 90);
+            const pixels = ctx.getImageData(0, 0, 160, 90).data;
+            return { jpeg: item.thumbnail.startsWith("data:image/jpeg;base64,"),
+              black: pixels.every((value, index) => index % 4 === 3 || value < 8),
+              frames: asset.durationFrames, paused: item.element.paused, time: item.element.currentTime };
+          } finally {
+            if (recorder.state !== "inactive") recorder.stop();
+            stream.getTracks().forEach((track) => track.stop());
+            library.clear();
+          }
+        }),
+      );
+      assert.equal(result.jpeg, true);
+      assert.equal(result.black, true);
+      assert.ok(result.frames > 1);
+      assert.equal(result.paused, true);
+      assert.equal(result.time, 0);
+    });
+
     await t.test("cover recovery for another asset leaves the active source player and ownership untouched", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async () => {

@@ -97,17 +97,63 @@ async function mediaDuration(element: HTMLMediaElement): Promise<number> {
   return duration;
 }
 
+/** Wait for the sought frame to reach composition, not just the media clock. */
+function firstVideoFrame(element: HTMLVideoElement, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false,
+      sought = false,
+      presented = false,
+      videoCallback: number | undefined,
+      animation: number | undefined;
+    const frameCallbacks = typeof element.requestVideoFrameCallback === "function";
+    // Covers are optional. Hidden or stalled renderers must not hold up imports.
+    const timer = setTimeout(() => finish(false), 1000);
+    function finish(ready: boolean) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (videoCallback !== undefined) element.cancelVideoFrameCallback(videoCallback);
+      if (animation !== undefined) cancelAnimationFrame(animation);
+      element.removeEventListener("seeked", onSeeked);
+      element.removeEventListener("error", unavailable);
+      signal.removeEventListener("abort", unavailable);
+      resolve(ready);
+    }
+    const unavailable = () => finish(false);
+    const onSeeked = () => {
+      sought = true;
+      if (presented) finish(true);
+      else if (!frameCallbacks)
+        animation = requestAnimationFrame(() => {
+          animation = requestAnimationFrame(() => finish(true));
+        });
+    };
+    element.addEventListener("seeked", onSeeked);
+    element.addEventListener("error", unavailable);
+    signal.addEventListener("abort", unavailable, { once: true });
+    try {
+      if (frameCallbacks)
+        videoCallback = element.requestVideoFrameCallback(() => {
+          presented = true;
+          if (sought) finish(true);
+        });
+      // Register before seeking on a fresh decoder. It has not played or probed
+      // the end for duration, so an older frame cannot satisfy this callback.
+      element.currentTime = 0;
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 /** Called only on a new decoder, before it becomes available to either player. */
 async function sourceThumbnail(
   element: HTMLVideoElement | HTMLAudioElement | HTMLImageElement,
+  signal: AbortSignal,
 ): Promise<string | undefined> {
   if (element instanceof HTMLVideoElement) {
-    // loadeddata can arrive before Chromium exposes the first decoded frame
-    // to canvas, especially with metadata-only preloading. An explicit seek
-    // asks for that frame without creating a whole-file Blob or stored copy.
-    await eventOnce(element, "seeked", () => {
-      element.currentTime = 0;
-    });
+    if (!(await firstVideoFrame(element, signal))) return;
     if (!element.videoWidth || !element.videoHeight || element.readyState < 2) return;
   } else if (element instanceof HTMLImageElement) {
     await element.decode();
@@ -134,7 +180,7 @@ export class MediaLibrary {
   private playbackOwner?: symbol;
   private voices = new Set<LocalMedia>();
   private generation = 0;
-  private loads = new Map<string, symbol>();
+  private loads = new Map<string, AbortController>();
 
   claimPlayback(): symbol {
     this.playbackOwner = Symbol("playback");
@@ -156,7 +202,8 @@ export class MediaLibrary {
           ? "video"
           : null;
     if (!kind) throw new Error(`不支持的素材：${file.name}`);
-    const ticket = Symbol("import");
+    const ticket = new AbortController();
+    this.loads.get(assetId)?.abort();
     this.loads.set(assetId, ticket);
     const url = URL.createObjectURL(file);
     const element = kind === "image" ? new Image() : document.createElement(kind);
@@ -168,6 +215,11 @@ export class MediaLibrary {
     element.src = url;
     try {
       await ready;
+      // Capture the initial frame before a metadata-less WebM duration probe
+      // visits the end; that probe still returns the new decoder to zero.
+      const thumbnail = await sourceThumbnail(element, ticket.signal);
+      if (generation !== this.generation || this.loads.get(assetId) !== ticket)
+        throw new Error("素材读取已取消");
       const duration = element instanceof HTMLMediaElement ? await mediaDuration(element) : 5;
       if (!Number.isFinite(duration) || duration <= 0) throw new Error("素材缺少有效时长");
       const asset: Asset = existing || {
@@ -194,7 +246,7 @@ export class MediaLibrary {
       if (existing && Math.abs(asset.durationFrames - Math.round(duration * 30)) > 2)
         throw new Error("重连素材的时长不匹配，请选择原文件");
       const item: LocalMedia = { file, url, element, ownsUrl: true };
-      item.thumbnail = await sourceThumbnail(element);
+      item.thumbnail = thumbnail;
       if (generation !== this.generation || this.loads.get(assetId) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
@@ -282,7 +334,8 @@ export class MediaLibrary {
       this.release(existing);
       this.items.delete(asset.id);
     }
-    const ticket = Symbol("connected");
+    const ticket = new AbortController();
+    this.loads.get(asset.id)?.abort();
     this.loads.set(asset.id, ticket);
     const element = asset.kind === "image" ? new Image() : document.createElement(asset.kind);
     if (element instanceof HTMLMediaElement) {
@@ -297,7 +350,7 @@ export class MediaLibrary {
       // Regenerate from the connected source for every storage mode. Saved
       // thumbnail IDs may be absent or stale; a decoded local image also avoids
       // a second request failing after the source has already been restored.
-      item.thumbnail = await sourceThumbnail(element);
+      item.thumbnail = await sourceThumbnail(element, ticket.signal);
       if (generation !== this.generation || this.loads.get(asset.id) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
@@ -371,7 +424,11 @@ export class MediaLibrary {
   }
 
   release(item: LocalMedia): void {
-    for (const [assetId, current] of this.items) if (current === item) this.loads.delete(assetId);
+    for (const [assetId, current] of this.items)
+      if (current === item) {
+        this.loads.get(assetId)?.abort();
+        this.loads.delete(assetId);
+      }
     if (item.element instanceof HTMLMediaElement) item.element.pause();
     item.source?.disconnect();
     item.gain?.disconnect();
@@ -383,6 +440,7 @@ export class MediaLibrary {
 
   clear(): void {
     this.generation++;
+    this.loads.forEach((controller) => controller.abort());
     this.loads.clear();
     this.claimPlayback();
     this.pause();

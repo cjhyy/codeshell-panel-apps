@@ -51,7 +51,9 @@ for actual frame sampling, candidate checks, and result submission. The full que
 still runs in sequence: four sources are processed as 3 + 1. After updating the
 Panel, reopen the original project and use **继续未完成的素材** (continue unfinished
 sources) under **粗剪 → 批量工具 → AI 辅助粗剪**. Completed candidates are retained;
-there is no need to reimport sources or upgrade the Host.
+there is no need to reimport sources or upgrade the Host. Video covers also wait
+for a decoded frame before capture, preventing intermittent empty thumbnails
+when restoring cached sources.
 
 Version 0.5.8 puts manual rough cuts for the current source first:
 source selection, playback and seeking, I/O marks, saved ranges, and insertion into
