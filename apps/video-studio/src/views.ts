@@ -5,6 +5,7 @@ import {
   timelineDuration,
   type Project,
   type EditOperation,
+  type Asset,
 } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
 import { renderCaptionControls } from "./caption-controls";
@@ -43,7 +44,10 @@ export interface ViewState {
   readonly voicePreparationActive?: boolean;
   readonly voicePreparationMarkup?: string;
   readonly roughcutMarkup?: string;
+  readonly selectedMedia?: ReadonlySet<string>;
   readonly sourcePreview?: {
+    readonly id?: string;
+    readonly kind?: Asset["kind"];
     readonly name: string;
     readonly frame: number;
     readonly duration: number;
@@ -133,13 +137,7 @@ export function createViews(state: ViewState) {
           )}
         </div>
       </header>
-      <main
-        class="workspace ${tab === "roughcut"
-          ? "source-mode"
-          : tab === "voiceover"
-            ? "voice-mode"
-            : ""}"
-      >
+      <main class="workspace ${source ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}">
         <nav class="rail" aria-label="工作台导航">
           ${[
             ["media", "素材", "folder"],
@@ -180,6 +178,9 @@ export function createViews(state: ViewState) {
                 height="${previewHeight}"
                 aria-label="${source ? "原素材画面" : "当前剪辑画面"}"
               ></canvas>
+              ${source?.kind === "audio" && source.available
+                ? `<div class="source-audio-preview" data-source-audio>${icon("volume", 42)}<strong>${esc(source.name)}</strong><span>音频素材 · 点击播放试听</span></div>`
+                : ""}
             </div>
             ${source
               ? !source.duration
@@ -194,15 +195,18 @@ export function createViews(state: ViewState) {
                   "</div>"
                 : ""}
           </div>
+          ${source && tab === "media" && source.kind !== "image"
+            ? `<label class="source-preview-scrub">原片位置<input type="range" data-source-scrub aria-label="原素材播放位置" min="0" max="${Math.max(0, source.duration - 1)}" step="1" value="${source.frame}" aria-valuetext="${formatTime(source.frame)}"${source.available ? "" : " disabled"}></label>`
+            : ""}
           <div class="transport">
             <span id="time-current" class="timecode">${formatTime(source?.frame ?? frame)}</span>
             <div>
-              ${tool("start", "回到开头", "back")}${tool(
+              ${tool("start", "回到开头", "back", source?.kind === "image")}${tool(
                 "play",
                 "播放 / 暂停（空格）",
                 playing ? "pause" : "play",
-                source ? !source.available : !project.clips.length,
-              )}${tool("end", "跳到结尾", "next")}
+                source ? !source.available || source.kind === "image" : !project.clips.length,
+              )}${tool("end", "跳到结尾", "next", source?.kind === "image")}
             </div>
             <span class="timecode muted">${formatTime(source?.duration ?? duration())}</span>
           </div>
@@ -211,7 +215,7 @@ export function createViews(state: ViewState) {
               ? `<div class="source-history">${tool("undo", "撤销上一步（⌘ Z）", "undo", !canUndo)}${tool("redo", "重做上一步（⌘ ⇧ Z）", "redo", !canRedo)}</div>`
               : ""}
             ${source
-              ? `<span>${source.available ? "原素材预览 · 标记保留范围后加入成片" : "原素材待重连 · 可继续整理已保存的标记"}</span>${button("return-composition", "返回成片", "film", "quiet")}`
+              ? `<span>${source.available ? (source.kind === "image" ? "图片预览" : tab === "roughcut" ? "原素材预览 · 标记保留范围后加入成片" : "原素材预览 · 点击其他素材继续浏览") : "原素材待重连 · 可继续整理已保存的标记"}</span>${tab === "media" && ["video", "audio"].includes(source.kind ?? "") ? button("trim-source", "粗剪这份素材", "cut", "quiet") : ""}${button("return-composition", "返回成片", "film", "quiet")}`
               : html` <span
                     >${missingAssetCount
                       ? '<i class="warning-dot"></i> ' + missingAssetCount + " 个素材待重连"
@@ -247,8 +251,11 @@ export function createViews(state: ViewState) {
           >${project.clips.length} 个片段 <span class="dot">·</span> ${project.captions.length}
           条字幕 <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
         ><span
-          >${source ? "I 起点 · O 终点 · + 保留" : "空格 播放 · S 切分"}
-          <span class="dot">·</span> ⌘ Z 撤销</span
+          >${tab === "roughcut"
+            ? "I 起点 · O 终点 · + 保留"
+            : source
+              ? "点击素材预览 · ← → 逐帧"
+              : "空格 播放 · S 切分"} <span class="dot">·</span> ⌘ Z 撤销</span
         >
       </footer>
       <dialog id="export-dialog"></dialog>
@@ -467,20 +474,26 @@ ${esc(aiPrompt)}</textarea
             !state.production?.status.hyperframes.available,
           )
         : ""}
-      <div class="library-label">
-        <span>素材库</span><span>${connected ? "素材保存于本机" : "素材保存在此浏览器"}</span>
-      </div>
+      <div class="library-label"><span>点击预览 · 拖动入轨</span><span>勾选后可批量粗剪</span></div>
+      ${project.assets.some((asset) => ["video", "audio"].includes(asset.kind))
+        ? `<div class="media-selection-bar"><div>${button("select-media", search ? "全选搜索结果" : "全选", undefined, "quiet")}${button("clear-media-selection", "清空", undefined, "quiet", !state.selectedMedia?.size)}</div>${button("batch-roughcut", `批量粗剪${state.selectedMedia?.size ? `（${state.selectedMedia.size}）` : ""}`, "cut", "primary", !state.selectedMedia?.size)}</div>`
+        : ""}
       <div class="asset-list">
         ${assets
           .map((asset, i) => {
             const item = mediaItems.get(asset.id);
             const missing = asset.kind !== "demo" && !item;
             return html`<article
-              class="asset-card ${missing ? "missing" : ""}"
+              class="asset-card ${missing ? "missing" : ""} ${source?.id === asset.id
+                ? "is-previewing"
+                : ""}"
               draggable="true"
               data-asset="${esc(asset.id)}"
+              data-preview-asset="${esc(asset.id)}"
             >
-              <div
+              <button
+                type="button"
+                aria-label="预览 ${esc(asset.name)}"
                 class="asset-thumbnail ${asset.kind === "demo" ? "demo-thumb demo-" + (i % 3) : ""}"
               >
                 ${item?.thumbnail
@@ -496,10 +509,21 @@ ${esc(aiPrompt)}</textarea
                     : icon(missing ? "link" : "volume", 30)}<span class="asset-duration"
                   >${seconds(asset.durationFrames)}s</span
                 >${asset.kind === "demo" ? '<span class="demo-label">示例</span>' : ""}
-              </div>
+              </button>
+              ${["video", "audio"].includes(asset.kind)
+                ? `<label class="asset-select"><input type="checkbox" data-select-media="${esc(asset.id)}" aria-label="选择 ${esc(asset.name)} 进行批量粗剪"${state.selectedMedia?.has(asset.id) ? " checked" : ""}>选入批量粗剪</label>`
+                : ""}
               <div class="asset-info">
                 <div>
-                  <strong title="${esc(asset.sourcePath || asset.name)}">${esc(asset.name)}</strong
+                  <button
+                    type="button"
+                    class="asset-preview-name"
+                    title="${esc(asset.sourcePath || asset.name)}"
+                    aria-label="预览 ${esc(asset.name)}"
+                  >
+                    <strong title="${esc(asset.sourcePath || asset.name)}"
+                      >${esc(asset.name)}</strong
+                    ></button
                   ><span
                     >${missing
                       ? "素材待重连"

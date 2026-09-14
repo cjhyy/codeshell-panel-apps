@@ -88,14 +88,40 @@ const button = (
 
 export function createRoughCutUI(context: RoughCutContext) {
   const drafts = new Map<string, Draft>();
-  const asset = () =>
-    context
-      .project()
-      .assets.find(
-        (item) => item.id === context.assetId() && ["video", "audio"].includes(item.kind),
-      );
+  let queueProjectId = "";
+  let queueIds: string[] | undefined;
+  let queueExpanded = false;
+  function ensureProject() {
+    const id = context.project().id;
+    if (id === queueProjectId) return;
+    queueProjectId = id;
+    queueIds = undefined;
+    queueExpanded = false;
+    drafts.clear();
+  }
+  function sources() {
+    ensureProject();
+    return context.project().assets.filter((item) => ["video", "audio"].includes(item.kind));
+  }
+  const asset = () => sources().find((item) => item.id === context.assetId());
+  function queueSources(): Asset[] {
+    const available = sources();
+    const byId = new Map(available.map((item) => [item.id, item]));
+    return queueIds === undefined
+      ? available
+      : queueIds.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+  }
+  /** The caller selects the first source and renders after setting an explicit queue. */
+  function setQueue(ids: string[]): void {
+    const valid = new Set(sources().map((item) => item.id));
+    queueIds = [...new Set(ids)].filter((id) => valid.has(id));
+  }
   const cuts = () => context.project().roughCuts ?? [];
   const sourceCuts = () => cuts().filter((cut) => cut.assetId === context.assetId());
+  const queueCuts = () =>
+    queueSources().flatMap((source) =>
+      cuts().filter((cut) => cut.assetId === source.id && cut.enabled),
+    );
   const frame = (source: Asset) =>
     Math.max(0, Math.min(source.durationFrames, Math.round(context.frame())));
 
@@ -186,8 +212,7 @@ export function createRoughCutUI(context: RoughCutContext) {
   }
 
   function render(): string {
-    const project = context.project();
-    const sources = project.assets.filter((item) => ["video", "audio"].includes(item.kind));
+    const availableSources = sources();
     const source = asset(),
       current = draft(source);
     const entries = sourceCuts();
@@ -200,10 +225,11 @@ export function createRoughCutUI(context: RoughCutContext) {
         <span class="roughcut-tag">先挑段，再成片</span>
       </div>
       <p class="section-description">素材先挑段，加入成片后继续剪辑。</p>
+      ${renderQueue(availableSources)}
       <label class="roughcut-source-label" for="roughcut-source">当前素材</label>
       <select id="roughcut-source" data-roughcut-field="asset" aria-label="选择粗剪素材">
         <option value="" ${!source ? "selected" : ""}>选择一段视频或音频</option>
-        ${sources
+        ${availableSources
           .map(
             (item) =>
               `<option value="${esc(item.id)}"${source?.id === item.id ? " selected" : ""}>${esc(item.name)} · ${durationText(item.durationFrames)}${context.available(item.id) ? "" : " · 素材未连接"}</option>`,
@@ -211,7 +237,7 @@ export function createRoughCutUI(context: RoughCutContext) {
           .join("")}
       </select>
       ${!source || !current
-        ? `<div class="roughcut-empty">${icon("cut", 28)}<h3>${sources.length ? "选好素材，就能开始挑段" : "先导入视频或录音"}</h3><p>预览原素材，按 I 记开始、按 O 记结束，保留喜欢的部分。</p>${!sources.length ? '<button type="button" data-action="import" class="primary">导入素材</button>' : ""}</div>`
+        ? `<div class="roughcut-empty">${icon("cut", 28)}<h3>${availableSources.length ? "选好素材，就能开始挑段" : "先导入视频或录音"}</h3><p>预览原素材，按 I 记开始、按 O 记结束，保留喜欢的部分。</p>${!availableSources.length ? '<button type="button" data-action="import" class="primary">导入素材</button>' : ""}</div>`
         : html`
             ${!usable
               ? `<p class="roughcut-notice">原片尚未连接，已保存的保留段仍在。请选择原文件，保存后会自动恢复。<button type="button" class="quiet" data-action="reconnect-media" data-id="${esc(source.id)}">重新连接原文件</button></p>`
@@ -402,6 +428,75 @@ export function createRoughCutUI(context: RoughCutContext) {
     </section>`;
   }
 
+  function renderQueue(available: Asset[]): string {
+    if (!available.length) return "";
+    const queue = queueSources();
+    const selected = new Set(queue.map((item) => item.id));
+    const ordered = [...queue, ...available.filter((item) => !selected.has(item.id))];
+    const index = queue.findIndex((item) => item.id === context.assetId());
+    const enabled = queueCuts();
+    const marked = new Set(enabled.map((cut) => cut.assetId));
+    const unmarked = queue.filter((item) => !marked.has(item.id)).length;
+    return html`<section class="roughcut-queue" data-roughcut-queue aria-label="批量粗剪队列">
+      <div class="roughcut-queue-heading">
+        <h3>批量粗剪</h3>
+        <button
+          type="button"
+          data-action="roughcut-queue-toggle"
+          aria-expanded="${queueExpanded}"
+          aria-controls="roughcut-queue-picker"
+        >
+          选择/调整 ${queue.length} 份素材
+        </button>
+      </div>
+      <div id="roughcut-queue-picker" ${queueExpanded ? "" : " hidden"}>
+        <div class="roughcut-queue-selection-actions">
+          ${button("queue-all", "全选", "", { disabled: queue.length === available.length })}
+          ${button("queue-clear", "清空", "", { disabled: !queue.length })}
+        </div>
+        <div class="roughcut-queue-list" aria-label="选择批量粗剪素材">
+          ${ordered
+            .map((item) => {
+              const kept = cuts().filter((cut) => cut.assetId === item.id && cut.enabled).length;
+              return `<div class="roughcut-queue-row${item.id === context.assetId() ? " current" : ""}" data-roughcut-queue-row="${esc(item.id)}">
+              <input type="checkbox" data-roughcut-field="queue-enabled" data-asset-id="${esc(item.id)}" aria-label="将 ${esc(item.name)} 加入粗剪队列"${selected.has(item.id) ? " checked" : ""} />
+              <button type="button" data-action="roughcut-queue-select" data-id="${esc(item.id)}"${item.id === context.assetId() ? ' aria-current="true"' : ""} title="${esc(item.sourcePath || item.name)}"><strong>${esc(item.name)}</strong><span>${kept ? `${kept} 段已保留` : "待标记"}${context.available(item.id) ? "" : " · 素材未连接"}</span></button>
+            </div>`;
+            })
+            .join("")}
+        </div>
+      </div>
+      <div class="roughcut-queue-nav">
+        ${button("queue-previous", "上一素材", "back", { disabled: index <= 0 })}
+        <span
+          >${index >= 0
+            ? `${index + 1} / ${queue.length}`
+            : queue.length
+              ? "当前素材未勾选"
+              : "勾选要处理的素材"}</span
+        >
+        ${button("queue-next", "下一素材", "next", {
+          disabled: !queue.length || index >= queue.length - 1,
+        })}
+      </div>
+      <div class="roughcut-queue-summary" data-roughcut-queue-summary>
+        <strong
+          >共 ${enabled.length} 段 ·
+          ${durationText(enabled.reduce((sum, cut) => sum + cut.outFrame - cut.inFrame, 0))}</strong
+        >
+        <p>
+          ${unmarked
+            ? `${unmarked} 份素材尚无勾选的保留段，标记后再加入。`
+            : "按上方素材顺序和各自保留段顺序加入。"}
+        </p>
+        ${button("queue-append", `统一加入 ${enabled.length} 段到成片`, "plus", {
+          className: "primary full",
+          disabled: !enabled.length,
+        })}
+      </div>
+    </section>`;
+  }
+
   function renderCut(
     cut: RoughCut,
     index: number,
@@ -495,6 +590,17 @@ export function createRoughCutUI(context: RoughCutContext) {
   function input(target: Field): boolean {
     const field = target.dataset.roughcutField;
     if (!field) return false;
+    if (field === "queue-enabled") {
+      const id = target.dataset.assetId;
+      if (!id || !sources().some((item) => item.id === id)) return true;
+      const current = queueSources().map((item) => item.id);
+      const checked = (target as HTMLInputElement).checked;
+      if (current.includes(id) !== checked) {
+        setQueue(checked ? [...current, id] : current.filter((item) => item !== id));
+        context.changed();
+      }
+      return true;
+    }
     if (field === "asset") {
       if (target.value !== context.assetId()) fire(context.selectAsset(target.value));
       return true;
@@ -534,10 +640,43 @@ export function createRoughCutUI(context: RoughCutContext) {
 
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("roughcut-")) return false;
+    const verb = name.slice("roughcut-".length);
+    if (verb.startsWith("queue-")) {
+      try {
+        const queue = queueSources();
+        if (verb === "queue-toggle") {
+          queueExpanded = !queueExpanded;
+          context.changed();
+        } else if (verb === "queue-all" || verb === "queue-clear") {
+          queueIds = verb === "queue-all" ? undefined : [];
+          context.changed();
+        } else if (verb === "queue-select") {
+          if (!sources().some((item) => item.id === id)) throw new Error("这份素材已不存在");
+          await context.selectAsset(id!);
+        } else if (verb === "queue-previous" || verb === "queue-next") {
+          const index = queue.findIndex((item) => item.id === context.assetId());
+          const next = queue[index + (verb === "queue-previous" ? -1 : 1)];
+          if (next) await context.selectAsset(next.id);
+        } else if (verb === "queue-append") {
+          const enabled = queueCuts();
+          if (!enabled.length) throw new Error("请先为队列中的素材保存并勾选保留段");
+          const operations = roughCutOperations(
+            context.project(),
+            enabled.map((item) => item.id),
+          );
+          context.edit(operations);
+          context.toast(
+            `已按队列顺序加入 ${new Set(enabled.map((item) => item.assetId)).size} 份素材的 ${enabled.length} 个片段`,
+          );
+        } else return false;
+      } catch (error) {
+        errorMessage(error);
+      }
+      return true;
+    }
     const source = asset(),
       current = draft(source);
     if (!source || !current) return true;
-    const verb = name.slice("roughcut-".length);
     const cut = cuts().find(
       (item) => item.id === (id ?? current.selectedId) && item.assetId === source.id,
     );
@@ -744,13 +883,14 @@ export function createRoughCutUI(context: RoughCutContext) {
   function setAsset(id: string): void {
     if (!id) {
       drafts.clear();
+      queueIds = undefined;
+      queueExpanded = false;
+      queueProjectId = context.project().id;
       return;
     }
-    const source = context
-      .project()
-      .assets.find((item) => item.id === id && ["video", "audio"].includes(item.kind));
+    const source = sources().find((item) => item.id === id);
     if (source) draft(source);
   }
 
-  return { render, input, action, key, selectedRange, setAsset, sync };
+  return { render, input, action, key, selectedRange, setAsset, setQueue, sync };
 }

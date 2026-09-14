@@ -51,6 +51,119 @@
   margin-bottom: -6px;
   font-size: 11px;
 }
+.roughcut-queue {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid #344239;
+  border-radius: 8px;
+  background: #161e19;
+  min-width: 0;
+}
+.roughcut-queue-heading,
+.roughcut-queue-selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.roughcut-queue-heading h3 {
+  margin: 0;
+  font-size: 12px;
+}
+.roughcut-queue-selection-actions {
+  justify-content: flex-end;
+  margin-bottom: 5px;
+}
+.roughcut-queue-heading button,
+.roughcut-queue-selection-actions button {
+  min-height: 25px;
+  padding: 3px 6px;
+  font-size: 10px;
+  background: transparent;
+}
+.roughcut-queue-list {
+  display: grid;
+  gap: 4px;
+  max-height: 152px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.roughcut-queue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.roughcut-queue-row.current {
+  border-color: #4c6855;
+  background: #24332a;
+}
+.roughcut-queue-row button {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  justify-content: stretch;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.roughcut-queue-row button strong {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 500;
+}
+.roughcut-queue-row button span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.roughcut-queue-nav {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+.roughcut-queue-nav button {
+  min-width: 0;
+  padding: 6px 4px;
+  font-size: 10px;
+  gap: 3px;
+}
+.roughcut-queue-nav > span {
+  text-align: center;
+  color: var(--muted);
+  font-size: 10px;
+}
+.roughcut-queue-summary {
+  display: grid;
+  gap: 6px;
+  padding-top: 9px;
+  border-top: 1px solid #303d34;
+  font-size: 11px;
+}
+.roughcut-queue-summary > strong {
+  color: #c7e6d1;
+  font-weight: 500;
+}
+.roughcut-queue-summary > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+}
+.roughcut-queue-summary > button {
+  white-space: normal;
+  min-width: 0;
+  font-size: 11px;
+}
 .roughcut-panel select,
 .roughcut-panel input:not([type="range"]):not([type="checkbox"]) {
   width: 100%;
@@ -486,7 +599,7 @@
 @media (max-width: 640px) {
   .workspace.source-mode {
     grid-template-columns: 46px minmax(0, 1fr);
-    grid-template-rows: 300px auto;
+    grid-template-rows: clamp(380px, calc(56.25vw + 160px), 510px) auto;
   }
   .source-mode > .library-panel {
     padding: 16px 14px;

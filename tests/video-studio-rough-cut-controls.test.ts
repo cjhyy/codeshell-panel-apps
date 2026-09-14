@@ -69,6 +69,10 @@ function fixture() {
     ui,
     input,
     project: () => project,
+    replaceProject: (next: Project) => {
+      project = validateProject(next);
+    },
+    source: () => sourceId,
     undo: () => {
       project = validateProject({ ...history.pop()!, revision: project.revision + 1 });
     },
@@ -234,4 +238,131 @@ test("a rejected commit preserves the marked draft instead of advancing to a new
   assert.deepEqual(f.ui.selectedRange(), { inFrame: 30, outFrame: 60 });
   assert.match(f.ui.render(), /保留这份草稿/);
   assert.equal((f.project().roughCuts ?? []).length, 0);
+});
+
+test("the selected source queue navigates in order while each source retains its unsaved draft", async () => {
+  const f = fixture();
+  const before = structuredClone(f.project());
+  f.input("in", "3");
+  f.input("out", "5");
+  f.ui.setQueue(["source-b", "still", "source-b", "missing", "source-a"]);
+  await f.ui.action("roughcut-queue-previous");
+  assert.equal(f.source(), "source-b");
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 0, outFrame: 600 });
+  f.input("in", "6");
+  f.input("out", "8");
+  await f.ui.action("roughcut-queue-next");
+  assert.equal(f.source(), "source-a");
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 90, outFrame: 150 });
+  const markup = f.ui.render();
+  assert.ok(
+    markup.indexOf('data-roughcut-queue-row="source-b"') <
+      markup.indexOf('data-roughcut-queue-row="source-a"'),
+  );
+  assert.doesNotMatch(markup, /data-roughcut-queue-row="(?:still|missing)"/);
+  f.ui.input({
+    dataset: { roughcutField: "queue-enabled", assetId: "source-a" },
+    checked: false,
+  } as unknown as HTMLInputElement);
+  await f.ui.action("roughcut-queue-next");
+  assert.equal(f.source(), "source-b", "An unchecked current source can enter the selected queue");
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 180, outFrame: 240 });
+  await f.ui.action("roughcut-queue-next");
+  assert.equal(f.source(), "source-b", "Navigation stops at the end of the queue");
+  assert.deepEqual(f.project(), before, "Queue navigation and selection never edit the project");
+});
+
+test("batch insertion respects source order and enabled per-source order with one undo", async () => {
+  const f = fixture();
+  f.input("in", "1");
+  f.input("out", "2");
+  await f.ui.action("roughcut-save");
+  const excluded = f.project().roughCuts![0]!;
+  f.input("in", "3");
+  f.input("out", "5");
+  await f.ui.action("roughcut-save");
+  await f.ui.action("roughcut-up", f.project().roughCuts![1]!.id);
+  f.ui.input({
+    dataset: { roughcutField: "enabled", cutId: excluded.id },
+    checked: false,
+  } as unknown as HTMLInputElement);
+  f.setSource("source-b");
+  f.input("in", "2");
+  f.input("out", "3");
+  await f.ui.action("roughcut-save");
+  f.ui.setQueue(["source-b", "source-a"]);
+  const before = structuredClone(f.project());
+  assert.match(f.ui.render(), /统一加入 2 段到成片/);
+  await f.ui.action("roughcut-queue-append");
+  assert.deepEqual(
+    f.project().clips.map((clip) => [clip.assetId, clip.inFrame, clip.outFrame]),
+    [
+      ["source-b", 60, 90],
+      ["source-a", 90, 150],
+    ],
+  );
+  assert.deepEqual(f.project().roughCuts, before.roughCuts);
+  f.undo();
+  assert.deepEqual(f.project().clips, before.clips);
+  assert.deepEqual(f.project().roughCuts, before.roughCuts, "Undo preserves reusable source marks");
+});
+
+test("batch audio overflow or a rejected edit leaves all existing tracks and markers intact", async () => {
+  const f = fixture();
+  f.replaceProject({
+    ...f.project(),
+    assets: [
+      ...f.project().assets,
+      { id: "voice", name: "配音.wav", kind: "audio", durationFrames: 120 },
+    ],
+  });
+  f.input("in", "0");
+  f.input("out", "1");
+  await f.ui.action("roughcut-save");
+  f.setSource("voice");
+  f.input("in", "0");
+  f.input("out", "3");
+  await f.ui.action("roughcut-save");
+  f.ui.setQueue(["source-a", "voice"]);
+  const before = structuredClone(f.project());
+  await f.ui.action("roughcut-queue-append");
+  assert.match(f.messages.at(-1)!, /音频选段超出画面时长/);
+  assert.deepEqual(f.project(), before, "A late audio failure cannot partially append the video");
+  f.ui.setQueue(["source-a"]);
+  f.rejectEdits();
+  await f.ui.action("roughcut-queue-append");
+  assert.match(f.messages.at(-1)!, /请等待当前制作完成/);
+  assert.deepEqual(f.project(), before);
+});
+
+test("queue selection and drafts reset across projects and explicit same-ID replacement", async () => {
+  const f = fixture();
+  assert.match(f.ui.render(), /id="roughcut-queue-picker"\s+hidden/);
+  await f.ui.action("roughcut-queue-toggle");
+  assert.doesNotMatch(f.ui.render(), /id="roughcut-queue-picker"\s+hidden/);
+  f.ui.setQueue(["source-b"]);
+  f.input("in", "3");
+  f.input("out", "5");
+  assert.doesNotMatch(f.ui.render(), /id="roughcut-queue-picker"\s+hidden/);
+  const next = { ...f.project(), id: "another-project" };
+  f.replaceProject(next);
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 0, outFrame: 900 });
+  assert.match(f.ui.render(), /id="roughcut-queue-picker"\s+hidden/);
+  await f.ui.action("roughcut-queue-next");
+  assert.equal(f.source(), "source-b", "A new project defaults to every eligible source");
+  await f.ui.action("roughcut-queue-previous");
+  assert.equal(f.source(), "source-a");
+  f.ui.setQueue([]);
+  await f.ui.action("roughcut-queue-append");
+  assert.match(f.messages.at(-1)!, /请先为队列中的素材/);
+  f.ui.setAsset("");
+  await f.ui.action("roughcut-queue-next");
+  assert.equal(f.source(), "source-b", "Same-ID project replacement also clears queue intent");
+  await f.ui.action("roughcut-queue-clear");
+  await f.ui.action("roughcut-queue-previous");
+  assert.equal(f.source(), "source-b");
+  await f.ui.action("roughcut-queue-all");
+  await f.ui.action("roughcut-queue-previous");
+  assert.equal(f.source(), "source-a");
+  assert.equal(f.project().clips.length, 0);
 });

@@ -243,6 +243,347 @@ async function download(page, selector) {
 }
 
 test(
+  "clicking imported video previews and seeks its real frames without adding to an empty timeline",
+  { timeout: 45_000 },
+  async () => {
+    const page = await openPage();
+    try {
+      await page.locator("#media-input").setInputFiles(sourcePath);
+      await page.waitForFunction(
+        () => window.__roughCutTools.read_video_project().project.assets.length === 1,
+      );
+      await saved(page);
+      const before = await state(page);
+      const video = before.project.assets[0];
+      assert.deepEqual(before.project.clips, []);
+      const card = page.locator(`[data-preview-asset="${video.id}"]`);
+      await card.locator(".asset-thumbnail").focus();
+      await page.keyboard.press("Space");
+      assert.equal(await page.locator('[data-tab="media"].active').count(), 1);
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "原素材画面");
+      assert.equal(await page.locator("[data-roughcut-panel]").count(), 0);
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector("#preview");
+        const bytes = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        const colors = new Set();
+        for (let offset = 0; offset < bytes.length; offset += 64)
+          colors.add(`${bytes[offset]},${bytes[offset + 1]},${bytes[offset + 2]}`);
+        return colors.size > 20;
+      });
+      const framePixels = () =>
+        page.locator("#preview").evaluate((canvas) => {
+          const pixels = canvas
+            .getContext("2d")
+            .getImageData(0, 0, canvas.width, canvas.height).data;
+          return Array.from(pixels.filter((_, index) => index % 128 === 0));
+        });
+      const firstFrame = await framePixels();
+      await page.locator("[data-source-scrub]").evaluate((input) => {
+        input.value = "120";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await page.waitForFunction(
+        () => document.querySelector("#time-current")?.textContent === "00:00:04:00",
+      );
+      await page.waitForFunction((initial) => {
+        const canvas = document.querySelector("#preview");
+        const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+        return Array.from(pixels.filter((_, index) => index % 128 === 0)).some(
+          (value, index) => value !== initial[index],
+        );
+      }, firstFrame);
+      assert.deepEqual((await state(page)).project, before.project);
+      assert.equal((await state(page)).playheadFrame, before.playheadFrame);
+      await page.locator('.transport [data-action="play"]').click();
+      await page.waitForFunction(
+        () => Number(document.querySelector("[data-source-scrub]")?.value) > 123,
+      );
+      await page.locator('.transport [data-action="play"]').click();
+      assert.deepEqual(
+        (await state(page)).project,
+        before.project,
+        "Preview playback does not save an edit",
+      );
+      assert.equal((await state(page)).playheadFrame, before.playheadFrame);
+      await page.screenshot({
+        path: resolve(artifacts, "media-source-preview.png"),
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 640, height: 960 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: resolve(artifacts, "media-source-preview-mobile.png"),
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('[data-action="return-composition"]').click();
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("[data-source-scrub]").count(), 0);
+      await card.locator(".asset-preview-name").click();
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "原素材画面");
+      assert.equal(await page.locator('[data-tab="media"].active').count(), 1);
+      assert.deepEqual(
+        (await state(page)).project,
+        before.project,
+        "The filename also previews without insertion",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "image and WAV card previews preserve the composition playhead and the add button remains independent",
+  { timeout: 45_000 },
+  async () => {
+    const { page, video, audio } = await importedPage();
+    try {
+      const png = Buffer.from(
+        await page.evaluate(() => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 80;
+          canvas.height = 40;
+          const context = canvas.getContext("2d");
+          context.fillStyle = "#db5823";
+          context.fillRect(0, 0, 40, 40);
+          context.fillStyle = "#186bd9";
+          context.fillRect(40, 0, 40, 40);
+          return canvas.toDataURL("image/png").split(",")[1];
+        }),
+        "base64",
+      );
+      managedSources.set(`/media/asset-${createHash("sha256").update(png).digest("hex")}`, {
+        bytes: png,
+        mimeType: "image/png",
+      });
+      await page.locator("#media-input").setInputFiles({
+        name: "preview-colors.png",
+        mimeType: "image/png",
+        buffer: png,
+      });
+      await page.waitForFunction(
+        () => window.__roughCutTools.read_video_project().project.assets.length === 3,
+      );
+      await saved(page);
+      const before = await state(page);
+      const image = before.project.assets.find((asset) => asset.kind === "image");
+      assert.ok(before.playheadFrame > 0);
+      await page.locator(`[data-preview-asset="${image.id}"] .asset-thumbnail`).click();
+      assert.equal(await page.locator('[data-tab="media"].active').count(), 1);
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "原素材画面");
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector("#preview");
+        const context = canvas.getContext("2d");
+        const left = context.getImageData(canvas.width / 4, canvas.height / 2, 1, 1).data;
+        const right = context.getImageData((canvas.width * 3) / 4, canvas.height / 2, 1, 1).data;
+        return left[0] > 200 && left[1] < 110 && left[2] < 70 && right[0] < 60 && right[2] > 190;
+      });
+      assert.equal(await page.locator('.transport [data-action="play"]').isDisabled(), true);
+      assert.deepEqual((await state(page)).project, before.project);
+      assert.equal((await state(page)).playheadFrame, before.playheadFrame);
+      await page.locator(`[data-preview-asset="${audio.id}"] .asset-preview-name`).click();
+      assert.equal(await page.locator("[data-source-audio]").isVisible(), true);
+      assert.match(await page.locator("[data-source-audio]").textContent(), /音频|声音|播放|试听/);
+      assert.equal(await page.locator('.transport [data-action="play"]').isDisabled(), false);
+      await page.locator('.transport [data-action="play"]').click();
+      await page.waitForFunction(
+        () => Number(document.querySelector("[data-source-scrub]")?.value) > 0,
+      );
+      await page.locator('[data-action="return-composition"]').click();
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("[data-source-audio]").count(), 0);
+      assert.equal((await state(page)).playheadFrame, before.playheadFrame);
+      assert.deepEqual((await state(page)).project, before.project);
+      await page.locator(`[data-add-asset="${video.id}"]`).click();
+      await saved(page);
+      const added = await state(page);
+      assert.equal(added.project.revision, before.project.revision + 1);
+      assert.equal(added.project.clips.length, before.project.clips.length + 1);
+      assert.deepEqual(added.project.clips.slice(0, -1), before.project.clips);
+      assert.equal(added.project.clips.at(-1).assetId, video.id);
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(
+        await page.locator("[data-source-scrub]").count(),
+        0,
+        "Clicking + must not bubble into source preview",
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "selected video cards form an ordered rough-cut queue with independent drafts and one undoable insertion",
+  { timeout: 60_000 },
+  async () => {
+    const { page, video } = await importedPage();
+    try {
+      const secondPath = join(directory, "second-source.mp4");
+      const generated = spawnSync(
+        "ffmpeg",
+        [
+          "-nostdin",
+          "-hide_banner",
+          "-v",
+          "error",
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=blue:size=320x180:rate=30:duration=4",
+          "-c:v",
+          "libx264",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+          secondPath,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        generated.status,
+        0,
+        `The second queue item must be real video: ${generated.stderr}`,
+      );
+      const bytes = await readFile(secondPath);
+      managedSources.set(`/media/asset-${createHash("sha256").update(bytes).digest("hex")}`, {
+        bytes,
+        mimeType: "video/mp4",
+      });
+      await page.locator("#media-input").setInputFiles(secondPath);
+      await page.waitForFunction(
+        () => window.__roughCutTools.read_video_project().project.assets.length === 3,
+      );
+      await saved(page);
+      const before = await state(page);
+      const second = before.project.assets.find((asset) => asset.name === "second-source.mp4");
+      assert.equal(second.durationFrames, 120);
+      await page.locator(`[data-select-media="${second.id}"]`).check();
+      await page.locator(`[data-select-media="${video.id}"]`).check();
+      assert.equal(
+        await page.locator("#preview").getAttribute("aria-label"),
+        "当前剪辑画面",
+        "Selecting cards must not trigger their preview handler",
+      );
+      assert.deepEqual((await state(page)).project, before.project);
+      await page.locator('[data-action="batch-roughcut"]').click();
+      assert.equal(
+        await page.locator("#roughcut-source").inputValue(),
+        video.id,
+        "The initial queue follows the material list, not checkbox click order",
+      );
+      assert.equal(
+        await page.locator('[data-action="roughcut-queue-toggle"]').getAttribute("aria-expanded"),
+        "false",
+      );
+      await seekSource(page, 30);
+      await page.keyboard.press("i");
+      await seekSource(page, 59);
+      await page.keyboard.press("o");
+      await page.locator('[data-roughcut-field="name"]').fill("第一份的草稿");
+      await page.locator('[data-action="roughcut-queue-next"]').click();
+      assert.equal(await page.locator("#roughcut-source").inputValue(), second.id);
+      await seekSource(page, 0);
+      await page.keyboard.press("i");
+      await seekSource(page, 29);
+      await page.keyboard.press("o");
+      await page.locator('[data-roughcut-field="name"]').fill("第二份的草稿");
+      await page.locator('[data-action="roughcut-queue-previous"]').click();
+      assert.equal(await page.locator("#roughcut-in").inputValue(), "00:00:01:00");
+      assert.equal(await page.locator("#roughcut-out").inputValue(), "00:00:02:00");
+      assert.equal(await page.locator('[data-roughcut-field="name"]').inputValue(), "第一份的草稿");
+      assert.deepEqual(
+        (await state(page)).project,
+        before.project,
+        "Switching sources preserves unsaved drafts without edits",
+      );
+      await page.locator('[data-action="roughcut-save"]').click();
+      await saved(page);
+      await page.locator('[data-action="roughcut-queue-next"]').click();
+      assert.equal(await page.locator("#roughcut-in").inputValue(), "00:00:00:00");
+      assert.equal(await page.locator("#roughcut-out").inputValue(), "00:00:01:00");
+      assert.equal(await page.locator('[data-roughcut-field="name"]').inputValue(), "第二份的草稿");
+      await page.locator('[data-action="roughcut-save"]').click();
+      await saved(page);
+      const marked = (await state(page)).project;
+      assert.deepEqual(
+        marked.roughCuts.map(({ assetId, inFrame, outFrame }) => [assetId, inFrame, outFrame]),
+        [
+          [video.id, 30, 60],
+          [second.id, 0, 30],
+        ],
+      );
+      assert.deepEqual(marked.clips, before.project.clips);
+      await page.locator('[data-action="roughcut-queue-toggle"]').focus();
+      await page.keyboard.press("Space");
+      const firstCheckbox = page.locator(
+        `[data-roughcut-field="queue-enabled"][data-asset-id="${video.id}"]`,
+      );
+      await firstCheckbox.uncheck();
+      await firstCheckbox.check();
+      assert.deepEqual(
+        await page
+          .locator("[data-roughcut-queue-row]")
+          .evaluateAll((rows) =>
+            rows
+              .filter((row) => row.querySelector('input[type="checkbox"]')?.checked)
+              .map((row) => row.dataset.roughcutQueueRow),
+          ),
+        [second.id, video.id],
+      );
+      assert.equal(
+        await page.locator('[data-action="roughcut-queue-toggle"]').getAttribute("aria-expanded"),
+        "true",
+        "Editing queue selection must keep its picker open",
+      );
+      await page.screenshot({ path: resolve(artifacts, "rough-cut-queue.png"), fullPage: true });
+      await page.setViewportSize({ width: 640, height: 960 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: resolve(artifacts, "rough-cut-queue-mobile.png"),
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('[data-action="roughcut-queue-append"]').click();
+      await saved(page);
+      const joined = (await state(page)).project;
+      assert.equal(joined.revision, marked.revision + 1, "All selected cuts are one edit");
+      assert.deepEqual(joined.clips.slice(0, before.project.clips.length), before.project.clips);
+      assert.deepEqual(
+        joined.clips
+          .slice(before.project.clips.length)
+          .map(({ assetId, inFrame, outFrame }) => [assetId, inFrame, outFrame]),
+        [
+          [second.id, 0, 30],
+          [video.id, 30, 60],
+        ],
+      );
+      assert.deepEqual(joined.roughCuts, marked.roughCuts);
+      await page.locator('.source-history [data-action="undo"]').click();
+      await saved(page);
+      const undone = (await state(page)).project;
+      assert.deepEqual(
+        undone.clips,
+        before.project.clips,
+        "One undo removes the whole queue insertion",
+      );
+      assert.deepEqual(undone.roughCuts, marked.roughCuts, "Undo keeps the saved source marks");
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "real source preview, I/O marks, invert/undo, ordered cuts and portable project survive a complete workflow",
   { timeout: 90_000 },
   async () => {

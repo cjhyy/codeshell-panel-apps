@@ -82,6 +82,8 @@ let frame = 0;
 let tab = "media";
 let sourceAssetId = "";
 let sourceFrame = 0;
+let mediaPreview = false;
+const selectedMedia = new Set<string>();
 let zoom = 36;
 let search = "";
 let history: Project[] = [];
@@ -607,17 +609,19 @@ function views() {
     voicePreparationActive: voicePreparation.preparing(),
     voicePreparationMarkup: voicePreparation.render(tab === "voiceover"),
     roughcutMarkup: tab === "roughcut" ? roughcut.render() : "",
-    sourcePreview:
-      tab === "roughcut"
-        ? {
-            name: sourceAsset()?.name ?? "选择原素材开始粗剪",
-            frame: sourceFrame,
-            duration: sourceAsset()?.durationFrames ?? 0,
-            available: library.items.has(sourceAssetId),
-            width: previewProject().width,
-            height: previewProject().height,
-          }
-        : undefined,
+    selectedMedia,
+    sourcePreview: sourcePreviewActive()
+      ? {
+          id: sourceAssetId,
+          kind: sourceAsset()?.kind,
+          name: sourceAsset()?.name ?? "选择原素材开始粗剪",
+          frame: sourceFrame,
+          duration: sourceAsset()?.durationFrames ?? 0,
+          available: sourceAsset()?.kind === "demo" || library.items.has(sourceAssetId),
+          width: previewProject().width,
+          height: previewProject().height,
+        }
+      : undefined,
     recordingMarkup: recording.render(),
     spokenMarkup: spoken.render(),
     mediaItems: library.items,
@@ -754,6 +758,8 @@ async function replace(next: Project): Promise<void> {
     future = [];
     frame = 0;
     sourceAssetId = "";
+    mediaPreview = false;
+    selectedMedia.clear();
     sourceFrame = 0;
     roughcut.setAsset("");
     selected = project.clips[0]?.id || "";
@@ -778,8 +784,10 @@ async function replace(next: Project): Promise<void> {
 
 function render(): void {
   stop();
+  for (const id of selectedMedia)
+    if (!project.assets.some((asset) => asset.id === id)) selectedMedia.delete(id);
   if (tab === "roughcut") {
-    if (!sourceAsset()) {
+    if (!sourceAsset() || !["video", "audio"].includes(sourceAsset()!.kind)) {
       sourceAssetId =
         project.assets.find((asset) => ["video", "audio"].includes(asset.kind))?.id ?? "";
       sourceFrame = 0;
@@ -897,14 +905,16 @@ function draw(): void {
 }
 
 function sourceAsset(): Asset | undefined {
-  return project.assets.find(
-    (asset) => asset.id === sourceAssetId && ["video", "audio"].includes(asset.kind),
-  );
+  return project.assets.find((asset) => asset.id === sourceAssetId);
+}
+
+function sourcePreviewActive(): boolean {
+  return tab === "roughcut" || (tab === "media" && mediaPreview && !!sourceAsset());
 }
 
 /** A disposable source monitor: it never changes the saved composition or its playhead. */
 function previewProject(inFrame = 0, outFrame = sourceAsset()?.durationFrames ?? 0): Project {
-  if (tab !== "roughcut") return project;
+  if (!sourcePreviewActive()) return project;
   const asset = sourceAsset();
   const scale = Math.min(
     1,
@@ -929,34 +939,41 @@ function previewProject(inFrame = 0, outFrame = sourceAsset()?.durationFrames ??
 }
 
 function previewFrame(): number {
-  return tab === "roughcut"
+  return sourcePreviewActive()
     ? Math.min(sourceFrame, Math.max(0, (sourceAsset()?.durationFrames ?? 0) - 1))
     : Math.min(frame, Math.max(0, duration() - 1));
 }
 
-async function selectSource(id: string): Promise<void> {
-  assertEditable();
+async function selectSource(id: string, mode: "media" | "roughcut" = "roughcut"): Promise<void> {
+  if (exporting || projectSwitching) throw new Error("请等待当前导出或工程切换完成");
   recording.assertSafeToLeave();
   const asset = project.assets.find((item) => item.id === id);
-  if (!asset || !["video", "audio"].includes(asset.kind)) throw new Error("请选择视频或音频原素材");
+  if (!asset || (mode === "roughcut" && !["video", "audio"].includes(asset.kind)))
+    throw new Error("请选择视频或音频原素材");
   voiceover.stopPreview();
   stop();
+  if (sourceAssetId !== id) sourceFrame = 0;
   sourceAssetId = id;
-  sourceFrame = 0;
-  tab = "roughcut";
-  roughcut.setAsset(id);
+  mediaPreview = mode === "media";
+  tab = mode;
+  if (mode === "roughcut") roughcut.setAsset(id);
   render();
 }
 
 function updateSourcePlayhead(next: number): void {
   sourceFrame = Math.max(0, Math.min(Math.round(next), sourceAsset()?.durationFrames ?? 0));
-  if (tab !== "roughcut") return;
+  if (!sourcePreviewActive()) return;
   if ($("#time-current")) $("#time-current").textContent = formatTime(sourceFrame);
-  roughcut.sync();
+  const scrub = studio.querySelector<HTMLInputElement>("[data-source-scrub]");
+  if (scrub) {
+    scrub.value = String(sourceFrame);
+    scrub.setAttribute("aria-valuetext", formatTime(sourceFrame));
+  }
+  if (tab === "roughcut") roughcut.sync();
 }
 
 async function seekSource(next: number): Promise<void> {
-  if (tab !== "roughcut" || exporting || projectSwitching) return;
+  if (!sourcePreviewActive() || exporting || projectSwitching) return;
   stop();
   updateSourcePlayhead(next);
   const version = ++seekVersion;
@@ -973,7 +990,8 @@ async function seekSource(next: number): Promise<void> {
 }
 
 async function playSource(inFrame?: number, outFrame?: number): Promise<void> {
-  if (tab !== "roughcut" || exporting || projectSwitching) return;
+  if (!sourcePreviewActive() || exporting || projectSwitching || sourceAsset()?.kind === "image")
+    return;
   voiceover.stopPreview();
   if (playback && inFrame === undefined) {
     stop();
@@ -984,7 +1002,8 @@ async function playSource(inFrame?: number, outFrame?: number): Promise<void> {
   stop();
   const asset = sourceAsset();
   if (!asset) throw new Error("请先选择原素材");
-  if (!library.items.has(asset.id)) throw new Error("请先在素材库重新连接这份原素材");
+  if (asset.kind !== "demo" && !library.items.has(asset.id))
+    throw new Error("请先在素材库重新连接这份原素材");
   const start = Math.max(0, Math.min(inFrame ?? 0, asset.durationFrames - 1));
   const end = Math.max(start + 1, Math.min(outFrame ?? asset.durationFrames, asset.durationFrames));
   const from =
@@ -1025,6 +1044,11 @@ function updatePlayhead(next: number): void {
 async function seek(next: number): Promise<void> {
   if (exporting || projectSwitching) return;
   stop();
+  if (sourcePreviewActive()) {
+    mediaPreview = false;
+    tab = "media";
+    render();
+  }
   frame = Math.max(0, Math.min(Math.round(next), Math.max(0, duration() - 1)));
   updatePlayhead(frame);
   const version = ++seekVersion;
@@ -1633,8 +1657,34 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "return-composition":
+      mediaPreview = false;
       tab = "media";
       render();
+      break;
+    case "batch-roughcut": {
+      const ids = project.assets
+        .filter((asset) => selectedMedia.has(asset.id) && ["video", "audio"].includes(asset.kind))
+        .map((asset) => asset.id);
+      if (!ids.length) throw new Error("先勾选要一起粗剪的视频或音频");
+      roughcut.setQueue(ids);
+      await selectSource(ids[0]!);
+      break;
+    }
+    case "trim-source":
+      await selectSource(sourceAssetId);
+      break;
+    case "select-media":
+      for (const asset of project.assets)
+        if (
+          ["video", "audio"].includes(asset.kind) &&
+          asset.name.toLowerCase().includes(search.toLowerCase())
+        )
+          selectedMedia.add(asset.id);
+      $(".library-panel").innerHTML = views().renderLibrary();
+      break;
+    case "clear-media-selection":
+      selectedMedia.clear();
+      $(".library-panel").innerHTML = views().renderLibrary();
       break;
     case "import":
       reconnectAssetId = "";
@@ -1903,15 +1953,15 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "start":
-      if (tab === "roughcut") await seekSource(0);
+      if (sourcePreviewActive()) await seekSource(0);
       else await seek(0);
       break;
     case "end":
-      if (tab === "roughcut") await seekSource(sourceAsset()?.durationFrames ?? 0);
+      if (sourcePreviewActive()) await seekSource(sourceAsset()?.durationFrames ?? 0);
       else await seek(duration() - 1);
       break;
     case "play": {
-      if (tab === "roughcut") {
+      if (sourcePreviewActive()) {
         await playSource();
         break;
       }
@@ -1944,7 +1994,8 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "export":
-      if (tab === "roughcut") {
+      if (sourcePreviewActive()) {
+        mediaPreview = false;
         tab = "media";
         render();
       }
@@ -2088,6 +2139,7 @@ studio.addEventListener("click", (event) => {
     }
     voiceover.stopPreview();
     stop();
+    mediaPreview = false;
     tab = nav.dataset.tab!;
     render();
     if (tab === "voiceover") void voiceover.load().catch(fail);
@@ -2123,6 +2175,13 @@ studio.addEventListener("click", (event) => {
     }
     return;
   }
+  // Explicit card controls keep their own behavior; clicking the rest previews only.
+  if (target.closest("[data-select-media],.asset-select")) return;
+  const previewAsset = target.closest<HTMLElement>("[data-preview-asset]");
+  if (previewAsset) {
+    void selectSource(previewAsset.dataset.previewAsset!, "media").catch(fail);
+    return;
+  }
   const caption = target.closest<HTMLElement>("[data-edit-caption]");
   if (caption) {
     stop();
@@ -2137,6 +2196,7 @@ studio.addEventListener("click", (event) => {
   const audioTarget = target.closest<HTMLElement>("[data-audio-clip]");
   if (audioTarget) {
     stop();
+    mediaPreview = false;
     selected = audioTarget.dataset.audioClip!;
     frame = project.audioClips?.find((c) => c.id === selected)?.startFrame ?? frame;
     render();
@@ -2145,6 +2205,7 @@ studio.addEventListener("click", (event) => {
   const clipTarget = target.closest<HTMLElement>("[data-clip]");
   if (clipTarget && !target.closest("[data-trim]")) {
     stop();
+    mediaPreview = false;
     selected = clipTarget.dataset.clip!;
     const clip = timelineClips(project).find((item) => item.id === selected)!;
     frame = Math.max(
@@ -2160,6 +2221,24 @@ studio.addEventListener("click", (event) => {
 });
 
 studio.addEventListener("input", (event) => {
+  const sourceScrub = event.target as HTMLInputElement;
+  if (sourceScrub.matches("[data-source-scrub]")) {
+    void seekSource(Number(sourceScrub.value)).catch(fail);
+    return;
+  }
+  if (sourceScrub.matches("[data-select-media]")) {
+    if (sourceScrub.checked) selectedMedia.add(sourceScrub.dataset.selectMedia!);
+    else selectedMedia.delete(sourceScrub.dataset.selectMedia!);
+    const scroll = $(".library-panel").scrollTop;
+    $(".library-panel").innerHTML = views().renderLibrary();
+    $(".library-panel").scrollTop = scroll;
+    studio
+      .querySelector<HTMLInputElement>(
+        `[data-select-media="${CSS.escape(sourceScrub.dataset.selectMedia!)}"]`,
+      )
+      ?.focus({ preventScroll: true });
+    return;
+  }
   if (
     (tab === "roughcut" && roughcut.input(event.target as HTMLInputElement)) ||
     recording.input(event.target as HTMLInputElement) ||
@@ -2433,6 +2512,7 @@ $("#srt-input").addEventListener("change", async (event) => {
 document.addEventListener("keydown", (event) => {
   if (
     (event.target as HTMLElement).closest("input,textarea,select,[contenteditable]") ||
+    (event.code === "Space" && (event.target as HTMLElement).closest("button")) ||
     document.querySelector("dialog[open]")
   )
     return;
@@ -2443,6 +2523,12 @@ document.addEventListener("keydown", (event) => {
     if (event.target === document.body || studio.contains(event.target as Node))
       roughcut.key(event);
     return;
+  } else if (sourcePreviewActive()) {
+    if (event.code === "Space" && !(event.target as HTMLElement).closest("button")) name = "play";
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      void seekSource(sourceFrame + (event.key === "ArrowLeft" ? -1 : 1)).catch(fail);
+    }
   } else if (event.code === "Space") name = "play";
   else if (event.key.toLowerCase() === "s" && !event.metaKey && !event.ctrlKey) name = "split";
   else if (["Backspace", "Delete"].includes(event.key)) name = "remove";
