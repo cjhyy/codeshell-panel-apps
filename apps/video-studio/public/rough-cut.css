@@ -661,3 +661,79 @@
   flex-shrink: 0;
   gap: 3px;
 }
+.roughcut-batch-tools {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.roughcut-uniform,
+.roughcut-ai-controls,
+.roughcut-candidates {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.roughcut-uniform summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.roughcut-batch-tools label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.roughcut-batch-tools input:not([type="checkbox"]),
+.roughcut-batch-tools select,
+.roughcut-batch-tools textarea {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+.roughcut-uniform-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+.roughcut-uniform-fields[hidden] {
+  display: none;
+}
+.roughcut-batch-tools p {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.roughcut-candidate-note {
+  white-space: pre-line;
+  max-height: 160px;
+  overflow: auto;
+}
+.roughcut-candidate-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+.roughcut-candidate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+.roughcut-candidate-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.roughcut-candidate-row > button {
+  flex-shrink: 0;
+}
+.roughcut-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}

@@ -42,7 +42,7 @@ export function validateAudioEnhanceInput(raw: unknown): AudioEnhanceInput {
     Object.keys(input).some((key) => !["assetId", "preset", "denoise", "normalize"].includes(key))
   )
     throw new Error("Unsupported audio enhancement parameter");
-  if (typeof input.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(input.assetId))
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
     throw new Error("Select an authorized source asset");
   if (input.preset !== undefined && input.preset !== "light" && input.preset !== "balanced")
     throw new Error("Audio enhancement preset must be light or balanced");

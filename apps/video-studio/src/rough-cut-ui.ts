@@ -3,9 +3,12 @@ import {
   createRoughCut,
   exportRoughCutsCsv,
   invertRoughCuts,
+  planUniformRoughCuts,
   roughCutOperations,
   splitRoughCut,
+  validateRoughCuts,
 } from "./rough-cut";
+import type { RoughCutAIController } from "./rough-cut-ai";
 import { escapeHtml as esc, html, icon } from "./icons";
 
 export interface RoughCutContext {
@@ -23,6 +26,8 @@ export interface RoughCutContext {
   downloadCsv(name: string, contents: string): void;
   extractReference?(assetId: string, inFrame: number, outFrame: number): Promise<void>;
   canExtractReference?(): boolean;
+  ai?: RoughCutAIController;
+  saveAICandidates?(operations: EditOperation[]): Promise<void>;
 }
 
 type Field = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
@@ -91,12 +96,35 @@ export function createRoughCutUI(context: RoughCutContext) {
   let queueProjectId = "";
   let queueIds: string[] | undefined;
   let queueExpanded = false;
+  let batchMode = "trim",
+    batchHead = "0",
+    batchTail = "0",
+    batchLength = "5",
+    batchPosition = "start";
+  let aiGoal = "";
+  let batchDraft: {
+    projectId: string;
+    cuts: RoughCut[];
+    basis: Map<string, string>;
+    note: string;
+  } | null = null;
+  const unselectedCandidates = new Set<string>();
+  const sourceBasis = (source: Asset) =>
+    JSON.stringify([
+      source.kind,
+      source.durationFrames,
+      source.mediaId,
+      source.size,
+      source.lastModified,
+    ]);
   function ensureProject() {
     const id = context.project().id;
     if (id === queueProjectId) return;
     queueProjectId = id;
     queueIds = undefined;
     queueExpanded = false;
+    batchDraft = null;
+    unselectedCandidates.clear();
     drafts.clear();
   }
   function sources() {
@@ -494,6 +522,135 @@ export function createRoughCutUI(context: RoughCutContext) {
           disabled: !enabled.length,
         })}
       </div>
+      ${renderBatchTools(queue)}
+    </section>`;
+  }
+
+  function renderBatchTools(queue: Asset[]): string {
+    const ai = context.ai?.state;
+    const busy = context.ai?.busy ?? false;
+    const aiCurrent = ai?.projectId === context.project().id;
+    return html`<div class="roughcut-batch-tools">
+      <details class="roughcut-uniform">
+        <summary>统一去片头片尾 / 保留指定时长</summary>
+        <label
+          >处理方式<select data-roughcut-field="batch-mode" aria-label="统一裁剪方式">
+            <option value="trim" ${batchMode === "trim" ? "selected" : ""}>去片头片尾</option>
+            <option value="keep" ${batchMode === "keep" ? "selected" : ""}>保留指定时长</option>
+          </select></label
+        >
+        <div class="roughcut-uniform-fields" ${batchMode === "trim" ? "" : "hidden"}>
+          <label
+            >去片头（秒）<input
+              data-roughcut-field="batch-head"
+              value="${esc(batchHead)}"
+              inputmode="decimal"
+              aria-label="统一去片头秒数"
+          /></label>
+          <label
+            >去片尾（秒）<input
+              data-roughcut-field="batch-tail"
+              value="${esc(batchTail)}"
+              inputmode="decimal"
+              aria-label="统一去片尾秒数"
+          /></label>
+        </div>
+        <div class="roughcut-uniform-fields" ${batchMode === "keep" ? "" : "hidden"}>
+          <label
+            >保留（秒）<input
+              data-roughcut-field="batch-length"
+              value="${esc(batchLength)}"
+              inputmode="decimal"
+              aria-label="统一保留秒数"
+          /></label>
+          <label
+            >位置<select data-roughcut-field="batch-position" aria-label="统一保留位置">
+              ${(
+                [
+                  ["start", "开头"],
+                  ["middle", "中间"],
+                  ["end", "结尾"],
+                ] as const
+              )
+                .map(
+                  ([value, label]) =>
+                    `<option value="${value}"${batchPosition === value ? " selected" : ""}>${label}</option>`,
+                )
+                .join("")}
+            </select></label
+          >
+        </div>
+        <p>先生成候选段，预览确认后保存。素材过短时会单独提示。</p>
+        ${button("batch-plan", `为 ${queue.length} 份素材生成候选段`, "cut", {
+          disabled: !queue.length || busy,
+        })}
+      </details>
+      <div class="roughcut-ai-controls">
+        <label
+          >AI 粗剪要求<textarea
+            data-roughcut-field="ai-goal"
+            rows="2"
+            maxlength="2000"
+            placeholder="例如：保留有主体的旅行镜头，口播保留完整的重点句子"
+          >
+${esc(aiGoal)}</textarea
+          >
+        </label>
+        <p>AI 会实际查看多个时间点的画面，音频依据真实转写。先生成可预览的候选段。</p>
+        ${button("ai-start", `AI 批量粗剪 ${queue.length} 份素材`, "sparkles", {
+          disabled: !queue.length || busy || !context.ai || !!(aiCurrent && ai!.cuts.length),
+          className: "primary full",
+        })}
+        ${aiCurrent && ai!.cuts.length && !busy
+          ? "<p>先保存或丢弃下方候选段，再开始新的分析。</p>"
+          : ""}
+        ${!context.ai
+          ? '<p class="roughcut-notice">请在 CodeShell 面板内连接 AI 任务能力。</p>'
+          : ""}
+        ${aiCurrent && ai?.message
+          ? `<p class="roughcut-ai-status" role="status">${esc(ai.message)}</p>`
+          : ""}
+        ${aiCurrent && busy ? button("ai-cancel", "取消分析，保留已完成结果") : ""}
+        ${aiCurrent && ["failed", "cancelled"].includes(ai!.phase)
+          ? button("ai-retry", "继续未完成的素材")
+          : ""}
+      </div>
+      ${batchDraft ? renderCandidates(batchDraft.cuts, "batch", batchDraft.note) : ""}
+      ${aiCurrent && ai!.cuts.length
+        ? renderCandidates(ai!.cuts, "ai", ai!.explanations.filter(Boolean).join("\n"), busy)
+        : ""}
+    </div>`;
+  }
+
+  function renderCandidates(
+    candidates: RoughCut[],
+    kind: "batch" | "ai",
+    note: string,
+    busy = false,
+  ): string {
+    const chosen = candidates.filter((cut) => !unselectedCandidates.has(cut.id));
+    return html`<section
+      class="roughcut-candidates"
+      data-roughcut-candidates="${kind}"
+      aria-label="${kind === "ai" ? "AI" : "统一裁剪"}候选保留段"
+    >
+      <h4>${kind === "ai" ? "AI" : "统一裁剪"}候选 · ${candidates.length} 段</h4>
+      ${note ? `<p class="roughcut-candidate-note">${esc(note)}</p>` : ""}
+      <div class="roughcut-candidate-list">
+        ${candidates
+          .map((cut) => {
+            const source = sources().find((asset) => asset.id === cut.assetId);
+            return `<div class="roughcut-candidate-row"><input type="checkbox" data-roughcut-field="candidate-enabled" data-id="${esc(cut.id)}" aria-label="保留候选 ${esc(source?.name || cut.assetId)} ${roughCutTimecode(cut.inFrame)}"${unselectedCandidates.has(cut.id) ? "" : " checked"} /><div><strong>${esc(source?.name || "素材已移除")}</strong><span>${roughCutTimecode(cut.inFrame)} → ${roughCutTimecode(cut.outFrame)}</span><span>${esc(cut.name)}</span></div>${button("candidate-preview", "预览", "play", { id: cut.id, disabled: !source || !context.available(cut.assetId) })}</div>`;
+          })
+          .join("")}
+      </div>
+      <div class="roughcut-candidate-actions">
+        ${button(`${kind}-save`, `保存勾选的 ${chosen.length} 段`, "plus", {
+          disabled: !chosen.length || busy,
+          className: "primary",
+        })}${button(`${kind}-discard`, "丢弃候选", "", { disabled: busy })}
+      </div>
+      <p>保存后可继续调整 I/O，再用「统一加入」放进成片。</p>
     </section>`;
   }
 
@@ -590,6 +747,26 @@ export function createRoughCutUI(context: RoughCutContext) {
   function input(target: Field): boolean {
     const field = target.dataset.roughcutField;
     if (!field) return false;
+    if (field.startsWith("batch-") || field === "ai-goal" || field === "candidate-enabled") {
+      ensureProject();
+      if (field === "batch-mode" && ["trim", "keep"].includes(target.value)) {
+        batchMode = target.value;
+        // Keep the settings disclosure open when changing modes.
+        context.changed();
+        if (typeof document !== "undefined")
+          document.querySelector<HTMLDetailsElement>(".roughcut-uniform")?.setAttribute("open", "");
+      } else if (field === "batch-head") batchHead = target.value.slice(0, 30);
+      else if (field === "batch-tail") batchTail = target.value.slice(0, 30);
+      else if (field === "batch-length") batchLength = target.value.slice(0, 30);
+      else if (field === "batch-position") batchPosition = target.value;
+      else if (field === "ai-goal") aiGoal = target.value.slice(0, 2000);
+      else if (field === "candidate-enabled" && target.dataset.id) {
+        if ((target as HTMLInputElement).checked) unselectedCandidates.delete(target.dataset.id);
+        else unselectedCandidates.add(target.dataset.id);
+        context.changed();
+      }
+      return true;
+    }
     if (field === "queue-enabled") {
       const id = target.dataset.assetId;
       if (!id || !sources().some((item) => item.id === id)) return true;
@@ -641,6 +818,98 @@ export function createRoughCutUI(context: RoughCutContext) {
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("roughcut-")) return false;
     const verb = name.slice("roughcut-".length);
+    if (verb.startsWith("batch-") || verb.startsWith("ai-") || verb === "candidate-preview") {
+      try {
+        ensureProject();
+        if (verb === "batch-plan") {
+          const queue = queueSources();
+          const number = (value: string) => {
+            const result = parseRoughCutTime(value);
+            if (result === undefined) throw new Error("请输入有效的秒数或时码");
+            return result;
+          };
+          const result = planUniformRoughCuts(
+            context.project(),
+            queue.map((asset) => asset.id),
+            batchMode === "trim"
+              ? { mode: "trim", headFrames: number(batchHead), tailFrames: number(batchTail) }
+              : {
+                  mode: "keep",
+                  durationFrames: number(batchLength),
+                  position: batchPosition as "start" | "middle" | "end",
+                },
+          );
+          batchDraft = {
+            projectId: context.project().id,
+            cuts: result.cuts,
+            basis: new Map(queue.map((asset) => [asset.id, sourceBasis(asset)])),
+            note: [
+              result.skippedIds.length
+                ? `${result.skippedIds.length} 份素材去头尾后没有剩余，已跳过：${queue
+                    .filter((asset) => result.skippedIds.includes(asset.id))
+                    .map((asset) => asset.name)
+                    .join("、")}`
+                : "",
+              result.shorterIds.length
+                ? `${result.shorterIds.length} 份素材短于指定时长，候选保留整段。`
+                : "",
+              "仅生成候选段，现有手动标记仍然保留。",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          };
+          context.changed();
+        } else if (verb === "batch-save") {
+          if (!batchDraft || batchDraft.projectId !== context.project().id)
+            throw new Error("候选段已失效，请重新生成");
+          const chosen = batchDraft.cuts.filter((cut) => !unselectedCandidates.has(cut.id));
+          if (!chosen.length) throw new Error("请勾选要保存的候选段");
+          for (const cut of chosen) {
+            const source = sources().find((asset) => asset.id === cut.assetId);
+            if (!source || batchDraft.basis.get(source.id) !== sourceBasis(source))
+              throw new Error("素材或原片时长已改变，请重新生成候选段");
+          }
+          saveCuts(validateRoughCuts([...cuts(), ...chosen], context.project().assets));
+          batchDraft.cuts = batchDraft.cuts.filter(
+            (cut) => !chosen.some((item) => item.id === cut.id),
+          );
+          if (!batchDraft.cuts.length) batchDraft = null;
+          context.toast(`已保存 ${chosen.length} 个保留段，预览调整后可统一加入成片`);
+          context.changed();
+        } else if (verb === "batch-discard") {
+          batchDraft = null;
+          context.changed();
+        } else if (verb === "candidate-preview") {
+          const candidate = [...(batchDraft?.cuts ?? []), ...(context.ai?.state.cuts ?? [])].find(
+            (cut) => cut.id === id,
+          );
+          if (!candidate || !context.available(candidate.assetId))
+            throw new Error("候选段原素材未连接，请先重新连接");
+          await context.selectAsset(candidate.assetId);
+          await context.play(candidate.inFrame, candidate.outFrame);
+        } else if (verb === "ai-start")
+          await context.ai?.start(
+            queueSources().map((asset) => asset.id),
+            aiGoal,
+          );
+        else if (verb === "ai-cancel") await context.ai?.cancel();
+        else if (verb === "ai-retry") await context.ai?.retry();
+        else if (verb === "ai-discard") await context.ai?.discard();
+        else if (verb === "ai-save") {
+          if (!context.ai) throw new Error("AI 粗剪尚未连接");
+          const chosen = context.ai.state.cuts
+            .filter((cut) => !unselectedCandidates.has(cut.id))
+            .map((cut) => cut.id);
+          const operations = context.ai.reviewOperations(chosen);
+          if (context.saveAICandidates) await context.saveAICandidates(operations);
+          else context.edit(operations);
+          await context.ai.didSave(chosen);
+        } else return false;
+      } catch (error) {
+        errorMessage(error);
+      }
+      return true;
+    }
     if (verb.startsWith("queue-")) {
       try {
         const queue = queueSources();
@@ -886,6 +1155,8 @@ export function createRoughCutUI(context: RoughCutContext) {
       queueIds = undefined;
       queueExpanded = false;
       queueProjectId = context.project().id;
+      batchDraft = null;
+      unselectedCandidates.clear();
       return;
     }
     const source = sources().find((item) => item.id === id);

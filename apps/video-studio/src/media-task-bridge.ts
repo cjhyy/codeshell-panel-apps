@@ -1,6 +1,7 @@
 import type { PanelBridge } from "./host";
 import type { MediaJob } from "./production";
 import { createPanelRuntime, taskValue, runtimeCancelled } from "./sdk/panel-runtime";
+import { isExternalMedia, isResourceId } from "./external-media";
 
 type Recipe = { id: string; action: string; type: string };
 type State = { cwd: string; key: string; revision: number; recipes: Recipe[] };
@@ -26,8 +27,7 @@ function taskRequest(job: any) {
   return job.input?.request ?? job.input?.input?.request;
 }
 function assetId(value: unknown): string {
-  if (typeof value !== "string" || !/^asset-[a-f0-9]{64}$/.test(value))
-    throw new Error("请选择当前工程中的有效素材");
+  if (!isResourceId(value)) throw new Error("请选择当前工程中的有效素材");
   return value;
 }
 function arrayResult(value: any): any[] {
@@ -468,7 +468,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       if (method === "media.assets.get") {
         const fetched = (await sdk.call("resources.get", { id: assetId(params.id) })) as any;
         let preparation = await prepared(params.id);
-        if (!preparation?.inspection) {
+        if (!preparation?.inspection && !isExternalMedia(params.id)) {
           const inspected = await completed("inspect", { assetId: params.id });
           preparation = {
             ...(preparation ?? {}),

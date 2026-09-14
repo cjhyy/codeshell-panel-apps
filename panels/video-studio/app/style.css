@@ -484,13 +484,14 @@ h3 {
 }
 .asset-info {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 5px;
   padding: 8px 9px;
 }
 .asset-info > div {
   min-width: 0;
-  flex: 1;
+  flex: 1 1 100px;
 }
 .asset-info strong {
   display: block;
@@ -511,6 +512,14 @@ h3 {
   width: 24px;
   height: 24px;
   min-height: 24px;
+}
+.asset-info > button.quiet {
+  width: auto;
+  height: auto;
+  flex: none;
+  padding: 4px 6px;
+  font-size: 10px;
+  white-space: nowrap;
 }
 .asset-card.missing {
   border-color: #725c37;

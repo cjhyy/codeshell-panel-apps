@@ -144,20 +144,54 @@ async function openPage() {
   await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(() => {
     window.__roughCutTools = {};
+    window.__roughCutAgentTasks = [];
+    const listeners = new Map();
+    window.__roughCutEmit = (event, value) => {
+      for (const listener of listeners.get(event) || []) listener(value);
+    };
     window.codeshellPanel = {
       getContext: async () => ({ cwd: "/isolated/rough-cut-ui", theme: "dark" }),
       registerTool(name, handler) {
         window.__roughCutTools[name] = handler;
         return () => {};
       },
-      on: () => () => {},
+      on(event, listener) {
+        const entries = listeners.get(event) || new Set();
+        entries.add(listener);
+        listeners.set(event, entries);
+        return () => entries.delete(listener);
+      },
       async call(method, params = {}) {
+        if (method === "agent.task.start") {
+          const task = {
+            id: `roughcut-ai-${window.__roughCutAgentTasks.length}`,
+            status: "running",
+            params,
+          };
+          window.__roughCutAgentTasks.push(task);
+          return task;
+        }
+        if (method === "agent.task.get")
+          return window.__roughCutAgentTasks.find((task) => task.id === params.id);
+        if (method === "agent.task.cancel") {
+          const task = window.__roughCutAgentTasks.find((task) => task.id === params.id);
+          if (task) task.status = "cancelled";
+          return task || { id: params.id, status: "cancelled" };
+        }
         if (method === "media.status") return { persistent: false };
         if (method === "media.document.get")
           return JSON.parse(
             localStorage.getItem(`document:${params.key}`) ?? '{"revision":0,"data":null}',
           );
         if (method === "media.document.set") {
+          if (params.key === "video-studio-current" && window.__roughCutRejectProjectSave)
+            throw new Error("模拟工程文档写入失败");
+          if (
+            params.key.startsWith("video-studio-roughcut-ai-") &&
+            params.data === null &&
+            window.__roughCutRejectDraftClear
+          )
+            throw new Error("模拟 AI 草稿清理失败");
           const previous = JSON.parse(
             localStorage.getItem(`document:${params.key}`) ?? '{"revision":0}',
           );
@@ -184,6 +218,337 @@ async function openPage() {
 const state = (page) => page.evaluate(() => window.__roughCutTools.read_video_project());
 const saved = (page) =>
   page.waitForFunction(() => document.querySelector("#save-state")?.textContent === "已自动保存");
+
+async function importedVideoQueue() {
+  const page = await openPage();
+  const bytes = await readFile(sourcePath);
+  await page.locator("#media-input").setInputFiles([
+    { name: "旅行一.mp4", mimeType: "video/mp4", buffer: bytes },
+    { name: "旅行二.mp4", mimeType: "video/mp4", buffer: bytes },
+  ]);
+  await page.waitForFunction(
+    () => window.__roughCutTools.read_video_project().project.assets.length === 2,
+  );
+  await saved(page);
+  const project = (await state(page)).project;
+  for (const asset of project.assets)
+    await page.locator(`[data-select-media="${asset.id}"]`).check();
+  await page.locator('[data-action="batch-roughcut"]').click();
+  return { page, assets: project.assets };
+}
+
+test(
+  "uniform batch review previews actual source ranges, discards safely and saves both sources atomically",
+  { timeout: 60_000 },
+  async () => {
+    const { page, assets } = await importedVideoQueue();
+    try {
+      const before = (await state(page)).project;
+      await page.locator(".roughcut-uniform summary").click();
+      await page.locator('[data-roughcut-field="batch-head"]').fill("1");
+      await page.locator('[data-roughcut-field="batch-tail"]').fill("2");
+      await page.locator('[data-action="roughcut-batch-plan"]').click();
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="batch"] .roughcut-candidate-row').count(),
+        2,
+      );
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator('[data-action="roughcut-candidate-preview"]').first().click();
+      await page.waitForFunction(
+        () => Number(document.querySelector("[data-roughcut-scrub]")?.value) > 35,
+      );
+      await page.locator('[data-action="roughcut-play"]').click();
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator('[data-action="roughcut-batch-discard"]').click();
+      assert.equal(await page.locator('[data-roughcut-candidates="batch"]').count(), 0);
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator(".roughcut-uniform summary").click();
+      await page.locator('[data-action="roughcut-batch-plan"]').click();
+      await page.locator('[data-action="roughcut-batch-save"]').click();
+      await saved(page);
+      const result = (await state(page)).project;
+      assert.deepEqual(
+        result.roughCuts.map((cut) => [cut.assetId, cut.inFrame, cut.outFrame]),
+        assets.map((asset) => [asset.id, 30, 120]),
+      );
+      assert.equal(result.revision, before.revision + 1);
+      assert.deepEqual(result.clips, []);
+      await page.locator('[data-action="undo"]').first().click();
+      await saved(page);
+      assert.equal((await state(page)).project.roughCuts?.length ?? 0, 0);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "AI batch candidates require real decoded frame tools and await user review before saving",
+  { timeout: 60_000 },
+  async () => {
+    const { page, assets } = await importedVideoQueue();
+    try {
+      const before = (await state(page)).project;
+      await page.locator('[data-roughcut-field="ai-goal"]').fill("保留有主体的中间段，先生成候选");
+      await page.locator('[data-action="roughcut-ai-start"]').click();
+      await page.waitForFunction(
+        () =>
+          window.__roughCutAgentTasks.length === 1 &&
+          window.__roughCutTools.read_video_project().requestToken,
+      );
+      const unseen = await page.evaluate(async () => {
+        const state = window.__roughCutTools.read_video_project();
+        try {
+          await window.__roughCutTools.propose_video_edit({
+            projectId: state.project.id,
+            requestToken: state.requestToken,
+            baseRevision: state.project.revision,
+            title: "未观察的方案",
+            explanation: "没有保留段的试探提交，必须先通过真实观察校验。",
+            operations: [{ type: "rough-cuts", cuts: [] }],
+          });
+          return "unexpected acceptance";
+        } catch (error) {
+          return error.message;
+        }
+      });
+      assert.match(unseen, /实际查看.*关键帧/);
+      const inspected = await page.evaluate(
+        async (ids) => {
+          const results = [];
+          for (const id of ids)
+            for (const seconds of [0.3, 3, 5.7]) {
+              const result = await window.__roughCutTools.inspect_video_frame({
+                assetId: id,
+                seconds,
+              });
+              results.push({
+                kind: result.kind,
+                width: result.width,
+                height: result.height,
+                bytes: atob(result.data).length,
+                summary: result.summary,
+              });
+            }
+          return results;
+        },
+        assets.map((asset) => asset.id),
+      );
+      assert.equal(inspected.length, 6);
+      assert.ok(
+        inspected.every(
+          (result) =>
+            result.kind === "image" &&
+            result.width === 320 &&
+            result.height === 180 &&
+            result.bytes > 1000,
+        ),
+      );
+      await page.evaluate(async () => {
+        const state = window.__roughCutTools.read_video_project();
+        await window.__roughCutTools.propose_video_edit({
+          projectId: state.project.id,
+          requestToken: state.requestToken,
+          baseRevision: state.project.revision,
+          title: "实际画面初筛",
+          explanation: "已查看每份原片开头、中间和结尾的真实画面；连续动作边界待预览确认。",
+          operations: [
+            {
+              type: "rough-cuts",
+              cuts: state.project.assets.map((asset, index) => ({
+                id: `proposed-${index}`,
+                assetId: asset.id,
+                inFrame: 60,
+                outFrame: 120,
+                name: "合成测试图主体",
+                enabled: true,
+              })),
+            },
+          ],
+        });
+        const task = window.__roughCutAgentTasks[0];
+        task.status = "completed";
+        window.__roughCutEmit("agent.task.changed", task);
+      });
+      await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+      await page.waitForFunction(
+        () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
+      );
+      assert.deepEqual((await state(page)).project, before);
+      await page.waitForFunction(() =>
+        Object.keys(localStorage).some(
+          (key) =>
+            key.startsWith("document:video-studio-roughcut-ai-") &&
+            JSON.parse(localStorage.getItem(key)).data?.state.phase === "review",
+        ),
+      );
+      await page.reload();
+      await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+      await page.locator('[data-tab="roughcut"]').click();
+      await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+      assert.match(
+        await page.locator(".roughcut-ai-status").textContent(),
+        /已恢复 2 个待审候选段/,
+      );
+      assert.deepEqual(
+        (await state(page)).project,
+        before,
+        "Pending AI candidates survive reload without becoming edits",
+      );
+      assert.equal(
+        await page.evaluate(() => window.__roughCutAgentTasks.length),
+        0,
+        "Restoring a review never starts a new model task",
+      );
+      await page.evaluate(() => {
+        window.__roughCutRejectProjectSave = true;
+      });
+      await page.locator('[data-action="roughcut-ai-save"]').click();
+      await page.waitForFunction(() =>
+        document.querySelector("#toast")?.textContent?.includes("模拟工程文档写入失败"),
+      );
+      assert.deepEqual(
+        (await state(page)).project,
+        before,
+        "A failed durable save does not commit or consume AI candidates",
+      );
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+        2,
+      );
+      await page.reload();
+      await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+      await page.locator('[data-tab="roughcut"]').click();
+      await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+      assert.deepEqual((await state(page)).project, before);
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+        2,
+        "Both candidates remain durable when the project save fails",
+      );
+      await page.locator('[data-action="roughcut-candidate-preview"]').last().click();
+      await page.waitForFunction(
+        () => Number(document.querySelector("[data-roughcut-scrub]")?.value) > 65,
+      );
+      await page.locator('[data-action="roughcut-play"]').click();
+      await page.screenshot({
+        path: resolve(artifacts, "rough-cut-ai-review.png"),
+        fullPage: true,
+      });
+
+      test(
+        "same-ID project replacement clears old AI candidates durably and can retry a failed clear",
+        { timeout: 60_000 },
+        async () => {
+          const { page } = await importedVideoQueue();
+          try {
+            const before = (await state(page)).project;
+            await page.locator('[data-action="roughcut-ai-start"]').click();
+            await page.waitForFunction(
+              () =>
+                window.__roughCutAgentTasks.length === 1 &&
+                window.__roughCutTools.read_video_project().requestToken,
+            );
+            await page.evaluate(async () => {
+              let state = window.__roughCutTools.read_video_project();
+              for (const asset of state.project.assets)
+                for (const seconds of [0.3, 3, 5.7])
+                  await window.__roughCutTools.inspect_video_frame({ assetId: asset.id, seconds });
+              state = window.__roughCutTools.read_video_project();
+              await window.__roughCutTools.propose_video_edit({
+                projectId: state.project.id,
+                requestToken: state.requestToken,
+                baseRevision: state.project.revision,
+                title: "原工程的候选",
+                explanation: "已查看开中尾的真实测试图。",
+                operations: [
+                  {
+                    type: "rough-cuts",
+                    cuts: state.project.assets.map((asset, index) => ({
+                      id: `same-id-${index}`,
+                      assetId: asset.id,
+                      inFrame: 60,
+                      outFrame: 120,
+                      name: "原工程候选",
+                      enabled: true,
+                    })),
+                  },
+                ],
+              });
+              const task = window.__roughCutAgentTasks[0];
+              task.status = "completed";
+              window.__roughCutEmit("agent.task.changed", task);
+            });
+            await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+            await page.waitForFunction(
+              () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
+            );
+            const replacement = { ...before, name: "同 ID 替换后的工程" };
+            const file = {
+              name: "replacement.json",
+              mimeType: "application/json",
+              buffer: Buffer.from(JSON.stringify(replacement)),
+            };
+            await page.evaluate(() => {
+              window.__roughCutRejectDraftClear = true;
+            });
+            await page.locator("#project-input").setInputFiles(file);
+            await page.waitForFunction(() =>
+              document.querySelector("#toast")?.textContent?.includes("模拟 AI 草稿清理失败"),
+            );
+            assert.deepEqual((await state(page)).project, before);
+            assert.equal(
+              await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+              2,
+            );
+            await page.evaluate(() => {
+              window.__roughCutRejectDraftClear = false;
+            });
+            await page.locator("#project-input").setInputFiles(file);
+            await page.waitForFunction(
+              () =>
+                window.__roughCutTools.read_video_project().project.name === "同 ID 替换后的工程",
+            );
+            await saved(page);
+            assert.equal(await page.locator('[data-roughcut-candidates="ai"]').count(), 0);
+            await page.reload();
+            await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+            await page.locator('[data-tab="roughcut"]').click();
+            assert.equal((await state(page)).project.name, replacement.name);
+            assert.equal(
+              await page.locator('[data-roughcut-candidates="ai"]').count(),
+              0,
+              "A restart must not resurrect the replaced document's old AI queue",
+            );
+          } finally {
+            await page.close();
+          }
+        },
+      );
+      await page.setViewportSize({ width: 640, height: 960 });
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      await page.screenshot({
+        path: resolve(artifacts, "rough-cut-ai-review-mobile.png"),
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.locator('[data-action="roughcut-ai-save"]').click();
+      await saved(page);
+      const result = (await state(page)).project;
+      assert.equal(result.roughCuts.length, 2);
+      assert.equal(result.revision, before.revision + 1);
+      assert.deepEqual(result.clips, []);
+      await page.locator('[data-action="roughcut-queue-append"]').click();
+      await saved(page);
+      assert.equal((await state(page)).project.clips.length, 2);
+    } finally {
+      await page.close();
+    }
+  },
+);
 
 async function importedPage() {
   const page = await openPage();

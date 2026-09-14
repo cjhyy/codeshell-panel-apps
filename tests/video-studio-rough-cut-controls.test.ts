@@ -94,6 +94,76 @@ function fixture() {
   };
 }
 
+test("uniform trimming drafts preserve manual I/O and require review before atomic save", async () => {
+  const f = fixture();
+  f.input("in", "2");
+  f.input("out", "4");
+  f.input("batch-head", "1.5");
+  f.input("batch-tail", "2");
+  await f.ui.action("roughcut-batch-plan");
+  assert.equal(f.project().roughCuts?.length ?? 0, 0);
+  assert.equal(f.project().clips.length, 0);
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 60, outFrame: 120 });
+  assert.match(f.ui.render(), /统一裁剪候选 · 2 段/);
+  await f.ui.action("roughcut-batch-save");
+  assert.deepEqual(
+    f.project().roughCuts!.map((cut) => [cut.assetId, cut.inFrame, cut.outFrame]),
+    [
+      ["source-a", 45, 840],
+      ["source-b", 45, 540],
+    ],
+  );
+  assert.equal(f.project().clips.length, 0);
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 60, outFrame: 120 });
+  f.undo();
+  assert.equal(f.project().roughCuts?.length ?? 0, 0);
+});
+
+test("uniform trimming reports too-short sources and fixed length centers frame-exactly", async () => {
+  const f = fixture();
+  f.input("batch-head", "12");
+  f.input("batch-tail", "10");
+  await f.ui.action("roughcut-batch-plan");
+  assert.match(f.ui.render(), /1 份素材去头尾后没有剩余，已跳过：原片 B.mp4/);
+  await f.ui.action("roughcut-batch-discard");
+  f.input("batch-mode", "keep");
+  f.input("batch-length", "5.1");
+  f.input("batch-position", "middle");
+  await f.ui.action("roughcut-batch-plan");
+  await f.ui.action("roughcut-batch-save");
+  assert.deepEqual(
+    f.project().roughCuts!.map((cut) => [cut.inFrame, cut.outFrame]),
+    [
+      [373, 526],
+      [223, 376],
+    ],
+  );
+  f.input("batch-length", "100");
+  await f.ui.action("roughcut-batch-plan");
+  assert.match(f.ui.render(), /2 份素材短于指定时长，候选保留整段/);
+});
+
+test("uniform review refuses source changes, preserves candidates on edit rejection, and clears on same-ID replacement", async () => {
+  const f = fixture();
+  await f.ui.action("roughcut-batch-plan");
+  const before = f.project();
+  f.replaceProject({
+    ...before,
+    assets: before.assets.map((asset) =>
+      asset.id === "source-a" ? { ...asset, durationFrames: 901 } : asset,
+    ),
+  });
+  await f.ui.action("roughcut-batch-save");
+  assert.match(f.messages.at(-1)!, /时长已改变/);
+  assert.equal(f.project().roughCuts?.length ?? 0, 0);
+  await f.ui.action("roughcut-batch-plan");
+  f.rejectEdits();
+  await f.ui.action("roughcut-batch-save");
+  assert.match(f.ui.render(), /统一裁剪候选 · 2 段/);
+  f.ui.setAsset("");
+  assert.doesNotMatch(f.ui.render(), /data-roughcut-candidates="batch"/);
+});
+
 test("rough-cut time inputs round to frames and retain half-open endpoint precision", () => {
   for (const value of [0, 1, 29, 30, 1799, 1800, 108001])
     assert.equal(parseRoughCutTime(roughCutTimecode(value)), value);

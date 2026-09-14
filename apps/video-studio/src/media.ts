@@ -193,13 +193,13 @@ export class MediaLibrary {
     return this.connectSource(asset, new URL("demo-narration.mp3", document.baseURI).href);
   }
 
-  async connectManaged(asset: Asset): Promise<void> {
+  async connectManaged(asset: Asset, options: { reload?: boolean } = {}): Promise<void> {
     const mediaId =
       asset.kind === "image" ? asset.thumbnailId || asset.mediaId : asset.proxyId || asset.mediaId;
     if (!mediaId || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(mediaId))
       throw new Error("素材缺少有效的本地媒体编号");
     if (asset.kind === "demo") return;
-    return this.connectSource(asset, `/media/${encodeURIComponent(mediaId)}`);
+    return this.connectSource(asset, `/media/${encodeURIComponent(mediaId)}`, options.reload);
   }
 
   /** Inspect an already captured immutable resource without requiring a media engine. */
@@ -257,16 +257,20 @@ export class MediaLibrary {
     }
   }
 
-  private async connectSource(asset: Asset, url: string): Promise<void> {
+  private async connectSource(asset: Asset, url: string, reload = false): Promise<void> {
     if (asset.kind === "demo") return;
     const generation = this.generation;
     const existing = this.items.get(asset.id);
-    if (existing?.url === url) return;
+    if (existing?.url === url && !reload) return;
+    if (reload && existing) {
+      this.release(existing);
+      this.items.delete(asset.id);
+    }
     const ticket = Symbol("connected");
     this.loads.set(asset.id, ticket);
     const element = asset.kind === "image" ? new Image() : document.createElement(asset.kind);
     if (element instanceof HTMLMediaElement) {
-      element.preload = "auto";
+      element.preload = asset.mediaId?.startsWith("external-") ? "metadata" : "auto";
       if (element instanceof HTMLVideoElement) element.playsInline = true;
     }
     const item: LocalMedia = { url, element, ownsUrl: false };
@@ -274,8 +278,24 @@ export class MediaLibrary {
       await eventOnce(element, asset.kind === "image" ? "load" : "loadeddata", () => {
         element.src = url;
       });
+      // Metadata preloading may report loadeddata before a video frame is decoded.
+      // An explicit first-frame seek requests only the preview's media range.
+      if (asset.mediaId?.startsWith("external-") && element instanceof HTMLVideoElement)
+        await eventOnce(element, "seeked", () => {
+          element.currentTime = 0;
+        });
       if (asset.thumbnailId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(asset.thumbnailId))
         item.thumbnail = `/media/${encodeURIComponent(asset.thumbnailId)}`;
+      else if (
+        asset.mediaId?.startsWith("external-") &&
+        (element instanceof HTMLVideoElement || element instanceof HTMLImageElement)
+      ) {
+        const thumbnail = document.createElement("canvas");
+        thumbnail.width = 320;
+        thumbnail.height = 180;
+        contain(thumbnail.getContext("2d")!, element, 320, 180);
+        item.thumbnail = thumbnail.toDataURL("image/jpeg", 0.7);
+      }
       if (generation !== this.generation || this.loads.get(asset.id) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);

@@ -112,6 +112,71 @@ export function createRoughCut(
   return validateRoughCuts([...cuts, cut], project.assets).at(-1)!;
 }
 
+export type UniformRoughCutRule =
+  | { mode: "trim"; headFrames: number; tailFrames: number }
+  | { mode: "keep"; durationFrames: number; position: "start" | "middle" | "end" };
+
+/** New review candidates only. Existing manual markers and the timeline are never replaced. */
+export function planUniformRoughCuts(
+  project: Project,
+  assetIds: string[],
+  rule: UniformRoughCutRule,
+): { cuts: RoughCut[]; skippedIds: string[]; shorterIds: string[] } {
+  if (!assetIds.length || assetIds.length > 1000 || new Set(assetIds).size !== assetIds.length)
+    throw new Error("请选择 1–1000 份不重复的素材");
+  const validFrames = (value: number) =>
+    Number.isSafeInteger(value) && value >= 0 && value <= MAX_FRAMES;
+  if (rule.mode === "trim") {
+    if (!validFrames(rule.headFrames) || !validFrames(rule.tailFrames))
+      throw new Error("片头和片尾长度须为有效的非负时长");
+  } else if (rule.mode === "keep") {
+    if (
+      !validFrames(rule.durationFrames) ||
+      rule.durationFrames < 1 ||
+      !["start", "middle", "end"].includes(rule.position)
+    )
+      throw new Error("请输入大于零的保留时长，并选择保留位置");
+  } else throw new Error("请选择去片头片尾或保留指定时长");
+  const cuts: RoughCut[] = [],
+    skippedIds: string[] = [],
+    shorterIds: string[] = [];
+  for (const id of assetIds) {
+    const asset = source(project.assets, id);
+    let inFrame: number, outFrame: number;
+    if (rule.mode === "trim") {
+      inFrame = rule.headFrames;
+      outFrame = asset.durationFrames - rule.tailFrames;
+      if (outFrame <= inFrame) {
+        skippedIds.push(id);
+        continue;
+      }
+    } else {
+      const length = Math.min(rule.durationFrames, asset.durationFrames);
+      if (length < rule.durationFrames) shorterIds.push(id);
+      inFrame =
+        rule.position === "end"
+          ? asset.durationFrames - length
+          : rule.position === "middle"
+            ? Math.floor((asset.durationFrames - length) / 2)
+            : 0;
+      outFrame = inFrame + length;
+    }
+    cuts.push({
+      id: `batch-cut-${crypto.randomUUID()}`,
+      assetId: id,
+      inFrame,
+      outFrame,
+      name:
+        rule.mode === "trim"
+          ? "统一去片头片尾"
+          : `保留${{ start: "开头", middle: "中间", end: "结尾" }[rule.position]} ${(rule.durationFrames / 30).toFixed(2)} 秒`,
+      enabled: true,
+    });
+  }
+  validateRoughCuts([...(project.roughCuts ?? []), ...cuts], project.assets);
+  return { cuts, skippedIds, shorterIds };
+}
+
 /** Replace this source's selections with the complement of its enabled union. */
 export function invertRoughCuts(project: Project, assetId: string): RoughCut[] {
   const cuts = cutsOf(project);

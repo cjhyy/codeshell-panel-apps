@@ -208,7 +208,7 @@ export async function inspectImportedAsset(
   asset: ManagedAsset,
   isCurrent: () => boolean = () => true,
 ): Promise<PreparedMedia["inspection"]> {
-  if (!/^asset-[a-f0-9]{64}$/.test(asset.id)) throw new Error("导入素材编号无效");
+  if (!/^(?:asset|external)-[a-f0-9]{64}$/.test(asset.id)) throw new Error("导入素材编号无效");
   const kind = asset.mimeType.startsWith("image/")
     ? "image"
     : asset.mimeType.startsWith("audio/")
@@ -420,7 +420,8 @@ function productionDocument(value: unknown): ProductionDocument {
           Number(raw.startFrame) < 0 ||
           Number(raw.startFrame) > 2592000)) ||
       (raw.assetId !== undefined &&
-        (typeof raw.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(raw.assetId))) ||
+        (typeof raw.assetId !== "string" ||
+          !/^(?:asset|external)-[a-f0-9]{64}$/.test(raw.assetId))) ||
       (raw.createdAt !== undefined &&
         (!Number.isSafeInteger(raw.createdAt) || Number(raw.createdAt) < 0))
     )

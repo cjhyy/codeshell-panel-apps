@@ -8,6 +8,7 @@ interface ProductionTools {
   assertRequest(args: Record<string, unknown>, toolName?: string): void;
   apply(value: unknown): Promise<Proposal>;
   capture(assetId: string, seconds: number): Promise<unknown>;
+  transcriptRead?(token: string, assetId: string, result: unknown): void;
   validateRender?(): Promise<void>;
   setScript?(text: string, baseRevision: number, finish: boolean): Promise<unknown>;
   finishSetup?(jobId: string): Promise<unknown>;
@@ -152,13 +153,16 @@ export function registerProductionTools(
     handlers.assertRequest(args, "prepare_video_assets");
     return production.prepare(strings(args.assetIds), args.transcribe === true);
   });
-  panel?.registerTool("get_video_transcript", (args) =>
-    production.transcript(
+  panel?.registerTool("get_video_transcript", async (args) => {
+    const token = handlers.requestToken();
+    const result = await production.transcript(
       String(args.assetId),
       page(args.offset, 0, 100000),
       page(args.limit, 50, 100),
-    ),
-  );
+    );
+    handlers.transcriptRead?.(token, String(args.assetId), result);
+    return result;
+  });
   panel?.registerTool("get_video_analysis", (args) =>
     production.analysis(
       String(args.assetId),

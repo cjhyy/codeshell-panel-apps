@@ -28,7 +28,7 @@ export function validateAudioExtractInput(raw: unknown): AudioExtractInput {
   const input = raw as Record<string, unknown>;
   if (Object.keys(input).some((key) => !["assetId", "inFrame", "outFrame", "fps"].includes(key)))
     throw new Error("不支持此参考录音提取参数");
-  if (typeof input.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(input.assetId))
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
     throw new Error("请选择当前项目已保存的素材");
   for (const key of ["inFrame", "outFrame"])
     if (

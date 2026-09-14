@@ -14,11 +14,18 @@ import { renderNarrationPanel } from "./narration-ui";
 import type { Proposal, PanelTask } from "./host";
 import { renderProductionJobs, type ProductionViewState } from "./production-views";
 import { version as panelVersion } from "../.codeshell-panel/panel.json";
+import { isExternalMedia } from "./external-media";
 
 /** Data needed to render a view; no host calls, media controls or state mutations. */
 export interface ViewState {
   readonly project: Readonly<Project>;
-  readonly mediaItems: ReadonlyMap<string, { readonly thumbnail?: string }>;
+  readonly mediaItems: ReadonlyMap<
+    string,
+    {
+      readonly thumbnail?: string;
+      readonly element?: HTMLVideoElement | HTMLAudioElement | HTMLImageElement;
+    }
+  >;
   readonly missingAssetCount: number;
   readonly selected: string;
   readonly frame: number;
@@ -482,7 +489,9 @@ ${esc(aiPrompt)}</textarea
         ${assets
           .map((asset, i) => {
             const item = mediaItems.get(asset.id);
-            const missing = asset.kind !== "demo" && !item;
+            const missing =
+              asset.kind !== "demo" &&
+              (!item || (item.element && "error" in item.element && !!item.element.error));
             return html`<article
               class="asset-card ${missing ? "missing" : ""} ${source?.id === asset.id
                 ? "is-previewing"
@@ -529,11 +538,11 @@ ${esc(aiPrompt)}</textarea
                       ? "素材待重连"
                       : asset.kind === "demo"
                         ? "示例画面"
-                        : asset.kind.toUpperCase()}
+                        : `${isExternalMedia(asset.mediaId) ? "引用 · " : ""}${asset.kind.toUpperCase()}`}
                     ${asset.width ? " · " + asset.width + "×" + asset.height : ""}</span
                   >
                 </div>
-                ${missing
+                ${missing || isExternalMedia(asset.mediaId)
                   ? `<button type="button" class="quiet" data-action="reconnect-media" data-id="${esc(asset.id)}">重新连接原文件</button>`
                   : ""}
                 ${["video", "audio"].includes(asset.kind)

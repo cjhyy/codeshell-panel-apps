@@ -11,7 +11,7 @@ const localId = (id: unknown): id is string =>
   typeof id === "string" && /^job-panel-[a-f0-9-]{36}$/.test(id);
 const engineId = (id: unknown): id is (typeof ENGINES)[number] => ENGINES.includes(id as any);
 const assetId = (id: unknown): id is string =>
-  typeof id === "string" && /^asset-[a-f0-9]{64}$/.test(id);
+  typeof id === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(id);
 interface Input {
   action: "setup" | "generate";
   engine: (typeof ENGINES)[number];

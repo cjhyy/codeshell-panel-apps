@@ -1,5 +1,6 @@
 import type { PanelBridge } from "./host";
 import { createPanelRuntime, runtimeCancelled } from "./sdk/panel-runtime";
+import { externalReference, type ImportMode } from "./external-media";
 
 export interface FolderEntry {
   path: string;
@@ -10,7 +11,7 @@ export interface FolderEntry {
 }
 export interface CapturedFolderAsset {
   id: string;
-  sha256: string;
+  sha256?: string;
   bytes: number;
   mimeType: string;
   name: string;
@@ -205,6 +206,11 @@ export function createDesktopFolderSource(panel: PanelBridge) {
     } catch {
       return false;
     }
+  }
+  async function referenceAvailable(): Promise<boolean> {
+    if (disposed) return false;
+    const context = await runtime.discover();
+    return context.availableMethods?.includes("resources.references.create") ?? false;
   }
   async function requireAvailable() {
     if (disposed) throw runtimeCancelled();
@@ -438,6 +444,7 @@ export function createDesktopFolderSource(panel: PanelBridge) {
     handle: string,
     file: FolderEntry,
     signal?: AbortSignal,
+    mode: ImportMode = "copy",
   ): Promise<CapturedFolderAsset> {
     const files = requireGrant(handle),
       checked = entry(file),
@@ -457,6 +464,34 @@ export function createDesktopFolderSource(panel: PanelBridge) {
       current = own.controller.signal;
     try {
       stopped(current);
+      if (mode === "reference") {
+        if (!(await referenceAvailable()))
+          throw new FolderSourceError("当前 CodeShell 不支持引用原文件，请更新桌面后重试。");
+        const value: any = await abortable(
+          runtime.call(
+            "resources.references.create",
+            {
+              directoryHandle: handle,
+              path: checked.path,
+              name: checked.name,
+              mimeType: checked.mimeType,
+              expectedBytes: checked.bytes,
+              expectedLastModified: checked.lastModified,
+            },
+            current,
+          ),
+          current,
+        );
+        stopped(current);
+        const ref = externalReference(value?.reference);
+        if (
+          ref.state !== "available" ||
+          ref.bytes !== checked.bytes ||
+          ref.lastModified !== checked.lastModified
+        )
+          throw new FolderSourceError("原文件已变化，请重新扫描后建立引用。");
+        return { id: ref.id, bytes: ref.bytes, mimeType: checked.mimeType, name: checked.name };
+      }
       const captured = await abortable(
         runtime.call(
           "resources.capture",
@@ -507,6 +542,7 @@ export function createDesktopFolderSource(panel: PanelBridge) {
   }
   return {
     available,
+    referenceAvailable,
     pick,
     scan,
     capture,

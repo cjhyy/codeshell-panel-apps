@@ -65,6 +65,8 @@ import {
 import { buildNarrationAlignment } from "./narration-alignment";
 import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
+import { createExternalMediaAccess, isExternalMedia } from "./external-media";
+import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
 
 if (panel) {
   const mediaBridge = createMediaTaskBridge(panel);
@@ -76,6 +78,8 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
 const studio = $("#studio");
 const library = new MediaLibrary();
+const externalMedia = createExternalMediaAccess(panel);
+window.addEventListener("pagehide", () => externalMedia.dispose(), { once: true });
 let project = createProject();
 let selected = "";
 let frame = 0;
@@ -123,69 +127,82 @@ let folderImportIntent: { projectId: string; generation: number } | undefined;
 let workspace = panel ? "项目工作区" : "浏览器工作区";
 let workspaceScope = panel ? "" : "browser";
 const duration = () => timelineDuration(project);
-const folderImport = createFolderImport(panel ? createDesktopFolderSource(panel) : undefined, {
-  project: () => project,
-  identity: () => `${workspaceScope}:${project.id}:${generation}`,
-  read: async (key) =>
-    panel ? panel.call("storage.get", { key }) : JSON.parse(localStorage.getItem(key) || "null"),
-  write: async (key, value) => {
-    if (panel) await panel.call("storage.set", { key, value });
-    else localStorage.setItem(key, JSON.stringify(value));
-  },
-  ready: () =>
-    !storageDiscoveryError &&
-    !projectSwitching &&
-    !aiApplying &&
-    !exporting &&
-    !mediaImporting &&
-    !playback &&
-    !recording.busy &&
-    !recording.hasUnsavedResult &&
-    !taskStarting &&
-    !["running", "queued"].includes(task?.status ?? ""),
-  changed: () => {
-    if (tab === "media" && !playback && !exporting && !recording.busy && !projectSwitching)
-      render();
-  },
-  publish: async (resource, file, current) => {
-    if (!current()) throw new Error("工程已切换，未导入旧文件夹素材");
-    assertEditable();
-    const existing = project.assets.find((asset) => asset.mediaId === resource.id);
-    if (existing) return existing;
-    if (playback || recording.busy || recording.hasUnsavedResult)
-      throw new Error("正在播放或录制，稍后再检查文件夹");
-    const initialGeneration = generation;
-    let asset: Asset | undefined;
-    mediaImporting = true;
-    try {
-      asset = await library.inspectManaged(resource, file.path, file.lastModified);
-      if (!current() || generation !== initialGeneration)
-        throw new Error("工程已切换，素材未加入工程");
-      const next = validateProject({
-        ...project,
-        revision: project.revision + 1,
-        assets: [...project.assets, asset],
-      });
-      await saveProject(next, "导入文件夹素材");
-      // Once the durable write succeeds, stopping the scan must still publish this file.
-      if (generation !== initialGeneration) throw new Error("工程已切换，素材未加入工程");
-      mediaImporting = false;
-      commit(next, true);
-      return asset;
-    } catch (error) {
-      if (asset && !project.assets.some((item) => item.id === asset!.id)) {
-        const item = library.items.get(asset.id);
-        if (item) {
-          library.release(item);
-          library.items.delete(asset.id);
-        }
+const desktopFolderSource = panel ? createDesktopFolderSource(panel) : undefined;
+const folderImport = createFolderImport(
+  desktopFolderSource
+    ? {
+        ...desktopFolderSource,
+        // A single import mode controls both the native file picker and folder scan.
+        // Web may expose directory references without the Desktop picker.
+        referenceAvailable: async () =>
+          (await desktopFolderSource.referenceAvailable()) && (await externalMedia.available()),
       }
-      throw error;
-    } finally {
-      mediaImporting = false;
-    }
+    : undefined,
+  {
+    project: () => project,
+    identity: () => `${workspaceScope}:${project.id}:${generation}`,
+    read: async (key) =>
+      panel ? panel.call("storage.get", { key }) : JSON.parse(localStorage.getItem(key) || "null"),
+    write: async (key, value) => {
+      if (panel) await panel.call("storage.set", { key, value });
+      else localStorage.setItem(key, JSON.stringify(value));
+    },
+    ready: () =>
+      !storageDiscoveryError &&
+      !projectSwitching &&
+      !aiApplying &&
+      !exporting &&
+      !mediaImporting &&
+      !playback &&
+      !roughCutAI.busy &&
+      !recording.busy &&
+      !recording.hasUnsavedResult &&
+      !taskStarting &&
+      !["running", "queued"].includes(task?.status ?? ""),
+    changed: () => {
+      if (tab === "media" && !playback && !exporting && !recording.busy && !projectSwitching)
+        render();
+    },
+    publish: async (resource, file, current) => {
+      if (!current()) throw new Error("工程已切换，未导入旧文件夹素材");
+      assertEditable();
+      const existing = project.assets.find((asset) => asset.mediaId === resource.id);
+      if (existing) return existing;
+      if (playback || recording.busy || recording.hasUnsavedResult)
+        throw new Error("正在播放或录制，稍后再检查文件夹");
+      const initialGeneration = generation;
+      let asset: Asset | undefined;
+      mediaImporting = true;
+      try {
+        asset = await library.inspectManaged(resource, file.path, file.lastModified);
+        if (!current() || generation !== initialGeneration)
+          throw new Error("工程已切换，素材未加入工程");
+        const next = validateProject({
+          ...project,
+          revision: project.revision + 1,
+          assets: [...project.assets, asset],
+        });
+        await saveProject(next, "导入文件夹素材");
+        // Once the durable write succeeds, stopping the scan must still publish this file.
+        if (generation !== initialGeneration) throw new Error("工程已切换，素材未加入工程");
+        mediaImporting = false;
+        commit(next, true);
+        return asset;
+      } catch (error) {
+        if (asset && !project.assets.some((item) => item.id === asset!.id)) {
+          const item = library.items.get(asset.id);
+          if (item) {
+            library.release(item);
+            library.items.delete(asset.id);
+          }
+        }
+        throw error;
+      } finally {
+        mediaImporting = false;
+      }
+    },
   },
-});
+);
 const production = new ProductionController(panel, {
   getProject: () => project,
   publishAssets: async (projectId, assets, options) => {
@@ -240,7 +257,10 @@ const production = new ProductionController(panel, {
 });
 const automatic = new AutomaticProducer(panel, production, {
   getProject: () => project,
-  assertEditable,
+  assertEditable: () => {
+    assertEditable();
+    if (roughCutAI.busy) throw new Error("请先完成或取消 AI 批量粗剪");
+  },
   state: (next, starting, message, token) => {
     task = next;
     taskStarting = starting;
@@ -309,7 +329,132 @@ const voicePreparation = createVoicePreparationUI(production, {
   },
 });
 
+const roughCutRevisions = new Map<string, number>();
+const roughCutWrites = new Map<string, Promise<void>>();
+async function roughCutDocumentKey(projectId: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(projectId));
+  return `video-studio-roughcut-ai-${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+async function persistRoughCutAI(snapshot: RoughCutAISnapshot | null): Promise<void> {
+  const key = await roughCutDocumentKey(snapshot?.state.projectId ?? project.id);
+  const work = (roughCutWrites.get(key) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      if (!panel) {
+        localStorage.setItem(key, JSON.stringify(snapshot));
+        return;
+      }
+      let revision = roughCutRevisions.get(key);
+      if (revision === undefined) {
+        const old: any = await panel.call("media.document.get", { key });
+        revision = old.revision;
+      }
+      const saved: any = await panel.call("media.document.set", {
+        key,
+        baseRevision: revision,
+        data: snapshot,
+        label: "AI 粗剪进度与候选",
+      });
+      roughCutRevisions.set(key, saved.revision);
+    });
+  roughCutWrites.set(key, work);
+  await work;
+}
+async function restoreRoughCutAI(): Promise<void> {
+  if (panel && (!hasPersistentStorage() || storageDiscoveryError)) return;
+  const ownGeneration = generation;
+  const key = await roughCutDocumentKey(project.id);
+  await roughCutWrites.get(key)?.catch(() => {});
+  const saved: any = panel
+    ? await panel.call("media.document.get", { key })
+    : { data: JSON.parse(localStorage.getItem(key) ?? "null") };
+  if (ownGeneration !== generation) return;
+  if (panel) roughCutRevisions.set(key, saved.revision);
+  await roughCutAI.restore(saved.data);
+}
+const roughCutAI = new RoughCutAIController(panel, {
+  project: () => project,
+  persist: persistRoughCutAI,
+  assertReady: () => {
+    assertEditable();
+    if (
+      automatic.requestToken ||
+      taskStarting ||
+      (task && ["running", "queued", "cancelling"].includes(task.status)) ||
+      (production.auto?.projectId === project.id &&
+        ["preparing", "agent", "waiting"].includes(production.auto.phase))
+    )
+      throw new Error("请先完成或取消当前 AI 制作，再开始批量粗剪");
+  },
+  changed: () => {
+    if (tab === "roughcut" && !projectSwitching) {
+      $(".library-panel").innerHTML = roughcut.render();
+      roughcut.sync();
+    }
+  },
+  prepareAudio: async (ids, signal) => {
+    const owned = new Set<string>();
+    const cancelOwned = async () => {
+      await Promise.allSettled([...owned].map((id) => production.cancel(id)));
+    };
+    const abort = () => {
+      void cancelOwned();
+    };
+    const current = () => {
+      if (signal.aborted) throw new Error("音频粗剪准备已取消");
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      for (const id of ids) {
+        current();
+        const cached = await production.transcript(id).catch(() => undefined);
+        current();
+        if (cached?.segments.length) continue;
+        const started = await production.transcribe([id]);
+        for (const job of started.jobs) owned.add(job.id);
+        current();
+        const jobIds = started.jobs.map((job) => job.id);
+        if (!jobIds.length) throw new Error("音频转写任务未启动");
+        for (;;) {
+          current();
+          const { jobs } = await production.waitForJobs(jobIds);
+          current();
+          if (jobs.length !== jobIds.length) throw new Error("音频转写任务记录已失联，请重试");
+          const failed = jobs.find((job) => ["failed", "cancelled"].includes(job.status));
+          if (failed)
+            throw new Error(failed.error?.message || "音频转写未完成，请检查语音转写环境后重试");
+          if (jobs.every((job) => job.status === "succeeded")) break;
+        }
+      }
+    } catch (error) {
+      await cancelOwned();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  },
+});
 const roughcut = createRoughCutUI({
+  ai: roughCutAI,
+  saveAICandidates: async (operations) => {
+    assertEditable();
+    const current = project;
+    const currentGeneration = generation;
+    const next = validateProject(
+      reconcileNarrationEdit(current, applyOperations(current, operations, current.revision)),
+    );
+    aiApplying = true;
+    try {
+      // Keep the durable AI draft until the project containing its reviewed
+      // markers is saved. A failed project write must not consume candidates.
+      await saveProject(next, "保存 AI 粗剪保留段");
+    } finally {
+      aiApplying = false;
+    }
+    if (generation !== currentGeneration || project !== current)
+      throw new Error("工程已改变，AI 候选仍保留，请重新审阅后保存");
+    commit(next, true);
+  },
   project: () => project,
   assetId: () => sourceAssetId,
   frame: () => sourceFrame,
@@ -338,6 +483,17 @@ const roughcut = createRoughCutUI({
     }
   },
 });
+window.addEventListener(
+  "pagehide",
+  () => {
+    if (
+      roughCutAI.busy ||
+      ["running", "queued", "cancelling"].includes(roughCutAI.state.task?.status ?? "")
+    )
+      void roughCutAI.cancel().catch(() => {});
+  },
+  { once: true },
+);
 
 const recording = createRecordingUI({
   projectId: () => project.id,
@@ -711,10 +867,12 @@ function edit(operations: EditOperation[], baseRevision = project.revision): voi
 async function replace(next: Project): Promise<void> {
   assertEditable();
   recording.assertSafeToLeave();
+  if (roughCutAI.busy) await roughCutAI.cancel();
   voiceover.stopPreview();
   document.querySelector<HTMLAudioElement>(".voice-preparation-audio")?.pause();
   const restored = validateProject(next);
   const validated = migratePristineDemoProject(restored) ?? restored;
+  const sameProjectId = validated.id === project.id;
   stop();
   const currentGeneration = generation;
   const currentRevision = project.revision;
@@ -742,6 +900,7 @@ async function replace(next: Project): Promise<void> {
         message: "工程已切换，原自动制作请求已停止；已排队媒体任务仍保留。",
       });
     }
+    if (sameProjectId) await roughCutAI.forgetSavedState();
     // Archive the old project before changing any live state or autosave pointer.
     library.clear();
     project = validated;
@@ -761,6 +920,7 @@ async function replace(next: Project): Promise<void> {
     mediaPreview = false;
     selectedMedia.clear();
     sourceFrame = 0;
+    await roughCutAI.reset();
     roughcut.setAsset("");
     selected = project.clips[0]?.id || "";
     proposal = null;
@@ -779,6 +939,10 @@ async function replace(next: Project): Promise<void> {
   await restoreManagedMedia();
   await voicePreparation.load();
   await folderImport.load();
+  if (!sameProjectId)
+    await restoreRoughCutAI().catch((error) =>
+      toast(`AI 粗剪草稿恢复失败，原记录已保留：${String(error)}`),
+    );
   if (production.enabled) await production.refresh();
 }
 
@@ -910,6 +1074,58 @@ function sourceAsset(): Asset | undefined {
 
 function sourcePreviewActive(): boolean {
   return tab === "roughcut" || (tab === "media" && mediaPreview && !!sourceAsset());
+}
+
+/** Register selected original files, then inspect only browser metadata/preview bytes. */
+async function importReferencedMedia(): Promise<void> {
+  assertEditable();
+  const ownGeneration = generation;
+  const references = await externalMedia.pick();
+  if (generation !== ownGeneration || !references.length) return;
+  const incoming = references.filter(
+    (ref) => !project.assets.some((asset) => asset.mediaId === ref.id),
+  );
+  if (project.assets.length + incoming.length > 1000)
+    throw new Error("工程最多保存 1000 个素材，请分批整理");
+  let imported = 0;
+  const failures: string[] = [];
+  for (const ref of incoming) {
+    if (generation !== ownGeneration) return;
+    let asset: Asset | undefined;
+    try {
+      assertEditable();
+      mediaImporting = true;
+      toast(`正在读取原文件预览 ${imported + failures.length + 1}/${incoming.length}：${ref.name}`);
+      asset = await library.inspectManaged(ref, ref.name, ref.lastModified);
+      if (generation !== ownGeneration) return;
+      const next = validateProject({
+        ...project,
+        revision: project.revision + 1,
+        assets: [...project.assets, asset],
+      });
+      await saveProject(next, "引用原文件");
+      if (generation !== ownGeneration) return;
+      mediaImporting = false;
+      commit(next, true);
+      imported++;
+    } catch (error) {
+      if (asset && !project.assets.some((item) => item.id === asset!.id)) {
+        const item = library.items.get(asset.id);
+        if (item) library.release(item);
+        library.items.delete(asset.id);
+      }
+      failures.push(`${ref.name}：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      mediaImporting = false;
+    }
+  }
+  if (generation !== ownGeneration) return;
+  render();
+  toast(
+    failures.length
+      ? `已引用 ${imported} 份素材；${failures.length} 份未能预览。${failures[0]}`
+      : `已引用 ${imported} 份素材，未复制原片。点击素材即可预览`,
+  );
 }
 
 /** A disposable source monitor: it never changes the saved composition or its playhead. */
@@ -1071,6 +1287,7 @@ function offer(value: unknown): void {
 }
 
 async function handleTask(next: PanelTask): Promise<void> {
+  if (await roughCutAI.handleTask(next)) return;
   if (production.enabled && production.auto?.taskId === next?.id) {
     await automatic.handleTask(next);
     return;
@@ -1157,6 +1374,7 @@ async function requestAI(
   mode: "initialize" | "workflow" | "draft" | "narration" = "workflow",
 ): Promise<void> {
   assertEditable();
+  if (roughCutAI.busy) throw new Error("AI 批量粗剪正在进行，请先完成或取消");
   if (narrationScriptDraft !== null && narrationScriptDraft !== (project.script ?? "")) {
     assertNarrationIdle();
     await saveNarrationScript();
@@ -1618,8 +1836,11 @@ async function action(name: string, id?: string): Promise<void> {
   switch (name) {
     case "import-folder":
       assertEditable();
+      folderImport.assertImportReady();
       if (folderImport.supported) await folderImport.connect(false);
       else {
+        if (folderImport.importMode === "reference")
+          throw new Error("当前环境无法引用整个文件夹，请直接选择素材文件，或明确切换为复制保存");
         folderImportIntent = { projectId: project.id, generation };
         $("#folder-input").click();
       }
@@ -1687,7 +1908,12 @@ async function action(name: string, id?: string): Promise<void> {
       $(".library-panel").innerHTML = views().renderLibrary();
       break;
     case "import":
+      folderImport.assertImportReady();
       reconnectAssetId = "";
+      if (folderImport.importMode === "reference") {
+        await importReferencedMedia();
+        break;
+      }
       if (production.enabled) {
         const result = await production.importFiles();
         if (result.job) {
@@ -1701,6 +1927,18 @@ async function action(name: string, id?: string): Promise<void> {
       assertEditable();
       if (!id || !project.assets.some((asset) => asset.id === id))
         throw new Error("请先选择要重新连接的素材");
+      if (isExternalMedia(project.assets.find((asset) => asset.id === id)?.mediaId)) {
+        const source = project.assets.find((asset) => asset.id === id)!;
+        const ownGeneration = generation;
+        const references = await externalMedia.pick(source.mediaId);
+        if (!references.length || ownGeneration !== generation) break;
+        stop();
+        await library.connectManaged(source, { reload: true });
+        if (ownGeneration !== generation) break;
+        render();
+        toast("已重新连接原文件，保留段和成片剪辑仍在");
+        break;
+      }
       reconnectAssetId = id;
       $("#media-input").click();
       break;
@@ -2581,7 +2819,7 @@ window.addEventListener("pagehide", () => {
 registerProjectReadTool(panel, production, () => ({
   project: structuredClone(project),
   workflowMode: automatic.mode,
-  requestToken: taskRequestToken || null,
+  requestToken: roughCutAI.requestToken || taskRequestToken || null,
   playheadFrame: frame,
   selectedClipId: selected,
   preparation: Object.fromEntries(
@@ -2624,6 +2862,7 @@ registerProjectReadTool(panel, production, () => ({
   },
 }));
 panel?.registerTool("propose_video_edit", async (args) => {
+  if (roughCutAI.isCurrentRequest(args)) return roughCutAI.accept(args);
   if (automatic.isCurrentRequest(args)) automatic.assertToolAllowed("propose_video_edit");
   if (
     !taskRequestToken ||
@@ -2643,7 +2882,8 @@ panel?.registerTool("propose_video_edit", async (args) => {
 });
 registerProductionTools(panel, production, {
   project: () => project,
-  requestToken: () => automatic.requestToken,
+  requestToken: () => roughCutAI.requestToken || automatic.requestToken,
+  transcriptRead: (token, id, result) => roughCutAI.recordTranscript(token, id, result),
   assertRequest: (args, toolName) => {
     if (!automatic.isCurrentRequest(args))
       throw new Error("这次修改不属于当前自动制作请求，已拒绝过期操作");
@@ -2706,9 +2946,12 @@ registerProductionTools(panel, production, {
       throw new Error("请先用已确认的本人录音完成画面与真实字幕对齐");
   },
   capture: async (id, seconds) => {
+    const token = roughCutAI.requestToken;
     const asset = project.assets.find((a) => a.id === id)!;
     if (!library.items.has(id) && asset.mediaId) await library.connectManaged(asset);
-    return captureAssetFrame(library, id, seconds);
+    const result = await captureAssetFrame(library, id, seconds);
+    roughCutAI.recordFrame(token, id, seconds);
+    return result;
   },
   apply: async (value) => {
     const candidate = parseProposal(value);
@@ -2862,10 +3105,13 @@ async function boot(): Promise<void> {
   selected = project.clips[0]?.id || "";
   voiceover.setText(project.script ?? "");
   render();
-  await restoreManagedMedia();
   await folderImport.load();
+  await restoreManagedMedia();
   await production.initialize();
   productionBooted = true;
+  await restoreRoughCutAI().catch((error) =>
+    toast(`AI 粗剪草稿恢复失败，原记录已保留：${String(error)}`),
+  );
   await voicePreparation.load();
   // The voice tab can be opened while the engine is still connecting.
   if (tab === "voiceover") await voiceover.load().catch(fail);

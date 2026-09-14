@@ -4,6 +4,7 @@ import { afterEach, test } from "node:test";
 import { createFolderImport, validateFolderDocument } from "../apps/video-studio/src/folder-import";
 import type { CapturedFolderAsset, FolderEntry } from "../apps/video-studio/src/folder-source";
 import { FolderCaptureTimeoutError } from "../apps/video-studio/src/folder-source";
+import type { ImportMode } from "../apps/video-studio/src/external-media";
 import { createProject, type Asset, type Project } from "../apps/video-studio/src/model";
 
 const controllers = new Set<ReturnType<typeof createFolderImport>>();
@@ -52,10 +53,12 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
   const writes: { key: string; value: any }[] = [];
   const scans: { handle: string; signal?: AbortSignal }[] = [];
   const captures: FolderEntry[] = [];
+  const captureModes: (ImportMode | undefined)[] = [];
   const publications: FolderEntry[] = [];
   const listings = new Map<string, FolderEntry[]>();
   const picks: { handle: string; name: string }[] = [];
   const hooks: {
+    referenceAvailable?: () => Promise<boolean>;
     pick?: () => Promise<{ handle: string; name: string } | undefined>;
     scan?: (
       handle: string,
@@ -67,6 +70,7 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
   } = {};
   const source = {
     available: async () => available,
+    referenceAvailable: async () => hooks.referenceAvailable?.() ?? false,
     pick: async () => (hooks.pick ? hooks.pick() : picks.shift()),
     scan: async (handle: string, signal?: AbortSignal) => {
       scans.push({ handle, signal });
@@ -74,8 +78,14 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
         ? hooks.scan(handle, signal)
         : { files: structuredClone(listings.get(handle) ?? []), skipped: 0 };
     },
-    capture: async (_handle: string, entry: FolderEntry, signal?: AbortSignal) => {
+    capture: async (
+      _handle: string,
+      entry: FolderEntry,
+      signal?: AbortSignal,
+      mode?: ImportMode,
+    ) => {
       captures.push(structuredClone(entry));
+      captureModes.push(mode);
       return hooks.capture ? hooks.capture(entry, signal) : resource(entry);
     },
     dispose: () => {
@@ -131,6 +141,7 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
     writes,
     scans,
     captures,
+    captureModes,
     publications,
     get project() {
       return project;
@@ -163,6 +174,54 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
     },
   };
 }
+
+test("imports wait for capability discovery instead of choosing the initial copy mode", async () => {
+  const f = fixture();
+  const discovery = deferred<boolean>();
+  let requested = false;
+  f.hooks.referenceAvailable = () => {
+    requested = true;
+    return discovery.promise;
+  };
+  assert.throws(() => f.controller.assertImportReady(), /正在确认素材导入方式/);
+  const loading = f.controller.load();
+  await until(() => requested);
+  assert.throws(() => f.controller.assertImportReady(), /正在确认素材导入方式/);
+  await assert.rejects(f.controller.connect(false), /正在确认素材导入方式/);
+  await assert.rejects(f.controller.action("folder-mode-copy"), /正在确认素材导入方式/);
+  assert.equal(f.captures.length, 0);
+  discovery.resolve(true);
+  await loading;
+  assert.doesNotThrow(() => f.controller.assertImportReady());
+  assert.equal(f.controller.importMode, "reference");
+});
+
+test("failed or stale discovery cannot enable copy fallback, but a confirmed old Host can", async () => {
+  const f = fixture();
+  f.hooks.referenceAvailable = async () => {
+    throw new Error("discovery failed");
+  };
+  await f.controller.load();
+  assert.throws(() => f.controller.assertImportReady(), /无法确认/);
+  const discovery = deferred<boolean>();
+  let requested = false;
+  f.hooks.referenceAvailable = () => {
+    requested = true;
+    return discovery.promise;
+  };
+  const loading = f.controller.load();
+  await until(() => requested);
+  f.setProject(createProject("另一个工程"));
+  discovery.resolve(true);
+  await loading;
+  assert.throws(() => f.controller.assertImportReady(), /正在确认素材导入方式/);
+  f.hooks.referenceAvailable = async () => false;
+  f.setAvailable(false);
+  await f.controller.load();
+  assert.doesNotThrow(() => f.controller.assertImportReady());
+  assert.equal(f.controller.supported, false);
+  assert.equal(f.controller.importMode, "copy");
+});
 
 test("repeated scans skip successful files while nested names retain independent resources", async () => {
   const f = fixture();
@@ -385,6 +444,41 @@ test("reopening keeps receipts but requires a new grant and never stores handles
   assert.ok(!JSON.stringify(f.writes).includes("fresh-grant"));
 });
 
+test("a reference folder retains its saved mode for automatic additions and reconnection", async () => {
+  const f = fixture({ intervalMs: 10 });
+  f.hooks.referenceAvailable = async () => true;
+  f.hooks.capture = async (entry) => ({
+    id: `external-${resource(entry).sha256}`,
+    bytes: entry.bytes,
+    mimeType: entry.mimeType,
+    name: entry.name,
+  });
+  await f.controller.load();
+  const first = file("原片.mp4"),
+    second = file("新增.mp4");
+  const handle = await f.connect([first], "引用目录", true);
+  const id = f.id();
+  assert.equal(f.document().folders[0].importMode, "reference");
+  await f.controller.action("folder-mode-copy");
+  f.listings.set(handle, [first, second]);
+  await until(() => f.document().folders[0].receipts.length === 2 && !f.controller.busy);
+  assert.equal(f.controller.importMode, "copy");
+  assert.deepEqual(f.captureModes, ["reference", "reference"]);
+  assert.ok(f.project.assets.every((asset) => asset.mediaId?.startsWith("external-")));
+  assert.equal(f.document().folders[0].importMode, "reference");
+
+  await f.controller.load();
+  await assert.rejects(f.controller.scan(id), /重新连接/);
+  await f.controller.action("folder-mode-copy");
+  f.picks.push({ handle: "renewed-reference-grant", name: "引用目录" });
+  f.listings.set("renewed-reference-grant", [first, second]);
+  await f.controller.action("folder-reconnect", id);
+  assert.equal(f.project.assets.length, 2);
+  assert.deepEqual(f.captureModes, ["reference", "reference", "reference", "reference"]);
+  assert.equal(f.document().folders[0].importMode, "reference");
+  assert.ok(!JSON.stringify(f.writes).includes("renewed-reference-grant"));
+});
+
 test("paused and removed folders stop automatic scanning without deleting imported assets", async () => {
   const f = fixture({ intervalMs: 10 });
   await f.controller.load();
@@ -448,7 +542,7 @@ test("invalid stored records are preserved and cannot be overwritten by connecti
   });
   const before = structuredClone(f.store.get(key));
   await f.controller.load();
-  await assert.rejects(f.controller.connect(true), /持续连接需要桌面/);
+  await assert.rejects(f.controller.connect(true), /素材导入方式无法确认/);
   assert.deepEqual(f.store.get(key), before);
   assert.equal(f.writes.length, 0);
   assert.match(f.controller.render(), /记录无法恢复/);

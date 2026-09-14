@@ -3178,7 +3178,7 @@ function validateAudioEnhanceInput(raw) {
   const input = raw;
   if (Object.keys(input).some((key) => !["assetId", "preset", "denoise", "normalize"].includes(key)))
     throw new Error("Unsupported audio enhancement parameter");
-  if (typeof input.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(input.assetId))
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
     throw new Error("Select an authorized source asset");
   if (input.preset !== void 0 && input.preset !== "light" && input.preset !== "balanced")
     throw new Error("Audio enhancement preset must be light or balanced");
@@ -3369,7 +3369,7 @@ function validateAudioExtractInput(raw) {
   const input = raw;
   if (Object.keys(input).some((key) => !["assetId", "inFrame", "outFrame", "fps"].includes(key)))
     throw new Error("不支持此参考录音提取参数");
-  if (typeof input.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(input.assetId))
+  if (typeof input.assetId !== "string" || !/^(?:asset|external)-[a-f0-9]{64}$/.test(input.assetId))
     throw new Error("请选择当前项目已保存的素材");
   for (const key of ["inFrame", "outFrame"])
     if (typeof input[key] !== "number" || !Number.isSafeInteger(input[key]) || input[key] < 0 || input[key] > 24 * 3600 * 30)

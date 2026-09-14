@@ -7,7 +7,7 @@ export const VOICE_REFERENCE_TEXT =
   "你好，这是我平时说话的声音。今天阳光很好，我想慢慢分享一个小故事。希望接下来的每一句话，都清楚自然，让听到的人感到轻松。";
 const engines = ["audio8-tts", "qwen3-tts"] as const;
 const managedId = (value: unknown): value is string =>
-  typeof value === "string" && /^asset-[a-f0-9]{64}$/.test(value);
+  typeof value === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(value);
 const shortText = (value: unknown, max: number): value is string =>
   typeof value === "string" && Array.from(value).length <= max;
 type Recipe = {

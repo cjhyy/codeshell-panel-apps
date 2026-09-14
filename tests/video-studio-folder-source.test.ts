@@ -106,6 +106,20 @@ function fixture(
           },
         };
         break;
+      case "resources.references.create":
+        response = {
+          reference: {
+            id: `external-${"c".repeat(64)}`,
+            kind: "external",
+            name: sample.name,
+            mimeType: sample.mimeType,
+            bytes: sample.bytes,
+            lastModified: sample.lastModified,
+            createdAt: 1,
+            state: "available",
+          },
+        };
+        break;
       default:
         throw Error(`Unexpected interface ${method}`);
     }
@@ -194,6 +208,96 @@ test("availability uses discovered methods and missing permissions never request
     f.source.dispose();
   }
 });
+
+test("reference capture only registers the reviewed scan identity without copying the original", async () => {
+  const f = fixture({ methods: [...METHODS, "resources.references.create"], structured: true });
+  try {
+    const handle = await opened(f);
+    const found = await f.source.scan(handle);
+    assert.equal(await f.source.referenceAvailable(), true);
+    const referenced = await f.source.capture(handle, found.files[0]!, undefined, "reference");
+    assert.deepEqual(referenced, {
+      id: `external-${"c".repeat(64)}`,
+      bytes: sample.bytes,
+      mimeType: sample.mimeType,
+      name: sample.name,
+    });
+    assert.deepEqual(
+      f.calls.filter((call) => call.method.startsWith("resources.")),
+      [
+        {
+          method: "resources.references.create",
+          params: {
+            directoryHandle: handle,
+            path: sample.path,
+            name: sample.name,
+            mimeType: sample.mimeType,
+            expectedBytes: sample.bytes,
+            expectedLastModified: sample.lastModified,
+          },
+        },
+      ],
+    );
+    await assert.rejects(
+      f.source.capture(
+        handle,
+        { ...sample, lastModified: sample.lastModified + 1 },
+        undefined,
+        "reference",
+      ),
+      /扫描清单/,
+    );
+    assert.equal(f.calls.filter((call) => call.method === "resources.references.create").length, 1);
+  } finally {
+    f.source.dispose();
+  }
+});
+
+test("an unavailable reference interface never falls back to copying the original", async () => {
+  const f = fixture();
+  try {
+    const handle = await opened(f);
+    await f.source.scan(handle);
+    assert.equal(await f.source.referenceAvailable(), false);
+    await assert.rejects(
+      f.source.capture(handle, sample, undefined, "reference"),
+      /不支持引用原文件/,
+    );
+    assert.ok(!f.calls.some((call) => call.method.startsWith("resources.")));
+  } finally {
+    f.source.dispose();
+  }
+});
+
+for (const [label, patch] of [
+  ["changed source", { state: "changed" }],
+  ["different byte size", { bytes: sample.bytes + 1 }],
+  ["different modification time", { lastModified: sample.lastModified + 1 }],
+] as const)
+  test(`reference capture rejects ${label} without a copy fallback`, async () => {
+    const f = fixture({
+      methods: [...METHODS, "resources.references.create"],
+      modify: (method, response) =>
+        method === "resources.references.create"
+          ? { reference: { ...response.reference, ...patch } }
+          : response,
+    });
+    try {
+      const handle = await opened(f);
+      await f.source.scan(handle);
+      await assert.rejects(
+        f.source.capture(handle, sample, undefined, "reference"),
+        /原文件已变化/,
+      );
+      assert.deepEqual(
+        f.calls.filter((call) => call.method.startsWith("resources.")).map((call) => call.method),
+        ["resources.references.create"],
+      );
+    } finally {
+      f.source.dispose();
+    }
+  });
+
 test("cancelled folder selection is not a reusable grant", async () => {
   const f = fixture({
     modify: (method, response) =>

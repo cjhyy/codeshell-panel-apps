@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "98ef6bdb9bfe8069cd4fe8947d45712f59579a3fab70aa5a411f849dbafd40ac",
+    ".codeshell-panel/panel.json": "e1dd00e6adb0c0753d38deb6ec34a4b995523fc34bac3d4462ae796769d0e269",
     "agent/skills/narration-workflow/SKILL.md": "9380787ffb90441db9af823e524a4e3781f1434180c99a8807501c7b5702579b",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
@@ -16,12 +16,12 @@
     "agent/skills/video-workflow/SKILL.md": "709f107fbb33c6c8c7bae823b47441885b786b3636dc9b04e4f61bfdab89af7f",
     "app/demo-narration.mp3": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
     "app/index.html": "9f9cee3ee0826fed83e2f678021de6b3b51ba59f7a8a578b98b7ed0907cb02ed",
-    "app/main.mjs": "fb5707a918292997a4d089991322485106a3bd0743392fb1a34ccd39552a9205",
-    "app/rough-cut.css": "94e9a743aaad13c8618c93aed8bd78069b5c3b7f9d5ed3a088b839da6e3db787",
-    "app/style.css": "d1798140cc3e16984e1771aa1c58aa807f4d0d932686d5a3b6fd61a69859d659",
+    "app/main.mjs": "63ae4e516282bbcfa19bd131a42d385758d8188c4acafaa86a234ff49eed4573",
+    "app/rough-cut.css": "d315c1f565c3b6fca2686d154a6786719c380a62c633d0898683ebd4d4f9923b",
+    "app/style.css": "b9023c6d79f1be02c34cbbebda575ac922c658bd353efc48140fb3880b44728a",
     "app/tools/folder-scan.mjs": "d89b408c3893bc4c8ed913d6d755723564ee7717accf40b57df07a4aa2763407",
-    "app/tools/media-runtime.mjs": "a3eb7b88d6c8be1b5d212c4b4298bd1764ea3469fbb923f6869ff2e792291138",
+    "app/tools/media-runtime.mjs": "45d58c535f7a4976cc8beb41bda7936688d07f743d92bbac90194265d9447e2d",
     "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
-    "README.md": "3fc861049c1183d122cac88ce3f722a1ecce09840703a7e2fe1ae9cb2dde86ab"
+    "README.md": "1d4970939e4a3365ccd02e01256be1094aae1aaa6b0427a0405b144660462393"
   }
 }

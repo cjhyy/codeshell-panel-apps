@@ -44,7 +44,16 @@ prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
 custody, and reviewed entry handles; submitted native tasks continue after the
-panel closes. Native tools require Node.js 20+ and their declared local
+panel closes. Version 0.5.6 adds source-card previews, manual multi-source rough-cut
+queues, uniform head/tail trimming or fixed-duration selections, and AI-assisted
+rough-cut candidates based on actual frame samples or transcripts. AI batches
+support review, cancellation, continuation, and saved progress across restarts.
+With **CodeShell 0.9.14**, desktop imports default to persistent read-only references
+to original files without copying entire sources; explicit copy imports remain
+available. Processing jobs may still create necessary temporary inputs. Moved
+originals can be reconnected, and changed source contents are not silently swapped
+into existing edits. The Host update supplies generic authorized file references;
+editing and AI workflow logic remain in the Panel. Native tools require Node.js 20+ and their declared local
 dependencies; voice initialization downloads the selected models. See the
 [Video Studio guide](apps/video-studio/README.md) for requirements, reference
 recordings, real previews, and export. GitHub installation itself does not

@@ -2,10 +2,20 @@ import type { Asset, Project } from "./model";
 import type { FolderEntry, createDesktopFolderSource } from "./folder-source";
 import { FolderCaptureTimeoutError } from "./folder-source";
 import { escapeHtml as esc } from "./icons";
+import type { ImportMode } from "./external-media";
 
-type Source = ReturnType<typeof createDesktopFolderSource>;
+type DesktopSource = ReturnType<typeof createDesktopFolderSource>;
+type Source = Omit<DesktopSource, "referenceAvailable"> & {
+  referenceAvailable?: DesktopSource["referenceAvailable"];
+};
 type Receipt = { path: string; bytes: number; lastModified: number; assetId: string };
-type Folder = { id: string; name: string; automatic: boolean; receipts: Receipt[] };
+type Folder = {
+  id: string;
+  name: string;
+  automatic: boolean;
+  receipts: Receipt[];
+  importMode?: ImportMode;
+};
 interface FolderDocument {
   schemaVersion: 1;
   projectId: string;
@@ -62,6 +72,7 @@ export function validateFolderDocument(value: unknown, projectId: string): Folde
       !folder.name ||
       folder.name.length > 240 ||
       typeof folder.automatic !== "boolean" ||
+      (folder.importMode !== undefined && !["reference", "copy"].includes(folder.importMode)) ||
       !Array.isArray(folder.receipts) ||
       folder.receipts.length > 1000
     )
@@ -92,6 +103,7 @@ export function validateFolderDocument(value: unknown, projectId: string): Folde
       id: f.id,
       name: f.name,
       automatic: f.automatic,
+      ...(f.importMode ? { importMode: f.importMode } : {}),
       receipts: f.receipts.map((r) => ({
         path: r.path,
         bytes: r.bytes,
@@ -118,6 +130,9 @@ export function createFolderImport(
     active: AbortController | undefined,
     timer: ReturnType<typeof setTimeout> | undefined;
   let scheduleIndex = 0;
+  let importReady = false;
+  let referenceSupported = false;
+  let importMode: ImportMode = "copy";
   const handles = new Map<string, string>();
   const suspended = new Set<string>();
   // Receipts from previous grants are retained for display, but cannot authorize or identify a new directory.
@@ -127,6 +142,10 @@ export function createFolderImport(
   const notify = () => {
     if (!disposed) context.changed();
   };
+  function assertImportReady() {
+    if (locked) throw new Error("素材导入方式无法确认，请重新读取记录后再试");
+    if (!importReady || !current()) throw new Error("正在确认素材导入方式，请稍候再导入");
+  }
   async function persist(next = document) {
     const own = identity;
     if (!loaded || locked || !current()) throw new Error("文件夹记录尚未安全恢复");
@@ -164,6 +183,9 @@ export function createFolderImport(
     identity = context.identity();
     const own = identity;
     loaded = false;
+    importReady = false;
+    supported = false;
+    referenceSupported = false;
     locked = false;
     busy = false;
     status = "";
@@ -172,8 +194,14 @@ export function createFolderImport(
       const stored = await context.read(key());
       if (!current(own)) return;
       document = validateFolderDocument(stored, context.project().id);
+      const nextSupported = !!source && (await source.available());
+      const nextReferenceSupported = !!source && !!(await source.referenceAvailable?.());
+      if (!current(own)) return;
+      supported = nextSupported;
+      referenceSupported = nextReferenceSupported;
+      importMode = referenceSupported ? "reference" : "copy";
       loaded = true;
-      supported = !!source && (await source.available());
+      importReady = true;
     } catch (error) {
       if (current(own)) {
         locked = true;
@@ -183,6 +211,7 @@ export function createFolderImport(
     if (current(own)) notify();
   }
   async function connect(automatic: boolean, id?: string) {
+    assertImportReady();
     if (!source || !supported || !loaded || locked)
       throw new Error("当前环境支持一次性导入文件夹；持续连接需要桌面目录和资源权限");
     if (busy || !context.ready()) throw new Error("请等待当前操作结束，再选择素材文件夹");
@@ -203,6 +232,7 @@ export function createFolderImport(
         id: existing?.id ?? crypto.randomUUID(),
         name: picked.name,
         automatic,
+        importMode: existing?.importMode ?? importMode,
         receipts: existing?.receipts ?? [],
       };
       await persist({
@@ -298,10 +328,11 @@ export function createFolderImport(
       for (const [index, file] of candidates.entries()) {
         if (!valid()) break;
         const position = `${index + 1}/${candidates.length}`;
-        status = `正在保存原片 ${position} · ${formatBytes(file.bytes)}（本轮共 ${formatBytes(totalBytes)}）：${file.path}`;
+        const mode = folder.importMode ?? importMode;
+        status = `${mode === "reference" ? "正在引用原文件" : "正在保存原片"} ${position} · ${formatBytes(file.bytes)}（本轮共 ${formatBytes(totalBytes)}）：${file.path}`;
         notify();
         try {
-          const resource = await source.capture(handle, file, controller.signal);
+          const resource = await source.capture(handle, file, controller.signal, mode);
           if (!valid()) break;
           status = `正在读取预览并保存工程 ${position}：${file.path}`;
           notify();
@@ -358,6 +389,15 @@ export function createFolderImport(
   }
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("folder-")) return false;
+    if (name === "folder-mode-reference" || name === "folder-mode-copy") {
+      assertImportReady();
+      if (busy) throw new Error("请先停止当前导入，再切换导入方式");
+      if (name === "folder-mode-reference" && !referenceSupported)
+        throw new Error("更新 CodeShell 后可引用原文件");
+      importMode = name === "folder-mode-reference" ? "reference" : "copy";
+      notify();
+      return true;
+    }
     if (name === "folder-reload") {
       await load();
       return true;
@@ -400,16 +440,23 @@ export function createFolderImport(
   function render() {
     const button = (name: string, text: string, id = "", disabled = false) =>
       `<button type="button" class="quiet" data-action="${name}" data-id="${esc(id)}" ${disabled ? "disabled" : ""}>${text}</button>`;
-    return `<div class="folder-import"><div class="folder-actions">${button("import-folder", "导入文件夹", "", busy)}${button("folder-connect", "连接文件夹 · 自动导入", "", busy || !supported || !loaded || locked)}</div><p class="muted small">包含子文件夹中的视频、音频和图片；只加入素材库。首次导入会完整保存原片，大文件需要等待复制完成。</p>${!supported ? '<p class="muted small">当前可一次性导入。持续连接需要桌面文件夹与资源权限。</p>' : '<p class="muted small">自动导入在面板打开时检查新增或修改文件。重启后重新连接，已导入素材仍保留。</p>'}${document.folders.map((f) => `<article class="folder-connection"><strong>${esc(f.name)}</strong><span class="muted small">${handles.has(f.id) ? (suspended.has(f.id) ? "检查失败，自动导入已暂停" : f.automatic ? "自动检查中" : "已暂停自动检查") : "待重新连接"} · 已记录 ${f.receipts.length} 个文件</span><div class="folder-actions">${handles.has(f.id) ? button("folder-scan", "立即检查 / 重试", f.id, busy) + button("folder-toggle", f.automatic && !suspended.has(f.id) ? "暂停" : "开启自动导入", f.id, busy) : button("folder-reconnect", "重新连接", f.id, busy || !supported || locked)}${button("folder-remove", "断开并移除记录", f.id, busy || locked)}</div></article>`).join("")}<p class="folder-status small" role="status">${esc(status)}</p>${busy ? button("folder-cancel", "停止本次检查") : ""}${locked ? button("folder-reload", "重新读取记录") : ""}</div>`;
+    return `<div class="folder-import">${referenceSupported ? `<div class="folder-actions" aria-label="素材导入方式"><button type="button" data-action="folder-mode-reference" aria-pressed="${importMode === "reference"}" ${busy ? "disabled" : ""}>引用原文件${importMode === "reference" ? " · 已选" : ""}</button><button type="button" data-action="folder-mode-copy" aria-pressed="${importMode === "copy"}" ${busy ? "disabled" : ""}>复制保存${importMode === "copy" ? " · 已选" : ""}</button></div>` : ""}<div class="folder-actions">${button("import-folder", "导入文件夹", "", busy)}${button("folder-connect", "连接文件夹 · 自动导入", "", busy || !supported || !loaded || locked)}</div><p class="muted small">${importMode === "reference" ? "引用视频、音频和图片，导入不复制原片。请保留原文件位置；移动后可重新连接。" : "包含子文件夹中的视频、音频和图片；只加入素材库。首次导入会完整保存原片，大文件需要等待复制完成。"}</p>${!supported ? '<p class="muted small">当前可一次性导入。持续连接需要桌面文件夹与资源权限。</p>' : '<p class="muted small">自动导入在面板打开时检查新增或修改文件。重启后重新连接，已导入素材仍保留。</p>'}${document.folders.map((f) => `<article class="folder-connection"><strong>${esc(f.name)}</strong><span class="muted small">${handles.has(f.id) ? (suspended.has(f.id) ? "检查失败，自动导入已暂停" : f.automatic ? "自动检查中" : "已暂停自动检查") : "待重新连接"} · ${(f.importMode ?? importMode) === "reference" ? "引用原文件" : "复制保存"} · 已记录 ${f.receipts.length} 个文件</span><div class="folder-actions">${handles.has(f.id) ? button("folder-scan", "立即检查 / 重试", f.id, busy) + button("folder-toggle", f.automatic && !suspended.has(f.id) ? "暂停" : "开启自动导入", f.id, busy) : button("folder-reconnect", "重新连接", f.id, busy || !supported || locked)}${button("folder-remove", "断开并移除记录", f.id, busy || locked)}</div></article>`).join("")}<p class="folder-status small" role="status">${esc(status)}</p>${busy ? button("folder-cancel", "停止本次检查") : ""}${locked ? button("folder-reload", "重新读取记录") : ""}</div>`;
   }
   return {
     load,
+    assertImportReady,
     render,
     action,
     connect,
     scan,
     get supported() {
       return supported;
+    },
+    get importMode() {
+      return importMode;
+    },
+    get referenceSupported() {
+      return referenceSupported;
     },
     get busy() {
       return busy;

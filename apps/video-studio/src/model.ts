@@ -1,6 +1,7 @@
 import { validateVideoWorkflow, type VideoWorkflow } from "./workflow";
 import { validateNarration, type NarrationState } from "./narration";
 import { validateRoughCuts } from "./rough-cut";
+import { isResourceId } from "./external-media";
 
 /**
  * A portable, frame-based edit decision list. Source media stays outside the project.
@@ -224,7 +225,7 @@ function volume(value: unknown): number {
 }
 
 function mediaId(value: unknown): string {
-  if (typeof value !== "string" || !/^asset-[a-f0-9]{64}$/.test(value)) {
+  if (!isResourceId(value)) {
     throw new Error("持久素材 ID 格式不正确");
   }
   return value;

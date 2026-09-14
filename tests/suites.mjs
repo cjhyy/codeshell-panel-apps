@@ -27,6 +27,8 @@ export const suites = [
         "tests/video-studio-local-voice.test.ts",
         "tests/video-studio-media-task-bridge.test.ts",
         "tests/video-studio-media-file-storage.test.ts",
+        "tests/video-studio-external-media.test.ts",
+        "tests/video-studio-rough-cut-ai.test.ts",
         "tests/video-studio-folder-scan.test.ts",
         "tests/video-studio-folder-source.test.ts",
         "tests/video-studio-folder-import.test.ts",
