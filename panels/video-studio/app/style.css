@@ -565,6 +565,119 @@ h3 {
   font-size: 11px;
   padding: 7px 9px;
 }
+/* Library display density is independent of the source monitor and timeline. */
+.media-library-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0;
+}
+.media-view-switch {
+  display: flex;
+  border: 1px solid #39443e;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.media-view-switch button {
+  border: 0;
+  border-radius: 0;
+  padding: 6px 9px;
+  min-height: 29px;
+  font-size: 11px;
+  background: transparent;
+}
+.media-view-switch button[aria-pressed="true"] {
+  background: #acd4b7;
+  color: #14241b;
+}
+.media-library-toolbar > label {
+  flex: 1 1 88px;
+  color: #90a59a;
+  font-size: 10px;
+}
+.media-library-toolbar select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px;
+  min-width: 0;
+  font-size: 11px;
+}
+.asset-card.is-selected { border-color: #8bae97; }
+.asset-card:focus-visible { outline: 2px solid #b6d9bf; outline-offset: 2px; }
+.asset-card .asset-more { flex: none; padding: 2px; }
+.asset-list[data-view="large"] { display: flex; flex-direction: column; }
+.asset-list[data-view="small"] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100px, 100%), 1fr));
+  gap: 8px;
+}
+.asset-list[data-view="small"] .asset-info { padding: 6px; gap: 4px; }
+.asset-list[data-view="small"] .asset-info > div { flex-basis: 100%; }
+.asset-list[data-view="small"] .asset-info > button.quiet { display: none; }
+.asset-list[data-view="small"] .asset-select { padding: 5px 6px 0; font-size: 10px; }
+.asset-list[data-view="small"] .demo-thumb { padding: 10px; }
+.asset-list[data-view="small"] .demo-thumb strong { font-size: 13px; }
+.asset-list[data-view="small"] .demo-thumb-kicker,
+.asset-list[data-view="small"] .demo-thumb:after { display: none; }
+.asset-list[data-view="list"] { display: flex; flex-direction: column; gap: 5px; }
+.asset-list[data-view="list"] .asset-card {
+  display: grid;
+  grid-template-columns: 22px 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+}
+.asset-list[data-view="list"] .asset-select { grid-row: 1; grid-column: 1; padding: 0; }
+.asset-list[data-view="list"] .asset-select > span { display: none; }
+.asset-list[data-view="list"] .asset-thumbnail { grid-row: 1; grid-column: 2; border-radius: 4px; aspect-ratio: 16 / 10; }
+.asset-list[data-view="list"] .asset-info { grid-row: 1; grid-column: 3; padding: 0; gap: 3px; }
+.asset-list[data-view="list"] .asset-info > div { flex: 1 1 76px; }
+.asset-list[data-view="list"] .asset-info > button.quiet { display: none; }
+.asset-list[data-view="list"] .demo-thumb { padding: 5px; justify-content: center; }
+.asset-list[data-view="list"] .demo-thumb strong { font-size: 9px; line-height: 1.2; }
+.asset-list[data-view="list"] .demo-thumb-kicker,
+.asset-list[data-view="list"] .demo-thumb:after,
+.asset-list[data-view="list"] .demo-label { display: none; }
+.asset-list[data-view="list"] .asset-duration { font-size: 7px; padding: 1px 2px; bottom: 2px; right: 2px; }
+.asset-list .empty-state { grid-column: 1 / -1; }
+.media-context-menu {
+  position: fixed;
+  left: 8px;
+  top: 8px;
+  width: 216px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid #4d6155;
+  border-radius: 8px;
+  background: #202823;
+  color: #e0eee4;
+  box-shadow: 0 12px 40px #0008;
+  z-index: 1000;
+}
+.media-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  border-radius: 4px;
+  padding: 7px 9px;
+  background: transparent;
+  text-align: left;
+  font-size: 12px;
+}
+.media-context-menu button:hover,
+.media-context-menu button:focus-visible { background: #34493b; outline: none; }
+.media-context-menu button.danger,
+.media-selection-bar .danger { color: #ffb8a9; }
+#media-delete-dialog p { line-height: 1.7; }
+#media-delete-dialog .danger { background: #7b3531; border-color: #a64e46; color: #fff; }
+
 .source-preview-scrub {
   display: flex;
   align-items: center;

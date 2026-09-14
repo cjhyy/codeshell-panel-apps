@@ -14,7 +14,9 @@ import { renderNarrationPanel } from "./narration-ui";
 import type { Proposal, PanelTask } from "./host";
 import { renderProductionJobs, type ProductionViewState } from "./production-views";
 import { version as panelVersion } from "../.codeshell-panel/panel.json";
+import { demoSceneIndex } from "./demo";
 import { isExternalMedia } from "./external-media";
+import { visibleMedia, type MediaLibraryPreferences } from "./media-library-ui";
 
 /** Data needed to render a view; no host calls, media controls or state mutations. */
 export interface ViewState {
@@ -52,6 +54,7 @@ export interface ViewState {
   readonly voicePreparationMarkup?: string;
   readonly roughcutMarkup?: string;
   readonly selectedMedia?: ReadonlySet<string>;
+  readonly mediaPreferences?: MediaLibraryPreferences;
   readonly sourcePreview?: {
     readonly id?: string;
     readonly kind?: Asset["kind"];
@@ -267,7 +270,8 @@ export function createViews(state: ViewState) {
       </footer>
       <dialog id="export-dialog"></dialog>
       <dialog id="caption-dialog"></dialog>
-      <dialog id="plan-dialog"></dialog>`;
+      <dialog id="plan-dialog"></dialog>
+      <dialog id="media-delete-dialog" aria-labelledby="media-delete-heading"></dialog>`;
   }
 
   function renderLibrary(): string {
@@ -448,8 +452,16 @@ ${esc(aiPrompt)}</textarea
           : ""}
         ${button("voiceover", "文字配音", "volume", "quiet full")}
         ${button("paste-plan", "导入剪辑方案 JSON", "text", "quiet full")}`;
-    const assets = project.assets.filter((asset) =>
-      asset.name.toLowerCase().includes(search.toLowerCase()),
+    const preferences = state.mediaPreferences ?? {
+      view: "large",
+      filter: "all",
+      sort: "original",
+    };
+    const assets = visibleMedia(project.assets, search, preferences);
+    const filteringMedia = Boolean(search.trim()) || preferences.filter !== "all";
+    const selectedAssets = project.assets.filter((asset) => state.selectedMedia?.has(asset.id));
+    const roughCutSelected = selectedAssets.filter((asset) =>
+      ["video", "audio"].includes(asset.kind),
     );
     return html`<div class="section-title">
         <h2>项目素材</h2>
@@ -481,29 +493,90 @@ ${esc(aiPrompt)}</textarea
             !state.production?.status.hyperframes.available,
           )
         : ""}
-      <div class="library-label"><span>点击预览 · 拖动入轨</span><span>勾选后可批量粗剪</span></div>
-      ${project.assets.some((asset) => ["video", "audio"].includes(asset.kind))
-        ? `<div class="media-selection-bar"><div>${button("select-media", search ? "全选搜索结果" : "全选", undefined, "quiet")}${button("clear-media-selection", "清空", undefined, "quiet", !state.selectedMedia?.size)}</div>${button("batch-roughcut", `批量粗剪${state.selectedMedia?.size ? `（${state.selectedMedia.size}）` : ""}`, "cut", "primary", !state.selectedMedia?.size)}</div>`
+      <div class="media-library-toolbar">
+        <div class="media-view-switch" role="group" aria-label="素材视图">
+          ${(
+            [
+              ["large", "大图"],
+              ["small", "小图"],
+              ["list", "列表"],
+            ] as const
+          )
+            .map(
+              ([id, label]) =>
+                `<button type="button" data-action="media-view" data-id="${id}" aria-pressed="${preferences.view === id}">${label}</button>`,
+            )
+            .join("")}
+        </div>
+        <label
+          >类型<select data-media-filter aria-label="素材类型">
+            ${(
+              [
+                ["all", "全部"],
+                ["video", "视频"],
+                ["audio", "音频"],
+                ["image", "图片"],
+                ["demo", "示例"],
+              ] as const
+            )
+              .map(
+                ([value, label]) =>
+                  `<option value="${value}"${preferences.filter === value ? " selected" : ""}>${label}</option>`,
+              )
+              .join("")}
+          </select></label
+        >
+        <label
+          >排序<select data-media-sort aria-label="素材排序">
+            ${(
+              [
+                ["original", "导入顺序"],
+                ["name", "名称"],
+                ["duration", "时长 · 长到短"],
+              ] as const
+            )
+              .map(
+                ([value, label]) =>
+                  `<option value="${value}"${preferences.sort === value ? " selected" : ""}>${label}</option>`,
+              )
+              .join("")}
+          </select></label
+        >
+      </div>
+      <div class="library-label">
+        <span>点击预览 · 右键管理</span
+        ><span
+          >${assets.length}
+          份${selectedAssets.length ? ` · 已选 ${selectedAssets.length}` : ""}</span
+        >
+      </div>
+      ${project.assets.length
+        ? `<div class="media-selection-bar"><div>${button("select-media", search || preferences.filter !== "all" ? "全选当前结果" : "全选", undefined, "quiet", !assets.length)}${button("clear-media-selection", "清空选择", undefined, "quiet", !selectedAssets.length)}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "primary", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger", !selectedAssets.length)}</div></div>`
         : ""}
-      <div class="asset-list">
+      <div class="asset-list" data-view="${preferences.view}">
         ${assets
-          .map((asset, i) => {
+          .map((asset) => {
+            const demoIndex = demoSceneIndex(asset);
             const item = mediaItems.get(asset.id);
             const missing =
               asset.kind !== "demo" &&
               (!item || (item.element && "error" in item.element && !!item.element.error));
             return html`<article
-              class="asset-card ${missing ? "missing" : ""} ${source?.id === asset.id
-                ? "is-previewing"
-                : ""}"
+              class="asset-card ${state.selectedMedia?.has(asset.id) ? "is-selected" : ""} ${missing
+                ? "missing"
+                : ""} ${source?.id === asset.id ? "is-previewing" : ""}"
               draggable="true"
               data-asset="${esc(asset.id)}"
               data-preview-asset="${esc(asset.id)}"
+              tabindex="0"
+              aria-label="素材 ${esc(asset.name)}"
             >
               <button
                 type="button"
                 aria-label="预览 ${esc(asset.name)}"
-                class="asset-thumbnail ${asset.kind === "demo" ? "demo-thumb demo-" + (i % 3) : ""}"
+                class="asset-thumbnail ${asset.kind === "demo"
+                  ? "demo-thumb demo-" + demoIndex
+                  : ""}"
               >
                 ${item?.thumbnail
                   ? `<img src="${item.thumbnail}" alt="${esc(asset.name)}" />`
@@ -513,15 +586,28 @@ ${esc(aiPrompt)}</textarea
                         "从想法，<br>到成片。",
                         "让每一帧，<br>恰到好处。",
                         "你的故事，<br>现在开始。",
-                      ][i % 3] +
+                      ][demoIndex] +
                       "</strong>"
-                    : icon(missing ? "link" : "volume", 30)}<span class="asset-duration"
-                  >${seconds(asset.durationFrames)}s</span
+                    : icon(
+                        missing
+                          ? "link"
+                          : asset.kind === "audio"
+                            ? "volume"
+                            : asset.kind === "image"
+                              ? "image"
+                              : "film",
+                        30,
+                      )}<span class="asset-duration">${seconds(asset.durationFrames)}s</span
                 >${asset.kind === "demo" ? '<span class="demo-label">示例</span>' : ""}
               </button>
-              ${["video", "audio"].includes(asset.kind)
-                ? `<label class="asset-select"><input type="checkbox" data-select-media="${esc(asset.id)}" aria-label="选择 ${esc(asset.name)} 进行批量粗剪"${state.selectedMedia?.has(asset.id) ? " checked" : ""}>选入批量粗剪</label>`
-                : ""}
+              <label class="asset-select"
+                ><input
+                  type="checkbox"
+                  data-select-media="${esc(asset.id)}"
+                  aria-label="选择 ${esc(asset.name)}"
+                  ${state.selectedMedia?.has(asset.id) ? " checked" : ""}
+                /><span>选择</span></label
+              >
               <div class="asset-info">
                 <div>
                   <button
@@ -549,6 +635,17 @@ ${esc(aiPrompt)}</textarea
                   ? `<button type="button" class="quiet" data-rough-source="${esc(asset.id)}" title="预览原片并标记保留范围" aria-label="粗剪 ${esc(asset.name)}">粗剪</button>`
                   : ""}
                 <button
+                  type="button"
+                  class="icon-button asset-more"
+                  data-action="media-menu"
+                  data-id="${esc(asset.id)}"
+                  title="更多素材操作"
+                  aria-label="更多 ${esc(asset.name)}"
+                  aria-haspopup="menu"
+                >
+                  ${icon("more", 16)}
+                </button>
+                <button
                   class="icon-button"
                   data-add-asset="${esc(asset.id)}"
                   title="添加到时间轴"
@@ -560,12 +657,12 @@ ${esc(aiPrompt)}</textarea
             </article>`;
           })
           .join("") ||
-        `<div class="empty-state">${icon("folder", 32)}<h3>${search ? "没有匹配的素材" : "你的素材，故事的起点"}</h3><p>${search ? "换个关键词试试。" : "导入视频、音频或图片。<br>也可以将文件拖到这里。"}</p>${!search ? button("demo", "打开示例工程", "play", "quiet") : ""}</div>`}
+        `<div class="empty-state">${icon("folder", 32)}<h3>${filteringMedia ? "没有匹配的素材" : "你的素材，故事的起点"}</h3><p>${filteringMedia ? "试试其他类型或搜索词。" : "导入视频、音频或图片。<br>也可以将文件拖到这里。"}</p>${filteringMedia ? button("clear-media-filter", "清除筛选", undefined, "quiet") : button("demo", "打开示例工程", "play", "quiet")}</div>`}
       </div>
       <div class="library-note">
         ${icon("link", 14)}<span
           >${connected
-            ? "素材与预览由工作台持久保存，重新打开自动恢复。"
+            ? "素材信息随工程保存。引用素材需要保留原片；删除素材仅从当前工程移除。"
             : "导入素材保存在此浏览器，重新打开自动恢复；清除网站数据会移除本地副本。"}</span
         >
       </div>`;

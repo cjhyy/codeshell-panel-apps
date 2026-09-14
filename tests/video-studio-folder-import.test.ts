@@ -5,6 +5,7 @@ import { createFolderImport, validateFolderDocument } from "../apps/video-studio
 import type { CapturedFolderAsset, FolderEntry } from "../apps/video-studio/src/folder-source";
 import { FolderCaptureTimeoutError } from "../apps/video-studio/src/folder-source";
 import type { ImportMode } from "../apps/video-studio/src/external-media";
+import { removeAssets } from "../apps/video-studio/src/asset-management";
 import { createProject, type Asset, type Project } from "../apps/video-studio/src/model";
 
 const controllers = new Set<ReturnType<typeof createFolderImport>>();
@@ -48,7 +49,8 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
   let identity = "folder-project:1",
     ready = true,
     available = true,
-    disposed = false;
+    disposed = false,
+    assetSequence = 0;
   const store = new Map<string, unknown>();
   const writes: { key: string; value: any }[] = [];
   const scans: { handle: string; signal?: AbortSignal }[] = [];
@@ -112,7 +114,7 @@ function fixture(options: { intervalMs?: number; settleMs?: number } = {}) {
         const existing = project.assets.find((item) => item.mediaId === asset.id);
         if (existing) return existing;
         const published: Asset = {
-          id: `source-${project.assets.length + 1}`,
+          id: `source-${++assetSequence}`,
           name: entry.name,
           kind: "video",
           durationFrames: 90,
@@ -442,6 +444,104 @@ test("reopening keeps receipts but requires a new grant and never stores handles
   );
   assert.equal(f.id(), id);
   assert.ok(!JSON.stringify(f.writes).includes("fresh-grant"));
+});
+
+test("a saved folder receipt keeps a deleted asset out of automatic scans and a reopened connection", async () => {
+  const f = fixture({ intervalMs: 10 });
+  await f.controller.load();
+  const original = file("已移除的原片.mp4");
+  await f.connect([original], "原片目录", true);
+  const id = f.id();
+  const receipt = structuredClone(f.document().folders[0].receipts);
+  f.setProject(removeAssets(f.project, [f.project.assets[0]!.id]), "folder-project:1");
+  const scans = f.scans.length;
+  await until(() => f.scans.length >= scans + 4 && !f.controller.busy);
+  assert.equal(f.captures.length, 1);
+  assert.equal(f.publications.length, 1);
+  assert.deepEqual(f.project.assets, []);
+  assert.deepEqual(f.document().folders[0].receipts, receipt);
+
+  await f.controller.load();
+  await assert.rejects(f.controller.scan(id), /重新连接/);
+  f.picks.push({ handle: "reopened-deleted-source", name: "原片目录" });
+  f.listings.set("reopened-deleted-source", [original]);
+  await f.controller.action("folder-reconnect", id);
+  assert.equal(f.captures.length, 1, "A fresh grant does not reverse the saved deletion intent");
+  assert.equal(f.publications.length, 1);
+  assert.deepEqual(f.project.assets, []);
+  assert.deepEqual(f.document().folders[0].receipts, receipt);
+  assert.match(f.controller.render(), /跳过 1 个/);
+});
+
+test("new publications preserve deleted-file receipts across later scans and fresh grants", async () => {
+  const f = fixture();
+  await f.controller.load();
+  const removed = file("已删除.mp4"),
+    kept = file("保留.mp4"),
+    added = file("新增.mp4");
+  await f.connect([removed, kept]);
+  const id = f.id(),
+    deletedReceipt = structuredClone(f.document().folders[0].receipts[0]);
+  f.setProject(removeAssets(f.project, [f.project.assets[0]!.id]), "folder-project:1");
+
+  await f.controller.load();
+  f.picks.push({ handle: "fresh-grant-with-addition", name: "原片目录" });
+  f.listings.set("fresh-grant-with-addition", [removed, kept, added]);
+  await f.controller.action("folder-reconnect", id);
+  assert.deepEqual(
+    f.captures.map((entry) => entry.path),
+    [removed.path, kept.path, kept.path, added.path],
+    "Existing assets still require verification under the new grant",
+  );
+  assert.deepEqual(f.project.assets.map((asset) => asset.name), [kept.name, added.name]);
+  assert.deepEqual(
+    f.document().folders[0].receipts.find((receipt: any) => receipt.path === removed.path),
+    deletedReceipt,
+    "Publishing another file must retain the durable deletion receipt",
+  );
+  await f.controller.scan(id);
+  assert.equal(f.captures.length, 4, "The next scan must not resurrect the removed file");
+
+  await f.controller.load();
+  f.picks.push({ handle: "second-fresh-grant", name: "原片目录" });
+  f.listings.set("second-fresh-grant", [removed, kept, added]);
+  await f.controller.action("folder-reconnect", id);
+  await f.controller.scan(id);
+  assert.deepEqual(
+    f.captures.map((entry) => entry.path),
+    [removed.path, kept.path, kept.path, added.path, kept.path, added.path],
+    "Durable skips survive another restart without becoming grant authorization",
+  );
+  assert.deepEqual(f.project.assets.map((asset) => asset.name), [kept.name, added.name]);
+});
+
+test("a changed original or a new one-time connection can import a previously deleted source", async () => {
+  const f = fixture();
+  await f.controller.load();
+  const original = file("原片.mp4"),
+    modified = file("原片.mp4", 20);
+  const handle = await f.connect([original]);
+  const firstFolderId = f.id();
+  const originalMediaId = f.project.assets[0]!.mediaId;
+  f.setProject(removeAssets(f.project, [f.project.assets[0]!.id]), "folder-project:1");
+  f.listings.set(handle, [modified]);
+  await f.controller.scan(firstFolderId);
+  assert.equal(f.captures.length, 2);
+  assert.equal(f.project.assets.length, 1);
+  assert.notEqual(f.project.assets[0]!.mediaId, originalMediaId);
+  assert.equal(f.document().folders[0].receipts[0].lastModified, 20);
+
+  const modifiedMediaId = f.project.assets[0]!.mediaId;
+  f.setProject(removeAssets(f.project, [f.project.assets[0]!.id]), "folder-project:1");
+  await f.controller.scan(firstFolderId);
+  assert.deepEqual(f.project.assets, []);
+  assert.equal(f.captures.length, 2);
+  await f.connect([modified], "明确再次导入", false);
+  assert.equal(f.captures.length, 3);
+  assert.equal(f.project.assets.length, 1);
+  assert.equal(f.project.assets[0]!.mediaId, modifiedMediaId);
+  assert.notEqual(f.id(1), firstFolderId);
+  assert.equal(f.document().folders[1].automatic, false);
 });
 
 test("a reference folder retains its saved mode for automatic additions and reconnection", async () => {

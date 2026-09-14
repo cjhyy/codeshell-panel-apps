@@ -293,6 +293,7 @@ export function createFolderImport(
       if (!valid()) return;
       const previous = new Map(before.files.map((f) => [f.path, fingerprint(f)]));
       const receipts = seen.get(id) ?? new Map<string, Receipt>();
+      const persistedReceipts = new Map(folder.receipts.map((receipt) => [receipt.path, receipt]));
       const candidates = after.files.filter((file) => {
         if (file.bytes > 20 * 1024 ** 3) {
           oversized++;
@@ -302,11 +303,12 @@ export function createFolderImport(
           unstable++;
           return false;
         }
-        const receipt = receipts.get(file.path);
+        const receipt = receipts.get(file.path) ?? persistedReceipts.get(file.path);
         if (
           receipt &&
           fingerprint(receipt) === fingerprint(file) &&
-          context.project().assets.some((a) => a.id === receipt.assetId)
+          (receipts.has(file.path) ||
+            !context.project().assets.some((asset) => asset.id === receipt.assetId))
         ) {
           skipped++;
           return false;
@@ -344,7 +346,9 @@ export function createFolderImport(
             lastModified: file.lastModified,
             assetId: asset.id,
           };
-          const nextReceipts = new Map(receipts);
+          // Preserve skipped deletion receipts when another file is published.
+          // Only this grant's successful captures enter `seen` below.
+          const nextReceipts = new Map([...persistedReceipts, ...receipts]);
           nextReceipts.set(file.path, receipt);
           await persist({
             ...document,

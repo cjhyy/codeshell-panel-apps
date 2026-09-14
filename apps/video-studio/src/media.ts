@@ -5,7 +5,7 @@ import {
   type Project,
   type CaptionStyle,
 } from "./model";
-import { isDemoNarration } from "./demo";
+import { isDemoNarration, demoSceneIndex } from "./demo";
 
 export interface LocalMedia {
   file?: File;
@@ -97,6 +97,36 @@ async function mediaDuration(element: HTMLMediaElement): Promise<number> {
   return duration;
 }
 
+/** Called only on a new decoder, before it becomes available to either player. */
+async function sourceThumbnail(
+  element: HTMLVideoElement | HTMLAudioElement | HTMLImageElement,
+): Promise<string | undefined> {
+  if (element instanceof HTMLVideoElement) {
+    // loadeddata can arrive before Chromium exposes the first decoded frame
+    // to canvas, especially with metadata-only preloading. An explicit seek
+    // asks for that frame without creating a whole-file Blob or stored copy.
+    await eventOnce(element, "seeked", () => {
+      element.currentTime = 0;
+    });
+    if (!element.videoWidth || !element.videoHeight || element.readyState < 2) return;
+  } else if (element instanceof HTMLImageElement) {
+    await element.decode();
+    if (!element.naturalWidth || !element.naturalHeight) return;
+  } else return;
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 180;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  try {
+    contain(ctx, element, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    // An unavailable canvas must not make an otherwise playable source missing.
+    return element instanceof HTMLImageElement ? element.src : undefined;
+  }
+}
+
 export class MediaLibrary {
   items = new Map<string, LocalMedia>();
   audio?: AudioContext;
@@ -164,14 +194,7 @@ export class MediaLibrary {
       if (existing && Math.abs(asset.durationFrames - Math.round(duration * 30)) > 2)
         throw new Error("重连素材的时长不匹配，请选择原文件");
       const item: LocalMedia = { file, url, element, ownsUrl: true };
-      if (kind !== "audio") {
-        const thumbnail = document.createElement("canvas");
-        thumbnail.width = 320;
-        thumbnail.height = 180;
-        const ctx = thumbnail.getContext("2d")!;
-        contain(ctx, element as HTMLVideoElement | HTMLImageElement, 320, 180);
-        item.thumbnail = thumbnail.toDataURL("image/jpeg", 0.7);
-      }
+      item.thumbnail = await sourceThumbnail(element);
       if (generation !== this.generation || this.loads.get(assetId) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
@@ -195,7 +218,7 @@ export class MediaLibrary {
 
   async connectManaged(asset: Asset, options: { reload?: boolean } = {}): Promise<void> {
     const mediaId =
-      asset.kind === "image" ? asset.thumbnailId || asset.mediaId : asset.proxyId || asset.mediaId;
+      asset.kind === "image" ? asset.mediaId || asset.thumbnailId : asset.proxyId || asset.mediaId;
     if (!mediaId || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(mediaId))
       throw new Error("素材缺少有效的本地媒体编号");
     if (asset.kind === "demo") return;
@@ -242,13 +265,6 @@ export class MediaLibrary {
         asset.width = element.naturalWidth;
         asset.height = element.naturalHeight;
       }
-      if (kind !== "audio") {
-        const canvas = document.createElement("canvas");
-        canvas.width = 320;
-        canvas.height = 180;
-        contain(canvas.getContext("2d")!, element as HTMLVideoElement | HTMLImageElement, 320, 180);
-        item.thumbnail = canvas.toDataURL("image/jpeg", 0.7);
-      }
       return asset;
     } catch (error) {
       this.release(item);
@@ -278,24 +294,10 @@ export class MediaLibrary {
       await eventOnce(element, asset.kind === "image" ? "load" : "loadeddata", () => {
         element.src = url;
       });
-      // Metadata preloading may report loadeddata before a video frame is decoded.
-      // An explicit first-frame seek requests only the preview's media range.
-      if (asset.mediaId?.startsWith("external-") && element instanceof HTMLVideoElement)
-        await eventOnce(element, "seeked", () => {
-          element.currentTime = 0;
-        });
-      if (asset.thumbnailId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(asset.thumbnailId))
-        item.thumbnail = `/media/${encodeURIComponent(asset.thumbnailId)}`;
-      else if (
-        asset.mediaId?.startsWith("external-") &&
-        (element instanceof HTMLVideoElement || element instanceof HTMLImageElement)
-      ) {
-        const thumbnail = document.createElement("canvas");
-        thumbnail.width = 320;
-        thumbnail.height = 180;
-        contain(thumbnail.getContext("2d")!, element, 320, 180);
-        item.thumbnail = thumbnail.toDataURL("image/jpeg", 0.7);
-      }
+      // Regenerate from the connected source for every storage mode. Saved
+      // thumbnail IDs may be absent or stale; a decoded local image also avoids
+      // a second request failing after the source has already been restored.
+      item.thumbnail = await sourceThumbnail(element);
       if (generation !== this.generation || this.loads.get(asset.id) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
@@ -609,7 +611,7 @@ export function renderFrame(
     (item) => frame >= item.startFrame && frame < item.endFrame,
   );
   const asset = project.assets.find((item) => item.id === clip?.assetId);
-  if (asset?.kind === "demo") drawDemo(ctx, w, h, project.assets.indexOf(asset), frame);
+  if (asset?.kind === "demo") drawDemo(ctx, w, h, demoSceneIndex(asset), frame);
   else if (asset) {
     const item = library.items.get(asset.id);
     if (item?.element instanceof HTMLVideoElement || item?.element instanceof HTMLImageElement)

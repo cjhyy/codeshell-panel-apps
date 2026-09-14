@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { PNG } from "pngjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 
@@ -20,6 +21,8 @@ async function browserFixture(page) {
     canvas.height = 90;
     document.body.append(canvas);
     const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#d64e35";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     const audio = new AudioContext();
     const destination = audio.createMediaStreamDestination();
     const oscillator = audio.createOscillator();
@@ -194,6 +197,17 @@ test(
     });
 
     routes.set("/media/slow-source", { ...routes.get("/media/managed-source"), delay: 300 });
+    routes.set(`/media/external-${"e".repeat(64)}`, routes.get("/media/managed-source"));
+    const picture = new PNG({ width: 160, height: 90 });
+    for (let offset = 0; offset < picture.data.length; offset += 4) {
+      picture.data[offset] = 30;
+      picture.data[offset + 1] = 140;
+      picture.data[offset + 2] = 220;
+      picture.data[offset + 3] = 255;
+    }
+    const imageBytes = PNG.sync.write(picture);
+    routes.set("/media/managed-image", { type: "image/png", body: imageBytes });
+    routes.set(`/media/external-${"f".repeat(64)}`, routes.get("/media/managed-image"));
 
     async function withMediaPage(run) {
       const page = await browser.newPage();
@@ -244,6 +258,122 @@ test(
       assert.ok(result.frames >= 110 && result.frames <= 140, JSON.stringify(result));
       assert.ok(Math.abs(result.time - 1.5) < 1 / 30, JSON.stringify(result));
       assert.equal(result.hasPicture, true);
+    });
+
+    await t.test("restores decoded video and image covers for every storage mode even when thumbnail IDs are stale", async () => {
+      const result = await withMediaPage((page) =>
+        page.evaluate(async (imageBytes) => {
+          const { MediaLibrary } = window.videoMedia;
+          const snapshots = [];
+          async function inspect(mode, library, asset) {
+            const item = library.items.get(asset.id);
+            if (!item?.thumbnail) return { mode, missing: true };
+            const image = new Image();
+            image.src = item.thumbnail;
+            await image.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+            canvas.getContext("2d").drawImage(image, 0, 0);
+            const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+            return {
+              mode,
+              jpeg: item.thumbnail.startsWith("data:image/jpeg;base64,"),
+              width: image.naturalWidth,
+              height: image.naturalHeight,
+              picture: pixels.some((value, index) => index % 4 !== 3 && value > 40),
+              paused: !(item.element instanceof HTMLMediaElement) || item.element.paused,
+              time: item.element instanceof HTMLMediaElement ? item.element.currentTime : 0,
+            };
+          }
+          for (const [kind, file] of [
+            ["video", document.querySelector("#fixture").files[0]],
+            ["image", new File([new Uint8Array(imageBytes)], "picture.png", { type: "image/png" })],
+          ]) {
+            const browser = new MediaLibrary();
+            let base;
+            try {
+              base = await browser.import(file);
+              snapshots.push(await inspect(`${kind}:browser`, browser, base));
+              browser.clear();
+              // The cache-restoration entry point receives the saved File plus asset metadata.
+              await browser.import(file, JSON.parse(JSON.stringify(base)));
+              snapshots.push(await inspect(`${kind}:cached-file`, browser, base));
+            } finally { browser.clear(); }
+            const sourceId = kind === "video" ? "managed-source" : "managed-image";
+            const cases = [
+              ["copied", { mediaId: sourceId }],
+              ["reference", { mediaId: `external-${(kind === "video" ? "e" : "f").repeat(64)}` }],
+              ["stale-thumbnail", { mediaId: sourceId, thumbnailId: "missing-cover" }],
+              ...(kind === "video"
+                ? [["proxy", { mediaId: "missing-original", proxyId: sourceId, thumbnailId: "missing-cover" }]]
+                : [["legacy-thumbnail-only", { thumbnailId: sourceId }]]),
+            ];
+            for (const [mode, source] of cases) {
+              const library = new MediaLibrary();
+              const restored = JSON.parse(JSON.stringify({ ...base, ...source }));
+              try {
+                await library.connectManaged(restored);
+                snapshots.push(await inspect(`${kind}:${mode}`, library, restored));
+              } finally { library.clear(); }
+            }
+          }
+          return snapshots;
+        }, [...imageBytes]),
+      );
+      assert.equal(result.length, 12);
+      for (const snapshot of result) {
+        assert.equal(snapshot.missing, undefined, snapshot.mode);
+        assert.equal(snapshot.jpeg, true, snapshot.mode);
+        assert.equal(snapshot.width, 320, snapshot.mode);
+        assert.equal(snapshot.height, 180, snapshot.mode);
+        assert.equal(snapshot.picture, true, snapshot.mode);
+        assert.equal(snapshot.paused, true, snapshot.mode);
+        assert.equal(snapshot.time, 0, snapshot.mode);
+      }
+    });
+
+    await t.test("cover recovery for another asset leaves the active source player and ownership untouched", async () => {
+      const result = await withMediaPage((page) =>
+        page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const library = new MediaLibrary();
+          try {
+            const asset = await library.import(document.querySelector("#fixture").files[0]);
+            asset.mediaId = "managed-source";
+            await library.connectManaged(asset);
+            const item = library.items.get(asset.id);
+            const element = item.element;
+            await new Promise((resolve) => {
+              element.addEventListener("seeked", resolve, { once: true });
+              element.currentTime = 1;
+            });
+            let seekEvents = 0;
+            element.addEventListener("seeking", () => { seekEvents++; });
+            element.muted = true;
+            await element.play();
+            const owner = library.claimPlayback();
+            const before = element.currentTime;
+            await library.connectManaged({ ...asset, thumbnailId: "missing-cover" });
+            await library.connectManaged({ ...asset, id: "other-asset", thumbnailId: "missing-cover" });
+            return {
+              before,
+              after: element.currentTime,
+              paused: element.paused,
+              seekEvents,
+              sameElement: library.items.get(asset.id) === item,
+              ownsPlayback: library.ownsPlayback(owner),
+              otherCover: library.items.get("other-asset").thumbnail.startsWith("data:image/jpeg;base64,"),
+            };
+          } finally { library.clear(); }
+        }),
+      );
+      assert.ok(result.after >= result.before, JSON.stringify(result));
+      assert.equal(result.paused, false);
+      assert.equal(result.seekEvents, 0);
+      assert.equal(result.sameElement, true);
+      assert.equal(result.ownsPlayback, true);
+      assert.equal(result.otherCover, true);
     });
 
     await t.test(

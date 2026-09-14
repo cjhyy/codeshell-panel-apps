@@ -504,6 +504,8 @@ export class ProductionController {
   private documentFailed = false;
   private disposed = false;
   private refreshScheduled = false;
+  private assetRequests = new Map<string, number>();
+  private consuming = new Set<JobBinding>();
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   constructor(
@@ -525,6 +527,20 @@ export class ProductionController {
   }
   get pendingJobs(): MediaJob[] {
     return this.currentJobs.filter(active);
+  }
+  /** Includes request admission, result publication and its durable consumption receipt. */
+  get hasPendingAssetPublication(): boolean {
+    const projectId = this.callbacks.getProject().id;
+    const assetBinding = (binding: JobBinding) =>
+      binding.projectId === projectId && ["import", "prepare"].includes(binding.purpose);
+    if ((this.assetRequests.get(projectId) ?? 0) > 0 || [...this.consuming].some(assetBinding))
+      return true;
+    const jobs = new Map(this.jobs.map((job) => [job.id, job]));
+    return Object.values(this.document.bindings).some((binding) => {
+      if (!assetBinding(binding) || binding.consumed) return false;
+      const job = jobs.get(binding.jobId!);
+      return !job || active(job) || job.status === "succeeded";
+    });
   }
   get latestExport(): ManagedAsset | undefined {
     const job = this.currentJobs.find((j) => j.type === "render" && j.status === "succeeded");
@@ -644,13 +660,26 @@ export class ProductionController {
         });
     });
   }
+  private beginAssetRequest(projectId: string): () => void {
+    this.assetRequests.set(projectId, (this.assetRequests.get(projectId) ?? 0) + 1);
+    return () => {
+      const remaining = (this.assetRequests.get(projectId) ?? 1) - 1;
+      if (remaining) this.assetRequests.set(projectId, remaining);
+      else this.assetRequests.delete(projectId);
+    };
+  }
   async importFiles(): Promise<{ job?: MediaJob; cancelled?: boolean }> {
     const projectId = this.callbacks.getProject().id;
-    const result = (await this.requireHost().call("media.import", {})) as
-      | MediaJob
-      | { cancelled: true };
-    if ("cancelled" in result) return result;
-    return { job: await this.track(result, { projectId, purpose: "import" }) };
+    const finish = this.beginAssetRequest(projectId);
+    try {
+      const result = (await this.requireHost().call("media.import", {})) as
+        | MediaJob
+        | { cancelled: true };
+      if ("cancelled" in result) return result;
+      return { job: await this.track(result, { projectId, purpose: "import" }) };
+    } finally {
+      finish();
+    }
   }
   async importRecording(
     blob: Blob,
@@ -852,13 +881,18 @@ export class ProductionController {
     if (!ids.length) return { jobs: [] };
     if (transcribe && !this.status.transcription.available)
       throw new Error("本机语音转写尚未就绪，请先配置本地 Whisper 与模型，或导入 SRT");
-    const result = (await this.requireHost().call("media.prepare", {
-      assetIds: ids,
-      transcribe,
-    })) as { jobs: MediaJob[] };
-    for (const [i, job] of result.jobs.entries())
-      await this.track(job, { projectId, purpose: "prepare", assetId: ids[i] });
-    return result;
+    const finish = this.beginAssetRequest(projectId);
+    try {
+      const result = (await this.requireHost().call("media.prepare", {
+        assetIds: ids,
+        transcribe,
+      })) as { jobs: MediaJob[] };
+      for (const [i, job] of result.jobs.entries())
+        await this.track(job, { projectId, purpose: "prepare", assetId: ids[i] });
+      return result;
+    } finally {
+      finish();
+    }
   }
   async transcribe(assetIds: string[]): Promise<{ jobs: MediaJob[] }> {
     if (!this.status.transcription.available)
@@ -1293,12 +1327,15 @@ export class ProductionController {
     this.callbacks.changed();
   }
   private async consume(binding: JobBinding): Promise<void> {
+    this.consuming.add(binding);
     binding.consumed = true;
     try {
       await this.persist();
     } catch (error) {
       binding.consumed = false;
       throw error;
+    } finally {
+      this.consuming.delete(binding);
     }
   }
   async restorePreparation(project: Project): Promise<void> {

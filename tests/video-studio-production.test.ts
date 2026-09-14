@@ -279,6 +279,118 @@ test("a completed prepare response is consumed automatically and reopening does 
   assert.equal(reopened.published.length, 0);
 });
 
+test("asset deletion stays gated through successful lookup, publication and durable consumption", async () => {
+  const f = await fixture();
+  const job = f.host.add("prepare", "queued", prepared());
+  f.host.handlers.set("media.prepare", () => ({ jobs: [job] }));
+  await f.controller.prepare(["source"]);
+  await f.controller.refresh();
+  assert.equal(f.controller.hasPendingAssetPublication, true);
+  f.host.jobs.get(job.id)!.status = "running";
+  await f.controller.refresh();
+  assert.equal(f.controller.hasPendingAssetPublication, true);
+  f.current = project("project-b");
+  assert.equal(f.controller.hasPendingAssetPublication, false);
+  f.current = project();
+
+  const lookup = deferred<unknown>(),
+    publication = deferred<void>(),
+    receipt = deferred<void>();
+  let lookupEntered = false,
+    publicationEntered = false,
+    receiptEntered = false;
+  f.host.handlers.set("media.assets.get", () => {
+    lookupEntered = true;
+    return lookup.promise;
+  });
+  f.beforePublish(async () => {
+    publicationEntered = true;
+    await publication.promise;
+  });
+  f.host.handlers.set("media.document.set", async (params) => {
+    if (Object.values(params.data.bindings).some((row: any) => row.consumed)) {
+      receiptEntered = true;
+      await receipt.promise;
+    }
+    assert.equal(params.baseRevision, f.host.revision);
+    f.host.document = structuredClone(params.data);
+    return { revision: ++f.host.revision };
+  });
+  f.host.jobs.get(job.id)!.status = "succeeded";
+  const refreshing = f.controller.refresh();
+  await until(() => lookupEntered);
+  assert.equal(f.controller.pendingJobs.length, 0, "Successful work is no longer a running job");
+  assert.equal(f.controller.hasPendingAssetPublication, true);
+  lookup.resolve({ asset: f.host.managed() });
+  await until(() => publicationEntered);
+  assert.equal(f.controller.hasPendingAssetPublication, true);
+  publication.resolve();
+  await until(() => receiptEntered);
+  assert.equal(f.published.length, 1);
+  assert.equal(
+    f.controller.hasPendingAssetPublication,
+    true,
+    "An unacknowledged consumption write cannot allow removal",
+  );
+  receipt.resolve();
+  await refreshing;
+  assert.equal(binding(f.host, job.id).consumed, true);
+  assert.equal(f.controller.hasPendingAssetPublication, false);
+});
+
+test("concurrent import and prepare admissions remain scoped and gated until cancellation or failure settles", async () => {
+  for (const method of ["media.import", "media.prepare"] as const) {
+    const f = await fixture();
+    const gates = [deferred<void>(), deferred<void>()];
+    let called = 0;
+    f.host.handlers.set(method, async () => {
+      const index = called++;
+      await gates[index]!.promise;
+      if (index === 1) throw new Error("start rejected");
+      return method === "media.import" ? { cancelled: true } : { jobs: [] };
+    });
+    const start = () =>
+      method === "media.import" ? f.controller.importFiles() : f.controller.prepare(["source"]);
+    const first = start();
+    const second = assert.rejects(start(), /start rejected/);
+    assert.equal(f.controller.currentJobs.length, 0);
+    assert.equal(f.controller.hasPendingAssetPublication, true);
+    f.current = project("project-b");
+    assert.equal(f.controller.hasPendingAssetPublication, false);
+    f.current = project();
+    gates[0]!.resolve();
+    await first;
+    assert.equal(
+      f.controller.hasPendingAssetPublication,
+      true,
+      "One settled request cannot clear another request's guard",
+    );
+    gates[1]!.resolve();
+    await second;
+    assert.equal(f.controller.hasPendingAssetPublication, false);
+  }
+});
+
+test("an imported original remains pending while browser inspection awaits its publication", async () => {
+  const f = await fixture();
+  f.current = { ...createProject(), id: "project-a" };
+  f.controller.status.ffmpeg.available = false;
+  const inspection = deferred<PreparedMedia["inspection"]>();
+  let entered = false;
+  f.host.handlers.set("browser.inspect", () => {
+    entered = true;
+    return inspection.promise;
+  });
+  const result = await f.controller.importFiles();
+  await until(() => entered);
+  assert.equal(f.controller.pendingJobs.length, 0);
+  assert.equal(f.controller.hasPendingAssetPublication, true);
+  inspection.resolve(prepared().inspection);
+  await f.controller.refresh();
+  assert.equal(binding(f.host, result.job!.id).consumed, true);
+  assert.equal(f.controller.hasPendingAssetPublication, false);
+});
+
 test("late managed-asset lookup cannot publish into a newly selected project", async () => {
   const f = await fixture();
   const job = f.host.add("prepare", "succeeded", prepared());
@@ -336,6 +448,7 @@ test("failed publication and failed consumption writes leave completed jobs retr
   await f.controller.prepare(["source"]);
   await assert.rejects(f.controller.refresh(), /project save failed/);
   assert.equal(binding(f.host, job.id).consumed, undefined);
+  assert.equal(f.controller.hasPendingAssetPublication, true);
   failPublish = false;
   let failConsumed = true;
   f.host.handlers.set("media.document.set", (params) => {
@@ -347,10 +460,12 @@ test("failed publication and failed consumption writes leave completed jobs retr
   });
   await assert.rejects(f.controller.refresh(), /consumption save failed/);
   assert.equal(binding(f.host, job.id).consumed, undefined);
+  assert.equal(f.controller.hasPendingAssetPublication, true);
   failConsumed = false;
   await f.controller.refresh();
   assert.equal(binding(f.host, job.id).consumed, true);
   assert.equal(f.current.assets.length, 1);
+  assert.equal(f.controller.hasPendingAssetPublication, false);
 });
 
 test("import publishes its original before optional preparation and a reopened controller preserves its identity", async () => {

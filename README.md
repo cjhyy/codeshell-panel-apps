@@ -15,7 +15,7 @@ permission; their application logic belongs to the Panel package.
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
-| Video Studio 0.5.6 | `panels/video-studio` | Local video editing, source rough cuts, captions, AI workflows, and fully panel-owned media and voice tools                        |
+| Video Studio 0.5.7 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
 | Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
 ## Install from GitHub
@@ -39,12 +39,24 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.5.6 is maintained in `apps/video-studio/` and installed from the
+Video Studio 0.5.7 is maintained in `apps/video-studio/` and installed from the
 prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
 custody, and reviewed entry handles; submitted native tasks continue after the
-panel closes. Version 0.5.6 adds source-card previews, manual multi-source rough-cut
+panel closes. Version 0.5.7 adds single and batch removal of demo and imported
+assets, with confirmation for used assets and one-step undo. Related clips are
+removed together, and captions and audio follow the adjusted timeline. Original
+files and other projects remain intact. Large thumbnails, small thumbnails, and
+list views share persistent display, type-filter, and name/duration-sort preferences;
+context and More menus support keyboard and small-screen use. Real thumbnails
+recover after reopening for copied, referenced, and browser-imported media,
+including when old thumbnail URLs fail. Connected folders do not immediately
+reimport unchanged files removed from the project; changed files may be imported
+as new assets. These changes only require a Panel update; original-file references
+still require **CodeShell 0.9.14**.
+
+Version 0.5.6 adds source-card previews, manual multi-source rough-cut
 queues, uniform head/tail trimming or fixed-duration selections, and AI-assisted
 rough-cut candidates based on actual frame samples or transcripts. AI batches
 support review, cancellation, continuation, and saved progress across restarts.

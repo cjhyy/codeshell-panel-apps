@@ -47,6 +47,13 @@ import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
 import { createVoicePreparationUI, VOICE_REFERENCE_TEXT } from "./voice-preparation-ui";
 import { createFolderImport } from "./folder-import";
+import { removeAssets, assetRemovalUsage } from "./asset-management";
+import {
+  readMediaLibraryPreferences,
+  saveMediaLibraryPreferences,
+  visibleMedia,
+} from "./media-library-ui";
+import { createMediaLibraryMenu } from "./media-library-menu";
 import { createDesktopFolderSource } from "./folder-source";
 import { prepareFolderFiles, sameFileContents } from "./folder-files";
 import { createRecordingUI } from "./recording-ui";
@@ -88,6 +95,38 @@ let sourceAssetId = "";
 let sourceFrame = 0;
 let mediaPreview = false;
 const selectedMedia = new Set<string>();
+const mediaPreferences = readMediaLibraryPreferences();
+let mediaMenuGeneration = -1;
+let pendingMediaDeletion: { project: Project; generation: number; ids: string[] } | undefined;
+const mediaMenu = createMediaLibraryMenu({
+  items: (id) => {
+    const asset = project.assets.find((item) => item.id === id)!;
+    const count = selectedMedia.has(id) ? selectedMedia.size : 1;
+    return [
+      { action: "preview-media", label: "预览素材", glyph: "play" },
+      { action: "add-media", label: "加入时间轴", glyph: "plus" },
+      ...(["video", "audio"].includes(asset.kind)
+        ? [{ action: "roughcut-media", label: "粗剪这份素材", glyph: "cut" }]
+        : []),
+      ...(asset.kind !== "demo" && !isDemoNarration(asset)
+        ? [{ action: "reconnect-media", label: "重新连接原文件", glyph: "link" }]
+        : []),
+      {
+        action: "delete-media",
+        label: count > 1 ? `删除所选 ${count} 份素材` : "删除素材",
+        glyph: "trash",
+        danger: true,
+      },
+    ];
+  },
+  run: (name, id) => {
+    void action(name, id).catch(fail);
+  },
+  restoreFocus: (id) =>
+    studio
+      .querySelector<HTMLElement>(`[data-action="media-menu"][data-id="${CSS.escape(id)}"]`)
+      ?.focus({ preventScroll: true }),
+});
 let zoom = 36;
 let search = "";
 let history: Project[] = [];
@@ -157,10 +196,18 @@ const folderImport = createFolderImport(
       !roughCutAI.busy &&
       !recording.busy &&
       !recording.hasUnsavedResult &&
+      !document.querySelector("dialog[open]") &&
       !taskStarting &&
       !["running", "queued"].includes(task?.status ?? ""),
     changed: () => {
-      if (tab === "media" && !playback && !exporting && !recording.busy && !projectSwitching)
+      if (
+        tab === "media" &&
+        !playback &&
+        !exporting &&
+        !recording.busy &&
+        !projectSwitching &&
+        !document.querySelector("dialog[open]")
+      )
         render();
     },
     publish: async (resource, file, current) => {
@@ -766,6 +813,7 @@ function views() {
     voicePreparationMarkup: voicePreparation.render(tab === "voiceover"),
     roughcutMarkup: tab === "roughcut" ? roughcut.render() : "",
     selectedMedia,
+    mediaPreferences,
     sourcePreview: sourcePreviewActive()
       ? {
           id: sourceAssetId,
@@ -919,6 +967,7 @@ async function replace(next: Project): Promise<void> {
     sourceAssetId = "";
     mediaPreview = false;
     selectedMedia.clear();
+    pendingMediaDeletion = undefined;
     sourceFrame = 0;
     await roughCutAI.reset();
     roughcut.setAsset("");
@@ -947,6 +996,19 @@ async function replace(next: Project): Promise<void> {
 }
 
 function render(): void {
+  // Background jobs may update the project while a deletion is being reviewed.
+  // Keep the modal mounted; confirmation rechecks the latest project below.
+  const removalDialog = studio.querySelector<HTMLDialogElement>("#media-delete-dialog[open]");
+  if (removalDialog) {
+    if (pendingMediaDeletion?.generation === generation) return;
+    removalDialog.close();
+  }
+  if (
+    mediaMenu.active &&
+    (mediaMenuGeneration !== generation ||
+      !project.assets.some((asset) => asset.id === mediaMenu.assetId))
+  )
+    mediaMenu.close();
   stop();
   for (const id of selectedMedia)
     if (!project.assets.some((asset) => asset.id === id)) selectedMedia.delete(id);
@@ -1077,6 +1139,122 @@ function sourcePreviewActive(): boolean {
 }
 
 /** Register selected original files, then inspect only browser metadata/preview bytes. */
+function refreshMediaLibrary(): void {
+  const scroll = $(".library-panel").scrollTop;
+  $(".library-panel").innerHTML = views().renderLibrary();
+  $(".library-panel").scrollTop = scroll;
+}
+function openMediaMenu(id: string, x?: number, y?: number): void {
+  if (!project.assets.some((asset) => asset.id === id)) return;
+  if (!selectedMedia.has(id)) {
+    selectedMedia.clear();
+    selectedMedia.add(id);
+    refreshMediaLibrary();
+  }
+  const anchor = studio
+    .querySelector<HTMLElement>(`[data-action="media-menu"][data-id="${CSS.escape(id)}"]`)
+    ?.getBoundingClientRect();
+  mediaMenuGeneration = generation;
+  mediaMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
+}
+function addMediaToTimeline(id: string): void {
+  const source = project.assets.find((asset) => asset.id === id);
+  if (!source) throw new Error("素材已不存在");
+  if (source.kind === "audio" && project.clips.length) {
+    edit([
+      {
+        type: "audio-add",
+        assetId: id,
+        startFrame: frame,
+        volume: source.speech || isDemoNarration(source) ? 1 : 0.25,
+      },
+    ]);
+    selected = project.audioClips?.at(-1)?.id || "";
+  } else {
+    edit([{ type: "add", assetId: id }]);
+    selected = project.clips.at(-1)!.id;
+  }
+  render();
+}
+function assertMediaRemovalReady(): void {
+  assertEditable();
+  recording.assertSafeToLeave();
+  if (
+    roughCutAI.busy ||
+    taskStarting ||
+    automatic.requestToken ||
+    (production.auto?.projectId === project.id &&
+      ["preparing", "agent", "waiting"].includes(production.auto.phase)) ||
+    (task && ["running", "queued", "cancelling"].includes(task.status)) ||
+    folderImport.busy ||
+    production.hasPendingAssetPublication
+  )
+    throw new Error("请先结束当前素材导入或 AI 任务，再删除素材");
+}
+async function deleteMedia(ids: string[]): Promise<void> {
+  assertMediaRemovalReady();
+  const current = project,
+    ownGeneration = generation;
+  const next = removeAssets(current, ids);
+  if (next.revision === current.revision) return;
+  stop();
+  aiApplying = true;
+  try {
+    await saveProject(next, "删除素材");
+  } finally {
+    aiApplying = false;
+  }
+  if (project !== current || generation !== ownGeneration)
+    throw new Error("工程已变化，请重新选择素材");
+  // Retain decoders/resources for undo and other projects. Removal changes only this document.
+  pendingMediaDeletion = undefined;
+  $<HTMLDialogElement>("#media-delete-dialog").close();
+  commit(next, true);
+  toast(`已从工程删除 ${new Set(ids).size} 份素材，可撤销；原文件保留`);
+}
+async function requestMediaDeletion(id?: string): Promise<void> {
+  assertMediaRemovalReady();
+  const ids =
+    id && !selectedMedia.has(id)
+      ? [id]
+      : project.assets.filter((asset) => selectedMedia.has(asset.id)).map((asset) => asset.id);
+  if (!ids.length) throw new Error("请先选择要删除的素材");
+  const usage = assetRemovalUsage(project, ids);
+  if (!usage.used) {
+    await deleteMedia(ids);
+    return;
+  }
+  showMediaDeletion(ids);
+}
+function showMediaDeletion(ids: string[]): void {
+  const usage = assetRemovalUsage(project, ids);
+  stop();
+  pendingMediaDeletion = { project, generation, ids };
+  const dialog = $<HTMLDialogElement>("#media-delete-dialog");
+  dialog.innerHTML = html`<div class="dialog-heading">
+      <h2 id="media-delete-heading">删除 ${ids.length} 份素材？</h2>
+      ${tool("close-dialog", "取消", "close")}
+    </div>
+    <p>
+      这些素材正在工程中使用。删除后会同时移除 ${usage.clipCount}
+      个画面片段、${usage.audioClipCount} 个音频片段和 ${usage.roughCutCount}
+      个保留段，后续字幕和音轨会随时间轴衔接。
+    </p>
+    ${usage.narrationRecording
+      ? "<p>其中包含已选的本人录音，需要重新选择录音并确认字幕对齐。</p>"
+      : ""}
+    <p class="muted">仅从当前工程移除，原文件保留。删除后可以撤销。</p>
+    <div class="dialog-actions">
+      ${button("close-dialog", "取消", undefined, "quiet")}${button(
+        "confirm-delete-media",
+        "删除素材及使用片段",
+        "trash",
+        "danger",
+      )}
+    </div>`;
+  dialog.showModal();
+}
+
 async function importReferencedMedia(): Promise<void> {
   assertEditable();
   const ownGeneration = generation;
@@ -1894,18 +2072,56 @@ async function action(name: string, id?: string): Promise<void> {
     case "trim-source":
       await selectSource(sourceAssetId);
       break;
+    case "media-view":
+      if (!["large", "small", "list"].includes(id ?? "")) return;
+      mediaPreferences.view = id as typeof mediaPreferences.view;
+      saveMediaLibraryPreferences(mediaPreferences);
+      mediaMenu.close();
+      refreshMediaLibrary();
+      break;
+    case "media-menu":
+      if (!id) return;
+      if (mediaMenu.assetId === id) mediaMenu.close(true);
+      else openMediaMenu(id);
+      break;
+    case "preview-media":
+      if (id) await selectSource(id, "media");
+      break;
+    case "roughcut-media":
+      if (id) await selectSource(id);
+      break;
+    case "add-media":
+      if (id) addMediaToTimeline(id);
+      break;
+    case "delete-media":
+      await requestMediaDeletion(id);
+      break;
+    case "confirm-delete-media": {
+      const pending = pendingMediaDeletion;
+      if (!pending || pending.generation !== generation)
+        throw new Error("工程已变化，请重新选择要删除的素材");
+      if (pending.project !== project) {
+        showMediaDeletion(pending.ids);
+        toast("工程已更新，请确认当前删除范围");
+        break;
+      }
+      await deleteMedia(pending.ids);
+      break;
+    }
     case "select-media":
-      for (const asset of project.assets)
-        if (
-          ["video", "audio"].includes(asset.kind) &&
-          asset.name.toLowerCase().includes(search.toLowerCase())
-        )
-          selectedMedia.add(asset.id);
-      $(".library-panel").innerHTML = views().renderLibrary();
+      for (const asset of visibleMedia(project.assets, search, mediaPreferences))
+        selectedMedia.add(asset.id);
+      refreshMediaLibrary();
+      break;
+    case "clear-media-filter":
+      search = "";
+      mediaPreferences.filter = "all";
+      saveMediaLibraryPreferences(mediaPreferences);
+      refreshMediaLibrary();
       break;
     case "clear-media-selection":
       selectedMedia.clear();
-      $(".library-panel").innerHTML = views().renderLibrary();
+      refreshMediaLibrary();
       break;
     case "import":
       folderImport.assertImportReady();
@@ -2335,14 +2551,31 @@ async function action(name: string, id?: string): Promise<void> {
     case "versions":
       await versionsDialog();
       break;
-    case "close-dialog":
+    case "close-dialog": {
+      const refreshLibrary = Boolean(pendingMediaDeletion);
+      pendingMediaDeletion = undefined;
       if (exporting) throw new Error("请先取消或完成导出");
       document
         .querySelectorAll<HTMLDialogElement>("dialog[open]")
         .forEach((dialog) => dialog.close());
+      if (refreshLibrary) render();
       break;
+    }
   }
 }
+
+studio.addEventListener(
+  "cancel",
+  (event) => {
+    const dialog = event.target;
+    if (!(dialog instanceof HTMLDialogElement) || dialog.id !== "media-delete-dialog") return;
+    event.preventDefault();
+    pendingMediaDeletion = undefined;
+    dialog.close();
+    render();
+  },
+  true,
+);
 
 studio.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
@@ -2392,22 +2625,7 @@ studio.addEventListener("click", (event) => {
   const asset = target.closest<HTMLElement>("[data-add-asset]");
   if (asset) {
     try {
-      const source = project.assets.find((a) => a.id === asset.dataset.addAsset)!;
-      if (source.kind === "audio" && project.clips.length) {
-        edit([
-          {
-            type: "audio-add",
-            assetId: source.id,
-            startFrame: frame,
-            volume: source.speech || isDemoNarration(source) ? 1 : 0.25,
-          },
-        ]);
-        selected = project.audioClips?.at(-1)?.id || "";
-      } else {
-        edit([{ type: "add", assetId: source.id }]);
-        selected = project.clips.at(-1)!.id;
-      }
-      render();
+      addMediaToTimeline(asset.dataset.addAsset!);
     } catch (error) {
       fail(error);
     }
@@ -2456,6 +2674,30 @@ studio.addEventListener("click", (event) => {
     );
     render();
   }
+});
+
+studio.addEventListener("contextmenu", (event) => {
+  const card = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
+  if (!card || tab !== "media") return;
+  event.preventDefault();
+  openMediaMenu(card.dataset.asset!, event.clientX, event.clientY);
+});
+studio.addEventListener("change", (event) => {
+  const target = event.target as HTMLSelectElement;
+  if (
+    target.matches("[data-media-filter]") &&
+    ["all", "video", "audio", "image", "demo"].includes(target.value)
+  )
+    mediaPreferences.filter = target.value as typeof mediaPreferences.filter;
+  else if (
+    target.matches("[data-media-sort]") &&
+    ["original", "name", "duration"].includes(target.value)
+  )
+    mediaPreferences.sort = target.value as typeof mediaPreferences.sort;
+  else return;
+  saveMediaLibraryPreferences(mediaPreferences);
+  mediaMenu.close();
+  refreshMediaLibrary();
 });
 
 studio.addEventListener("input", (event) => {
@@ -2748,6 +2990,17 @@ $("#srt-input").addEventListener("change", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (mediaMenu.active) return;
+  const mediaCard = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
+  if (
+    tab === "media" &&
+    mediaCard &&
+    (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+  ) {
+    event.preventDefault();
+    openMediaMenu(mediaCard.dataset.asset!);
+    return;
+  }
   if (
     (event.target as HTMLElement).closest("input,textarea,select,[contenteditable]") ||
     (event.code === "Space" && (event.target as HTMLElement).closest("button")) ||
@@ -2757,7 +3010,15 @@ document.addEventListener("keydown", (event) => {
   let name = "";
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z")
     name = event.shiftKey ? "redo" : "undo";
-  else if (tab === "roughcut") {
+  else if (
+    tab === "media" &&
+    ["Backspace", "Delete"].includes(event.key) &&
+    !!studio.querySelector(".library-panel")?.contains(event.target as Node) &&
+    (mediaCard || selectedMedia.size)
+  ) {
+    name = "delete-media";
+    if (mediaCard && !selectedMedia.size) selectedMedia.add(mediaCard.dataset.asset!);
+  } else if (tab === "roughcut") {
     if (event.target === document.body || studio.contains(event.target as Node))
       roughcut.key(event);
     return;

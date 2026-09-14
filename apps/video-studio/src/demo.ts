@@ -1,5 +1,10 @@
 import { createDemoProject, validateProject, type Asset, type Project } from "./model";
 
+/** Scene identity must survive filtering, source-only previews and deleting other examples. */
+export function demoSceneIndex(asset: Asset): number {
+  return asset.id === "demo-city" ? 1 : asset.id === "demo-outro" ? 2 : 0;
+}
+
 export const DEMO_NARRATION_ID = "demo-narration-v1";
 const narration: Asset = {
   id: DEMO_NARRATION_ID,
