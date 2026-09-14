@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -1115,6 +1115,10 @@
     ]
   },
   "nativeEntries": {
+    "folder-scan": {
+      "entry": "app/tools/folder-scan.mjs",
+      "sha256": "d89b408c3893bc4c8ed913d6d755723564ee7717accf40b57df07a4aa2763407"
+    },
     "voice-runtime": {
       "entry": "app/tools/voice-runtime.mjs",
       "sha256": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023"

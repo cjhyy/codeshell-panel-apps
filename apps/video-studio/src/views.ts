@@ -39,6 +39,7 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly voiceoverMarkup?: string;
+  readonly folderMarkup?: string;
   readonly voicePreparationActive?: boolean;
   readonly voicePreparationMarkup?: string;
   readonly roughcutMarkup?: string;
@@ -449,7 +450,7 @@ ${esc(aiPrompt)}</textarea
           mediaImporting,
         )}
       </div>
-      ${button("voiceover", "文字配音", "volume", "full")}
+      ${state.folderMarkup ?? ""} ${button("voiceover", "文字配音", "volume", "full")}
       <label class="search-field"
         >${icon("search", 15)}<input
           id="asset-search"
@@ -498,7 +499,7 @@ ${esc(aiPrompt)}</textarea
               </div>
               <div class="asset-info">
                 <div>
-                  <strong title="${esc(asset.name)}">${esc(asset.name)}</strong
+                  <strong title="${esc(asset.sourcePath || asset.name)}">${esc(asset.name)}</strong
                   ><span
                     >${missing
                       ? "素材待重连"

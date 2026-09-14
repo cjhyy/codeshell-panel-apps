@@ -46,6 +46,9 @@ import { createNarratedDemoProject, migratePristineDemoProject, isDemoNarration 
 import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
 import { createVoicePreparationUI, VOICE_REFERENCE_TEXT } from "./voice-preparation-ui";
+import { createFolderImport } from "./folder-import";
+import { createDesktopFolderSource } from "./folder-source";
+import { prepareFolderFiles, sameFileContents } from "./folder-files";
 import { createRecordingUI } from "./recording-ui";
 import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
@@ -114,9 +117,73 @@ let narrationRecordingSaved = false;
 let voiceReferenceRecording: { projectId: string; generation: number } | undefined;
 let voiceReferenceRecordingSaved = false;
 let voiceReferenceImport: { projectId: string; generation: number } | undefined;
+let folderImportIntent: { projectId: string; generation: number } | undefined;
 let workspace = panel ? "项目工作区" : "浏览器工作区";
 let workspaceScope = panel ? "" : "browser";
 const duration = () => timelineDuration(project);
+const folderImport = createFolderImport(panel ? createDesktopFolderSource(panel) : undefined, {
+  project: () => project,
+  identity: () => `${workspaceScope}:${project.id}:${generation}`,
+  read: async (key) =>
+    panel ? panel.call("storage.get", { key }) : JSON.parse(localStorage.getItem(key) || "null"),
+  write: async (key, value) => {
+    if (panel) await panel.call("storage.set", { key, value });
+    else localStorage.setItem(key, JSON.stringify(value));
+  },
+  ready: () =>
+    !storageDiscoveryError &&
+    !projectSwitching &&
+    !aiApplying &&
+    !exporting &&
+    !mediaImporting &&
+    !playback &&
+    !recording.busy &&
+    !recording.hasUnsavedResult &&
+    !taskStarting &&
+    !["running", "queued"].includes(task?.status ?? ""),
+  changed: () => {
+    if (tab === "media" && !playback && !exporting && !recording.busy && !projectSwitching)
+      render();
+  },
+  publish: async (resource, file, current) => {
+    if (!current()) throw new Error("工程已切换，未导入旧文件夹素材");
+    assertEditable();
+    const existing = project.assets.find((asset) => asset.mediaId === resource.id);
+    if (existing) return existing;
+    if (playback || recording.busy || recording.hasUnsavedResult)
+      throw new Error("正在播放或录制，稍后再检查文件夹");
+    const initialGeneration = generation;
+    let asset: Asset | undefined;
+    mediaImporting = true;
+    try {
+      asset = await library.inspectManaged(resource, file.path, file.lastModified);
+      if (!current() || generation !== initialGeneration)
+        throw new Error("工程已切换，素材未加入工程");
+      const next = validateProject({
+        ...project,
+        revision: project.revision + 1,
+        assets: [...project.assets, asset],
+      });
+      await saveProject(next, "导入文件夹素材");
+      // Once the durable write succeeds, stopping the scan must still publish this file.
+      if (generation !== initialGeneration) throw new Error("工程已切换，素材未加入工程");
+      mediaImporting = false;
+      commit(next, true);
+      return asset;
+    } catch (error) {
+      if (asset && !project.assets.some((item) => item.id === asset!.id)) {
+        const item = library.items.get(asset.id);
+        if (item) {
+          library.release(item);
+          library.items.delete(asset.id);
+        }
+      }
+      throw error;
+    } finally {
+      mediaImporting = false;
+    }
+  },
+});
 const production = new ProductionController(panel, {
   getProject: () => project,
   publishAssets: async (projectId, assets, options) => {
@@ -536,6 +603,7 @@ function views() {
     narrationScriptDraft,
     workspace,
     voiceoverMarkup: voiceover.render(),
+    folderMarkup: folderImport.render(),
     voicePreparationActive: voicePreparation.preparing(),
     voicePreparationMarkup: voicePreparation.render(tab === "voiceover"),
     roughcutMarkup: tab === "roughcut" ? roughcut.render() : "",
@@ -678,6 +746,7 @@ async function replace(next: Project): Promise<void> {
     voiceReferenceRecording = undefined;
     voiceReferenceRecordingSaved = false;
     voiceReferenceImport = undefined;
+    folderImportIntent = undefined;
     voiceover.resetReplacement();
     voiceover.setText(project.script ?? "");
     generation++;
@@ -703,6 +772,7 @@ async function replace(next: Project): Promise<void> {
     void panel.call("agent.task.cancel", { id: previousTaskId }).catch(() => {});
   await restoreManagedMedia();
   await voicePreparation.load();
+  await folderImport.load();
   if (production.enabled) await production.refresh();
 }
 
@@ -1145,6 +1215,7 @@ async function importMedia(
   files: File[],
   reconnectId?: string,
   audioReference = false,
+  fromFolder = false,
 ): Promise<Asset[]> {
   assertEditable();
   if (reconnectId && files.length !== 1) throw new Error("请只选择这个素材对应的一个原文件");
@@ -1153,6 +1224,23 @@ async function importMedia(
   const previousSaveText = saveText;
   const importGeneration = generation;
   const next = structuredClone(project);
+  if (
+    fromFolder &&
+    next.assets.length +
+      files.filter(
+        (file) =>
+          !next.assets.some(
+            (asset) =>
+              asset.sourcePath === file.webkitRelativePath &&
+              asset.size === file.size &&
+              asset.lastModified === file.lastModified,
+          ),
+      ).length >
+      1000
+  ) {
+    mediaImporting = false;
+    throw new Error("工程最多保存 1000 个素材，请拆分文件夹或新建工程后导入");
+  }
   const imported = new Map<string, LocalMedia>();
   const availableAssets: Asset[] = [];
   const releaseImported = (id: string) => {
@@ -1170,14 +1258,25 @@ async function importMedia(
     reconnected = 0;
   try {
     for (const file of files) {
-      const existing = reconnectId
+      let existing = reconnectId
         ? next.assets.find((asset) => asset.id === reconnectId)
         : next.assets.find(
             (asset) =>
               asset.name === file.name &&
+              (fromFolder ? asset.sourcePath === file.webkitRelativePath : !asset.sourcePath) &&
               asset.size === file.size &&
               asset.lastModified === file.lastModified,
           );
+      if (fromFolder && existing) {
+        // A chooser File can still refer to a source that has since changed on disk.
+        // Compare against the durable saved snapshot, never that live file reference.
+        const previousFile = !panel ? await cachedMediaFile(existing.id) : undefined;
+        if (
+          !previousFile ||
+          !(await sameFileContents(previousFile, file, () => generation === importGeneration))
+        )
+          existing = undefined;
+      }
       if (existing && library.items.has(existing.id)) {
         if (audioReference && existing.kind !== "audio")
           throw new Error("请选择一段录音；视频请先提取声音片段");
@@ -1192,6 +1291,7 @@ async function importMedia(
         )
           throw new Error("所选文件与这个素材不匹配，请选择当时导入的原文件");
         let asset = await library.import(file, existing);
+        if (fromFolder) asset = { ...asset, sourcePath: file.webkitRelativePath };
         importedId = asset.id;
         const item = library.items.get(asset.id);
         if (item) imported.set(asset.id, item);
@@ -1206,6 +1306,15 @@ async function importMedia(
         });
         if (importGeneration !== generation)
           throw new Error("导入期间工程已切换，已取消旧工程的素材导入");
+        if (fromFolder && !existing && asset.mediaId) {
+          const duplicate = next.assets.find((previous) => previous.mediaId === asset.mediaId);
+          if (duplicate) {
+            releaseImported(asset.id);
+            availableAssets.push(duplicate);
+            if (!library.items.has(duplicate.id)) await library.connectManaged(duplicate);
+            continue;
+          }
+        }
         if (existing) {
           next.assets = next.assets.map((previous) =>
             previous.id === existing.id ? asset : previous,
@@ -1240,16 +1349,16 @@ async function importMedia(
   if (added || reconnected) {
     try {
       next.revision++;
-      if (audioReference) {
+      if (audioReference || fromFolder) {
         mediaImporting = true;
         try {
-          await saveProject(validateProject(next), "保存声音参考");
+          await saveProject(validateProject(next), fromFolder ? "导入素材文件夹" : "保存声音参考");
         } finally {
           mediaImporting = false;
         }
         if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的声音参考");
       }
-      commit(next, audioReference);
+      commit(next, audioReference || fromFolder);
     } catch (error) {
       releaseBatch();
       throw error;
@@ -1455,6 +1564,10 @@ async function action(name: string, id?: string): Promise<void> {
     await recording.action(name);
     return;
   }
+  if (name.startsWith("folder-")) {
+    await folderImport.action(name, id);
+    return;
+  }
   if (recording.busy) throw new Error("请先结束当前录制");
   if (name.startsWith("roughcut-")) {
     if (tab === "roughcut") await roughcut.action(name, id);
@@ -1479,6 +1592,14 @@ async function action(name: string, id?: string): Promise<void> {
   const audioClip = project.audioClips?.find((item) => item.id === selected);
   const clip = project.clips.find((item) => item.id === selected) ?? audioClip;
   switch (name) {
+    case "import-folder":
+      assertEditable();
+      if (folderImport.supported) await folderImport.connect(false);
+      else {
+        folderImportIntent = { projectId: project.id, generation };
+        $("#folder-input").click();
+      }
+      break;
     case "voice-reference-record":
       assertEditable();
       recording.setScript(VOICE_REFERENCE_TEXT, "microphone");
@@ -2217,6 +2338,28 @@ $("#media-input").addEventListener("change", (event) => {
 $("#media-input").addEventListener("cancel", () => {
   reconnectAssetId = "";
 });
+$("#folder-input").addEventListener("change", (event) => {
+  const input = event.target as HTMLInputElement;
+  const files = [...(input.files || [])];
+  const intent = folderImportIntent;
+  folderImportIntent = undefined;
+  input.value = "";
+  void (async () => {
+    if (!files.length) return;
+    if (!intent || intent.projectId !== project.id || intent.generation !== generation)
+      throw new Error("工程已切换，请在当前工程重新选择素材文件夹");
+    const prepared = prepareFolderFiles(files);
+    if (!prepared.files.length) {
+      toast("此文件夹没有可导入的视频、音频或图片");
+      return;
+    }
+    await importMedia(prepared.files, undefined, false, true);
+    if (prepared.skipped) toast(`文件夹导入完成，已跳过 ${prepared.skipped} 个非素材或空文件`);
+  })().catch(fail);
+});
+$("#folder-input").addEventListener("cancel", () => {
+  folderImportIntent = undefined;
+});
 $("#voice-reference-input").addEventListener("change", (event) => {
   const input = event.target as HTMLInputElement;
   const files = [...(input.files || [])];
@@ -2343,6 +2486,7 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 window.addEventListener("pagehide", () => {
+  folderImport.dispose();
   voiceover.dispose();
   recording.dispose();
   spoken.dispose();
@@ -2633,6 +2777,7 @@ async function boot(): Promise<void> {
   voiceover.setText(project.script ?? "");
   render();
   await restoreManagedMedia();
+  await folderImport.load();
   await production.initialize();
   productionBooted = true;
   await voicePreparation.load();

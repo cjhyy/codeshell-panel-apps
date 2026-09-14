@@ -2437,3 +2437,9 @@ dialog .range-inputs {
 .voice-guide-nav a:hover { color: var(--accent); }
 .voice-guide-progress { margin: 16px 0; padding: 12px; border: 1px solid #40574b; border-radius: 8px; background: #b8edc808; line-height: 1.7; overflow-wrap: anywhere; }
 .voice-guide-step { scroll-margin-top: 16px; }
+.folder-import { margin: 12px 0 18px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.folder-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.folder-actions button { white-space: normal; overflow-wrap: anywhere; border: 1px solid var(--line); background: #202426; }
+.folder-connection { display: grid; gap: 8px; border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.folder-connection strong, .folder-status { overflow-wrap: anywhere; }
+.folder-import p { line-height: 1.6; margin: 8px 0; }

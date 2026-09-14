@@ -202,6 +202,61 @@ export class MediaLibrary {
     return this.connectSource(asset, `/media/${encodeURIComponent(mediaId)}`);
   }
 
+  /** Inspect an already captured immutable resource without requiring a media engine. */
+  async inspectManaged(
+    resource: { id: string; name: string; mimeType: string; bytes: number },
+    sourcePath: string,
+    lastModified: number,
+  ): Promise<Asset> {
+    const kind = resource.mimeType.startsWith("image/")
+      ? "image"
+      : resource.mimeType.startsWith("audio/")
+        ? "audio"
+        : resource.mimeType.startsWith("video/")
+          ? "video"
+          : undefined;
+    if (!kind) throw new Error("文件类型不受支持");
+    const asset: Asset = {
+      id: crypto.randomUUID(),
+      name: resource.name,
+      mediaId: resource.id,
+      mimeType: resource.mimeType,
+      size: resource.bytes,
+      sourcePath,
+      lastModified,
+      kind,
+      durationFrames: 1,
+    };
+    await this.connectManaged(asset);
+    const item = this.items.get(asset.id)!;
+    try {
+      const element = item.element;
+      const duration = element instanceof HTMLMediaElement ? await mediaDuration(element) : 5;
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error("素材缺少有效时长");
+      asset.durationFrames = Math.max(1, Math.round(duration * 30));
+      if (element instanceof HTMLVideoElement) {
+        asset.width = element.videoWidth;
+        asset.height = element.videoHeight;
+      }
+      if (element instanceof HTMLImageElement) {
+        asset.width = element.naturalWidth;
+        asset.height = element.naturalHeight;
+      }
+      if (kind !== "audio") {
+        const canvas = document.createElement("canvas");
+        canvas.width = 320;
+        canvas.height = 180;
+        contain(canvas.getContext("2d")!, element as HTMLVideoElement | HTMLImageElement, 320, 180);
+        item.thumbnail = canvas.toDataURL("image/jpeg", 0.7);
+      }
+      return asset;
+    } catch (error) {
+      this.release(item);
+      this.items.delete(asset.id);
+      throw error;
+    }
+  }
+
   private async connectSource(asset: Asset, url: string): Promise<void> {
     if (asset.kind === "demo") return;
     const generation = this.generation;

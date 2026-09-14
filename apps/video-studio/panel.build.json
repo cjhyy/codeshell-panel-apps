@@ -1,6 +1,7 @@
 {
   "entry": "src/main.ts",
   "nativeEntries": {
+    "folder-scan": "native/folder-scan.ts",
     "voice-runtime": "native/voice-runtime.ts",
     "media-runtime": "native/media/cli.ts"
   }

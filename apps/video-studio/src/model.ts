@@ -15,6 +15,8 @@ export interface Asset {
   height?: number;
   size?: number;
   lastModified?: number;
+  /** Selected-folder relative path for display and repeated batch imports; never an authority. */
+  sourcePath?: string;
   mimeType?: string;
   mediaId?: string;
   proxyId?: string;
@@ -273,6 +275,7 @@ function readAsset(value: unknown): Asset {
       "height",
       "size",
       "lastModified",
+      "sourcePath",
       "mimeType",
       "mediaId",
       "proxyId",
@@ -297,6 +300,16 @@ function readAsset(value: unknown): Asset {
     asset.size = integer(data.size, 0, Number.MAX_SAFE_INTEGER, "素材大小");
   if (data.lastModified !== undefined) {
     asset.lastModified = integer(data.lastModified, 0, Number.MAX_SAFE_INTEGER, "素材修改时间");
+  }
+  if (data.sourcePath !== undefined) {
+    const path = text(data.sourcePath, 1024, "素材相对路径");
+    if (
+      /[\\:\x00-\x1f\x7f]/.test(path) ||
+      path.startsWith("/") ||
+      path.split("/").some((part) => !part || part === "." || part === "..")
+    )
+      throw new Error("素材相对路径无效");
+    asset.sourcePath = path;
   }
   if (data.mimeType !== undefined) asset.mimeType = text(data.mimeType, 128, "素材 MIME 类型");
   if (data.mediaId !== undefined) asset.mediaId = mediaId(data.mediaId);
