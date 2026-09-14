@@ -1,5 +1,6 @@
 import type { Asset, Project } from "./model";
 import type { FolderEntry, createDesktopFolderSource } from "./folder-source";
+import { FolderCaptureTimeoutError } from "./folder-source";
 import { escapeHtml as esc } from "./icons";
 
 type Source = ReturnType<typeof createDesktopFolderSource>;
@@ -25,6 +26,8 @@ interface Context {
 }
 const fingerprint = (file: { bytes: number; lastModified: number }) =>
   `${file.bytes}:${file.lastModified}`;
+const formatBytes = (bytes: number) =>
+  bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
 const safePath = (path: unknown): path is string =>
   typeof path === "string" &&
   path.length > 0 &&
@@ -240,6 +243,7 @@ export function createFolderImport(
       skipped = 0,
       unstable = 0,
       oversized = 0;
+    let captureTimedOut = false;
     const failures: string[] = [];
     try {
       const before = await source.scan(handle, controller.signal);
@@ -290,13 +294,17 @@ export function createFolderImport(
       });
       if (context.project().assets.length + newCandidates.length > 1000)
         throw new Error("工程最多保存 1000 个素材，请拆分文件夹或新建工程后导入");
+      const totalBytes = candidates.reduce((sum, file) => sum + file.bytes, 0);
       for (const [index, file] of candidates.entries()) {
         if (!valid()) break;
-        status = `正在导入 ${index + 1}/${candidates.length}：${file.path}`;
+        const position = `${index + 1}/${candidates.length}`;
+        status = `正在保存原片 ${position} · ${formatBytes(file.bytes)}（本轮共 ${formatBytes(totalBytes)}）：${file.path}`;
         notify();
         try {
           const resource = await source.capture(handle, file, controller.signal);
           if (!valid()) break;
+          status = `正在读取预览并保存工程 ${position}：${file.path}`;
+          notify();
           const asset = await context.publish(resource, file, valid);
           if (!valid()) break;
           const receipt = {
@@ -319,6 +327,12 @@ export function createFolderImport(
         } catch (error) {
           if (!valid()) break;
           failures.push(`${file.path}：${error instanceof Error ? error.message : String(error)}`);
+          // Older Hosts may keep copying after their RPC timer expires. Stop
+          // this batch instead of piling up untracked copies of later files.
+          if (error instanceof FolderCaptureTimeoutError) {
+            captureTimedOut = true;
+            break;
+          }
           // A record write failure must be retried before silently moving on to another file.
           if (!current(own)) break;
         }
@@ -326,7 +340,7 @@ export function createFolderImport(
       if (valid()) {
         if (failures.length) suspended.add(id);
         else suspended.delete(id);
-        status = `「${folder.name}」已导入 ${imported} 个，跳过 ${skipped + after.skipped} 个${oversized ? `，${oversized} 个超过 20 GiB 保存上限` : ""}${unstable ? `，${unstable} 个仍在写入，稍后再检查` : ""}${failures.length ? `；${failures.length} 个失败，点击立即检查重试。${failures[0]}` : ""}`;
+        status = `「${folder.name}」已导入 ${imported} 个，跳过 ${skipped + after.skipped} 个${oversized ? `，${oversized} 个超过 20 GiB 保存上限` : ""}${unstable ? `，${unstable} 个仍在写入，稍后再检查` : ""}${captureTimedOut ? `；已停止本轮导入。${failures.at(-1)}` : failures.length ? `；${failures.length} 个失败，点击立即检查重试。${failures[0]}` : ""}`;
       }
     } catch (error) {
       if (valid()) {
@@ -386,7 +400,7 @@ export function createFolderImport(
   function render() {
     const button = (name: string, text: string, id = "", disabled = false) =>
       `<button type="button" class="quiet" data-action="${name}" data-id="${esc(id)}" ${disabled ? "disabled" : ""}>${text}</button>`;
-    return `<div class="folder-import"><div class="folder-actions">${button("import-folder", "导入文件夹", "", busy)}${button("folder-connect", "连接文件夹 · 自动导入", "", busy || !supported || !loaded || locked)}</div><p class="muted small">包含子文件夹中的视频、音频和图片；只加入素材库。</p>${!supported ? '<p class="muted small">当前可一次性导入。持续连接需要桌面文件夹与资源权限。</p>' : '<p class="muted small">自动导入在面板打开时检查新增或修改文件。重启后重新连接，已导入素材仍保留。</p>'}${document.folders.map((f) => `<article class="folder-connection"><strong>${esc(f.name)}</strong><span class="muted small">${handles.has(f.id) ? (suspended.has(f.id) ? "检查失败，自动导入已暂停" : f.automatic ? "自动检查中" : "已暂停自动检查") : "待重新连接"} · 已记录 ${f.receipts.length} 个文件</span><div class="folder-actions">${handles.has(f.id) ? button("folder-scan", "立即检查 / 重试", f.id, busy) + button("folder-toggle", f.automatic && !suspended.has(f.id) ? "暂停" : "开启自动导入", f.id, busy) : button("folder-reconnect", "重新连接", f.id, busy || !supported || locked)}${button("folder-remove", "断开并移除记录", f.id, busy || locked)}</div></article>`).join("")}<p class="folder-status small" role="status">${esc(status)}</p>${busy ? button("folder-cancel", "停止本次检查") : ""}${locked ? button("folder-reload", "重新读取记录") : ""}</div>`;
+    return `<div class="folder-import"><div class="folder-actions">${button("import-folder", "导入文件夹", "", busy)}${button("folder-connect", "连接文件夹 · 自动导入", "", busy || !supported || !loaded || locked)}</div><p class="muted small">包含子文件夹中的视频、音频和图片；只加入素材库。首次导入会完整保存原片，大文件需要等待复制完成。</p>${!supported ? '<p class="muted small">当前可一次性导入。持续连接需要桌面文件夹与资源权限。</p>' : '<p class="muted small">自动导入在面板打开时检查新增或修改文件。重启后重新连接，已导入素材仍保留。</p>'}${document.folders.map((f) => `<article class="folder-connection"><strong>${esc(f.name)}</strong><span class="muted small">${handles.has(f.id) ? (suspended.has(f.id) ? "检查失败，自动导入已暂停" : f.automatic ? "自动检查中" : "已暂停自动检查") : "待重新连接"} · 已记录 ${f.receipts.length} 个文件</span><div class="folder-actions">${handles.has(f.id) ? button("folder-scan", "立即检查 / 重试", f.id, busy) + button("folder-toggle", f.automatic && !suspended.has(f.id) ? "暂停" : "开启自动导入", f.id, busy) : button("folder-reconnect", "重新连接", f.id, busy || !supported || locked)}${button("folder-remove", "断开并移除记录", f.id, busy || locked)}</div></article>`).join("")}<p class="folder-status small" role="status">${esc(status)}</p>${busy ? button("folder-cancel", "停止本次检查") : ""}${locked ? button("folder-reload", "重新读取记录") : ""}</div>`;
   }
   return {
     load,

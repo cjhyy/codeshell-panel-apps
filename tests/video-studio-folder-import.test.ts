@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { afterEach, test } from "node:test";
 import { createFolderImport, validateFolderDocument } from "../apps/video-studio/src/folder-import";
 import type { CapturedFolderAsset, FolderEntry } from "../apps/video-studio/src/folder-source";
+import { FolderCaptureTimeoutError } from "../apps/video-studio/src/folder-source";
 import { createProject, type Asset, type Project } from "../apps/video-studio/src/model";
 
 const controllers = new Set<ReturnType<typeof createFolderImport>>();
@@ -205,6 +206,51 @@ test("capture and publication failures retry only failed files, preserving succe
   assert.equal(f.document().folders[0].receipts.length, 3);
   await f.controller.scan(f.id());
   assert.equal(f.project.assets.length, 3);
+});
+
+test("a slow original save shows its size and changes stage only after capture finishes", async () => {
+  const f = fixture();
+  const copied = deferred<CapturedFolderAsset>(),
+    published = deferred<void>();
+  await f.controller.load();
+  f.hooks.capture = () => copied.promise;
+  f.hooks.publish = () => published.promise;
+  const entry = file("原片.mp4", 10, 1_500_000_000);
+  const pending = f.connect([entry]);
+  await until(() => f.captures.length === 1);
+  assert.match(f.controller.render(), /正在保存原片 1\/1 · 1.50 GB（本轮共 1.50 GB）/);
+  assert.equal(f.project.assets.length, 0);
+  copied.resolve(resource(entry));
+  await until(() => f.publications.length === 1);
+  assert.match(f.controller.render(), /正在读取预览并保存工程 1\/1/);
+  assert.equal(f.project.assets.length, 0);
+  published.resolve();
+  await pending;
+  assert.equal(f.project.assets.length, 1);
+  assert.match(f.controller.render(), /已导入 1 个/);
+});
+
+test("an uncertain capture timeout stops later copies and pauses automatic retry", async () => {
+  const f = fixture({ intervalMs: 10 });
+  await f.controller.load();
+  f.hooks.capture = async (entry) => {
+    if (entry.path === "large.mp4") throw new FolderCaptureTimeoutError();
+    return resource(entry);
+  };
+  await f.connect([file("good.mp4"), file("large.mp4"), file("later.mp4")], "原片", true);
+  assert.equal(f.project.assets.length, 1);
+  assert.deepEqual(
+    f.captures.map((entry) => entry.path),
+    ["good.mp4", "large.mp4"],
+  );
+  assert.match(f.controller.render(), /已停止本轮导入/);
+  assert.match(f.controller.render(), /后台可能仍在复制/);
+  assert.match(f.controller.render(), /检查失败，自动导入已暂停/);
+  assert.doesNotMatch(f.controller.render(), /点击立即检查重试/);
+  const scans = f.scans.length;
+  await pause(40);
+  assert.equal(f.scans.length, scans);
+  assert.equal(f.document().folders[0].receipts.length, 1);
 });
 
 test("modified files add a new source without changing clips or the old source", async () => {

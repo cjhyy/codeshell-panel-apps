@@ -4,6 +4,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import {
   createDesktopFolderSource,
+  FolderCaptureTimeoutError,
   type FolderEntry,
 } from "../apps/video-studio/src/folder-source";
 import type { PanelBridge } from "../apps/video-studio/src/host";
@@ -359,7 +360,7 @@ test("a capture accepts only unchanged entries from the last successful scan", a
     f.source.dispose();
   }
 });
-for (const field of ["id", "sha256", "bytes", "mimeType", "name"])
+for (const field of ["id", "sha256", "bytes"])
   test(`capture validates returned ${field}`, async () => {
     const f = fixture({
       modify: (method, response) =>
@@ -370,6 +371,56 @@ for (const field of ["id", "sha256", "bytes", "mimeType", "name"])
     try {
       await f.source.scan(await opened(f));
       await assert.rejects(f.source.capture(f.directory, sample), /身份与大小检查/);
+    } finally {
+      f.source.dispose();
+    }
+  });
+
+test("same content under another name reuses the resource with the current scan's display metadata", async () => {
+  const f = fixture({
+    modify: (method, response) =>
+      method === "resources.capture"
+        ? {
+            asset: {
+              ...response.asset,
+              name: "首次上传.bin",
+              mimeType: "application/octet-stream",
+            },
+          }
+        : response,
+  });
+  try {
+    await f.source.scan(await opened(f));
+    const asset = await f.source.capture(f.directory, sample);
+    assert.equal(asset.id, `asset-${"b".repeat(64)}`);
+    assert.equal(asset.name, sample.name);
+    assert.equal(asset.mimeType, sample.mimeType);
+    assert.equal(f.calls.filter((c) => c.method === "resources.capture").length, 1);
+  } finally {
+    f.source.dispose();
+  }
+});
+
+for (const failure of [
+  Object.assign(Error("untrusted /private/source.mp4"), { code: "TIMEOUT" }),
+  Error("Panel App call timed out"),
+])
+  test("capture timeout is actionable and never retries a possibly running copy", async () => {
+    const f = fixture({
+      modify: (method, response) => {
+        if (method === "resources.capture") throw failure;
+        return response;
+      },
+    });
+    try {
+      await f.source.scan(await opened(f));
+      await assert.rejects(f.source.capture(f.directory, sample), (error: Error) => {
+        assert.ok(error instanceof FolderCaptureTimeoutError);
+        assert.match(error.message, /后台可能仍在复制/);
+        assert.doesNotMatch(error.message, /private|source.mp4/);
+        return true;
+      });
+      assert.equal(f.calls.filter((c) => c.method === "resources.capture").length, 1);
     } finally {
       f.source.dispose();
     }

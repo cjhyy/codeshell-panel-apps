@@ -32,6 +32,14 @@ const MAX_FILE_BYTES = 20 * 1024 ** 3;
 const SCAN_TIMEOUT_MS = 60_000;
 const encoder = new TextEncoder();
 class FolderSourceError extends Error {}
+export class FolderCaptureTimeoutError extends FolderSourceError {
+  constructor(cause?: unknown) {
+    super(
+      "保存原片等待超时，后台可能仍在复制。请勿连续重试；更新 CodeShell 后重新连接文件夹再检查。",
+      { cause },
+    );
+  }
+}
 // Only fixed messages from the reviewed scanner may cross back into the UI. Other stderr stays private.
 const SCANNER_MESSAGES = new Set([
   "文件夹扫描限制无效。",
@@ -470,21 +478,26 @@ export function createDesktopFolderSource(panel: PanelBridge) {
         typeof asset.sha256 !== "string" ||
         !HASH.test(asset.sha256) ||
         asset.id !== `asset-${asset.sha256}` ||
-        asset.bytes !== checked.bytes ||
-        asset.mimeType !== checked.mimeType ||
-        asset.name !== checked.name
+        asset.bytes !== checked.bytes
       )
         throw new FolderSourceError("文件夹素材保存结果未通过文件身份与大小检查。");
       return {
         id: asset.id,
         sha256: asset.sha256,
         bytes: asset.bytes,
-        mimeType: asset.mimeType,
-        name: asset.name,
+        // Content-addressed resources retain the first import's metadata. This
+        // descriptor uses the current scanned file's display name and type.
+        mimeType: checked.mimeType,
+        name: checked.name,
       };
     } catch (cause) {
       if (current.aborted || (cause as Error)?.name === "AbortError") throw runtimeCancelled();
       if (cause instanceof FolderSourceError) throw cause;
+      if (
+        (record(cause) && cause.code === "TIMEOUT") ||
+        (cause instanceof Error && cause.message === "Panel App call timed out")
+      )
+        throw new FolderCaptureTimeoutError(cause);
       throw new FolderSourceError("文件夹素材未能保存，请重新扫描并检查文件是否仍在写入。", {
         cause,
       });
