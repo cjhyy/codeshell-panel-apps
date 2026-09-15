@@ -1,0 +1,6 @@
+# Optional isolated Python runtime; the Panel App never installs dependencies.
+# Verified with Python 3.12.12. Source licenses: MIT and BSD-3-Clause respectively.
+efinance==0.5.9
+stockstats==0.6.8
+# easy-tdx is intentionally not an installation dependency: its upstream GitHub
+# repository and PyPI JSON endpoint returned 404 during verification (2026-09-12).

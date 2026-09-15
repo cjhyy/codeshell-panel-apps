@@ -1,13 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "quant-lab",
-  "version": "0.5.0",
+  "version": "0.44.5",
   "title": {
     "default": "投资工作台",
     "en": "Investment Desk",
     "zh-CN": "投资工作台"
   },
-  "description": "A local-first investment desk with repository-backed research and watchlist workflows.",
+  "description": "A local-first investment desk for market and stock diagnosis, portfolio tracking, alerts, news, and research.",
   "entry": "app/index.html",
   "icon": "line-chart",
   "placement": "right-dock",
@@ -21,7 +21,13 @@
     "external.open",
     "storage",
     "agent.submitPrompt",
+    "agent.task",
     "automations.manage",
-    "notifications.send"
-  ]
+    "notifications.send",
+    "process"
+  ],
+  "agent": {
+    "tools": [],
+    "skills": ["agent/skills/investment-research/SKILL.md"]
+  }
 }

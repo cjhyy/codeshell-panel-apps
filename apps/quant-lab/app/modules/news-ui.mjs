@@ -20,6 +20,7 @@ const TASK_NAMES = Object.freeze({
 });
 
 const SOURCE_LABELS = Object.freeze({
+  "cninfo-announcement": "巨潮资讯 · 官方公司公告",
   "eastmoney-stock": "东方财富个股 · 二级资讯",
   "eastmoney-724": "东方财富 7×24 · 二级资讯",
   "sec-edgar": "SEC EDGAR · 官方申报",
@@ -60,7 +61,11 @@ function timeLabel(value) {
 }
 
 function sourceCoverage(source) {
-  return source === "sec-edgar" ? "美股仅 SEC 官方申报，无一般新闻覆盖" : "A 股东财二级资讯、无 SLA";
+  return source === "cninfo-announcement"
+    ? "A 股法定披露原文"
+    : source === "sec-edgar"
+    ? "美股仅 SEC 官方申报，无一般新闻覆盖"
+    : "A 股东方财富二级资讯，稳定性不保证";
 }
 
 function notificationBody(item) {
@@ -98,13 +103,18 @@ export function createNewsController({
     live: byId("news-live-status"),
     enableCard: byId("news-enable-card"),
     workspace: byId("news-workspace"),
+    sourceCninfo: byId("news-source-cninfo"),
     sourceStock: byId("news-source-stock"),
     source724: byId("news-source-724"),
     sourceSec: byId("news-source-sec"),
+    contactField: byId("news-contact-field"),
     secContact: byId("news-sec-contact"),
+    enableSelection: byId("news-enable-selection"),
     enableError: byId("news-enable-error"),
     enable: byId("news-enable"),
     filter: byId("news-symbol-filter"),
+    query: byId("news-query"),
+    kindFilters: [...root.querySelectorAll("[data-news-kind]")],
     refresh: byId("news-refresh"),
     reload: byId("news-reload"),
     updateSubscriptions: byId("news-update-subscriptions"),
@@ -137,9 +147,11 @@ export function createNewsController({
     ledgerFile: null,
     tasks: [],
     taskErrors: { cn: null, us: null },
+    taskRetryIntent: { cn: null, us: null },
     readError: null,
     inFlight: false,
     notifiedThisLoad: false,
+    feedKind: "all",
   };
 
   function setLive(message, tone = "idle") {
@@ -223,15 +235,21 @@ export function createNewsController({
     row.time.textContent = plan?.scheduleLabel ?? "本市场无订阅标的";
     if (error) {
       row.status.textContent = `失败 · ${error}`;
-      row.action.textContent = task ? "关闭" : "重试";
+      row.action.textContent = state.taskRetryIntent[market] === "read"
+        ? "重试读取"
+        : state.taskRetryIntent[market] === "remove"
+          ? "重试关闭"
+          : task
+            ? "重试更新"
+            : "重试开启";
     } else if (task && !plan) {
-      row.status.textContent = "孤儿任务 · 订阅已空，任务仍在运行";
+      row.status.textContent = "订阅已清空，但旧任务仍在运行";
       row.action.textContent = "关闭";
     } else if (drift) {
-      row.status.textContent = "漂移 · schedule/prompt 与当前契约不一致";
+      row.status.textContent = "设置已变化，后台仍按旧设置运行";
       row.action.textContent = "更新";
     } else if (task) {
-      row.status.textContent = `已开启 · ${task.permissionLevel ?? "full"} · ${task.resumeSessionId ? "绑定会话" : "依赖当前会话"}`;
+      row.status.textContent = `已开启 · ${task.permissionLevel === "full" ? "允许联网检查" : "权限受限"} · ${task.resumeSessionId ? "跟随当前会话" : "需要当前会话可用"}`;
       row.action.textContent = "关闭";
     } else if (plan) {
       row.status.textContent = "未开启";
@@ -269,20 +287,20 @@ export function createNewsController({
       card.dataset.stale = String(stale);
       appendText(card, "b", SOURCE_LABELS[source]);
       const label = status.status === "not-enabled"
-        ? "not-enabled"
+        ? "未启用"
         : status.status === "configuration-required"
-          ? "configuration-required"
+          ? "等待配置"
           : status.status === "error"
-            ? `error · ${status.errorCode ?? "source-error"}`
+            ? `失败 · ${status.errorCode ?? "source-error"}`
             : !status.lastSuccessAt
-              ? "never-succeeded"
+              ? "尚未成功读取"
               : severe
-                ? "error · 超过 72 小时"
+                ? "异常 · 超过 72 小时"
                 : stale
-                  ? "stale · 超过 12 小时"
-                  : "ok";
+                  ? "较早 · 超过 12 小时"
+                  : "正常";
       appendText(card, "span", label);
-      appendText(card, "small", `attempt ${timeLabel(status.lastAttemptAt)} · success ${timeLabel(status.lastSuccessAt)} · 连续失败 ${status.consecutiveFailures}`);
+      appendText(card, "small", `尝试 ${timeLabel(status.lastAttemptAt)} · 成功 ${timeLabel(status.lastSuccessAt)} · 连续失败 ${status.consecutiveFailures}`);
       elements.sourceStatuses.append(card);
     }
   }
@@ -312,16 +330,21 @@ export function createNewsController({
   function renderFeed() {
     elements.feedList.replaceChildren();
     const filter = elements.filter.value;
+    const query = elements.query.value.trim().toLocaleLowerCase("zh-CN");
     const subscribed = new Set((state.subscriptions?.symbols ?? []).map((item) => item.symbol));
     const items = (state.feed?.items ?? []).filter(
-      (item) => subscribed.has(item.symbol) && (filter === "all" || item.symbol === filter),
+      (item) => subscribed.has(item.symbol)
+        && (filter === "all" || item.symbol === filter)
+        && (state.feedKind === "all" || item.kind === state.feedKind)
+        && (!query || [item.title, item.symbol, item.form, SOURCE_LABELS[item.source]]
+          .some((value) => String(value ?? "").toLocaleLowerCase("zh-CN").includes(query))),
     );
     elements.feedCount.textContent = `${items.length} 条`;
     elements.feedEmpty.hidden = items.length > 0;
     if (items.length === 0) {
       elements.feedEmpty.textContent = state.feed
-        ? "当前过滤条件没有持久化条目；不把缺数据表述为“无新闻”。"
-        : "尚未抓取，等待定时任务或点击刷新。";
+        ? "当前筛选没有匹配条目；可清除搜索或切回“全部”。这不表示市场没有相关资讯。"
+        : "尚未抓取，等待定时任务或点击同步。";
     }
     for (const item of items) {
       const card = document.createElement("article");
@@ -332,7 +355,9 @@ export function createNewsController({
       const head = document.createElement("div");
       head.className = "news-item-head";
       appendText(head, "h3", item.title);
-      const open = appendText(head, "button", "打开来源", "ghost-button");
+      const actions = document.createElement("div");
+      actions.className = "news-item-actions";
+      const open = appendText(actions, "button", "查看原文", "ghost-button");
       open.type = "button";
       open.addEventListener("click", async () => {
         if (!isAllowedNewsUrl(item.url)) return setLive("外链被 URL allowlist 拒绝；未调用 Host。", "error");
@@ -344,20 +369,27 @@ export function createNewsController({
         }
       });
       const noteLink = { type: "news", newsItemId: item.id, fingerprint: item.fingerprint };
-      const record = appendText(head, "button", `记录笔记 · ${noteLinkCount(noteLink)}`, "ghost-button record-note-button");
+      const record = appendText(actions, "button", `记笔记 · ${noteLinkCount(noteLink)}`, "ghost-button record-note-button");
       record.type = "button";
       record.addEventListener("click", () => onRecordNote(noteLink));
+      head.append(actions);
       card.append(head);
       const badges = document.createElement("div");
       badges.className = "news-item-badges";
       appendText(badges, "span", item.kind === "filing" ? `官方申报${item.form ? ` · ${item.form}` : ""}` : "二级资讯");
       appendText(badges, "span", item.symbol);
-      appendText(badges, "span", item.association);
-      appendText(badges, "span", item.stale ? "stale" : "fresh");
+      appendText(badges, "span", item.association === "confirmed" ? "明确关联" : `${item.association} · 弱关联`);
+      appendText(badges, "span", item.stale ? "较早数据" : "最新数据");
       appendText(badges, "span", ledgerState(item));
       card.append(badges);
-      appendText(card, "p", `${SOURCE_LABELS[item.source]} · 发布 ${timeLabel(item.publishedAt)} · 可得 ${timeLabel(item.availableAt)}`, "news-item-meta");
-      appendText(card, "p", `事件来源 ${item.occurrences.map((entry) => SOURCE_LABELS[entry.source]).join(" / ")} · ${sourceCoverage(item.source)}`, "news-item-sources");
+      appendText(card, "p", `${SOURCE_LABELS[item.source]} · 发布于 ${timeLabel(item.publishedAt)} · 收录于 ${timeLabel(item.availableAt)}`, "news-item-meta");
+      const independentSources = [...new Set(item.occurrences.map((entry) => entry.source))];
+      appendText(
+        card,
+        "p",
+        `独立来源 ${independentSources.length} 个 · ${independentSources.map((source) => SOURCE_LABELS[source]).join(" / ")} · ${sourceCoverage(item.source)}`,
+        "news-item-sources",
+      );
       elements.feedList.append(card);
     }
   }
@@ -373,15 +405,17 @@ export function createNewsController({
     renderAutomation("us");
     renderFeed();
     const drift = !sameSymbols(state.subscriptions.symbols, currentSymbols());
-    elements.updateSubscriptions.hidden = !drift;
-    if (drift) setLive("持仓/关注与订阅文件不一致；自动化仍读取旧订阅。确认更新前不覆盖。", "warning");
-    else if (Object.values(state.taskErrors).some(Boolean)) setLive("订阅已保存；部分市场 automation 失败，成功市场继续运行。", "warning");
+    const sourceUpgrade = state.subscriptions.symbols.some((item) => item.market === "cn") && !state.subscriptions.enabledSources.includes("cninfo-announcement");
+    const failed = state.feed?.sources.filter((item) => item.status === "error").length ?? 0;
+    elements.updateSubscriptions.hidden = !drift && !sourceUpgrade;
+    elements.updateSubscriptions.textContent = sourceUpgrade ? "启用巨潮官方公告" : "更新订阅标的";
+    if (drift) setLive("持仓或关注列表已变化；后台任务仍在使用旧订阅，请确认后更新。", "warning");
+    else if (Object.values(state.taskErrors).some(Boolean)) setLive("订阅已保存；部分市场的后台任务失败，其他市场继续运行。", "warning");
     else if (state.readError) setLive(state.readError, "error");
-    else if (!state.feed) setLive("自动资讯已启用；尚无持久 feed，不能据此声称“无新闻”。");
-    else {
-      const failed = state.feed.sources.filter((item) => item.status === "error").length;
-      setLive(failed ? `${failed} 个来源最近失败；旧缓存保留，其他来源继续。` : `已读取 ${state.feed.items.length} 条持久资讯。`, failed ? "warning" : "idle");
-    }
+    else if (failed) setLive(`${failed} 个来源最近失败；旧缓存保留，其他来源继续。`, "warning");
+    else if (sourceUpgrade) setLive("A 股资讯可补充巨潮官方公告原文；启用后不再只依赖二级资讯。", "warning");
+    else if (!state.feed) setLive("自动资讯已启用；尚无已保存的信息流，不能据此判断没有新资讯。");
+    else setLive(`已读取 ${state.feed.items.length} 条持久资讯。`);
   }
 
   async function readTasks() {
@@ -389,6 +423,24 @@ export function createNewsController({
     renderAutomation("cn");
     renderAutomation("us");
     return state.tasks;
+  }
+
+  function markTaskReadFailure(error) {
+    const message = error instanceof Error ? error.message : "无法读取后台任务";
+    for (const market of ["cn", "us"]) {
+      state.taskErrors[market] = message;
+      state.taskRetryIntent[market] = "read";
+    }
+    renderAutomation("cn");
+    renderAutomation("us");
+  }
+
+  function clearTaskReadFailures() {
+    for (const market of ["cn", "us"]) {
+      if (state.taskRetryIntent[market] !== "read") continue;
+      state.taskErrors[market] = null;
+      state.taskRetryIntent[market] = null;
+    }
   }
 
   async function notifyCandidates() {
@@ -450,7 +502,7 @@ export function createNewsController({
         elements.enableCard.hidden = false;
         elements.workspace.hidden = true;
         elements.enable.disabled = false;
-        setLive("未启用：不会联网，也不会创建 automation。");
+        setLive("尚未启用：不会联网，也不会创建后台检查任务。");
         return;
       }
       const [feedFile, ledgerFile] = await Promise.all([
@@ -461,7 +513,13 @@ export function createNewsController({
       state.feed = feedFile.value;
       state.ledgerFile = ledgerFile.exists ? ledgerFile : { ...ledgerFile, value: emptyNotificationLedger() };
       state.ledger = state.ledgerFile.value;
-      await readTasks();
+      try {
+        await readTasks();
+        clearTaskReadFailures();
+      } catch (error) {
+        markTaskReadFailure(error);
+        throw error;
+      }
       render();
       await notifyCandidates();
     } catch (error) {
@@ -479,10 +537,23 @@ export function createNewsController({
 
   function selectedSources() {
     return [
+      ...(elements.sourceCninfo.checked ? ["cninfo-announcement"] : []),
       ...(elements.sourceStock.checked ? ["eastmoney-stock"] : []),
       ...(elements.source724.checked ? ["eastmoney-724"] : []),
       ...(elements.sourceSec.checked ? ["sec-edgar"] : []),
     ];
+  }
+
+  function renderEnableSelection() {
+    const sources = selectedSources();
+    const cnCount = sources.filter((source) => source !== "sec-edgar").length;
+    const usCount = sources.includes("sec-edgar") ? 1 : 0;
+    elements.contactField.hidden = usCount === 0;
+    elements.enableSelection.textContent = sources.length === 0
+      ? "尚未选择来源"
+      : `已选 ${sources.length} 个来源 · A 股 ${cnCount} 个${usCount ? "，美股申报 1 个" : ""}`;
+    elements.enable.disabled = state.inFlight || sources.length === 0;
+    if (sources.length > 0) elements.enableError.hidden = true;
   }
 
   async function ensureMarket(market) {
@@ -504,9 +575,11 @@ export function createNewsController({
       await readTasks();
       task = taskFor(market);
       if (!task || !newsAutomationMatches(task, plan)) throw new Error("创建/更新后 list 验证不一致");
+      state.taskRetryIntent[market] = null;
       return true;
     } catch (error) {
       state.taskErrors[market] = error instanceof Error ? error.message : "automation 操作失败";
+      state.taskRetryIntent[market] = "ensure";
       renderAutomation(market);
       return false;
     }
@@ -517,14 +590,19 @@ export function createNewsController({
     try {
       await readTasks();
       const task = taskFor(market);
-      if (!task) return true;
+      if (!task) {
+        state.taskRetryIntent[market] = null;
+        return true;
+      }
       const result = await hostCall("automations.delete", { id: task.id });
       if (result?.ok === false) throw new Error("Host 未删除任务");
       await readTasks();
       if (taskFor(market)) throw new Error("删除后任务仍存在");
+      state.taskRetryIntent[market] = null;
       return true;
     } catch (error) {
       state.taskErrors[market] = error instanceof Error ? error.message : "automation 删除失败";
+      state.taskRetryIntent[market] = "remove";
       renderAutomation(market);
       return false;
     }
@@ -557,7 +635,12 @@ export function createNewsController({
       // deletes an existing user artifact; its row remains retryable.
       for (const plan of plans()) await ensureMarket(plan.market);
       render();
-      setLive(Object.values(state.taskErrors).some(Boolean) ? "订阅已保存；部分市场 automation 失败，成功市场继续运行。" : "自动资讯已启用；任务已逐市场 list 验证。", Object.values(state.taskErrors).some(Boolean) ? "warning" : "idle");
+      setLive(
+        Object.values(state.taskErrors).some(Boolean)
+          ? "订阅已保存；部分市场的后台任务失败，其他市场继续运行。"
+          : "自动资讯已启用；各市场的后台任务已确认。",
+        Object.values(state.taskErrors).some(Boolean) ? "warning" : "idle",
+      );
     } catch (error) {
       elements.enableError.textContent = error instanceof Error ? error.message : "启用失败";
       elements.enableError.hidden = false;
@@ -571,15 +654,25 @@ export function createNewsController({
 
   async function toggleMarket(market) {
     if (state.inFlight) return;
+    let action = state.taskRetryIntent[market];
     state.inFlight = true;
     renderAutomation(market);
     try {
       await readTasks();
+      if (action === "read") {
+        clearTaskReadFailures();
+        state.readError = null;
+        setLive("后台资讯任务状态已重新读取。");
+        return;
+      }
       const task = taskFor(market);
       const plan = planFor(market);
-      if (task && plan && !newsAutomationMatches(task, plan)) await ensureMarket(market);
-      else if (task) await deleteMarket(market);
+      action ??= task && (!plan || newsAutomationMatches(task, plan)) ? "remove" : "ensure";
+      if (action === "remove") await deleteMarket(market);
       else if (plan) await ensureMarket(market);
+    } catch (error) {
+      state.taskErrors[market] = error instanceof Error ? error.message : "无法读取后台任务";
+      state.taskRetryIntent[market] = action ?? "read";
     } finally {
       state.inFlight = false;
       renderAutomation("cn");
@@ -591,12 +684,22 @@ export function createNewsController({
     if (!state.subscriptions || state.inFlight) return;
     state.inFlight = true;
     try {
-      const document = parseNewsSubscriptions(JSON.stringify({ ...state.subscriptions, symbols: currentSymbols(), updatedAt: now().toISOString() }));
+      const enabledSources = state.subscriptions.symbols.some((item) => item.market === "cn")
+        ? [...new Set(["cninfo-announcement", ...state.subscriptions.enabledSources])]
+        : state.subscriptions.enabledSources;
+      const document = parseNewsSubscriptions(JSON.stringify({ ...state.subscriptions, enabledSources, symbols: currentSymbols(), updatedAt: now().toISOString() }));
       state.subscriptionFile = await writeFile(NEWS_PATHS.subscriptions, document, parseNewsSubscriptions, state.subscriptionFile);
       state.subscriptions = state.subscriptionFile.value;
-      await readTasks();
+      try {
+        await readTasks();
+        clearTaskReadFailures();
+      } catch (error) {
+        markTaskReadFailure(error);
+        throw error;
+      }
+      for (const plan of plans()) await ensureMarket(plan.market);
       render();
-      setLive("订阅标的已条件写入；空市场不会新建任务，既有孤儿任务可单独关闭。");
+      setLive("订阅已更新；A 股官方公告源与现有资讯源会分层合并。");
     } catch (error) {
       setLive(`订阅更新失败，旧文件与任务继续：${error instanceof Error ? error.message : "write-failed"}`, "error");
     } finally {
@@ -638,13 +741,18 @@ export function createNewsController({
     state.tasks = [];
     state.taskErrors.cn = null;
     state.taskErrors.us = null;
+    state.taskRetryIntent.cn = null;
+    state.taskRetryIntent.us = null;
     state.readError = null;
     state.inFlight = false;
     state.notifiedThisLoad = false;
+    state.feedKind = "all";
     elements.enableCard.hidden = false;
     elements.workspace.hidden = true;
-    elements.enable.disabled = false;
+    elements.query.value = "";
+    for (const button of elements.kindFilters) button.setAttribute("aria-pressed", String(button.dataset.newsKind === "all"));
     elements.feedList.replaceChildren();
+    renderEnableSelection();
     setLive("工作区切换中；旧资讯已清除。");
   }
 
@@ -653,17 +761,30 @@ export function createNewsController({
       const item = state.feed?.items.find((entry) => entry.id === card.dataset.newsItemId);
       const button = card.querySelector(".record-note-button");
       if (!item || !button) continue;
-      button.textContent = `记录笔记 · ${noteLinkCount({ type: "news", newsItemId: item.id, fingerprint: item.fingerprint })}`;
+      button.textContent = `记笔记 · ${noteLinkCount({ type: "news", newsItemId: item.id, fingerprint: item.fingerprint })}`;
     }
   }
 
   elements.enable.addEventListener("click", () => void enable());
   elements.filter.addEventListener("change", renderFeed);
+  elements.query.addEventListener("input", renderFeed);
+  for (const button of elements.kindFilters) {
+    button.addEventListener("click", () => {
+      state.feedKind = button.dataset.newsKind ?? "all";
+      for (const item of elements.kindFilters) item.setAttribute("aria-pressed", String(item === button));
+      renderFeed();
+    });
+  }
+  for (const source of [elements.sourceCninfo, elements.sourceStock, elements.source724, elements.sourceSec]) {
+    source.addEventListener("change", renderEnableSelection);
+  }
   elements.refresh.addEventListener("click", () => void requestRefresh());
   elements.reload.addEventListener("click", () => void load());
   elements.updateSubscriptions.addEventListener("click", () => void updateSymbols());
   elements.automations.cn.action.addEventListener("click", () => void toggleMarket("cn"));
   elements.automations.us.action.addEventListener("click", () => void toggleMarket("us"));
+
+  renderEnableSelection();
 
   return { load, reset, render, refreshNoteCounts, state, enable, toggleMarket, updateSymbols };
 }
