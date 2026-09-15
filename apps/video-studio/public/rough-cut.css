@@ -50,7 +50,8 @@
 .roughcut-panel [hidden] {
   display: none !important;
 }
-.roughcut-bulk {
+.roughcut-bulk,
+.roughcut-ai {
   margin-top: 8px;
   border-top: 1px solid #30383b;
   padding-top: 8px;
@@ -713,14 +714,24 @@
   font-weight: 600;
   margin-bottom: 10px;
 }
-.roughcut-batch-tools label {
+.roughcut-ai-controls {
+  display: grid;
+  gap: 10px;
+}
+.roughcut-ai-controls p {
+  margin: 0;
+}
+.roughcut-batch-tools label,
+.roughcut-ai label {
   display: grid;
   gap: 6px;
   font-size: 12px;
 }
 .roughcut-batch-tools input:not([type="checkbox"]),
 .roughcut-batch-tools select,
-.roughcut-batch-tools textarea {
+.roughcut-batch-tools textarea,
+.roughcut-ai select,
+.roughcut-ai textarea {
   min-width: 0;
   width: 100%;
   box-sizing: border-box;
@@ -734,7 +745,8 @@
 .roughcut-uniform-fields[hidden] {
   display: none;
 }
-.roughcut-batch-tools p {
+.roughcut-batch-tools p,
+.roughcut-ai p {
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;

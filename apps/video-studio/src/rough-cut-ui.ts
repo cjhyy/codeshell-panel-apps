@@ -98,6 +98,7 @@ export function createRoughCutUI(context: RoughCutContext) {
   let queueExpanded = false;
   let bulkOpen = false;
   let aiOpen = false;
+  let aiScope: "current" | "queue" = "current";
   let batchMode = "trim",
     batchHead = "0",
     batchTail = "0",
@@ -127,6 +128,7 @@ export function createRoughCutUI(context: RoughCutContext) {
     queueExpanded = false;
     bulkOpen = false;
     aiOpen = false;
+    aiScope = "current";
     batchDraft = null;
     unselectedCandidates.clear();
     drafts.clear();
@@ -147,6 +149,26 @@ export function createRoughCutUI(context: RoughCutContext) {
   function setQueue(ids: string[]): void {
     const valid = new Set(sources().map((item) => item.id));
     queueIds = [...new Set(ids)].filter((id) => valid.has(id));
+  }
+  function aiSources(): Asset[] {
+    const current = asset();
+    return aiScope === "current" ? (current ? [current] : []) : queueSources();
+  }
+  function pendingAI(): boolean {
+    const ai = context.ai?.state;
+    return !!(
+      ai?.projectId === context.project().id &&
+      (ai.starting ||
+        (ai.phase !== "idle" && (ai.completed < ai.assetIds.length || ai.cuts.length)) ||
+        (ai.task && ["queued", "running", "cancelling"].includes(ai.task.status)))
+    );
+  }
+  function sourceNames(ids: string[]): string {
+    const byId = new Map(sources().map((source) => [source.id, source.name]));
+    return `${ids
+      .slice(0, 3)
+      .map((id) => byId.get(id) || "素材已移除")
+      .join("、")}${ids.length > 3 ? ` 等 ${ids.length} 份素材` : ""}`;
   }
   const cuts = () => context.project().roughCuts ?? [];
   const sourceCuts = () => cuts().filter((cut) => cut.assetId === context.assetId());
@@ -456,13 +478,14 @@ export function createRoughCutUI(context: RoughCutContext) {
                 : ""}
             </details>
           `}
-      ${renderBulk(availableSources)}
+      ${renderAI()} ${renderBulk(availableSources)}
     </section>`;
   }
 
   function aiSummary(): string {
     const state = context.ai?.state;
     if (state?.projectId !== context.project().id) return "";
+    if (state.starting && !context.ai?.busy) return "正在停止 AI";
     if (context.ai?.busy) return "AI 分析中";
     if (state.cuts.length) return `${state.cuts.length} 段待审阅`;
     if (["failed", "cancelled"].includes(state.phase)) return "AI 进度待处理";
@@ -471,9 +494,9 @@ export function createRoughCutUI(context: RoughCutContext) {
 
   function renderBulk(available: Asset[]): string {
     if (!available.length) return "";
-    const summary =
-      aiSummary() ||
-      (batchDraft?.cuts.length ? `${batchDraft.cuts.length} 段待审阅` : "多素材裁剪与 AI 辅助");
+    const summary = batchDraft?.cuts.length
+      ? `${batchDraft.cuts.length} 段待审阅`
+      : "选择多份素材，统一裁剪或交给 AI";
     return html`<div class="roughcut-bulk">
       <button
         type="button"
@@ -559,9 +582,7 @@ export function createRoughCutUI(context: RoughCutContext) {
   }
 
   function renderBatchTools(queue: Asset[]): string {
-    const ai = context.ai?.state;
     const busy = context.ai?.busy ?? false;
-    const aiCurrent = ai?.projectId === context.project().id;
     return html`<div class="roughcut-batch-tools">
       <details class="roughcut-uniform">
         <summary>统一去片头片尾 / 保留指定时长</summary>
@@ -618,6 +639,26 @@ export function createRoughCutUI(context: RoughCutContext) {
         })}
       </details>
       ${batchDraft ? renderCandidates(batchDraft.cuts, "batch", batchDraft.note) : ""}
+      ${button("ai-queue", `AI 粗剪所选 ${queue.length} 份素材…`, "sparkles", {
+        disabled: !queue.length,
+        className: "full",
+      })}
+    </div>`;
+  }
+
+  function renderAI(): string {
+    const ai = context.ai?.state;
+    const busy = context.ai?.busy ?? false;
+    const aiCurrent = ai?.projectId === context.project().id;
+    const pending = pendingAI();
+    const activeTask = !!(
+      aiCurrent &&
+      ai?.task &&
+      ["queued", "running", "cancelling"].includes(ai.task.status)
+    );
+    const targets = aiSources();
+    const queue = queueSources();
+    return html`<div class="roughcut-ai">
       <button
         type="button"
         class="roughcut-tools-toggle"
@@ -625,10 +666,34 @@ export function createRoughCutUI(context: RoughCutContext) {
         aria-expanded="${aiOpen}"
         aria-controls="roughcut-ai-panel"
       >
-        <span>AI 辅助粗剪</span><small>${esc(aiSummary())}</small>${icon("chevron", 14)}
+        <span>AI 辅助粗剪</span
+        ><small
+          >${esc(
+            aiSummary() || (aiScope === "current" ? "当前素材" : `所选 ${queue.length} 份素材`),
+          )}</small
+        >${icon("chevron", 14)}
       </button>
       <div id="roughcut-ai-panel" ${aiOpen ? "" : "hidden"}>
         <div class="roughcut-ai-controls">
+          <label
+            >${pending ? "新分析范围" : "分析范围"}<select
+              data-roughcut-field="ai-scope"
+              aria-label="AI 粗剪分析范围"
+            >
+              <option value="current" ${aiScope === "current" ? "selected" : ""}>当前素材</option>
+              <option value="queue" ${aiScope === "queue" ? "selected" : ""}>
+                所选 ${queue.length} 份素材
+              </option>
+            </select></label
+          >
+          <p data-roughcut-ai-target>
+            ${targets.length
+              ? `将分析：${esc(sourceNames(targets.map((source) => source.id)))}`
+              : "请选择要分析的视频或音频。"}
+          </p>
+          ${aiScope === "queue"
+            ? button("ai-select-queue", "选择 / 调整素材", "", { className: "quiet" })
+            : ""}
           <label
             >AI 粗剪要求<textarea
               data-roughcut-field="ai-goal"
@@ -640,12 +705,17 @@ ${esc(aiGoal)}</textarea
             >
           </label>
           <p>AI 会实际查看多个时间点的画面，音频依据真实转写。先生成可预览的候选段。</p>
-          ${button("ai-start", `AI 批量粗剪 ${queue.length} 份素材`, "sparkles", {
-            disabled: !queue.length || busy || !context.ai || !!(aiCurrent && ai!.cuts.length),
-            className: "primary full",
-          })}
-          ${aiCurrent && ai!.cuts.length && !busy
-            ? "<p>先保存或丢弃下方候选段，再开始新的分析。</p>"
+          ${button(
+            "ai-start",
+            aiScope === "current" ? "AI 粗剪当前素材" : `AI 粗剪所选 ${targets.length} 份素材`,
+            "sparkles",
+            {
+              disabled: !targets.length || busy || !context.ai || pending,
+              className: "primary full",
+            },
+          )}
+          ${pending
+            ? `<p data-roughcut-ai-job-target>本次分析 · ${ai!.assetIds.length} 份素材：${esc(sourceNames(ai!.assetIds))}</p><p>${busy || ai!.starting ? "请等待本次分析完成或确认取消，再处理结果、开始新的分析。" : "已有分析待处理。请先继续、保存候选或丢弃本次分析，再开始新的分析。"}</p>`
             : ""}
           ${!context.ai
             ? '<p class="roughcut-notice">请在 CodeShell 面板内连接 AI 任务能力。</p>'
@@ -653,13 +723,25 @@ ${esc(aiGoal)}</textarea
           ${aiCurrent && ai?.message
             ? `<p class="roughcut-ai-status" role="status">${esc(ai.message)}</p>`
             : ""}
-          ${aiCurrent && busy ? button("ai-cancel", "取消分析，保留已完成结果") : ""}
+          ${aiCurrent && (busy || activeTask)
+            ? button("ai-cancel", "取消分析，保留已完成结果", "", {
+                disabled: ai!.starting && !busy,
+              })
+            : ""}
           ${aiCurrent && ["failed", "cancelled"].includes(ai!.phase)
-            ? button("ai-retry", "继续未完成的素材")
+            ? button("ai-retry", "继续未完成的素材", "", { disabled: ai!.starting })
+            : ""}
+          ${pending && !busy && !activeTask && !ai!.starting && !ai!.cuts.length
+            ? button("ai-discard", "丢弃本次分析")
             : ""}
         </div>
         ${aiCurrent && ai!.cuts.length
-          ? renderCandidates(ai!.cuts, "ai", ai!.explanations.filter(Boolean).join("\n"), busy)
+          ? renderCandidates(
+              ai!.cuts,
+              "ai",
+              ai!.explanations.filter(Boolean).join("\n"),
+              busy || ai!.starting,
+            )
           : ""}
       </div>
     </div>`;
@@ -691,9 +773,15 @@ ${esc(aiGoal)}</textarea
         ${button(`${kind}-save`, `保存勾选的 ${chosen.length} 段`, "plus", {
           disabled: !chosen.length || busy,
           className: "primary",
-        })}${button(`${kind}-discard`, "丢弃候选", "", { disabled: busy })}
+        })}${button(`${kind}-discard`, kind === "ai" ? "丢弃本次分析" : "丢弃候选", "", {
+          disabled:
+            busy ||
+            (kind === "ai" &&
+              !!context.ai?.state.task &&
+              ["queued", "running", "cancelling"].includes(context.ai.state.task.status)),
+        })}
       </div>
-      <p>保存后可继续调整 I/O，再用「统一加入」放进成片。</p>
+      <p>保存后可继续调整 I/O，再用「加入成片」；多份素材也可从批量工具统一加入。</p>
     </section>`;
   }
 
@@ -790,6 +878,14 @@ ${esc(aiGoal)}</textarea
   function input(target: Field): boolean {
     const field = target.dataset.roughcutField;
     if (!field) return false;
+    if (field === "ai-scope") {
+      ensureProject();
+      if (target.value === "current" || target.value === "queue") {
+        aiScope = target.value;
+        context.changed();
+      }
+      return true;
+    }
     if (field.startsWith("batch-") || field === "ai-goal" || field === "candidate-enabled") {
       ensureProject();
       if (field === "batch-mode" && ["trim", "keep"].includes(target.value)) {
@@ -872,6 +968,25 @@ ${esc(aiGoal)}</textarea
           ?.focus({ preventScroll: true });
       return true;
     }
+    if (verb === "ai-queue" || verb === "ai-select-queue") {
+      ensureProject();
+      if (verb === "ai-queue") {
+        aiScope = "queue";
+        aiOpen = true;
+      } else {
+        bulkOpen = true;
+        queueExpanded = true;
+      }
+      context.changed();
+      if (typeof document !== "undefined") {
+        const region = document.querySelector<HTMLElement>(
+          verb === "ai-queue" ? "#roughcut-ai-panel" : "#roughcut-queue-picker",
+        );
+        region?.scrollIntoView({ block: "start" });
+        region?.querySelector<HTMLElement>("select, input, button")?.focus({ preventScroll: true });
+      }
+      return true;
+    }
     if (verb.startsWith("batch-") || verb.startsWith("ai-") || verb === "candidate-preview") {
       try {
         ensureProject();
@@ -941,15 +1056,24 @@ ${esc(aiGoal)}</textarea
             throw new Error("候选段原素材未连接，请先重新连接");
           await context.selectAsset(candidate.assetId);
           await context.play(candidate.inFrame, candidate.outFrame);
-        } else if (verb === "ai-start")
-          await context.ai?.start(
-            queueSources().map((asset) => asset.id),
+        } else if (verb === "ai-start") {
+          if (!context.ai) throw new Error("AI 粗剪尚未连接");
+          if (pendingAI()) throw new Error("请先处理已有分析：继续、保存候选或丢弃本次分析");
+          const targets = aiSources();
+          if (!targets.length) throw new Error("请选择要分析的视频或音频");
+          await context.ai.start(
+            targets.map((source) => source.id),
             aiGoal,
           );
-        else if (verb === "ai-cancel") await context.ai?.cancel();
+        } else if (verb === "ai-cancel") await context.ai?.cancel();
         else if (verb === "ai-retry") await context.ai?.retry();
-        else if (verb === "ai-discard") await context.ai?.discard();
-        else if (verb === "ai-save") {
+        else if (verb === "ai-discard") {
+          if (context.ai?.state.starting) throw new Error("请等待任务启动或停止确认后再丢弃");
+          const task = context.ai?.state.task;
+          if (task && ["queued", "running", "cancelling"].includes(task.status))
+            throw new Error("请先取消当前分析，确认任务停止后再丢弃");
+          await context.ai?.discard();
+        } else if (verb === "ai-save") {
           if (!context.ai) throw new Error("AI 粗剪尚未连接");
           const chosen = context.ai.state.cuts
             .filter((cut) => !unselectedCandidates.has(cut.id))
@@ -1210,6 +1334,7 @@ ${esc(aiGoal)}</textarea
       queueExpanded = false;
       bulkOpen = false;
       aiOpen = false;
+      aiScope = "current";
       queueProjectId = context.project().id;
       batchDraft = null;
       unselectedCandidates.clear();
@@ -1223,6 +1348,7 @@ ${esc(aiGoal)}</textarea
     ensureProject();
     bulkOpen = mode === "batch";
     aiOpen = false;
+    aiScope = mode === "batch" ? "queue" : "current";
     queueExpanded = false;
   }
 

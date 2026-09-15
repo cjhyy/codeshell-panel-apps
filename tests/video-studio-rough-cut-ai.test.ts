@@ -23,6 +23,87 @@ function promptedAssetIds(start: Record<string, unknown>): string[] {
   );
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function delayedLaunchFixture(
+  options: { failFirstCancel?: boolean; rejectFirstLaunch?: boolean } = {},
+) {
+  const project = fixture(2).project();
+  const startSeen = deferred(),
+    deliverStart = deferred(),
+    cancelSeen = deferred(),
+    stopped = deferred();
+  const tasks: (PanelTask & { key: string })[] = [];
+  const starts: Record<string, unknown>[] = [];
+  const cancelled: string[] = [];
+  const controller = new RoughCutAIController(
+    {
+      call: async (method: string, args: Record<string, unknown>) => {
+        if (method === "agent.task.start") {
+          assert.equal(args.maxTurns, 20);
+          starts.push(args);
+          if (options.rejectFirstLaunch && starts.length === 1) {
+            startSeen.resolve();
+            await deliverStart.promise;
+            throw new Error("AI 任务暂时不可用");
+          }
+          // Match Host ownership: a task exists before its start response arrives,
+          // and another request with the same active key receives that same task.
+          let task = tasks.find(
+            (item) =>
+              item.key === args.key && ["queued", "running", "cancelling"].includes(item.status),
+          );
+          if (!task) {
+            task = { id: `delayed-${tasks.length}`, key: String(args.key), status: "running" };
+            tasks.push(task);
+          }
+          if (starts.length === 1) {
+            startSeen.resolve();
+            await deliverStart.promise;
+          }
+          return structuredClone(task);
+        }
+        const task = tasks.find((item) => item.id === args.id);
+        assert.ok(task);
+        if (method === "agent.task.cancel") {
+          cancelled.push(task.id);
+          task.status = "cancelling";
+          cancelSeen.resolve();
+          if (options.failFirstCancel && cancelled.length === 1)
+            throw new Error("取消确认暂时中断");
+          return structuredClone(task);
+        }
+        if (method === "agent.task.get") {
+          if (task.status === "cancelling") {
+            await stopped.promise;
+            task.status = "cancelled";
+          }
+          return structuredClone(task);
+        }
+        throw new Error(`Unexpected ${method}`);
+      },
+    } as PanelBridge,
+    { project: () => project, assertReady() {}, changed() {} },
+  );
+  return {
+    controller,
+    project,
+    tasks,
+    starts,
+    cancelled,
+    startSeen,
+    deliverStart,
+    cancelSeen,
+    stopped,
+  };
+}
+
 function fixture(count = 2, audio = false) {
   let project = validateProject({
     ...createProject(),
@@ -321,6 +402,121 @@ test("cancel prevents late task results and read evidence from entering a restar
     for (const seconds of [1.5, 15, 28.5]) f.controller.recordFrame(token, asset.id, seconds);
   assert.throws(() => f.controller.accept(f.proposal(["source-0"])), /关键帧/);
   assert.equal(f.starts.length, 2);
+});
+
+test("cancel waits for a delayed start response and confirmed stop before the same Host task key can be reused", async () => {
+  const f = delayedLaunchFixture();
+  const before = structuredClone(f.project);
+  const starting = f.controller.start(["source-0"]);
+  await f.startSeen.promise;
+  assert.equal(f.tasks.length, 1, "The Host already owns a task whose response is delayed");
+  assert.equal(f.controller.state.task, null);
+  let cancellationFinished = false;
+  const cancelling = f.controller.cancel().then(() => {
+    cancellationFinished = true;
+  });
+  const duplicateCancellation = f.controller.cancel();
+  assert.equal(f.controller.state.starting, true);
+  await assert.rejects(() => f.controller.start(["source-1"]), /启动或停止完成/);
+  await assert.rejects(() => f.controller.retry(), /启动或停止完成/);
+  await assert.rejects(() => f.controller.discard(), /确认任务停止/);
+  await assert.rejects(() => f.controller.restore(f.controller.snapshot()), /等待任务停止/);
+  assert.equal(f.starts.length, 1);
+  assert.equal(cancellationFinished, false);
+  f.deliverStart.resolve();
+  await f.cancelSeen.promise;
+  await starting;
+  assert.equal(f.controller.state.starting, true);
+  assert.equal(cancellationFinished, false, "An acknowledged cancel still needs terminal status");
+  await assert.rejects(() => f.controller.retry(), /启动或停止完成/);
+  await assert.rejects(() => f.controller.discard(), /确认任务停止/);
+  f.stopped.resolve();
+  await Promise.all([cancelling, duplicateCancellation]);
+  assert.equal(f.controller.state.starting, false);
+  assert.equal(f.controller.state.task?.status, "cancelled");
+  assert.deepEqual(f.cancelled, ["delayed-0"], "Repeated cancellation shares one owned stop");
+  await f.controller.discard();
+  await f.controller.start(["source-1"]);
+  assert.deepEqual(f.starts.map(promptedAssetIds), [["source-0"], ["source-1"]]);
+  assert.equal(f.tasks.length, 2, "The new request receives a fresh task after key release");
+  assert.equal(f.controller.state.task?.id, "delayed-1");
+  assert.equal(f.tasks[1]!.status, "running");
+  assert.deepEqual(f.cancelled, ["delayed-0"], "A stale start cannot cancel the new task");
+  assert.deepEqual(f.project, before);
+});
+
+test("a failed cancellation of a late start retains its task until retry confirms it stopped", async () => {
+  const f = delayedLaunchFixture({ failFirstCancel: true });
+  const starting = f.controller.start(["source-0"]);
+  await f.startSeen.promise;
+  const cancelling = f.controller.cancel();
+  const rejected = assert.rejects(cancelling, /取消确认暂时中断/);
+  f.deliverStart.resolve();
+  await Promise.all([starting, rejected]);
+  assert.equal(f.controller.state.starting, false);
+  assert.equal(f.controller.state.task?.id, "delayed-0");
+  await assert.rejects(() => f.controller.start(["source-1"]), /尚未确认停止/);
+  await assert.rejects(() => f.controller.discard(), /确认任务停止/);
+  assert.equal(f.starts.length, 1);
+  const retrying = f.controller.retry();
+  assert.equal(f.controller.state.starting, true);
+  await assert.rejects(() => f.controller.discard(), /确认任务停止/);
+  f.stopped.resolve();
+  await retrying;
+  assert.deepEqual(f.cancelled, ["delayed-0", "delayed-0"]);
+  assert.deepEqual(f.starts.map(promptedAssetIds), [["source-0"], ["source-0"]]);
+  assert.equal(f.controller.state.task?.id, "delayed-1");
+  assert.equal(f.tasks[1]!.status, "running");
+  assert.equal(f.project.clips.length, 0);
+});
+
+test("cancelling a launch that is rejected waits for the response without inventing a task to stop", async () => {
+  const f = delayedLaunchFixture({ rejectFirstLaunch: true });
+  const starting = f.controller.start(["source-0"]);
+  await f.startSeen.promise;
+  const cancelling = f.controller.cancel();
+  assert.equal(f.controller.state.starting, true);
+  await assert.rejects(() => f.controller.start(["source-1"]), /启动或停止完成/);
+  await assert.rejects(() => f.controller.discard(), /确认任务停止/);
+  f.deliverStart.resolve();
+  await Promise.all([starting, cancelling]);
+  assert.equal(f.controller.state.starting, false);
+  assert.equal(f.controller.state.task, null);
+  assert.deepEqual(f.cancelled, []);
+  assert.equal(f.tasks.length, 0);
+  await f.controller.discard();
+  await f.controller.start(["source-1"]);
+  assert.equal(f.tasks.length, 1);
+  assert.equal(f.controller.state.phase, "running");
+  assert.deepEqual(f.controller.state.assetIds, ["source-1"]);
+});
+
+test("reset retains ownership of a delayed launch until cancellation reaches a terminal state", async () => {
+  const f = delayedLaunchFixture();
+  const starting = f.controller.start(["source-0"]);
+  await f.startSeen.promise;
+  let resetFinished = false;
+  const resetting = f.controller.reset().then(() => {
+    resetFinished = true;
+  });
+  assert.equal(f.controller.state.starting, true);
+  assert.deepEqual(f.controller.state.assetIds, ["source-0"]);
+  await assert.rejects(() => f.controller.start(["source-1"]), /启动或停止完成/);
+  f.deliverStart.resolve();
+  await f.cancelSeen.promise;
+  await starting;
+  assert.equal(resetFinished, false);
+  assert.equal(f.controller.state.starting, true);
+  f.stopped.resolve();
+  await resetting;
+  assert.equal(f.controller.state.phase, "idle");
+  assert.equal(f.controller.state.task, null);
+  assert.deepEqual(f.controller.state.assetIds, []);
+  assert.deepEqual(f.cancelled, ["delayed-0"]);
+  assert.equal(f.tasks[0]!.status, "cancelled");
+  await f.controller.start(["source-1"]);
+  assert.equal(f.controller.state.task?.id, "delayed-1");
+  assert.equal(f.tasks[1]!.status, "running");
 });
 
 test("audio preparation must succeed and selections require actual corresponding transcript ranges", async () => {

@@ -232,7 +232,6 @@ async function disclosure(page, name, expanded = true) {
   );
 }
 async function openAI(page) {
-  await disclosure(page, "bulk");
   await disclosure(page, "ai");
 }
 async function openUniform(page) {
@@ -333,6 +332,15 @@ for (const scenario of [
           path: resolve(artifacts, `rough-cut-manual-${scenario.name}.png`),
         });
         await openAI(page);
+        assert.equal(await page.locator("#roughcut-bulk-panel").isVisible(), false);
+        assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "current");
+        await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
+        for (const selector of ['[data-roughcut-field="ai-scope"]', '[data-action="roughcut-ai-start"]']) {
+          const bounds = await page.locator(selector).boundingBox();
+          assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= scenario.viewport.width + 1);
+        }
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        await page.screenshot({ path: resolve(artifacts, `rough-cut-ai-${scenario.name}.png`) });
         assert.equal(
           await page.evaluate(() => window.__roughCutAgentTasks.length),
           0,
@@ -344,7 +352,7 @@ for (const scenario of [
         await saved(page);
         assert.equal(
           await page.locator('[data-action="roughcut-bulk-toggle"]').getAttribute("aria-expanded"),
-          "true",
+          "false",
           "Saving a manual mark keeps the chosen disclosure state",
         );
         assert.equal(
@@ -421,6 +429,74 @@ test(
 );
 
 test(
+  "single-source AI ignores the previous multi-selection and reviews only that source through real frame tools",
+  { timeout: 60_000 },
+  async () => {
+    const { page, assets } = await importedVideoQueue();
+    try {
+      await page.locator('[data-tab="media"]').click();
+      const current = assets[1];
+      await page.locator(`[data-rough-source="${current.id}"]`).click();
+      await openAI(page);
+      assert.equal(await page.locator("#roughcut-bulk-panel").isVisible(), false);
+      assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "current");
+      assert.match(await page.locator('[data-roughcut-ai-target]').textContent(), /旅行二/);
+      assert.doesNotMatch(await page.locator('[data-roughcut-ai-target]').textContent(), /旅行一/);
+      const before = (await state(page)).project;
+      await page.locator('[data-roughcut-field="ai-goal"]').fill("只挑这份素材的主体镜头");
+      await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(artifacts, "rough-cut-ai-current.png") });
+      await page.locator('[data-action="roughcut-ai-start"]').click();
+      await page.waitForFunction(() => window.__roughCutAgentTasks.length === 1 && window.__roughCutTools.read_video_project().requestToken);
+      const submitted = await page.evaluate(() => window.__roughCutAgentTasks[0].params);
+      assert.deepEqual(JSON.parse(submitted.prompt.split("本批素材数据：")[1]).map((asset) => asset.id), [current.id]);
+      assert.equal(submitted.maxTurns, 20);
+      assert.match(submitted.prompt, /只挑这份素材的主体镜头/);
+      const token = (await state(page)).requestToken;
+      await page.locator('[data-roughcut-field="ai-scope"]').selectOption("queue");
+      await page.locator('#roughcut-source').selectOption(assets[0].id);
+      assert.equal(await page.locator('[data-action="roughcut-ai-start"]').isDisabled(), true);
+      assert.equal((await state(page)).requestToken, token);
+      assert.match(await page.locator('[data-roughcut-ai-job-target]').textContent(), /1 份素材：旅行二/);
+      await page.evaluate(async (assetId) => {
+        for (const seconds of [0.3, 3, 5.7]) {
+          const frame = await window.__roughCutTools.inspect_video_frame({ assetId, seconds });
+          if (frame.kind !== "image" || atob(frame.data).length < 1000) throw new Error("No decoded frame");
+        }
+        const state = window.__roughCutTools.read_video_project();
+        await window.__roughCutTools.propose_video_edit({
+          projectId: state.project.id,
+          requestToken: state.requestToken,
+          baseRevision: state.project.revision,
+          title: "单素材画面初筛",
+          explanation: "已查看当前原片的真实关键帧，候选先预览确认。",
+          operations: [{ type: "rough-cuts", cuts: [{ id: "single-candidate", assetId, inFrame: 60, outFrame: 120, name: "主体镜头", enabled: true }] }],
+        });
+        const task = window.__roughCutAgentTasks[0];
+        task.status = "completed";
+        window.__roughCutEmit("agent.task.changed", task);
+      }, current.id);
+      await page.waitForFunction(() => document.querySelector('[data-action="roughcut-ai-save"]')?.disabled === false);
+      assert.equal(await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(), 1);
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator('[data-action="roughcut-candidate-preview"]').click();
+      assert.equal(await page.locator('#roughcut-source').inputValue(), current.id);
+      assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "queue");
+      await page.locator('[data-action="roughcut-ai-save"]').click();
+      await saved(page);
+      const result = (await state(page)).project;
+      assert.deepEqual(result.roughCuts.map((cut) => [cut.assetId, cut.inFrame, cut.outFrame]), [[current.id, 60, 120]]);
+      assert.deepEqual(result.clips, []);
+      await page.locator('[data-action="roughcut-ai-select-queue"]').click();
+      assert.equal(await page.locator('[data-roughcut-field="queue-enabled"]:checked').count(), 2, "Single analysis preserves the previous multi-selection");
+      await page.locator('[data-action="roughcut-ai-queue"]').click();
+      assert.equal(await page.locator('#roughcut-ai-panel').isVisible(), true);
+      assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 1, "Multi-source shortcut only opens the configuration");
+    } finally { await page.close(); }
+  },
+);
+
+test(
   "AI batch candidates require real decoded frame tools and await user review before saving",
   { timeout: 60_000 },
   async () => {
@@ -428,6 +504,9 @@ test(
     try {
       const before = (await state(page)).project;
       await openAI(page);
+      assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "queue");
+      await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(artifacts, "rough-cut-ai-queue.png") });
       await page.locator('[data-roughcut-field="ai-goal"]').fill("保留有主体的中间段，先生成候选");
       await page.locator('[data-action="roughcut-ai-start"]').click();
       await page.waitForFunction(
@@ -436,7 +515,7 @@ test(
           window.__roughCutTools.read_video_project().requestToken,
       );
       assert.match(
-        await page.locator('[data-action="roughcut-bulk-toggle"]').textContent(),
+        await page.locator('[data-action="roughcut-ai-toggle"]').textContent(),
         /AI 分析中/,
       );
       const unseen = await page.evaluate(async () => {
@@ -541,7 +620,7 @@ test(
       await page.locator('[data-tab="roughcut"]').click();
       await page.waitForFunction(() =>
         document
-          .querySelector('[data-action="roughcut-bulk-toggle"]')
+          .querySelector('[data-action="roughcut-ai-toggle"]')
           ?.textContent?.includes("2 段待审阅"),
       );
       await openAI(page);

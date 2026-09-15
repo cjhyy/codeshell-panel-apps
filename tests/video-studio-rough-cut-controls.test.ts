@@ -11,6 +11,11 @@ import {
   parseRoughCutTime,
   roughCutTimecode,
 } from "../apps/video-studio/src/rough-cut-ui";
+import {
+  RoughCutAIController,
+  type RoughCutAISnapshot,
+} from "../apps/video-studio/src/rough-cut-ai";
+import type { PanelBridge, PanelTask } from "../apps/video-studio/src/host";
 
 function fixture() {
   let project = validateProject({
@@ -29,7 +34,46 @@ function fixture() {
   const messages: string[] = [],
     downloads: { name: string; contents: string }[] = [];
   const plays: [number | undefined, number | undefined][] = [];
+  const tasks: PanelTask[] = [];
+  const startAttempts: Record<string, unknown>[] = [];
+  const snapshots: (RoughCutAISnapshot | null)[] = [];
+  let startError = "";
+  const ai = new RoughCutAIController(
+    {
+      call: async (method: string, value: unknown) => {
+        const args = value as Record<string, unknown>;
+        if (method === "agent.task.start") {
+          startAttempts.push(structuredClone(args));
+          const maxTurns = args.maxTurns === undefined ? 8 : Number(args.maxTurns);
+          if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 20)
+            throw new Error("agent.task.start maxTurns must be an integer from 1 to 20");
+          if (startError) throw new Error(startError);
+          const task: PanelTask = { id: `rough-cut-${tasks.length}`, status: "running" };
+          tasks.push(task);
+          return task;
+        }
+        if (method === "agent.task.get") return tasks.find((task) => task.id === args.id);
+        if (method === "agent.task.cancel") {
+          const task = tasks.find((task) => task.id === args.id);
+          if (task) task.status = "cancelled";
+          return task;
+        }
+        throw new Error(`Unexpected rough-cut control bridge call: ${method}`);
+      },
+    } as PanelBridge,
+    {
+      project: () => project,
+      assertReady() {},
+      changed: () => {
+        changed++;
+      },
+      persist: async (snapshot) => {
+        snapshots.push(structuredClone(snapshot));
+      },
+    },
+  );
   const ui = createRoughCutUI({
+    ai,
     project: () => project,
     assetId: () => sourceId,
     frame: () => frame,
@@ -68,6 +112,44 @@ function fixture() {
   return {
     ui,
     input,
+    ai,
+    tasks,
+    startAttempts,
+    snapshots,
+    rejectStart: (message: string) => {
+      startError = message;
+    },
+    finishAI: async () => {
+      const state = ai.state;
+      const ids = state.assetIds.slice(state.completed, state.completed + 3);
+      const assets = ids.map((id) => project.assets.find((asset) => asset.id === id)!);
+      for (const asset of assets)
+        for (const ratio of [0.05, 0.5, 0.95])
+          ai.recordFrame(ai.requestToken, asset.id, (asset.durationFrames * ratio) / 30);
+      ai.accept({
+        projectId: project.id,
+        requestToken: ai.requestToken,
+        baseRevision: project.revision,
+        title: "画面初筛",
+        explanation: "基于已查看的关键帧生成候选，保留段需预览确认。",
+        operations: [
+          {
+            type: "rough-cuts",
+            cuts: assets.map((asset) => ({
+              id: `candidate-${asset.id}`,
+              assetId: asset.id,
+              inFrame: Math.floor(asset.durationFrames * 0.45),
+              outFrame: Math.floor(asset.durationFrames * 0.6),
+              name: `候选 ${asset.name}`,
+              enabled: true,
+            })),
+          },
+        ],
+      });
+      const task = tasks.find((task) => task.id === ai.state.task!.id)!;
+      task.status = "completed";
+      await ai.handleTask(task);
+    },
     project: () => project,
     replaceProject: (next: Project) => {
       project = validateProject(next);
@@ -110,11 +192,32 @@ function expectDisclosure(
   );
 }
 
+function expectScope(ui: ReturnType<typeof createRoughCutUI>, scope: "current" | "queue") {
+  const select = ui
+    .render()
+    .match(/<select[^>]*data-roughcut-field="ai-scope"[^>]*>[\s\S]*?<\/select>/)?.[0];
+  assert.ok(select, "AI exposes an explicit current-source or selected-queue choice");
+  assert.match(select, new RegExp(`<option\\s+value="${scope}"[^>]*\\bselected\\b`));
+}
+
+function expectAIStartDisabled(ui: ReturnType<typeof createRoughCutUI>, disabled: boolean) {
+  const button = ui.render().match(/<button[^>]*data-action="roughcut-ai-start"[^>]*>/)?.[0];
+  assert.ok(button, "AI start remains visible with its current availability");
+  assert.equal(/\bdisabled\b/.test(button), disabled);
+}
+
+function promptedIds(start: Record<string, unknown>): string[] {
+  return JSON.parse(String(start.prompt).split("本批素材数据：")[1]!).map(
+    (asset: { id: string }) => asset.id,
+  );
+}
+
 test("ordinary source mode puts manual controls first and explicit batch mode opens only batch tools", async () => {
   const f = fixture();
   const before = f.project();
   expectDisclosure(f.ui, "bulk", false);
   expectDisclosure(f.ui, "ai", false);
+  expectScope(f.ui, "current");
   const markup = f.ui.render();
   for (const control of [
     "roughcut-source",
@@ -125,18 +228,207 @@ test("ordinary source mode puts manual controls first and explicit batch mode op
     "roughcut-csv",
   ])
     assert.ok(
-      markup.indexOf(control) < markup.indexOf("roughcut-bulk-toggle"),
-      `${control} precedes optional batch tools`,
+      markup.indexOf(control) < markup.indexOf("roughcut-ai-toggle"),
+      `${control} precedes optional AI tools`,
     );
+  assert.ok(markup.indexOf("roughcut-ai-toggle") < markup.indexOf("roughcut-bulk-toggle"));
+  await f.ui.action("roughcut-ai-toggle");
+  expectDisclosure(f.ui, "ai", true);
+  expectDisclosure(f.ui, "bulk", false);
   f.ui.setMode("batch");
   expectDisclosure(f.ui, "bulk", true);
   expectDisclosure(f.ui, "ai", false);
+  expectScope(f.ui, "queue");
   await f.ui.action("roughcut-ai-toggle");
   expectDisclosure(f.ui, "ai", true);
   f.ui.setMode("single");
   expectDisclosure(f.ui, "bulk", false);
   expectDisclosure(f.ui, "ai", false);
+  expectScope(f.ui, "current");
+  assert.equal(f.startAttempts.length, 0, "Entry and disclosure choices never start an AI task");
   assert.deepEqual(f.project(), before, "Disclosure and entry mode changes never edit the project");
+});
+
+test("single-source AI ignores an earlier multi-selection and preserves manual drafts and queue order", async () => {
+  const f = fixture();
+  f.ui.setQueue(["source-b", "source-a"]);
+  f.ui.setMode("single");
+  f.input("in", "2");
+  f.input("out", "4");
+  f.input("ai-goal", "仅保留当前原片里的主体镜头");
+  const before = structuredClone(f.project());
+  expectScope(f.ui, "current");
+  expectAIStartDisabled(f.ui, false);
+  await f.ui.action("roughcut-ai-start");
+  assert.deepEqual(promptedIds(f.startAttempts[0]!), ["source-a"]);
+  assert.match(String(f.startAttempts[0]!.prompt), /仅保留当前原片里的主体镜头/);
+  assert.deepEqual(f.ai.state.assetIds, ["source-a"]);
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 60, outFrame: 120 });
+  const markup = f.ui.render();
+  assert.ok(
+    markup.indexOf('data-roughcut-queue-row="source-b"') <
+      markup.indexOf('data-roughcut-queue-row="source-a"'),
+    "Single-source AI must not replace the selected queue or its order",
+  );
+  assert.deepEqual(f.project(), before, "AI start must not save marks or change the timeline");
+
+  await f.finishAI();
+  expectAIStartDisabled(f.ui, true);
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.startAttempts.length, 1, "Unreviewed single-source candidates cannot be replaced");
+  assert.deepEqual(f.project(), before);
+  const candidate = f.ai.state.cuts[0]!;
+  await f.ui.action("roughcut-candidate-preview", candidate.id);
+  assert.deepEqual(f.plays.at(-1), [candidate.inFrame, candidate.outFrame]);
+  expectScope(f.ui, "current");
+  await f.ui.action("roughcut-ai-save");
+  assert.equal(f.project().revision, before.revision + 1);
+  assert.deepEqual(
+    f.project().roughCuts!.map((cut) => cut.assetId),
+    ["source-a"],
+  );
+  assert.deepEqual(
+    f.project().clips,
+    before.clips,
+    "Reviewed AI ranges still await timeline insertion",
+  );
+  assert.deepEqual(f.ui.selectedRange(), { inFrame: 60, outFrame: 120 });
+  f.undo();
+  assert.deepEqual(f.project().roughCuts ?? [], before.roughCuts ?? []);
+});
+
+test("the batch AI shortcut targets only the selected ordered queue and keeps current-source AI independent", async () => {
+  const f = fixture();
+  f.ui.setQueue(["source-b", "source-a"]);
+  const before = structuredClone(f.project());
+  await f.ui.action("roughcut-ai-queue");
+  expectScope(f.ui, "queue");
+  expectDisclosure(f.ui, "ai", true);
+  expectDisclosure(f.ui, "bulk", false);
+  assert.equal(f.startAttempts.length, 0, "The batch shortcut opens controls without running AI");
+  await f.ui.action("roughcut-ai-start");
+  assert.deepEqual(promptedIds(f.startAttempts[0]!), ["source-b", "source-a"]);
+  const token = f.ai.requestToken;
+  const running = structuredClone(f.ai.state);
+  f.input("ai-scope", "current");
+  f.setSource("source-b");
+  f.ui.setMode("single");
+  expectScope(f.ui, "current");
+  expectAIStartDisabled(f.ui, true);
+  assert.match(
+    f.ui.render().match(/data-roughcut-ai-target[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? "",
+    /原片 B\.mp4/,
+  );
+  assert.match(
+    f.ui.render().match(/data-roughcut-ai-job-target[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? "",
+    /2 份素材：原片 B\.mp4.*原片 A\.mp4/,
+    "The saved task's targets remain clear when the next-run scope changes",
+  );
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.startAttempts.length, 1);
+  assert.equal(f.ai.requestToken, token);
+  assert.deepEqual(
+    f.ai.state,
+    running,
+    "Changing input scope or source must not retarget active work",
+  );
+  await f.finishAI();
+  const review = structuredClone(f.ai.state);
+  f.input("ai-scope", "queue");
+  const candidate = f.ai.state.cuts.find((cut) => cut.assetId === "source-a")!;
+  await f.ui.action("roughcut-candidate-preview", candidate.id);
+  expectScope(f.ui, "queue");
+  assert.equal(f.source(), "source-a");
+  assert.deepEqual(f.ai.state, review, "Candidate preview retains both sources' review results");
+  assert.deepEqual(f.project(), before);
+});
+
+test("AI with no current video or audio and AI with an empty queue never fall back to all sources", async () => {
+  const f = fixture();
+  const before = structuredClone(f.project());
+  for (const id of ["missing", "still"]) {
+    f.setSource(id);
+    f.ui.setMode("single");
+    expectAIStartDisabled(f.ui, true);
+    await f.ui.action("roughcut-ai-start");
+  }
+  f.setSource("source-a");
+  f.ui.setQueue([]);
+  f.input("ai-scope", "queue");
+  expectAIStartDisabled(f.ui, true);
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.startAttempts.length, 0);
+  assert.deepEqual(f.ai.state.assetIds, []);
+  assert.deepEqual(f.project(), before);
+  f.input("ai-scope", "current");
+  expectAIStartDisabled(f.ui, false);
+  await f.ui.action("roughcut-ai-start");
+  assert.deepEqual(promptedIds(f.startAttempts[0]!), ["source-a"]);
+});
+
+test("restored zero-of-four AI progress survives scope changes until retry or explicit discard", async () => {
+  const f = fixture();
+  const queue = ["source-b", "source-a", "source-c", "source-d"];
+  f.replaceProject({
+    ...f.project(),
+    assets: [
+      ...f.project().assets,
+      ...["source-c", "source-d"].map((id) => ({
+        id,
+        kind: "video" as const,
+        name: `${id}.mp4`,
+        durationFrames: 900,
+      })),
+    ],
+  });
+  const before = structuredClone(f.project());
+  f.ui.setQueue(queue);
+  f.ui.setMode("batch");
+  f.rejectStart("agent.task.start maxTurns must be an integer from 1 to 20");
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.ai.state.phase, "failed");
+  assert.equal(f.ai.state.completed, 0);
+  assert.equal(f.ai.state.cuts.length, 0);
+  assert.equal(f.tasks.length, 0);
+  expectAIStartDisabled(f.ui, true);
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.startAttempts.length, 1, "A failed zero-result queue also cannot be replaced");
+  const checkpoint = f.snapshots.at(-1)!;
+  assert.ok(checkpoint);
+  assert.equal(checkpoint.state.phase, "preparing");
+  await f.ai.restore(checkpoint);
+  assert.equal(f.ai.state.phase, "cancelled");
+  const restored = structuredClone(f.ai.state);
+  f.ui.setQueue(["source-a"]);
+  f.setSource("source-a");
+  f.ui.setMode("single");
+  await f.ui.action("roughcut-ai-toggle");
+  expectDisclosure(f.ui, "bulk", false);
+  expectAIStartDisabled(f.ui, true);
+  assert.match(f.ui.render(), /data-action="roughcut-ai-retry"/);
+  assert.match(f.ui.render(), /data-action="roughcut-ai-discard"/);
+  await f.ui.action("roughcut-ai-start");
+  assert.equal(f.startAttempts.length, 1, "A zero-result saved queue is still unfinished work");
+  assert.deepEqual(f.ai.state, restored);
+  f.rejectStart("");
+  await f.ui.action("roughcut-ai-retry");
+  assert.deepEqual(
+    f.ai.state.assetIds,
+    queue,
+    "Retry uses saved targets, not the newly displayed scope",
+  );
+  assert.deepEqual(promptedIds(f.startAttempts[1]!), queue.slice(0, 3));
+  await f.ui.action("roughcut-ai-cancel");
+  expectAIStartDisabled(f.ui, true);
+  await f.ui.action("roughcut-ai-discard");
+  expectAIStartDisabled(f.ui, false);
+  await f.ui.action("roughcut-ai-start");
+  assert.deepEqual(promptedIds(f.startAttempts[2]!), ["source-a"]);
+  assert.deepEqual(
+    f.project(),
+    before,
+    "Recovery, cancellation and discard never edit the project",
+  );
 });
 
 test("optional tools keep their disclosure through source and draft updates and reset with the project", async () => {
