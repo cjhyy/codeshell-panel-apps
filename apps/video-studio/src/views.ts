@@ -77,6 +77,15 @@ export const tool = (action: string, title: string, glyph: string, disabled = fa
   `<button type="button" data-action="${action}" class="icon-button" title="${title}" aria-label="${title}" ${disabled ? "disabled" : ""}>${icon(glyph)}</button>`;
 export const seconds = (value: number) => (value / 30).toFixed(2);
 
+/** Quote a URL as CSS before escaping the surrounding HTML attribute. */
+function cssUrl(value: string): string {
+  const quoted = value.replace(
+    /[\u0000-\u001f\u007f"\\]/g,
+    (character) => `\\${character.charCodeAt(0).toString(16)} `,
+  );
+  return `url("${quoted}")`;
+}
+
 /** Each invocation captures the current read-only view state for one render pass. */
 export function createViews(state: ViewState) {
   const {
@@ -858,9 +867,14 @@ ${esc(aiPrompt)}</textarea
                         >${esc(asset.name)}</span
                       >
                     </div>
-                    <div class="clip-fill">
+                    <div
+                      class="clip-fill ${item?.thumbnail ? "has-thumbnail" : ""}"
                       ${item?.thumbnail
-                        ? `<img src="${item.thumbnail}" alt="" draggable="false"/>`.repeat(8)
+                        ? `style="--clip-thumbnail:${esc(cssUrl(item.thumbnail))}"`
+                        : ""}
+                    >
+                      ${item?.thumbnail
+                        ? `<img src="${esc(item.thumbnail)}" alt="" draggable="false"/>`
                         : `<span>${asset.kind === "demo" ? "MIMI" : asset.kind.toUpperCase()}</span>`.repeat(
                             12,
                           )}

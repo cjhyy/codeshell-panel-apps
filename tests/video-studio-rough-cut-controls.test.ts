@@ -87,6 +87,11 @@ function fixture() {
       history.push(structuredClone(project));
       project = applyOperations(project, ops, project.revision);
     },
+    appendToTimeline: (ops) => {
+      if (rejectEdits) throw new Error("请等待当前制作完成");
+      history.push(structuredClone(project));
+      project = applyOperations(project, ops, project.revision);
+    },
     selectAsset: async (id) => {
       sourceId = id;
     },

@@ -333,13 +333,24 @@ for (const scenario of [
         });
         await openAI(page);
         assert.equal(await page.locator("#roughcut-bulk-panel").isVisible(), false);
-        assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "current");
-        await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
-        for (const selector of ['[data-roughcut-field="ai-scope"]', '[data-action="roughcut-ai-start"]']) {
+        assert.equal(
+          await page.locator('[data-roughcut-field="ai-scope"]').inputValue(),
+          "current",
+        );
+        await page.locator("#roughcut-ai-panel").scrollIntoViewIfNeeded();
+        for (const selector of [
+          '[data-roughcut-field="ai-scope"]',
+          '[data-action="roughcut-ai-start"]',
+        ]) {
           const bounds = await page.locator(selector).boundingBox();
-          assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= scenario.viewport.width + 1);
+          assert.ok(
+            bounds && bounds.x >= 0 && bounds.x + bounds.width <= scenario.viewport.width + 1,
+          );
         }
-        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+        assert.equal(
+          await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+          true,
+        );
         await page.screenshot({ path: resolve(artifacts, `rough-cut-ai-${scenario.name}.png`) });
         assert.equal(
           await page.evaluate(() => window.__roughCutAgentTasks.length),
@@ -440,28 +451,39 @@ test(
       await openAI(page);
       assert.equal(await page.locator("#roughcut-bulk-panel").isVisible(), false);
       assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "current");
-      assert.match(await page.locator('[data-roughcut-ai-target]').textContent(), /旅行二/);
-      assert.doesNotMatch(await page.locator('[data-roughcut-ai-target]').textContent(), /旅行一/);
+      assert.match(await page.locator("[data-roughcut-ai-target]").textContent(), /旅行二/);
+      assert.doesNotMatch(await page.locator("[data-roughcut-ai-target]").textContent(), /旅行一/);
       const before = (await state(page)).project;
       await page.locator('[data-roughcut-field="ai-goal"]').fill("只挑这份素材的主体镜头");
-      await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
+      await page.locator("#roughcut-ai-panel").scrollIntoViewIfNeeded();
       await page.screenshot({ path: resolve(artifacts, "rough-cut-ai-current.png") });
       await page.locator('[data-action="roughcut-ai-start"]').click();
-      await page.waitForFunction(() => window.__roughCutAgentTasks.length === 1 && window.__roughCutTools.read_video_project().requestToken);
+      await page.waitForFunction(
+        () =>
+          window.__roughCutAgentTasks.length === 1 &&
+          window.__roughCutTools.read_video_project().requestToken,
+      );
       const submitted = await page.evaluate(() => window.__roughCutAgentTasks[0].params);
-      assert.deepEqual(JSON.parse(submitted.prompt.split("本批素材数据：")[1]).map((asset) => asset.id), [current.id]);
+      assert.deepEqual(
+        JSON.parse(submitted.prompt.split("本批素材数据：")[1]).map((asset) => asset.id),
+        [current.id],
+      );
       assert.equal(submitted.maxTurns, 20);
       assert.match(submitted.prompt, /只挑这份素材的主体镜头/);
       const token = (await state(page)).requestToken;
       await page.locator('[data-roughcut-field="ai-scope"]').selectOption("queue");
-      await page.locator('#roughcut-source').selectOption(assets[0].id);
+      await page.locator("#roughcut-source").selectOption(assets[0].id);
       assert.equal(await page.locator('[data-action="roughcut-ai-start"]').isDisabled(), true);
       assert.equal((await state(page)).requestToken, token);
-      assert.match(await page.locator('[data-roughcut-ai-job-target]').textContent(), /1 份素材：旅行二/);
+      assert.match(
+        await page.locator("[data-roughcut-ai-job-target]").textContent(),
+        /1 份素材：旅行二/,
+      );
       await page.evaluate(async (assetId) => {
         for (const seconds of [0.3, 3, 5.7]) {
           const frame = await window.__roughCutTools.inspect_video_frame({ assetId, seconds });
-          if (frame.kind !== "image" || atob(frame.data).length < 1000) throw new Error("No decoded frame");
+          if (frame.kind !== "image" || atob(frame.data).length < 1000)
+            throw new Error("No decoded frame");
         }
         const state = window.__roughCutTools.read_video_project();
         await window.__roughCutTools.propose_video_edit({
@@ -470,29 +492,61 @@ test(
           baseRevision: state.project.revision,
           title: "单素材画面初筛",
           explanation: "已查看当前原片的真实关键帧，候选先预览确认。",
-          operations: [{ type: "rough-cuts", cuts: [{ id: "single-candidate", assetId, inFrame: 60, outFrame: 120, name: "主体镜头", enabled: true }] }],
+          operations: [
+            {
+              type: "rough-cuts",
+              cuts: [
+                {
+                  id: "single-candidate",
+                  assetId,
+                  inFrame: 60,
+                  outFrame: 120,
+                  name: "主体镜头",
+                  enabled: true,
+                },
+              ],
+            },
+          ],
         });
         const task = window.__roughCutAgentTasks[0];
         task.status = "completed";
         window.__roughCutEmit("agent.task.changed", task);
       }, current.id);
-      await page.waitForFunction(() => document.querySelector('[data-action="roughcut-ai-save"]')?.disabled === false);
-      assert.equal(await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(), 1);
+      await page.waitForFunction(
+        () => document.querySelector('[data-action="roughcut-ai-save"]')?.disabled === false,
+      );
+      assert.equal(
+        await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+        1,
+      );
       assert.deepEqual((await state(page)).project, before);
       await page.locator('[data-action="roughcut-candidate-preview"]').click();
-      assert.equal(await page.locator('#roughcut-source').inputValue(), current.id);
+      assert.equal(await page.locator("#roughcut-source").inputValue(), current.id);
       assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "queue");
       await page.locator('[data-action="roughcut-ai-save"]').click();
       await saved(page);
       const result = (await state(page)).project;
-      assert.deepEqual(result.roughCuts.map((cut) => [cut.assetId, cut.inFrame, cut.outFrame]), [[current.id, 60, 120]]);
+      assert.deepEqual(
+        result.roughCuts.map((cut) => [cut.assetId, cut.inFrame, cut.outFrame]),
+        [[current.id, 60, 120]],
+      );
       assert.deepEqual(result.clips, []);
       await page.locator('[data-action="roughcut-ai-select-queue"]').click();
-      assert.equal(await page.locator('[data-roughcut-field="queue-enabled"]:checked').count(), 2, "Single analysis preserves the previous multi-selection");
+      assert.equal(
+        await page.locator('[data-roughcut-field="queue-enabled"]:checked').count(),
+        2,
+        "Single analysis preserves the previous multi-selection",
+      );
       await page.locator('[data-action="roughcut-ai-queue"]').click();
-      assert.equal(await page.locator('#roughcut-ai-panel').isVisible(), true);
-      assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 1, "Multi-source shortcut only opens the configuration");
-    } finally { await page.close(); }
+      assert.equal(await page.locator("#roughcut-ai-panel").isVisible(), true);
+      assert.equal(
+        await page.evaluate(() => window.__roughCutAgentTasks.length),
+        1,
+        "Multi-source shortcut only opens the configuration",
+      );
+    } finally {
+      await page.close();
+    }
   },
 );
 
@@ -505,7 +559,7 @@ test(
       const before = (await state(page)).project;
       await openAI(page);
       assert.equal(await page.locator('[data-roughcut-field="ai-scope"]').inputValue(), "queue");
-      await page.locator('#roughcut-ai-panel').scrollIntoViewIfNeeded();
+      await page.locator("#roughcut-ai-panel").scrollIntoViewIfNeeded();
       await page.screenshot({ path: resolve(artifacts, "rough-cut-ai-queue.png") });
       await page.locator('[data-roughcut-field="ai-goal"]').fill("保留有主体的中间段，先生成候选");
       await page.locator('[data-action="roughcut-ai-start"]').click();
@@ -758,6 +812,134 @@ async function download(page, selector) {
   assert.equal(await item.failure(), null);
   return { name: item.suggestedFilename(), bytes: await readFile(await item.path()) };
 }
+
+async function expectPreviewFrame(page, assetId, sourceFrame) {
+  // A second decoder supplies the expected pixels without moving the monitor's
+  // decoder. Compare a small image so display scaling/JPEG rounding is harmless.
+  const expected = await page.evaluate(
+    async ({ assetId, sourceFrame }) => {
+      const frame = await window.__roughCutTools.inspect_video_frame({
+        assetId,
+        seconds: sourceFrame / 30,
+      });
+      const image = new Image();
+      image.src = `data:${frame.mediaType};base64,${frame.data}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = 40;
+      canvas.height = 23;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      return Array.from(context.getImageData(0, 0, canvas.width, canvas.height).data);
+    },
+    { assetId, sourceFrame },
+  );
+  await page.waitForFunction(
+    (expected) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 40;
+      canvas.height = 23;
+      const context = canvas.getContext("2d");
+      context.drawImage(document.querySelector("#preview"), 0, 0, canvas.width, canvas.height);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let difference = 0;
+      for (let index = 0; index < pixels.length; index++)
+        if (index % 4 !== 3) difference += Math.abs(pixels[index] - expected[index]);
+      return difference / (canvas.width * canvas.height * 3) < 8;
+    },
+    expected,
+    { timeout: 10_000 },
+  );
+}
+
+async function expectTimelinePreview(page, clip, frame) {
+  assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+  assert.equal(await page.locator("[data-source-scrub],[data-roughcut-scrub]").count(), 0);
+  const current = await state(page);
+  assert.equal(
+    current.playheadFrame,
+    frame,
+    "The new clip's beginning becomes the composition playhead",
+  );
+  assert.equal(current.selectedClipId, clip.id, "The inserted clip is selected for editing");
+  const timelineClip = page.locator(`[data-clip="${clip.id}"]`);
+  assert.equal(await page.locator(".timeline-panel").isVisible(), true);
+  await page.waitForFunction((id) => {
+    const viewport = document.querySelector("#timeline-scroll").getBoundingClientRect();
+    const segment = document.querySelector(`[data-clip="${id}"]`).getBoundingClientRect();
+    return segment.left >= viewport.left - 1 && segment.left < viewport.right - 1;
+  }, clip.id);
+  await timelineClip.locator(".clip-fill img").first().waitFor();
+  await page.waitForFunction((id) => {
+    const images = [...document.querySelectorAll(`[data-clip="${id}"] .clip-fill img`)];
+    return images.length > 0 && images.every((image) => image.complete && image.naturalWidth > 0);
+  }, clip.id);
+  await expectPreviewFrame(page, clip.assetId, clip.inFrame);
+}
+
+test(
+  "adding and dropping real media after source preview shows the inserted timeline clip and its thumbnails",
+  { timeout: 60_000 },
+  async () => {
+    const page = await openPage();
+    try {
+      await page
+        .locator("#media-input")
+        .setInputFiles([sourcePath, resolve(root, "tests/fixtures/static-tone.wav")]);
+      await page.waitForFunction(
+        () => window.__roughCutTools.read_video_project().project.assets.length === 2,
+      );
+      await saved(page);
+      const imported = (await state(page)).project.assets;
+      const asset = imported.find((item) => item.kind === "video");
+      const audio = imported.find((item) => item.kind === "audio");
+      for (const insertion of ["first", "append", "menu", "drop"]) {
+        await page.locator("#timeline-scroll").evaluate((element) => {
+          element.scrollLeft = 0;
+        });
+        if (insertion === "first") {
+          await page.locator(`[data-preview-asset="${audio.id}"] .asset-preview-name`).click();
+          assert.equal(await page.locator("[data-source-audio]").isVisible(), true);
+          assert.equal(await page.locator(".timeline-panel").isVisible(), false);
+        } else {
+          await page.locator(`[data-preview-asset="${asset.id}"] .asset-thumbnail`).click();
+          await page.locator("[data-source-scrub]").evaluate((input) => {
+            input.value = "120";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          });
+        }
+        if (insertion !== "first") await expectPreviewFrame(page, asset.id, 120);
+        const before = (await state(page)).project;
+        const start = before.clips.reduce((sum, clip) => sum + clip.outFrame - clip.inFrame, 0);
+        if (insertion === "drop") {
+          await page.locator('[data-action="return-composition"]').click();
+          assert.equal(await page.locator(".timeline-panel").isVisible(), true);
+          await page.locator("#timeline-scroll").evaluate((element) => {
+            element.scrollLeft = 0;
+          });
+          await page.locator(`[data-asset="${asset.id}"]`).dragTo(page.locator("#video-track"), {
+            targetPosition: { x: 60, y: 30 },
+          });
+        } else if (insertion === "menu") {
+          await page.locator(`[data-action="media-menu"][data-id="${asset.id}"]`).click();
+          await page.locator('#media-context-menu [data-action="add-media"]').click();
+        } else await page.locator(`[data-add-asset="${asset.id}"]`).click();
+        await saved(page);
+        const project = (await state(page)).project;
+        assert.equal(project.clips.length, before.clips.length + 1);
+        assert.deepEqual(project.clips.slice(0, -1), before.clips);
+        assert.equal(await page.locator("[data-source-audio]").count(), 0);
+        await expectTimelinePreview(page, project.clips.at(-1), start);
+      }
+      await page.screenshot({
+        path: resolve(artifacts, "timeline-insert-preview.png"),
+        fullPage: true,
+      });
+    } finally {
+      await page.close();
+    }
+  },
+);
 
 test(
   "same-ID project replacement clears old AI candidates durably and can retry a failed clear",
@@ -1184,7 +1366,29 @@ test(
         ],
       );
       assert.deepEqual(joined.roughCuts, marked.roughCuts);
-      await page.locator('.source-history [data-action="undo"]').click();
+      await expectTimelinePreview(page, joined.clips[before.project.clips.length], 180);
+      // Return from rough cutting to the visible timeline, then verify that
+      // selecting a different clip changes real composition pixels.
+      await page.locator(`[data-rough-source="${video.id}"]`).click();
+      await seekSource(page, 90);
+      await expectPreviewFrame(page, video.id, 90);
+      const blueClip = joined.clips[before.project.clips.length];
+      await page.locator('[data-action="return-composition"]').click();
+      await page
+        .locator(`[data-clip="${joined.clips[0].id}"]`)
+        .click({ position: { x: 45, y: 20 } });
+      await expectPreviewFrame(page, video.id, (await state(page)).playheadFrame);
+      await page.locator(`[data-clip="${blueClip.id}"]`).click({ position: { x: 15, y: 20 } });
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      const selected = await state(page);
+      assert.equal(selected.selectedClipId, blueClip.id);
+      assert.ok(selected.playheadFrame >= 180 && selected.playheadFrame < 210);
+      await expectPreviewFrame(page, second.id, selected.playheadFrame - 180);
+      await page.screenshot({
+        path: resolve(artifacts, "timeline-select-from-roughcut.png"),
+        fullPage: true,
+      });
+      await page.locator('[data-action="undo"]').first().click();
       await saved(page);
       const undone = (await state(page)).project;
       assert.deepEqual(
@@ -1352,6 +1556,7 @@ test(
         "Joining uses list order and exact source ranges",
       );
       assert.deepEqual(assembled.roughCuts, ordered.roughCuts);
+      await expectTimelinePreview(page, assembled.clips[1], 180);
 
       const json = await download(page, '[data-action="save-project"]');
       assert.deepEqual(JSON.parse(json.bytes.toString()).roughCuts, assembled.roughCuts);
@@ -1368,12 +1573,14 @@ test(
         assembled,
         "Opening the downloaded JSON keeps markers and assembled clips intact",
       );
-      await page
-        .locator("#media-input")
-        .setInputFiles([sourcePath, resolve(root, "tests/fixtures/static-tone.wav")]);
+      // Wait for the portable project's managed media to reconnect before
+      // exercising duplicate import; an import must finish before editing.
       await page.waitForFunction(
         () => window.__roughCutTools.read_video_project().missingAssetIds.length === 0,
       );
+      await page
+        .locator("#media-input")
+        .setInputFiles([sourcePath, resolve(root, "tests/fixtures/static-tone.wav")]);
       assert.equal(
         (await state(page)).project.assets.length,
         2,
@@ -1435,7 +1642,36 @@ test(
         ]),
         [[audio.id, 0, audio.durationFrames, 0]],
       );
-      await page.locator('.source-history [data-action="undo"]').click();
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal((await state(page)).playheadFrame, 0);
+      assert.equal((await state(page)).selectedClipId, project.audioClips[0].id);
+      const video = before.assets.find((asset) => asset.kind === "video");
+      await page.locator(`[data-rough-source="${video.id}"]`).click();
+      await seekSource(page, 90);
+      await expectPreviewFrame(page, video.id, 90);
+      await page.locator('[data-action="return-composition"]').click();
+      await page
+        .locator(`[data-clip="${project.clips[0].id}"]`)
+        .click({ position: { x: 45, y: 20 } });
+      assert.ok((await state(page)).playheadFrame > 0);
+      await page.locator(`[data-audio-clip="${project.audioClips[0].id}"]`).click();
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal((await state(page)).playheadFrame, 0);
+      await expectPreviewFrame(page, video.id, 0);
+      await page.locator(`[data-rough-source="${video.id}"]`).click();
+      await seekSource(page, 90);
+      await page.locator('[data-action="return-composition"]').click();
+      await page
+        .locator(`[data-clip="${project.clips[0].id}"]`)
+        .click({ position: { x: 45, y: 20 } });
+      assert.ok((await state(page)).playheadFrame > 0);
+      await page.locator(`[data-clip="${project.clips[0].id}"]`).focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal((await state(page)).playheadFrame, 0);
+      assert.equal((await state(page)).selectedClipId, project.clips[0].id);
+      await expectPreviewFrame(page, video.id, 0);
+      await page.locator('[data-action="undo"]').first().click();
       await saved(page);
       assert.equal((await state(page)).project.audioClips?.length ?? 0, 0);
       assert.equal(

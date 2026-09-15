@@ -1161,6 +1161,20 @@ h3 {
   overflow: hidden;
   background: #06110e29;
 }
+.clip-fill.has-thumbnail {
+  position: relative;
+}
+/* Repeat the same representative cover without growing DOM for long clips. */
+.clip-fill.has-thumbnail::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 66px;
+  background-image: var(--clip-thumbnail);
+  background-repeat: repeat-x;
+  background-size: 66px 37px;
+  opacity: 0.65;
+  pointer-events: none;
+}
 .clip-fill > span {
   display: inline-flex;
   min-width: 53px;
@@ -1174,6 +1188,7 @@ h3 {
   transform: skewX(-8deg);
 }
 .clip-fill img {
+  flex: 0 0 66px;
   height: 37px;
   width: 66px;
   object-fit: cover;

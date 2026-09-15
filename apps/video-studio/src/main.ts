@@ -513,6 +513,7 @@ const roughcut = createRoughCutUI({
     roughcut.sync();
   },
   edit,
+  appendToTimeline,
   selectAsset: (id) => selectSource(id, "roughcut", "preserve"),
   seek: seekSource,
   play: playSource,
@@ -1161,7 +1162,7 @@ function addMediaToTimeline(id: string): void {
   const source = project.assets.find((asset) => asset.id === id);
   if (!source) throw new Error("素材已不存在");
   if (source.kind === "audio" && project.clips.length) {
-    edit([
+    appendToTimeline([
       {
         type: "audio-add",
         assetId: id,
@@ -1169,12 +1170,41 @@ function addMediaToTimeline(id: string): void {
         volume: source.speech || isDemoNarration(source) ? 1 : 0.25,
       },
     ]);
-    selected = project.audioClips?.at(-1)?.id || "";
   } else {
-    edit([{ type: "add", assetId: id }]);
-    selected = project.clips.at(-1)!.id;
+    appendToTimeline([{ type: "add", assetId: id }]);
   }
+}
+
+/** User insertion selects the first new segment, including a multi-source append. */
+function appendToTimeline(operations: EditOperation[]): void {
+  const previousIds = new Set([...project.clips, ...(project.audioClips ?? [])].map((c) => c.id));
+  edit(operations);
+  const added = [...timelineClips(project), ...(project.audioClips ?? [])].find(
+    (clip) => !previousIds.has(clip.id),
+  );
+  if (added) selectTimelineClip(added.id, added.startFrame, true);
+}
+
+function selectTimelineClip(id: string, atFrame?: number, reveal = false): void {
+  if (exporting || projectSwitching) return;
+  const clip = [...timelineClips(project), ...(project.audioClips ?? [])].find((c) => c.id === id);
+  if (!clip) return;
+  voiceover.stopPreview();
+  stop();
+  mediaPreview = false;
+  if (tab === "roughcut") tab = "media";
+  selected = id;
+  frame = Math.max(
+    clip.startFrame,
+    Math.min(clip.startFrame + clip.outFrame - clip.inFrame - 1, atFrame ?? clip.startFrame),
+  );
   render();
+  if (reveal) {
+    const scroll = $("#timeline-scroll");
+    const left = (frame / 30) * zoom;
+    if (left < scroll.scrollLeft || left >= scroll.scrollLeft + scroll.clientWidth - 32)
+      scroll.scrollLeft = Math.max(0, left - 32);
+  }
 }
 function assertMediaRemovalReady(): void {
   assertEditable();
@@ -2663,28 +2693,17 @@ studio.addEventListener("click", (event) => {
   }
   const audioTarget = target.closest<HTMLElement>("[data-audio-clip]");
   if (audioTarget) {
-    stop();
-    mediaPreview = false;
-    selected = audioTarget.dataset.audioClip!;
-    frame = project.audioClips?.find((c) => c.id === selected)?.startFrame ?? frame;
-    render();
+    selectTimelineClip(audioTarget.dataset.audioClip!);
     return;
   }
   const clipTarget = target.closest<HTMLElement>("[data-clip]");
   if (clipTarget && !target.closest("[data-trim]")) {
-    stop();
-    mediaPreview = false;
-    selected = clipTarget.dataset.clip!;
-    const clip = timelineClips(project).find((item) => item.id === selected)!;
-    frame = Math.max(
-      clip.startFrame,
-      Math.min(
-        clip.endFrame - 1,
-        clip.startFrame +
-          Math.round(((event.clientX - clipTarget.getBoundingClientRect().left) / zoom) * 30),
-      ),
+    const clip = timelineClips(project).find((item) => item.id === clipTarget.dataset.clip)!;
+    selectTimelineClip(
+      clip.id,
+      clip.startFrame +
+        Math.round(((event.clientX - clipTarget.getBoundingClientRect().left) / zoom) * 30),
     );
-    render();
   }
 });
 
@@ -2875,17 +2894,7 @@ studio.addEventListener("drop", (event) => {
   try {
     const data = JSON.parse(event.dataTransfer.getData("text/plain"));
     if (!(event.target as HTMLElement).closest(".timeline-panel")) return;
-    if (data.assetId)
-      edit([
-        {
-          type:
-            project.clips.length &&
-            project.assets.find((a) => a.id === data.assetId)?.kind === "audio"
-              ? "audio-add"
-              : "add",
-          assetId: data.assetId,
-        },
-      ]);
+    if (data.assetId) addMediaToTimeline(data.assetId);
     else if (data.clipId) {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-clip]")?.dataset
         .clip;
@@ -3019,6 +3028,14 @@ document.addEventListener("keydown", (event) => {
     document.querySelector("dialog[open]")
   )
     return;
+  const timelineClip = (event.target as HTMLElement).closest<HTMLElement>(
+    "[data-clip],[data-audio-clip]",
+  );
+  if (timelineClip && event.key === "Enter") {
+    event.preventDefault();
+    selectTimelineClip(timelineClip.dataset.clip ?? timelineClip.dataset.audioClip!);
+    return;
+  }
   let name = "";
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z")
     name = event.shiftKey ? "redo" : "undo";
@@ -3046,10 +3063,6 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
     event.preventDefault();
     void seek(frame + (event.key === "ArrowLeft" ? -1 : 1)).catch(fail);
-    return;
-  } else if (event.key === "Enter" && (event.target as HTMLElement).dataset.clip) {
-    selected = (event.target as HTMLElement).dataset.clip!;
-    render();
     return;
   }
   if (name) {

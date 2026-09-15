@@ -19,6 +19,7 @@ export interface RoughCutContext {
   available(id: string): boolean;
   changed(): void;
   edit(operations: EditOperation[]): void;
+  appendToTimeline(operations: EditOperation[]): void;
   selectAsset(id: string): Promise<void>;
   seek(frame: number): Promise<void>;
   play(inFrame?: number, outFrame?: number): Promise<void>;
@@ -1111,7 +1112,7 @@ ${esc(aiGoal)}</textarea
             context.project(),
             enabled.map((item) => item.id),
           );
-          context.edit(operations);
+          context.appendToTimeline(operations);
           context.toast(
             `已按队列顺序加入 ${new Set(enabled.map((item) => item.assetId)).size} 份素材的 ${enabled.length} 个片段`,
           );
@@ -1239,7 +1240,7 @@ ${esc(aiGoal)}</textarea
       } else if (verb === "append") {
         const enabled = sourceCuts().filter((item) => item.enabled);
         if (!enabled.length) throw new Error("先勾选要加入成片的保留段");
-        context.edit(
+        context.appendToTimeline(
           roughCutOperations(
             context.project(),
             enabled.map((item) => item.id),

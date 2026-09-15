@@ -15,7 +15,7 @@ permission; their application logic belongs to the Panel package.
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
-| Video Studio 0.5.10 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
+| Video Studio 0.5.11 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
 | Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
 ## Install from GitHub
@@ -39,12 +39,20 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.5.10 is maintained in `apps/video-studio/` and installed from the
+Video Studio 0.5.11 is maintained in `apps/video-studio/` and installed from the
 prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
 custody, and reviewed entry handles; submitted native tasks continue after the
-panel closes. Version 0.5.10 gives AI rough cuts an independent, collapsed area
+panel closes. Version 0.5.11 returns to the composition preview after adding media
+through the card, menu, drag-and-drop, or single/multi-source rough cuts. It selects
+and reveals the first new segment at its start, making the timeline visible again
+after source preview. Timeline selection keeps the composition active. Covers repeat
+across the entire clip width without allocating image nodes per second or decoding
+additional source frames. No Host update or
+media reimport is required.
+
+Version 0.5.10 gives AI rough cuts an independent, collapsed area
 with an explicit current-source or selected-sources scope. Ordinary entry targets
 only the current source; multi-source entry preserves the selected queue. Scope
 changes never start analysis or replace pending work, and cancellation confirms

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { PNG } from "pngjs";
 import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
@@ -258,6 +259,92 @@ async function backgroundChangesWhileDeleting(page, assetId) {
   await saved(page);
   return (await state(page)).project;
 }
+
+test(
+  "long timeline clips keep real covers through zoom, trimming and undo with fixed DOM size",
+  { timeout: 60_000 },
+  async () => {
+    const page = await openPage();
+    try {
+      await page.locator("#media-input").setInputFiles(fixtures[0]);
+      await page.waitForFunction(
+        () => window.__libraryTools.read_video_project().project.assets.length === 1,
+      );
+      await saved(page);
+      const asset = (await state(page)).project.assets[0];
+      await page.locator(`[data-add-asset="${asset.id}"]`).click();
+      await saved(page);
+      const clip = (await state(page)).project.clips[0];
+      const strip = page.locator(`[data-clip="${clip.id}"] .clip-fill`);
+      const zoom = async (value) => {
+        await page.locator("#timeline-zoom").evaluate((input, next) => {
+          input.value = String(next);
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }, value);
+      };
+      const coverReady = () =>
+        page.waitForFunction((id) => {
+          const image = document.querySelector(`[data-clip="${id}"] .clip-fill img`);
+          return image?.complete && image.naturalWidth > 0;
+        }, clip.id);
+      const assertCoveredTail = async () => {
+        await coverReady();
+        const pixels = PNG.sync.read(await strip.screenshot());
+        assert.ok(pixels.width > 558, "The clip extends beyond the old eight-cover limit");
+        let difference = 0;
+        let samples = 0;
+        let minimum = 255;
+        let maximum = 0;
+        // Match the repeated cover after the old 528px cutoff against the first
+        // cover. These are representative covers, not separate source frames.
+        for (let y = 5; y < 30; y++)
+          for (let x = 4; x < 24; x++)
+            for (let channel = 0; channel < 3; channel++) {
+              const first = pixels.data[(y * pixels.width + x) * 4 + channel];
+              const tail = pixels.data[(y * pixels.width + x + 528) * 4 + channel];
+              difference += Math.abs(first - tail);
+              minimum = Math.min(minimum, tail);
+              maximum = Math.max(maximum, tail);
+              samples++;
+            }
+        assert.ok(maximum - minimum > 60, "The tail visibly contains the decoded colorful cover");
+        assert.ok(difference / samples < 10, "The cover repeats across the entire clip");
+        assert.equal(await strip.locator("img").count(), 1);
+        assert.equal(
+          await strip.evaluate((element) => element.childElementCount),
+          1,
+          "Clip width does not allocate extra cover elements",
+        );
+      };
+      await zoom(100);
+      await assertCoveredTail();
+      await page.screenshot({
+        path: resolve(artifacts, "timeline-cover-wide.png"),
+        fullPage: true,
+      });
+      await zoom(12);
+      await coverReady();
+      const small = await strip.boundingBox();
+      const image = await strip.locator("img").boundingBox();
+      assert.ok(small.width < 75, "Zooming out produces a narrow clip");
+      assert.equal(image.width, 66, "The first cover keeps its width instead of squeezing");
+      assert.equal(image.height, 37);
+      assert.equal(await strip.locator("img").count(), 1);
+      await zoom(100);
+      await page.locator("#trim-out").fill("5.8");
+      await page.locator('[data-action="trim"]').click();
+      await saved(page);
+      assert.equal((await state(page)).project.clips[0].outFrame, 174);
+      await assertCoveredTail();
+      await page.locator('[data-action="undo"]').click();
+      await saved(page);
+      assert.equal((await state(page)).project.clips[0].outFrame, clip.outFrame);
+      await assertCoveredTail();
+    } finally {
+      await page.close();
+    }
+  },
+);
 
 test(
   "used demo deletion supports cancellation, confirmation, undo and a durable reload",
