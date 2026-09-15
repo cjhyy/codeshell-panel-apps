@@ -80,10 +80,15 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
   });
   await page.addInitScript(() => {
     window.__deviceRequests = [];
+    window.__deviceRequestUrls = [];
     window.__capturedTracks = [];
     const acquire = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async (constraints) => {
       window.__deviceRequests.push(structuredClone(constraints));
+      window.__deviceRequestUrls.push(location.href);
+      // The desktop permission boundary rejects a Panel URL with a fragment.
+      // Keep this guard around the real browser acquisition, not a fake stream.
+      if (location.hash) throw new DOMException("Panel URL contains a hash", "NotAllowedError");
       const stream = await acquire(constraints);
       window.__capturedTracks.push(...stream.getTracks());
       return stream;
@@ -418,10 +423,27 @@ test(
         "The local WAV is published through the generic task artifact capture contract",
       );
       const audio = page.locator('audio[aria-label="本人声音真实试听"]');
+      const original = page.locator("#voice-prep-reference-audio");
+      await original.evaluate((element) => element.play());
+      await page.waitForFunction(
+        () => document.querySelector("#voice-prep-reference-audio")?.currentTime > 0,
+      );
       await audio.evaluate((audio) => audio.play());
       await page.waitForFunction(
         () => document.querySelector('audio[aria-label="本人声音真实试听"]')?.currentTime > 0,
       );
+      assert.equal(
+        await original.evaluate((element) => element.paused),
+        true,
+        "The generated sample pauses the original recording",
+      );
+      await original.evaluate((element) => element.play());
+      assert.equal(
+        await audio.evaluate((element) => element.paused),
+        true,
+        "The original recording pauses the generated sample",
+      );
+      await original.evaluate((element) => element.pause());
       await audio.evaluate((audio) => audio.pause());
       await page.locator("#voice-prep-confirmed").check();
       await page.locator("#voice-prep-name").fill("我的自然中文");
@@ -535,6 +557,20 @@ test(
       assert.equal(await page.locator("#voice-prep-reference").inputValue(), extracted.id);
       assert.equal(await page.locator("#voiceover-reference").inputValue(), extracted.id);
       assert.equal(await page.locator("#voice-prep-transcript").inputValue(), "");
+      const recording = page.locator(`[data-voice-reference-asset="${extracted.id}"]`);
+      assert.match(await recording.textContent(), new RegExp(extracted.name));
+      assert.match(await recording.textContent(), /5\.0 秒 · 已保存到素材库/);
+      const original = page.locator("#voice-prep-reference-audio");
+      await original.evaluate((element) => element.play());
+      await page.waitForFunction(
+        () => document.querySelector("#voice-prep-reference-audio")?.currentTime > 0,
+      );
+      assert.equal(await page.locator('audio[aria-label="本人声音真实试听"]').count(), 0);
+      await page.locator('[data-action="voice-prep-show-reference"]').click();
+      await page.locator(`[data-preview-asset="${extracted.id}"]`).waitFor();
+      assert.equal(await page.locator('[data-tab="media"].active').count(), 1);
+      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "原素材画面");
+      assert.equal(await page.locator(`[data-select-media="${extracted.id}"]`).isChecked(), true);
       assert.deepEqual(after.clips, before.clips);
       assert.deepEqual(after.audioClips, before.audioClips);
       assert.equal((await call(page, "media.tts")).length, 0);
@@ -586,16 +622,150 @@ async function createMyVoice(page) {
 }
 
 test(
+  "original MP3 and imported WAV preview before model setup, survive refresh and locate their saved assets",
+  { timeout: 45_000 },
+  async () => {
+    const page = await pageWithHost();
+    try {
+      const before = await project(page);
+      await page.locator("[data-media-filter]").selectOption("video");
+      await page.locator("#asset-search").fill("不会匹配本人录音");
+      await createMyVoice(page);
+      await page.locator("#voice-prep-reference").selectOption("reference-project-asset");
+      const original = page.locator("#voice-prep-reference-audio");
+      await original.waitFor();
+      assert.match(
+        await page.locator(".voice-preparation-reference").textContent(),
+        /本人参考录音.mp3/,
+      );
+      assert.match(
+        await page.locator(".voice-preparation-reference").textContent(),
+        /24\.0 秒 · 已保存到素材库/,
+      );
+      await original.evaluate((element) => element.play());
+      await page.waitForFunction(
+        () => document.querySelector("#voice-prep-reference-audio")?.currentTime > 0.2,
+      );
+      const initialPlayer = await original.elementHandle();
+      await page.locator('[data-action="voice-prep-retry"]').click();
+      await page.waitForFunction(() => {
+        const audio = document.querySelector("#voice-prep-reference-audio");
+        return audio && !audio.paused && audio.currentTime > 0.3;
+      });
+      assert.equal(await initialPlayer.evaluate((element) => element.isConnected), true);
+      assert.equal(await page.evaluate(() => window.__voiceRuntimeRequests.length), 0);
+      await page.locator('[data-action="voice-prep-show-reference"]').click();
+      assert.equal(await page.locator('[data-tab="media"].active').count(), 1);
+      assert.equal(await page.locator("[data-media-filter]").inputValue(), "all");
+      assert.equal(await page.locator("#asset-search").inputValue(), "");
+      await page.locator('[data-preview-asset="reference-project-asset"]').waitFor();
+      assert.equal(
+        await page.locator('[data-select-media="reference-project-asset"]').isChecked(),
+        true,
+      );
+      assert.equal(await initialPlayer.evaluate((element) => element.paused), true);
+      await page.locator('[data-tab="voiceover"]').click();
+      const chooser = page.waitForEvent("filechooser");
+      await page.locator('[data-action="voice-reference-import"]').click();
+      await (await chooser).setFiles(referenceWave());
+      await page.waitForFunction(() => {
+        const selected = document.querySelector("#voice-prep-reference")?.value;
+        return selected && selected !== "reference-project-asset";
+      });
+      const imported = (await project(page)).assets.find(
+        (asset) => asset.name === "隔离测试参考.wav",
+      );
+      assert.ok(imported);
+      await original.waitFor();
+      assert.equal(await original.getAttribute("data-reference-asset"), imported.id);
+      const waveUrl = await original.getAttribute("src");
+      assert.ok(
+        waveUrl.startsWith("blob:"),
+        "The just-imported original uses its connected local decoder URL",
+      );
+      await original.evaluate((element) => element.play());
+      await page.waitForFunction(
+        () => document.querySelector("#voice-prep-reference-audio")?.currentTime > 0.2,
+      );
+      const wavePlayer = await original.elementHandle();
+      assert.ok(
+        Math.abs((await original.evaluate((element) => element.duration)) - 4) < 0.1,
+        "The player decodes the real four-second WAV, not the managed MP3 fallback fixture",
+      );
+      await page.locator('[data-action="voice-prep-retry"]').click();
+      assert.equal(
+        await wavePlayer.evaluate((element) => element.isConnected && !element.paused),
+        true,
+      );
+      await page.locator("#voice-prep-reference").selectOption("reference-project-asset");
+      assert.equal(await wavePlayer.evaluate((element) => element.paused), true);
+      await original.waitFor();
+      assert.equal(await original.getAttribute("data-reference-asset"), "reference-project-asset");
+      assert.notEqual(await original.getAttribute("src"), waveUrl);
+      assert.equal(
+        await original.evaluate((element) => element.paused && element.currentTime === 0),
+        true,
+      );
+      assert.equal(await page.evaluate(() => window.__voiceRuntimeRequests.length), 0);
+      assert.equal(await page.locator('audio[aria-label="本人声音真实试听"]').count(), 0);
+      const after = await project(page);
+      assert.deepEqual(after.clips, before.clips);
+      assert.deepEqual(after.audioClips, before.audioClips);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "creating a voice at 390px opens a guided microphone recording without requesting devices until Start",
   { timeout: 45_000 },
   async () => {
     const page = await pageWithHost({ width: 390 });
     try {
+      const unchangedUrl = page.url();
+      await page.evaluate(() => {
+        history.replaceState({ voiceGuideRecovery: "preserved" }, "", "#voice-guide-model");
+      });
+      await page.reload();
+      await page.waitForFunction(
+        () => window.__panelTools.read_video_project?.().project.id === "voice-preparation-project",
+      );
+      assert.equal(
+        page.url(),
+        unchangedUrl,
+        "Reload repairs the legacy guide URL before media use",
+      );
+      assert.deepEqual(
+        await page.evaluate(() => history.state),
+        { voiceGuideRecovery: "preserved" },
+        "Repairing a known guide fragment preserves existing history state",
+      );
       const before = await project(page);
       assert.equal(await page.evaluate(() => window.__deviceRequests.length), 0);
       await createMyVoice(page);
       for (const name of ["1. 提供本人录音", "2. 准备模型", "3. 试听并保存"])
         await page.getByRole("heading", { name, exact: true }).waitFor();
+      for (const target of ["reference", "model", "preview"]) {
+        const button = page.locator(`[data-action="voice-prep-goto"][data-id="${target}"]`);
+        assert.equal(await button.getAttribute("type"), "button");
+        for (const interaction of ["click", "Enter", "Space"]) {
+          if (interaction === "click") await button.click();
+          else await button.press(interaction);
+          assert.equal(
+            page.url(),
+            unchangedUrl,
+            `${target} navigation via ${interaction} keeps the Panel URL`,
+          );
+          assert.equal(
+            await page
+              .locator(`#voice-guide-${target}`)
+              .evaluate((element) => document.activeElement === element),
+            true,
+            "Step navigation also moves keyboard focus to its destination",
+          );
+        }
+      }
       assert.equal(await page.locator("#voice-prep-model").inputValue(), "audio8-tts");
       assert.equal(
         await page.evaluate(() => window.__voiceRuntimeRequests.length),
@@ -640,6 +810,7 @@ test(
       await page.locator('[data-action="rec-finish"]').click();
       await page.locator('[data-action="rec-save"]').waitFor();
       assert.equal(await page.evaluate(() => window.__deviceRequests.length), 1);
+      assert.deepEqual(await page.evaluate(() => window.__deviceRequestUrls), [unchangedUrl]);
       assert.equal(await page.evaluate(() => window.__deviceRequests[0].video), false);
       assert.equal(
         await page.evaluate(() =>

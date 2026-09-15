@@ -30,7 +30,12 @@ const job = (id: string, type: string, status: MediaJob["status"] = "queued"): M
   updatedAt: 1,
   attempt: 1,
 });
-function fixture() {
+function fixture(
+  referenceContext: {
+    assetUrl?(assetId: string): string | undefined;
+    showAsset?(assetId: string): void | Promise<void>;
+  } = {},
+) {
   let project: Project = { ...createProject(), assets: [structuredClone(reference)] };
   let scope = "/workspace/a",
     failWrites = false,
@@ -132,6 +137,7 @@ function fixture() {
       changes++;
     },
     assertEditable() {},
+    ...referenceContext,
     toast() {},
     useVoice: async (value) => {
       if (failUse) throw new Error("测试：配音表单尚未载入");
@@ -220,6 +226,66 @@ function fixture() {
     },
   };
 }
+
+test("saved reference recording is playable and discoverable before or during model installation", async () => {
+  const shown: string[] = [];
+  const f = fixture({
+    showAsset: (assetId) => {
+      shown.push(assetId);
+    },
+  });
+  await f.ui.load();
+  await f.select();
+  const beforeSetup = f.ui.render();
+  assert.match(beforeSetup, /我的录音.wav/);
+  assert.match(beforeSetup, /10\.0 秒 · 已保存到素材库/);
+  assert.match(beforeSetup, /aria-label="本人参考原录音"/);
+  assert.match(beforeSetup, new RegExp(`src="/media/${reference.mediaId}"`));
+  assert.doesNotMatch(beforeSetup, /aria-label="本人声音真实试听"/);
+  assert.equal(f.requests.length, 0);
+  await f.ui.action("voice-prep-setup");
+  assert.doesNotMatch(f.ui.render(), /href="#voice-guide-/);
+  await f.ui.action("voice-prep-goto", "model");
+  assert.doesNotMatch(f.ui.render(), /class="conflict"/);
+  assert.match(f.ui.render(), /aria-label="本人参考原录音"/);
+  assert.match(f.ui.render(), /data-action="voice-prep-show-reference">在素材库查看/);
+  await f.ui.action("voice-prep-show-reference");
+  assert.deepEqual(shown, [reference.id]);
+  assert.deepEqual(f.setups, ["audio8-tts"]);
+  assert.equal(f.requests.length, 0);
+});
+
+test("reference preview uses the connected URL and never falls back when the connection is missing", async () => {
+  const urls = new Map([[reference.id, 'blob:reference-"<&']]);
+  const shown: string[] = [];
+  const f = fixture({
+    assetUrl: (assetId) => urls.get(assetId),
+    showAsset: (assetId) => {
+      shown.push(assetId);
+    },
+  });
+  await f.ui.load();
+  await f.select();
+  assert.match(f.ui.render(), /src="blob:reference-&quot;&lt;&amp;"/);
+  assert.doesNotMatch(f.ui.render(), new RegExp(`/media/${reference.mediaId}`));
+  urls.delete(reference.id);
+  assert.match(f.ui.render(), /原录音尚未连接/);
+  assert.doesNotMatch(f.ui.render(), /id="voice-prep-reference-audio"/);
+  assert.doesNotMatch(f.ui.render(), new RegExp(`/media/${reference.mediaId}`));
+  const second = {
+    ...reference,
+    id: "second-reference",
+    mediaId: media("c"),
+    name: "另一段录音.wav",
+  };
+  f.project().assets.push(second);
+  urls.set(second.id, "blob:second-recording");
+  f.input("reference", second.id);
+  assert.match(f.ui.render(), /src="blob:second-recording"/);
+  assert.doesNotMatch(f.ui.render(), /src="blob:reference/);
+  await f.ui.action("voice-prep-show-reference");
+  assert.deepEqual(shown, [second.id]);
+});
 
 test("unrelated job refreshes do not redraw editable voiceover fields; newly recovered sample proof still updates", async () => {
   const f = fixture();
@@ -521,9 +587,11 @@ test("creating a voice exposes three steps and selects an available engine witho
     ])
       assert.ok(markup.includes(label), label);
     for (const step of ["reference", "model", "preview"]) {
-      assert.ok(markup.includes(`href="#voice-guide-${step}"`));
-      assert.ok(markup.includes(`id="voice-guide-${step}"`));
+      assert.match(markup, new RegExp(`data-action="voice-prep-goto"\\s+data-id="${step}"`));
+      assert.ok(markup.includes(`aria-controls="voice-guide-${step}"`));
+      assert.ok(markup.includes(`id="voice-guide-${step}" tabindex="-1"`));
     }
+    assert.doesNotMatch(markup, /href="#voice-guide-/);
     assert.deepEqual(f.setups, []);
     assert.deepEqual(f.requests, []);
     assert.deepEqual(f.extracts, []);

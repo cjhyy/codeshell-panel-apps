@@ -36,6 +36,8 @@ interface Context {
   getJob(id: string): Promise<MediaJob>;
   changed(): void;
   assertEditable(): void;
+  assetUrl?(assetId: string): string | undefined;
+  showAsset?(assetId: string): void | Promise<void>;
   useVoice(value: VoicePreparation): Promise<void>;
   toast(message: string): void;
 }
@@ -563,6 +565,24 @@ export function createVoicePreparationUI(production: ProductionController, conte
   }
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("voice-prep-")) return false;
+    if (name === "voice-prep-goto") {
+      if (!["reference", "model", "preview"].includes(id ?? "")) return true;
+      if (typeof window === "undefined") return true;
+      const step = window.document.getElementById(`voice-guide-${id}`);
+      step?.scrollIntoView({ block: "start" });
+      step?.focus({ preventScroll: true });
+      return true;
+    }
+    if (name === "voice-prep-show-reference") {
+      try {
+        const source = reference();
+        if (!source || !context.showAsset) throw new Error("请先选择已保存的本人参考录音。");
+        await context.showAsset(source.id);
+      } catch (reason) {
+        report(reason);
+      }
+      return true;
+    }
     if (name === "voice-prep-retry" && (!loaded || locked)) {
       await load();
       return true;
@@ -698,9 +718,15 @@ export function createVoicePreparationUI(production: ProductionController, conte
   }
   function render(compact = false): string {
     const value = selected(),
+      source = reference(),
       preview = sample(),
       job = pendingJob(),
       recipe = savedRecipe();
+    const referenceUrl = source
+      ? context.assetUrl
+        ? context.assetUrl(source.id)
+        : `/media/${source.mediaId!}`
+      : undefined;
     const unavailable = !production.enabled || !loaded || locked || busy;
     const controlsLocked = unavailable || working();
     const models = engines.map(
@@ -734,11 +760,38 @@ export function createVoicePreparationUI(production: ProductionController, conte
         ${value
           ? html`
               <ol class="voice-guide-nav" aria-label="声音准备步骤">
-                <li><a href="#voice-guide-reference">提供本人录音</a></li>
-                <li><a href="#voice-guide-model">准备模型</a></li>
-                <li><a href="#voice-guide-preview">试听并保存</a></li>
+                <li>
+                  <button
+                    type="button"
+                    data-action="voice-prep-goto"
+                    data-id="reference"
+                    aria-controls="voice-guide-reference"
+                  >
+                    提供本人录音
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    data-action="voice-prep-goto"
+                    data-id="model"
+                    aria-controls="voice-guide-model"
+                  >
+                    准备模型
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    data-action="voice-prep-goto"
+                    data-id="preview"
+                    aria-controls="voice-guide-preview"
+                  >
+                    试听并保存
+                  </button>
+                </li>
               </ol>
-              <section class="voice-guide-step" id="voice-guide-reference">
+              <section class="voice-guide-step" id="voice-guide-reference" tabindex="-1">
                 <h4>1. 提供本人录音</h4>
                 <p class="small muted">
                   参考：<span data-voice-guide-reference
@@ -772,6 +825,19 @@ export function createVoicePreparationUI(production: ProductionController, conte
                       .join("")}
                   </select></label
                 >
+                ${source
+                  ? `<div class="voice-preparation-reference" data-voice-reference-asset="${esc(source.id)}">
+                    <p class="small"><strong>${esc(source.name)}</strong></p>
+                    <p class="small muted">${(source.durationFrames / context.project().fps).toFixed(1)} 秒 · 已保存到素材库</p>
+                    <p class="small muted">原录音 · 可直接试听，无需安装声音模型。</p>
+                    ${
+                      referenceUrl
+                        ? `<audio id="voice-prep-reference-audio" class="voice-preparation-reference-audio" controls preload="none" src="${esc(referenceUrl)}" data-reference-asset="${esc(source.id)}" aria-label="本人参考原录音"></audio>`
+                        : '<p class="capability-note" data-voice-reference-unavailable role="status">原录音尚未连接，请在素材库重新连接后试听。</p>'
+                    }
+                    ${context.showAsset ? '<button class="quiet full" data-action="voice-prep-show-reference">在素材库查看</button>' : ""}
+                  </div>`
+                  : ""}
                 <p class="small muted">可以照读这段话，也可以使用自己的内容：</p>
                 <blockquote>${esc(VOICE_REFERENCE_TEXT)}</blockquote>
                 <button
@@ -796,7 +862,7 @@ ${esc(value.referenceText ?? "")}</textarea
                   ${esc(referenceError() || "参考已填写，可以继续准备模型和生成短句试听。")}
                 </p>
               </section>
-              <section class="voice-guide-step" id="voice-guide-model">
+              <section class="voice-guide-step" id="voice-guide-model" tabindex="-1">
                 <h4>2. 准备模型</h4>
                 <p class="small muted">
                   引擎：${model()?.available
@@ -818,7 +884,7 @@ ${esc(value.referenceText ?? "")}</textarea
                   关闭面板后，已排队任务仍会继续；重新打开可恢复进度。主程序重启导致的中断会保留状态，可在这里重试。
                 </p>
               </section>
-              <section class="voice-guide-step" id="voice-guide-preview">
+              <section class="voice-guide-step" id="voice-guide-preview" tabindex="-1">
                 <h4>3. 试听并保存</h4>
                 <p class="small muted">
                   声音：${recipe

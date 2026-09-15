@@ -241,6 +241,135 @@ async function assertNoResourceDeletion(page) {
   );
 }
 
+test(
+  "timeline menu deletes the pointed video segment, preserves assets and restores with one undo",
+  { timeout: 60_000 },
+  async () => {
+    const page = await demoPage();
+    try {
+      const before = (await state(page)).project;
+      const [first, second] = before.clips;
+      await page.locator(`[data-clip="${first.id}"]`).click();
+      const beforeMenu = await state(page);
+      await page.locator(`[data-clip="${second.id}"]`).click({
+        button: "right",
+        position: { x: 20, y: 20 },
+      });
+      const context = page.locator("#timeline-context-menu");
+      await context.waitFor({ state: "visible" });
+      assert.equal((await state(page)).selectedClipId, second.id);
+      assert.equal((await state(page)).playheadFrame, beforeMenu.playheadFrame);
+      assert.deepEqual((await state(page)).project, before);
+      assert.match(await context.textContent(), /素材库与原文件保留，可撤销/);
+      await context.locator('[data-timeline-menu-action="remove"]').click();
+      await saved(page);
+      const changed = (await state(page)).project;
+      assert.deepEqual(
+        changed.clips.map((clip) => clip.id),
+        before.clips.filter((clip) => clip.id !== second.id).map((clip) => clip.id),
+        "A previously selected clip must never replace the right-click target",
+      );
+      assert.deepEqual(changed.assets, before.assets);
+      for (const asset of before.assets)
+        assert.equal(await page.locator(`[data-asset="${asset.id}"]`).count(), 1);
+      await page.locator('[data-action="undo"]').first().click();
+      await saved(page);
+      const undone = (await state(page)).project;
+      for (const field of ["assets", "clips", "audioClips", "captions"])
+        assert.deepEqual(undone[field], before[field]);
+      await assertNoResourceDeletion(page);
+
+      // A right-button gesture on a trim edge opens the menu without editing the source range.
+      const edge = page.locator(`[data-clip="${second.id}"] [data-trim="out"]`);
+      await edge.scrollIntoViewIfNeeded();
+      const rect = await edge.boundingBox();
+      await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      await page.mouse.down({ button: "right" });
+      await page.mouse.move(rect.x - 60, rect.y + rect.height / 2, { steps: 3 });
+      await page.mouse.up({ button: "right" });
+      await context.waitFor({ state: "visible" });
+      assert.deepEqual((await state(page)).project, undone);
+      await page.keyboard.press("Escape");
+      assert.equal(await context.count(), 0);
+      assert.equal(
+        await page
+          .locator(`[data-clip="${second.id}"]`)
+          .evaluate((element) => element === document.activeElement),
+        true,
+      );
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "timeline audio context menu supports keyboard deletion and undo inside a 390px viewport",
+  { timeout: 60_000 },
+  async () => {
+    const page = await mixedPage({ width: 390, height: 844 });
+    try {
+      const audio = (await state(page)).project.assets.find(
+        (asset) => asset.name === "Library-Alpha.wav",
+      );
+      await page.locator(`[data-add-asset="${audio.id}"]`).click();
+      await saved(page);
+      const before = (await state(page)).project;
+      const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
+      assert.ok(audioClip);
+      const target = page.locator(`[data-audio-clip="${audioClip.id}"]`);
+      const context = page.locator("#timeline-context-menu");
+      await page.locator(`[data-clip="${before.clips[0].id}"]`).focus();
+      await target.click({ button: "right" });
+      await context.waitFor({ state: "visible" });
+      assert.equal((await state(page)).selectedClipId, audioClip.id);
+      await context.locator('[data-timeline-menu-action="cancel"]').click();
+      assert.deepEqual((await state(page)).project, before);
+
+      for (const key of ["Shift+F10", "ContextMenu"]) {
+        await target.focus();
+        await page.keyboard.press(key);
+        await context.waitFor({ state: "visible" });
+        const bounds = await context.boundingBox();
+        assert.ok(
+          bounds.x >= 8 &&
+            bounds.x + bounds.width <= 382 &&
+            bounds.y >= 8 &&
+            bounds.y + bounds.height <= 836,
+        );
+        assert.equal((await state(page)).selectedClipId, audioClip.id);
+        await page.keyboard.press("Escape");
+        assert.equal(await target.evaluate((element) => element === document.activeElement), true);
+      }
+      await target.focus();
+      await page.keyboard.press("Shift+F10");
+      await context.waitFor({ state: "visible" });
+      await page.screenshot({
+        path: resolve(artifacts, "timeline-context-menu-390px.png"),
+        fullPage: false,
+      });
+      assert.equal(
+        await context
+          .locator('[data-timeline-menu-action="remove"]')
+          .evaluate((element) => element === document.activeElement),
+        true,
+      );
+      await page.keyboard.press("Enter");
+      await saved(page);
+      const changed = (await state(page)).project;
+      assert.deepEqual(changed.clips, before.clips);
+      assert.deepEqual(changed.assets, before.assets);
+      assert.ok(!changed.audioClips.some((clip) => clip.id === audioClip.id));
+      await page.locator('[data-action="undo"]').first().click();
+      await saved(page);
+      assert.deepEqual((await state(page)).project.audioClips, before.audioClips);
+      await assertNoResourceDeletion(page);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
 async function backgroundChangesWhileDeleting(page, assetId) {
   const before = (await state(page)).project;
   // Exercise the real edit/commit callback while the modal is mounted, as a

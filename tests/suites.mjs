@@ -29,6 +29,7 @@ export const suites = [
         "tests/video-studio-media-file-storage.test.ts",
         "tests/video-studio-external-media.test.ts",
         "tests/video-studio-asset-management.test.ts",
+        "tests/video-studio-timeline-menu.test.ts",
         "tests/video-studio-rough-cut-ai.test.ts",
         "tests/video-studio-folder-scan.test.ts",
         "tests/video-studio-folder-source.test.ts",

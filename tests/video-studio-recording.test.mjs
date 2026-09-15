@@ -368,3 +368,203 @@ test(
     await p.close();
   },
 );
+
+test(
+  "a suspended level meter does not block original microphone recording or produce silent output",
+  { timeout: 15000 },
+  async () => {
+    const strictBrowser = await chromium.launch({
+      headless: true,
+      args: [
+        "--use-fake-device-for-media-stream",
+        "--use-fake-ui-for-media-stream",
+        "--autoplay-policy=document-user-activation-required",
+      ],
+    });
+    try {
+      const p = await strictBrowser.newPage();
+      await p.goto(url);
+      const cdp = await p.context().newCDPSession(p);
+      // CDP intentionally supplies no user activation. This is a real suspended
+      // AudioContext, real capture stream and MediaRecorder, not a mock encoder.
+      const response = await cdp.send("Runtime.evaluate", {
+        expression: `(async () => {
+          const capture = new window.CaptureRecorder();
+          try {
+            const preparation = capture.prepare({ mode: 'microphone' });
+            const prepared = await Promise.race([
+              preparation.then(() => true),
+              new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+            ]);
+            const ready = capture.snapshot;
+            if (!prepared) return { prepared, phase: ready.phase };
+            capture.start();
+            await new Promise(resolve => setTimeout(resolve, 700));
+            const take = await capture.stop();
+            const decoder = new OfflineAudioContext(1, 48000, 48000);
+            const audio = await decoder.decodeAudioData(await take.blob.arrayBuffer());
+            const samples = audio.getChannelData(0);
+            return {
+              prepared,
+              phase: ready.phase,
+              meterUnavailable: ready.meterUnavailable,
+              hadUserActivation: navigator.userActivation.hasBeenActive,
+              bytes: take.blob.size,
+              rms: Math.sqrt(samples.reduce((sum, v) => sum + v * v, 0) / samples.length),
+              allEnded: ready.stream.getTracks().every(track => track.readyState === 'ended'),
+            };
+          } finally { capture.dispose(); }
+        })()`,
+        userGesture: false,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      assert.equal(response.exceptionDetails, undefined, JSON.stringify(response));
+      const result = response.result.value;
+      assert.equal(result.prepared, true, JSON.stringify(result));
+      assert.equal(result.phase, "preview");
+      assert.equal(result.hadUserActivation, false);
+      assert.equal(result.meterUnavailable, true);
+      assert.ok(result.bytes > 1000, JSON.stringify(result));
+      assert.ok(result.rms > 0.001, JSON.stringify(result));
+      assert.equal(result.allEnded, true);
+    } finally {
+      await strictBrowser.close();
+    }
+  },
+);
+
+test(
+  "slow device labels do not block the start countdown and late labels cannot replace a new connection",
+  { timeout: 15000 },
+  async () => {
+    const p = await page();
+    try {
+      await p.evaluate(() => {
+        navigator.mediaDevices.enumerateDevices = () =>
+          new Promise((resolve) => {
+            window.releaseLabels = resolve;
+          });
+      });
+      await click(p, "3 秒后开始录制");
+      await p.locator(".recording-countdown").waitFor();
+      await p.waitForFunction(() => typeof window.releaseLabels === "function");
+      assert.equal(await p.evaluate(() => window.deviceRequests), 1);
+      await click(p, "取消倒数");
+      assert.equal(
+        await p.evaluate(() => window.tracks.every((track) => track.readyState === "ended")),
+        true,
+      );
+      await p.evaluate(() => {
+        navigator.mediaDevices.enumerateDevices = async () => [
+          { kind: "audioinput", deviceId: "new-microphone", label: "新连接的麦克风" },
+        ];
+      });
+      await click(p, "连接并检查预览");
+      await p.getByText("预览就绪，尚未录制", { exact: true }).waitFor();
+      await p
+        .locator('#recording-microphone option[value="new-microphone"]')
+        .waitFor({ state: "attached" });
+      await p.evaluate(() =>
+        window.releaseLabels([
+          { kind: "audioinput", deviceId: "old-microphone", label: "已过期的麦克风" },
+        ]),
+      );
+      assert.equal(
+        await p.locator('#recording-microphone option[value="new-microphone"]').count(),
+        1,
+      );
+      assert.equal(
+        await p.locator('#recording-microphone option[value="old-microphone"]').count(),
+        0,
+      );
+      await click(p, "停止预览并释放设备");
+    } finally {
+      await p.close();
+    }
+  },
+);
+
+test(
+  "start permission failures show actionable guidance and allow a clean recording retry",
+  { timeout: 15000 },
+  async () => {
+    const p = await page();
+    try {
+      await p.evaluate(() => {
+        navigator.mediaDevices.getUserMedia = async () => {
+          throw new DOMException("Permission denied", "NotAllowedError");
+        };
+      });
+      await click(p, "3 秒后开始录制");
+      const alert = p.getByRole("alert");
+      await alert.filter({ hasText: "未获得录制权限" }).waitFor();
+      assert.match(await alert.textContent(), /系统隐私设置.*CodeShell.*麦克风/);
+      assert.equal(await p.evaluate(() => window.recording.busy), false);
+      assert.equal(await p.locator(".recording-countdown").count(), 0);
+      await p.evaluate(() => {
+        navigator.mediaDevices.getUserMedia = async (options) => {
+          const stream = await window.realCapture(options);
+          window.tracks.push(...stream.getTracks());
+          return stream;
+        };
+      });
+      await click(p, "3 秒后开始录制");
+      await p.getByRole("button", { name: "暂停", exact: true }).waitFor();
+      assert.equal(await p.getByRole("alert").count(), 0);
+      await p.waitForTimeout(350);
+      await click(p, "结束录制");
+      await p.getByText("录制已完成，设备已释放", { exact: true }).waitFor();
+      assert.equal(await p.evaluate(() => window.recording.hasUnsavedResult), true);
+      assert.equal(
+        await p.evaluate(() => window.tracks.every((track) => track.readyState === "ended")),
+        true,
+      );
+    } finally {
+      await p.close();
+    }
+  },
+);
+
+test(
+  "screen capture fails explicitly and releases every stream when its required audio mix cannot resume",
+  { timeout: 10000 },
+  async () => {
+    const p = await page();
+    try {
+      const result = await p.evaluate(async () => {
+        navigator.mediaDevices.getDisplayMedia = async () => {
+          const stream = await window.realCapture({ video: true, audio: true });
+          window.tracks.push(...stream.getTracks());
+          return stream;
+        };
+        const original = AudioContext.prototype.resume;
+        AudioContext.prototype.resume = () => new Promise(() => {});
+        const capture = new window.CaptureRecorder();
+        const start = performance.now();
+        try {
+          await capture.prepare({ mode: "screen" });
+          return { unexpectedSuccess: true };
+        } catch (error) {
+          return {
+            error: error.message,
+            phase: capture.snapshot.phase,
+            stream: capture.snapshot.stream,
+            elapsed: performance.now() - start,
+            allEnded: window.tracks.every((track) => track.readyState === "ended"),
+          };
+        } finally {
+          capture.dispose();
+          AudioContext.prototype.resume = original;
+        }
+      });
+      assert.match(result.error, /声音混合未能启动.*设备已释放.*重新连接/);
+      assert.equal(result.phase, "error");
+      assert.equal(result.stream, null);
+      assert.equal(result.allEnded, true);
+      assert.ok(result.elapsed < 5000, JSON.stringify(result));
+    } finally {
+      await p.close();
+    }
+  },
+);

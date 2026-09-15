@@ -163,11 +163,17 @@ export function createRecordingUI(context: RecordingContext) {
       capture.cancelPreview();
       throw new Error("工程已切换，录制设备已释放");
     }
-    try {
-      devices = await listRecordingDevices();
-    } catch {
-      /* The stream can still be recorded when labels cannot refresh. */
-    }
+    // Device labels are optional. Do not delay the countdown (or reopen an old
+    // selection) while enumerateDevices is slow or the user changes devices.
+    void listRecordingDevices()
+      .then((updated) => {
+        if (disposed || version !== attempt || originProject !== context.projectId()) return;
+        devices = updated;
+        changed();
+      })
+      .catch(() => {
+        /* The stream can still be recorded when labels cannot refresh. */
+      });
     changed();
   }
   function cancelCountdown(): void {
@@ -382,6 +388,12 @@ export function createRecordingUI(context: RecordingContext) {
         <span>${esc(countdown ? "即将开始录制" : statuses[snapshot.phase])}</span
         ><time id="recording-time">${elapsed(snapshot.elapsedSeconds)}</time>
       </div>
+      ${snapshot.phase === "preparing"
+        ? '<p class="small muted" role="status">请留意系统或浏览器的授权提示；没有弹窗时可检查录制权限，再取消连接并重试。</p>'
+        : ""}
+      ${error || snapshot.error
+        ? `<p class="conflict" role="alert">${esc(error || snapshot.error)}</p>`
+        : ""}
       <div
         id="recording-level"
         class="recording-level"
@@ -393,6 +405,9 @@ export function createRecordingUI(context: RecordingContext) {
       >
         <i></i>
       </div>
+      ${snapshot.meterUnavailable
+        ? '<p class="small muted" role="status">声音电平暂不可用，录音仍使用麦克风原声。结束后可试听确认。</p>'
+        : ""}
       ${mode === "screen" && (snapshot.stream || result)
         ? `<p class="small muted">${snapshot.systemAudio ? "已接入麦克风和系统声音。" : "本次共享没有系统音轨，只录制麦克风声音。"}</p>`
         : ""}
@@ -413,9 +428,6 @@ export function createRecordingUI(context: RecordingContext) {
       </div>
       ${result
         ? `<label class="input-label recording-name">素材名称<input id="recording-name" maxlength="160" value="${esc(name)}" placeholder="我的口播" ${saving ? "disabled" : ""}/></label><p class="small muted">${elapsed(result.durationSeconds)} · ${(result.blob.size / 1024 / 1024).toFixed(1)} MB · 尚未保存</p>${button("rec-save", saving ? "正在保存…" : esc(context.saveLabel?.() || "保存到素材库"), "check", "primary full", saving)}${button("rec-download", "下载原始录制", "download", "quiet full", saving)}`
-        : ""}
-      ${error || snapshot.error
-        ? `<p class="conflict" role="alert">${esc(error || snapshot.error)}</p>`
         : ""}
       <p class="small muted">
         点击连接或录制后才申请设备权限。最长 20 分钟或 200 MB；暂停时间不计入成片。

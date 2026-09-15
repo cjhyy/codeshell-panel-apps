@@ -54,6 +54,7 @@ import {
   visibleMedia,
 } from "./media-library-ui";
 import { createMediaLibraryMenu } from "./media-library-menu";
+import { createTimelineContextMenu, isTimelineMenuTargetCurrent } from "./timeline-context-menu";
 import { createDesktopFolderSource } from "./folder-source";
 import { prepareFolderFiles, sameFileContents } from "./folder-files";
 import { createRecordingUI } from "./recording-ui";
@@ -74,6 +75,16 @@ import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
 import { createExternalMediaAccess, isExternalMedia } from "./external-media";
 import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
+
+// Older guide links changed the entry URL, which the Host correctly rejects
+// for media capture. Recover only our known legacy anchors before using it.
+if (
+  ["#voice-guide-reference", "#voice-guide-model", "#voice-guide-preview"].includes(location.hash)
+) {
+  const entry = new URL(location.href);
+  entry.hash = "";
+  window.history.replaceState(window.history.state, "", entry.href);
+}
 
 if (panel) {
   const mediaBridge = createMediaTaskBridge(panel);
@@ -127,6 +138,33 @@ const mediaMenu = createMediaLibraryMenu({
       .querySelector<HTMLElement>(`[data-action="media-menu"][data-id="${CSS.escape(id)}"]`)
       ?.focus({ preventScroll: true }),
 });
+const timelineMenu = createTimelineContextMenu({
+  project: () => project,
+  generation: () => generation,
+  canRemove: () =>
+    !storageDiscoveryError &&
+    !projectSwitching &&
+    !aiApplying &&
+    !exporting &&
+    !mediaImporting &&
+    !recording.busy,
+  remove: (target) => {
+    if (!isTimelineMenuTargetCurrent(target, project, generation)) {
+      toast("工程已变化，请重新选择要删除的片段");
+      return;
+    }
+    selected = target.clipId;
+    void action("remove").catch(fail);
+  },
+  restoreFocus: (target) =>
+    studio
+      .querySelector<HTMLElement>(
+        `[${target.kind === "audio" ? "data-audio-clip" : "data-clip"}="${CSS.escape(target.clipId)}"]`,
+      )
+      ?.focus({ preventScroll: true }),
+  stale: () => toast("工程已变化，请重新选择要删除的片段"),
+});
+window.addEventListener("pagehide", () => timelineMenu.destroy(), { once: true });
 let zoom = 36;
 let search = "";
 let history: Project[] = [];
@@ -343,6 +381,17 @@ const voiceover = createVoiceoverUI(production, {
 
 const voicePreparation = createVoicePreparationUI(production, {
   project: () => project,
+  assetUrl: (id) => library.items.get(id)?.url,
+  showAsset: async (id) => {
+    search = "";
+    mediaPreferences.filter = "all";
+    selectedMedia.clear();
+    selectedMedia.add(id);
+    await selectSource(id, "media");
+    studio
+      .querySelector<HTMLElement>(`[data-asset="${CSS.escape(id)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  },
   scope: () => workspaceScope,
   read: (key) =>
     panel
@@ -918,7 +967,11 @@ async function replace(next: Project): Promise<void> {
   recording.assertSafeToLeave();
   if (roughCutAI.busy) await roughCutAI.cancel();
   voiceover.stopPreview();
-  document.querySelector<HTMLAudioElement>(".voice-preparation-audio")?.pause();
+  document
+    .querySelectorAll<HTMLAudioElement>(
+      ".voice-preparation-audio,.voice-preparation-reference-audio",
+    )
+    .forEach((audio) => audio.pause());
   const restored = validateProject(next);
   const validated = migratePristineDemoProject(restored) ?? restored;
   const sameProjectId = validated.id === project.id;
@@ -997,6 +1050,7 @@ async function replace(next: Project): Promise<void> {
 }
 
 function render(): void {
+  timelineMenu.reconcile();
   // Background jobs may update the project while a deletion is being reviewed.
   // Keep the modal mounted; confirmation rechecks the latest project below.
   const removalDialog = studio.querySelector<HTMLDialogElement>("#media-delete-dialog[open]");
@@ -1048,8 +1102,12 @@ function render(): void {
   const libraryScroll = sameLibrary ? $(".library-panel")?.scrollTop || 0 : 0;
   const workflowOpen =
     sameLibrary && Boolean(document.querySelector<HTMLDetailsElement>(".workflow-summary")?.open);
-  const sampleAudio = studio.querySelector<HTMLAudioElement>(".voice-preparation-audio");
-  const samplePlaying = Boolean(sampleAudio && !sampleAudio.paused);
+  const voiceAudios = [".voice-preparation-audio", ".voice-preparation-reference-audio"].map(
+    (selector) => {
+      const audio = studio.querySelector<HTMLAudioElement>(selector);
+      return { selector, audio, playing: Boolean(audio && !audio.paused) };
+    },
+  );
   const voiceDisclosure = sameLibrary
     ? studio.querySelector<HTMLDetailsElement>(".voice-preparation-disclosure")?.open
     : undefined;
@@ -1096,11 +1154,19 @@ function render(): void {
   const alternativeVoice = studio.querySelector<HTMLDetailsElement>(".voiceover-alternative");
   if (alternativeVoice && alternativeVoiceOpen !== undefined)
     alternativeVoice.open = alternativeVoiceOpen;
-  const nextSampleAudio = studio.querySelector<HTMLAudioElement>(".voice-preparation-audio");
-  if (sameLibrary && sampleAudio && nextSampleAudio && sampleAudio.src === nextSampleAudio.src) {
-    nextSampleAudio.replaceWith(sampleAudio);
-    if (samplePlaying && sampleAudio.paused) void sampleAudio.play().catch(fail);
-  } else sampleAudio?.pause();
+  for (const { selector, audio, playing } of voiceAudios) {
+    const next = studio.querySelector<HTMLAudioElement>(selector);
+    if (
+      sameLibrary &&
+      audio &&
+      next &&
+      audio.src === next.src &&
+      audio.dataset.referenceAsset === next.dataset.referenceAsset
+    ) {
+      next.replaceWith(audio);
+      if (playing && audio.paused) void audio.play().catch(fail);
+    } else audio?.pause();
+  }
   renderedProjectId = project.id;
   inspectorDraftKey = draftKey;
   for (const draft of trimDraft) {
@@ -1146,6 +1212,7 @@ function refreshMediaLibrary(): void {
   $(".library-panel").scrollTop = scroll;
 }
 function openMediaMenu(id: string, x?: number, y?: number): void {
+  timelineMenu.close();
   if (!project.assets.some((asset) => asset.id === id)) return;
   if (!selectedMedia.has(id)) {
     selectedMedia.clear();
@@ -1157,6 +1224,19 @@ function openMediaMenu(id: string, x?: number, y?: number): void {
     ?.getBoundingClientRect();
   mediaMenuGeneration = generation;
   mediaMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
+}
+function openTimelineMenu(id: string, x?: number, y?: number): void {
+  if (exporting || projectSwitching || sourcePreviewActive()) return;
+  if (![...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === id)) return;
+  mediaMenu.close();
+  selected = id;
+  render();
+  const anchor = studio
+    .querySelector<HTMLElement>(
+      `[data-clip="${CSS.escape(id)}"],[data-audio-clip="${CSS.escape(id)}"]`,
+    )
+    ?.getBoundingClientRect();
+  timelineMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
 }
 function addMediaToTimeline(id: string): void {
   const source = project.assets.find((asset) => asset.id === id);
@@ -2617,6 +2697,27 @@ studio.addEventListener(
   true,
 );
 
+studio.addEventListener(
+  "play",
+  (event) => {
+    const target = event.target;
+    if (
+      !(target instanceof HTMLAudioElement) ||
+      !target.matches(".voice-preparation-audio,.voice-preparation-reference-audio")
+    )
+      return;
+    stop();
+    studio
+      .querySelectorAll<HTMLAudioElement>(
+        ".voice-preparation-audio,.voice-preparation-reference-audio",
+      )
+      .forEach((audio) => {
+        if (audio !== target) audio.pause();
+      });
+  },
+  true,
+);
+
 studio.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const buttonTarget = target.closest<HTMLElement>("[data-action]");
@@ -2708,6 +2809,12 @@ studio.addEventListener("click", (event) => {
 });
 
 studio.addEventListener("contextmenu", (event) => {
+  const clip = (event.target as HTMLElement).closest<HTMLElement>("[data-clip],[data-audio-clip]");
+  if (clip) {
+    event.preventDefault();
+    openTimelineMenu(clip.dataset.clip ?? clip.dataset.audioClip!, event.clientX, event.clientY);
+    return;
+  }
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
   if (!card || tab !== "media") return;
   event.preventDefault();
@@ -2819,7 +2926,7 @@ studio.addEventListener("change", (event) => {
 
 studio.addEventListener("pointerdown", (event) => {
   const target = event.target as HTMLElement;
-  if (exporting || mediaImporting || projectSwitching) return;
+  if (event.button !== 0 || exporting || mediaImporting || projectSwitching) return;
   const handle = target.closest<HTMLElement>("[data-trim]");
   if (handle) {
     event.preventDefault();
@@ -3011,7 +3118,19 @@ $("#srt-input").addEventListener("change", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (mediaMenu.active) return;
+  if (mediaMenu.active || timelineMenu.active) return;
+  const menuClip = (event.target as HTMLElement).closest<HTMLElement>(
+    "[data-clip],[data-audio-clip]",
+  );
+  if (
+    menuClip &&
+    !document.querySelector("dialog[open]") &&
+    (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+  ) {
+    event.preventDefault();
+    openTimelineMenu(menuClip.dataset.clip ?? menuClip.dataset.audioClip!);
+    return;
+  }
   const mediaCard = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
   if (
     tab === "media" &&

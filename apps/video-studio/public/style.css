@@ -642,7 +642,8 @@ h3 {
 .asset-list[data-view="list"] .demo-label { display: none; }
 .asset-list[data-view="list"] .asset-duration { font-size: 7px; padding: 1px 2px; bottom: 2px; right: 2px; }
 .asset-list .empty-state { grid-column: 1 / -1; }
-.media-context-menu {
+.media-context-menu,
+.timeline-context-menu {
   position: fixed;
   left: 8px;
   top: 8px;
@@ -658,7 +659,8 @@ h3 {
   box-shadow: 0 12px 40px #0008;
   z-index: 1000;
 }
-.media-context-menu button {
+.media-context-menu button,
+.timeline-context-menu button {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -672,9 +674,26 @@ h3 {
   font-size: 12px;
 }
 .media-context-menu button:hover,
-.media-context-menu button:focus-visible { background: #34493b; outline: none; }
+.media-context-menu button:focus-visible,
+.timeline-context-menu button:hover,
+.timeline-context-menu button:focus-visible { background: #34493b; outline: none; }
 .media-context-menu button.danger,
+.timeline-context-menu button.danger,
 .media-selection-bar .danger { color: #ffb8a9; }
+.timeline-context-menu-title {
+  padding: 5px 9px;
+  color: #bacac1;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-context-menu p {
+  margin: 5px 9px;
+  color: #9eafa4;
+  font-size: 10px;
+  line-height: 1.5;
+}
 #media-delete-dialog p { line-height: 1.7; }
 #media-delete-dialog .danger { background: #7b3531; border-color: #a64e46; color: #fff; }
 
@@ -2612,9 +2631,13 @@ dialog .range-inputs {
 .voice-preparation select,
 .voice-preparation textarea,
 .voice-preparation input:not([type="checkbox"]),
-.voice-preparation-audio { box-sizing: border-box; width: 100%; min-width: 0; }
+.voice-preparation-audio,
+.voice-preparation-reference-audio { box-sizing: border-box; width: 100%; min-width: 0; }
 .voice-preparation-steps { padding-left: 18px; color: var(--muted, #a0aaa6); font-size: 12px; line-height: 1.8; }
-.voice-preparation-audio { margin-top: 14px; }
+.voice-preparation-audio,
+.voice-preparation-reference-audio { margin-top: 14px; }
+.voice-preparation-reference { min-width: 0; }
+.voice-preparation-reference p { overflow-wrap: anywhere; }
 .voice-preparation-confirm { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0; font-size: 12px; line-height: 1.6; }
 .voice-preparation-confirm input { flex: 0 0 auto; margin-top: 3px; }
 .voice-preparation-recipes { margin-top: 16px; }
@@ -2655,8 +2678,9 @@ dialog .range-inputs {
 .voiceover-alternative { margin-top: 18px; border-top: 1px solid var(--line); }
 .voice-guide progress { display: block; width: 100%; accent-color: var(--accent); margin: 10px 0; }
 
-.voice-guide-nav a { color: inherit; text-decoration: none; display: block; }
-.voice-guide-nav a:hover { color: var(--accent); }
+.voice-guide-nav button { color: inherit; display: block; width: 100%; min-height: 0; padding: 0; border: 0; background: transparent; font: inherit; line-height: inherit; text-align: center; white-space: normal; }
+.voice-guide-nav button:hover { color: var(--accent); background: transparent; }
+.voice-guide-nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .voice-guide-progress { margin: 16px 0; padding: 12px; border: 1px solid #40574b; border-radius: 8px; background: #b8edc808; line-height: 1.7; overflow-wrap: anywhere; }
 .voice-guide-step { scroll-margin-top: 16px; }
 .folder-import { margin: 12px 0 18px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }

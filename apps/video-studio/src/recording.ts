@@ -26,6 +26,7 @@ export interface CaptureSnapshot {
   systemAudio: boolean;
   elapsedSeconds: number;
   error: string;
+  meterUnavailable: boolean;
   result: RecordedTake | null;
 }
 export interface RecordingDevice {
@@ -40,10 +41,13 @@ const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_SECONDS = 20 * 60;
 export const recordingLimits = { maxBytes: MAX_BYTES, maxSeconds: MAX_SECONDS };
 
-export function captureError(error: unknown): string {
+export function captureError(error: unknown, mode?: RecordingMode): string {
   const name = error instanceof DOMException ? error.name : "";
-  if (name === "NotAllowedError" || name === "PermissionDeniedError")
-    return "未获得录制权限或已取消选择。请允许麦克风、摄像头或屏幕共享后重试。";
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    const device =
+      mode === "microphone" ? "麦克风" : mode === "camera" ? "麦克风和摄像头" : "麦克风或屏幕录制";
+    return `未获得录制权限${mode === "screen" ? "，或已取消屏幕选择" : ""}。请确认面板已获准录制，并在系统隐私设置中允许 CodeShell 使用${device}；浏览器使用时请检查网站权限，然后重新连接。`;
+  }
   if (name === "NotFoundError" || name === "DevicesNotFoundError")
     return "没有找到所选麦克风或摄像头，请检查设备并刷新列表。";
   if (name === "NotReadableError" || name === "TrackStartError")
@@ -110,6 +114,7 @@ export class CaptureRecorder {
       systemAudio: this.systemAudio,
       elapsedSeconds: this.elapsed(),
       error: this.error,
+      meterUnavailable: Boolean(this.stream && this.audio?.state !== "running"),
       result: this.result,
     };
   }
@@ -234,7 +239,28 @@ export class CaptureRecorder {
         if (options.mode === "camera" && !stream.getVideoTracks().length)
           throw new Error("没有获得摄像头画面");
       }
-      await resumed;
+      // Microphone/camera encoding uses the original tracks. A suspended level
+      // meter must not keep that working stream stuck in "preparing". Screen
+      // capture uses a Web Audio mix, so it must explicitly wait or fail.
+      if (options.mode === "screen") {
+        let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            resumed,
+            new Promise<never>((_resolve, reject) => {
+              resumeTimer = setTimeout(
+                () =>
+                  reject(
+                    new Error("屏幕录制的声音混合未能启动。设备已释放，请点击重新连接后重试。"),
+                  ),
+                2000,
+              );
+            }),
+          ]);
+        } finally {
+          if (resumeTimer) clearTimeout(resumeTimer);
+        }
+      }
       if (generation !== this.generation) return;
       this.kind = options.mode === "microphone" ? "audio" : "video";
       preferredMime(this.kind);
@@ -262,7 +288,7 @@ export class CaptureRecorder {
       if (generation !== this.generation) return;
       this.cleanupTracks();
       this.phase = "error";
-      this.error = captureError(error);
+      this.error = captureError(error, options.mode);
       this.emit();
       throw new Error(this.error);
     }
