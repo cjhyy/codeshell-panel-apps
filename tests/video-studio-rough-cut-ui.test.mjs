@@ -893,6 +893,11 @@ test(
       const imported = (await state(page)).project.assets;
       const asset = imported.find((item) => item.kind === "video");
       const audio = imported.find((item) => item.kind === "audio");
+      await page.locator("#timeline-zoom").evaluate((input) => {
+        input.value = "100";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      assert.equal(await page.locator("#timeline-zoom").inputValue(), "100");
       for (const insertion of ["first", "append", "menu", "drop"]) {
         await page.locator("#timeline-scroll").evaluate((element) => {
           element.scrollLeft = 0;
@@ -930,6 +935,11 @@ test(
         assert.deepEqual(project.clips.slice(0, -1), before.clips);
         assert.equal(await page.locator("[data-source-audio]").count(), 0);
         await expectTimelinePreview(page, project.clips.at(-1), start);
+        if (insertion === "drop")
+          assert.ok(
+            await page.locator("#timeline-scroll").evaluate((element) => element.scrollLeft > 0),
+            "An insertion beyond the visible timeline scrolls its beginning into view",
+          );
       }
       await page.screenshot({
         path: resolve(artifacts, "timeline-insert-preview.png"),
