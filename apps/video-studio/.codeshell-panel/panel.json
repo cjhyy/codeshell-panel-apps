@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.5.12",
+  "version": "0.5.15",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -33,7 +33,11 @@
           "properties": {
             "view": {
               "type": "string",
-              "enum": ["project", "jobs", "voices"],
+              "enum": [
+                "project",
+                "jobs",
+                "voices"
+              ],
               "description": "Defaults to project; jobs returns full task results, voices reads the live catalog."
             },
             "jobIds": {
@@ -92,6 +96,7 @@
                       "split",
                       "remove",
                       "move",
+                      "video-move",
                       "volume",
                       "add",
                       "caption",
@@ -99,6 +104,7 @@
                       "settings",
                       "audio-add",
                       "audio-trim",
+                      "audio-split",
                       "audio-move",
                       "audio-volume",
                       "audio-remove",
@@ -113,14 +119,40 @@
                     "items": {
                       "type": "object",
                       "properties": {
-                        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
-                        "assetId": { "type": "string", "minLength": 1, "maxLength": 128 },
-                        "inFrame": { "type": "integer", "minimum": 0 },
-                        "outFrame": { "type": "integer", "minimum": 1 },
-                        "name": { "type": "string", "maxLength": 200 },
-                        "enabled": { "type": "boolean" }
+                        "id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "assetId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "inFrame": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "outFrame": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 200
+                        },
+                        "enabled": {
+                          "type": "boolean"
+                        }
                       },
-                      "required": ["id", "assetId", "inFrame", "outFrame", "name", "enabled"],
+                      "required": [
+                        "id",
+                        "assetId",
+                        "inFrame",
+                        "outFrame",
+                        "name",
+                        "enabled"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -191,7 +223,12 @@
                         "minimum": 1
                       }
                     },
-                    "required": ["id", "text", "startFrame", "endFrame"],
+                    "required": [
+                      "id",
+                      "text",
+                      "startFrame",
+                      "endFrame"
+                    ],
                     "additionalProperties": false
                   },
                   "startFrame": {
@@ -200,7 +237,11 @@
                   },
                   "captionStyle": {
                     "type": "string",
-                    "enum": ["classic", "bold", "minimal"]
+                    "enum": [
+                      "classic",
+                      "bold",
+                      "minimal"
+                    ]
                   },
                   "workflow": {
                     "type": "object",
@@ -239,7 +280,14 @@
                             },
                             "role": {
                               "type": "string",
-                              "enum": ["main", "broll", "voice", "music", "image", "hold"]
+                              "enum": [
+                                "main",
+                                "broll",
+                                "voice",
+                                "music",
+                                "image",
+                                "hold"
+                              ]
                             },
                             "note": {
                               "type": "string",
@@ -255,7 +303,11 @@
                               "minimum": 1
                             }
                           },
-                          "required": ["assetId", "role", "note"],
+                          "required": [
+                            "assetId",
+                            "role",
+                            "note"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -279,16 +331,38 @@
                         }
                       }
                     },
-                    "required": ["stage", "brief", "outline", "sources", "nextSteps", "blockers"],
+                    "required": [
+                      "stage",
+                      "brief",
+                      "outline",
+                      "sources",
+                      "nextSteps",
+                      "blockers"
+                    ],
                     "additionalProperties": false
+                  },
+                  "timelineMode": {
+                    "type": "string",
+                    "enum": [
+                      "magnetic",
+                      "free"
+                    ]
                   }
                 },
-                "required": ["type"],
+                "required": [
+                  "type"
+                ],
                 "additionalProperties": false
               }
             }
           },
-          "required": ["projectId", "requestToken", "baseRevision", "title", "operations"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "baseRevision",
+            "title",
+            "operations"
+          ],
           "additionalProperties": false
         }
       },
@@ -333,6 +407,7 @@
                       "split",
                       "remove",
                       "move",
+                      "video-move",
                       "volume",
                       "add",
                       "caption",
@@ -340,6 +415,7 @@
                       "settings",
                       "audio-add",
                       "audio-trim",
+                      "audio-split",
                       "audio-move",
                       "audio-volume",
                       "audio-remove",
@@ -413,7 +489,12 @@
                         "minimum": 1
                       }
                     },
-                    "required": ["id", "text", "startFrame", "endFrame"],
+                    "required": [
+                      "id",
+                      "text",
+                      "startFrame",
+                      "endFrame"
+                    ],
                     "additionalProperties": false
                   },
                   "startFrame": {
@@ -422,7 +503,11 @@
                   },
                   "captionStyle": {
                     "type": "string",
-                    "enum": ["classic", "bold", "minimal"]
+                    "enum": [
+                      "classic",
+                      "bold",
+                      "minimal"
+                    ]
                   },
                   "workflow": {
                     "type": "object",
@@ -461,7 +546,14 @@
                             },
                             "role": {
                               "type": "string",
-                              "enum": ["main", "broll", "voice", "music", "image", "hold"]
+                              "enum": [
+                                "main",
+                                "broll",
+                                "voice",
+                                "music",
+                                "image",
+                                "hold"
+                              ]
                             },
                             "note": {
                               "type": "string",
@@ -477,7 +569,11 @@
                               "minimum": 1
                             }
                           },
-                          "required": ["assetId", "role", "note"],
+                          "required": [
+                            "assetId",
+                            "role",
+                            "note"
+                          ],
                           "additionalProperties": false
                         }
                       },
@@ -501,16 +597,38 @@
                         }
                       }
                     },
-                    "required": ["stage", "brief", "outline", "sources", "nextSteps", "blockers"],
+                    "required": [
+                      "stage",
+                      "brief",
+                      "outline",
+                      "sources",
+                      "nextSteps",
+                      "blockers"
+                    ],
                     "additionalProperties": false
+                  },
+                  "timelineMode": {
+                    "type": "string",
+                    "enum": [
+                      "magnetic",
+                      "free"
+                    ]
                   }
                 },
-                "required": ["type"],
+                "required": [
+                  "type"
+                ],
                 "additionalProperties": false
               }
             }
           },
-          "required": ["projectId", "requestToken", "baseRevision", "title", "operations"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "baseRevision",
+            "title",
+            "operations"
+          ],
           "additionalProperties": false
         }
       },
@@ -544,7 +662,11 @@
               "maxLength": 128
             }
           },
-          "required": ["assetIds", "projectId", "requestToken"],
+          "required": [
+            "assetIds",
+            "projectId",
+            "requestToken"
+          ],
           "additionalProperties": false
         }
       },
@@ -570,7 +692,9 @@
               "maximum": 100
             }
           },
-          "required": ["assetId"],
+          "required": [
+            "assetId"
+          ],
           "additionalProperties": false
         }
       },
@@ -587,7 +711,10 @@
             },
             "kind": {
               "type": "string",
-              "enum": ["silence", "scenes"]
+              "enum": [
+                "silence",
+                "scenes"
+              ]
             },
             "offset": {
               "type": "integer",
@@ -600,7 +727,10 @@
               "maximum": 100
             }
           },
-          "required": ["assetId", "kind"],
+          "required": [
+            "assetId",
+            "kind"
+          ],
           "additionalProperties": false
         }
       },
@@ -620,7 +750,9 @@
               "minimum": 0
             }
           },
-          "required": ["assetId"],
+          "required": [
+            "assetId"
+          ],
           "additionalProperties": false
         }
       },
@@ -633,7 +765,10 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": ["chapter", "explainer"]
+              "enum": [
+                "chapter",
+                "explainer"
+              ]
             },
             "title": {
               "type": "string",
@@ -676,7 +811,11 @@
               "maxLength": 128
             }
           },
-          "required": ["title", "projectId", "requestToken"],
+          "required": [
+            "title",
+            "projectId",
+            "requestToken"
+          ],
           "additionalProperties": false
         }
       },
@@ -702,7 +841,11 @@
               "maxLength": 128
             }
           },
-          "required": ["projectId", "baseRevision", "requestToken"],
+          "required": [
+            "projectId",
+            "baseRevision",
+            "requestToken"
+          ],
           "additionalProperties": false
         }
       },
@@ -761,7 +904,11 @@
               "description": "Verbatim transcript of the reference recording; required with referenceAssetId for audio8-tts or qwen3-tts. This is distinct from text to synthesize."
             }
           },
-          "required": ["projectId", "requestToken", "text"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "text"
+          ],
           "additionalProperties": false
         }
       },
@@ -820,7 +967,12 @@
               "description": "Verbatim transcript of the reference recording; required with referenceAssetId for audio8-tts or qwen3-tts. This is distinct from text to synthesize."
             }
           },
-          "required": ["projectId", "requestToken", "text", "modelId"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "text",
+            "modelId"
+          ],
           "additionalProperties": false
         }
       },
@@ -857,7 +1009,13 @@
               "maximum": 2592000
             }
           },
-          "required": ["projectId", "requestToken", "assetId", "inFrame", "outFrame"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "assetId",
+            "inFrame",
+            "outFrame"
+          ],
           "additionalProperties": false
         }
       },
@@ -880,10 +1038,19 @@
             },
             "providerId": {
               "type": "string",
-              "enum": ["edge-tts", "kokoro", "qwen3-tts", "audio8-tts"]
+              "enum": [
+                "edge-tts",
+                "kokoro",
+                "qwen3-tts",
+                "audio8-tts"
+              ]
             }
           },
-          "required": ["projectId", "requestToken", "providerId"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "providerId"
+          ],
           "additionalProperties": false
         }
       },
@@ -911,7 +1078,10 @@
             },
             "preset": {
               "type": "string",
-              "enum": ["light", "balanced"]
+              "enum": [
+                "light",
+                "balanced"
+              ]
             },
             "denoise": {
               "type": "boolean"
@@ -920,7 +1090,11 @@
               "type": "boolean"
             }
           },
-          "required": ["projectId", "requestToken", "assetId"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "assetId"
+          ],
           "additionalProperties": false
         }
       },
@@ -954,7 +1128,12 @@
               "type": "boolean"
             }
           },
-          "required": ["projectId", "requestToken", "baseRevision", "text"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "baseRevision",
+            "text"
+          ],
           "additionalProperties": false
         }
       },
@@ -981,7 +1160,11 @@
               "maxLength": 128
             }
           },
-          "required": ["projectId", "requestToken", "jobId"],
+          "required": [
+            "projectId",
+            "requestToken",
+            "jobId"
+          ],
           "additionalProperties": false
         }
       }

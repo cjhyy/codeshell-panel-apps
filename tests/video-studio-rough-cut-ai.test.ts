@@ -121,6 +121,7 @@ function fixture(count = 2, audio = false) {
     cancelled: string[] = [];
   let rejectStart = false,
     failPrepare = false,
+    failPersist = false,
     preparations = 0;
   let legacyMaxTurns: number | undefined;
   const snapshots: (RoughCutAISnapshot | null)[] = [];
@@ -156,6 +157,7 @@ function fixture(count = 2, audio = false) {
     changed() {},
     persist: async (snapshot) => {
       snapshots.push(structuredClone(snapshot));
+      if (failPersist) throw new Error("工程文档暂时无法写入");
     },
     prepareAudio: async (_ids, signal) => {
       preparations++;
@@ -217,6 +219,9 @@ function fixture(count = 2, audio = false) {
     failPrepare: (value: boolean) => {
       failPrepare = value;
     },
+    failPersist: (value: boolean) => {
+      failPersist = value;
+    },
     preparations: () => preparations,
   };
 }
@@ -267,16 +272,17 @@ test("a persisted 0/4 Host parameter failure retries with compliant turns and pr
     "The Host rejects an invalid request before creating a task",
   );
   assert.equal(failed.startAttempts[0]!.maxTurns, 32);
-  // The failed launch leaves its pre-launch queue checkpoint in actual storage.
+  // Persist the actual failed state, including the reason, instead of a running checkpoint.
   const checkpoint = failed.snapshots.at(-1)!;
-  assert.equal(checkpoint!.state.phase, "preparing");
+  assert.equal(checkpoint!.state.phase, "failed");
   assert.equal(checkpoint!.state.completed, 0);
   assert.deepEqual(checkpoint!.state.assetIds, ids);
   assert.equal(checkpoint!.state.task, null);
   const restored = fixture(4);
   restored.replace(failed.project());
   assert.equal(await restored.controller.restore(checkpoint), true);
-  assert.match(restored.controller.state.message, /已恢复 0\/4/);
+  assert.equal(restored.controller.state.phase, "failed");
+  assert.equal(restored.controller.state.message, checkpoint!.state.message);
   assert.equal(restored.starts.length, 0, "Restoration does not start or bill a new task");
   assert.deepEqual(restored.cancelled, []);
   await restored.controller.retry();
@@ -566,6 +572,162 @@ test("JSON fallback still passes the same evidence gate and never edits a timeli
     buildRoughCutPrompt("p", "t", f.project().assets, "剪出重点"),
     /静态关键帧只支持画面初筛/,
   );
+});
+
+test("invalid fallback retains the real Panel blocker before the revision error and after reload", async () => {
+  const f = fixture(1);
+  const before = structuredClone(f.project());
+  await f.controller.start(["source-0"]);
+  const explanation =
+    "Panel 工具返回 workspace:authority unknown session: panel-task-missing，无法读取工程、检查指定素材帧、获取真实转写或取得当前 baseRevision，因此未虚构分析结果，也未提交提案。";
+  await f.controller.handleTask({
+    ...f.tasks[0]!,
+    status: "completed",
+    result: { text: JSON.stringify({ ...f.proposal([]), baseRevision: null, explanation }) },
+    // Released Hosts reported tool results this way, even when the tool had failed.
+    activity: [{ kind: "tool", status: "completed", toolName: "Tool", message: "Tool returned" }],
+  });
+  const failed = f.controller.state;
+  assert.equal(failed.phase, "failed");
+  assert.equal(failed.completed, 0);
+  assert.deepEqual(failed.cuts, []);
+  assert.deepEqual(failed.explanations, [], "A diagnostic report is not accepted analysis");
+  assert.ok(failed.message.startsWith(`AI 报告：${explanation}`));
+  assert.match(failed.message, /未收到有效粗剪方案：方案 baseRevision.*非负整数/);
+  assert.equal(f.controller.requestToken, "");
+  assert.deepEqual(f.project(), before);
+  const checkpoint = f.snapshots.at(-1)!;
+  assert.equal(checkpoint!.state.phase, "failed");
+  assert.equal(checkpoint!.state.message, failed.message);
+  assert.deepEqual(checkpoint!.state.task, { id: f.tasks[0]!.id, status: "completed" });
+  const restored = fixture(1);
+  restored.replace(before);
+  await restored.controller.restore(checkpoint);
+  assert.equal(restored.controller.state.phase, "failed");
+  assert.equal(restored.controller.state.message, failed.message);
+  assert.equal(restored.controller.requestToken, "");
+  assert.deepEqual(restored.cancelled, []);
+  assert.deepEqual(restored.starts, []);
+  await restored.controller.retry();
+  assert.throws(() => restored.controller.accept(restored.proposal(["source-0"])), /关键帧/);
+  restored.observe(["source-0"]);
+  restored.controller.accept(restored.proposal(["source-0"]));
+  await restored.controller.handleTask({ ...restored.tasks[0]!, status: "completed" });
+  assert.equal(restored.controller.state.phase, "review");
+  assert.equal(restored.controller.state.completed, 1);
+});
+
+test("fallback diagnostics prefer the latest unrecovered tool failure and retain the schema reason", async () => {
+  const f = fixture(1);
+  await f.controller.start(["source-0"]);
+  await f.controller.handleTask({
+    ...f.tasks[0]!,
+    status: "completed",
+    result: { text: JSON.stringify({ explanation: "原片帧读取失败，未生成候选" }) },
+    activity: [
+      { kind: "tool", status: "failed", toolName: "Panel", message: "旧的连接错误" },
+      { kind: "tool", status: "completed", toolName: "Panel", message: "连接已恢复" },
+      {
+        kind: "tool",
+        status: "failed",
+        toolName: "inspect_video_frame",
+        message: "原片帧解码失败",
+      },
+      { kind: "model", status: "completed", message: "完成失败说明" },
+    ],
+  });
+  assert.ok(f.controller.state.message.startsWith("工具调用失败：原片帧解码失败"));
+  assert.match(f.controller.state.message, /AI 报告：原片帧读取失败/);
+  assert.match(f.controller.state.message, /baseRevision.*非负整数/);
+  assert.doesNotMatch(f.controller.state.message, /旧的连接错误/);
+  assert.equal(f.controller.state.completed, 0);
+  assert.equal(f.snapshots.at(-1)!.state.phase, "failed");
+});
+
+test("recovered tool failures do not mask malformed final JSON", async () => {
+  const f = fixture(1);
+  await f.controller.start(["source-0"]);
+  await f.controller.handleTask({
+    ...f.tasks[0]!,
+    status: "completed",
+    result: { text: "分析完成，但没有提供 JSON" },
+    activity: [
+      { kind: "tool", status: "failed", toolName: "Panel", message: "旧的连接错误" },
+      { kind: "tool", status: "completed", toolName: "Panel", message: "连接已恢复" },
+    ],
+  });
+  assert.ok(f.controller.state.message.startsWith("未收到有效粗剪方案："));
+  assert.doesNotMatch(f.controller.state.message, /旧的连接错误|工具调用失败/);
+  assert.equal(f.controller.state.phase, "failed");
+});
+
+test("fallback diagnostic text is bounded and never supplies missing ownership or evidence", async () => {
+  for (const report of ["说明".repeat(3000), { error: "不可作为文本" }, "不合法\u0000说明"]) {
+    const f = fixture(1);
+    await f.controller.start(["source-0"]);
+    await f.controller.handleTask({
+      ...f.tasks[0]!,
+      status: "completed",
+      result: { text: JSON.stringify({ explanation: report }) },
+    });
+    assert.equal(f.controller.state.phase, "failed");
+    assert.equal(f.controller.state.completed, 0);
+    assert.deepEqual(f.controller.state.cuts, []);
+    assert.ok(f.controller.state.message.length < 3000);
+    if (typeof report === "string" && !report.includes("\u0000"))
+      assert.match(f.controller.state.message, /AI 报告：/);
+    else assert.doesNotMatch(f.controller.state.message, /AI 报告：/);
+  }
+});
+
+test("failure checkpoint storage errors retain the blocker and retry can recover", async () => {
+  const f = fixture(1);
+  await f.controller.start(["source-0"]);
+  f.failPersist(true);
+  const beforeAttempts = f.snapshots.length;
+  await f.controller.handleTask({
+    ...f.tasks[0]!,
+    status: "failed",
+    error: "Panel 无法读取当前工程",
+  });
+  assert.equal(f.controller.state.phase, "failed");
+  assert.match(f.controller.state.message, /Panel 无法读取当前工程/);
+  assert.match(f.controller.state.message, /失败状态未能保存：工程文档暂时无法写入/);
+  assert.equal(f.snapshots.length, beforeAttempts + 1, "Failed persistence does not recurse");
+  f.failPersist(false);
+  await f.controller.retry();
+  assert.equal(f.controller.state.phase, "running");
+  f.observe(["source-0"]);
+  f.controller.accept(f.proposal(["source-0"]));
+  await f.controller.handleTask({ ...f.tasks[1]!, status: "completed" });
+  assert.equal(f.controller.state.phase, "review");
+});
+
+test("zero candidates require complete evidence and work in both tool and final JSON routes", async () => {
+  for (const route of ["tool", "fallback"]) {
+    const f = fixture(1);
+    await f.controller.start(["source-0"]);
+    const proposal = f.proposal([]);
+    proposal.explanation = "已查看原片开头、中间、结尾，本批画面没有符合目标的内容";
+    assert.throws(() => f.controller.accept(proposal), /关键帧/);
+    f.observe(["source-0"]);
+    if (route === "tool") f.controller.accept(proposal);
+    await f.controller.handleTask({
+      ...f.tasks[0]!,
+      status: "completed",
+      result: { text: JSON.stringify(proposal) },
+    });
+    assert.equal(f.controller.state.phase, "review");
+    assert.equal(f.controller.state.completed, 1);
+    assert.deepEqual(f.controller.state.cuts, []);
+    assert.deepEqual(f.controller.state.explanations, [proposal.explanation]);
+    assert.equal(f.snapshots.at(-1)!.state.phase, "review");
+  }
+  const prompt = buildRoughCutPrompt("p", "t", fixture(1).project().assets, "筛掉空镜");
+  assert.match(prompt, /诊断 JSON/);
+  assert.match(prompt, /禁止猜测、伪造 baseRevision 或用 null 占位/);
+  assert.match(prompt, /project\.revision/);
+  assert.ok(prompt.includes('[{"type":"rough-cuts","cuts":[]}]'));
 });
 
 test("persisted queue resumes after stopping the old task and retains reviewed drafts across a reload", async () => {

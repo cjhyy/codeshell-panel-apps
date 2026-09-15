@@ -1695,3 +1695,503 @@ test("local voice cloning validates its own recording, uses real model preview, 
     await page.close();
   }
 });
+
+test("fine timeline editing splits the selected audio at the playhead and restores it with one undo", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const original = await readProject(page);
+    const audio = original.audioClips[0];
+    await page.locator(`[data-audio-clip="${audio.id}"]`).click({ position: { x: 60, y: 12 } });
+    assert.equal(
+      await page.evaluate(() => window.__panelTools.read_video_project().selectedClipId),
+      audio.id,
+    );
+    assert.equal(await page.locator('[data-action="split"]').isDisabled(), true);
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.waitForFunction(
+      () => window.__panelTools.read_video_project().playheadFrame === 150,
+    );
+    assert.equal(await page.locator('[data-action="split"]').isDisabled(), false);
+    await page.keyboard.press("s");
+    await saved(page);
+    const edited = await readProject(page);
+    assert.equal(edited.revision, original.revision + 1);
+    assert.deepEqual(
+      edited.clips,
+      original.clips,
+      "S on an audio selection does not split the video",
+    );
+    assert.deepEqual(edited.captions, original.captions);
+    assert.equal(edited.audioClips.length, 2);
+    assert.deepEqual(
+      edited.audioClips.map(({ startFrame, inFrame, outFrame, volume, assetId }) => ({
+        startFrame,
+        inFrame,
+        outFrame,
+        volume,
+        assetId,
+      })),
+      [
+        { startFrame: 0, inFrame: 0, outFrame: 150, volume: audio.volume, assetId: audio.assetId },
+        {
+          startFrame: 150,
+          inFrame: 150,
+          outFrame: 720,
+          volume: audio.volume,
+          assetId: audio.assetId,
+        },
+      ],
+    );
+    await page.locator('[data-action="undo"]').click();
+    await saved(page);
+    const restored = await readProject(page);
+    assert.equal(restored.revision, edited.revision + 1);
+    assert.deepEqual(restored.audioClips, original.audioClips);
+    assert.deepEqual(restored.clips, original.clips);
+    assert.deepEqual(restored.captions, original.captions);
+  } finally {
+    await page.close();
+  }
+});
+
+test("fine timeline editing moves and trims audio as single undo steps and Escape cancels delayed release", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const audioId = (await readProject(page)).audioClips[0].id;
+    const audio = () => page.locator(`[data-audio-clip="${audioId}"]`);
+    await audio().click({ position: { x: 60, y: 12 } });
+    await page.locator("#trim-in").fill("2");
+    await page.locator("#trim-out").fill("10");
+    await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
+    await saved(page);
+    await page.locator('[data-action="toggle-snapping"]').click();
+    assert.equal(
+      await page.locator('[data-action="toggle-snapping"]').getAttribute("aria-pressed"),
+      "false",
+    );
+    const prepared = await readProject(page);
+
+    const startDrag = async (locator, deltaFrames) => {
+      await locator.scrollIntoViewIfNeeded();
+      const bounds = await locator.boundingBox();
+      assert.ok(bounds);
+      const zoom = Number(await page.locator("#timeline-zoom").inputValue());
+      const x = bounds.x + bounds.width / 2;
+      const y = bounds.y + bounds.height / 2;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x + (deltaFrames / 30) * zoom, y, { steps: 5 });
+    };
+    const drag = async (locator, deltaFrames) => {
+      const before = await readProject(page);
+      await startDrag(locator, deltaFrames);
+      assert.deepEqual(
+        await readProject(page),
+        before,
+        "Pointer moves only preview the pending edit",
+      );
+      assert.equal(await page.locator(".timeline-drag-guide:visible").count(), 1);
+      await page.mouse.up();
+      await saved(page);
+      const after = await readProject(page);
+      assert.equal(after.revision, before.revision + 1, "A completed drag creates one revision");
+      assert.deepEqual(after.clips, before.clips);
+      assert.deepEqual(after.captions, before.captions);
+      return after;
+    };
+    const undoAndRedo = async (before, after) => {
+      await page.locator('[data-action="undo"]').click();
+      await saved(page);
+      assert.deepEqual(
+        (await readProject(page)).audioClips,
+        before.audioClips,
+        "One undo restores the whole drag",
+      );
+      await page.locator('[data-action="redo"]').click();
+      await saved(page);
+      assert.deepEqual((await readProject(page)).audioClips, after.audioClips);
+    };
+
+    const moved = await drag(audio(), 90);
+    assert.deepEqual(moved.audioClips, [{ ...prepared.audioClips[0], startFrame: 90 }]);
+    await undoAndRedo(prepared, moved);
+
+    const beforeIn = await readProject(page);
+    const trimmedIn = await drag(audio().locator('[data-trim="in"]'), 30);
+    assert.deepEqual(trimmedIn.audioClips, [
+      { ...beforeIn.audioClips[0], startFrame: 120, inFrame: 90 },
+    ]);
+    await undoAndRedo(beforeIn, trimmedIn);
+
+    const beforeOut = await readProject(page);
+    const trimmedOut = await drag(audio().locator('[data-trim="out"]'), -30);
+    assert.deepEqual(trimmedOut.audioClips, [{ ...beforeOut.audioClips[0], outFrame: 270 }]);
+    await undoAndRedo(beforeOut, trimmedOut);
+
+    // Keep a video selected and place the playhead away from the audio start before cancelling.
+    await page
+      .locator(`[data-clip="${prepared.clips[0].id}"]`)
+      .evaluate((element) => element.click());
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.waitForFunction(
+      () => window.__panelTools.read_video_project().playheadFrame === 150,
+    );
+    const beforeCancel = await page.evaluate(() => window.__panelTools.read_video_project());
+    await startDrag(audio(), 60);
+    await page.keyboard.press("Escape");
+    assert.equal(await page.locator(".timeline-drag-guide").count(), 0);
+    await page.waitForTimeout(50);
+    await page.mouse.up();
+    const afterCancel = await page.evaluate(() => window.__panelTools.read_video_project());
+    assert.deepEqual(afterCancel.project, beforeCancel.project);
+    assert.equal(afterCancel.playheadFrame, beforeCancel.playheadFrame);
+    assert.equal(afterCancel.selectedClipId, beforeCancel.selectedClipId);
+    assert.equal(await page.locator(".dragging").count(), 0);
+  } finally {
+    await page.close();
+  }
+});
+
+test("fine timeline editing keeps zoom anchored and updates split availability during keyboard navigation", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const original = await readProject(page);
+    const go = async (key, expected) => {
+      await page.keyboard.press(key);
+      await page.waitForFunction(
+        (frame) => window.__panelTools.read_video_project().playheadFrame === frame,
+        expected,
+      );
+    };
+    const split = page.locator('[data-action="split"]');
+    await go("Home", 0);
+    assert.equal(await split.isDisabled(), true);
+    await go("ArrowRight", 1);
+    assert.equal(await split.isDisabled(), false);
+    await go("Shift+ArrowRight", 151);
+    await go("Shift+ArrowLeft", 1);
+    await go("End", 719);
+    await go("Home", 0);
+    await go("ArrowDown", 180);
+    assert.equal(await split.isDisabled(), true);
+    await go("ArrowDown", 480);
+    assert.equal(await split.isDisabled(), true);
+    await go("ArrowUp", 180);
+    await go("ArrowLeft", 179);
+    assert.equal(await split.isDisabled(), false);
+
+    const anchor = () =>
+      page.evaluate(() => {
+        const scroll = document.querySelector("#timeline-scroll");
+        return (
+          document.querySelector("#playhead").getBoundingClientRect().left -
+          scroll.getBoundingClientRect().left
+        );
+      });
+    const before = await anchor();
+    await page.locator("#timeline-zoom").evaluate((input) => {
+      input.value = "240";
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    assert.ok(
+      Math.abs((await anchor()) - before) <= 1,
+      "Zoom retains the playhead's screen position",
+    );
+    assert.equal(
+      await page.evaluate(() => window.__panelTools.read_video_project().playheadFrame),
+      179,
+    );
+    assert.equal(await split.isDisabled(), false);
+    assert.match(await page.locator("#ruler").textContent(), /\d{2}:\d{2}:\d{2}/);
+    await go("ArrowRight", 180);
+    assert.equal(
+      await split.isDisabled(),
+      true,
+      "Seeking updates the split button without a full render",
+    );
+    await go("ArrowRight", 181);
+    assert.equal(await split.isDisabled(), false);
+    const beforeContextClick = await page.evaluate(() => window.__panelTools.read_video_project());
+    const scrollBounds = await page.locator("#timeline-scroll").boundingBox();
+    assert.ok(scrollBounds);
+    await page.mouse.click(scrollBounds.x + scrollBounds.width * 0.75, scrollBounds.y + 15, {
+      button: "right",
+    });
+    const afterContextClick = await page.evaluate(() => window.__panelTools.read_video_project());
+    assert.equal(
+      afterContextClick.playheadFrame,
+      beforeContextClick.playheadFrame,
+      "Right-clicking the ruler must not seek",
+    );
+    assert.equal(afterContextClick.selectedClipId, beforeContextClick.selectedClipId);
+    assert.deepEqual(
+      await readProject(page),
+      original,
+      "Navigation and zoom never edit the project",
+    );
+    await page.screenshot({
+      path: resolve(screenshots, "timeline-fine-editing.png"),
+      fullPage: true,
+    });
+  } finally {
+    await page.close();
+  }
+});
+
+test("fine timeline editing fits an hour-long project and limits ruler labels while scrolling at full zoom", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const project = await readProject(page);
+    project.id = "fine-timeline-long-project";
+    project.name = "一小时长片缩放测试";
+    project.assets[0].durationFrames = 30 * 3600;
+    project.clips = [{ ...project.clips[0], outFrame: 30 * 3600 }];
+    await page.locator("#project-input").setInputFiles({
+      name: "long-project.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(project)),
+    });
+    await page.waitForFunction(
+      (id) => window.__panelTools.read_video_project().project.id === id,
+      project.id,
+    );
+    await saved(page);
+    // Saving finishes before original-media recovery; the input clears only after replacement completes.
+    await page.waitForFunction(() => document.querySelector("#project-input").value === "");
+    const imported = await readProject(page);
+    await page.locator('[data-action="fit-timeline"]').click();
+    const fitted = await page.locator("#timeline-scroll").evaluate((scroll) => ({
+      width: scroll.clientWidth,
+      left: scroll.scrollLeft,
+      zoom: Number(document.querySelector("#timeline-zoom").value),
+      labels: document.querySelectorAll("#ruler > span").length,
+    }));
+    assert.ok(fitted.zoom < 12);
+    assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1);
+    assert.equal(fitted.left, 0);
+    assert.ok(fitted.labels > 0 && fitted.labels < 100);
+
+    await page.locator("#timeline-zoom").evaluate((input) => {
+      input.value = "240";
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(
+      () =>
+        Number(document.querySelector("#timeline-zoom").value) === 240 &&
+        document.querySelector("#timeline-scroll").scrollWidth > 800000,
+    );
+    await page.locator("#timeline-scroll").evaluate((scroll) => {
+      scroll.scrollLeft = scroll.scrollWidth - scroll.clientWidth;
+      scroll.dispatchEvent(new Event("scroll"));
+    });
+    const ruler = await page.locator("#timeline-scroll").evaluate((scroll) => ({
+      left: scroll.scrollLeft,
+      width: scroll.clientWidth,
+      positions: [...document.querySelectorAll("#ruler > span")].map((label) =>
+        parseFloat(label.style.left),
+      ),
+    }));
+    assert.ok(
+      ruler.left > 800000,
+      `Full-zoom ruler should reach the hour-long sequence end: ${JSON.stringify(ruler)}`,
+    );
+    assert.ok(ruler.positions.length > 0 && ruler.positions.length < 100);
+    assert.ok(
+      ruler.positions.every(
+        (position) => position >= ruler.left - 8 && position <= ruler.left + ruler.width + 8,
+      ),
+    );
+    await page.locator('[data-action="fit-timeline"]').click();
+    assert.equal(await page.locator("#timeline-scroll").evaluate((scroll) => scroll.scrollLeft), 0);
+    assert.deepEqual(await readProject(page), imported);
+  } finally {
+    await page.close();
+  }
+});
+
+test("fine timeline editing extends a trimmed source left of timeline zero and restores it with one undo", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    await page.locator("#trim-in").fill("2");
+    await page.locator("#trim-out").fill("6");
+    await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
+    await saved(page);
+    await page.locator('[data-action="toggle-snapping"]').click();
+    const before = await readProject(page);
+    const clip = before.clips[0];
+    assert.equal(clip.inFrame, 60);
+    const handle = page.locator(`[data-clip="${clip.id}"] [data-trim="in"]`);
+    await handle.scrollIntoViewIfNeeded();
+    const bounds = await handle.boundingBox();
+    assert.ok(bounds);
+    const zoom = Number(await page.locator("#timeline-zoom").inputValue());
+    const x = bounds.x + bounds.width / 2;
+    const y = bounds.y + bounds.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - zoom, y, { steps: 5 });
+    assert.deepEqual(await readProject(page), before);
+    await page.mouse.up();
+    await saved(page);
+    const after = await readProject(page);
+    assert.equal(after.revision, before.revision + 1);
+    assert.deepEqual(after.clips[0], { ...clip, inFrame: 30 });
+    assert.deepEqual(after.clips.slice(1), before.clips.slice(1));
+    await page.locator('[data-action="undo"]').click();
+    await saved(page);
+    const restored = await readProject(page);
+    assert.deepEqual(restored.clips, before.clips);
+    assert.deepEqual(restored.audioClips, before.audioClips);
+    assert.deepEqual(restored.captions, before.captions);
+  } finally {
+    await page.close();
+  }
+});
+
+async function freeTimelineDemo(page) {
+  await demo(page);
+  await page.locator('[data-action="toggle-magnetic"]').click();
+  await saved(page);
+  await page.locator("#timeline-zoom").evaluate((input) => {
+    input.value = "8";
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.locator('[data-action="toggle-snapping"]').click();
+}
+
+async function beginFreeVideoDrag(page, id, deltaFrames) {
+  const clip = page.locator(`[data-clip="${id}"]`);
+  await clip.scrollIntoViewIfNeeded();
+  const bounds = await clip.boundingBox();
+  assert.ok(bounds);
+  const zoom = Number(await page.locator("#timeline-zoom").inputValue());
+  const x = bounds.x + bounds.width / 2;
+  const y = bounds.y + 22;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + (deltaFrames / 30) * zoom, y, { steps: 5 });
+}
+
+test("free timeline dragging keeps gaps, rejects collisions, cancels safely and saves one undo step", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await freeTimelineDemo(page);
+    const original = await readProject(page);
+    const last = original.clips.at(-1);
+    assert.equal(original.timelineMode, "free");
+    assert.equal(await page.locator(`[data-clip="${last.id}"]`).getAttribute("draggable"), "false");
+    await beginFreeVideoDrag(page, last.id, 90);
+    await page.keyboard.press("n");
+    assert.equal(
+      await page.locator(".timeline-drag-guide").count(),
+      1,
+      "An ordinary UI refresh cannot cancel an active drag",
+    );
+    await page.keyboard.press("n");
+    assert.deepEqual(
+      await readProject(page),
+      original,
+      "Dragging previews geometry before committing",
+    );
+    await page.mouse.up();
+    await saved(page);
+    const moved = await readProject(page);
+    assert.equal(moved.revision, original.revision + 1);
+    assert.equal(moved.clips.at(-1).startFrame, last.startFrame + 90);
+    assert.deepEqual(moved.clips.slice(0, -1), original.clips.slice(0, -1));
+    assert.deepEqual(moved.audioClips, original.audioClips);
+    assert.match(await page.locator(".timeline-hint").textContent(), /允许留空/);
+    await page
+      .locator("#ruler")
+      .click({ position: { x: ((last.startFrame + 45) / 30) * 8, y: 12 } });
+    await page.waitForFunction(
+      (frame) => window.__panelTools.read_video_project().playheadFrame === frame,
+      last.startFrame + 45,
+    );
+    const black = await page
+      .locator("#preview")
+      .evaluate((canvas) => [...canvas.getContext("2d").getImageData(5, 5, 1, 1).data]);
+    assert.deepEqual(black, [0, 0, 0, 255]);
+
+    await beginFreeVideoDrag(page, last.id, -last.startFrame - 90);
+    assert.equal(await page.locator(".drag-invalid").count(), 1);
+    await page.mouse.up();
+    assert.deepEqual(
+      await readProject(page),
+      moved,
+      "An overlapping drop cannot overwrite another clip",
+    );
+    await beginFreeVideoDrag(page, last.id, 90);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(30);
+    await page.mouse.up();
+    assert.equal(await page.locator(".timeline-drag-guide").count(), 0);
+    assert.deepEqual(await readProject(page), moved);
+    await page.locator('[data-action="undo"]').click();
+    await saved(page);
+    const undone = await readProject(page);
+    assert.deepEqual(undone.clips, original.clips);
+    assert.deepEqual(undone.audioClips, original.audioClips);
+    assert.deepEqual(undone.captions, original.captions);
+  } finally {
+    await page.close();
+  }
+});
+
+test("free timeline positions survive reload, accept asset drops at the cursor, and compact reversibly", async () => {
+  const page = await pageWithBridge();
+  try {
+    await freeTimelineDemo(page);
+    const original = await readProject(page);
+    const last = original.clips.at(-1);
+    await page.locator(`[data-clip="${last.id}"]`).click({ position: { x: 20, y: 22 } });
+    await page.locator("#video-start").fill("30");
+    await page.locator("#video-start").press("Tab");
+    await saved(page);
+    const positioned = await readProject(page);
+    assert.equal(positioned.clips.at(-1).startFrame, 900);
+    await page.reload();
+    await page.locator("#revision").waitFor();
+    await page.waitForFunction(
+      () => JSON.parse(localStorage.getItem("video-studio-project-v1"))?.timelineMode === "free",
+    );
+    assert.deepEqual((await readProject(page)).clips, positioned.clips);
+    await page.locator("#timeline-zoom").evaluate((input) => {
+      input.value = "8";
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page
+      .locator(`[data-asset="${original.clips[0].assetId}"]`)
+      .dragTo(page.locator("#video-track"), { targetPosition: { x: 320, y: 25 } });
+    await saved(page);
+    const dropped = await readProject(page);
+    assert.equal(dropped.clips.length, positioned.clips.length + 1);
+    assert.equal(
+      dropped.clips.at(-1).startFrame,
+      1200,
+      "A library drop uses its actual timeline position",
+    );
+    assert.deepEqual(dropped.clips.slice(0, -1), positioned.clips);
+    await page.locator('[data-action="toggle-magnetic"]').click();
+    await saved(page);
+    const compacted = await readProject(page);
+    assert.equal(compacted.timelineMode, "magnetic");
+    assert.ok(compacted.clips.every((clip) => clip.startFrame === undefined));
+    await page.locator('[data-action="undo"]').click();
+    await saved(page);
+    const undone = await readProject(page);
+    assert.equal(undone.timelineMode, "free");
+    assert.deepEqual(undone.clips, dropped.clips);
+    await page.locator("#timeline-scroll").evaluate((scroll) => {
+      scroll.scrollLeft = 0;
+    });
+    await page.screenshot({ path: resolve(screenshots, "free-timeline-gaps.png") });
+  } finally {
+    await page.close();
+  }
+});

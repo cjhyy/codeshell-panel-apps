@@ -3,25 +3,25 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "949448b99cf5003c0d9bd74471a8d3d47ae04bc1ded08f9bf8eee71b73c914fa",
+    ".codeshell-panel/panel.json": "7256108c048662d4702c3afb6e81685e36ff9474499c14cb50e814b8a8e6e0b5",
     "agent/skills/narration-workflow/SKILL.md": "9380787ffb90441db9af823e524a4e3781f1434180c99a8807501c7b5702579b",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
     "agent/skills/video-init/references/workflow-state.md": "ffacf4cd991f6db15ecc0a0bf799dfb8179c927f4f3c7ff1fde90e80ff7f050d",
     "agent/skills/video-init/SKILL.md": "a2846ee8a9104aee03c87abe6fde79ae800ee4cf0fb1324b504fc2c9f17071bb",
-    "agent/skills/video-production/references/editing.md": "12bc5366b1b9e4a2994fde8c164ce106def3c2cbaf64e3dab8c376af50cb5e2b",
+    "agent/skills/video-production/references/editing.md": "1c924a0b84dd6533b59a17437e65492ee86ba1a2469b3b4c06e1b8834a31f023",
     "agent/skills/video-production/references/panel-tools.md": "baf20394a66a7fd459f91e24005097e99fcd613bca66e3c3ae8a24bc05bf9fdc",
-    "agent/skills/video-production/SKILL.md": "ebb75b14b0a451b28e2497e8536c4cb3ede815c306339ec9cb54a046c547789d",
+    "agent/skills/video-production/SKILL.md": "685e9ffeaaa36bd61ba4e53201ee4a625ee32a77ad04054facf81fa949176c15",
     "agent/skills/video-workflow/references/content-routes.md": "d05137d1506d96059fb3fe459e92d889db2438b798ed1ab3c46bde70c73f2185",
     "agent/skills/video-workflow/SKILL.md": "709f107fbb33c6c8c7bae823b47441885b786b3636dc9b04e4f61bfdab89af7f",
     "app/demo-narration.mp3": "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40",
     "app/index.html": "9f9cee3ee0826fed83e2f678021de6b3b51ba59f7a8a578b98b7ed0907cb02ed",
-    "app/main.mjs": "928167f0da3ba3972e50e42e851d6d097b0015809c8ac6d7669abdfbbf0f9726",
+    "app/main.mjs": "0ae56220d26c64f2acc44ad0ccd889cccfe27a8ab65f773ee828c8320a3f8d34",
     "app/rough-cut.css": "78f7aa060c02a6dbb0b560ad999cc26e8d962ae2397795d655367cc15f16f42e",
-    "app/style.css": "a2f08dcb3b1a6faa7f849bb1eb09fca936df9026e4384ec29c5cdf1f5cae21a1",
+    "app/style.css": "4bec4a8b41ca6605047c0c49777b3bb6a436c0455ad1bbc7b360ee495d068b2b",
     "app/tools/folder-scan.mjs": "d89b408c3893bc4c8ed913d6d755723564ee7717accf40b57df07a4aa2763407",
-    "app/tools/media-runtime.mjs": "45d58c535f7a4976cc8beb41bda7936688d07f743d92bbac90194265d9447e2d",
-    "app/tools/voice-runtime.mjs": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023",
-    "README.md": "dcd2965bf79a521f23ab77929003fd695685b0e559b37addb8a811cfc42548e8"
+    "app/tools/media-runtime.mjs": "c593093a4a3270b5a1174e3205cad21d856994bbbf8e6a6613bb600b29294277",
+    "app/tools/voice-runtime.mjs": "e496fdb40f2a1c16569233e10e3098c195908c22aca5f0c9a7712117c1f67618",
+    "README.md": "7dfa973a27a0e5d3f082ab118c834cc62a7228014061cf179b228d8a304cd2c7"
   }
 }

@@ -657,6 +657,14 @@ export function createRoughCutUI(context: RoughCutContext) {
       ai?.task &&
       ["queued", "running", "cancelling"].includes(ai.task.status)
     );
+    const pendingMessage =
+      busy || ai?.starting || activeTask
+        ? "请等待本次分析完成或确认取消，再处理结果、开始新的分析。"
+        : ai?.phase === "failed" && !ai.cuts.length
+          ? "本次分析失败，尚未生成候选段。可重试未完成的素材，或丢弃本次分析后重新选择。"
+          : ai?.phase === "cancelled" && !ai.cuts.length
+            ? "本次分析已暂停。可继续未完成的素材，或丢弃本次分析后重新选择。"
+            : "已有分析待处理。请先继续、保存候选或丢弃本次分析，再开始新的分析。";
     const targets = aiSources();
     const queue = queueSources();
     return html`<div class="roughcut-ai">
@@ -716,7 +724,7 @@ ${esc(aiGoal)}</textarea
             },
           )}
           ${pending
-            ? `<p data-roughcut-ai-job-target>本次分析 · ${ai!.assetIds.length} 份素材：${esc(sourceNames(ai!.assetIds))}</p><p>${busy || ai!.starting ? "请等待本次分析完成或确认取消，再处理结果、开始新的分析。" : "已有分析待处理。请先继续、保存候选或丢弃本次分析，再开始新的分析。"}</p>`
+            ? `<p data-roughcut-ai-job-target>本次分析 · ${ai!.assetIds.length} 份素材：${esc(sourceNames(ai!.assetIds))}</p><p>${pendingMessage}</p>`
             : ""}
           ${!context.ai
             ? '<p class="roughcut-notice">请在 CodeShell 面板内连接 AI 任务能力。</p>'
@@ -730,7 +738,12 @@ ${esc(aiGoal)}</textarea
               })
             : ""}
           ${aiCurrent && ["failed", "cancelled"].includes(ai!.phase)
-            ? button("ai-retry", "继续未完成的素材", "", { disabled: ai!.starting })
+            ? button(
+                "ai-retry",
+                ai!.phase === "failed" ? "重试未完成的素材" : "继续未完成的素材",
+                "",
+                { disabled: ai!.starting },
+              )
             : ""}
           ${pending && !busy && !activeTask && !ai!.starting && !ai!.cuts.length
             ? button("ai-discard", "丢弃本次分析")

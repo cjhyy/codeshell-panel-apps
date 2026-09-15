@@ -75,6 +75,9 @@ test(
   "Video Studio imports, previews and records real local media",
   { timeout: 60_000 },
   async (t) => {
+    const filter = process.env.VIDEO_STUDIO_MEDIA_TEST;
+    const mediaTest = (name, ...args) => filter && !new RegExp(filter).test(name)
+      ? t.test(name, { skip: true }, () => {}) : t.test(name, ...args);
     const directory = await mkdtemp(join(tmpdir(), "video-studio-media-"));
     let browser;
     let server;
@@ -221,7 +224,181 @@ test(
       }
     }
 
-    await t.test("reads real metadata and seeks the decoded source before drawing", async () => {
+    await mediaTest("bounds decoder sources while restoring 118 videos, sampling and importing concurrently", async () => {
+      const result = await withMediaPage((page) => page.evaluate(async () => {
+        const { MediaLibrary, createProject, captureAssetFrame, renderFrame } = window.videoMedia;
+        const library = new MediaLibrary();
+        const videos = new Set();
+        const descriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src");
+        let starts = 0, peak = 0;
+        const attached = () => [...videos].filter((video) => video.hasAttribute("src")).length;
+        Object.defineProperty(HTMLMediaElement.prototype, "src", {
+          ...descriptor,
+          set(value) {
+            descriptor.set.call(this, value);
+            if (this instanceof HTMLVideoElement) {
+              videos.add(this);
+              starts++;
+              peak = Math.max(peak, attached());
+            }
+          },
+        });
+        try {
+          const base = {
+            kind: "video", name: "4K original", width: 3840, height: 2160,
+            durationFrames: 120, mediaId: "managed-source", thumbnailId: "managed-image",
+          };
+          const assets = Array.from({ length: 118 }, (_, i) => ({ ...base, id: `video-${i}`, thumbnailId: i === 0 ? "managed-image" : undefined }));
+          await Promise.all(assets.map((asset) => library.connectManaged(asset)));
+          const cold = { count: library.items.size, starts, active: attached(),
+            cover: library.items.get("video-0").thumbnail,
+            duration: library.items.get("video-0").duration,
+            width: library.items.get("video-0").width };
+          await library.import(document.querySelector("#fixture").files[0], assets[0], { defer: true });
+          const cached = { starts, active: attached(), duration: library.items.get("video-0").duration };
+          const project = createProject();
+          project.width = 160; project.height = 90; project.assets = assets;
+          project.clips = [
+            { id: "first", assetId: "video-0", inFrame: 0, outFrame: 30, volume: 1 },
+            { id: "second", assetId: "video-117", inFrame: 30, outFrame: 60, volume: 1 },
+          ];
+          await library.seek(project, 15);
+          const first = { active: attached(), time: library.items.get("video-0").element.currentTime };
+          await library.seek(project, 45);
+          const canvas = document.querySelector("#preview");
+          renderFrame(canvas, project, library, 45);
+          const second = { active: attached(), time: library.items.get("video-117").element.currentTime,
+            oldReady: library.items.get("video-0").element.readyState,
+            picture: canvas.getContext("2d").getImageData(0, 0, 160, 90).data
+              .some((value, index) => index % 4 !== 3 && value > 40) };
+          const samples = await Promise.all([0.5, 1.5, 2.5].map((time) => captureAssetFrame(library, "video-2", time)));
+          const sampled = { active: attached(), peak, sizes: samples.map((sample) => sample.data.length),
+            previewTime: library.items.get("video-117").element.currentTime };
+          const beforeCovers = starts;
+          let cardVisible = true;
+          const pendingCovers = Promise.all([
+            ...[2, 2, 3, 4].map((id) => library.ensureThumbnail(`video-${id}`)),
+            library.ensureThumbnail("video-5", () => cardVisible),
+          ]);
+          cardVisible = false;
+          const covers = await pendingCovers;
+          const visibleCovers = { starts: starts - beforeCovers, active: attached(), peak,
+            pictures: covers.slice(0, 4).every((cover) => cover?.startsWith("data:image/jpeg")),
+            skipped: covers[4] === undefined, shared: covers[0] === covers[1],
+            previewTime: library.items.get("video-117").element.currentTime };
+          const imported = await Promise.all([
+            ...Array.from({ length: 4 }, () => library.import(document.querySelector("#fixture").files[0])),
+            library.inspectManaged({ id: "managed-source", name: "managed", mimeType: "video/mp4", bytes: 1000 }, "managed.mp4", 1),
+          ]);
+          const afterImports = { active: attached(), peak,
+            covers: imported.every((asset) => library.items.get(asset.id).thumbnail?.startsWith("data:image/jpeg")),
+            metadata: imported.every((asset) => asset.durationFrames > 90 && asset.width === 160),
+            dormant: imported.every((asset) => !library.items.get(asset.id).element.hasAttribute("src")) };
+          library.suspend();
+          const stopped = { active: attached(), count: library.items.size, missing: library.missing(project).length };
+          await library.seek(project, 15);
+          const resumed = { active: attached(), time: library.items.get("video-0").element.currentTime };
+          return { cold, cached, first, second, sampled, visibleCovers, afterImports, stopped, resumed };
+        } finally {
+          library.clear();
+          Object.defineProperty(HTMLMediaElement.prototype, "src", descriptor);
+        }
+      }));
+      assert.deepEqual(result.cold, { count: 118, starts: 0, active: 0, cover: "/media/managed-image", duration: 4, width: 3840 });
+      assert.deepEqual(result.cached, { starts: 0, active: 0, duration: 4 });
+      assert.equal(result.first.active, 1);
+      assert.ok(Math.abs(result.first.time - 0.5) < 0.02);
+      assert.equal(result.second.active, 1);
+      assert.equal(result.second.oldReady, 0);
+      assert.equal(result.second.picture, true);
+      assert.ok(Math.abs(result.second.time - 1.5) < 0.02);
+      assert.equal(result.sampled.active, 1);
+      assert.equal(result.sampled.peak, 2);
+      assert.ok(result.sampled.sizes.every((bytes) => bytes > 500));
+      assert.ok(Math.abs(result.sampled.previewTime - 1.5) < 0.02);
+      assert.deepEqual(result.visibleCovers, { starts: 3, active: 1, peak: 2, pictures: true, skipped: true, shared: true, previewTime: result.sampled.previewTime });
+      assert.deepEqual(result.afterImports, { active: 1, peak: 2, covers: true, metadata: true, dormant: true });
+      assert.deepEqual(result.stopped, { active: 0, count: 123, missing: 0 });
+      assert.equal(result.resumed.active, 1);
+      assert.ok(Math.abs(result.resumed.time - 0.5) < 0.02);
+    });
+
+    await mediaTest("playback reconnects video audio and follows both trimmed sources after eviction", async () => {
+      const result = await withMediaPage((page) => page.evaluate(async () => {
+        const { MediaLibrary, createProject, playSequence } = window.videoMedia;
+        const library = new MediaLibrary();
+        const project = createProject();
+        const assets = ["left", "right"].map((id) => ({ id, kind: "video", name: id,
+          mediaId: "managed-source", durationFrames: 120, width: 160, height: 90 }));
+        project.width = 160; project.height = 90; project.assets = assets;
+        project.clips = [
+          { id: "one", assetId: "left", inFrame: 30, outFrame: 42, volume: 0.3 },
+          { id: "two", assetId: "right", inFrame: 60, outFrame: 72, volume: 0.7 },
+        ];
+        const runs = [];
+        try {
+          await Promise.all(assets.map((asset) => library.connectManaged(asset)));
+          for (let iteration = 0; iteration < 2; iteration++) {
+            const segments = [];
+            let lastFrame;
+            await playSequence(project, library, document.querySelector("#preview"), 0,
+              new AbortController().signal, (frame) => { lastFrame = frame; }, {
+                async onReady() {
+                  // Let scheduled gain values reach the audio rendering quantum.
+                  await new Promise((resolve) => setTimeout(resolve, 30));
+                  const active = [...library.items].filter(([, item]) => item.element.hasAttribute("src"));
+                  segments.push(active.map(([id, item]) => ({ id, time: item.element.currentTime,
+                    gain: item.gain.gain.value, connected: item.audioConnected })));
+                },
+              });
+            runs.push({ segments, lastFrame,
+              leftDetached: !library.items.get("left").audioConnected,
+              activeCount: [...library.items.values()].filter((item) => item.element.hasAttribute("src")).length });
+          }
+          return runs;
+        } finally { library.clear(); await library.audio?.close(); }
+      }));
+      for (const run of result) {
+        assert.equal(run.lastFrame, 24);
+        assert.equal(run.leftDetached, true);
+        assert.equal(run.activeCount, 1);
+        assert.equal(run.segments.length, 2);
+        for (const [index, entries] of run.segments.entries()) {
+          assert.equal(entries.length, 1);
+          assert.equal(entries[0].id, index ? "right" : "left");
+          assert.ok(Math.abs(entries[0].time - (index ? 2 : 1)) < 0.2);
+          assert.ok(Math.abs(entries[0].gain - (index ? 0.7 : 0.3)) < 0.001, JSON.stringify(run));
+          assert.equal(entries[0].connected, true);
+        }
+      }
+    });
+
+    await mediaTest("suspending a pending decoder cancels it and permits a fresh seek", async () => {
+      const result = await withMediaPage((page) => page.evaluate(async () => {
+        const { MediaLibrary, createProject } = window.videoMedia;
+        const library = new MediaLibrary();
+        const project = createProject();
+        const asset = { id: "slow", kind: "video", name: "slow", durationFrames: 120,
+          mediaId: "slow-source", width: 160, height: 90 };
+        project.assets = [asset];
+        project.clips = [{ id: "clip", assetId: asset.id, inFrame: 0, outFrame: 90, volume: 1 }];
+        try {
+          await library.connectManaged(asset);
+          const pending = library.seek(project, 15).then(() => false, () => true);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          library.suspend();
+          const rejected = await pending;
+          const released = !library.items.get(asset.id).element.hasAttribute("src");
+          await library.seek(project, 30);
+          return { rejected, released, time: library.items.get(asset.id).element.currentTime };
+        } finally { library.clear(); }
+      }));
+      assert.equal(result.rejected, true);
+      assert.equal(result.released, true);
+      assert.ok(Math.abs(result.time - 1) < 0.02);
+    });
+
+    await mediaTest("reads real metadata and seeks the decoded source before drawing", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async () => {
           const { MediaLibrary, createProject, renderFrame } = window.videoMedia;
@@ -260,10 +437,10 @@ test(
       assert.equal(result.hasPicture, true);
     });
 
-    await t.test("restores decoded video and image covers for every storage mode even when thumbnail IDs are stale", async () => {
+    await mediaTest("restores video covers on first use and image covers immediately, including stale thumbnail IDs", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async (imageBytes) => {
-          const { MediaLibrary } = window.videoMedia;
+          const { MediaLibrary, createProject } = window.videoMedia;
           const snapshots = [];
           async function inspect(mode, library, asset) {
             const item = library.items.get(asset.id);
@@ -314,6 +491,12 @@ test(
               const restored = JSON.parse(JSON.stringify({ ...base, ...source }));
               try {
                 await library.connectManaged(restored);
+                if (kind === "video") {
+                  const project = createProject();
+                  project.assets = [restored];
+                  project.clips = [{ id: "cover", assetId: restored.id, inFrame: 0, outFrame: 60, volume: 1 }];
+                  await library.seek(project, 0);
+                }
                 snapshots.push(await inspect(`${kind}:${mode}`, library, restored));
               } finally { library.clear(); }
             }
@@ -333,7 +516,7 @@ test(
       }
     });
 
-    await t.test("a seeked source is not published until its real frame notification arrives", async () => {
+    await mediaTest("a seeked source is not published until its real frame notification arrives", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async () => {
           const { MediaLibrary } = window.videoMedia;
@@ -374,7 +557,7 @@ test(
       assert.equal(result.time, 0);
     });
 
-    await t.test("optional frame waits fall back without the API and clean up errors, timeout and cancellation", async () => {
+    await mediaTest("optional frame waits fall back without the API and clean up errors, timeout and cancellation", async () => {
       const results = await withMediaPage((page) =>
         page.evaluate(async () => {
           const { MediaLibrary } = window.videoMedia;
@@ -433,13 +616,13 @@ test(
           assert.equal(result.thumbnail, result.mode === "absent", result.mode);
           assert.equal(result.paused, true, result.mode);
           assert.equal(result.time, 0, result.mode);
-          assert.ok(result.ready >= 2, JSON.stringify(result));
+          assert.equal(result.ready, 0, "import releases its decoder after retaining the cover");
         }
         assert.equal(result.cancelled, ["error", "timeout", "cancel"].includes(result.mode) ? 1 : 0, result.mode);
       }
     });
 
-    await t.test("a real black WebM first frame is a valid cover and stays paused at zero", async () => {
+    await mediaTest("a real black WebM first frame is a valid cover and stays paused at zero", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async () => {
           const { MediaLibrary } = window.videoMedia;
@@ -483,21 +666,21 @@ test(
       assert.equal(result.time, 0);
     });
 
-    await t.test("cover recovery for another asset leaves the active source player and ownership untouched", async () => {
+    await mediaTest("lazy recovery for another asset leaves the active source player and ownership untouched", async () => {
       const result = await withMediaPage((page) =>
         page.evaluate(async () => {
-          const { MediaLibrary } = window.videoMedia;
+          const { MediaLibrary, createProject } = window.videoMedia;
           const library = new MediaLibrary();
           try {
             const asset = await library.import(document.querySelector("#fixture").files[0]);
             asset.mediaId = "managed-source";
             await library.connectManaged(asset);
+            const project = createProject();
+            project.assets = [asset];
+            project.clips = [{ id: "clip", assetId: asset.id, inFrame: 0, outFrame: 90, volume: 1 }];
+            await library.seek(project, 30);
             const item = library.items.get(asset.id);
             const element = item.element;
-            await new Promise((resolve) => {
-              element.addEventListener("seeked", resolve, { once: true });
-              element.currentTime = 1;
-            });
             let seekEvents = 0;
             element.addEventListener("seeking", () => { seekEvents++; });
             element.muted = true;
@@ -513,7 +696,7 @@ test(
               seekEvents,
               sameElement: library.items.get(asset.id) === item,
               ownsPlayback: library.ownsPlayback(owner),
-              otherCover: library.items.get("other-asset").thumbnail.startsWith("data:image/jpeg;base64,"),
+              otherDormant: !library.items.get("other-asset").element.hasAttribute("src"),
             };
           } finally { library.clear(); }
         }),
@@ -523,10 +706,10 @@ test(
       assert.equal(result.seekEvents, 0);
       assert.equal(result.sameElement, true);
       assert.equal(result.ownsPlayback, true);
-      assert.equal(result.otherCover, true);
+      assert.equal(result.otherDormant, true);
     });
 
-    await t.test(
+    await mediaTest(
       "trimmed and reordered media keep early source clocks inside each timeline segment",
       { timeout: 15_000 },
       async () => {
@@ -645,7 +828,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "an aborted playback finishing late cannot pause or update its replacement",
       { timeout: 15_000 },
       async () => {
@@ -747,7 +930,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "encoder construction failure stops only its real canvas video tracks",
       async () => {
         const result = await withMediaPage((page) =>
@@ -805,7 +988,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "exports audible WebM, supports 0/1/2 gains, reimports it, and excludes seek waits",
       { timeout: 30_000 },
       async () => {
@@ -923,7 +1106,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "reconnects managed media and captures a real JPEG without seeking the preview",
       async () => {
         const result = await withMediaPage((page) =>
@@ -987,7 +1170,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "clearing the project rejects stale managed decoding without replacing the new project",
       async () => {
         const result = await withMediaPage((page) =>
@@ -998,7 +1181,7 @@ test(
               const asset = await library.import(document.querySelector("#fixture").files[0]);
               const old = { ...asset, id: "old-project", mediaId: "slow-source" };
               const current = { ...asset, id: "new-project", mediaId: "managed-source" };
-              const pending = library.connectManaged(old).then(
+              const pending = library.connectManaged(old, { inspect: true }).then(
                 () => false,
                 () => true,
               );
@@ -1009,7 +1192,7 @@ test(
                 rejected,
                 oldPresent: library.items.has(old.id),
                 currentPresent: library.items.has(current.id),
-                width: library.items.get(current.id).element.videoWidth,
+                width: library.items.get(current.id).width,
                 count: library.items.size,
               };
             } finally {
@@ -1025,7 +1208,153 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
+      "free timeline gaps stay black, preserve time, and retain independent audio in WebM",
+      { timeout: 15_000 },
+      async () => {
+        const result = await withMediaPage((page) =>
+          page.evaluate(async () => {
+            const { MediaLibrary, createProject, recordSequence, renderFrame } = window.videoMedia;
+            const library = new MediaLibrary();
+            const restored = new MediaLibrary();
+            const decoder = new AudioContext();
+            try {
+              const asset = await library.import(document.querySelector("#fixture").files[0]);
+              const project = createProject();
+              project.width = 160;
+              project.height = 90;
+              project.timelineMode = "free";
+              project.assets = [asset];
+              project.captions = [];
+              project.clips = [
+                {
+                  id: "first",
+                  assetId: asset.id,
+                  startFrame: 15,
+                  inFrame: 0,
+                  outFrame: 15,
+                  volume: 0.5,
+                },
+                {
+                  id: "second",
+                  assetId: asset.id,
+                  startFrame: 60,
+                  inFrame: 60,
+                  outFrame: 75,
+                  volume: 0.5,
+                },
+              ];
+              project.audioClips = [
+                {
+                  id: "voice",
+                  assetId: asset.id,
+                  startFrame: 30,
+                  inFrame: 30,
+                  outFrame: 60,
+                  volume: 0.6,
+                },
+              ];
+              const canvas = document.querySelector("#preview");
+              const black = () =>
+                canvas
+                  .getContext("2d")
+                  .getImageData(0, 0, 160, 90)
+                  .data.every((value, index) => index % 4 === 3 || value < 3);
+              let leading = false,
+                internal = false,
+                gapSourcePaused = false,
+                finalFrame = -1;
+              const output = await recordSequence(
+                project,
+                library,
+                new AbortController().signal,
+                (frame) => {
+                  finalFrame = frame;
+                  renderFrame(canvas, project, library, frame);
+                  if (frame >= 4 && frame < 12) leading ||= black();
+                  if (frame >= 36 && frame < 48) {
+                    internal ||= black();
+                    gapSourcePaused ||= library.items.get(asset.id).element.paused;
+                  }
+                },
+              );
+              const audio = await decoder.decodeAudioData(await output.arrayBuffer());
+              const samples = audio.getChannelData(0);
+              const rms = (start, end) => {
+                let energy = 0,
+                  count = 0;
+                for (
+                  let i = Math.floor(start * audio.sampleRate);
+                  i < Math.min(samples.length, end * audio.sampleRate);
+                  i++
+                ) {
+                  energy += samples[i] ** 2;
+                  count++;
+                }
+                return Math.sqrt(energy / Math.max(1, count));
+              };
+              const imported = await restored.import(
+                new File([output], "gaps.webm", { type: "video/webm" }),
+              );
+              const decodedProject = createProject();
+              decodedProject.width = 160;
+              decodedProject.height = 90;
+              decodedProject.assets = [imported];
+              decodedProject.captions = [];
+              decodedProject.audioClips = [];
+              decodedProject.clips = [
+                {
+                  id: "rendered",
+                  assetId: imported.id,
+                  inFrame: 0,
+                  outFrame: imported.durationFrames,
+                  volume: 1,
+                },
+              ];
+              const encodedBlack = [];
+              for (const frame of [6, 42]) {
+                await restored.seek(decodedProject, frame);
+                renderFrame(canvas, decodedProject, restored, frame);
+                encodedBlack.push(black());
+              }
+              return {
+                leading,
+                internal,
+                gapSourcePaused,
+                finalFrame,
+                encodedBlack,
+                duration: audio.duration,
+                importedSeconds: imported.durationFrames / 30,
+                silent: rms(0.12, 0.32),
+                first: rms(0.65, 0.85),
+                voice: rms(1.3, 1.65),
+                second: rms(2.1, 2.3),
+              };
+            } finally {
+              library.clear();
+              restored.clear();
+              await library.audio?.close();
+              await restored.audio?.close();
+              await decoder.close();
+            }
+          }),
+        );
+        assert.equal(result.finalFrame, 75, JSON.stringify(result));
+        assert.equal(result.leading, true);
+        assert.equal(result.internal, true);
+        assert.equal(result.gapSourcePaused, true);
+        assert.deepEqual(result.encodedBlack, [true, true]);
+        assert.ok(Math.abs(result.duration - 2.5) < 0.2, JSON.stringify(result));
+        assert.ok(Math.abs(result.importedSeconds - 2.5) < 0.2, JSON.stringify(result));
+        assert.ok(result.silent < 0.0001, JSON.stringify(result));
+        assert.ok(
+          result.first > 0.005 && result.voice > 0.005 && result.second > 0.005,
+          JSON.stringify(result),
+        );
+      },
+    );
+
+    await mediaTest(
       "records overlapping independent audio clips from one asset at their own source times",
       { timeout: 20000 },
       async () => {
@@ -1128,7 +1457,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "bundled narration reconnects and produces audible browser WebM",
       { timeout: 12000 },
       async () => {
@@ -1186,7 +1515,7 @@ test(
       },
     );
 
-    await t.test(
+    await mediaTest(
       "rejects export when the engineering data references an unconnected source",
       async () => {
         const result = await withMediaPage((page) =>

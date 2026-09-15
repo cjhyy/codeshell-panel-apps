@@ -400,9 +400,9 @@ test("restored zero-of-four AI progress survives scope changes until retry or ex
   assert.equal(f.startAttempts.length, 1, "A failed zero-result queue also cannot be replaced");
   const checkpoint = f.snapshots.at(-1)!;
   assert.ok(checkpoint);
-  assert.equal(checkpoint.state.phase, "preparing");
+  assert.equal(checkpoint.state.phase, "failed");
   await f.ai.restore(checkpoint);
-  assert.equal(f.ai.state.phase, "cancelled");
+  assert.equal(f.ai.state.phase, "failed");
   const restored = structuredClone(f.ai.state);
   f.ui.setQueue(["source-a"]);
   f.setSource("source-a");
@@ -434,6 +434,38 @@ test("restored zero-of-four AI progress survives scope changes until retry or ex
     before,
     "Recovery, cancellation and discard never edit the project",
   );
+});
+
+test("a failed AI result offers retry or discard without claiming candidates exist", async () => {
+  const f = fixture();
+  const before = structuredClone(f.project());
+  await f.ui.action("roughcut-ai-start");
+  const task = f.tasks[0]!;
+  task.status = "completed";
+  task.result = {
+    text: JSON.stringify({
+      projectId: f.project().id,
+      requestToken: f.ai.requestToken,
+      baseRevision: null,
+      title: "候选保留段（未生成）",
+      explanation: "Panel 工具返回 unknown session，无法读取工程。<script>bad()</script>",
+      operations: [{ type: "rough-cuts", cuts: [] }],
+    }),
+  };
+  await f.ai.handleTask(task);
+  const html = f.ui.render();
+  assert.match(html, /本次分析失败，尚未生成候选段/);
+  assert.match(html, /重试未完成的素材/);
+  assert.match(html, /unknown session/);
+  assert.doesNotMatch(html, /<script>|data-action="roughcut-ai-save"/);
+  expectAIStartDisabled(f.ui, true);
+  await f.ui.action("roughcut-ai-retry");
+  assert.equal(f.startAttempts.length, 2);
+  assert.deepEqual(promptedIds(f.startAttempts[1]!), ["source-a"]);
+  await f.ui.action("roughcut-ai-cancel");
+  await f.ui.action("roughcut-ai-discard");
+  expectAIStartDisabled(f.ui, false);
+  assert.deepEqual(f.project(), before);
 });
 
 test("optional tools keep their disclosure through source and draft updates and reset with the project", async () => {

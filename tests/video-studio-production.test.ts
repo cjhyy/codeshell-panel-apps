@@ -1528,6 +1528,99 @@ test("reference extraction rejects invalid or unselected ranges before Host subm
   assert.equal(f.host.calls.filter(({ method }) => method === "media.audio.extract").length, 0);
 });
 
+async function extractedReference() {
+  const f = await fixture();
+  f.host.handlers.set("media.audio.extract", () => f.host.add("audio-extract"));
+  const job = await f.controller.extractReference("source", 0, 180);
+  await f.controller.refresh();
+  Object.assign(f.host.jobs.get(job.id)!, {
+    status: "succeeded",
+    updatedAt: Date.now() + 100,
+    result: {
+      asset: {
+        id: `asset-${"b".repeat(64)}`,
+        name: "本人参考.wav",
+        mimeType: "audio/wav",
+        bytes: 200,
+        createdAt: 1,
+      },
+      inspection: { kind: "audio", durationSeconds: 6, audio: { channels: 1 } },
+    },
+  });
+  return { fixture: f, job };
+}
+
+test("completed reference publication is recoverable after a failed save and after its consumed asset is removed", async () => {
+  const { fixture: f, job } = await extractedReference();
+  f.beforePublish(async () => {
+    throw new Error("保存失败：磁盘空间不足");
+  });
+  await assert.rejects(f.controller.refresh(), /磁盘空间不足/);
+  assert.ok(!binding(f.host, job.id).consumed);
+  f.beforePublish();
+  await f.controller.recoverReference(job.id);
+  assert.equal(binding(f.host, job.id).consumed, true);
+  assert.equal(f.published.length, 1);
+  assert.equal(f.published[0]!.options?.audioPlacement, undefined);
+  const savedResult = f.current.assets.find((asset) => asset.kind === "audio")!;
+  f.current = {
+    ...f.current,
+    assets: f.current.assets.filter((asset) => asset.id !== savedResult.id),
+  };
+  await f.controller.recoverReference(job.id);
+  assert.equal(
+    f.current.assets.find((asset) => asset.id === savedResult.id)?.mediaId,
+    savedResult.mediaId,
+  );
+  assert.equal(f.current.audioClips.length, 0);
+  assert.equal(f.host.calls.filter((call) => call.method === "media.audio.extract").length, 1);
+  assert.equal(f.host.calls.filter((call) => call.method === "media.jobs.retry").length, 0);
+});
+
+test("reference recovery rejects foreign projects, non-reference jobs and changed or invalid results", async () => {
+  const { fixture: f, job } = await extractedReference();
+  f.current = project("project-b");
+  await assert.rejects(f.controller.recoverReference(job.id), /不属于当前工程/);
+  await assert.rejects(f.controller.recoverReference("unbound"), /不属于当前工程/);
+  f.current = project();
+  f.host.jobs.get(job.id)!.status = "queued";
+  f.host.handlers.set("media.tts.setup", () => f.host.add("tts-setup"));
+  const setup = await f.controller.setupTts("audio8-tts");
+  await assert.rejects(f.controller.recoverReference(setup.id), /不属于当前工程/);
+  f.host.jobs.get(job.id)!.status = "succeeded";
+  const original = structuredClone(f.host.jobs.get(job.id)!.result) as any;
+  for (const result of [
+    undefined,
+    { ...original, inspection: { kind: "audio", durationSeconds: 31 } },
+    { ...original, asset: { ...original.asset, id: "unmanaged" } },
+  ]) {
+    f.host.jobs.get(job.id)!.result = result;
+    await assert.rejects(f.controller.recoverReference(job.id), /有效且一致/);
+  }
+  assert.equal(f.published.length, 0);
+  f.host.jobs.get(job.id)!.result = original;
+  await f.controller.recoverReference(job.id);
+  f.host.jobs.get(job.id)!.result = {
+    ...original,
+    asset: { ...original.asset, id: `asset-${"c".repeat(64)}` },
+  };
+  await assert.rejects(f.controller.recoverReference(job.id), /有效且一致/);
+  assert.equal(f.published.length, 1);
+});
+
+test("reference recovery stops a delayed result when the project switches", async () => {
+  const { fixture: f, job } = await extractedReference();
+  const read = deferred<MediaJob>();
+  f.host.handlers.set("media.jobs.get", () => read.promise);
+  const recovery = f.controller.recoverReference(job.id);
+  await until(() => f.host.calls.some((call) => call.method === "media.jobs.get"));
+  f.current = project("project-b");
+  read.resolve(structuredClone(f.host.jobs.get(job.id)!));
+  await assert.rejects(recovery, /工程已切换/);
+  assert.equal(f.published.length, 0);
+  assert.ok(!binding(f.host, job.id).consumed);
+});
+
 test("older Host extraction support reports an actionable upgrade without masking other failures", async () => {
   const f = await fixture();
   const unsupported = new Error("Unsupported media method: media.audio.extract");

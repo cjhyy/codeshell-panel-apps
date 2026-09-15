@@ -1,4 +1,9 @@
 const paths: Record<string, string> = {
+  minus: '<path d="M5 12h14"/>',
+  fit: '<path d="M8 4H4v16h4M16 4h4v16h-4M8 12h8M10 9l-3 3 3 3m4-6 3 3-3 3"/>',
+  keyboard:
+    '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M5 9h1m3 0h1m3 0h1m3 0h1M5 12h1m3 0h1m3 0h1m3 0h1M7 16h10"/>',
+
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   film: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 3v18M17 3v18M3 8h4m10 0h4M3 16h4m10 0h4"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3z"/>',

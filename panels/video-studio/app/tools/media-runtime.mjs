@@ -411,6 +411,100 @@ else:
     raise ValueError("Unsupported managed action")
 `;
 
+// native/providers/audio-probe.ts
+var AUDIO_PROBE_MESSAGES = [
+  "参考素材中没有可用音轨，请选择音频或带声音的视频",
+  "无法解析这段声音，请先提取为 WAV 参考录音后重试",
+  "暂时无法测量这段录音时长，请先提取为 WAV 参考录音后重试",
+  "声音时长检查超时，请先裁剪或提取参考录音后重试"
+];
+var [NO_AUDIO, UNSUPPORTED, NO_DURATION, TIMEOUT] = AUDIO_PROBE_MESSAGES;
+var number = (value) => {
+  if (typeof value !== "string" && typeof value !== "number" || value === "") return;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : void 0;
+};
+var duration = (value) => {
+  const result = number(value);
+  return result !== void 0 && result > 0 ? result : void 0;
+};
+async function probeVoiceAudio(path, signal, options) {
+  const deadline = AbortSignal.timeout(15e3);
+  const bounded2 = combineAbortSignals([signal, deadline]);
+  const source = ["-protocol_whitelist", "file,pipe", "-format_whitelist", options.formats];
+  try {
+    const raw = await runMediaProcess(
+      options.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source,
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "format=duration,start_time:stream=codec_name,sample_rate,channels,duration,start_time",
+        "-of",
+        "json",
+        path
+      ],
+      { signal: bounded2, maxStdoutBytes: 64 * 1024 }
+    );
+    const data = JSON.parse(raw.stdout.toString("utf8"));
+    const audio = data.streams?.[0];
+    if (!audio) throw new Error(NO_AUDIO);
+    let durationSeconds = duration(audio.duration) ?? duration(data.format?.duration);
+    if (durationSeconds !== void 0) return { audio, durationSeconds };
+    let pending = "", bytes = 0, packets = 0;
+    let firstTime, lastTime, lastDelta = 0, lastEnd = -Infinity;
+    const consume = (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 4 * 1024 * 1024) throw new Error(NO_DURATION);
+      const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      if (pending.length > 4096) throw new Error(NO_DURATION);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (++packets > 2e4) throw new Error(NO_DURATION);
+        const fields = Object.fromEntries(line.split("|").map((part) => part.split("=")));
+        const time = number(fields.pts_time) ?? number(fields.dts_time);
+        if (time === void 0) continue;
+        firstTime = firstTime === void 0 ? time : Math.min(firstTime, time);
+        if (lastTime !== void 0 && time > lastTime) lastDelta = time - lastTime;
+        lastTime = time;
+        lastEnd = Math.max(lastEnd, time + (duration(fields.duration_time) ?? lastDelta));
+      }
+    };
+    await runMediaProcess(
+      options.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source,
+        "-select_streams",
+        "a:0",
+        "-read_intervals",
+        "%+31",
+        "-show_entries",
+        "packet=pts_time,dts_time,duration_time",
+        "-of",
+        "compact=p=0:nk=0",
+        path
+      ],
+      { signal: bounded2, onStdout: consume }
+    );
+    consume(Buffer.from("\n"));
+    const origin = number(audio.start_time) ?? number(data.format?.start_time) ?? firstTime;
+    durationSeconds = origin === void 0 ? void 0 : duration(lastEnd - origin);
+    if (durationSeconds === void 0) throw new Error(NO_DURATION);
+    return { audio, durationSeconds };
+  } catch (error) {
+    if (signal.aborted) throw mediaAbortError();
+    if (deadline.aborted) throw new Error(TIMEOUT, { cause: error });
+    if (error instanceof Error && AUDIO_PROBE_MESSAGES.includes(error.message)) throw error;
+    throw new Error(UNSUPPORTED, { cause: error });
+  }
+}
+
 // native/providers/audio8.ts
 var PACKAGES = [
   "numpy==2.4.3",
@@ -800,31 +894,7 @@ function createAudio8TtsProvider(options) {
     }
   }
   async function probe(path, signal, formats = FORMATS) {
-    const raw = await runMediaProcess(
-      options.ffprobePath ?? "ffprobe",
-      [
-        "-v",
-        "error",
-        "-protocol_whitelist",
-        "file,pipe",
-        "-format_whitelist",
-        formats,
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "format=duration:stream=codec_name,sample_rate,channels,duration",
-        "-of",
-        "json",
-        path
-      ],
-      { signal }
-    );
-    const data = JSON.parse(raw.stdout.toString("utf8"));
-    const audio = data.streams?.[0];
-    const durationSeconds = Number(audio?.duration ?? data.format?.duration);
-    if (!audio || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error("无法读取录音时长，请选择有效的音频或视频素材");
-    return { audio, durationSeconds };
+    return probeVoiceAudio(path, signal, { ffprobePath: options.ffprobePath, formats });
   }
   async function audible(path, signal) {
     const raw = await runMediaProcess(
@@ -1201,6 +1271,7 @@ function createAudio8TtsProvider(options) {
       if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
       const message = error instanceof Error ? error.message : "";
       const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
         "本地模型校验失败，请重新准备声音克隆",
         "参考录音须为 512 MB 以内的本地素材",
         "无法读取录音时长，请选择有效的音频或视频素材",
@@ -1600,31 +1671,7 @@ function createQwenTtsProvider(options) {
     }
   }
   async function probe(path, signal, formats = FORMATS2) {
-    const raw = await runMediaProcess(
-      options.ffprobePath ?? "ffprobe",
-      [
-        "-v",
-        "error",
-        "-protocol_whitelist",
-        "file,pipe",
-        "-format_whitelist",
-        formats,
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "format=duration:stream=codec_name,sample_rate,channels,duration",
-        "-of",
-        "json",
-        path
-      ],
-      { signal }
-    );
-    const data = JSON.parse(raw.stdout.toString("utf8"));
-    const audio = data.streams?.[0];
-    const durationSeconds = Number(audio?.duration ?? data.format?.duration);
-    if (!audio || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error("无法读取录音时长，请选择有效的音频或视频素材");
-    return { audio, durationSeconds };
+    return probeVoiceAudio(path, signal, { ffprobePath: options.ffprobePath, formats });
   }
   async function audible(path, signal) {
     const raw = await runMediaProcess(
@@ -1988,6 +2035,7 @@ function createQwenTtsProvider(options) {
       if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
       const message = error instanceof Error ? error.message : "";
       const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
         "本地模型校验失败，请重新准备声音克隆",
         "参考录音须为 512 MB 以内的本地素材",
         "无法读取录音时长，请选择有效的音频或视频素材",
@@ -2184,7 +2232,35 @@ import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypt
 import { access, mkdir as mkdir4, readFile as readFile4, realpath, rename as rename4, stat as stat3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, isAbsolute as isAbsolute3, join as join4, resolve as resolve3 } from "node:path";
-var MEDIA_PROCESSOR_CACHE_VERSION = 3;
+
+// src/rough-cut.ts
+var MAX_FRAMES = 24 * 60 * 60 * 30;
+
+// src/model.ts
+var FPS = 30;
+var MAX_FRAMES2 = 24 * 60 * 60 * FPS;
+function timelineDuration(project) {
+  let cursor = 0;
+  let duration2 = 0;
+  for (const clip of project.clips) {
+    const start = project.timelineMode === "free" ? clip.startFrame ?? cursor : cursor;
+    cursor = start + clip.outFrame - clip.inFrame;
+    duration2 = Math.max(duration2, cursor);
+  }
+  return duration2;
+}
+function timelineClips(project) {
+  let cursor = 0;
+  const result = project.clips.map((clip) => {
+    const startFrame = project.timelineMode === "free" ? clip.startFrame ?? cursor : cursor;
+    cursor = startFrame + clip.outFrame - clip.inFrame;
+    return { ...clip, startFrame, endFrame: cursor };
+  });
+  return project.timelineMode === "free" ? result.sort((a, b) => a.startFrame - b.startFrame) : result;
+}
+
+// native/media/media-processors.ts
+var MEDIA_PROCESSOR_CACHE_VERSION = 4;
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error(`${label} must be an object`);
@@ -2278,8 +2354,8 @@ async function inspectMediaFile(path, context, options = {}) {
         const previous = streams.get(stream);
         const delta = previous && time > previous.time ? time - previous.time : previous?.delta ?? 0;
         streams.set(stream, { time, delta });
-        const duration = finiteDuration(fields.duration_time) ?? delta;
-        lastEnd = Math.max(lastEnd, time + duration);
+        const duration2 = finiteDuration(fields.duration_time) ?? delta;
+        lastEnd = Math.max(lastEnd, time + duration2);
       }
     };
     await context.reportProgress({ stage: "inspect", message: "Measuring media packet duration" });
@@ -2374,6 +2450,8 @@ function renderProject(value) {
   const project = object(value, "project");
   if (project.schemaVersion !== 1 || project.fps !== 30)
     throw new Error("Only version 1, 30 fps projects are supported");
+  if (project.timelineMode !== void 0 && project.timelineMode !== "magnetic" && project.timelineMode !== "free")
+    throw new Error("Timeline mode must be magnetic or free");
   if (project.captionStyle !== void 0 && !["classic", "bold", "minimal"].includes(project.captionStyle))
     throw new Error("Caption style must be classic, bold or minimal");
   integer(project.width, 16, 8192, "width");
@@ -2396,7 +2474,11 @@ function renderProject(value) {
   };
   for (const clip of project.clips) {
     validateClip(clip);
-    frames += clip.outFrame - clip.inFrame;
+    if (clip.startFrame !== void 0)
+      integer(clip.startFrame, 0, 30 * 86400 - 1, "video startFrame");
+    const startFrame = project.timelineMode === "free" ? clip.startFrame ?? frames : frames;
+    if (startFrame < frames) throw new Error("Video clips must be ordered without overlap");
+    frames = startFrame + clip.outFrame - clip.inFrame;
   }
   integer(frames, 1, 30 * 86400, "timeline duration");
   if (!Array.isArray(project.captions) || project.captions.length > 1e4)
@@ -2422,13 +2504,13 @@ function createMediaJobProcessors(options) {
   let toolVersions;
   const source = async (input, context) => regularFile(await options.resolveAssetPath(context.scope, id(input.assetId)));
   const publish = async (path, mimeType, context) => options.publishArtifact ? { asset: await options.publishArtifact(context.scope, path, mimeType), mimeType } : { path, mimeType };
-  const encode = (args, context, duration, progress) => runMediaProcess(
+  const encode = (args, context, duration2, progress) => runMediaProcess(
     ffmpeg,
     ["-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-nostats", ...args],
     {
       signal: context.signal,
       cwd: context.workDir,
-      durationSeconds: duration,
+      durationSeconds: duration2,
       onProgress: (update) => context.reportProgress({
         fraction: progress && update.fraction !== void 0 ? progress(update.fraction) : update.fraction
       })
@@ -2960,33 +3042,42 @@ function createMediaJobProcessors(options) {
       );
       sources.set(assetId, { path, inspection: await inspectMediaFile(path, context, options) });
     }
-    const frames = project.clips.reduce((total, clip) => total + clip.outFrame - clip.inFrame, 0), duration = frames / 30;
+    const frames = timelineDuration(project), duration2 = frames / 30;
     const subtitleMode = input.subtitleMode ?? "burn";
     if (!["burn", "soft", "none"].includes(subtitleMode)) throw new Error("Invalid subtitle mode");
     if (project.captions.length && subtitleMode === "burn" && !options.renderCaptionPng)
       throw new Error("Burned captions require the Host caption PNG renderer");
     const paths = [];
+    const segments = [];
+    let cursor = 0;
+    for (const clip of timelineClips(project)) {
+      if (clip.startFrame > cursor) segments.push({ frames: clip.startFrame - cursor });
+      segments.push({ frames: clip.endFrame - clip.startFrame, clip });
+      cursor = clip.endFrame;
+    }
     let finishedFrames = 0;
-    for (const [index, clip] of project.clips.entries()) {
+    for (const [index, segment] of segments.entries()) {
       check(context);
-      const media = sources.get(clip.assetId), seconds = (clip.outFrame - clip.inFrame) / 30;
-      if (media.inspection.kind !== "image" && (!media.inspection.durationSeconds || clip.outFrame / 30 > media.inspection.durationSeconds + 1 / 30))
+      const clip = segment.clip, media = clip ? sources.get(clip.assetId) : void 0, seconds = segment.frames / 30;
+      if (clip && media && media.inspection.kind !== "image" && (!media.inspection.durationSeconds || clip.outFrame / 30 > media.inspection.durationSeconds + 1 / 30))
         throw new Error("Clip range exceeds its source media duration");
       const output2 = join4(context.workDir, `segment-${index}.mkv`);
       const args2 = [];
-      if (media.inspection.kind === "image")
-        args2.push("-loop", "1", "-framerate", "30", ...sourceOptions, "-i", media.path);
-      else args2.push("-ss", String(clip.inFrame / 30), ...sourceOptions, "-i", media.path);
-      if (!media.inspection.video)
+      if (clip && media) {
+        if (media.inspection.kind === "image")
+          args2.push("-loop", "1", "-framerate", "30", ...sourceOptions, "-i", media.path);
+        else args2.push("-ss", String(clip.inFrame / 30), ...sourceOptions, "-i", media.path);
+      }
+      if (!media?.inspection.video)
         args2.push(
           "-f",
           "lavfi",
           "-i",
-          `color=c=0x0a0e10:s=${project.width}x${project.height}:r=30`
+          `color=c=${media ? "0x0a0e10" : "black"}:s=${project.width}x${project.height}:r=30`
         );
-      if (!media.inspection.audio) args2.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
-      const videoInput = media.inspection.video ? 0 : 1, audioInput = media.inspection.audio ? 0 : 1;
-      const filter = `[${videoInput}:v]scale=${project.width}:${project.height}:force_original_aspect_ratio=decrease,pad=${project.width}:${project.height}:(ow-iw)/2:(oh-ih)/2:color=0x0a0e10,setsar=1,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setpts=PTS-STARTPTS[v];[${audioInput}:a]aresample=48000,volume=${clip.volume},apad,atrim=duration=${seconds},asetpts=PTS-STARTPTS[a]`;
+      if (!media?.inspection.audio) args2.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+      const videoInput = !media || media.inspection.video ? 0 : 1, audioInput = media?.inspection.audio ? 0 : media && !media.inspection.video ? 2 : 1;
+      const filter = `[${videoInput}:v]scale=${project.width}:${project.height}:force_original_aspect_ratio=decrease,pad=${project.width}:${project.height}:(ow-iw)/2:(oh-ih)/2:color=0x0a0e10,setsar=1,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setpts=PTS-STARTPTS[v];[${audioInput}:a]aresample=48000,volume=${clip?.volume ?? 1},apad,atrim=duration=${seconds},asetpts=PTS-STARTPTS[a]`;
       args2.push(
         "-filter_complex",
         filter,
@@ -3017,9 +3108,9 @@ function createMediaJobProcessors(options) {
         args2,
         context,
         seconds,
-        (fraction) => (base + fraction * (clip.outFrame - clip.inFrame)) / frames * 0.7
+        (fraction) => (base + fraction * segment.frames) / frames * 0.7
       );
-      finishedFrames += clip.outFrame - clip.inFrame;
+      finishedFrames += segment.frames;
       paths.push(output2);
     }
     const listPath = join4(context.workDir, "segments.txt");
@@ -3031,7 +3122,7 @@ function createMediaJobProcessors(options) {
     await encode(
       ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", joined],
       context,
-      duration,
+      duration2,
       (fraction) => 0.7 + fraction * 0.05
     );
     const prefix = `render-r${project.revision}-${randomUUID4()}`;
@@ -3104,9 +3195,9 @@ function createMediaJobProcessors(options) {
           "-i",
           media.path
         );
-        const delay = Math.round(clip.startFrame / 30 * 1e3), label = `music${index}`;
+        const delaySamples = clip.startFrame * (48e3 / 30), label = `music${index}`;
         filters.push(
-          `[${inputIndex}:a]aresample=48000,volume=${clip.volume},adelay=${delay}:all=1,apad,atrim=duration=${duration}[${label}]`
+          `[${inputIndex}:a]aresample=48000,asetpts=N/SR/TB,volume=${clip.volume},adelay=${delaySamples}S:all=1,asetpts=N/SR/TB,apad,atrim=duration=${duration2}[${label}]`
         );
         labels.push(`[${label}]`);
         inputIndex++;
@@ -3146,14 +3237,14 @@ function createMediaJobProcessors(options) {
       "-ac",
       "2",
       "-t",
-      String(duration),
+      String(duration2),
       "-movflags",
       "+faststart",
       output
     );
-    await encode(args, context, duration, (fraction) => 0.75 + fraction * 0.24);
+    await encode(args, context, duration2, (fraction) => 0.75 + fraction * 0.24);
     const inspection = await inspectMediaFile(output, context, options);
-    if (!inspection.video || !inspection.audio || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration) > Math.max(0.15, duration * 2e-3))
+    if (!inspection.video || !inspection.audio || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > Math.max(0.15, duration2 * 2e-3))
       throw new Error("Rendered MP4 failed duration or audio/video validation");
     return {
       revision: project.revision,
@@ -3209,10 +3300,10 @@ function createAudioEnhanceProcessor(options) {
       context.signal.throwIfAborted();
       const source = await options.resolveAssetPath(context.scope, input.assetId);
       const original = await inspectMediaFile(source, context, options);
-      const duration = original.durationSeconds;
-      if (!original.audio || !duration || duration > 24 * 60 * 60 || original.audio.channels < 1 || original.audio.channels > 8)
+      const duration2 = original.durationSeconds;
+      if (!original.audio || !duration2 || duration2 > 24 * 60 * 60 || original.audio.channels < 1 || original.audio.channels > 8)
         throw new Error("Audio enhancement requires an audio stream up to 24 hours and 8 channels");
-      if (Math.ceil(duration * 48e3) * original.audio.channels * 2 + 4096 > maxOutputBytes)
+      if (Math.ceil(duration2 * 48e3) * original.audio.channels * 2 + 4096 > maxOutputBytes)
         throw new Error("Enhanced WAV would exceed the media file budget");
       await mkdir5(context.outputDir, { recursive: true });
       const temporary = join5(context.outputDir, `enhanced-${randomUUID5()}.partial.wav`);
@@ -3224,7 +3315,7 @@ function createAudioEnhanceProcessor(options) {
         `highpass=f=${input.preset === "light" ? 60 : 80}:p=2`,
         ...input.denoise ? [`afftdn=nr=${input.preset === "light" ? 6 : 12}:nf=-45:tn=1`] : [],
         "apad",
-        `atrim=duration=${duration}`
+        `atrim=duration=${duration2}`
       ];
       const target = input.preset === "light" ? -18 : -16;
       const loudness = `loudnorm=I=${target}:TP=-1.5:LRA=11`;
@@ -3281,7 +3372,7 @@ function createAudioEnhanceProcessor(options) {
           "alimiter=limit=0.891251:level=false:latency=true",
           "aresample=48000",
           "apad",
-          `atrim=duration=${duration}`
+          `atrim=duration=${duration2}`
         ];
         await runMediaProcess(
           options.ffmpegPath ?? "ffmpeg",
@@ -3318,7 +3409,7 @@ function createAudioEnhanceProcessor(options) {
           ],
           {
             signal: context.signal,
-            durationSeconds: duration,
+            durationSeconds: duration2,
             onProgress: (progress) => context.reportProgress({
               stage: "enhance",
               fraction: (input.normalize ? 0.4 : 0) + (progress.fraction ?? 0) * (input.normalize ? 0.55 : 0.95)
@@ -3326,7 +3417,7 @@ function createAudioEnhanceProcessor(options) {
           }
         );
         const inspection = await inspectMediaFile(temporary, context, options);
-        if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== original.audio.channels || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration) > Math.max(1 / 30, duration * 1e-5))
+        if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== original.audio.channels || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > Math.max(1 / 30, duration2 * 1e-5))
           throw new Error("Enhanced audio did not preserve its source duration and channels");
         context.signal.throwIfAborted();
         await rename5(temporary, output);
@@ -3393,7 +3484,7 @@ function createAudioExtractProcessor(options) {
           throw new Error("这个素材没有可用的声音，请选择本人录音或带原声的视频");
         if (input.outFrame / 30 > original.durationSeconds + 1 / 60)
           throw new Error("参考片段超出原始素材时长，请重新选择起止位置");
-        const duration = (input.outFrame - input.inFrame) / 30;
+        const duration2 = (input.outFrame - input.inFrame) / 30;
         await mkdir6(context.outputDir, { recursive: true });
         const temporary = join6(context.outputDir, `reference-${randomUUID6()}.partial.wav`);
         const output = join6(context.outputDir, `reference-${randomUUID6()}.wav`);
@@ -3434,7 +3525,7 @@ function createAudioExtractProcessor(options) {
                 "asetpts=PTS-STARTPTS"
               ].join(","),
               "-t",
-              String(duration),
+              String(duration2),
               "-ar",
               "48000",
               "-ac",
@@ -3451,7 +3542,7 @@ function createAudioExtractProcessor(options) {
             ],
             {
               signal: context.signal,
-              durationSeconds: duration,
+              durationSeconds: duration2,
               onProgress: (progress) => context.reportProgress({
                 stage: "extract",
                 fraction: (progress.fraction ?? 0) * 0.95
@@ -3459,7 +3550,7 @@ function createAudioExtractProcessor(options) {
             }
           );
           const inspection = await inspectMediaFile(temporary, context, options);
-          if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== 1 || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration) > 1 / 48e3 + 1e-6)
+          if (inspection.kind !== "audio" || inspection.audio?.sampleRate !== 48e3 || inspection.audio.channels !== 1 || !inspection.durationSeconds || Math.abs(inspection.durationSeconds - duration2) > 1 / 48e3 + 1e-6)
             throw new Error("参考录音提取未保留完整片段，请重试");
           context.signal.throwIfAborted();
           await rename6(temporary, output);
@@ -5091,7 +5182,7 @@ function text(value, max, field) {
     throw new Error(`Invalid HyperFrames ${field}`);
   return value.trim();
 }
-function number(value, min, max, field) {
+function number2(value, min, max, field) {
   if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max)
     throw new Error(`Invalid HyperFrames ${field}`);
   return value;
@@ -5099,7 +5190,7 @@ function number(value, min, max, field) {
 function normalizeParams(params) {
   if (!params || !["chapter", "explainer"].includes(params.kind))
     throw new Error("Scene kind must be chapter or explainer");
-  const width = number(params.width ?? 1920, 320, 3840, "width"), height = number(params.height ?? 1080, 180, 3840, "height");
+  const width = number2(params.width ?? 1920, 320, 3840, "width"), height = number2(params.height ?? 1080, 180, 3840, "height");
   if (!Number.isInteger(width / 2) || !Number.isInteger(height / 2))
     throw new Error("MP4 scene dimensions must be even integers");
   const palette = params.palette ?? {
@@ -5120,7 +5211,7 @@ function normalizeParams(params) {
     subtitle: params.subtitle ? text(params.subtitle, 240, "subtitle") : "",
     eyebrow: params.eyebrow ? text(params.eyebrow, 60, "eyebrow") : params.kind === "chapter" ? "CHAPTER" : "EXPLAINER",
     bullets: (params.bullets ?? []).map((line) => text(line, 140, "bullet")),
-    durationSeconds: number(params.durationSeconds ?? 4, 0.5, 60, "duration"),
+    durationSeconds: number2(params.durationSeconds ?? 4, 0.5, 60, "duration"),
     width,
     height,
     palette: { ...palette }

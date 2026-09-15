@@ -252,7 +252,10 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
           if (method === "media.audio.extract") return start("audio-extract", args);
           if (method === "storage.get") return structuredClone(storage[args.key] ?? null);
           if (method === "storage.set") {
-            if (window.__failVoiceSave && args.key.startsWith("video-studio-voice-preparation"))
+            if (window.__failVoiceSave && (
+              args.key.startsWith("video-studio-voice-preparation") ||
+              args.key === "video-studio-voice-library-v1"
+            ))
               throw Error("声音保存失败：模拟磁盘已满");
             storage[args.key] = structuredClone(args.value);
             persist();
@@ -261,6 +264,12 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
           if (method === "media.document.get")
             return structuredClone(documents[args.key] ?? { revision: 0, data: null });
           if (method === "media.document.set") {
+            if (
+              window.__failExtractedPublication &&
+              args.key === "video-studio-current" &&
+              args.data.assets?.some((item) => item.mediaId === extractedId)
+            )
+              throw Error("参考录音已截取，工程保存失败：模拟磁盘已满");
             if ((documents[args.key]?.revision ?? 0) !== args.baseRevision)
               throw Error("Document revision conflict");
             const next = {
@@ -515,8 +524,24 @@ test(
         () => window.__panelTools.read_video_project().project.id !== "voice-preparation-project",
       );
       await page.locator('[data-tab="ai"]').click();
-      assert.equal(await page.locator(".voice-preparation-recipes").count(), 0);
+      await page.locator(".voice-preparation-recipes").waitFor();
       assert.equal(await page.locator("#voice-prep-model").inputValue(), "");
+      const newProject = await project(page);
+      await page.locator('[data-action="voice-prep-use"]').click();
+      await page.waitForFunction(() =>
+        window.__panelTools.read_video_project().project.assets.some((asset) =>
+          asset.kind === "audio" && asset.mediaId === "asset-" + "a".repeat(64)),
+      ).catch(async (error) => {
+        console.error("Voice reuse state:", await page.locator(".voice-preparation").textContent());
+        console.error("Voice reuse calls:", await page.evaluate(() => window.__calls.slice(-8)));
+        throw error;
+      });
+      const reusedProject = await project(page);
+      assert.equal(reusedProject.id, newProject.id);
+      assert.deepEqual(reusedProject.clips, newProject.clips);
+      assert.deepEqual(reusedProject.audioClips, newProject.audioClips);
+      assert.equal(await page.locator("#voiceover-reference-text").inputValue(), "这是我本人录下的参考声音。");
+      assert.equal(await page.locator("#voiceover-model").inputValue(), "audio8-tts");
     } finally {
       await page.close();
     }
@@ -574,6 +599,110 @@ test(
       assert.deepEqual(after.clips, before.clips);
       assert.deepEqual(after.audioClips, before.audioClips);
       assert.equal((await call(page, "media.tts")).length, 0);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
+  "a completed extraction without a saved asset exposes recovery and ending preparation, then saves its original result",
+  { timeout: 30_000 },
+  async () => {
+    const page = await pageWithHost();
+    try {
+      await page.locator('[data-rough-source="reference-project-asset"]').click();
+      await page.locator("#roughcut-in").fill("1");
+      await page.locator("#roughcut-out").fill("6");
+      const before = await project(page);
+      await page.locator('[data-action="roughcut-reference"]').click();
+      await page.waitForFunction(() => {
+        const records = JSON.parse(localStorage.getItem("voice-test-storage") || "{}");
+        return (
+          records["video-studio-voice-preparation-voice-preparation-project"]?.pending?.kind ===
+          "extract"
+        );
+      });
+      await page.evaluate(() => {
+        window.__failExtractedPublication = true;
+        window.__completeVoiceJob("audio-extract");
+      });
+      const recover = page.locator('[data-action="voice-prep-recover-extract"]');
+      await recover.waitFor();
+      assert.equal(await recover.isEnabled(), true);
+      assert.equal(
+        await page.locator('[data-action="voice-prep-dismiss-extract"]').isEnabled(),
+        true,
+      );
+      assert.match(
+        await page.locator(".voice-guide-progress").textContent(),
+        /录音已截取，尚未保存到当前工程/,
+      );
+      assert.equal(await page.locator("#voice-prep-model").isDisabled(), true);
+      assert.deepEqual(
+        await project(page),
+        before,
+        "A completed task has not yet published its asset",
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            Object.values(JSON.parse(localStorage.getItem("voice-test-jobs"))).find(
+              (job) => job.type === "audio-extract",
+            )?.status,
+        ),
+        "succeeded",
+      );
+      await recover.click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".voice-preparation [role=alert]")
+            ?.textContent.includes("模拟磁盘已满"),
+      );
+      assert.equal(await recover.isEnabled(), true, "A failed save leaves recovery available");
+      await page.evaluate(() => {
+        window.__failExtractedPublication = false;
+      });
+      await recover.click();
+      await page.waitForFunction(
+        (mediaId) => {
+          const current = window.__panelTools.read_video_project().project;
+          const asset = current.assets.find((item) => item.mediaId === mediaId);
+          return asset && document.querySelector("#voice-prep-reference")?.value === asset.id;
+        },
+        extractedId,
+      );
+      const after = await project(page);
+      const extracted = after.assets.find((asset) => asset.mediaId === extractedId);
+      assert.equal(await page.locator("#voiceover-reference").inputValue(), extracted.id);
+      assert.equal(await page.locator("#voice-prep-model").isEnabled(), true);
+      assert.equal(await recover.count(), 0);
+      assert.deepEqual(after.clips, before.clips);
+      assert.deepEqual(after.audioClips, before.audioClips);
+      assert.equal((await call(page, "media.audio.extract")).length, 1);
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.__genericHostCalls.filter(
+              (item) =>
+                item.method === "tasks.start" && item.args.input.request.action === "audio-extract",
+            ).length,
+        ),
+        1,
+        "Recovery reuses the completed task instead of extracting another recording",
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("voice-test-storage"))[
+              "video-studio-voice-preparation-voice-preparation-project"
+            ].pending,
+        ),
+        undefined,
+      );
+      const durable = await page.evaluate(() => window.__documents["video-studio-current"].data);
+      assert.ok(durable.assets.some((asset) => asset.mediaId === extractedId));
     } finally {
       await page.close();
     }

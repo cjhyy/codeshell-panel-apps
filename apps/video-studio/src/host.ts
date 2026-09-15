@@ -6,11 +6,17 @@ export interface PanelTask {
   status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
   result?: { text: string };
   error?: string;
-  activity?: { message: string }[];
+  activity?: {
+    message: string;
+    kind?: "model" | "tool" | "plan" | "error";
+    status?: "running" | "completed" | "failed";
+    toolName?: string;
+    at?: number;
+  }[];
 }
 
 export interface PanelBridge {
-  getContext(): Promise<{ cwd?: string; theme?: string; availableMethods?: string[] }>;
+  getContext(): Promise<{ cwd?: string; theme?: string; visible?: boolean; availableMethods?: string[] }>;
   call(method: string, params?: unknown): Promise<unknown>;
   callResult?(method: string, params?: unknown): Promise<BridgeResult>;
   registerTool(name: string, handler: (args: Record<string, unknown>) => unknown): () => void;
@@ -322,16 +328,18 @@ export function parseProposal(value: unknown): Proposal {
   if (
     !Number.isSafeInteger(raw.baseRevision) ||
     raw.baseRevision! < 0 ||
-    raw.baseRevision! >= Number.MAX_SAFE_INTEGER ||
+    raw.baseRevision! >= Number.MAX_SAFE_INTEGER
+  )
+    throw new Error("方案 baseRevision 必须是有效的非负整数，请先读取当前工程修订号");
+  if (
     typeof raw.title !== "string" ||
     !raw.title.trim() ||
     raw.title.length > 200 ||
-    /[\u0000-\u001f]/.test(raw.title) ||
-    !Array.isArray(raw.operations) ||
-    raw.operations.length === 0 ||
-    raw.operations.length > 100
+    /[\u0000-\u001f]/.test(raw.title)
   )
-    throw new Error("方案需要有效的 baseRevision、title 和 1–100 条 operations");
+    throw new Error("方案 title 必须是 1–200 个字符的单行非空文本");
+  if (!Array.isArray(raw.operations) || raw.operations.length === 0 || raw.operations.length > 100)
+    throw new Error("方案 operations 必须是包含 1–100 条操作的数组");
   if (
     raw.explanation !== undefined &&
     (typeof raw.explanation !== "string" ||
@@ -355,11 +363,16 @@ export function parseProposal(value: unknown): Proposal {
   return proposal;
 }
 
-export function parseTaskProposal(text: string): Proposal {
+/** Decode task JSON without accepting its contents as an edit proposal. */
+export function parseTaskResultJson(text: string): unknown {
   if (typeof text !== "string" || text.length > 1_000_000)
     throw new Error("任务结果格式错误或过长");
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text);
-  return parseProposal(JSON.parse(fenced ? fenced[1]! : text.trim()));
+  return JSON.parse(fenced ? fenced[1]! : text.trim());
+}
+
+export function parseTaskProposal(text: string): Proposal {
+  return parseProposal(parseTaskResultJson(text));
 }
 
 export function download(blob: Blob, filename: string): void {

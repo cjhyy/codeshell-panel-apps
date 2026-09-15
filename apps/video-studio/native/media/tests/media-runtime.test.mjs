@@ -227,6 +227,116 @@ mediaTest("real video render includes Unicode captions through independent Chrom
   assert.equal((await readdir(ctx.jobDir)).includes("work"), false);
 });
 mediaTest(
+  "free timeline MP4 preserves leading and internal gaps while mixing independent audio",
+  async () => {
+    const ctx = await context("render-free-gaps");
+    const project = {
+      schemaVersion: 1,
+      timelineMode: "free",
+      revision: 1,
+      fps: 30,
+      width: 320,
+      height: 180,
+      assets: [{ id: sourceId, kind: "video" }],
+      clips: [
+        { id: "first", assetId: sourceId, startFrame: 30, inFrame: 0, outFrame: 30, volume: 0.5 },
+        { id: "second", assetId: sourceId, startFrame: 90, inFrame: 60, outFrame: 90, volume: 0.5 },
+      ],
+      captions: [],
+      audioClips: [
+        { id: "voice", assetId: sourceId, startFrame: 60, inFrame: 30, outFrame: 60, volume: 0.6 },
+      ],
+    };
+    const response = await api.runMediaRequest(input("render", { project }), ctx);
+    assert.equal(response.result.frames, 120);
+    assert.ok(Math.abs(response.result.inspection.durationSeconds - 4) < 0.1);
+    await assertArtifacts(response, ctx);
+    const video = response.artifacts.find((artifact) => artifact.file.endsWith(".mp4"));
+    assert.ok(video, "render must publish a real MP4");
+    const output = join(ctx.jobDir, video.file);
+    const decode = (args) => {
+      const result = spawnSync("ffmpeg", ["-v", "error", ...args, "pipe:1"], {
+        maxBuffer: 4_000_000,
+      });
+      assert.equal(result.status, 0, result.stderr.toString());
+      return result.stdout;
+    };
+    const maxPixel = (time) => {
+      const rgb = decode([
+        "-ss",
+        String(time),
+        "-i",
+        output,
+        "-frames:v",
+        "1",
+        "-an",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+      ]);
+      let maximum = 0;
+      for (const value of rgb) maximum = Math.max(maximum, value);
+      return maximum;
+    };
+    assert.ok(maxPixel(0.3) < 3, "leading gap must be a black frame");
+    assert.ok(maxPixel(1.3) > 100, "first clip must remain at its absolute position");
+    assert.ok(maxPixel(2.3) < 3, "internal gap must be a black frame");
+    assert.ok(maxPixel(3.3) > 100, "second clip must remain at its absolute position");
+    const rms = (time) => {
+      const pcm = decode([
+        "-ss",
+        String(time),
+        "-i",
+        output,
+        "-t",
+        "0.2",
+        "-vn",
+        "-ac",
+        "1",
+        "-f",
+        "f32le",
+      ]);
+      let energy = 0;
+      for (let offset = 0; offset < pcm.length; offset += 4) energy += pcm.readFloatLE(offset) ** 2;
+      return Math.sqrt(energy / Math.max(1, pcm.length / 4));
+    };
+    const levels = [0.3, 1.3, 2.3, 3.3].map(rms);
+    assert.ok(levels[0] < 0.0001, `an empty gap must be silent: ${levels}`);
+    assert.ok(levels[1] > 0.01, "first source audio must stay aligned");
+    assert.ok(levels[2] > 0.01, "independent audio must continue across a video gap");
+    assert.ok(levels[3] > 0.01, "second source audio must stay aligned");
+  },
+);
+mediaTest("native render rejects invalid free positions and overlapping video clips", async () => {
+  const base = {
+    schemaVersion: 1,
+    timelineMode: "free",
+    revision: 1,
+    fps: 30,
+    width: 320,
+    height: 180,
+    assets: [{ id: sourceId, kind: "video" }],
+    captions: [],
+    audioClips: [],
+    clips: [
+      { id: "first", assetId: sourceId, startFrame: 30, inFrame: 0, outFrame: 30, volume: 1 },
+    ],
+  };
+  const variants = [
+    { ...base, clips: [{ ...base.clips[0], startFrame: -1 }] },
+    { ...base, clips: [{ ...base.clips[0], startFrame: 0.5 }] },
+    { ...base, clips: [{ ...base.clips[0], startFrame: 30 * 86400 }] },
+    { ...base, clips: [...base.clips, { ...base.clips[0], id: "second", startFrame: 45 }] },
+    { ...base, timelineMode: "layers" },
+  ];
+  for (const [index, project] of variants.entries()) {
+    const ctx = await context(`render-invalid-free-${index}`);
+    await assert.rejects(api.runMediaRequest(input("render", { project }), ctx));
+    assert.equal((await readdir(ctx.jobDir)).includes("outputs"), false);
+  }
+});
+mediaTest(
   "changed content, symlinks and cancellation fail without publishing partial outputs",
   async () => {
     const ctx = await context("invalid");

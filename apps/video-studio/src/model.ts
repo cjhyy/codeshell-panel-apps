@@ -58,6 +58,8 @@ export interface Clip {
   inFrame: number;
   outFrame: number;
   volume: number;
+  /** Explicit placement in a free timeline; omitted on legacy magnetic sequences. */
+  startFrame?: number;
 }
 
 export interface TimelineClip extends Clip {
@@ -77,6 +79,7 @@ export interface Caption {
 }
 
 export type CaptionStyle = "classic" | "bold" | "minimal";
+export type TimelineMode = "magnetic" | "free";
 
 /** Half-open source ranges retained during rough cutting, independent of the final timeline. */
 export interface RoughCut {
@@ -98,6 +101,8 @@ export interface Project {
   fps: 30;
   assets: Asset[];
   clips: Clip[];
+  /** Omitted version 1 projects retain the original contiguous magnetic sequence. */
+  timelineMode?: TimelineMode;
   /** Optional on legacy version 1 files; validation normalizes this to an array. */
   audioClips?: AudioClip[];
   captions: Caption[];
@@ -116,8 +121,9 @@ export type EditOperation =
   | { type: "split"; clipId: string; atFrame: number }
   | { type: "remove"; clipId: string }
   | { type: "move"; clipId: string; toIndex: number }
+  | { type: "video-move"; clipId: string; startFrame: number }
   | { type: "volume"; clipId: string; volume: number }
-  | { type: "add"; assetId: string; inFrame?: number; outFrame?: number }
+  | { type: "add"; assetId: string; inFrame?: number; outFrame?: number; startFrame?: number }
   | {
       type: "audio-add";
       assetId: string;
@@ -127,6 +133,7 @@ export type EditOperation =
       volume?: number;
     }
   | { type: "audio-trim"; clipId: string; inFrame: number; outFrame: number }
+  | { type: "audio-split"; clipId: string; atFrame: number }
   | { type: "audio-move"; clipId: string; startFrame: number }
   | { type: "audio-volume"; clipId: string; volume: number }
   | { type: "audio-remove"; clipId: string }
@@ -140,6 +147,7 @@ export type EditOperation =
       width?: number;
       height?: number;
       captionStyle?: CaptionStyle;
+      timelineMode?: TimelineMode;
     };
 
 const FPS = 30;
@@ -372,17 +380,21 @@ function readAsset(value: unknown): Asset {
 
 function readClip(value: unknown, assets: ReadonlyMap<string, Asset>): Clip {
   const data = record(value, "片段");
-  keys(data, ["id", "assetId", "inFrame", "outFrame", "volume"], "片段");
+  keys(data, ["id", "assetId", "inFrame", "outFrame", "volume", "startFrame"], "片段");
   const assetId = identifier(data.assetId, "片段素材 ID");
   const asset = assets.get(assetId);
   if (!asset) throw new Error(`片段引用了不存在的素材：${assetId}`);
   const inFrame = integer(data.inFrame, 0, asset.durationFrames - 1, "片段入点");
+  const outFrame = integer(data.outFrame, inFrame + 1, asset.durationFrames, "片段出点");
   return {
     id: identifier(data.id, "片段 ID"),
     assetId,
     inFrame,
-    outFrame: integer(data.outFrame, inFrame + 1, asset.durationFrames, "片段出点"),
+    outFrame,
     volume: volume(data.volume),
+    ...(data.startFrame !== undefined
+      ? { startFrame: integer(data.startFrame, 0, MAX_FRAMES - outFrame + inFrame, "片段开始时间") }
+      : {}),
   };
 }
 
@@ -431,6 +443,7 @@ export function validateProject(value: unknown): Project {
       "fps",
       "assets",
       "clips",
+      "timelineMode",
       "audioClips",
       "captions",
       "captionStyle",
@@ -443,12 +456,39 @@ export function validateProject(value: unknown): Project {
   );
   if (data.schemaVersion !== 1) throw new Error("不支持此工程版本");
   if (data.fps !== FPS) throw new Error("当前版本只支持 30 fps 工程");
+  if (
+    data.timelineMode !== undefined &&
+    data.timelineMode !== "magnetic" &&
+    data.timelineMode !== "free"
+  )
+    throw new Error("时间轴模式须为 magnetic 或 free");
+  const timelineMode = data.timelineMode as TimelineMode | undefined;
   const assets = list(data.assets, MAX_ASSETS, "素材列表").map(readAsset);
   uniqueIds(assets, "素材");
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
   const clips = list(data.clips, MAX_CLIPS, "片段列表").map((clip) => readClip(clip, assetsById));
   uniqueIds(clips, "片段");
-  const duration = integer(timelineDuration({ clips }), 0, MAX_FRAMES, "时间线总时长");
+  if (timelineMode === "free") {
+    let cursor = 0;
+    for (const clip of clips) {
+      clip.startFrame ??= cursor;
+      cursor = clip.startFrame + clip.outFrame - clip.inFrame;
+    }
+    clips.sort((a, b) => a.startFrame! - b.startFrame!);
+    let end = 0;
+    for (const clip of clips) {
+      if (clip.startFrame! < end) throw new Error("同一画面轨的片段不能重叠，请移到空余位置");
+      end = clip.startFrame! + clip.outFrame - clip.inFrame;
+    }
+  } else if (clips.some((clip) => clip.startFrame !== undefined)) {
+    throw new Error("磁性时间轴不能指定片段开始时间，请先关闭主序列磁性");
+  }
+  const duration = integer(
+    timelineDuration({ clips, timelineMode }),
+    0,
+    MAX_FRAMES,
+    "时间线总时长",
+  );
   const audioClips = list(
     data.audioClips === undefined ? [] : data.audioClips,
     MAX_AUDIO_CLIPS,
@@ -471,6 +511,7 @@ export function validateProject(value: unknown): Project {
     ...(data.script !== undefined ? { script: text(data.script, 10000, "口播文稿", true) } : {}),
     assets,
     clips,
+    ...(timelineMode !== undefined ? { timelineMode } : {}),
     audioClips,
     captions,
     ...(data.captionStyle !== undefined ? { captionStyle: captionStyle(data.captionStyle) } : {}),
@@ -544,17 +585,27 @@ export function createDemoProject(): Project {
   return validateProject(project);
 }
 
-export function timelineDuration(project: Pick<Project, "clips">): number {
-  return project.clips.reduce((total, clip) => total + clip.outFrame - clip.inFrame, 0);
+export function timelineDuration(project: Pick<Project, "clips" | "timelineMode">): number {
+  let cursor = 0;
+  let duration = 0;
+  for (const clip of project.clips) {
+    const start = project.timelineMode === "free" ? (clip.startFrame ?? cursor) : cursor;
+    cursor = start + clip.outFrame - clip.inFrame;
+    duration = Math.max(duration, cursor);
+  }
+  return duration;
 }
 
-export function timelineClips(project: Pick<Project, "clips">): TimelineClip[] {
+export function timelineClips(project: Pick<Project, "clips" | "timelineMode">): TimelineClip[] {
   let cursor = 0;
-  return project.clips.map((clip) => {
-    const startFrame = cursor;
-    cursor += clip.outFrame - clip.inFrame;
+  const result = project.clips.map((clip) => {
+    const startFrame = project.timelineMode === "free" ? (clip.startFrame ?? cursor) : cursor;
+    cursor = startFrame + clip.outFrame - clip.inFrame;
     return { ...clip, startFrame, endFrame: cursor };
   });
+  return project.timelineMode === "free"
+    ? result.sort((a, b) => a.startFrame - b.startFrame)
+    : result;
 }
 
 function nextId(prefix: string, used: ReadonlySet<string>): string {
@@ -569,12 +620,25 @@ function nextId(prefix: string, used: ReadonlySet<string>): string {
  * captions, and a caption spanning separated ranges can become multiple captions.
  * Adjacent pieces with the same origin are joined to avoid needless fragmentation.
  */
-function rippleCaptions(project: Project, before: TimelineClip[]): void {
+function rippleCaptions(project: Project, before: TimelineClip[], preserveGaps = false): void {
   const after = new Map(timelineClips(project).map((clip) => [clip.id, clip]));
   const used = new Set(project.captions.map((caption) => caption.id));
   const result: Caption[] = [];
   for (const caption of project.captions) {
     const pieces: { startFrame: number; endFrame: number }[] = [];
+    if (preserveGaps) {
+      // Captions in an existing picture gap have no source clip to follow.
+      let cursor = caption.startFrame;
+      for (const oldClip of before) {
+        if (oldClip.endFrame <= cursor) continue;
+        const end = Math.min(caption.endFrame, oldClip.startFrame);
+        if (end > cursor) pieces.push({ startFrame: cursor, endFrame: end });
+        cursor = Math.max(cursor, Math.min(caption.endFrame, oldClip.endFrame));
+        if (cursor >= caption.endFrame) break;
+      }
+      if (cursor < caption.endFrame)
+        pieces.push({ startFrame: cursor, endFrame: caption.endFrame });
+    }
     for (const oldClip of before) {
       const newClip = after.get(oldClip.id);
       if (!newClip) continue;
@@ -597,7 +661,8 @@ function rippleCaptions(project: Project, before: TimelineClip[]): void {
     const merged: typeof pieces = [];
     for (const piece of pieces) {
       const previous = merged[merged.length - 1];
-      if (previous && previous.endFrame === piece.startFrame) previous.endFrame = piece.endFrame;
+      if (previous && previous.endFrame >= piece.startFrame)
+        previous.endFrame = Math.max(previous.endFrame, piece.endFrame);
       else merged.push({ ...piece });
     }
     merged.forEach((piece, index) => {
@@ -664,15 +729,33 @@ function rippleAudio(project: Project, before: TimelineClip[]): void {
   project.audioClips = result;
 }
 
+/** Independent tracks retain absolute positions in free mode; only the new sequence end clips them. */
+function trimIndependentTracksToTimeline(project: Project): void {
+  const duration = timelineDuration(project);
+  project.audioClips = (project.audioClips ?? []).flatMap((clip) => {
+    const available = duration - clip.startFrame;
+    return available > 0
+      ? [{ ...clip, outFrame: Math.min(clip.outFrame, clip.inFrame + available) }]
+      : [];
+  });
+  project.captions = project.captions.flatMap((caption) =>
+    caption.startFrame < duration
+      ? [{ ...caption, endFrame: Math.min(caption.endFrame, duration) }]
+      : [],
+  );
+}
+
 const OPERATION_KEYS: Record<EditOperation["type"], readonly string[]> = {
   trim: ["type", "clipId", "inFrame", "outFrame"],
   split: ["type", "clipId", "atFrame"],
   remove: ["type", "clipId"],
   move: ["type", "clipId", "toIndex"],
+  "video-move": ["type", "clipId", "startFrame"],
   volume: ["type", "clipId", "volume"],
-  add: ["type", "assetId", "inFrame", "outFrame"],
+  add: ["type", "assetId", "inFrame", "outFrame", "startFrame"],
   "audio-add": ["type", "assetId", "inFrame", "outFrame", "startFrame", "volume"],
   "audio-trim": ["type", "clipId", "inFrame", "outFrame"],
+  "audio-split": ["type", "clipId", "atFrame"],
   "audio-move": ["type", "clipId", "startFrame"],
   "audio-volume": ["type", "clipId", "volume"],
   "audio-remove": ["type", "clipId"],
@@ -680,12 +763,13 @@ const OPERATION_KEYS: Record<EditOperation["type"], readonly string[]> = {
   "remove-caption": ["type", "captionId"],
   workflow: ["type", "workflow"],
   "rough-cuts": ["type", "cuts"],
-  settings: ["type", "name", "width", "height", "captionStyle"],
+  settings: ["type", "name", "width", "height", "captionStyle", "timelineMode"],
 };
 
 /**
  * Apply an entire patch atomically to a copy, with optimistic revision locking.
- * move.toIndex is the final, zero-based clip index. split.atFrame is a source frame.
+ * move.toIndex is the final, zero-based clip index. split.atFrame and
+ * audio-split.atFrame are source frames; audio splitting preserves timeline positions.
  * A successful nonempty patch increments revision exactly once; failed patches do
  * not change any caller-owned data. A caption operation inserts or replaces by ID.
  */
@@ -710,7 +794,11 @@ export function applyOperations(
     const type = data.type as EditOperation["type"];
     keys(data, OPERATION_KEYS[type], "编辑操作");
     const before = timelineClips(next);
+    const wasFree = next.timelineMode === "free";
+    let compressedTimeline = false;
     if (type === "add") {
+      if (data.startFrame !== undefined && !wasFree)
+        throw new Error("指定加入时间需要先关闭主序列磁性");
       const assetId = identifier(data.assetId, "素材 ID");
       const asset = next.assets.find((candidate) => candidate.id === assetId);
       if (!asset) throw new Error(`素材不存在：${assetId}`);
@@ -722,6 +810,12 @@ export function applyOperations(
             inFrame: data.inFrame === undefined ? 0 : data.inFrame,
             outFrame: data.outFrame === undefined ? asset.durationFrames : data.outFrame,
             volume: 1,
+            ...(wasFree
+              ? {
+                  startFrame:
+                    data.startFrame === undefined ? timelineDuration(next) : data.startFrame,
+                }
+              : {}),
           },
           new Map([[assetId, asset]]),
         ),
@@ -780,6 +874,16 @@ export function applyOperations(
         const asset = next.assets.find((candidate) => candidate.id === clip.assetId)!;
         clip.inFrame = integer(data.inFrame, 0, asset.durationFrames - 1, "音轨入点");
         clip.outFrame = integer(data.outFrame, clip.inFrame + 1, asset.durationFrames, "音轨出点");
+      } else if (type === "audio-split") {
+        const atFrame = integer(data.atFrame, clip.inFrame + 1, clip.outFrame - 1, "音轨分割位置");
+        const right = {
+          ...clip,
+          id: nextId("audio", new Set(audioClips.map((candidate) => candidate.id))),
+          inFrame: atFrame,
+          startFrame: clip.startFrame + atFrame - clip.inFrame,
+        };
+        clip.outFrame = atFrame;
+        audioClips.splice(index + 1, 0, right);
       }
     } else if (type === "caption") {
       const caption = readCaption(data.caption, timelineDuration(next));
@@ -796,6 +900,17 @@ export function applyOperations(
     } else if (type === "rough-cuts") {
       next.roughCuts = validateRoughCuts(data.cuts, next.assets);
     } else if (type === "settings") {
+      if (data.timelineMode !== undefined) {
+        if (data.timelineMode !== "magnetic" && data.timelineMode !== "free")
+          throw new Error("时间轴模式须为 magnetic 或 free");
+        if (data.timelineMode === "free" && !wasFree) {
+          next.clips = before.map(({ endFrame: _endFrame, ...clip }) => clip);
+        } else if (data.timelineMode === "magnetic" && wasFree) {
+          next.clips = next.clips.map(({ startFrame: _startFrame, ...clip }) => clip);
+          compressedTimeline = true;
+        }
+        next.timelineMode = data.timelineMode;
+      }
       if (data.captionStyle !== undefined) next.captionStyle = captionStyle(data.captionStyle);
       if (data.name !== undefined) next.name = text(data.name, 200, "工程名称");
       if (data.width !== undefined) next.width = integer(data.width, 16, 8_192, "画面宽度");
@@ -807,7 +922,15 @@ export function applyOperations(
       if (!clip) throw new Error(`片段不存在：${clipId}`);
       if (type === "trim") {
         const asset = next.assets.find((candidate) => candidate.id === clip.assetId)!;
-        clip.inFrame = integer(data.inFrame, 0, asset.durationFrames - 1, "片段入点");
+        const inFrame = integer(data.inFrame, 0, asset.durationFrames - 1, "片段入点");
+        if (wasFree)
+          clip.startFrame = integer(
+            clip.startFrame! + inFrame - clip.inFrame,
+            0,
+            MAX_FRAMES - 1,
+            "片段开始时间",
+          );
+        clip.inFrame = inFrame;
         clip.outFrame = integer(data.outFrame, clip.inFrame + 1, asset.durationFrames, "片段出点");
       } else if (type === "split") {
         const atFrame = integer(data.atFrame, clip.inFrame + 1, clip.outFrame - 1, "分割位置");
@@ -815,22 +938,40 @@ export function applyOperations(
           ...clip,
           id: nextId("clip", new Set(next.clips.map((candidate) => candidate.id))),
           inFrame: atFrame,
+          ...(wasFree ? { startFrame: clip.startFrame! + atFrame - clip.inFrame } : {}),
         };
         clip.outFrame = atFrame;
         next.clips.splice(index + 1, 0, right);
       } else if (type === "remove") {
         next.clips.splice(index, 1);
       } else if (type === "move") {
+        if (wasFree) throw new Error("自由时间轴请按时间移动片段，或先开启主序列磁性");
         const toIndex = integer(data.toIndex, 0, next.clips.length - 1, "片段目标位置");
         next.clips.splice(index, 1);
         next.clips.splice(toIndex, 0, clip);
+      } else if (type === "video-move") {
+        if (!wasFree) throw new Error("按时间移动片段需要先关闭主序列磁性");
+        clip.startFrame = integer(
+          data.startFrame,
+          0,
+          MAX_FRAMES - clip.outFrame + clip.inFrame,
+          "片段开始时间",
+        );
       } else if (type === "volume") {
         clip.volume = volume(data.volume);
       }
     }
-    if (type === "trim" || type === "remove" || type === "move" || type === "add") {
-      rippleCaptions(next, before);
-      rippleAudio(next, before);
+    if (
+      type === "trim" ||
+      type === "remove" ||
+      type === "move" ||
+      type === "video-move" ||
+      type === "add" ||
+      compressedTimeline
+    ) {
+      rippleCaptions(next, before, wasFree);
+      if (wasFree) trimIndependentTracksToTimeline(next);
+      else rippleAudio(next, before);
     }
     // Bound intermediate states too, so an oversized patch cannot temporarily
     // allocate an unbounded project and then hide it with a final removal.

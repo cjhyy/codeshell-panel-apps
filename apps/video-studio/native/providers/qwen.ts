@@ -9,6 +9,7 @@ import { mediaAbortError, runMediaProcess } from "../process-runner.js";
 import { validateLocalTtsInput, type LocalTtsVoice } from "../validation.js";
 import type { ManagedTtsProviderStatus } from "../contracts.js";
 import type { MediaJobContext } from "../contracts.js";
+import { AUDIO_PROBE_MESSAGES, probeVoiceAudio } from "./audio-probe.js";
 
 export interface QwenTtsOptions {
   /** Trusted Host configuration; never derive executable or runtime paths from panel input. */
@@ -438,31 +439,7 @@ export function createQwenTtsProvider(options: QwenTtsOptions) {
     }
   }
   async function probe(path: string, signal: AbortSignal, formats = FORMATS) {
-    const raw = await runMediaProcess(
-      options.ffprobePath ?? "ffprobe",
-      [
-        "-v",
-        "error",
-        "-protocol_whitelist",
-        "file,pipe",
-        "-format_whitelist",
-        formats,
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "format=duration:stream=codec_name,sample_rate,channels,duration",
-        "-of",
-        "json",
-        path,
-      ],
-      { signal },
-    );
-    const data = JSON.parse(raw.stdout.toString("utf8"));
-    const audio = data.streams?.[0];
-    const durationSeconds = Number(audio?.duration ?? data.format?.duration);
-    if (!audio || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error("无法读取录音时长，请选择有效的音频或视频素材");
-    return { audio, durationSeconds };
+    return probeVoiceAudio(path, signal, { ffprobePath: options.ffprobePath, formats });
   }
   async function audible(path: string, signal: AbortSignal) {
     const raw = await runMediaProcess(
@@ -843,6 +820,7 @@ export function createQwenTtsProvider(options: QwenTtsOptions) {
       if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
       const message = error instanceof Error ? error.message : "";
       const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
         "本地模型校验失败，请重新准备声音克隆",
         "参考录音须为 512 MB 以内的本地素材",
         "无法读取录音时长，请选择有效的音频或视频素材",

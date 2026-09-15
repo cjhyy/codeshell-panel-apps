@@ -31,7 +31,7 @@ description: 使用 Mimi 视频工作台的 Panel 工具，将用户目标与已
 - 工程固定 30 fps，编辑时间为整数帧、半开范围 `[开始,结束)`。`get_video_transcript` 和 `get_video_analysis` 返回源文件秒数；转换用 `round(seconds * 30)` 并限制在实际素材长度内。`inspect_video_frame.seconds` 也是源秒，图片用 0。
 - 当前画面只有单路磁吸序列。`trim.inFrame/outFrame` 与 `split.atFrame` 都是源素材绝对帧，不是序列时间；切分点必须在当前片段内。`move.toIndex` 是移动后的最终零基位置；`add` 追加末尾，`remove` 删除并磁吸后续内容。
 - 每批最多 100 项操作，按顺序原子执行。新增/切分生成的 ID 由工作台分配，先完成当前批次并重新读取工程，再使用真实新 ID 移动或修改；不要猜 ID。单批失败不能报告部分已应用。
-- `audio-add` 可从音频或视频来源添加独立音轨；`startFrame` 是序列起点，`inFrame/outFrame` 是源范围。`audio-trim` 裁源，`audio-move` 改序列起点，`audio-volume` 调音量，`audio-remove` 删除。最多 64 条音轨，必须全部落在画面序列内：`startFrame + outFrame - inFrame <= 画面总帧数`；音量 `0..2`，`1` 为原音量。不要依赖默认裁到画面末尾来放完整旁白。
+- `audio-add` 可从音频或视频来源添加独立音轨；`startFrame` 是序列起点，`inFrame/outFrame` 是源范围。`audio-trim` 裁源，`audio-split {clipId,atFrame}` 在源绝对帧切开音轨，切分点必须在音轨内部；两段保留原音量并在序列上无缝衔接，画面、其他音轨和字幕时间不变。`audio-move` 改序列起点，`audio-volume` 调音量，`audio-remove` 删除。最多 64 条音轨，必须全部落在画面序列内：`startFrame + outFrame - inFrame <= 画面总帧数`；音量 `0..2`，`1` 为原音量。不要依赖默认裁到画面末尾来放完整旁白。
 - 画面裁剪、删除、重排会同步影响对应的字幕与独立音轨时间范围，必要时拆分；新加回的素材范围不会恢复已删字幕。完成大范围粗剪后再补精确声音与字幕，修改后重新读取真实状态，避免重复平移。
 - 新字幕在粗剪后从源转写映射：片段序列起点等于之前画面片段长度之和；先将源字幕起止截到 `[clip.inFrame,clip.outFrame)`，只保留非空交集，再用 `序列帧 = 片段序列起点 + 源帧 - clip.inFrame` 转换两个端点。同一源出现多次，分别按各实例映射；字幕不得越出序列。
 - `caption` 使用序列 `startFrame/endFrame`；同 ID 替换已有字幕。润色保留原 ID 与时间，新增采用新的有效 ID，避免覆盖；没有词级证据不伪造逐词时点。`settings.captionStyle` 仅支持 `classic/bold/minimal`。画幅与字幕能否看清应有实际观察，不等于自动主体跟踪。

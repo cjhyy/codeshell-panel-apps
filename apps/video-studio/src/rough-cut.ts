@@ -1,4 +1,10 @@
-import type { Asset, EditOperation, Project, RoughCut } from "./model";
+import {
+  timelineDuration,
+  type Asset,
+  type EditOperation,
+  type Project,
+  type RoughCut,
+} from "./model";
 
 export const MAX_ROUGH_CUTS = 1000;
 const MAX_FRAMES = 24 * 60 * 60 * 30;
@@ -235,7 +241,7 @@ export function roughCutOperations(project: Project, cutIds: string[]): EditOper
     throw new Error("粗剪片段选择须为不重复的 ID 列表");
   const byId = new Map(cuts.map((cut) => [cut.id, cut]));
   const assetsById = new Map(project.assets.map((asset) => [asset.id, asset]));
-  let pictureEnd = project.clips.reduce((end, clip) => end + clip.outFrame - clip.inFrame, 0);
+  let pictureEnd = timelineDuration(project);
   let audioEnd = (project.audioClips ?? []).reduce(
     (end, clip) => Math.max(end, clip.startFrame + clip.outFrame - clip.inFrame),
     0,

@@ -1,24 +1,23 @@
 import { escapeHtml as esc, html } from "./icons";
 import type { Asset, Project } from "./model";
 import type { MediaJob, ProductionController, VoiceModel, VoicePreparation } from "./production";
+import {
+  emptyVoiceLibrary,
+  isVoiceMediaId as managedId,
+  isVoiceText as shortText,
+  mergeVoiceLibrary,
+  validVoiceRecipe,
+  validateVoiceLibrary,
+  voiceEngines as engines,
+  VOICE_LIBRARY_KEY,
+  type LibraryVoiceRecipe,
+  type VoiceLibraryReference,
+  type VoiceRecipe as Recipe,
+} from "./voice-library";
 
 export const VOICE_SAMPLE_TEXT = "你好，这是我的声音试听。我会用自然的语气，介绍今天的视频内容。";
 export const VOICE_REFERENCE_TEXT =
   "你好，这是我平时说话的声音。今天阳光很好，我想慢慢分享一个小故事。希望接下来的每一句话，都清楚自然，让听到的人感到轻松。";
-const engines = ["audio8-tts", "qwen3-tts"] as const;
-const managedId = (value: unknown): value is string =>
-  typeof value === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(value);
-const shortText = (value: unknown, max: number): value is string =>
-  typeof value === "string" && Array.from(value).length <= max;
-type Recipe = {
-  id: string;
-  name: string;
-  modelId: string;
-  referenceMediaId: string;
-  referenceText: string;
-  sampleMediaId: string;
-  sampleText: string;
-};
 interface Document {
   schemaVersion: 1;
   scope: string;
@@ -38,6 +37,14 @@ interface Context {
   assertEditable(): void;
   assetUrl?(assetId: string): string | undefined;
   showAsset?(assetId: string): void | Promise<void>;
+  ensureReference?(value: VoiceLibraryReference): Promise<Asset>;
+  listVoices?(): Promise<LibraryVoiceRecipe[]>;
+  saveVoice?(recipe: LibraryVoiceRecipe): Promise<LibraryVoiceRecipe>;
+  importVoice?(recipeId: string): Promise<{
+    referenceMediaId: string;
+    sampleMediaId: string;
+    durationSeconds: number;
+  }>;
   useVoice(value: VoicePreparation): Promise<void>;
   toast(message: string): void;
 }
@@ -93,34 +100,7 @@ export function validateVoiceRecipes(value: unknown, scope: string, projectId: s
     bad();
   const ids = new Set<string>();
   for (const recipe of data.recipes) {
-    if (
-      !recipe ||
-      !shortText(recipe.id, 80) ||
-      !recipe.id ||
-      ids.has(recipe.id) ||
-      !shortText(recipe.name, 80) ||
-      !recipe.name.trim() ||
-      !engines.includes(recipe.modelId as (typeof engines)[number]) ||
-      !managedId(recipe.referenceMediaId) ||
-      !managedId(recipe.sampleMediaId) ||
-      !shortText(recipe.referenceText, 1000) ||
-      !recipe.referenceText.trim() ||
-      !shortText(recipe.sampleText, 120) ||
-      !recipe.sampleText.trim() ||
-      Object.keys(recipe).some(
-        (key) =>
-          ![
-            "id",
-            "name",
-            "modelId",
-            "referenceMediaId",
-            "referenceText",
-            "sampleMediaId",
-            "sampleText",
-          ].includes(key),
-      )
-    )
-      bad();
+    if (!validVoiceRecipe(recipe) || ids.has(recipe.id)) bad();
     ids.add(recipe.id);
   }
   if (
@@ -134,9 +114,11 @@ export function validateVoiceRecipes(value: unknown, scope: string, projectId: s
   return structuredClone(data);
 }
 
-/** Reusable voice recipes are bound to the workspace and project, separate from timeline edits. */
+/** Drafts stay with their project; confirmed voice recipes are shared by the workspace. */
 export function createVoicePreparationUI(production: ProductionController, context: Context) {
   let document = empty(context.scope(), context.project().id);
+  let library = emptyVoiceLibrary(context.scope());
+  let sharedRecipes: LibraryVoiceRecipe[] = [];
   let catalog: VoiceModel[] = [];
   let catalogLoaded = false;
   let catalogReason = "";
@@ -185,9 +167,23 @@ export function createVoicePreparationUI(production: ProductionController, conte
     !["failed", "cancelled"].includes(pendingJob()?.status ?? "queued");
   const defaultModel = () =>
     engines.find((id) => catalog.some((item) => item.id === id && item.available)) ?? "audio8-tts";
+  const recipes = (): Recipe[] =>
+    current()
+      ? [
+          ...library.recipes,
+          ...sharedRecipes.filter(
+            (recipe) => !library.recipes.some((item) => item.id === recipe.id),
+          ),
+          ...document.recipes.filter(
+            (recipe) =>
+              !library.recipes.some((item) => item.id === recipe.id) &&
+              !sharedRecipes.some((item) => item.id === recipe.id),
+          ),
+        ]
+      : [];
   const savedRecipe = () =>
     current() && reference()
-      ? document.recipes.find(
+      ? recipes().find(
           (recipe) =>
             recipe.modelId === selected()?.modelId &&
             recipe.referenceMediaId === reference()?.mediaId &&
@@ -195,6 +191,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
         )
       : undefined;
   const preparing = () => !!selected() && !savedRecipe();
+  const reuseScope = () => (context.saveVoice ? "所有项目" : "本工作空间的其他工程");
   function observe(job: MediaJob): boolean {
     const previous = observedJobs.get(job.id);
     observedJobs.set(job.id, structuredClone(job));
@@ -226,7 +223,8 @@ export function createVoicePreparationUI(production: ProductionController, conte
   function referenceError(): string {
     if (!selected()) return "未选择声音准备，初始化将保留现有原声。";
     const asset = reference();
-    if (!asset) return "尚未选择本人参考录音；可先安装引擎，声音还未准备完成。";
+    if (!asset)
+      return "下一步：录一段本人声音、导入已有录音，或从视频截取 3–30 秒本人说话片段。选好录音后填写实际说出的内容。";
     const seconds = asset.durationFrames / context.project().fps;
     if (seconds < 3 || seconds > 30) return "参考录音需要 3–30 秒。长素材可在粗剪里提取一段。";
     if (!selected()?.referenceText?.trim()) return "请填写参考录音实际说出的内容，再生成试听。";
@@ -252,7 +250,8 @@ export function createVoicePreparationUI(production: ProductionController, conte
     if (referenceError()) return referenceError();
     if (!model()?.available) return "录音已准备好，请安装并检查声音模型。";
     const recipe = savedRecipe();
-    if (recipe) return `「${recipe.name}」已保存，可以用于当前工程的配音。`;
+    if (recipe)
+      return `「${recipe.name}」已保存到声音库，${sharedRecipes.some((item) => item.id === recipe.id) ? "所有项目" : "本工作空间的其他工程"}都可以使用。`;
     return sample()
       ? "试听已生成。听过后确认发音和音色，再保存并用于配音。"
       : "录音和模型已就绪，点击生成真实试听。";
@@ -274,6 +273,74 @@ export function createVoicePreparationUI(production: ProductionController, conte
       });
     saveQueue = operation;
     await operation;
+  }
+  async function storeRecipes(
+    additions: LibraryVoiceRecipe[],
+    replaceMedia = false,
+  ): Promise<void> {
+    if (!loaded || locked || !current()) throw new Error("声音库尚未安全恢复，不能覆盖原记录。");
+    const ownVersion = version,
+      scope = context.scope(),
+      projectId = context.project().id;
+    const assertCurrent = () => {
+      if (ownVersion !== version || scope !== context.scope() || projectId !== context.project().id)
+        throw new Error("工程已切换，已停止写入原声音库。");
+    };
+    const operation = saveQueue
+      .catch(() => {})
+      .then(async () => {
+        assertCurrent();
+        const stored = await context.read(VOICE_LIBRARY_KEY);
+        assertCurrent();
+        const previous =
+          stored == null ? emptyVoiceLibrary(scope) : validateVoiceLibrary(stored, scope);
+        const next = mergeVoiceLibrary(previous, additions, replaceMedia);
+        await context.write(VOICE_LIBRARY_KEY, next);
+        assertCurrent();
+        library = next;
+      });
+    saveQueue = operation;
+    await operation;
+  }
+  async function refreshLibrary(): Promise<void> {
+    const ownVersion = version,
+      scope = context.scope();
+    try {
+      const [stored, shared] = await Promise.all([
+        context.read(VOICE_LIBRARY_KEY),
+        context.listVoices?.() ?? Promise.resolve([]),
+      ]);
+      if (ownVersion !== version || !current()) return;
+      const next = stored == null ? emptyVoiceLibrary(scope) : validateVoiceLibrary(stored, scope);
+      const sharedNext = validateVoiceLibrary({ schemaVersion: 1, scope, recipes: shared }, scope);
+      library = next;
+      sharedRecipes = sharedNext.recipes;
+    } catch (reason) {
+      if (ownVersion !== version || !current()) return;
+      throw new Error(
+        `声音库未刷新，已保留上次的声音和当前草稿：${reason instanceof Error ? reason.message : String(reason)}`,
+      );
+    }
+  }
+  async function migrateProjectRecipes(): Promise<void> {
+    const additions: LibraryVoiceRecipe[] = [];
+    for (const recipe of document.recipes) {
+      if (library.recipes.some((item) => item.id === recipe.id)) continue;
+      const source = context
+        .project()
+        .assets.find(
+          (asset) => asset.kind === "audio" && asset.mediaId === recipe.referenceMediaId,
+        );
+      if (!source) continue;
+      const durationSeconds = source.durationFrames / context.project().fps;
+      if (durationSeconds < 3 || durationSeconds > 30) continue;
+      additions.push({
+        ...recipe,
+        referenceName: source.name.trim().slice(0, 256) || "本人参考录音.wav",
+        referenceDurationSeconds: durationSeconds,
+      });
+    }
+    if (additions.length) await storeRecipes(additions);
   }
   function report(reason: unknown): void {
     error = reason instanceof Error ? reason.message : String(reason);
@@ -301,14 +368,29 @@ export function createVoicePreparationUI(production: ProductionController, conte
     verifiedJobs.clear();
     observedJobs.clear();
     document = empty(scope, projectId);
+    library = emptyVoiceLibrary(scope);
+    sharedRecipes = [];
     try {
       await saveQueue.catch(() => {});
-      const stored = await context.read(key(projectId));
+      const [stored, storedLibrary, shared] = await Promise.all([
+        context.read(key(projectId)),
+        context.read(VOICE_LIBRARY_KEY),
+        context.listVoices?.() ?? Promise.resolve([]),
+      ]);
       if (ownVersion !== version || projectId !== context.project().id || scope !== context.scope())
         return;
       document =
         stored == null ? empty(scope, projectId) : validateVoiceRecipes(stored, scope, projectId);
+      library =
+        storedLibrary == null
+          ? emptyVoiceLibrary(scope)
+          : validateVoiceLibrary(storedLibrary, scope);
+      sharedRecipes = validateVoiceLibrary(
+        { schemaVersion: 1, scope, recipes: shared },
+        scope,
+      ).recipes;
       loaded = true;
+      await migrateProjectRecipes();
     } catch (reason) {
       if (ownVersion !== version) return;
       locked = true;
@@ -426,6 +508,8 @@ export function createVoicePreparationUI(production: ProductionController, conte
         return;
       }
       if (job.status === "succeeded" && job.result) verifiedJobs.set(job.id, job);
+      const next = structuredClone(document);
+      let completionMessage = "";
       if (job.status !== "succeeded") {
         message = "";
         error =
@@ -438,28 +522,38 @@ export function createVoicePreparationUI(production: ProductionController, conte
         const asset = context
           .project()
           .assets.find((item) => item.mediaId === mediaId && item.kind === "audio");
-        if (!asset) return; // Wait until the controller has durably published the actual extracted asset.
-        document.selection = {
+        if (!asset) {
+          message = "录音已截取，尚未保存到当前工程。可恢复保存，或结束本次准备。";
+          if (changed) context.changed();
+          return;
+        }
+        next.selection = {
           modelId: selected()?.modelId || "audio8-tts",
           referenceAssetId: asset.id,
           referenceText: "",
           sampleText: VOICE_SAMPLE_TEXT,
         };
-        confirmed = false;
-        message = "已提取并保存参考录音。请填写逐字稿，然后生成短句试听。";
+        completionMessage = "已提取并保存参考录音。请填写逐字稿，然后生成短句试听。";
       } else if (pending.kind === "setup") {
         await refreshCatalog();
         if (ownVersion !== version || !current()) return;
-        message = "引擎检查完成。选择本人录音并生成短试听后，才能保存自己的声音。";
+        completionMessage = "引擎检查完成。选择本人录音并生成短试听后，才能保存自己的声音。";
       } else {
         if (!sample()) return;
-        message = "真实试听已生成。请播放并确认音色，再保存为可复用声音。";
+        completionMessage = "真实试听已生成。请播放并确认音色，再保存为可复用声音。";
       }
       if (ownVersion !== version || !current()) return;
-      delete document.pending;
-      await persist();
-      if (pending.kind === "extract" && job.status === "succeeded")
+      delete next.pending;
+      message = "";
+      await persist(next);
+      if (ownVersion !== version || !current()) return;
+      document = next;
+      message = completionMessage;
+      error = "";
+      if (pending.kind === "extract" && job.status === "succeeded") {
+        confirmed = false;
         await context.useVoice(document.selection!);
+      }
       context.changed();
     } catch (reason) {
       if (ownVersion === version) report(reason);
@@ -565,6 +659,13 @@ export function createVoicePreparationUI(production: ProductionController, conte
   }
   async function action(name: string, id?: string): Promise<boolean> {
     if (!name.startsWith("voice-prep-")) return false;
+    if (name === "voice-prep-fill-transcript") {
+      if (typeof window === "undefined") return true;
+      const field = window.document.getElementById("voice-prep-transcript");
+      field?.scrollIntoView({ block: "center" });
+      field?.focus({ preventScroll: true });
+      return true;
+    }
     if (name === "voice-prep-goto") {
       if (!["reference", "model", "preview"].includes(id ?? "")) return true;
       if (typeof window === "undefined") return true;
@@ -591,13 +692,29 @@ export function createVoicePreparationUI(production: ProductionController, conte
       const ownVersion = version,
         value = selected();
       if (name === "voice-prep-retry") {
-        await refreshCatalog();
+        await Promise.all([refreshCatalog(), refreshLibrary()]);
         if (ownVersion === version) await refresh();
       } else if (name === "voice-prep-cancel") {
         if (!document.pending || !working() || pendingJob()?.status === "succeeded") return;
         await production.cancel(document.pending.jobId);
         if (ownVersion !== version || !current()) return;
         await refresh();
+      } else if (name === "voice-prep-recover-extract") {
+        const pending = document.pending;
+        if (pending?.kind !== "extract" || pendingJob()?.status !== "succeeded")
+          throw new Error("请先刷新录音提取任务的状态。");
+        await production.recoverReference(pending.jobId);
+        if (ownVersion !== version || !current()) return;
+        await refresh();
+      } else if (name === "voice-prep-dismiss-extract") {
+        if (document.pending?.kind !== "extract" || pendingJob()?.status !== "succeeded")
+          throw new Error("仅已完成的录音提取可以结束准备；进行中的任务请先取消。");
+        const next = structuredClone(document);
+        delete next.pending;
+        await persist(next);
+        if (ownVersion !== version || !current()) return;
+        document = next;
+        message = "已结束本次声音准备，原提取任务和录音结果仍保留。";
       } else if (name === "voice-prep-retry-job") {
         const pending = document.pending,
           job = pendingJob();
@@ -611,7 +728,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
       } else {
         if (working()) throw new Error("声音准备任务正在进行，请等待完成或先取消。");
         if (name === "voice-prep-start") {
-          if (!value) {
+          if (!value || savedRecipe()) {
             const next = {
               ...document,
               selection: { modelId: defaultModel(), sampleText: VOICE_SAMPLE_TEXT },
@@ -620,7 +737,9 @@ export function createVoicePreparationUI(production: ProductionController, conte
             if (ownVersion !== version || !current()) return;
             document = next;
           }
-          message = "先准备一段参考录音，再按提示继续。";
+          message = reference()
+            ? "录音已选好。请填写录音实际说出的内容，然后继续准备模型和试听。"
+            : "已打开声音准备。先点击“录我的声音”“导入已有录音”或“从视频截取”，再填写实际逐字稿。";
         } else if (name === "voice-prep-reference-text") {
           if (!value || !reference())
             throw new Error("请先录制或选择本人录音，再确认实际读出的内容。");
@@ -667,50 +786,103 @@ export function createVoicePreparationUI(production: ProductionController, conte
             throw new Error("请先生成真实试听，并确认已听过且满意。");
           if (!recipeName.trim() || Array.from(recipeName).length > 80)
             throw new Error("请填写 1–80 字的声音名称。");
-          if (!existing && document.recipes.length >= 20)
-            throw new Error("当前工程最多保存 20 个声音。");
-          const recipe: Recipe = existing ?? {
-            id: crypto.randomUUID(),
-            name: recipeName.trim(),
-            modelId: value.modelId,
-            referenceMediaId: source.mediaId!,
-            referenceText: value.referenceText!.trim(),
-            sampleMediaId: preview.mediaId!,
-            sampleText: sampleText().trim(),
+          const recipe: LibraryVoiceRecipe = {
+            ...(existing ?? {
+              id: crypto.randomUUID(),
+              name: recipeName.trim(),
+              modelId: value.modelId,
+              referenceMediaId: source.mediaId!,
+              referenceText: value.referenceText!.trim(),
+              sampleMediaId: preview.mediaId!,
+              sampleText: sampleText().trim(),
+            }),
+            referenceName: source.name.trim().slice(0, 256) || "本人参考录音.wav",
+            referenceDurationSeconds: source.durationFrames / context.project().fps,
           };
-          const next = {
-            ...document,
-            recipes: existing ? document.recipes : [...document.recipes, recipe],
-          };
-          await persist(next);
+          mergeVoiceLibrary(library, [recipe]);
+          if (context.saveVoice) {
+            const saved = await context.saveVoice(recipe);
+            if (ownVersion !== version || !current()) return;
+            validateVoiceLibrary(
+              { schemaVersion: 1, scope: context.scope(), recipes: [saved] },
+              context.scope(),
+            );
+            sharedRecipes = [...sharedRecipes.filter((item) => item.id !== saved.id), saved];
+          }
+          await storeRecipes([recipe]);
           if (ownVersion !== version || !current()) return;
-          document = next;
-          message = `已保存「${recipe.name}」，可在当前工程反复使用。`;
+          message = `已保存「${recipe.name}」到声音库，${reuseScope()}都可以使用。`;
           await context.useVoice(selected()!);
           if (ownVersion !== version || !current()) return;
           confirmed = false;
-          message = `已保存「${recipe.name}」并用于配音，现在可以填写要新读的文案。`;
+          message = `已保存「${recipe.name}」并用于配音，${reuseScope()}都能复用。现在可以填写要新读的文案。`;
         } else if (name === "voice-prep-use") {
-          const recipe = document.recipes.find((item) => item.id === id);
-          if (recipe) {
-            const source = context
+          const recipe = recipes().find((item) => item.id === id);
+          if (!recipe) throw new Error("请先选择声音库中已保存的声音。");
+          let local = library.recipes.find((item) => item.id === recipe.id);
+          let source = context
+            .project()
+            .assets.find(
+              (asset) => asset.kind === "audio" && asset.mediaId === local?.referenceMediaId,
+            );
+          if (!source && sharedRecipes.some((item) => item.id === recipe.id)) {
+            if (!context.importVoice) throw new Error("当前无法连接共享声音库，请刷新后重试。");
+            message = `正在把「${recipe.name}」的录音连接到当前工程…`;
+            context.changed();
+            const imported = await context.importVoice(recipe.id);
+            if (ownVersion !== version || !current()) return;
+            const shared = sharedRecipes.find((item) => item.id === recipe.id)!;
+            local = {
+              ...shared,
+              referenceMediaId: imported.referenceMediaId,
+              sampleMediaId: imported.sampleMediaId,
+              referenceDurationSeconds: imported.durationSeconds,
+            };
+            validateVoiceLibrary(
+              { schemaVersion: 1, scope: context.scope(), recipes: [local] },
+              context.scope(),
+            );
+          }
+          const mediaId = local?.referenceMediaId ?? recipe.referenceMediaId;
+          source = context
+            .project()
+            .assets.find((asset) => asset.kind === "audio" && asset.mediaId === mediaId);
+          if (!source) {
+            if (!local || !context.ensureReference)
+              throw new Error("这个声音的参考录音尚未连接，请重新连接原录音后重试。");
+            const restored = await context.ensureReference({
+              mediaId: local.referenceMediaId,
+              name: local.referenceName,
+              durationSeconds: local.referenceDurationSeconds,
+            });
+            if (ownVersion !== version || !current()) return;
+            source = context
               .project()
               .assets.find(
-                (asset) => asset.kind === "audio" && asset.mediaId === recipe.referenceMediaId,
+                (asset) =>
+                  asset.id === restored.id && asset.kind === "audio" && asset.mediaId === mediaId,
               );
-            if (!source) throw new Error("这个声音的参考素材不在当前工程，请重新连接本人录音。");
-            document.selection = {
+            if (!source) throw new Error("参考录音尚未保存到当前工程，请重新连接后重试。");
+          }
+          if (local) await storeRecipes([local], true);
+          if (ownVersion !== version || !current()) return;
+          const next = {
+            ...document,
+            selection: {
               modelId: recipe.modelId,
               referenceAssetId: source.id,
               referenceText: recipe.referenceText,
               sampleText: recipe.sampleText,
-            };
-            await persist();
-            if (ownVersion !== version || !current()) return;
-          }
+            },
+          };
+          await persist(next);
+          if (ownVersion !== version || !current()) return;
+          document = next;
           if (!selected() || referenceError())
             throw new Error(referenceError() || "请先选择本人声音。");
           await context.useVoice(selected()!);
+          if (ownVersion !== version || !current()) return;
+          message = `已使用「${recipe.name}」，可以直接填写新文案生成配音。`;
         }
       }
     });
@@ -742,21 +914,40 @@ export function createVoicePreparationUI(production: ProductionController, conte
     </select></label>`;
     const next = nextStep();
     const progress = Math.round(Math.max(0, Math.min(1, job?.progress?.fraction ?? 0)) * 100);
+    const pendingReferenceId = (job?.result as { asset?: { id?: string } } | undefined)?.asset?.id;
+    const pendingReferenceSaved =
+      document.pending?.kind === "extract" &&
+      managedId(pendingReferenceId) &&
+      context
+        .project()
+        .assets.some((asset) => asset.kind === "audio" && asset.mediaId === pendingReferenceId);
     const retryable =
       job &&
       (job.status === "cancelled" || (job.status === "failed" && job.error?.retryable !== false));
+    const libraryMarkup = recipes().length
+      ? `<div class="voice-preparation-recipes"><h4>我的声音库 · 多项目复用</h4>${recipes()
+          .map(
+            (item) =>
+              `<button class="full" data-action="voice-prep-use" data-id="${esc(item.id)}" ${controlsLocked ? "disabled" : ""}>使用 ${esc(item.name)} · ${item.modelId === "audio8-tts" ? "Audio8" : "Qwen3-TTS"}</button><p class="small muted">${sharedRecipes.some((shared) => shared.id === item.id) ? "所有项目可用 · 使用时自动连接录音" : "本工作空间的工程可用 · 使用时自动连接录音"}</p>`,
+          )
+          .join("")}</div>`
+      : "";
     return html`${compact
         ? `<details class="voice-preparation-disclosure" ${recipe ? "" : "open"}><summary>${recipe ? `我的声音：${esc(recipe.name)} · 配方已保存` : "创建 / 管理我的声音"}</summary>`
         : ""}
       <section class="voice-preparation voice-guide" aria-label="准备我的声音">
         <h3>准备我的声音</h3>
         <p class="small muted">
-          提供本人录音 → 准备模型 → 试听并保存。只需准备一次，当前工程可反复使用。
+          提供本人录音 → 准备模型 → 试听并保存。只需准备一次，${reuseScope()}都能复用。
         </p>
+        ${libraryMarkup}
         ${!value
           ? `<button class="primary full" data-action="voice-prep-start" ${unavailable ? "disabled" : ""}>创建我的声音</button><p class="small muted">先准备一段参考录音，再按提示继续。</p>${modelSelect}`
           : ""}
         <p class="voice-guide-next" data-voice-guide-next role="status">${esc(next)}</p>
+        ${value && source && !value.referenceText?.trim()
+          ? `<button class="primary full" data-action="voice-prep-fill-transcript" ${controlsLocked ? "disabled" : ""}>填写这段录音的逐字稿</button><p class="small muted">录音已经选好。原样填入这段录音说的话，才能继续生成你的声音。</p>`
+          : ""}
         ${value
           ? html`
               <ol class="voice-guide-nav" aria-label="声音准备步骤">
@@ -917,14 +1108,11 @@ ${esc(sampleText())}</textarea
             `
           : ""}
         ${document.pending
-          ? `<div class="voice-guide-progress" role="status">${working() ? (job?.status === "succeeded" ? "<p>生成已完成，正在保存结果，请稍候。</p>" : `<p>${esc(job?.progress?.message || "声音准备任务进行中，正在恢复进度。")}</p><progress max="100" value="${progress}"></progress><p>${progress}%</p><button data-action="voice-prep-cancel" ${unavailable ? "disabled" : ""}>取消准备</button>`) : `<p>${esc(job?.error?.message || (job?.status === "cancelled" ? "准备已取消。" : "这一步未完成。"))}</p>${retryable ? `<button data-action="voice-prep-retry-job" ${unavailable ? "disabled" : ""}>重试这一步</button>` : ""}`}</div>`
+          ? `<div class="voice-guide-progress" role="status">${working() ? (job?.status === "succeeded" ? (document.pending.kind === "extract" ? `<p>${pendingReferenceSaved ? "录音已保存，声音设置尚未保存。" : "录音已截取，尚未保存到当前工程。"}</p><button data-action="voice-prep-recover-extract" ${unavailable ? "disabled" : ""}>恢复保存</button><button data-action="voice-prep-dismiss-extract" ${unavailable ? "disabled" : ""}>结束本次准备</button>` : "<p>生成已完成，正在保存结果，请稍候。</p>") : `<p>${esc(job?.progress?.message || "声音准备任务进行中，正在恢复进度。")}</p><progress max="100" value="${progress}"></progress><p>${progress}%</p><button data-action="voice-prep-cancel" ${unavailable ? "disabled" : ""}>取消准备</button>`) : `<p>${esc(job?.error?.message || (job?.status === "cancelled" ? "准备已取消。" : "这一步未完成。"))}</p>${retryable ? `<button data-action="voice-prep-retry-job" ${unavailable ? "disabled" : ""}>重试这一步</button>` : ""}`}</div>`
           : ""}
         <button class="quiet full" data-action="voice-prep-retry" ${busy ? "disabled" : ""}>
           ${locked || !loaded ? "重新恢复声音设置" : "刷新状态"}
         </button>
-        ${document.recipes.length && current()
-          ? `<div class="voice-preparation-recipes"><h4>当前工程已保存的声音</h4>${document.recipes.map((item) => `<button class="full" data-action="voice-prep-use" data-id="${esc(item.id)}" ${controlsLocked ? "disabled" : ""}>使用 ${esc(item.name)} · ${item.modelId === "audio8-tts" ? "Audio8" : "Qwen3-TTS"}</button>`).join("")}</div>`
-          : ""}
         ${message ? `<p class="capability-note" role="status">${esc(message)}</p>` : ""}
         ${error ? `<p class="conflict" role="alert">${esc(error)}</p>` : ""}
         ${!production.enabled

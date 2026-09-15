@@ -1,6 +1,6 @@
 // native/voice-runtime.ts
-import { lstat, mkdir as mkdir4, realpath, rename as rename4, rm as rm4, stat as stat3 } from "node:fs/promises";
-import { dirname, join as join4 } from "node:path";
+import { lstat as lstat2, mkdir as mkdir5, realpath as realpath2, rename as rename5, rm as rm5, stat as stat3 } from "node:fs/promises";
+import { dirname as dirname2, join as join5 } from "node:path";
 
 // native/signals.ts
 function combineAbortSignals(signals) {
@@ -56,7 +56,7 @@ async function runMediaProcess(executable, args, options) {
       windowsHide: true
     });
     const stdout = [];
-    let bytes = 0;
+    let bytes2 = 0;
     let stderr = "";
     let progressBuffer = "";
     let lastProgress = 0;
@@ -80,9 +80,9 @@ async function runMediaProcess(executable, args, options) {
     };
     options.signal.addEventListener("abort", stop, { once: true });
     if (options.signal.aborted) stop();
-    const consumeProgress = (text) => {
+    const consumeProgress = (text2) => {
       if (options.durationSeconds && options.onProgress) {
-        progressBuffer += text;
+        progressBuffer += text2;
         const lines = progressBuffer.split(/\r?\n/);
         progressBuffer = (lines.pop() ?? "").slice(-4096);
         for (const line of lines) {
@@ -103,8 +103,8 @@ async function runMediaProcess(executable, args, options) {
       try {
         if (options.onStdout) options.onStdout(chunk);
         else {
-          bytes += chunk.length;
-          if (bytes > (options.maxStdoutBytes ?? 4 * 1024 * 1024)) {
+          bytes2 += chunk.length;
+          if (bytes2 > (options.maxStdoutBytes ?? 4 * 1024 * 1024)) {
             failure = new Error("Media tool output exceeds its bounded result budget");
             stop();
             return;
@@ -118,11 +118,11 @@ async function runMediaProcess(executable, args, options) {
       }
     });
     child.stderr.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      stderr = (stderr + text).slice(-128 * 1024);
+      const text2 = chunk.toString("utf8");
+      stderr = (stderr + text2).slice(-128 * 1024);
       try {
-        options.onStderr?.(text);
-        if (options.progressStream === "stderr") consumeProgress(text);
+        options.onStderr?.(text2);
+        if (options.progressStream === "stderr") consumeProgress(text2);
       } catch (error) {
         failure = error instanceof Error ? error : new Error(String(error));
         stop();
@@ -153,9 +153,9 @@ function validateLocalTtsInput(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("配音参数必须是对象");
   const input = raw;
   if (typeof input.text !== "string") throw new Error("请输入配音文字");
-  const text = input.text.replace(/\r\n?/g, "\n").trim();
-  if (!text || Array.from(text).length > 6e3) throw new Error("配音文字须为 1 至 6000 字");
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text) || /\[\[|\]\]/.test(text))
+  const text2 = input.text.replace(/\r\n?/g, "\n").trim();
+  if (!text2 || Array.from(text2).length > 6e3) throw new Error("配音文字须为 1 至 6000 字");
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text2) || /\[\[|\]\]/.test(text2))
     throw new Error("配音仅支持普通文字，不支持语音控制标记或控制字符");
   let voiceId;
   if (input.voiceId !== void 0) {
@@ -166,7 +166,7 @@ function validateLocalTtsInput(raw) {
   const rate = input.rate === void 0 ? 1 : input.rate;
   if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0.5 || rate > 2)
     throw new Error("语速须在 0.5 至 2 倍之间");
-  return { text, ...voiceId ? { voiceId } : {}, rate };
+  return { text: text2, ...voiceId ? { voiceId } : {}, rate };
 }
 
 // native/providers/audio8-resources.ts
@@ -407,6 +407,100 @@ else:
     raise ValueError("Unsupported managed action")
 `;
 
+// native/providers/audio-probe.ts
+var AUDIO_PROBE_MESSAGES = [
+  "参考素材中没有可用音轨，请选择音频或带声音的视频",
+  "无法解析这段声音，请先提取为 WAV 参考录音后重试",
+  "暂时无法测量这段录音时长，请先提取为 WAV 参考录音后重试",
+  "声音时长检查超时，请先裁剪或提取参考录音后重试"
+];
+var [NO_AUDIO, UNSUPPORTED, NO_DURATION, TIMEOUT] = AUDIO_PROBE_MESSAGES;
+var number = (value) => {
+  if (typeof value !== "string" && typeof value !== "number" || value === "") return;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : void 0;
+};
+var duration = (value) => {
+  const result = number(value);
+  return result !== void 0 && result > 0 ? result : void 0;
+};
+async function probeVoiceAudio(path, signal, options) {
+  const deadline = AbortSignal.timeout(15e3);
+  const bounded = combineAbortSignals([signal, deadline]);
+  const source = ["-protocol_whitelist", "file,pipe", "-format_whitelist", options.formats];
+  try {
+    const raw = await runMediaProcess(
+      options.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source,
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "format=duration,start_time:stream=codec_name,sample_rate,channels,duration,start_time",
+        "-of",
+        "json",
+        path
+      ],
+      { signal: bounded, maxStdoutBytes: 64 * 1024 }
+    );
+    const data = JSON.parse(raw.stdout.toString("utf8"));
+    const audio2 = data.streams?.[0];
+    if (!audio2) throw new Error(NO_AUDIO);
+    let durationSeconds = duration(audio2.duration) ?? duration(data.format?.duration);
+    if (durationSeconds !== void 0) return { audio: audio2, durationSeconds };
+    let pending = "", bytes2 = 0, packets = 0;
+    let firstTime, lastTime, lastDelta = 0, lastEnd = -Infinity;
+    const consume = (chunk) => {
+      bytes2 += chunk.length;
+      if (bytes2 > 4 * 1024 * 1024) throw new Error(NO_DURATION);
+      const lines = (pending + chunk.toString("utf8")).split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      if (pending.length > 4096) throw new Error(NO_DURATION);
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (++packets > 2e4) throw new Error(NO_DURATION);
+        const fields = Object.fromEntries(line.split("|").map((part) => part.split("=")));
+        const time = number(fields.pts_time) ?? number(fields.dts_time);
+        if (time === void 0) continue;
+        firstTime = firstTime === void 0 ? time : Math.min(firstTime, time);
+        if (lastTime !== void 0 && time > lastTime) lastDelta = time - lastTime;
+        lastTime = time;
+        lastEnd = Math.max(lastEnd, time + (duration(fields.duration_time) ?? lastDelta));
+      }
+    };
+    await runMediaProcess(
+      options.ffprobePath ?? "ffprobe",
+      [
+        "-v",
+        "error",
+        ...source,
+        "-select_streams",
+        "a:0",
+        "-read_intervals",
+        "%+31",
+        "-show_entries",
+        "packet=pts_time,dts_time,duration_time",
+        "-of",
+        "compact=p=0:nk=0",
+        path
+      ],
+      { signal: bounded, onStdout: consume }
+    );
+    consume(Buffer.from("\n"));
+    const origin = number(audio2.start_time) ?? number(data.format?.start_time) ?? firstTime;
+    durationSeconds = origin === void 0 ? void 0 : duration(lastEnd - origin);
+    if (durationSeconds === void 0) throw new Error(NO_DURATION);
+    return { audio: audio2, durationSeconds };
+  } catch (error) {
+    if (signal.aborted) throw mediaAbortError();
+    if (deadline.aborted) throw new Error(TIMEOUT, { cause: error });
+    if (error instanceof Error && AUDIO_PROBE_MESSAGES.includes(error.message)) throw error;
+    throw new Error(UNSUPPORTED, { cause: error });
+  }
+}
+
 // native/providers/audio8.ts
 var PACKAGES = [
   "numpy==2.4.3",
@@ -428,9 +522,9 @@ var MAX_BYTES = MAX_SECONDS * 48e3 * 2 + 4096;
 var FORMATS = "wav,aiff,mp3,flac,ogg,mov,matroska,webm,aac,amr";
 var owners = /* @__PURE__ */ new Set();
 var generationQueues = /* @__PURE__ */ new Map();
-function splitAudio8Text(text) {
+function splitAudio8Text(text2) {
   const pieces = [];
-  for (const sentence of text.split(/(?<=[。！？!?；;\n])/u)) {
+  for (const sentence of text2.split(/(?<=[。！？!?；;\n])/u)) {
     let characters = Array.from(sentence.trim());
     while (characters.length) {
       let boundary = Math.min(150, characters.length);
@@ -751,15 +845,15 @@ function createAudio8TtsProvider(options) {
       if (!response.ok || !response.body || !response.url.startsWith("https://"))
         throw new Error("Audio8 resource download failed");
       const hash = createHash("sha256");
-      let bytes = 0;
+      let bytes2 = 0;
       let reportedAt = 0;
       const reader = response.body.getReader();
       try {
         while (true) {
           const chunk = await reader.read();
           if (chunk.done) break;
-          bytes += chunk.value.byteLength;
-          if (bytes > resource.bytes) throw new Error("Audio8 download exceeds expected size");
+          bytes2 += chunk.value.byteLength;
+          if (bytes2 > resource.bytes) throw new Error("Audio8 download exceeds expected size");
           hash.update(chunk.value);
           let offset = 0;
           while (offset < chunk.value.byteLength) {
@@ -768,7 +862,7 @@ function createAudio8TtsProvider(options) {
             offset += written.bytesWritten;
           }
           if (Date.now() - reportedAt >= 1e3) {
-            await report(bytes);
+            await report(bytes2);
             reportedAt = Date.now();
           }
         }
@@ -776,12 +870,12 @@ function createAudio8TtsProvider(options) {
         await reader.cancel().catch(() => {
         });
       }
-      if (bytes !== resource.bytes || hash.digest("hex") !== resource.sha256)
+      if (bytes2 !== resource.bytes || hash.digest("hex") !== resource.sha256)
         throw new Error("Audio8 resource integrity check failed");
       if (signal.aborted) throw mediaAbortError();
       await handle.close();
       await rename(partial, path);
-      await report(bytes);
+      await report(bytes2);
     } finally {
       await handle.close().catch(() => {
       });
@@ -796,31 +890,7 @@ function createAudio8TtsProvider(options) {
     }
   }
   async function probe(path, signal, formats = FORMATS) {
-    const raw = await runMediaProcess(
-      options.ffprobePath ?? "ffprobe",
-      [
-        "-v",
-        "error",
-        "-protocol_whitelist",
-        "file,pipe",
-        "-format_whitelist",
-        formats,
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "format=duration:stream=codec_name,sample_rate,channels,duration",
-        "-of",
-        "json",
-        path
-      ],
-      { signal }
-    );
-    const data = JSON.parse(raw.stdout.toString("utf8"));
-    const audio = data.streams?.[0];
-    const durationSeconds = Number(audio?.duration ?? data.format?.duration);
-    if (!audio || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error("无法读取录音时长，请选择有效的音频或视频素材");
-    return { audio, durationSeconds };
+    return probeVoiceAudio(path, signal, { ffprobePath: options.ffprobePath, formats });
   }
   async function audible(path, signal) {
     const raw = await runMediaProcess(
@@ -1084,8 +1154,8 @@ function createAudio8TtsProvider(options) {
         const total = AUDIO8_RESOURCES.reduce((sum, item) => sum + item.bytes, 0);
         let completed = 0;
         for (const item of AUDIO8_RESOURCES) {
-          await downloadResource(item, signal, async (bytes) => {
-            const downloaded = completed + bytes;
+          await downloadResource(item, signal, async (bytes2) => {
+            const downloaded = completed + bytes2;
             await context.reportProgress({
               fraction: 0.2 + 0.45 * downloaded / total,
               stage: "download",
@@ -1197,6 +1267,7 @@ function createAudio8TtsProvider(options) {
       if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
       const message = error instanceof Error ? error.message : "";
       const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
         "本地模型校验失败，请重新准备声音克隆",
         "参考录音须为 512 MB 以内的本地素材",
         "无法读取录音时长，请选择有效的音频或视频素材",
@@ -1596,31 +1667,7 @@ function createQwenTtsProvider(options) {
     }
   }
   async function probe(path, signal, formats = FORMATS2) {
-    const raw = await runMediaProcess(
-      options.ffprobePath ?? "ffprobe",
-      [
-        "-v",
-        "error",
-        "-protocol_whitelist",
-        "file,pipe",
-        "-format_whitelist",
-        formats,
-        "-select_streams",
-        "a:0",
-        "-show_entries",
-        "format=duration:stream=codec_name,sample_rate,channels,duration",
-        "-of",
-        "json",
-        path
-      ],
-      { signal }
-    );
-    const data = JSON.parse(raw.stdout.toString("utf8"));
-    const audio = data.streams?.[0];
-    const durationSeconds = Number(audio?.duration ?? data.format?.duration);
-    if (!audio || !Number.isFinite(durationSeconds) || durationSeconds <= 0)
-      throw new Error("无法读取录音时长，请选择有效的音频或视频素材");
-    return { audio, durationSeconds };
+    return probeVoiceAudio(path, signal, { ffprobePath: options.ffprobePath, formats });
   }
   async function audible(path, signal) {
     const raw = await runMediaProcess(
@@ -1984,6 +2031,7 @@ function createQwenTtsProvider(options) {
       if (deadline.aborted) throw new Error("本地声音生成超时，请缩短文稿后重试", { cause: error });
       const message = error instanceof Error ? error.message : "";
       const safeMessages = [
+        ...AUDIO_PROBE_MESSAGES,
         "本地模型校验失败，请重新准备声音克隆",
         "参考录音须为 512 MB 以内的本地素材",
         "无法读取录音时长，请选择有效的音频或视频素材",
@@ -2098,6 +2146,265 @@ async function acquireVoiceQueue(root, signal, waiting) {
   }
 }
 
+// native/voice-library.ts
+import { constants } from "node:fs";
+import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
+import { lstat, mkdir as mkdir4, open as open3, readdir as readdir3, realpath, rename as rename4, rm as rm4 } from "node:fs/promises";
+import { dirname, join as join4 } from "node:path";
+var MAX_AUDIO = 16 * 1024 * 1024;
+var MAX_VOICES = 20;
+var HEX = /^[a-f0-9]{64}$/;
+var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+var ASSET = /^(?:asset|external)-[a-f0-9]{64}$/;
+function check(ok, message = "声音库数据无效，原有声音已保留") {
+  if (!ok) throw new Error(message);
+}
+function text(value, limit) {
+  return typeof value === "string" && value.trim().length > 0 && Array.from(value).length <= limit && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
+}
+function audio(value) {
+  check(
+    value && HEX.test(value.sha256) && Number.isSafeInteger(value.bytes) && value.bytes > 0 && value.bytes <= MAX_AUDIO
+  );
+  check(typeof value.mimeType === "string" && /^audio\/[a-z0-9.+-]{1,80}$/.test(value.mimeType));
+  return { sha256: value.sha256, bytes: value.bytes, mimeType: value.mimeType };
+}
+function validateLibraryEntry(value) {
+  const r = value?.recipe;
+  check(value?.schemaVersion === 1 && r && text(r.id, 80));
+  check(text(r.name, 80) && ["audio8-tts", "qwen3-tts"].includes(r.modelId));
+  check(ASSET.test(r.referenceMediaId) && ASSET.test(r.sampleMediaId));
+  check(text(r.referenceText, 1e3) && text(r.sampleText, 120) && text(r.referenceName, 256));
+  check(
+    Number.isFinite(r.referenceDurationSeconds) && r.referenceDurationSeconds >= 3 && r.referenceDurationSeconds <= 30
+  );
+  const recipe = {
+    id: r.id,
+    name: r.name,
+    modelId: r.modelId,
+    referenceMediaId: r.referenceMediaId,
+    referenceText: r.referenceText,
+    sampleMediaId: r.sampleMediaId,
+    sampleText: r.sampleText,
+    referenceName: r.referenceName,
+    referenceDurationSeconds: r.referenceDurationSeconds
+  };
+  return {
+    schemaVersion: 1,
+    recipe,
+    reference: audio(value.reference),
+    sample: audio(value.sample)
+  };
+}
+async function directory(root, parts, create = true) {
+  let path = root;
+  for (const part of parts) {
+    check(/^[a-zA-Z0-9._-]+$/.test(part) && part !== "." && part !== "..");
+    path = join4(path, part);
+    if (create)
+      await mkdir4(path, { mode: 448 }).catch((e) => {
+        if (e.code !== "EEXIST") throw e;
+      });
+    const info = await lstat(path);
+    check(info.isDirectory() && !info.isSymbolicLink(), "声音库目录无效，请检查后重试");
+  }
+  return path;
+}
+async function bytes(path, maximum) {
+  const file = await open3(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    check(info.isFile() && info.size <= maximum);
+    const result = await file.readFile();
+    check(result.length === info.size && result.length <= maximum);
+    return result;
+  } finally {
+    await file.close();
+  }
+}
+async function json(path) {
+  return JSON.parse((await bytes(path, 32 * 1024)).toString("utf8"));
+}
+async function writeJson(path, value) {
+  const temporary = `${path}.${randomUUID4()}.partial`;
+  const file = await open3(temporary, "wx", 384);
+  try {
+    try {
+      await file.writeFile(JSON.stringify(value));
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename4(temporary, path);
+    const parent = await open3(dirname(path), "r").catch(() => void 0);
+    try {
+      await parent?.sync().catch(() => {
+      });
+    } finally {
+      await parent?.close();
+    }
+  } finally {
+    await rm4(temporary, { force: true });
+  }
+}
+function digest3(value) {
+  return createHash3("sha256").update(value).digest("hex");
+}
+function entryName(id) {
+  return `${createHash3("sha256").update(id).digest("hex")}.json`;
+}
+function audioSignature(b) {
+  return b.length >= 12 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WAVE" || b.toString("ascii", 0, 3) === "ID3" || b.length >= 2 && b[0] === 255 && (b[1] & 224) === 224 || b.toString("ascii", 0, 4) === "OggS" || b.toString("ascii", 0, 4) === "fLaC" || b.length >= 12 && b.toString("ascii", 4, 8) === "ftyp" || b.length >= 4 && b.readUInt32BE(0) === 440786851;
+}
+async function verified(path, meta) {
+  const data = await bytes(path, MAX_AUDIO);
+  check(
+    data.length === meta.bytes && digest3(data) === meta.sha256 && audioSignature(data),
+    "声音文件不完整或校验失败，原有声音已保留"
+  );
+  return data;
+}
+async function runVoiceLibrary(raw, signal, appData = process.cwd()) {
+  check(
+    raw?.action === "library" && ["list", "begin", "write", "commit", "cancel", "get", "read"].includes(raw.operation)
+  );
+  signal.throwIfAborted();
+  const root = await realpath(appData);
+  const voices = await directory(root, ["voices"]);
+  const entries = await directory(voices, ["entries"]);
+  const blobs = await directory(voices, ["blobs"]);
+  const staging = await directory(voices, ["staging"]);
+  if (raw.operation === "list") {
+    const names = (await readdir3(entries)).filter((name) => HEX.test(name.replace(/\.json$/, "")) && name.endsWith(".json")).sort();
+    check(names.length <= MAX_VOICES, "声音库已达到容量限制");
+    const result = [];
+    for (const name of names) {
+      signal.throwIfAborted();
+      const entry2 = validateLibraryEntry(await json(join4(entries, name)));
+      check(name === entryName(entry2.recipe.id));
+      result.push(entry2.recipe);
+    }
+    return result;
+  }
+  if (raw.operation === "get" || raw.operation === "read") {
+    check(text(raw.id, 80));
+    const entry2 = validateLibraryEntry(await json(join4(entries, entryName(raw.id))));
+    check(entry2.recipe.id === raw.id);
+    if (raw.operation === "get") return entry2;
+    check(raw.part === "reference" || raw.part === "sample");
+    check(Number.isSafeInteger(raw.offset) && raw.offset >= 0);
+    const meta = entry2[raw.part];
+    check(raw.offset < meta.bytes);
+    const file = await open3(join4(blobs, meta.sha256), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const info = await file.stat();
+      check(info.isFile() && info.size === meta.bytes);
+      const chunk = Buffer.alloc(Math.min(512 * 1024, meta.bytes - raw.offset));
+      let offset = 0;
+      while (offset < chunk.length) {
+        const result = await file.read(chunk, offset, chunk.length - offset, raw.offset + offset);
+        check(result.bytesRead > 0, "声音库文件不完整，请重新保存声音");
+        offset += result.bytesRead;
+      }
+      return {
+        ...meta,
+        offset: raw.offset,
+        dataBase64: chunk.toString("base64"),
+        eof: raw.offset + chunk.length === meta.bytes
+      };
+    } finally {
+      await file.close();
+    }
+  }
+  check(UUID.test(raw.token));
+  if (raw.operation === "begin") {
+    const entry2 = validateLibraryEntry(raw.entry);
+    const stage2 = join4(staging, raw.token);
+    await mkdir4(stage2, { mode: 448 });
+    await writeJson(join4(stage2, "entry.json"), entry2);
+    return { token: raw.token };
+  }
+  if (raw.operation === "cancel") {
+    await rm4(join4(staging, raw.token), { recursive: true, force: true });
+    return { cancelled: true };
+  }
+  const stage = await directory(staging, [raw.token], false);
+  const entry = validateLibraryEntry(await json(join4(stage, "entry.json")));
+  if (raw.operation === "write") {
+    check(raw.part === "reference" || raw.part === "sample");
+    check(Number.isSafeInteger(raw.offset) && raw.offset >= 0);
+    check(
+      typeof raw.dataBase64 === "string" && raw.dataBase64.length <= 43692 && /^[A-Za-z0-9+/]*={0,2}$/.test(raw.dataBase64)
+    );
+    const data = Buffer.from(raw.dataBase64, "base64");
+    check(data.length > 0 && data.length <= 32768 && data.toString("base64") === raw.dataBase64);
+    const meta = entry[raw.part];
+    check(raw.offset + data.length <= meta.bytes);
+    const file = await open3(
+      join4(stage, `${raw.part}.bin`),
+      constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW,
+      384
+    );
+    try {
+      const info = await file.stat();
+      check(info.isFile() && info.size === raw.offset);
+      let offset = 0;
+      while (offset < data.length) {
+        const result = await file.write(data, offset, data.length - offset, raw.offset + offset);
+        check(result.bytesWritten > 0);
+        offset += result.bytesWritten;
+      }
+      return { offset: raw.offset + data.length };
+    } finally {
+      await file.close();
+    }
+  }
+  const queue = await directory(voices, ["queue"]);
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(15e3)]);
+  const release = await acquireVoiceQueue(queue, bounded, async () => {
+  });
+  try {
+    let previous;
+    try {
+      previous = validateLibraryEntry(await json(join4(entries, entryName(entry.recipe.id))));
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (previous) {
+      check(
+        JSON.stringify(previous) === JSON.stringify(entry),
+        "同名声音记录已由另一个面板更新，请重新打开声音库"
+      );
+      await verified(join4(blobs, previous.reference.sha256), previous.reference);
+      await verified(join4(blobs, previous.sample.sha256), previous.sample);
+      return previous.recipe;
+    }
+    check(
+      (await readdir3(entries)).filter((name) => name.endsWith(".json")).length < MAX_VOICES,
+      "声音库最多保存 20 个声音"
+    );
+    for (const part of ["reference", "sample"]) {
+      const meta = entry[part];
+      const source = join4(stage, `${part}.bin`);
+      await verified(source, meta);
+      bounded.throwIfAborted();
+      const destination = join4(blobs, meta.sha256);
+      try {
+        await verified(destination, meta);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        await rename4(source, destination);
+      }
+    }
+    bounded.throwIfAborted();
+    await writeJson(join4(entries, entryName(entry.recipe.id)), entry);
+    return entry.recipe;
+  } finally {
+    await release();
+    await rm4(stage, { recursive: true, force: true });
+  }
+}
+
 // native/voice-runtime.ts
 var RequestError = class extends Error {
 };
@@ -2137,15 +2444,15 @@ function validateVoiceRequest(raw) {
     throw new RequestError("语速须在 0.5 至 2 倍之间");
   return value;
 }
-async function directory(root, parts, create) {
+async function directory2(root, parts, create) {
   let path = root;
   for (const part of parts) {
-    path = join4(path, part);
+    path = join5(path, part);
     if (create)
-      await mkdir4(path, { mode: 448 }).catch((error) => {
+      await mkdir5(path, { mode: 448 }).catch((error) => {
         if (error.code !== "EEXIST") throw error;
       });
-    const info = await lstat(path).catch((error) => {
+    const info = await lstat2(path).catch((error) => {
       if (!create && error.code === "ENOENT") return void 0;
       throw error;
     });
@@ -2155,6 +2462,7 @@ async function directory(root, parts, create) {
   return path;
 }
 var safeProviderMessages = /* @__PURE__ */ new Set([
+  ...AUDIO_PROBE_MESSAGES,
   "请输入配音文字",
   "配音参数必须是对象",
   "配音文字须为 1 至 6000 字",
@@ -2207,36 +2515,40 @@ async function runCli(raw) {
   let release;
   let published = "";
   try {
+    if (raw?.action === "library") {
+      emit({ type: "result", result: await runVoiceLibrary(raw, controller.signal) });
+      return;
+    }
     const request = validateVoiceRequest(raw);
-    const root = await realpath(process.cwd());
-    const runtime = await directory(root, ["runtime"], request.action !== "status");
-    await directory(root, ["runtime", request.engine], false);
+    const root = await realpath2(process.cwd());
+    const runtime = await directory2(root, ["runtime"], request.action !== "status");
+    await directory2(root, ["runtime", request.engine], false);
     const provider = request.engine === "audio8-tts" ? createAudio8TtsProvider({ runtimeDir: runtime }) : createQwenTtsProvider({ runtimeDir: runtime });
     if (request.action === "status") {
       const result2 = await provider.status(controller.signal);
       emit({ type: "result", result: publicStatus(result2) });
       return;
     }
-    const job = await directory(root, ["jobs", request.scopeKey, request.jobId], true);
-    const workDir = await directory(job, ["work"], true);
-    const outputDir = await directory(job, ["rendered"], true);
+    const job = await directory2(root, ["jobs", request.scopeKey, request.jobId], true);
+    const workDir = await directory2(job, ["work"], true);
+    const outputDir = await directory2(job, ["rendered"], true);
     const signal = combineAbortSignals([
       controller.signal,
       AbortSignal.timeout(request.action === "setup" ? 45 * 6e4 : 25 * 6e4)
     ]);
     const context = {
-      scope: { appId: "video-studio", projectPath: join4(root, "scopes", request.scopeKey) },
+      scope: { appId: "video-studio", projectPath: join5(root, "scopes", request.scopeKey) },
       jobId: request.jobId,
       attempt: 1,
       signal,
       workDir,
       outputDir,
-      cacheDir: join4(runtime, "cache", request.scopeKey),
+      cacheDir: join5(runtime, "cache", request.scopeKey),
       reportProgress: async (progress) => {
         emit({ type: "progress", progress });
       }
     };
-    const queue = await directory(root, ["runtime", ".queues", request.engine], true);
+    const queue = await directory2(root, ["runtime", ".queues", request.engine], true);
     release = await acquireVoiceQueue(
       queue,
       signal,
@@ -2246,9 +2558,9 @@ async function runCli(raw) {
       emit({ type: "result", result: publicStatus(await provider.setup(context)) });
       return;
     }
-    const referencePath = join4(job, request.referenceFile);
-    const reference = await lstat(referencePath);
-    if (!reference.isFile() || reference.isSymbolicLink() || dirname(await realpath(referencePath)) !== job)
+    const referencePath = join5(job, request.referenceFile);
+    const reference = await lstat2(referencePath);
+    if (!reference.isFile() || reference.isSymbolicLink() || dirname2(await realpath2(referencePath)) !== job)
       throw new RequestError("参考录音须来自当前声音任务");
     const validate = request.engine === "audio8-tts" ? validateAudio8TtsInput : validateQwenTtsInput;
     const input = validate({
@@ -2257,21 +2569,21 @@ async function runCli(raw) {
       rate: request.rate,
       referencePath
     });
-    await rm4(join4(job, "output.wav"), { force: true });
+    await rm5(join5(job, "output.wav"), { force: true });
     const result = await provider.generate(input, context);
     if (signal.aborted) throw mediaAbortError();
-    if (dirname(await realpath(result.path)) !== outputDir)
+    if (dirname2(await realpath2(result.path)) !== outputDir)
       throw new RequestError("配音结果未通过检查");
-    const bytes = (await stat3(result.path)).size;
-    published = join4(job, "output.wav");
-    await rename4(result.path, published);
+    const bytes2 = (await stat3(result.path)).size;
+    published = join5(job, "output.wav");
+    await rename5(result.path, published);
     if (signal.aborted) throw mediaAbortError();
     emit({
       type: "result",
       result: {
         engine: result.engine,
         file: "output.wav",
-        bytes,
+        bytes: bytes2,
         mimeType: result.mimeType,
         durationSeconds: result.durationSeconds,
         sampleRate: result.sampleRate,
@@ -2283,7 +2595,7 @@ async function runCli(raw) {
     });
     published = "";
   } catch (error) {
-    if (published) await rm4(published, { force: true }).catch(() => {
+    if (published) await rm5(published, { force: true }).catch(() => {
     });
     emit({ type: "error", message: safeError(error, controller.signal.aborted) });
     process.exitCode = 1;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.5.12",
+  "version": "0.5.15",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -96,6 +96,7 @@
                       "split",
                       "remove",
                       "move",
+                      "video-move",
                       "volume",
                       "add",
                       "caption",
@@ -103,6 +104,7 @@
                       "settings",
                       "audio-add",
                       "audio-trim",
+                      "audio-split",
                       "audio-move",
                       "audio-volume",
                       "audio-remove",
@@ -338,6 +340,13 @@
                       "blockers"
                     ],
                     "additionalProperties": false
+                  },
+                  "timelineMode": {
+                    "type": "string",
+                    "enum": [
+                      "magnetic",
+                      "free"
+                    ]
                   }
                 },
                 "required": [
@@ -398,6 +407,7 @@
                       "split",
                       "remove",
                       "move",
+                      "video-move",
                       "volume",
                       "add",
                       "caption",
@@ -405,6 +415,7 @@
                       "settings",
                       "audio-add",
                       "audio-trim",
+                      "audio-split",
                       "audio-move",
                       "audio-volume",
                       "audio-remove",
@@ -595,6 +606,13 @@
                       "blockers"
                     ],
                     "additionalProperties": false
+                  },
+                  "timelineMode": {
+                    "type": "string",
+                    "enum": [
+                      "magnetic",
+                      "free"
+                    ]
                   }
                 },
                 "required": [
@@ -1166,11 +1184,11 @@
     },
     "voice-runtime": {
       "entry": "app/tools/voice-runtime.mjs",
-      "sha256": "d365ee386800c51dc5c9b9017d18805ac43ba9b99ca59f996e82259085dba023"
+      "sha256": "e496fdb40f2a1c16569233e10e3098c195908c22aca5f0c9a7712117c1f67618"
     },
     "media-runtime": {
       "entry": "app/tools/media-runtime.mjs",
-      "sha256": "45d58c535f7a4976cc8beb41bda7936688d07f743d92bbac90194265d9447e2d"
+      "sha256": "c593093a4a3270b5a1174e3205cad21d856994bbbf8e6a6613bb600b29294277"
     }
   }
 }

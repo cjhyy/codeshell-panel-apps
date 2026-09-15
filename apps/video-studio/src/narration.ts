@@ -1,4 +1,4 @@
-import type { Asset, Project } from "./model";
+import { timelineDuration, type Asset, type Project } from "./model";
 
 /** User approval is written by the panel, never by an Agent edit operation. */
 export interface NarrationState {
@@ -109,11 +109,15 @@ export function narrationSnapshot(project: Project): string {
     inFrame: value.inFrame,
     outFrame: value.outFrame,
     volume: value.volume,
+    ...(project.timelineMode === "free" && value.startFrame !== undefined
+      ? { startFrame: value.startFrame }
+      : {}),
   });
   return JSON.stringify({
     script: project.script ?? "",
     width: project.width,
     height: project.height,
+    ...(project.timelineMode === "free" ? { timelineMode: "free" } : {}),
     clips: project.clips.map(clip),
     audioClips: (project.audioClips ?? []).map((value) => ({
       ...clip(value),
@@ -267,7 +271,7 @@ export function updateNarrationScript(project: Project, text: string): Project {
     (caption) =>
       !owned.has(caption.id) && !(previous && caption.id.startsWith("recorded-narration-")),
   );
-  const duration = next.clips.reduce((total, clip) => total + clip.outFrame - clip.inFrame, 0);
+  const duration = timelineDuration(next);
   const segments = duration > 0 ? draftTextSegments(updatedScript, duration) : [];
   if (kept.length + segments.length > 10000) throw new Error("字幕数量已达上限，请先整理已有字幕");
   const weights = segments.map((segment) => [...segment.replace(/\s/g, "")].length || 1);

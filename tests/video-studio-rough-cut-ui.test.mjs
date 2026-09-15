@@ -440,6 +440,69 @@ test(
 );
 
 test(
+  "failed AI proposal preserves its original connection error across reload and supports retry or discard",
+  { timeout: 60_000 },
+  async () => {
+    const { page } = await importedVideoQueue();
+    try {
+      const before = (await state(page)).project;
+      await openAI(page);
+      await page.locator('[data-roughcut-field="ai-scope"]').selectOption("current");
+      await page.locator('[data-action="roughcut-ai-start"]').click();
+      await page.waitForFunction(() => window.__roughCutAgentTasks.length === 1);
+      await page.evaluate(() => {
+        const current = window.__roughCutTools.read_video_project();
+        const task = window.__roughCutAgentTasks[0];
+        task.status = "completed";
+        task.result = {
+          text: JSON.stringify({
+            projectId: current.project.id,
+            requestToken: current.requestToken,
+            baseRevision: null,
+            title: "稳定画面候选保留段（未生成）",
+            explanation: "Panel 工具返回 unknown session，无法读取工程或取得当前 baseRevision。",
+            operations: [{ type: "rough-cuts", cuts: [] }],
+          }),
+        };
+        window.__roughCutEmit("agent.task.changed", task);
+      });
+      await page.waitForFunction(() =>
+        Object.keys(localStorage).some(
+          (key) =>
+            key.startsWith("document:video-studio-roughcut-ai-") &&
+            JSON.parse(localStorage.getItem(key)).data?.state.phase === "failed",
+        ),
+      );
+      await page.reload();
+      await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+      await page.locator('[data-tab="roughcut"]').click();
+      await openAI(page);
+      await page.waitForFunction(() =>
+        document.querySelector(".roughcut-ai-status")?.textContent.includes("unknown session"),
+      );
+      assert.match(
+        await page.locator("#roughcut-ai-panel").textContent(),
+        /本次分析失败，尚未生成候选段/,
+      );
+      assert.equal(await page.locator('[data-action="roughcut-ai-start"]').isDisabled(), true);
+      assert.equal(await page.locator('[data-action="roughcut-ai-save"]').count(), 0);
+      assert.deepEqual((await state(page)).project, before);
+      assert.equal(await page.evaluate(() => window.__roughCutAgentTasks.length), 0);
+      await page.locator("#roughcut-ai-panel").scrollIntoViewIfNeeded();
+      await page.screenshot({ path: resolve(artifacts, "rough-cut-ai-connection-failure.png") });
+      await page.locator('[data-action="roughcut-ai-retry"]').click();
+      await page.waitForFunction(() => window.__roughCutAgentTasks.length === 1);
+      await page.locator('[data-action="roughcut-ai-cancel"]').click();
+      await page.locator('[data-action="roughcut-ai-discard"]').click();
+      assert.equal(await page.locator('[data-action="roughcut-ai-start"]').isDisabled(), false);
+      assert.deepEqual((await state(page)).project, before);
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "single-source AI ignores the previous multi-selection and reviews only that source through real frame tools",
   { timeout: 60_000 },
   async () => {

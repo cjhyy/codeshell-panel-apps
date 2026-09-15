@@ -2689,3 +2689,135 @@ dialog .range-inputs {
 .folder-connection { display: grid; gap: 8px; border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
 .folder-connection strong, .folder-status { overflow-wrap: anywhere; }
 .folder-import p { line-height: 1.6; margin: 8px 0; }
+
+/* Direct timeline editing and navigation. */
+.snap-toggle {
+  min-height: 28px;
+  padding: 4px 8px;
+  gap: 5px;
+  font-size: 10px;
+  color: #859c91;
+}
+.snap-toggle[aria-pressed="true"] {
+  border-color: #538976;
+  background: #233d33;
+  color: #c2ebd0;
+}
+.zoom-control {
+  gap: 5px;
+}
+.zoom-control .icon-button {
+  width: 27px;
+  height: 27px;
+  min-height: 27px;
+}
+.timeline-fit {
+  min-height: 28px;
+  font-size: 10px;
+  padding: 4px 8px;
+}
+.timeline-audio {
+  cursor: grab;
+  touch-action: none;
+  min-width: 1px;
+  padding-inline: 10px;
+}
+.trim-handle {
+  touch-action: none;
+}
+.timeline-audio.selected .trim-handle:after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  left: 3px;
+  width: 2px;
+  height: 50%;
+  border-radius: 2px;
+  background: #d3f6d7;
+}
+.timeline-clip.dragging,
+.timeline-audio.dragging {
+  opacity: 0.8;
+  z-index: 6;
+  cursor: grabbing;
+}
+.timeline-clip[draggable="false"] {
+  cursor: grab;
+  touch-action: none;
+}
+.timeline-clip.drag-invalid {
+  outline: 2px solid #e79b90;
+}
+.timeline-drag-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 7;
+  width: 1px;
+  background: #91abb7;
+  pointer-events: none;
+}
+.timeline-drag-guide.snapped {
+  background: #b9f5a4;
+}
+.timeline-drag-guide.invalid {
+  background: #e79b90;
+}
+.timeline-drag-guide.invalid > span {
+  color: #ffdcd6;
+  border-color: #c87669;
+  background: #462b29;
+}
+.timeline-drag-guide > span {
+  display: block;
+  position: absolute;
+  left: 5px;
+  top: 3px;
+  padding: 4px 7px;
+  background: #26352f;
+  color: #e4f5e9;
+  border: 1px solid #52745d;
+  border-radius: 4px;
+  font:
+    10px ui-monospace,
+    monospace;
+  white-space: nowrap;
+}
+.shortcut-list {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px 28px;
+  font-size: 12px;
+}
+.shortcut-list dd {
+  margin: 0;
+  color: #d2ebd8;
+  font-family: ui-monospace, monospace;
+}
+.shortcuts-dialog > p {
+  color: #90a398;
+  font-size: 11px;
+  line-height: 1.7;
+}
+@media (max-width: 900px) {
+  .timeline-tools .sequence-title {
+    display: none;
+  }
+  .timeline-toolbar {
+    padding-inline: 9px;
+    gap: 6px;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 46px;
+  }
+  .timeline-tools,
+  .zoom-control {
+    padding-block: 5px;
+  }
+  .zoom-control input {
+    width: 64px;
+  }
+  .timeline-tools .separator {
+    margin-inline: 3px;
+  }
+}

@@ -4,8 +4,9 @@ import { homedir } from "node:os";
 import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
 import type { MediaJobContext, MediaJobProcessor, MediaScope } from "./media-types.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
+import { timelineClips, timelineDuration } from "../../src/model.js";
 
-export const MEDIA_PROCESSOR_CACHE_VERSION = 3;
+export const MEDIA_PROCESSOR_CACHE_VERSION = 4;
 
 export interface CaptionImageRequest {
   width: number;
@@ -56,6 +57,7 @@ interface ProjectClip {
   inFrame: number;
   outFrame: number;
   volume: number;
+  startFrame?: number;
 }
 interface Caption {
   id: string;
@@ -77,6 +79,7 @@ export interface MediaRenderProject {
   captions: Caption[];
   captionStyle?: "classic" | "bold" | "minimal";
   audioClips?: AudioClip[];
+  timelineMode?: "magnetic" | "free";
 }
 
 function object(value: unknown, label: string): Record<string, any> {
@@ -304,6 +307,12 @@ function renderProject(value: unknown): MediaRenderProject {
   if (project.schemaVersion !== 1 || project.fps !== 30)
     throw new Error("Only version 1, 30 fps projects are supported");
   if (
+    project.timelineMode !== undefined &&
+    project.timelineMode !== "magnetic" &&
+    project.timelineMode !== "free"
+  )
+    throw new Error("Timeline mode must be magnetic or free");
+  if (
     project.captionStyle !== undefined &&
     !["classic", "bold", "minimal"].includes(project.captionStyle)
   )
@@ -333,7 +342,11 @@ function renderProject(value: unknown): MediaRenderProject {
   };
   for (const clip of project.clips) {
     validateClip(clip);
-    frames += clip.outFrame - clip.inFrame;
+    if (clip.startFrame !== undefined)
+      integer(clip.startFrame, 0, 30 * 86400 - 1, "video startFrame");
+    const startFrame = project.timelineMode === "free" ? (clip.startFrame ?? frames) : frames;
+    if (startFrame < frames) throw new Error("Video clips must be ordered without overlap");
+    frames = startFrame + clip.outFrame - clip.inFrame;
   }
   integer(frames, 1, 30 * 86400, "timeline duration");
   if (!Array.isArray(project.captions) || project.captions.length > 10000)
@@ -962,19 +975,29 @@ export function createMediaJobProcessors(
       );
       sources.set(assetId, { path, inspection: await inspectMediaFile(path, context, options) });
     }
-    const frames = project.clips.reduce((total, clip) => total + clip.outFrame - clip.inFrame, 0),
+    const frames = timelineDuration(project),
       duration = frames / 30;
     const subtitleMode = input.subtitleMode ?? "burn";
     if (!["burn", "soft", "none"].includes(subtitleMode)) throw new Error("Invalid subtitle mode");
     if (project.captions.length && subtitleMode === "burn" && !options.renderCaptionPng)
       throw new Error("Burned captions require the Host caption PNG renderer");
     const paths: string[] = [];
+    const segments: Array<{ frames: number; clip?: ProjectClip }> = [];
+    let cursor = 0;
+    for (const clip of timelineClips(project)) {
+      if (clip.startFrame > cursor) segments.push({ frames: clip.startFrame - cursor });
+      segments.push({ frames: clip.endFrame - clip.startFrame, clip });
+      cursor = clip.endFrame;
+    }
     let finishedFrames = 0;
-    for (const [index, clip] of project.clips.entries()) {
+    for (const [index, segment] of segments.entries()) {
       check(context);
-      const media = sources.get(clip.assetId)!,
-        seconds = (clip.outFrame - clip.inFrame) / 30;
+      const clip = segment.clip,
+        media = clip ? sources.get(clip.assetId)! : undefined,
+        seconds = segment.frames / 30;
       if (
+        clip &&
+        media &&
         media.inspection.kind !== "image" &&
         (!media.inspection.durationSeconds ||
           clip.outFrame / 30 > media.inspection.durationSeconds + 1 / 30)
@@ -982,20 +1005,22 @@ export function createMediaJobProcessors(
         throw new Error("Clip range exceeds its source media duration");
       const output = join(context.workDir, `segment-${index}.mkv`);
       const args: string[] = [];
-      if (media.inspection.kind === "image")
-        args.push("-loop", "1", "-framerate", "30", ...sourceOptions, "-i", media.path);
-      else args.push("-ss", String(clip.inFrame / 30), ...sourceOptions, "-i", media.path);
-      if (!media.inspection.video)
+      if (clip && media) {
+        if (media.inspection.kind === "image")
+          args.push("-loop", "1", "-framerate", "30", ...sourceOptions, "-i", media.path);
+        else args.push("-ss", String(clip.inFrame / 30), ...sourceOptions, "-i", media.path);
+      }
+      if (!media?.inspection.video)
         args.push(
           "-f",
           "lavfi",
           "-i",
-          `color=c=0x0a0e10:s=${project.width}x${project.height}:r=30`,
+          `color=c=${media ? "0x0a0e10" : "black"}:s=${project.width}x${project.height}:r=30`,
         );
-      if (!media.inspection.audio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
-      const videoInput = media.inspection.video ? 0 : 1,
-        audioInput = media.inspection.audio ? 0 : 1;
-      const filter = `[${videoInput}:v]scale=${project.width}:${project.height}:force_original_aspect_ratio=decrease,pad=${project.width}:${project.height}:(ow-iw)/2:(oh-ih)/2:color=0x0a0e10,setsar=1,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setpts=PTS-STARTPTS[v];[${audioInput}:a]aresample=48000,volume=${clip.volume},apad,atrim=duration=${seconds},asetpts=PTS-STARTPTS[a]`;
+      if (!media?.inspection.audio) args.push("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo");
+      const videoInput = !media || media.inspection.video ? 0 : 1,
+        audioInput = media?.inspection.audio ? 0 : media && !media.inspection.video ? 2 : 1;
+      const filter = `[${videoInput}:v]scale=${project.width}:${project.height}:force_original_aspect_ratio=decrease,pad=${project.width}:${project.height}:(ow-iw)/2:(oh-ih)/2:color=0x0a0e10,setsar=1,fps=30:eof_action=pass,tpad=stop_mode=clone:stop=-1,setpts=PTS-STARTPTS[v];[${audioInput}:a]aresample=48000,volume=${clip?.volume ?? 1},apad,atrim=duration=${seconds},asetpts=PTS-STARTPTS[a]`;
       args.push(
         "-filter_complex",
         filter,
@@ -1026,9 +1051,9 @@ export function createMediaJobProcessors(
         args,
         context,
         seconds,
-        (fraction) => ((base + fraction * (clip.outFrame - clip.inFrame)) / frames) * 0.7,
+        (fraction) => ((base + fraction * segment.frames) / frames) * 0.7,
       );
-      finishedFrames += clip.outFrame - clip.inFrame;
+      finishedFrames += segment.frames;
       paths.push(output);
     }
     const listPath = join(context.workDir, "segments.txt");
@@ -1124,10 +1149,12 @@ export function createMediaJobProcessors(
           "-i",
           media.path,
         );
-        const delay = Math.round((clip.startFrame / 30) * 1000),
+        const delaySamples = clip.startFrame * (48000 / 30),
           label = `music${index}`;
+        // Give every delayed sample an explicit clock, including silent samples
+        // generated after seeking a source whose first audio timestamp is absent.
         filters.push(
-          `[${inputIndex}:a]aresample=48000,volume=${clip.volume},adelay=${delay}:all=1,apad,atrim=duration=${duration}[${label}]`,
+          `[${inputIndex}:a]aresample=48000,asetpts=N/SR/TB,volume=${clip.volume},adelay=${delaySamples}S:all=1,asetpts=N/SR/TB,apad,atrim=duration=${duration}[${label}]`,
         );
         labels.push(`[${label}]`);
         inputIndex++;

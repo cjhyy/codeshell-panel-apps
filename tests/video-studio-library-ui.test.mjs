@@ -281,7 +281,8 @@ test(
 
       // A right-button gesture on a trim edge opens the menu without editing the source range.
       const edge = page.locator(`[data-clip="${second.id}"] [data-trim="out"]`);
-      await edge.scrollIntoViewIfNeeded();
+      // Media restoration can redraw after undo; hover retries until the live edge is stable.
+      await edge.hover();
       const rect = await edge.boundingBox();
       await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
       await page.mouse.down({ button: "right" });

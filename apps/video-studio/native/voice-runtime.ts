@@ -6,6 +6,8 @@ import { acquireVoiceQueue } from "./queue.js";
 import { combineAbortSignals } from "./signals.js";
 import { mediaAbortError } from "./process-runner.js";
 import type { MediaJobContext } from "./contracts.js";
+import { runVoiceLibrary } from "./voice-library.js";
+import { AUDIO_PROBE_MESSAGES } from "./providers/audio-probe.js";
 
 export interface VoiceRequest {
   action: "status" | "setup" | "generate";
@@ -92,6 +94,7 @@ async function directory(root: string, parts: string[], create: boolean) {
 }
 
 const safeProviderMessages = new Set([
+  ...AUDIO_PROBE_MESSAGES,
   "请输入配音文字",
   "配音参数必须是对象",
   "配音文字须为 1 至 6000 字",
@@ -146,6 +149,10 @@ export async function runCli(raw: unknown): Promise<void> {
   let release: (() => Promise<void>) | undefined;
   let published = "";
   try {
+    if ((raw as { action?: unknown })?.action === "library") {
+      emit({ type: "result", result: await runVoiceLibrary(raw, controller.signal) });
+      return;
+    }
     const request = validateVoiceRequest(raw);
     const root = await realpath(process.cwd());
     const runtime = await directory(root, ["runtime"], request.action !== "status");

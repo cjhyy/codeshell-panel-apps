@@ -234,6 +234,8 @@ export function buildSpokenEditPlan(
 ): SpokenEditPlan {
   const original = validateProject(project),
     ids = [...new Set(selectedIds)];
+  if (original.timelineMode === "free")
+    throw new Error("口播自动删减需要压紧时间轴，请先开启主序列磁性再应用；当前空隙已保留");
   if (!ids.length) throw new Error("请先勾选需要删减的候选");
   const selected = ids.map((id) => {
     const candidate = candidates.find((item) => item.id === id);

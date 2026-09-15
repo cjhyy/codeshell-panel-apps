@@ -1101,6 +1101,50 @@ export class ProductionController {
     this.refreshQueue = operation;
     return operation;
   }
+  /** Re-publish the owned durable result; recovering a save never starts extraction again. */
+  async recoverReference(jobId: string): Promise<void> {
+    const host = this.requireHost();
+    const projectId = this.callbacks.getProject().id;
+    const operation = this.refreshQueue.catch(() => {}).then(async () => {
+      const binding = this.bindingFor(jobId, projectId);
+      if (!binding || binding.purpose !== "reference")
+        throw new Error("这条录音提取任务不属于当前工程，未保存旧工程的结果。");
+      const job = (await host.call("media.jobs.get", { id: jobId })) as MediaJob;
+      if (job.id !== jobId || job.status !== "succeeded")
+        throw new Error("录音提取尚未成功完成，请先刷新任务状态。");
+      await this.publishReference(binding, job.result);
+      await this.consume(binding);
+      this.jobs = [job, ...this.jobs.filter((item) => item.id !== job.id)];
+      this.callbacks.changed();
+    });
+    this.refreshQueue = operation;
+    return operation;
+  }
+  private async publishReference(binding: JobBinding, value: unknown): Promise<void> {
+    const project = this.callbacks.getProject();
+    if (this.disposed || project.id !== binding.projectId)
+      throw new Error("工程已切换，未保存旧工程的参考录音。");
+    const result = value as Record<string, any> | undefined;
+    const managed = result?.asset as ManagedAsset | undefined;
+    if (
+      !managed ||
+      !/^asset-[a-f0-9]{64}$/.test(managed.id) ||
+      !managed.mimeType?.startsWith("audio/") ||
+      result?.inspection?.kind !== "audio" ||
+      !Number.isFinite(result.inspection.durationSeconds) ||
+      result.inspection.durationSeconds < 3 ||
+      result.inspection.durationSeconds > 30 ||
+      (binding.referenceResultId && binding.referenceResultId !== managed.id)
+    )
+      throw new Error("参考提取未返回有效且一致的 3–30 秒音频。");
+    const preparation = { assetId: managed.id, inspection: result.inspection };
+    const asset = preparedAsset(managed, preparation, project);
+    this.preparations.set(managed.id, preparation);
+    await this.callbacks.publishAssets(binding.projectId, [asset], { label: "保存声音参考选段" });
+    if (this.disposed || this.callbacks.getProject().id !== binding.projectId)
+      throw new Error("工程已切换，参考录音任务仍保留，可返回原工程恢复保存。");
+    binding.referenceResultId = managed.id;
+  }
   private async refreshNow(): Promise<void> {
     if (this.disposed) return;
     const host = this.requireHost();
@@ -1245,20 +1289,7 @@ export class ProductionController {
           },
         ]);
       } else if (binding.purpose === "reference") {
-        const managed = result.asset as ManagedAsset;
-        if (
-          !managed?.mimeType?.startsWith("audio/") ||
-          result.inspection?.kind !== "audio" ||
-          !Number.isFinite(result.inspection.durationSeconds) ||
-          result.inspection.durationSeconds < 3 ||
-          result.inspection.durationSeconds > 30
-        )
-          throw new Error("参考提取未返回有效的 3–30 秒音频");
-        const preparation = { assetId: managed.id, inspection: result.inspection };
-        const asset = preparedAsset(managed, preparation, this.callbacks.getProject());
-        this.preparations.set(managed.id, preparation);
-        await this.callbacks.publishAssets(projectId, [asset], { label: "保存声音参考选段" });
-        binding.referenceResultId = managed.id;
+        await this.publishReference(binding, result);
       } else if (binding.purpose === "enhance") {
         const managed = result.asset as ManagedAsset;
         const asset = preparedAsset(

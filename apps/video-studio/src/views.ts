@@ -33,6 +33,7 @@ export interface ViewState {
   readonly frame: number;
   readonly tab: string;
   readonly zoom: number;
+  readonly snapping?: boolean;
   readonly search: string;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
@@ -681,6 +682,10 @@ ${esc(aiPrompt)}</textarea
     const audioClip = project.audioClips?.find((item) => item.id === selected);
     const clip = project.clips.find((item) => item.id === selected) ?? audioClip;
     const asset = project.assets.find((item) => item.id === clip?.assetId);
+    const freeClip =
+      !audioClip && project.timelineMode === "free"
+        ? timelineClips(project).find((item) => item.id === selected)
+        : undefined;
     return html`<div class="section-title">
         <h2>片段属性</h2>
         <span class="muted">${clip ? "已选中" : "未选择"}</span>
@@ -688,8 +693,11 @@ ${esc(aiPrompt)}</textarea
       ${audioClip
         ? `<div class="property-section"><label class="input-label">音轨在时间轴的位置（秒）<input id="audio-start" type="number" step="0.033333" min="0" value="${seconds(audioClip.startFrame)}" /></label></div>`
         : ""}
+      ${freeClip
+        ? `<div class="property-section"><label class="input-label">画面在时间轴的位置（秒）<input id="video-start" type="number" step="0.033333" min="0" max="86400" value="${seconds(freeClip.startFrame)}" /></label><p class="small muted">可自由拖动并保留空隙；空隙显示黑场，音乐与配音继续播放。</p></div>`
+        : ""}
       ${clip && asset
-        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">原声音量 <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}" /></div><p class="small muted">画面与原声同步裁剪、同步移动。</p></div><div class="reorder-actions">${button("move-left", "前移", "back", "", project.clips[0]?.id === selected)}${button("move-right", "后移", "next", "", project.clips.at(-1)?.id === selected)}</div>`
+        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">${audioClip ? "音轨音量" : "原声音量"} <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}" /></div><p class="small muted">${audioClip ? "独立调整这条音轨，不改变画面；可在时间轴拖动定位或裁剪。" : "画面与原声同步裁剪、同步移动。"}</p></div><div class="reorder-actions">${button("move-left", freeClip ? "前移 1 秒" : "前移", "back", "", audioClip ? audioClip.startFrame === 0 : freeClip ? freeClip.startFrame === 0 : project.clips[0]?.id === selected)}${button("move-right", freeClip ? "后移 1 秒" : "后移", "next", "", audioClip ? audioClip.startFrame + audioClip.outFrame - audioClip.inFrame >= duration() : freeClip ? freeClip.endFrame >= 86400 * project.fps : project.clips.at(-1)?.id === selected)}</div>`
         : '<div class="empty-inspector">' +
           icon("film", 30) +
           "<p>选择时间轴上的片段<br>调整时长与音量</p></div>"}
@@ -768,6 +776,8 @@ ${esc(aiPrompt)}</textarea
         return `切分 ${named} @ ${seconds(op.atFrame)}s`;
       case "move":
         return `移动 ${named} 到第 ${op.toIndex + 1} 位`;
+      case "video-move":
+        return `移动 ${named} 到 ${seconds(op.startFrame)}s`;
       case "volume":
         return `设置 ${named} 音量 ${Math.round(op.volume * 100)}%`;
       case "caption":
@@ -782,6 +792,8 @@ ${esc(aiPrompt)}</textarea
         return `更新素材粗剪清单（${op.cuts.length} 段）`;
       case "audio-add":
         return "添加独立音乐 / 配音轨";
+      case "audio-split":
+        return `切分音轨 ${named} @ 源素材 ${seconds(op.atFrame)}s`;
       case "audio-trim":
         return `裁剪音轨 ${named} → ${seconds(op.inFrame)}–${seconds(op.outFrame)}s`;
       case "audio-move":
@@ -797,8 +809,17 @@ ${esc(aiPrompt)}</textarea
 
   function renderTimeline(): string {
     const clips = timelineClips(project);
-    const width = Math.max(650, (duration() / 30) * zoom + 120);
-    const ticks = Math.ceil(width / zoom / 5);
+    const width = Math.max(
+      650,
+      (duration() / 30) * zoom + (project.timelineMode === "free" ? 650 : 120),
+    );
+    const audio = project.audioClips?.find((clip) => clip.id === selected);
+    const splitTarget =
+      audio ?? clips.find((clip) => frame > clip.startFrame && frame < clip.endFrame);
+    const canSplit =
+      splitTarget &&
+      frame > splitTarget.startFrame &&
+      frame < splitTarget.startFrame + splitTarget.outFrame - splitTarget.inFrame;
     return html`<div class="timeline-toolbar">
         <div class="timeline-tools">
           ${tool("undo", "撤销（⌘ Z）", "undo", !canUndo)}${tool(
@@ -808,22 +829,48 @@ ${esc(aiPrompt)}</textarea
             !canRedo,
           )}<span class="separator"></span>${tool(
             "split",
-            "在播放头切分（S）",
+            audio ? "切分选中音轨（S）" : "在播放头切分（S）",
             "cut",
-            !project.clips.length,
+            !canSplit,
           )}${tool("remove", "删除选中片段", "trash", !selected)}<span class="separator"></span
-          ><span class="sequence-title">主序列 <span class="tiny-badge">磁吸</span></span>
+          ><span class="sequence-title">主序列</span>
+          <button
+            type="button"
+            class="snap-toggle"
+            data-action="toggle-magnetic"
+            aria-pressed="${project.timelineMode !== "free"}"
+            title="${project.timelineMode === "free"
+              ? "开启磁吸排列，消除画面间空隙（可撤销）"
+              : "关闭磁吸排列，允许自由拖动和留空"}（M）"
+          >
+            ${icon("film", 14)}<span
+              >${project.timelineMode === "free" ? "自由排列" : "磁吸排列"}</span
+            >
+          </button>
+          <button
+            type="button"
+            class="snap-toggle"
+            data-action="toggle-snapping"
+            aria-pressed="${state.snapping !== false}"
+            title="边缘对齐吸附（N）；按住 Alt 临时关闭"
+          >
+            ${icon("link", 14)}<span>边缘吸附</span>
+          </button>
         </div>
         <div class="zoom-control">
-          <span>−</span
-          ><input
+          ${tool("zoom-out", "缩小时间轴（−）", "minus")}
+          <input
             id="timeline-zoom"
             aria-label="时间轴缩放"
             type="range"
-            min="12"
-            max="100"
+            min="0.01"
+            max="240"
+            step="any"
             value="${zoom}"
-          /><span>+</span>
+          />
+          ${tool("zoom-in", "放大时间轴（+）", "plus")}
+          ${button("fit-timeline", "一屏看全", "fit", "timeline-fit", !clips.length)}
+          ${tool("timeline-shortcuts", "剪辑快捷键（?）", "keyboard")}
         </div>
       </div>
       <div class="timeline-body">
@@ -835,13 +882,7 @@ ${esc(aiPrompt)}</textarea
         </div>
         <div class="timeline-scroll" id="timeline-scroll">
           <div class="timeline-content" style="width:${width}px">
-            <div class="ruler" id="ruler">
-              ${Array.from(
-                { length: ticks + 1 },
-                (_, i) =>
-                  `<span style="left:${i * 5 * zoom}px">${String(Math.floor((i * 5) / 60)).padStart(2, "0")}:${String((i * 5) % 60).padStart(2, "0")}</span>`,
-              ).join("")}
-            </div>
+            <div class="ruler" id="ruler"></div>
             <div class="video-track" id="video-track">
               ${clips
                 .map((clip, index) => {
@@ -855,7 +896,7 @@ ${esc(aiPrompt)}</textarea
                     class="timeline-clip clip-color-${index % 3} ${selected === clip.id
                       ? "selected"
                       : ""}"
-                    draggable="true"
+                    draggable="${project.timelineMode !== "free"}"
                     data-clip="${esc(clip.id)}"
                     style="left:${(clip.startFrame / 30) * zoom}px;width:${((clip.endFrame -
                       clip.startFrame) /
@@ -905,7 +946,7 @@ ${esc(aiPrompt)}</textarea
               ${(project.audioClips ?? [])
                 .map(
                   (clip) =>
-                    `<button class="timeline-audio ${selected === clip.id ? "selected" : ""}" data-audio-clip="${esc(clip.id)}" style="left:${(clip.startFrame / 30) * zoom}px;width:${((clip.outFrame - clip.inFrame) / 30) * zoom}px">${icon("volume", 12)}<span>${esc(project.assets.find((a) => a.id === clip.assetId)?.name ?? "音轨")} · ${Math.round(clip.volume * 100)}%</span></button>`,
+                    `<button aria-label="音轨 ${esc(project.assets.find((a) => a.id === clip.assetId)?.name ?? "音轨")}" aria-pressed="${selected === clip.id}" class="timeline-audio ${selected === clip.id ? "selected" : ""}" data-audio-clip="${esc(clip.id)}" style="left:${(clip.startFrame / 30) * zoom}px;width:${((clip.outFrame - clip.inFrame) / 30) * zoom}px">${icon("volume", 12)}<span>${esc(project.assets.find((a) => a.id === clip.assetId)?.name ?? "音轨")} · ${Math.round(clip.volume * 100)}%</span><span class="trim-handle left" data-trim="in" title="拖动裁剪音轨入点"></span><span class="trim-handle right" data-trim="out" title="拖动裁剪音轨出点"></span></button>`,
                 )
                 .join("")}
             </div>
@@ -916,7 +957,11 @@ ${esc(aiPrompt)}</textarea
         </div>
       </div>
       <div class="timeline-hint">
-        <span>拖动片段排序 · 拖动边缘裁剪 · 点击刻度定位</span
+        <span
+          >${project.timelineMode === "free"
+            ? "拖动画面自由定位 · 允许留空 · 同轨片段不能重叠"
+            : "拖动画面排序 · 关闭磁吸排列可自由定位"}
+          · Alt 暂停边缘吸附</span
         ><span>总时长 ${seconds(duration())} 秒</span>
       </div>`;
   }

@@ -8,6 +8,13 @@ import type {
   VoiceRequest,
 } from "../apps/video-studio/src/production";
 import {
+  VOICE_LIBRARY_KEY,
+  mergeVoiceLibrary,
+  validateVoiceLibrary,
+  type LibraryVoiceRecipe,
+  type VoiceLibraryReference,
+} from "../apps/video-studio/src/voice-library";
+import {
   createVoicePreparationUI,
   validateVoiceRecipes,
   VOICE_SAMPLE_TEXT,
@@ -34,6 +41,12 @@ function fixture(
   referenceContext: {
     assetUrl?(assetId: string): string | undefined;
     showAsset?(assetId: string): void | Promise<void>;
+    ensureReference?(value: VoiceLibraryReference): Promise<Asset>;
+    listVoices?(): Promise<LibraryVoiceRecipe[]>;
+    saveVoice?(recipe: LibraryVoiceRecipe): Promise<LibraryVoiceRecipe>;
+    importVoice?(
+      recipeId: string,
+    ): Promise<{ referenceMediaId: string; sampleMediaId: string; durationSeconds: number }>;
   } = {},
 ) {
   let project: Project = { ...createProject(), assets: [structuredClone(reference)] };
@@ -48,6 +61,9 @@ function fixture(
   let changes = 0;
   let holdWrite: Promise<void> | undefined;
   let failUse = false;
+  let recoverExtract: ((id: string) => Promise<void>) | undefined;
+  const recoveries: string[] = [];
+  const reconnected: VoiceLibraryReference[] = [];
   const storage = new Map<string, unknown>();
   const requests: VoiceRequest[] = [],
     extracts: unknown[][] = [],
@@ -98,6 +114,10 @@ function fixture(
       allJobs.set(task.id, task);
       return task;
     },
+    recoverReference: async (id: string) => {
+      recoveries.push(id);
+      await recoverExtract?.(id);
+    },
     cancel: async (id: string) => {
       cancellations.push(id);
       allJobs.get(id)!.status = "cancelled";
@@ -137,6 +157,18 @@ function fixture(
       changes++;
     },
     assertEditable() {},
+    ensureReference: async (value) => {
+      reconnected.push(structuredClone(value));
+      const asset: Asset = {
+        id: `connected-${project.id}`,
+        mediaId: value.mediaId,
+        name: value.name,
+        kind: "audio",
+        durationFrames: Math.round(value.durationSeconds * project.fps),
+      };
+      project.assets.push(asset);
+      return asset;
+    },
     ...referenceContext,
     toast() {},
     useVoice: async (value) => {
@@ -166,7 +198,9 @@ function fixture(
         voiceId: "reference",
         rate: 1,
         engine: "audio8-tts",
-        referenceAssetId: reference.mediaId,
+        referenceAssetId:
+          project.assets.find((item) => item.id === request.referenceAssetId)?.mediaId ??
+          reference.mediaId,
         referenceText: request.referenceText,
       },
     };
@@ -191,6 +225,11 @@ function fixture(
     writes,
     cancellations,
     retries,
+    recoveries,
+    reconnected,
+    recoverExtract: (callback: (id: string) => Promise<void>) => {
+      recoverExtract = callback;
+    },
     project: () => project,
     scope: () => scope,
     changes: () => changes,
@@ -366,7 +405,7 @@ test("initialization can request installation without falsely claiming a persona
     modelId: "audio8-tts",
     sampleText: VOICE_SAMPLE_TEXT,
   });
-  assert.match(f.ui.render(), /尚未选择本人参考录音/);
+  assert.match(f.ui.render(), /下一步：录一段本人声音/);
   await f.ui.action("voice-prep-sample");
   assert.equal(f.requests.length, 0);
   await f.ui.action("voice-prep-setup");
@@ -410,7 +449,7 @@ test("actual sample provenance and listener confirmation are required before a r
   f.input("name", "我的自然中文");
   await f.ui.action("voice-prep-save");
   assert.match(f.ui.render(), /已保存「我的自然中文」/);
-  const saved = [...f.storage.values()][0] as {
+  const saved = f.storage.get(VOICE_LIBRARY_KEY) as {
     recipes: { id: string; referenceMediaId: string; sampleMediaId: string }[];
   };
   assert.equal(saved.recipes[0]!.referenceMediaId, reference.mediaId);
@@ -433,11 +472,11 @@ test("save failure keeps recipe uncommitted and allows a later successful retry"
   f.failWrites();
   await f.ui.action("voice-prep-save");
   assert.match(f.ui.render(), /模拟磁盘已满/);
-  assert.doesNotMatch(f.ui.render(), /当前工程已保存的声音/);
+  assert.doesNotMatch(f.ui.render(), /我的声音库/);
   assert.deepEqual(([...f.storage.values()][0] as { recipes: unknown[] }).recipes, []);
   f.failWrites(false);
   await f.ui.action("voice-prep-save");
-  assert.match(f.ui.render(), /当前工程已保存的声音/);
+  assert.match(f.ui.render(), /我的声音库/);
 });
 
 test("refresh restores recipe selection and gets an older sample job beyond the recent job window", async () => {
@@ -453,7 +492,7 @@ test("refresh restores recipe selection and gets an older sample job beyond the 
   f.jobs.splice(0);
   await f.ui.load();
   assert.match(f.ui.render(), /本人声音真实试听/);
-  assert.match(f.ui.render(), /当前工程已保存的声音/);
+  assert.match(f.ui.render(), /我的声音库/);
   assert.equal((await f.ui.initialization())!.referenceText, "这是我本人录下的参考声音。");
 });
 
@@ -467,6 +506,9 @@ test("extract waits for the actual published audio before selecting it; old proj
   task.result = { asset: { id: media("c") }, inspection: { kind: "audio" } };
   await f.ui.refresh();
   assert.equal(f.used.length, 0);
+  assert.match(f.ui.render(), /录音已截取，尚未保存到当前工程/);
+  assert.match(f.ui.render(), /data-action="voice-prep-recover-extract"/);
+  assert.match(f.ui.render(), /data-action="voice-prep-dismiss-extract"/);
   f.project().assets.push({
     id: "extracted-project-id",
     mediaId: media("c"),
@@ -490,6 +532,132 @@ test("extract waits for the actual published audio before selecting it; old proj
   assert.equal(await f.ui.initialization(), undefined);
 });
 
+test("completed extraction can recover publication without starting another task, preserving failures until saved", async () => {
+  const f = fixture();
+  await f.ui.load();
+  await f.ui.extract("video-project-id", 30, 330);
+  const task = f.allJobs.get("extract")!;
+  task.status = "succeeded";
+  task.result = { asset: { id: media("c") }, inspection: { kind: "audio" } };
+  await f.ui.refresh();
+  f.recoverExtract(async () => {
+    throw new Error("工程保存失败，磁盘空间不足");
+  });
+  await f.ui.action("voice-prep-recover-extract");
+  assert.match(f.ui.render(), /工程保存失败，磁盘空间不足/);
+  assert.match(f.ui.render(), /data-action="voice-prep-recover-extract"/);
+  assert.equal(f.used.length, 0);
+  f.recoverExtract(async () => {
+    f.project().assets.push({
+      id: "recovered",
+      mediaId: media("c"),
+      kind: "audio",
+      name: "参考.wav",
+      durationFrames: 300,
+    });
+  });
+  await f.ui.action("voice-prep-recover-extract");
+  assert.deepEqual(f.recoveries, ["extract", "extract"]);
+  assert.equal(f.extracts.length, 1);
+  assert.equal(f.used[0]?.referenceAssetId, "recovered");
+  assert.doesNotMatch(f.ui.render(), /data-action="voice-prep-recover-extract"|工程保存失败/);
+});
+
+test("ending a completed extraction persists before unlocking and preserves its task and old project isolation", async () => {
+  const f = fixture();
+  await f.ui.load();
+  await f.ui.extract("video-project-id", 30, 330);
+  const task = f.allJobs.get("extract")!;
+  task.status = "succeeded";
+  task.result = { asset: { id: media("c") } };
+  await f.ui.refresh();
+  f.failWrites();
+  await f.ui.action("voice-prep-dismiss-extract");
+  assert.match(f.ui.render(), /模拟磁盘已满/);
+  assert.match(f.ui.render(), /data-action="voice-prep-dismiss-extract"/);
+  f.failWrites(false);
+  await f.ui.action("voice-prep-dismiss-extract");
+  assert.equal(task.status, "succeeded");
+  assert.equal(f.cancellations.length, 0);
+  assert.equal(f.used.length, 0);
+  await f.ui.load();
+  assert.doesNotMatch(f.ui.render(), /data-action="voice-prep-dismiss-extract"/);
+  assert.equal(await f.ui.initialization(), undefined);
+  f.changeProject();
+  await f.ui.load();
+  await f.ui.action("voice-prep-recover-extract");
+  assert.equal(f.recoveries.length, 0);
+  assert.equal(f.used.length, 0);
+});
+
+test("failed extraction settings save keeps pending recovery across reload until selection is durable", async () => {
+  const f = fixture();
+  await f.ui.load();
+  await f.ui.extract("video-project-id", 30, 330);
+  const task = f.allJobs.get("extract")!;
+  task.status = "succeeded";
+  task.result = { asset: { id: media("c") } };
+  f.project().assets.push({
+    id: "saved-reference",
+    mediaId: media("c"),
+    kind: "audio",
+    name: "参考.wav",
+    durationFrames: 300,
+  });
+  f.failWrites();
+  await f.ui.refresh();
+  assert.match(f.ui.render(), /模拟磁盘已满/);
+  assert.match(f.ui.render(), /录音已保存，声音设置尚未保存/);
+  assert.match(f.ui.render(), /data-action="voice-prep-recover-extract"/);
+  assert.doesNotMatch(f.ui.render(), /正在提取真实参考音频|已提取并保存参考录音/);
+  assert.equal(f.used.length, 0);
+  const key = `video-studio-voice-preparation-${f.project().id}`;
+  assert.deepEqual((f.storage.get(key) as any).pending, { kind: "extract", jobId: "extract" });
+  assert.equal((f.storage.get(key) as any).selection, null);
+  await f.ui.load();
+  assert.match(f.ui.render(), /data-action="voice-prep-recover-extract"/);
+  assert.equal(f.used.length, 0);
+  f.failWrites(false);
+  await f.ui.action("voice-prep-recover-extract");
+  assert.equal(f.used[0]?.referenceAssetId, "saved-reference");
+  assert.equal((f.storage.get(key) as any).selection.referenceAssetId, "saved-reference");
+  assert.equal((f.storage.get(key) as any).pending, undefined);
+  assert.doesNotMatch(f.ui.render(), /data-action="voice-prep-recover-extract"|模拟磁盘已满/);
+  assert.equal(f.extracts.length, 1);
+});
+
+test("switching project during extraction settings save cannot apply its reference to the new project", async () => {
+  const f = fixture();
+  await f.ui.load();
+  await f.ui.extract("video-project-id", 30, 330);
+  const task = f.allJobs.get("extract")!;
+  task.status = "succeeded";
+  task.result = { asset: { id: media("c") } };
+  f.project().assets.push({
+    id: "saved-reference",
+    mediaId: media("c"),
+    kind: "audio",
+    name: "参考.wav",
+    durationFrames: 300,
+  });
+  let release!: () => void;
+  f.holdWrites(
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  const refreshing = f.ui.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  f.changeProject();
+  const loading = f.ui.load();
+  release();
+  f.holdWrites();
+  await Promise.all([refreshing, loading]);
+  assert.equal(f.used.length, 0);
+  assert.equal(await f.ui.initialization(), undefined);
+  assert.doesNotMatch(f.ui.render(), /已提取并保存参考录音/);
+});
+
 test("queued writes are stopped before a changed scope or project can receive them", async () => {
   const f = fixture();
   await f.ui.load();
@@ -510,7 +678,7 @@ test("queued writes are stopped before a changed scope or project can receive th
   await loading;
   assert.equal(f.writes.length, 1, "The queued second snapshot never reaches the new Host binding");
   assert.equal(await f.ui.initialization(), undefined);
-  assert.doesNotMatch(f.ui.render(), /当前工程已保存的声音|工程已切换/);
+  assert.doesNotMatch(f.ui.render(), /我的声音库|工程已切换/);
 });
 
 test("malformed or cross-scope storage is locked without overwriting existing records", async () => {
@@ -560,7 +728,7 @@ test("a project JSON speech annotation alone cannot fabricate a verified audio s
   assert.doesNotMatch(f.ui.render(), /本人声音真实试听/);
   f.input("confirmed", "", true);
   await f.ui.action("voice-prep-save");
-  assert.doesNotMatch(f.ui.render(), /当前工程已保存的声音/);
+  assert.doesNotMatch(f.ui.render(), /我的声音库/);
 });
 
 test("creating a voice exposes three steps and selects an available engine without installing or recording", async () => {
@@ -709,13 +877,13 @@ test("saving a verified voice applies it only after durable storage and retries 
   f.failWrites(false);
   f.failUse();
   await f.ui.action("voice-prep-save");
-  const saved = [...f.storage.values()][0] as any;
+  const saved = f.storage.get(VOICE_LIBRARY_KEY) as any;
   assert.equal(saved.recipes.length, 1);
   assert.equal(f.ui.preparing(), false);
   assert.match(f.ui.render(), /测试：配音表单尚未载入/);
   f.failUse(false);
   await f.ui.action("voice-prep-save");
-  assert.equal(([...f.storage.values()][0] as any).recipes.length, 1);
+  assert.equal((f.storage.get(VOICE_LIBRARY_KEY) as any).recipes.length, 1);
   assert.equal(f.used.length, 1);
   assert.equal(f.used[0]!.referenceAssetId, reference.id);
 });
@@ -734,4 +902,331 @@ test("finished tasks awaiting durable publication show saving without allowing c
   assert.match(f.ui.render(), /id="voice-prep-model" disabled/);
   await f.ui.action("voice-prep-cancel");
   assert.deepEqual(f.cancellations, []);
+});
+
+async function saveVerifiedVoice(f: ReturnType<typeof fixture>): Promise<LibraryVoiceRecipe> {
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-sample");
+  f.completeSample();
+  await f.ui.refresh();
+  f.input("confirmed", "", true);
+  await f.ui.action("voice-prep-save");
+  return validateVoiceLibrary(f.storage.get(VOICE_LIBRARY_KEY), f.scope()).recipes[0]!;
+}
+
+test("an extracted recording with no transcript has an explicit next step without synthesizing or filling guessed words", async () => {
+  const f = fixture();
+  await f.ui.load();
+  await f.ui.selectReference(reference.id);
+  assert.match(f.ui.render(), /填写这段录音的逐字稿/);
+  assert.match(f.ui.render(), /录音已经选好。原样填入这段录音说的话/);
+  assert.doesNotMatch(f.ui.render(), /尚未选择本人参考录音/);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.setups.length, 0);
+  await assert.rejects(f.ui.initialization(), /实际说出的内容/);
+});
+
+test("a saved voice remains available in another project and reconnects only on explicit use at that project's frame rate", async () => {
+  const f = fixture();
+  const saved = await saveVerifiedVoice(f);
+  const next = { ...createProject(), fps: 24, assets: [] as Asset[] };
+  f.changeProject(next);
+  await f.ui.load();
+  assert.match(f.ui.render(), /我的声音库 · 多项目复用/);
+  assert.match(f.ui.render(), /本工作空间的工程可用/);
+  assert.equal(await f.ui.initialization(), undefined);
+  assert.deepEqual(f.project().assets, []);
+  assert.deepEqual(f.reconnected, []);
+  assert.equal(f.requests.length, 1);
+  const before = structuredClone(next);
+  await f.ui.action("voice-prep-use", saved.id);
+  assert.deepEqual(f.reconnected, [
+    { mediaId: reference.mediaId, name: reference.name, durationSeconds: 10 },
+  ]);
+  assert.equal(f.project().assets[0]!.durationFrames, 240);
+  assert.equal(f.used.at(-1)!.referenceAssetId, f.project().assets[0]!.id);
+  assert.equal(f.used.at(-1)!.referenceText, "这是我本人录下的参考声音。");
+  assert.deepEqual(f.project().clips, before.clips);
+  assert.deepEqual(f.project().audioClips, before.audioClips);
+  assert.equal(f.requests.length, 1, "Reusing a verified recipe does not regenerate its sample");
+  assert.equal(f.ui.preparing(), false);
+  await f.ui.load();
+  assert.equal((await f.ui.initialization())!.referenceAssetId, f.project().assets[0]!.id);
+});
+
+test("legacy project recipes migrate to workspace storage without altering their project or inventing missing media", async () => {
+  const f = fixture();
+  const original = {
+    schemaVersion: 1,
+    scope: f.scope(),
+    projectId: f.project().id,
+    selection: null,
+    recipes: [
+      {
+        id: "legacy-voice",
+        name: "已确认的声音",
+        modelId: "audio8-tts",
+        referenceMediaId: reference.mediaId,
+        referenceText: "这是本人实际说过的内容。",
+        sampleMediaId: media("b"),
+        sampleText: VOICE_SAMPLE_TEXT,
+      },
+    ],
+  };
+  const key = `video-studio-voice-preparation-${f.project().id}`;
+  f.storage.set(key, structuredClone(original));
+  await f.ui.load();
+  const migrated = validateVoiceLibrary(f.storage.get(VOICE_LIBRARY_KEY), f.scope());
+  assert.equal(migrated.recipes[0]!.id, "legacy-voice");
+  assert.equal(migrated.recipes[0]!.referenceDurationSeconds, 10);
+  assert.deepEqual(f.storage.get(key), original);
+  assert.equal(f.requests.length, 0);
+  assert.equal(f.used.length, 0);
+  f.changeProject();
+  await f.ui.load();
+  assert.match(f.ui.render(), /使用 已确认的声音/);
+});
+
+test("an unreadable or cross-workspace voice library is preserved and cannot be silently replaced", async () => {
+  for (const scope of ["/other-workspace", "/workspace/a"]) {
+    const f = fixture();
+    const invalid = {
+      schemaVersion: 1,
+      scope,
+      recipes: [{ referenceMediaId: "/tmp/private.wav" }],
+    };
+    f.storage.set(VOICE_LIBRARY_KEY, invalid);
+    await f.ui.load();
+    assert.match(f.ui.render(), /声音库无法恢复，原记录已保留/);
+    await assert.rejects(f.ui.action("voice-prep-start"), /先恢复/);
+    assert.deepEqual(f.storage.get(VOICE_LIBRARY_KEY), invalid);
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.reconnected, []);
+  }
+});
+
+test("a failed reference reconnection preserves the saved voice and leaves the new project's selection untouched", async () => {
+  const f = fixture({
+    ensureReference: async () => {
+      throw new Error("录音已被移动，请重新连接");
+    },
+  });
+  const saved = await saveVerifiedVoice(f);
+  f.changeProject();
+  await f.ui.load();
+  const before = structuredClone(f.storage.get(VOICE_LIBRARY_KEY));
+  await f.ui.action("voice-prep-use", saved.id);
+  assert.match(f.ui.render(), /录音已被移动，请重新连接/);
+  assert.equal(await f.ui.initialization(), undefined);
+  assert.equal(f.project().assets.length, 0);
+  assert.deepEqual(f.storage.get(VOICE_LIBRARY_KEY), before);
+  assert.equal(f.used.length, 1);
+});
+
+test("global voice saving requires a real confirmed sample and cross-workspace use imports fresh local media handles", async () => {
+  const savedGlobally: LibraryVoiceRecipe[] = [];
+  const imports: string[] = [];
+  const f = fixture({
+    listVoices: async () => structuredClone(savedGlobally),
+    saveVoice: async (recipe) => {
+      savedGlobally.push(structuredClone(recipe));
+      return structuredClone(recipe);
+    },
+    importVoice: async (id) => {
+      imports.push(id);
+      return { referenceMediaId: media("c"), sampleMediaId: media("d"), durationSeconds: 10 };
+    },
+  });
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-save");
+  assert.equal(savedGlobally.length, 0);
+  await f.ui.action("voice-prep-sample");
+  f.completeSample();
+  await f.ui.refresh();
+  await f.ui.action("voice-prep-save");
+  assert.equal(savedGlobally.length, 0);
+  f.input("confirmed", "", true);
+  await f.ui.action("voice-prep-save");
+  assert.equal(savedGlobally.length, 1);
+  assert.equal(savedGlobally[0]!.referenceDurationSeconds, 10);
+  assert.match(f.ui.render(), /所有项目可用/);
+  f.changeProject();
+  f.changeScope();
+  f.storage.clear();
+  await f.ui.load();
+  assert.match(f.ui.render(), /使用 我的中文声音/);
+  assert.deepEqual(imports, [], "Listing global voices never imports another workspace's media");
+  assert.equal(f.project().assets.length, 0);
+  await f.ui.action("voice-prep-use", savedGlobally[0]!.id);
+  assert.deepEqual(imports, [savedGlobally[0]!.id]);
+  assert.equal(f.project().assets[0]!.mediaId, media("c"));
+  assert.equal(f.reconnected[0]!.mediaId, media("c"));
+  assert.equal(f.used.at(-1)!.referenceAssetId, f.project().assets[0]!.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.ui.preparing(), false);
+});
+
+test("failed global publication reports the failure and does not falsely claim a reusable voice was saved", async () => {
+  const f = fixture({
+    listVoices: async () => [],
+    saveVoice: async () => {
+      throw new Error("共享声音录音保存失败，请重试");
+    },
+  });
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-sample");
+  f.completeSample();
+  await f.ui.refresh();
+  f.input("confirmed", "", true);
+  await f.ui.action("voice-prep-save");
+  assert.match(f.ui.render(), /共享声音录音保存失败，请重试/);
+  assert.doesNotMatch(f.ui.render(), /我的声音库 · 多项目复用/);
+  assert.equal(f.storage.has(VOICE_LIBRARY_KEY), false);
+  assert.equal(f.ui.preparing(), true);
+  assert.deepEqual(f.used, []);
+});
+
+test("switching projects during global import cannot apply old media or voice settings to the new project", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const globalVoice: LibraryVoiceRecipe = {
+    id: "global-voice",
+    name: "我的共享声音",
+    modelId: "audio8-tts",
+    referenceMediaId: media("a"),
+    referenceText: "录音中真实说出的内容。",
+    sampleMediaId: media("b"),
+    sampleText: VOICE_SAMPLE_TEXT,
+    referenceName: reference.name,
+    referenceDurationSeconds: 10,
+  };
+  const f = fixture({
+    listVoices: async () => [globalVoice],
+    importVoice: async () => {
+      await held;
+      return { referenceMediaId: media("c"), sampleMediaId: media("d"), durationSeconds: 10 };
+    },
+  });
+  await f.ui.load();
+  const using = f.ui.action("voice-prep-use", globalVoice.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  f.changeProject();
+  await f.ui.load();
+  release();
+  await using;
+  assert.equal(await f.ui.initialization(), undefined);
+  assert.equal(f.project().assets.length, 0);
+  assert.deepEqual(f.reconnected, []);
+  assert.deepEqual(f.used, []);
+  assert.equal(f.storage.has(VOICE_LIBRARY_KEY), false);
+});
+
+test("importing an external reference into another project updates the saved local mapping and keeps the verified voice usable", async () => {
+  const shared: LibraryVoiceRecipe[] = [];
+  const f = fixture({
+    listVoices: async () => structuredClone(shared),
+    saveVoice: async (recipe) => {
+      shared.push(structuredClone(recipe));
+      return structuredClone(recipe);
+    },
+    importVoice: async () => ({
+      referenceMediaId: media("c"),
+      sampleMediaId: media("d"),
+      durationSeconds: 10,
+    }),
+  });
+  const externalId = "external-" + "a".repeat(64);
+  f.project().assets[0]!.mediaId = externalId;
+  const saved = await saveVerifiedVoice(f);
+  assert.equal(saved.referenceMediaId, externalId);
+  f.changeProject();
+  await f.ui.load();
+  await f.ui.action("voice-prep-use", saved.id);
+  const local = validateVoiceLibrary(f.storage.get(VOICE_LIBRARY_KEY), f.scope()).recipes[0]!;
+  assert.equal(local.id, saved.id);
+  assert.equal(local.referenceMediaId, media("c"));
+  assert.equal(local.sampleMediaId, media("d"));
+  assert.equal(local.referenceText, saved.referenceText);
+  assert.equal(f.project().assets[0]!.mediaId, media("c"));
+  assert.equal(
+    f.ui.preparing(),
+    false,
+    "A verified voice opens the full narration form after import",
+  );
+  assert.equal(f.used.at(-1)!.referenceAssetId, f.project().assets[0]!.id);
+  assert.equal(f.requests.length, 1);
+  assert.equal(
+    shared[0]!.referenceMediaId,
+    externalId,
+    "Local remapping never rewrites the app-wide recipe",
+  );
+  assert.throws(
+    () =>
+      mergeVoiceLibrary(
+        { schemaVersion: 1, scope: f.scope(), recipes: [saved] },
+        [{ ...local, referenceText: "不同的录音逐字稿" }],
+        true,
+      ),
+    /同编号的不同声音/,
+  );
+  await f.ui.load();
+  assert.equal(f.ui.preparing(), false);
+  assert.equal((await f.ui.initialization())!.referenceAssetId, f.project().assets[0]!.id);
+});
+
+test("explicit refresh discovers voices from another workspace while preserving the unfinished draft", async () => {
+  const shared: LibraryVoiceRecipe[] = [];
+  let listCalls = 0;
+  let unavailable = false;
+  const f = fixture({
+    listVoices: async () => {
+      listCalls++;
+      if (unavailable) throw new Error("声音文件暂时无法读取");
+      return structuredClone(shared);
+    },
+  });
+  await f.ui.load();
+  await f.select();
+  const draft = await f.ui.initialization();
+  const stored = structuredClone(f.storage.get(`video-studio-voice-preparation-${f.project().id}`));
+  const available: LibraryVoiceRecipe = {
+    id: "saved-in-another-workspace",
+    name: "在另一工程准备的声音",
+    modelId: "audio8-tts",
+    referenceMediaId: media("c"),
+    referenceName: "已确认录音.wav",
+    referenceDurationSeconds: 10,
+    referenceText: "另一工程中本人实际说出的录音内容。",
+    sampleMediaId: media("d"),
+    sampleText: VOICE_SAMPLE_TEXT,
+  };
+  shared.push(available);
+  await f.ui.refresh();
+  await f.ui.refresh();
+  assert.equal(
+    listCalls,
+    1,
+    "Background task polling does not repeatedly start native library reads",
+  );
+  assert.doesNotMatch(f.ui.render(), /在另一工程准备的声音/);
+  await f.ui.action("voice-prep-retry");
+  assert.equal(listCalls, 2);
+  assert.match(f.ui.render(), /使用 在另一工程准备的声音/);
+  assert.deepEqual(await f.ui.initialization(), draft);
+  assert.deepEqual(f.storage.get(`video-studio-voice-preparation-${f.project().id}`), stored);
+  unavailable = true;
+  await f.ui.action("voice-prep-retry");
+  assert.match(f.ui.render(), /声音库未刷新，已保留上次的声音和当前草稿/);
+  assert.match(f.ui.render(), /使用 在另一工程准备的声音/);
+  assert.deepEqual(await f.ui.initialization(), draft);
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(f.reconnected, []);
 });

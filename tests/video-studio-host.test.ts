@@ -139,6 +139,22 @@ test("proposal parsing rejects malformed identities, revisions and outer fields"
   assert.throws(() => parseTaskProposal("x".repeat(1_000_001)));
 });
 
+test("proposal diagnostics identify the invalid field without relaxing validation", () => {
+  const base = {
+    baseRevision: 0,
+    title: "没有符合目标的保留段",
+    explanation: "已检查原片，当前没有需要保留的内容",
+    operations: [{ type: "rough-cuts", cuts: [] }],
+  };
+  for (const baseRevision of [undefined, null, "0", -1, 0.5, Number.MAX_SAFE_INTEGER])
+    assert.throws(() => parseProposal({ ...base, baseRevision }), /baseRevision.*非负整数/);
+  for (const title of [undefined, null, "", "  ", "多\n行", "长".repeat(201)])
+    assert.throws(() => parseProposal({ ...base, title }), /title.*单行非空文本/);
+  for (const operations of [undefined, null, {}, [], Array(101).fill(base.operations[0])])
+    assert.throws(() => parseProposal({ ...base, operations }), /operations.*1–100/);
+  assert.deepEqual(parseProposal(base), base, "Zero candidates still use one explicit operation");
+});
+
 test("project archives retain ten distinct IDs in most recently saved order", async () => {
   let stored: Project[] = [];
   const archive = createProjectArchiveStore(

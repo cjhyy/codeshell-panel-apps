@@ -15,9 +15,22 @@ export interface LocalMedia {
   thumbnail?: string;
   source?: MediaElementAudioSourceNode;
   gain?: GainNode;
+  audioConnected?: boolean;
+  duration?: number;
+  width?: number;
+  height?: number;
 }
 
-function eventOnce(element: EventTarget, event: string, start?: () => void): Promise<void> {
+function cancelled(): Error {
+  return new Error("素材读取已取消");
+}
+
+function eventOnce(
+  element: EventTarget,
+  event: string,
+  start?: () => void,
+  signal?: AbortSignal,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const timer = setTimeout(() => done(new Error("素材读取超时，请检查文件格式")), 15000);
@@ -27,10 +40,17 @@ function eventOnce(element: EventTarget, event: string, start?: () => void): Pro
       clearTimeout(timer);
       element.removeEventListener(event, success);
       element.removeEventListener("error", failure);
+      signal?.removeEventListener("abort", abort);
       error ? reject(error) : resolve();
     }
     const success = () => done();
     const failure = () => done(new Error("浏览器无法解码此素材，请转换为 MP4 / WebM / WAV 后重试"));
+    const abort = () => done(cancelled());
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
     element.addEventListener(event, success, { once: true });
     element.addEventListener("error", failure, { once: true });
     try {
@@ -41,19 +61,30 @@ function eventOnce(element: EventTarget, event: string, start?: () => void): Pro
   });
 }
 
-async function seekMedia(element: HTMLMediaElement, seconds: number): Promise<void> {
+async function seekMedia(
+  element: HTMLMediaElement,
+  seconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) throw cancelled();
   if (
     !element.seeking &&
     Math.abs(element.currentTime - seconds) < 0.012 &&
     element.readyState >= 2
   )
     return;
-  await eventOnce(element, "seeked", () => {
-    element.currentTime = seconds;
-  });
+  await eventOnce(
+    element,
+    "seeked",
+    () => {
+      element.currentTime = seconds;
+    },
+    signal,
+  );
 }
 
-async function mediaDuration(element: HTMLMediaElement): Promise<number> {
+async function mediaDuration(element: HTMLMediaElement, signal?: AbortSignal): Promise<number> {
+  if (signal?.aborted) throw cancelled();
   if (Number.isFinite(element.duration) && element.duration > 0) return element.duration;
   // MediaRecorder WebM files commonly omit Duration. Seeking beyond the end
   // asks Chromium to inspect the final cluster without copying the file.
@@ -67,6 +98,7 @@ async function mediaDuration(element: HTMLMediaElement): Promise<number> {
       element.removeEventListener("durationchange", inspect);
       element.removeEventListener("seeked", inspect);
       element.removeEventListener("error", failure);
+      signal?.removeEventListener("abort", abort);
       error ? reject(error) : resolve(value!);
     };
     const inspect = (event: Event) => {
@@ -80,10 +112,12 @@ async function mediaDuration(element: HTMLMediaElement): Promise<number> {
         finish(element.currentTime);
     };
     const failure = () => finish(undefined, new Error("素材时长读取失败，请检查文件格式"));
+    const abort = () => finish(undefined, cancelled());
     const timer = setTimeout(
       () => finish(undefined, new Error("素材时长探测超时，请转换为带时长信息的视频后重试")),
       15000,
     );
+    signal?.addEventListener("abort", abort, { once: true });
     element.addEventListener("durationchange", inspect);
     element.addEventListener("seeked", inspect);
     element.addEventListener("error", failure);
@@ -93,7 +127,7 @@ async function mediaDuration(element: HTMLMediaElement): Promise<number> {
       failure();
     }
   });
-  await seekMedia(element, 0);
+  await seekMedia(element, 0, signal);
   return duration;
 }
 
@@ -181,6 +215,151 @@ export class MediaLibrary {
   private voices = new Set<LocalMedia>();
   private generation = 0;
   private loads = new Map<string, AbortController>();
+  private activeVideo?: LocalMedia;
+  private seekRequest = 0;
+  private videoQueue: Promise<unknown> = Promise.resolve();
+  private videoRequests = new Set<AbortController>();
+  private videoElements = new Set<HTMLVideoElement>();
+  private thumbnails = new Map<string, Promise<string | undefined>>();
+
+  /** One foreground video plus one serial import/frame probe, independent of library size. */
+  async withVideoDecoder<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController();
+    this.videoRequests.add(controller);
+    const run = this.videoQueue
+      .catch(() => {})
+      .then(async () => {
+        if (controller.signal.aborted) throw cancelled();
+        return operation(controller.signal);
+      });
+    this.videoQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      return await run;
+    } finally {
+      this.videoRequests.delete(controller);
+    }
+  }
+
+  private unloadVideo(item: LocalMedia): void {
+    if (!(item.element instanceof HTMLVideoElement)) return;
+    item.element.pause();
+    item.source?.disconnect();
+    item.gain?.disconnect();
+    item.audioConnected = false;
+    if (item.element.hasAttribute("src")) {
+      item.element.removeAttribute("src");
+      item.element.load();
+    }
+    this.videoElements.delete(item.element);
+    if (this.activeVideo === item) this.activeVideo = undefined;
+  }
+
+  /** Release decoder buffers while retaining reconnectable assets and their covers. */
+  suspend(): void {
+    this.claimPlayback();
+    this.seekRequest++;
+    this.pause();
+    this.videoRequests.forEach((controller) => controller.abort());
+    this.thumbnails.clear();
+    for (const item of this.items.values()) this.unloadVideo(item);
+    for (const element of this.videoElements) {
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+    }
+    this.videoElements.clear();
+  }
+
+  private async loadVideo(
+    element: HTMLVideoElement,
+    url: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    this.videoElements.add(element);
+    await eventOnce(
+      element,
+      "loadeddata",
+      () => {
+        element.preload = "auto";
+        element.src = url;
+      },
+      signal,
+    );
+  }
+
+  /** Populate a visible card without waking the rest of the library or seeking the player. */
+  async ensureThumbnail(
+    assetId: string,
+    isCurrent: () => boolean = () => true,
+  ): Promise<string | undefined> {
+    const item = this.items.get(assetId);
+    if (!item || !isCurrent()) return;
+    if (item.thumbnail) return item.thumbnail;
+    if (!(item.element instanceof HTMLVideoElement)) return;
+    const existing = this.thumbnails.get(assetId);
+    if (existing) return existing;
+    const pending = this.withVideoDecoder(async (signal) => {
+      if (!isCurrent() || this.items.get(assetId) !== item) return;
+      const element = document.createElement("video");
+      element.muted = true;
+      element.playsInline = true;
+      const temporary: LocalMedia = { url: item.url, element };
+      try {
+        await this.loadVideo(element, item.url, signal);
+        if (!isCurrent()) return;
+        const thumbnail = await sourceThumbnail(element, signal);
+        if (signal.aborted) throw cancelled();
+        if (this.items.get(assetId) !== item || !isCurrent()) return;
+        item.thumbnail = thumbnail;
+        return thumbnail;
+      } finally {
+        this.unloadVideo(temporary);
+      }
+    });
+    this.thumbnails.set(assetId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.thumbnails.get(assetId) === pending) this.thumbnails.delete(assetId);
+    }
+  }
+
+  private rememberMetadata(item: LocalMedia, asset?: Asset): void {
+    const element = item.element;
+    item.duration =
+      element instanceof HTMLMediaElement && Number.isFinite(element.duration)
+        ? element.duration
+        : (item.duration ?? (asset ? asset.durationFrames / 30 : undefined));
+    item.width =
+      element instanceof HTMLVideoElement ? element.videoWidth || asset?.width : asset?.width;
+    item.height =
+      element instanceof HTMLVideoElement ? element.videoHeight || asset?.height : asset?.height;
+  }
+
+  private async activateVideo(item: LocalMedia, signal: AbortSignal): Promise<void> {
+    if (this.activeVideo !== item) {
+      if (this.activeVideo) this.unloadVideo(this.activeVideo);
+      this.activeVideo = item;
+    }
+    const element = item.element as HTMLVideoElement;
+    if (!element.hasAttribute("src")) {
+      try {
+        await this.loadVideo(element, item.url, signal);
+        // Refresh the cover only when this source is first used, including stale saved IDs.
+        if (!item.thumbnail?.startsWith("data:"))
+          item.thumbnail = (await sourceThumbnail(element, signal)) ?? item.thumbnail;
+        if (signal.aborted) throw cancelled();
+        this.rememberMetadata(item);
+      } catch (error) {
+        this.unloadVideo(item);
+        throw error;
+      }
+    }
+    this.connectAudio(item);
+  }
 
   claimPlayback(): symbol {
     this.playbackOwner = Symbol("playback");
@@ -191,7 +370,29 @@ export class MediaLibrary {
     return this.playbackOwner === owner;
   }
 
-  async import(file: File, existing?: Asset): Promise<Asset> {
+  async import(file: File, existing?: Asset, options: { defer?: boolean } = {}): Promise<Asset> {
+    if (options.defer && existing?.kind === "video" && file.type.startsWith("video/")) {
+      const previous = this.items.get(existing.id);
+      if (previous) this.release(previous);
+      const item: LocalMedia = {
+        file,
+        ownsUrl: true,
+        url: URL.createObjectURL(file),
+        element: document.createElement("video"),
+        duration: existing.durationFrames / 30,
+        width: existing.width,
+        height: existing.height,
+      };
+      (item.element as HTMLVideoElement).playsInline = true;
+      this.items.set(existing.id, item);
+      return existing;
+    }
+    return file.type.startsWith("video/")
+      ? this.withVideoDecoder((signal) => this.importSource(file, existing, signal))
+      : this.importSource(file, existing);
+  }
+
+  private async importSource(file: File, existing?: Asset, signal?: AbortSignal): Promise<Asset> {
     const generation = this.generation,
       assetId = existing?.id ?? crypto.randomUUID();
     const kind = file.type.startsWith("image/")
@@ -211,7 +412,15 @@ export class MediaLibrary {
       element.preload = "auto";
       if (element instanceof HTMLVideoElement) element.playsInline = true;
     }
-    const ready = eventOnce(element, kind === "image" ? "load" : "loadeddata");
+    const abort = () => ticket.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    const ready = eventOnce(
+      element,
+      kind === "image" ? "load" : "loadeddata",
+      undefined,
+      ticket.signal,
+    );
+    if (element instanceof HTMLVideoElement) this.videoElements.add(element);
     element.src = url;
     try {
       await ready;
@@ -220,7 +429,8 @@ export class MediaLibrary {
       const thumbnail = await sourceThumbnail(element, ticket.signal);
       if (generation !== this.generation || this.loads.get(assetId) !== ticket)
         throw new Error("素材读取已取消");
-      const duration = element instanceof HTMLMediaElement ? await mediaDuration(element) : 5;
+      const duration =
+        element instanceof HTMLMediaElement ? await mediaDuration(element, ticket.signal) : 5;
       if (!Number.isFinite(duration) || duration <= 0) throw new Error("素材缺少有效时长");
       const asset: Asset = existing || {
         id: assetId,
@@ -247,18 +457,22 @@ export class MediaLibrary {
         throw new Error("重连素材的时长不匹配，请选择原文件");
       const item: LocalMedia = { file, url, element, ownsUrl: true };
       item.thumbnail = thumbnail;
+      this.rememberMetadata(item, asset);
       if (generation !== this.generation || this.loads.get(assetId) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
       if (previous) this.release(previous);
       this.items.set(asset.id, item);
+      this.unloadVideo(item);
       return asset;
     } catch (error) {
       element.removeAttribute("src");
       if (element instanceof HTMLMediaElement) element.load();
+      if (element instanceof HTMLVideoElement) this.videoElements.delete(element);
       URL.revokeObjectURL(url);
       throw error;
     } finally {
+      signal?.removeEventListener("abort", abort);
       if (this.loads.get(assetId) === ticket) this.loads.delete(assetId);
     }
   }
@@ -268,13 +482,21 @@ export class MediaLibrary {
     return this.connectSource(asset, new URL("demo-narration.mp3", document.baseURI).href);
   }
 
-  async connectManaged(asset: Asset, options: { reload?: boolean } = {}): Promise<void> {
+  async connectManaged(
+    asset: Asset,
+    options: { reload?: boolean; inspect?: boolean } = {},
+  ): Promise<void> {
     const mediaId =
       asset.kind === "image" ? asset.mediaId || asset.thumbnailId : asset.proxyId || asset.mediaId;
     if (!mediaId || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(mediaId))
       throw new Error("素材缺少有效的本地媒体编号");
     if (asset.kind === "demo") return;
-    return this.connectSource(asset, `/media/${encodeURIComponent(mediaId)}`, options.reload);
+    return this.connectSource(
+      asset,
+      `/media/${encodeURIComponent(mediaId)}`,
+      options.reload,
+      options.inspect,
+    );
   }
 
   /** Inspect an already captured immutable resource without requiring a media engine. */
@@ -302,16 +524,18 @@ export class MediaLibrary {
       kind,
       durationFrames: 1,
     };
-    await this.connectManaged(asset);
-    const item = this.items.get(asset.id)!;
+    await this.connectManaged(asset, { inspect: true });
+    const item = this.items.get(asset.id);
+    if (!item) throw cancelled();
     try {
       const element = item.element;
-      const duration = element instanceof HTMLMediaElement ? await mediaDuration(element) : 5;
+      const duration =
+        item.duration ?? (element instanceof HTMLMediaElement ? await mediaDuration(element) : 5);
       if (!Number.isFinite(duration) || duration <= 0) throw new Error("素材缺少有效时长");
       asset.durationFrames = Math.max(1, Math.round(duration * 30));
       if (element instanceof HTMLVideoElement) {
-        asset.width = element.videoWidth;
-        asset.height = element.videoHeight;
+        asset.width = item.width;
+        asset.height = item.height;
       }
       if (element instanceof HTMLImageElement) {
         asset.width = element.naturalWidth;
@@ -325,7 +549,45 @@ export class MediaLibrary {
     }
   }
 
-  private async connectSource(asset: Asset, url: string, reload = false): Promise<void> {
+  private async connectSource(
+    asset: Asset,
+    url: string,
+    reload = false,
+    inspect = false,
+  ): Promise<void> {
+    if (asset.kind === "video") {
+      const existing = this.items.get(asset.id);
+      if (existing?.url === url && !reload) return;
+      if (!inspect) {
+        if (existing) this.release(existing);
+        const element = document.createElement("video");
+        element.playsInline = true;
+        element.preload = "none";
+        this.items.set(asset.id, {
+          url,
+          element,
+          ownsUrl: false,
+          duration: asset.durationFrames / 30,
+          width: asset.width,
+          height: asset.height,
+          thumbnail:
+            asset.thumbnailId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(asset.thumbnailId)
+              ? `/media/${encodeURIComponent(asset.thumbnailId)}`
+              : undefined,
+        });
+        return;
+      }
+      return this.withVideoDecoder((signal) => this.loadSource(asset, url, reload, signal));
+    }
+    return this.loadSource(asset, url, reload);
+  }
+
+  private async loadSource(
+    asset: Asset,
+    url: string,
+    reload = false,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (asset.kind === "demo") return;
     const generation = this.generation;
     const existing = this.items.get(asset.id);
@@ -339,27 +601,40 @@ export class MediaLibrary {
     this.loads.set(asset.id, ticket);
     const element = asset.kind === "image" ? new Image() : document.createElement(asset.kind);
     if (element instanceof HTMLMediaElement) {
-      element.preload = asset.mediaId?.startsWith("external-") ? "metadata" : "auto";
+      element.preload = "auto";
       if (element instanceof HTMLVideoElement) element.playsInline = true;
     }
     const item: LocalMedia = { url, element, ownsUrl: false };
+    const abort = () => ticket.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (element instanceof HTMLVideoElement) this.videoElements.add(element);
     try {
-      await eventOnce(element, asset.kind === "image" ? "load" : "loadeddata", () => {
-        element.src = url;
-      });
+      await eventOnce(
+        element,
+        asset.kind === "image" ? "load" : "loadeddata",
+        () => {
+          element.src = url;
+        },
+        ticket.signal,
+      );
       // Regenerate from the connected source for every storage mode. Saved
       // thumbnail IDs may be absent or stale; a decoded local image also avoids
       // a second request failing after the source has already been restored.
       item.thumbnail = await sourceThumbnail(element, ticket.signal);
+      item.duration =
+        element instanceof HTMLMediaElement ? await mediaDuration(element, ticket.signal) : 5;
+      this.rememberMetadata(item, asset);
       if (generation !== this.generation || this.loads.get(asset.id) !== ticket)
         throw new Error("素材读取已取消");
       const previous = this.items.get(asset.id);
       if (previous) this.release(previous);
       this.items.set(asset.id, item);
+      this.unloadVideo(item);
     } catch (error) {
       this.release(item);
       throw error;
     } finally {
+      signal?.removeEventListener("abort", abort);
       if (this.loads.get(asset.id) === ticket) this.loads.delete(asset.id);
     }
   }
@@ -367,17 +642,19 @@ export class MediaLibrary {
   private connectAudio(item: LocalMedia): void {
     if (
       !(item.element instanceof HTMLMediaElement) ||
-      item.source ||
+      item.audioConnected ||
+      (item.element instanceof HTMLVideoElement && !item.element.hasAttribute("src")) ||
       !this.audio ||
       !this.destination
     )
       return;
-    item.source = this.audio.createMediaElementSource(item.element);
-    item.gain = this.audio.createGain();
+    item.source ??= this.audio.createMediaElementSource(item.element);
+    item.gain ??= this.audio.createGain();
     item.element.volume = 1;
     item.source.connect(item.gain);
     item.gain.connect(this.audio.destination);
     item.gain.connect(this.destination);
+    item.audioConnected = true;
   }
 
   async enableAudio(): Promise<void> {
@@ -429,6 +706,7 @@ export class MediaLibrary {
         this.loads.get(assetId)?.abort();
         this.loads.delete(assetId);
       }
+    this.unloadVideo(item);
     if (item.element instanceof HTMLMediaElement) item.element.pause();
     item.source?.disconnect();
     item.gain?.disconnect();
@@ -440,6 +718,7 @@ export class MediaLibrary {
 
   clear(): void {
     this.generation++;
+    this.suspend();
     this.loads.forEach((controller) => controller.abort());
     this.loads.clear();
     this.claimPlayback();
@@ -450,14 +729,27 @@ export class MediaLibrary {
   }
 
   async seek(project: Project, frame: number): Promise<void> {
+    const request = ++this.seekRequest;
     const clip = timelineClips(project).find(
       (item) => frame >= item.startFrame && frame < item.endFrame,
     );
-    if (!clip) return;
+    if (!clip) {
+      if (this.activeVideo) this.unloadVideo(this.activeVideo);
+      return;
+    }
     const item = this.items.get(clip.assetId);
+    if (!(item?.element instanceof HTMLVideoElement) && this.activeVideo)
+      this.unloadVideo(this.activeVideo);
     if (!(item?.element instanceof HTMLMediaElement)) return;
     const target = (clip.inFrame + frame - clip.startFrame) / 30;
-    await seekMedia(item.element, target);
+    if (item.element instanceof HTMLVideoElement) {
+      await this.withVideoDecoder(async (signal) => {
+        if (request !== this.seekRequest) return;
+        if (this.items.get(clip.assetId) !== item) throw cancelled();
+        await this.activateVideo(item, signal);
+        await seekMedia(item.element as HTMLVideoElement, target, signal);
+      });
+    } else await seekMedia(item.element, target);
   }
 }
 
@@ -663,11 +955,11 @@ export function renderFrame(
   }
   const w = canvas.width,
     h = canvas.height;
-  ctx.fillStyle = "#0a0e10";
-  ctx.fillRect(0, 0, w, h);
   const clip = timelineClips(project).find(
     (item) => frame >= item.startFrame && frame < item.endFrame,
   );
+  ctx.fillStyle = !clip && project.clips.length ? "#000" : "#0a0e10";
+  ctx.fillRect(0, 0, w, h);
   const asset = project.assets.find((item) => item.id === clip?.assetId);
   if (asset?.kind === "demo") drawDemo(ctx, w, h, demoSceneIndex(asset), frame);
   else if (asset) {
@@ -681,7 +973,7 @@ export function renderFrame(
       ctx.fillText("重新选择原素材以恢复预览", w / 2, h / 2);
       ctx.textAlign = "left";
     }
-  } else {
+  } else if (!project.clips.length) {
     ctx.textAlign = "center";
     ctx.fillStyle = "#a7beb2";
     ctx.font = `500 ${w * 0.038}px system-ui`;
@@ -772,13 +1064,14 @@ async function playOwnedSequence(
       const start = boundaries[index]!,
         end = boundaries[index + 1]!;
       const clip = clips.find((item) => start >= item.startFrame && start < item.endFrame);
-      if (!clip) continue;
+      // A free timeline gap is a real span of black video. Keep its clock and
+      // independent audio running, and stop the preceding source before it.
       library.pause();
       await hooks.onSeeking?.();
       if (!active()) break;
       await library.seek(project, start);
       if (!active()) break;
-      const item = library.items.get(clip.assetId);
+      const item = clip ? library.items.get(clip.assetId) : undefined;
       const media = item?.element instanceof HTMLMediaElement ? item.element : null;
       const audioClips = (project.audioClips ?? []).filter(
         (audio) =>
@@ -795,7 +1088,7 @@ async function playOwnedSequence(
       }
       if (!active()) break;
       renderFrame(canvas, project, library, start);
-      if (media) item!.gain!.gain.setValueAtTime(clip.volume, library.audio!.currentTime);
+      if (media && clip) item!.gain!.gain.setValueAtTime(clip.volume, library.audio!.currentTime);
       await Promise.all([
         ...(media ? [media.play()] : []),
         ...audioClips.map((audio) => (voices.get(audio.id)!.element as HTMLMediaElement).play()),
@@ -927,10 +1220,17 @@ export async function recordSequence(
   return new Blob(chunks, { type: mimeType });
 }
 
-export async function captureAssetFrame(
+export async function captureAssetFrame(library: MediaLibrary, assetId: string, seconds = 0) {
+  return library.withVideoDecoder((signal) =>
+    captureAssetFrameNow(library, assetId, seconds, signal),
+  );
+}
+
+async function captureAssetFrameNow(
   library: MediaLibrary,
   assetId: string,
   seconds = 0,
+  signal?: AbortSignal,
 ): Promise<{
   kind: "image";
   mediaType: "image/jpeg";
@@ -950,13 +1250,18 @@ export async function captureAssetFrame(
       element.muted = true;
       element.playsInline = true;
     }
-    await eventOnce(element, element instanceof HTMLImageElement ? "load" : "loadeddata", () => {
-      element.src = item.url;
-    });
+    await eventOnce(
+      element,
+      element instanceof HTMLImageElement ? "load" : "loadeddata",
+      () => {
+        element.src = item.url;
+      },
+      signal,
+    );
     if (element instanceof HTMLVideoElement) {
-      const duration = await mediaDuration(element);
+      const duration = await mediaDuration(element, signal);
       if (seconds >= duration) throw new Error("采样位置超出素材时长");
-      await seekMedia(element, seconds);
+      await seekMedia(element, seconds, signal);
       if (Math.abs(element.currentTime - seconds) > 0.05)
         throw new Error("素材无法精确定位到请求画面");
     }
