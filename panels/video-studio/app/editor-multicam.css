@@ -1,0 +1,181 @@
+.editor-multicam {
+  height: 100%;
+  overflow: auto;
+  min-width: 260px;
+  background: #121925;
+  color: #dce5f2;
+  font:
+    12px/1.5 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+.editor-multicam * {
+  box-sizing: border-box;
+}
+.editor-multicam .emc-header {
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 650;
+  border-bottom: 1px solid #2b3647;
+}
+.editor-multicam fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.editor-multicam .emc-section {
+  border-bottom: 1px solid #2a3546;
+}
+.editor-multicam summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.editor-multicam .emc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+.editor-multicam .emc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #b7c5d8;
+}
+.editor-multicam input:not([type="checkbox"]),
+.editor-multicam select {
+  width: 100%;
+  min-width: 0;
+  height: 33px;
+  border: 1px solid #3b485c;
+  border-radius: 6px;
+  background: #0d1420;
+  color: #eef5ff;
+  padding: 6px 8px;
+  font: inherit;
+}
+.editor-multicam button {
+  min-height: 32px;
+  border: 1px solid #43536b;
+  border-radius: 6px;
+  background: #222e41;
+  color: #e6effc;
+  padding: 7px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+.editor-multicam button:hover:not(:disabled) {
+  background: #30425d;
+}
+.editor-multicam :focus-visible {
+  outline: 2px solid #6caaff;
+  outline-offset: 2px;
+}
+.editor-multicam button:disabled,
+.editor-multicam fieldset:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.editor-multicam .emc-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.editor-multicam .emc-actions > * {
+  flex: 1;
+}
+.editor-multicam .emc-note {
+  margin: 0;
+  color: #93a7c1;
+  font-size: 11px;
+}
+.editor-multicam .emc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.editor-multicam .emc-grid button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  font-size: 11px;
+  text-align: left;
+  padding: 6px;
+}
+.editor-multicam .emc-grid button[aria-pressed="true"] {
+  border-color: #59a4ff;
+  background: #1e4169;
+}
+.editor-multicam canvas {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: #080e17;
+}
+.editor-multicam small {
+  color: #93a7c1;
+  font-size: 10px;
+}
+.editor-multicam .emc-assets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+}
+.editor-multicam .emc-assets label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}
+.editor-multicam .emc-angle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.editor-multicam .emc-cut {
+  display: grid;
+  grid-template-columns: 80px 1fr 76px;
+  gap: 6px;
+}
+.editor-multicam .emc-cuts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.editor-multicam .emc-cut button {
+  font-size: 10px;
+  padding: 4px;
+}
+.editor-multicam .emc-results {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  color: #a7c8ed;
+}
+.editor-multicam .emc-results p {
+  margin: 0 0 7px;
+}
+.editor-multicam .emc-error,
+.editor-multicam .emc-status,
+.editor-multicam .emc-empty {
+  margin: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+.editor-multicam .emc-error {
+  background: #492925;
+  color: #ffc4be;
+}
+.editor-multicam .emc-status {
+  background: #203b33;
+  color: #bce2cd;
+}
+.editor-multicam .emc-error:empty,
+.editor-multicam .emc-status:empty {
+  display: none;
+}

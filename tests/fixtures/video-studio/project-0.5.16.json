@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "id": "installed-0516",
+  "name": "0.5.16 多轨旧工程",
+  "revision": 16,
+  "width": 160,
+  "height": 90,
+  "fps": 30,
+  "script": "保留录制、字幕和口播数据",
+  "assets": [
+    {
+      "id": "red",
+      "name": "红色画面",
+      "kind": "video",
+      "durationFrames": 300,
+      "width": 160,
+      "height": 90,
+      "sourcePath": "采访/red.mp4",
+      "mediaId": "asset-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "id": "blue",
+      "name": "蓝色贴图",
+      "kind": "image",
+      "durationFrames": 300,
+      "width": 80,
+      "height": 80
+    },
+    {
+      "id": "green",
+      "name": "绿色画面",
+      "kind": "video",
+      "durationFrames": 300,
+      "width": 160,
+      "height": 90
+    },
+    {
+      "id": "voice",
+      "name": "后置旁白",
+      "kind": "audio",
+      "durationFrames": 900,
+      "speech": {
+        "text": "延伸到画面之后",
+        "voiceId": "voice-1",
+        "engine": "reviewed",
+        "rate": 1
+      }
+    }
+  ],
+  "clips": [
+    {
+      "id": "main-a",
+      "assetId": "red",
+      "inFrame": 0,
+      "outFrame": 60,
+      "volume": 0.7,
+      "trackId": "video-main"
+    },
+    {
+      "id": "overlay-a",
+      "assetId": "blue",
+      "inFrame": 15,
+      "outFrame": 90,
+      "volume": 0,
+      "trackId": "overlay",
+      "transform": {
+        "x": 0.25,
+        "y": -0.125,
+        "scale": 0.5,
+        "opacity": 0.6
+      },
+      "startFrame": 15
+    },
+    {
+      "id": "main-b",
+      "assetId": "red",
+      "inFrame": 30,
+      "outFrame": 90,
+      "volume": 0.5,
+      "trackId": "video-main",
+      "transform": {
+        "x": -0.1,
+        "y": 0.1,
+        "scale": 1.2,
+        "opacity": 1
+      }
+    },
+    {
+      "id": "hidden-a",
+      "assetId": "green",
+      "inFrame": 30,
+      "outFrame": 75,
+      "volume": 0.8,
+      "trackId": "hidden-picture",
+      "startFrame": 0
+    }
+  ],
+  "timelineMode": "magnetic",
+  "tracks": [
+    {
+      "id": "video-main",
+      "kind": "video",
+      "name": "主画面",
+      "locked": false
+    },
+    {
+      "id": "overlay",
+      "kind": "video",
+      "name": "叠加画面",
+      "muted": true
+    },
+    {
+      "id": "hidden-picture",
+      "kind": "video",
+      "name": "隐藏画面仍有声音",
+      "hidden": true
+    },
+    {
+      "id": "audio-main",
+      "kind": "audio",
+      "name": "静音轨",
+      "muted": true
+    },
+    {
+      "id": "track-captions",
+      "kind": "audio",
+      "name": "声音长尾",
+      "hidden": true,
+      "locked": true
+    }
+  ],
+  "audioClips": [
+    {
+      "id": "muted-audio",
+      "assetId": "voice",
+      "inFrame": 30,
+      "outFrame": 90,
+      "volume": 1,
+      "trackId": "audio-main",
+      "startFrame": 0
+    },
+    {
+      "id": "tail",
+      "assetId": "voice",
+      "inFrame": 90,
+      "outFrame": 210,
+      "volume": 0.9,
+      "trackId": "track-captions",
+      "startFrame": 110
+    }
+  ],
+  "captions": [
+    {
+      "id": "tail-caption",
+      "startFrame": 210,
+      "endFrame": 230,
+      "text": "音频长尾\n仍然保留"
+    }
+  ],
+  "captionStyle": "bold",
+  "roughCuts": [
+    {
+      "id": "cut-a",
+      "assetId": "red",
+      "inFrame": 15,
+      "outFrame": 90,
+      "name": "已审核",
+      "enabled": true
+    }
+  ]
+}

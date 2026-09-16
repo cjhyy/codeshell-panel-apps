@@ -20,7 +20,7 @@ and passes through `npm run build` unchanged.
 
 ## Source-built Video Studio
 
-Video Studio 0.5.5 is the source-built app in this release. Edit
+Video Studio 0.6.0 is the source-built app in this release. Edit
 `apps/video-studio/`; install and publish **`panels/video-studio/`**. Its GitHub
 installation subdirectory is `panels/video-studio`, not `apps/video-studio`.
 
@@ -115,6 +115,21 @@ and interrupted task records. Closing the panel does not cancel durable tasks;
 explicit cancellation waits for process termination. Online work that might
 incur charges uses manual recovery and checks existing results before another
 request. Bundling an entry does not execute it automatically.
+
+### Shared browser runtimes
+
+`panel.build.json` can declare `browserEntries`, for example
+`{ "editor-renderer": "src/editor/render-entry.ts" }`. The builder emits each
+as a self-contained browser IIFE at `app/runtimes/<name>.mjs`. A native entry may
+import `{ source, sha256 }` from `panel-browser:<name>` to embed those exact
+reviewed bytes in its hashed executable. This supports independent browser
+rendering with the same domain code used by the interactive UI. The native tool
+must never accept executable source from task JSON.
+
+These entries stay below `src/`; Node dependencies, unresolved runtime imports,
+path escapes, and public-file collisions fail the build. They use the installed
+package inventory and require no new Host capability. Run `npm run test:build`
+after changing the declaration or build behavior.
 
 ## System boundary
 

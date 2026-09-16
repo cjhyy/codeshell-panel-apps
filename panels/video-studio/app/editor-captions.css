@@ -1,0 +1,207 @@
+.editor-captions {
+  color-scheme: dark;
+  color: #e5eaf1;
+  background: #151b24;
+  border: 1px solid #3a4557;
+  border-radius: 12px;
+  width: min(940px, calc(100vw - 24px));
+  height: min(880px, calc(100dvh - 32px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  box-sizing: border-box;
+  font: 14px system-ui;
+  overflow: hidden;
+}
+.editor-captions[open] {
+  display: flex;
+  flex-direction: column;
+}
+.editor-captions::backdrop {
+  background: #05090eb8;
+}
+.editor-captions [hidden] {
+  display: none !important;
+}
+.editor-captions header,
+.editor-captions footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  gap: 12px;
+  flex: none;
+}
+.editor-captions header {
+  border-bottom: 1px solid #303b4c;
+}
+.editor-captions h2,
+.editor-captions h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.editor-captions footer {
+  border-top: 1px solid #303b4c;
+}
+.editor-captions button,
+.editor-captions input,
+.editor-captions select,
+.editor-captions textarea {
+  box-sizing: border-box;
+  font: inherit;
+  color: inherit;
+  background: #232d3c;
+  border: 1px solid #485870;
+  border-radius: 5px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 5px 8px;
+}
+.editor-captions button {
+  cursor: pointer;
+}
+.editor-captions button:hover {
+  background: #304158;
+}
+.editor-captions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.editor-captions input[type="checkbox"] {
+  min-height: auto;
+  accent-color: #6eadff;
+}
+.editor-captions :focus-visible {
+  outline: 2px solid #78b0ff;
+  outline-offset: 2px;
+}
+.editor-captions .ec-status {
+  margin: 0;
+  padding: 9px 16px;
+  min-height: 20px;
+  color: #b9d4f8;
+  overflow-wrap: anywhere;
+  flex: none;
+}
+.editor-captions .ec-body {
+  padding: 0 16px 16px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+.editor-captions .ec-tools,
+.editor-captions .ec-style,
+.editor-captions .ec-translate {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 1px solid #303b4c;
+  align-items: center;
+}
+.editor-captions details {
+  width: 100%;
+}
+.editor-captions summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.editor-captions details > div {
+  display: flex;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+}
+.editor-captions details label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.editor-captions .ec-style input {
+  width: 150px;
+}
+.editor-captions .ec-style input[type="number"] {
+  width: 90px;
+}
+.editor-captions .ec-row {
+  display: grid;
+  grid-template-columns: 22px minmax(130px, auto) minmax(160px, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid #303b4c;
+}
+.editor-captions .ec-row textarea {
+  width: 100%;
+  resize: vertical;
+}
+.editor-captions .ec-row small {
+  grid-column: 3/-1;
+  color: #99a8bd;
+}
+.editor-captions .ec-preview {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #537bb3;
+  border-radius: 8px;
+  background: #19283d;
+}
+.editor-captions .ec-candidates {
+  max-height: 340px;
+  overflow: auto;
+  margin: 8px 0;
+}
+.editor-captions .ec-candidate {
+  padding: 8px 0;
+  border-bottom: 1px solid #354b69;
+}
+.editor-captions .ec-candidate p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+}
+.editor-captions .ec-candidate small {
+  color: #a9bed9;
+}
+.editor-captions .ec-result {
+  color: #eaf4ff;
+}
+@media (max-width: 640px) {
+  .editor-captions {
+    width: calc(100vw - 12px);
+    height: calc(100dvh - 12px);
+  }
+  .editor-captions .ec-body {
+    padding: 0 10px 10px;
+  }
+  .editor-captions .ec-row {
+    grid-template-columns: 22px 1fr auto;
+  }
+  .editor-captions .ec-row textarea {
+    grid-column: 2/-1;
+    grid-row: 2;
+  }
+  .editor-captions .ec-row small {
+    grid-column: 2/-1;
+  }
+  .editor-captions .ec-row > button:last-of-type {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .editor-captions header,
+  .editor-captions footer {
+    padding: 10px;
+  }
+  .editor-captions .ec-tools > button {
+    flex: 1;
+  }
+  .editor-captions .ec-style,
+  .editor-captions .ec-translate {
+    align-items: stretch;
+  }
+  .editor-captions .ec-translate input {
+    width: 120px;
+    flex: 1;
+  }
+}

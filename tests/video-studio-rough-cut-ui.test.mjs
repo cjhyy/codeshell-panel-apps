@@ -1,3 +1,8 @@
+import {
+  enterLegacyProduction,
+  readSavedLegacyProject,
+  legacyProjectFromDocument,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { spawnSync } from "node:child_process";
@@ -13,7 +18,7 @@ import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs"
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output = resolve(root, "panels/video-studio/app");
 const artifacts = resolve(root, "artifacts/video-studio");
 const errors = [];
 let browser;
@@ -24,11 +29,13 @@ let sourcePath;
 const managedSources = new Map();
 
 before(async () => {
+  directory = await mkdtemp(join(tmpdir(), "video-studio-rough-cut-ui-"));
   if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
     const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
+    const isolatedOutput = join(directory, "package");
+    await buildProject({ ...project, output: isolatedOutput }, { log: false });
+    output = join(isolatedOutput, "app");
   }
-  directory = await mkdtemp(join(tmpdir(), "video-studio-rough-cut-ui-"));
   sourcePath = join(directory, "rough-cut-source.mp4");
   const generated = spawnSync(
     "ffmpeg",
@@ -214,6 +221,7 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
     };
   });
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
   return page;
 }
@@ -474,6 +482,7 @@ test(
         ),
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
       await page.locator('[data-tab="roughcut"]').click();
       await openAI(page);
@@ -733,6 +742,7 @@ test(
         ),
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
       await page.locator('[data-tab="roughcut"]').click();
       await page.waitForFunction(() =>
@@ -773,6 +783,7 @@ test(
         2,
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
       await page.locator('[data-tab="roughcut"]').click();
       await openAI(page);
@@ -1014,95 +1025,143 @@ test(
   },
 );
 
-test(
-  "same-ID project replacement clears old AI candidates durably and can retry a failed clear",
-  { timeout: 60_000 },
-  async () => {
-    const { page } = await importedVideoQueue();
-    try {
-      const before = (await state(page)).project;
-      await openAI(page);
-      await page.locator('[data-action="roughcut-ai-start"]').click();
-      await page.waitForFunction(
-        () =>
-          window.__roughCutAgentTasks.length === 1 &&
-          window.__roughCutTools.read_video_project().requestToken,
-      );
-      await page.evaluate(async () => {
-        let state = window.__roughCutTools.read_video_project();
-        for (const asset of state.project.assets)
-          for (const seconds of [0.3, 3, 5.7])
-            await window.__roughCutTools.inspect_video_frame({ assetId: asset.id, seconds });
-        state = window.__roughCutTools.read_video_project();
-        await window.__roughCutTools.propose_video_edit({
-          projectId: state.project.id,
-          requestToken: state.requestToken,
-          baseRevision: state.project.revision,
-          title: "原工程的候选",
-          explanation: "已查看开中尾的真实测试图。",
-          operations: [
-            {
-              type: "rough-cuts",
-              cuts: state.project.assets.map((asset, index) => ({
-                id: `same-id-${index}`,
-                assetId: asset.id,
-                inFrame: 60,
-                outFrame: 120,
-                name: "原工程候选",
-                enabled: true,
-              })),
-            },
-          ],
+for (const recovery of ["retry", "reload", "new-draft"])
+  test(
+    `same-ID project replacement preserves its durable document after failed cleanup: ${recovery}`,
+    { timeout: 60_000 },
+    async () => {
+      const { page } = await importedVideoQueue();
+      try {
+        const before = (await state(page)).project;
+        await openAI(page);
+        await page.locator('[data-action="roughcut-ai-start"]').click();
+        await page.waitForFunction(
+          () =>
+            window.__roughCutAgentTasks.length === 1 &&
+            window.__roughCutTools.read_video_project().requestToken,
+        );
+        await page.evaluate(async () => {
+          let state = window.__roughCutTools.read_video_project();
+          for (const asset of state.project.assets)
+            for (const seconds of [0.3, 3, 5.7])
+              await window.__roughCutTools.inspect_video_frame({ assetId: asset.id, seconds });
+          state = window.__roughCutTools.read_video_project();
+          await window.__roughCutTools.propose_video_edit({
+            projectId: state.project.id,
+            requestToken: state.requestToken,
+            baseRevision: state.project.revision,
+            title: "原工程的候选",
+            explanation: "已查看开中尾的真实测试图。",
+            operations: [
+              {
+                type: "rough-cuts",
+                cuts: state.project.assets.map((asset, index) => ({
+                  id: `same-id-${index}`,
+                  assetId: asset.id,
+                  inFrame: 60,
+                  outFrame: 120,
+                  name: "原工程候选",
+                  enabled: true,
+                })),
+              },
+            ],
+          });
+          const task = window.__roughCutAgentTasks[0];
+          task.status = "completed";
+          window.__roughCutEmit("agent.task.changed", task);
         });
-        const task = window.__roughCutAgentTasks[0];
-        task.status = "completed";
-        window.__roughCutEmit("agent.task.changed", task);
-      });
-      await page.locator('[data-roughcut-candidates="ai"]').waitFor();
-      await page.waitForFunction(
-        () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
-      );
-      const replacement = { ...before, name: "同 ID 替换后的工程" };
-      const file = {
-        name: "replacement.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(JSON.stringify(replacement)),
-      };
-      await page.evaluate(() => {
-        window.__roughCutRejectDraftClear = true;
-      });
-      await page.locator("#project-input").setInputFiles(file);
-      await page.waitForFunction(() =>
-        document.querySelector("#toast")?.textContent?.includes("模拟 AI 草稿清理失败"),
-      );
-      assert.deepEqual((await state(page)).project, before);
-      assert.equal(
-        await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
-        2,
-      );
-      await page.evaluate(() => {
-        window.__roughCutRejectDraftClear = false;
-      });
-      await page.locator("#project-input").setInputFiles(file);
-      await page.waitForFunction(
-        () => window.__roughCutTools.read_video_project().project.name === "同 ID 替换后的工程",
-      );
-      await saved(page);
-      assert.equal(await page.locator('[data-roughcut-candidates="ai"]').count(), 0);
-      await page.reload();
-      await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
-      await page.locator('[data-tab="roughcut"]').click();
-      assert.equal((await state(page)).project.name, replacement.name);
-      assert.equal(
-        await page.locator('[data-roughcut-candidates="ai"]').count(),
-        0,
-        "A restart must not resurrect the replaced document's old AI queue",
-      );
-    } finally {
-      await page.close();
-    }
-  },
-);
+        await page.locator('[data-roughcut-candidates="ai"]').waitFor();
+        await page.waitForFunction(
+          () => !document.querySelector('[data-action="roughcut-ai-save"]')?.disabled,
+        );
+        const replacement = { ...before, name: "同 ID 替换后的工程" };
+        const file = {
+          name: "replacement.json",
+          mimeType: "application/json",
+          buffer: Buffer.from(JSON.stringify(replacement)),
+        };
+        await page.evaluate(() => {
+          window.__roughCutRejectDraftClear = true;
+        });
+        await page.locator("#project-input").setInputFiles(file);
+        await page.locator(".editor-cleanup-warning").waitFor();
+        assert.match(
+          await page.locator(".editor-cleanup-warning").textContent(),
+          /模拟 AI 草稿清理失败/,
+        );
+        const replaced = (await state(page)).project;
+        assert.equal(replaced.name, replacement.name);
+        assert.ok(replaced.revision > before.revision);
+        assert.equal((await readSavedLegacyProject(page)).name, replacement.name);
+        assert.equal(
+          await page.locator('[data-roughcut-candidates="ai"] .roughcut-candidate-row').count(),
+          0,
+        );
+        const storedDraft = () =>
+          page.evaluate(
+            () =>
+              Object.keys(localStorage)
+                .filter((key) => key.startsWith("document:video-studio-roughcut-ai-"))
+                .map((key) => JSON.parse(localStorage.getItem(key)))
+                .find((record) => record.data)?.data ?? null,
+          );
+        const oldDraft = await storedDraft();
+        assert.ok(
+          oldDraft,
+          "Failed cleanup leaves the old saved candidate record for a real retry",
+        );
+        if (recovery === "retry") {
+          await page.evaluate(() => {
+            window.__roughCutRejectDraftClear = false;
+          });
+          await page.locator("[data-retry-cleanup]").click();
+          await page.locator(".editor-cleanup-warning").waitFor({ state: "detached" });
+          assert.equal(await storedDraft(), null);
+        } else if (recovery === "new-draft") {
+          await page.locator('[data-tab="media"]').click();
+          const asset = replaced.assets[0];
+          await page.locator(`[data-rough-source="${asset.id}"]`).click();
+          await openAI(page);
+          await page.locator('[data-action="roughcut-ai-start"]').click();
+          await page.waitForFunction(() => window.__roughCutAgentTasks.length === 2);
+          const nextDraft = await storedDraft();
+          assert.ok(nextDraft);
+          assert.notDeepEqual(nextDraft, oldDraft);
+          await page.evaluate(() => {
+            window.__roughCutRejectDraftClear = false;
+          });
+          await page.locator("[data-retry-cleanup]").click();
+          await page.locator(".editor-cleanup-warning").waitFor({ state: "detached" });
+          assert.deepEqual(
+            await storedDraft(),
+            nextDraft,
+            "Retrying old cleanup cannot erase the new generation's draft",
+          );
+          return;
+        }
+        await saved(page);
+        assert.equal(await page.locator('[data-roughcut-candidates="ai"]').count(), 0);
+        await page.reload();
+        await enterLegacyProduction(page);
+        await page.waitForFunction(() => window.__roughCutTools?.read_video_project);
+        await page.locator('[data-tab="roughcut"]').click();
+        assert.equal((await state(page)).project.name, replacement.name);
+        assert.equal(
+          await page.locator('[data-roughcut-candidates="ai"]').count(),
+          0,
+          "A restart must not resurrect the replaced document's old AI queue",
+        );
+        if (recovery === "reload")
+          assert.deepEqual(
+            await storedDraft(),
+            oldDraft,
+            "The epoch guard rejects the old candidates before a successful cleanup",
+          );
+      } finally {
+        await page.close();
+      }
+    },
+  );
 
 test(
   "clicking imported video previews and seeks its real frames without adding to an empty timeline",
@@ -1632,7 +1691,10 @@ test(
       await expectTimelinePreview(page, assembled.clips[1], 180);
 
       const json = await download(page, '[data-action="save-project"]');
-      assert.deepEqual(JSON.parse(json.bytes.toString()).roughCuts, assembled.roughCuts);
+      assert.deepEqual(
+        (await legacyProjectFromDocument(JSON.parse(json.bytes.toString()))).roughCuts,
+        assembled.roughCuts,
+      );
       await page.locator('[data-action="new"]').click();
       await page.waitForFunction(
         () => window.__roughCutTools.read_video_project().project.assets.length === 0,

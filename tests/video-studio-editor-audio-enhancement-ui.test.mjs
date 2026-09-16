@@ -1,0 +1,370 @@
+import assert from "node:assert/strict";
+import test, { before, after } from "node:test";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
+import { chromium } from "playwright";
+let browser, bundle, css;
+before(async () => {
+  bundle = (
+    await build({
+      stdin: {
+        contents: `export {EditorAudioEnhancementUI} from './apps/video-studio/src/editor/audio-enhancement-ui';export {createAudioEnhancementController} from './apps/video-studio/src/editor/audio-enhancement-controller';export {EditorSession} from './apps/video-studio/src/editor/session';export * from './apps/video-studio/src/editor/defaults';`,
+        resolveDir: fileURLToPath(new URL("../", import.meta.url)),
+      },
+      bundle: true,
+      write: false,
+      platform: "browser",
+      format: "iife",
+      globalName: "editor",
+      target: "chrome120",
+    })
+  ).outputFiles[0].text;
+  css = await readFile(
+    new URL("../apps/video-studio/public/editor-audio-enhancement.css", import.meta.url),
+    "utf8",
+  );
+  browser = await chromium.launch({ headless: true });
+});
+after(async () => {
+  await browser?.close();
+});
+async function fixture(t, { ready = true, width = 1000 } = {}) {
+  const page = await browser.newPage({ viewport: { width, height: 800 } }),
+    errors = [];
+  page.setDefaultTimeout(5000);
+  page.on("pageerror", (e) => errors.push(e.message));
+  t.after(async () => {
+    await page.close();
+    assert.deepEqual(errors, []);
+  });
+  await page.route("http://127.0.0.1:41999/**", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><main></main>" }),
+  );
+  await page.goto("http://127.0.0.1:41999/separation");
+  await page.addStyleTag({ content: css });
+  await page.addScriptTag({ content: bundle });
+  await page.evaluate(
+    async ({ ready }) => {
+      const T = 240000;
+      globalThis.calls = [];
+      globalThis.fail = false;
+      globalThis.pending = null;
+      globalThis.released = 0;
+      globalThis.signal = null;
+      const doc = {
+        schemaVersion: 2,
+        timebase: T,
+        id: "enhancement-ui",
+        revision: 0,
+        name: "原片",
+        activeSequenceId: "main",
+        exportProfiles: [],
+        assets: [
+          {
+            id: "a",
+            name: "原始片段",
+            kind: "video",
+            duration: 10 * T,
+            resourceId: "asset-" + "a".repeat(64),
+          },
+        ],
+        sequences: [
+          {
+            id: "main",
+            name: "主序列",
+            width: 640,
+            height: 360,
+            frameRate: { numerator: 30000, denominator: 1001 },
+            background: "#000000",
+            timelineMode: "free",
+            tracks: [editor.createTrack("video", "video")],
+            clips: [
+              {
+                id: "clip",
+                kind: "media",
+                assetId: "a",
+                trackId: "video",
+                label: "原片",
+                start: 1001,
+                duration: 2 * T,
+                transform: editor.defaultTransform(),
+                color: editor.defaultColorAdjustment(),
+                blendMode: "normal",
+                audio: editor.defaultAudioMix(),
+                timeMap: {
+                  points: [
+                    { time: 0, source: 5 * T },
+                    { time: 2 * T, source: 3 * T },
+                  ],
+                },
+              },
+            ],
+            transitions: [],
+            markers: [],
+          },
+        ],
+      };
+      let stored = doc,
+        revision = 1;
+      globalThis.session = await editor.EditorSession.open(
+        {
+          read: async () => ({ data: stored, revision }),
+          write: async (value, base) => {
+            if (fail) throw new Error("磁盘保存失败");
+            if (base !== revision) throw new Error("conflict");
+            stored = structuredClone(value);
+            return { revision: ++revision };
+          },
+          backupLegacy: async () => {},
+        },
+        { autosaveDelayMs: 60000 },
+      );
+      const result = {
+        sourceResourceId: "asset-" + "a".repeat(64),
+        assetId: "asset-" + "b".repeat(64),
+        sha256: "b".repeat(64),
+        bytes: 960044,
+        sampleRate: 48000,
+        sampleCount: 480000,
+        duration: 2400000,
+        settings: { preset: "balanced", denoise: true, normalize: true },
+      };
+      globalThis.setReady = (value) => {
+        ready = value;
+      };
+      const capability = () => ({
+        state: ready ? "ready" : "unavailable",
+        message: ready ? "本地声音优化已就绪" : "请先准备 FFmpeg 声音处理工具",
+      });
+      globalThis.controller = editor.createAudioEnhancementController({
+        session: () => session,
+        guard() {},
+        bridge: {
+          dispose() {},
+          list: async (id, offset) => {
+            calls.push("list:" + offset);
+            return {
+              jobs: [{ id: "old-job", status: "succeeded", createdAt: 1000, retryable: false }],
+              nextOffset: 1,
+              complete: true,
+            };
+          },
+          resume: async () => {
+            calls.push("resume");
+            return structuredClone(result);
+          },
+          status: async () => {
+            calls.push("status");
+            return capability();
+          },
+          enhance: async (_id, _duration, settings, options) => {
+            result.settings = structuredClone(settings);
+            globalThis.usedSettings = structuredClone(settings);
+            calls.push("enhance");
+            signal = options.signal;
+            options.onTask({ id: "enhancement-job" });
+            options.onChanged({ progress: { message: "真实处理器任务进度", fraction: 0.4 } });
+            if (pending) await pending;
+            return structuredClone(result);
+          },
+        },
+        apply: (ops, identity, label) => session.dispatchDurable(ops, identity, label),
+      });
+      // A real PCM WAV URL lets Chromium exercise audio elements, metadata and playback.
+      const bytes = new ArrayBuffer(44 + 44100 * 2 * 2),
+        v = new DataView(bytes),
+        str = (p, s) => {
+          for (let i = 0; i < s.length; i++) v.setUint8(p + i, s.charCodeAt(i));
+        };
+      str(0, "RIFF");
+      v.setUint32(4, bytes.byteLength - 8, true);
+      str(8, "WAVE");
+      str(12, "fmt ");
+      v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true);
+      v.setUint16(22, 2, true);
+      v.setUint32(24, 44100, true);
+      v.setUint32(28, 176400, true);
+      v.setUint16(32, 4, true);
+      v.setUint16(34, 16, true);
+      str(36, "data");
+      v.setUint32(40, bytes.byteLength - 44, true);
+      for (let i = 44; i < bytes.byteLength; i += 4) {
+        v.setInt16(i, 1000 * Math.sin(((i - 44) / 4 / 44100) * 2 * Math.PI * 440), true);
+        v.setInt16(i + 2, 1000 * Math.sin(((i - 44) / 4 / 44100) * 2 * Math.PI * 440), true);
+      }
+      globalThis.ui = new editor.EditorAudioEnhancementUI(document.querySelector("main"), {
+        controller,
+        preview: async (id, signal) => {
+          calls.push("preview:" + id);
+          const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+          return {
+            url,
+            release() {
+              released++;
+              URL.revokeObjectURL(url);
+            },
+          };
+        },
+        onError: (e) => calls.push("error:" + e.message),
+      });
+      ui.open("main", "clip");
+    },
+    { ready },
+  );
+  await page.waitForFunction(() => controller.getState().phase === "idle");
+  return page;
+}
+test("denoise and normalization controls start genuine processing and application is one durable undo", async (t) => {
+  const page = await fixture(t);
+  assert.deepEqual(await page.evaluate(() => calls), ["status"]);
+  await page.locator("[data-enhancement-denoise]").uncheck();
+  await page.locator("[data-enhancement-preset]").selectOption("light");
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() => controller.getState().phase === "preview");
+  assert.deepEqual(await page.evaluate(() => usedSettings), {
+    preset: "light",
+    denoise: false,
+    normalize: true,
+  });
+  assert.match(await page.locator("[data-audio-enhancement-status]").innerText(), /轻度响度统一/);
+  assert.equal(await page.evaluate(() => session.read().sequences[0].clips.length), 1);
+  await page.locator("[data-audio-enhancement-apply]").click();
+  await page.waitForFunction(() => session.read().sequences[0].clips.length === 2);
+  assert.equal(await page.evaluate(() => session.read().sequences[0].clips[0].audio.volume), 0);
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => session.read().sequences[0].clips.length), 1);
+  assert.equal(await page.evaluate(() => session.read().sequences[0].clips[0].audio.volume), 1);
+});
+test("real audio preview loads both resources, isolates playback and revokes URLs on close", async (t) => {
+  const page = await fixture(t);
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("audio")].every((a) => a.readyState >= 1),
+  );
+  assert.deepEqual(
+    await page.locator("audio").evaluateAll((nodes) => nodes.map((a) => a.duration)),
+    [1, 1],
+  );
+  await page.locator('[data-stem="original"]').evaluate((a) => a.play());
+  await page.locator('[data-stem="enhanced"]').evaluate((a) => a.play());
+  assert.equal(await page.locator('[data-stem="original"]').evaluate((a) => a.paused), true);
+  assert.equal(await page.locator('[data-stem="enhanced"]').evaluate((a) => a.paused), false);
+  await page.locator("[data-audio-enhancement-close]").click();
+  assert.equal(await page.evaluate(() => released), 2);
+  assert.equal(
+    await page.locator("audio").evaluateAll((nodes) => nodes.every((a) => !a.hasAttribute("src"))),
+    true,
+  );
+});
+test("failed durable save leaves original plus preview for explicit retry", async (t) => {
+  const page = await fixture(t);
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() => controller.getState().phase === "preview");
+  await page.evaluate(() => {
+    fail = true;
+  });
+  await page.locator("[data-audio-enhancement-apply]").click();
+  await page.waitForFunction(() => controller.getState().phase === "error");
+  assert.match(await page.locator("[data-audio-enhancement-status]").innerText(), /磁盘保存失败/);
+  assert.equal(await page.evaluate(() => session.read().sequences[0].clips.length), 1);
+  assert.equal(await page.locator("[data-audio-enhancement-preview]").isVisible(), true);
+  await page.evaluate(() => {
+    fail = false;
+  });
+  await page.locator("[data-audio-enhancement-apply]").click();
+  await page.waitForFunction(() => session.read().sequences[0].clips.length === 2);
+  assert.equal(await page.evaluate(() => calls.filter((c) => c === "enhance").length), 1);
+});
+test("cancel ignores a late result; closing a running durable task does not cancel it", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    pending = new Promise((resolve) => {
+      globalThis.finish = resolve;
+    });
+  });
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() => controller.getState().phase === "running");
+  await page.locator("[data-audio-enhancement-close]").click();
+  assert.equal(await page.evaluate(() => signal.aborted), false);
+  await page.evaluate(() => ui.open("main", "clip"));
+  await page.locator("[data-audio-enhancement-cancel]").click();
+  assert.equal(await page.evaluate(() => signal.aborted), true);
+  await page.evaluate(() => finish());
+  await page.waitForTimeout(30);
+  assert.equal(await page.evaluate(() => controller.getState().phase), "cancelled");
+  assert.equal(await page.locator("[data-audio-enhancement-preview]").isVisible(), false);
+  assert.equal(await page.evaluate(() => session.read().revision), 0);
+});
+test("narrow dialog fits viewport and stale revision disables old result application", async (t) => {
+  const page = await fixture(t, { width: 390 });
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() => controller.getState().phase === "preview");
+  const bounds = await page.locator("dialog").boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
+  assert.equal(await page.locator("dialog").evaluate((e) => e.scrollWidth <= e.clientWidth), true);
+  await page.evaluate(() =>
+    session.dispatch(
+      [{ type: "project.rename", name: "changed" }],
+      session.read().revision,
+      "rename",
+    ),
+  );
+  assert.equal(await page.locator("[data-audio-enhancement-preview]").isVisible(), false);
+  assert.match(await page.locator("[data-audio-enhancement-status]").innerText(), /工程已更新/);
+});
+test("existing task can be reopened without starting new inference; selecting another clip clears the old candidate", async (t) => {
+  const page = await fixture(t);
+  await page.locator("summary").click();
+  await page.locator("[data-audio-enhancement-more]").click();
+  await page.getByRole("button", { name: "重新试听" }).click();
+  await page.waitForFunction(() => controller.getState().phase === "preview");
+  assert.equal(await page.evaluate(() => calls.includes("resume")), true);
+  assert.equal(await page.evaluate(() => calls.includes("enhance")), false);
+  assert.match(await page.locator("[data-audio-enhancement-status]").innerText(), /原始片段/);
+  await page.evaluate(() => ui.open("main", "other-clip"));
+  assert.equal(await page.locator("[data-audio-enhancement-preview]").isVisible(), false);
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+});
+test("opening a different source while running is explicitly rejected and preserves the current task", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    pending = new Promise((resolve) => {
+      globalThis.finish = resolve;
+    });
+  });
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() => controller.getState().phase === "running");
+  const message = await page.evaluate(() => {
+    try {
+      ui.open("main", "other-clip");
+      return "";
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(message, /原始片段.*仍在处理/);
+  assert.equal(await page.evaluate(() => signal.aborted), false);
+  await page.locator("[data-audio-enhancement-cancel]").click();
+  await page.evaluate(() => finish());
+});
+
+test("unavailable processor can be checked again and empty processing selection stays unstarted", async (t) => {
+  const page = await fixture(t, { ready: false });
+  assert.equal(await page.locator("[data-audio-enhancement-start]").isDisabled(), true);
+  assert.match(await page.locator("[role=status]").innerText(), /FFmpeg/);
+  await page.evaluate(() => setReady(true));
+  await page.locator("[data-audio-enhancement-refresh]").click();
+  await page.waitForFunction(
+    () => !document.querySelector("[data-audio-enhancement-start]").disabled,
+  );
+  await page.locator("[data-enhancement-denoise]").uncheck();
+  await page.locator("[data-enhancement-normalize]").uncheck();
+  await page.locator("[data-audio-enhancement-start]").click();
+  await page.waitForFunction(() =>
+    document.querySelector("[role=status]").textContent.includes("请选择"),
+  );
+  assert.equal(await page.evaluate(() => calls.includes("enhance")), false);
+  assert.equal(await page.evaluate(() => session.read().revision), 0);
+});

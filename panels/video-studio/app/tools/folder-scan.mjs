@@ -1,3 +1,5 @@
+import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);
+
 // native/folder-scan.ts
 import { constants } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";

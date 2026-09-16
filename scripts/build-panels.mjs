@@ -153,6 +153,34 @@ async function stageProject(project, directory) {
     await listFiles(join(project.source, folder));
     await cp(join(project.source, folder), join(directory, folder), { recursive: true });
   }
+  // Shared browser renderers are compiled once from reviewed package sources.
+  // A native tool can embed these exact bytes; runtime JSON never supplies code.
+  await init;
+  const browserModules = new Map();
+  for (const [name, entry] of Object.entries(project.config.browserEntries ?? {})) {
+    const result = await build({
+      absWorkingDir: project.source,
+      entryPoints: [entry],
+      bundle: true,
+      platform: "browser",
+      format: "iife",
+      target: "es2022",
+      sourcemap: false,
+      legalComments: "inline",
+      charset: "utf8",
+      write: false,
+      logLevel: "silent",
+    });
+    assert.equal(result.outputFiles.length, 1, `Browser runtime ${name} must be self-contained`);
+    const source = result.outputFiles[0].text;
+    const [imports] = parse(source);
+    assert(!imports.length, `Browser runtime ${name} must not have runtime imports`);
+    const destination = join(directory, "app/runtimes", `${name}.mjs`);
+    assert(!(await exists(destination)), `public/ shadows a generated browser runtime: ${name}`);
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, source);
+    browserModules.set(name, { source, sha256: createHash("sha256").update(source).digest("hex") });
+  }
   const nativeModules = new Map();
   if (Object.keys(project.config.nativeEntries ?? {}).length)
     await listFiles(join(project.source, "native"));
@@ -163,12 +191,35 @@ async function stageProject(project, directory) {
       bundle: true,
       platform: "node",
       format: "esm",
+      // Bundled CommonJS dependencies may still require Node builtins at runtime.
+      banner: {
+        js: 'import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);',
+      },
       target: "node20",
       sourcemap: false,
       legalComments: "inline",
       charset: "utf8",
       write: false,
       logLevel: "silent",
+      plugins: [
+        {
+          name: "panel-browser-source",
+          setup(builder) {
+            builder.onResolve({ filter: /^panel-browser:/ }, ({ path }) => ({
+              path: path.slice(14),
+              namespace: "panel-browser",
+            }));
+            builder.onLoad({ filter: /.*/, namespace: "panel-browser" }, ({ path }) => {
+              const runtime = browserModules.get(path);
+              if (!runtime) throw new Error(`Undeclared browser runtime: ${path}`);
+              return {
+                contents: `export const source = ${JSON.stringify(runtime.source)}; export const sha256 = ${JSON.stringify(runtime.sha256)};`,
+                loader: "js",
+              };
+            });
+          },
+        },
+      ],
     });
     const source = result.outputFiles[0].text;
     const destination = join(directory, "app/tools", `${name}.mjs`);

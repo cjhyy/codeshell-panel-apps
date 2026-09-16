@@ -1,0 +1,71 @@
+.editor-separation {
+  box-sizing: border-box;
+  width: min(660px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid #3d485e;
+  border-radius: 14px;
+  padding: 20px;
+  background: #141c2b;
+  color: #edf2fb;
+  font:
+    14px/1.5 system-ui,
+    sans-serif;
+}
+.editor-separation::backdrop {
+  background: #0009;
+}
+.editor-separation [hidden] {
+  display: none !important;
+}
+.editor-separation header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.editor-separation h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.editor-separation p {
+  color: #b9c5da;
+}
+.editor-separation button,
+.editor-separation select {
+  border: 1px solid #45536c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #25344f;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.editor-separation button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.editor-separation progress,
+.editor-separation audio {
+  width: 100%;
+  min-width: 0;
+}
+.editor-separation label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+}
+.separation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.editor-separation [data-separation-apply] {
+  background: #366fdb;
+}
+.editor-separation button:focus-visible,
+.editor-separation select:focus-visible {
+  outline: 2px solid #8fc8ff;
+  outline-offset: 2px;
+}

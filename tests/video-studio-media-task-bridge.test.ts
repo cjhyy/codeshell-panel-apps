@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { ProductionController } from "../apps/video-studio/src/production";
+import { AutomaticProducer } from "../apps/video-studio/src/automatic";
+import { createProject } from "../apps/video-studio/src/model";
+import { canonicalRenderMediaJob } from "../apps/video-studio/src/editor/render-media-job";
 import { createMediaTaskBridge } from "../apps/video-studio/src/media-task-bridge.ts";
 import {
   createNdjsonDecoder,
@@ -243,6 +247,7 @@ test("recording publication receives inspection from panel tool and transcript p
     const transcript = (await f.bridge.call("media.transcript", { assetId: sourceId })) as any;
     assert.equal(transcript.segments[0].text, "真实转写");
     assert.equal(transcript.total, 1);
+    assert.equal(transcript.revision, transcriptId);
   } finally {
     f.dispose();
   }
@@ -355,11 +360,13 @@ test("task events normalize state, fetch terminal artifacts and omit internal ch
   try {
     const prepared = (await f.bridge.call("media.prepare", { assetIds: [sourceId] })) as any;
     const id = prepared.jobs[0].id;
+    f.jobs.get(id).status = "cancelling";
     f.emit("tasks.changed", { id, status: "cancelling", attempt: 1, sequence: 1 });
     await flush();
     assert.equal(observed[0].type, "prepare");
     assert.equal(observed[0].status, "running");
     assert.match(observed[0].progress.message, /停止/);
+    f.jobs.get(id).status = "succeeded";
     f.emit("tasks.changed", { id, status: "succeeded", attempt: 1, sequence: 2 });
     await flush();
     assert.equal(observed[1].result.inspection.durationSeconds, 4);
@@ -430,6 +437,202 @@ test("transcript paging reuses one immutable resource read, protects cached rows
     f.setCwd("/project-a");
     await f.bridge.call("media.transcript", { assetId: sourceId });
     assert.equal(f.calls.filter((call) => call.method === "resources.read").length, 2);
+  } finally {
+    f.dispose();
+  }
+});
+
+function canonicalTask(status = "running") {
+  return {
+    id: "job-canonical",
+    entry: { name: "editor-runtime" },
+    input: {
+      request: {
+        action: "render",
+        documentHash: "d".repeat(64),
+        sequenceId: "main",
+        transferId: "export-fixture",
+      },
+    },
+    recovery: "retry",
+    status,
+    attempt: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    progress: { fraction: 0.25, stage: "render-video" },
+    result: {
+      result: {
+        verified: true,
+        frameCount: 300,
+        durationSeconds: 10,
+        video: {
+          id: outputId,
+          sha256: "b".repeat(64),
+          bytes: 1024,
+          mimeType: "video/mp4",
+          name: "完整多轨.mp4",
+        },
+      },
+    },
+  };
+}
+test("canonical rendering maps only verified actual output and preserves cancellation/error states", () => {
+  const job = canonicalTask();
+  assert.equal(canonicalRenderMediaJob(job).status, "running");
+  assert.equal(canonicalRenderMediaJob({ ...job, status: "cancelling" }).status, "running");
+  const ready = canonicalRenderMediaJob({ ...job, status: "succeeded" });
+  assert.equal(ready.type, "render");
+  assert.equal((ready.result as any).video.asset.id, outputId);
+  assert.equal((ready.result as any).video.id, outputId);
+  assert.throws(
+    () =>
+      canonicalRenderMediaJob({
+        ...job,
+        status: "succeeded",
+        result: { result: { ...job.result.result, verified: false } },
+      }),
+    /核验/,
+  );
+  assert.throws(() => canonicalRenderMediaJob({ ...job, entry: { name: "unrelated" } }), /新版/);
+  assert.throws(
+    () =>
+      canonicalRenderMediaJob({
+        ...job,
+        status: "succeeded",
+        result: {
+          result: {
+            ...job.result.result,
+            video: { ...job.result.result.video, sha256: "c".repeat(64) },
+          },
+        },
+      }),
+    /核验/,
+  );
+  assert.equal(
+    canonicalRenderMediaJob({
+      ...job,
+      status: "interrupted",
+      error: { message: "任务中断", retryable: true },
+    }).status,
+    "failed",
+  );
+});
+test("old production tracks, waits, cancels and retries the real canonical export and automatic completion sees the same artifact", async () => {
+  const f = fixture(),
+    project = createProject(),
+    job = canonicalTask();
+  f.jobs.set(job.id, job);
+  let starts = 0;
+  const controller = new ProductionController(f.bridge, {
+    getProject: () => project,
+    publishAssets: async () => assert.fail("render cannot publish projected media"),
+    changed() {},
+    renderCanonical: async (snapshot) => {
+      starts++;
+      assert.deepEqual(snapshot, project);
+      return structuredClone(job) as any;
+    },
+  });
+  try {
+    await controller.initialize();
+    const first = await controller.render(project);
+    assert.equal(first.id, job.id);
+    assert.equal(first.status, "running");
+    assert.equal(first.type, "render");
+    assert.equal(
+      controller.pendingJobs.some((j) => j.id === job.id),
+      true,
+    );
+    assert.equal(
+      f.calls.some((c) => c.method === "tasks.start" && c.params.input.request.action === "render"),
+      false,
+      "legacy bridge must never start media-runtime render",
+    );
+    const page = (await f.bridge.call("media.jobs.list", {})) as any;
+    assert.equal(page.jobs.find((j: any) => j.id === job.id).type, "render");
+    await controller.cancel(job.id);
+    assert.equal(
+      controller.currentJobs.find((j) => j.id === job.id)!.status,
+      "running",
+      "cancel acknowledgement is not terminal",
+    );
+    job.status = "cancelled";
+    job.updatedAt++;
+    await controller.refresh();
+    assert.equal(controller.pendingJobs.length, 0);
+    const retried = await controller.retry(job.id);
+    assert.equal(retried!.id, job.id);
+    assert.equal(retried!.attempt, 2);
+    assert.equal(retried!.status, "queued");
+    assert.equal(starts, 1);
+    job.status = "succeeded";
+    job.updatedAt++;
+    await controller.refresh();
+    assert.equal(controller.latestExport!.id, outputId);
+    assert.equal((await controller.waitForJobs([job.id])).jobs[0]!.status, "succeeded");
+    await controller.setAuto({
+      projectId: project.id,
+      prompt: "制作完整工程",
+      phase: "waiting",
+      attempts: 1,
+      startedAt: job.createdAt - 1,
+    });
+    const automatic = new AutomaticProducer(f.bridge, controller, {
+      getProject: () => project,
+      assertEditable() {},
+      state() {},
+    });
+    await automatic.resume();
+    assert.equal(controller.auto!.phase, "done");
+    const restarted = new ProductionController(f.bridge, {
+      getProject: () => project,
+      publishAssets: async () => {},
+      changed() {},
+    });
+    try {
+      await restarted.initialize();
+      await restarted.refresh();
+      assert.equal(restarted.latestExport!.id, outputId);
+    } finally {
+      restarted.dispose();
+    }
+  } finally {
+    controller.dispose();
+    f.dispose();
+  }
+});
+test("generic task ownership rejects foreign operations and discovers only reviewed export actions", async () => {
+  const f = fixture(),
+    canonical = canonicalTask("succeeded");
+  f.jobs.set(canonical.id, canonical);
+  const foreign = { ...canonical, id: "job-foreign", entry: { name: "unrelated-tool" } },
+    prepare = {
+      ...canonical,
+      id: "job-editor-prepare",
+      input: { request: { action: "prepare-audio" } },
+    };
+  f.jobs.set(foreign.id, foreign);
+  f.jobs.set(prepare.id, prepare);
+  try {
+    const page = (await f.bridge.call("media.jobs.list", {})) as any;
+    assert.deepEqual(
+      page.jobs.map((j: any) => j.id),
+      [canonical.id],
+    );
+    for (const method of ["media.jobs.get", "media.jobs.cancel", "media.jobs.retry"])
+      for (const id of [foreign.id, prepare.id])
+        await assert.rejects(f.bridge.call(method, { id }), /不属于/);
+    assert.equal(
+      f.calls.some((c) => ["tasks.cancel", "tasks.retry"].includes(c.method)),
+      false,
+    );
+    const observed: any[] = [];
+    f.bridge.on("media.job.changed", (value) => observed.push(value));
+    f.emit("tasks.changed", { id: foreign.id, status: "succeeded", sequence: 1 });
+    f.emit("tasks.changed", { id: canonical.id, status: "succeeded", sequence: 1 });
+    for (let i = 0; i < 15; i++) await new Promise((r) => setTimeout(r, 0));
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].result.video.asset.id, outputId);
   } finally {
     f.dispose();
   }

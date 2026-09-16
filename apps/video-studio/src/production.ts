@@ -7,6 +7,15 @@ import {
   type Project,
 } from "./model";
 import type { PanelBridge } from "./host";
+import type { RuntimeJob } from "./sdk/panel-runtime";
+import { canonicalRenderMediaJob } from "./editor/render-media-job";
+import {
+  canonicalVoiceoverReceipt,
+  type CanonicalVoiceoverResult,
+  type VoiceoverOrigin,
+  type VoiceoverPublication,
+} from "./editor/voiceover-publication";
+import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
 
 export interface ProductionStatus {
   persistent: boolean;
@@ -183,6 +192,7 @@ interface JobBinding {
     | "setup"
     | "reference";
   sourceRevision?: number;
+  voiceoverOrigin?: VoiceoverOrigin;
   referenceRange?: [number, number];
   referenceResultId?: string;
   attachAudio?: boolean;
@@ -195,10 +205,47 @@ interface ProductionDocument {
   schemaVersion: 1;
   bindings: Record<string, JobBinding>;
   auto: AutoProduction | null;
+  renderSubmissions?: RenderSubmission[];
+}
+export interface RenderSubmissionReceipt {
+  accepted: true;
+  operationId: string;
+  projectId: string;
+  revision: number;
+  status: "preparing" | "cancelling" | "submitted" | "failed" | "interrupted";
+  createdAt: number;
+  updatedAt: number;
+  jobId?: string;
+  error?: string;
+}
+interface RenderSubmission extends RenderSubmissionReceipt {
+  requestToken: string;
+}
+export interface CanonicalRenderOptions {
+  signal?: AbortSignal;
+  assertCurrent?(): void;
 }
 export interface ProductionCallbacks {
   getProject(): Project;
   publishAssets(projectId: string, assets: Asset[], options?: AssetPublication): Promise<void>;
+  /** Canonical editors receive the precise native receipt, never a 30 fps placement projection. */
+  publishAudioEnhancement?(
+    projectId: string,
+    result: AudioEnhancementResult,
+    context: {
+      jobId: string;
+      asset: Asset;
+      baseRevision?: number;
+    },
+  ): Promise<void>;
+  /** Return the real generic editor-runtime render job for the complete canonical document. */
+  renderCanonical?(project: Project, options?: CanonicalRenderOptions): Promise<RuntimeJob>;
+  captureVoiceoverOrigin?(): VoiceoverOrigin;
+  publishVoiceover?(
+    projectId: string,
+    result: CanonicalVoiceoverResult,
+    context: VoiceoverPublication,
+  ): Promise<void>;
   inspectImportedAsset?(asset: ManagedAsset): Promise<PreparedMedia["inspection"]>;
   changed(): void;
 }
@@ -332,10 +379,59 @@ function productionDocument(value: unknown): ProductionDocument {
     !plain(value) ||
     value.schemaVersion !== 1 ||
     !plain(value.bindings) ||
-    Object.keys(value).some((key) => !["schemaVersion", "bindings", "auto"].includes(key))
+    Object.keys(value).some(
+      (key) => !["schemaVersion", "bindings", "auto", "renderSubmissions"].includes(key),
+    )
   )
     return bad();
   const bindings: Record<string, JobBinding> = {};
+  if (value.renderSubmissions !== undefined) {
+    if (!Array.isArray(value.renderSubmissions) || value.renderSubmissions.length > 100)
+      return bad();
+    const ids = new Set<string>();
+    for (const item of value.renderSubmissions) {
+      if (
+        !plain(item) ||
+        Object.keys(item).some(
+          (key) =>
+            ![
+              "accepted",
+              "operationId",
+              "projectId",
+              "revision",
+              "status",
+              "createdAt",
+              "updatedAt",
+              "jobId",
+              "error",
+              "requestToken",
+            ].includes(key),
+        ) ||
+        item.accepted !== true ||
+        !text(item.operationId, 128) ||
+        !/^render-[a-f0-9-]{36}$/.test(item.operationId) ||
+        ids.has(item.operationId) ||
+        !text(item.projectId, 128) ||
+        !text(item.requestToken, 256) ||
+        ![item.revision, item.createdAt, item.updatedAt].every(
+          (n) => Number.isSafeInteger(n) && Number(n) >= 0,
+        ) ||
+        Number(item.updatedAt) < Number(item.createdAt) ||
+        !["preparing", "cancelling", "submitted", "failed", "interrupted"].includes(
+          String(item.status),
+        ) ||
+        (item.status === "submitted" && !item.jobId) ||
+        (item.jobId !== undefined &&
+          (!text(item.jobId, 128) ||
+            !/^(?:job-[a-zA-Z0-9-]+|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/.test(
+              item.jobId,
+            ))) ||
+        (item.error !== undefined && !text(item.error, 2000))
+      )
+        return bad();
+      ids.add(item.operationId);
+    }
+  }
   if (Object.keys(value.bindings).length > 4000) return bad();
   for (const [key, raw] of Object.entries(value.bindings)) {
     if (
@@ -353,12 +449,25 @@ function productionDocument(value: unknown): ProductionDocument {
             "startFrame",
             "replaceClip",
             "sourceRevision",
+            "voiceoverOrigin",
             "referenceRange",
             "referenceResultId",
           ].includes(key),
       )
     )
       return bad();
+    if (raw.voiceoverOrigin !== undefined) {
+      const origin = raw.voiceoverOrigin;
+      if (
+        raw.purpose !== "tts" ||
+        !plain(origin) ||
+        Object.keys(origin).some((key) => !["sequenceId", "revision"].includes(key)) ||
+        !text(origin.sequenceId, 128) ||
+        !Number.isSafeInteger(origin.revision) ||
+        Number(origin.revision) < 0
+      )
+        return bad();
+    }
     if (raw.replaceClip !== undefined) {
       const clip = raw.replaceClip;
       if (
@@ -488,7 +597,14 @@ function productionDocument(value: unknown): ProductionDocument {
       }
     }
   }
-  return structuredClone({ schemaVersion: 1, bindings, auto } as ProductionDocument);
+  return structuredClone({
+    schemaVersion: 1,
+    bindings,
+    auto,
+    ...(value.renderSubmissions === undefined
+      ? {}
+      : { renderSubmissions: value.renderSubmissions }),
+  } as ProductionDocument);
 }
 
 /** Host jobs and durable intent live separately from the editable timeline. */
@@ -506,6 +622,7 @@ export class ProductionController {
   private refreshScheduled = false;
   private assetRequests = new Map<string, number>();
   private consuming = new Set<JobBinding>();
+  private renderControllers = new Map<string, AbortController>();
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   constructor(
@@ -527,6 +644,14 @@ export class ProductionController {
   }
   get pendingJobs(): MediaJob[] {
     return this.currentJobs.filter(active);
+  }
+  get renderSubmissions(): RenderSubmissionReceipt[] {
+    return (this.document.renderSubmissions ?? [])
+      .filter((item) => item.projectId === this.callbacks.getProject().id)
+      .map(({ requestToken: _token, ...receipt }) => structuredClone(receipt));
+  }
+  get hasPendingRenderSubmission(): boolean {
+    return this.renderSubmissions.some((item) => ["preparing", "cancelling"].includes(item.status));
   }
   /** Includes request admission, result publication and its durable consumption receipt. */
   get hasPendingAssetPublication(): boolean {
@@ -569,6 +694,13 @@ export class ProductionController {
       this.documentRevision = saved.revision;
       if (saved.data !== null) {
         this.document = productionDocument(saved.data);
+        for (const item of this.document.renderSubmissions ?? [])
+          if (["preparing", "cancelling"].includes(item.status)) {
+            item.status = "interrupted";
+            item.error =
+              "导出准备曾中断，未自动重复提交。请先检查已有后台任务，再发起新的制作请求。";
+            item.updatedAt = Date.now();
+          }
       }
     } catch (error) {
       this.documentFailed = true;
@@ -591,6 +723,7 @@ export class ProductionController {
   }
   dispose(): void {
     this.disposed = true;
+    for (const controller of this.renderControllers.values()) controller.abort();
     clearInterval(this.timer);
     this.unsubscribe?.();
   }
@@ -963,6 +1096,7 @@ export class ProductionController {
       throw new Error("配音位置无效");
     const currentProject = this.callbacks.getProject();
     const projectId = currentProject.id;
+    const voiceoverOrigin = structuredClone(this.callbacks.captureVoiceoverOrigin?.());
     const placementBinding = placement
       ? { attachAudio: placement.attach, startFrame: placement.startFrame }
       : {};
@@ -1011,11 +1145,127 @@ export class ProductionController {
     return this.track(job, {
       projectId,
       purpose: "tts",
+      ...(voiceoverOrigin ? { voiceoverOrigin: structuredClone(voiceoverOrigin) } : {}),
       ...placementBinding,
       ...(replaceClip ? { replaceClip } : {}),
     });
   }
-  async render(project: Project): Promise<MediaJob> {
+  /** Admission is small and immediate; a receipt is never presented as a native MediaJob. */
+  startRender(project: Project, requestToken: string): RenderSubmissionReceipt {
+    this.requireHost();
+    if (typeof requestToken !== "string" || !requestToken || requestToken.length > 256)
+      throw new Error("导出请求标识无效");
+    const snapshot = validateProject(project),
+      submissions = (this.document.renderSubmissions ??= []);
+    const existing = submissions.find(
+      (item) =>
+        item.projectId === snapshot.id &&
+        item.revision === snapshot.revision &&
+        item.requestToken === requestToken,
+    );
+    if (existing)
+      return this.renderSubmissions.find((item) => item.operationId === existing.operationId)!;
+    while (submissions.length >= 100) {
+      const index = submissions.findIndex(
+        (item) =>
+          ["failed", "interrupted"].includes(item.status) ||
+          (item.status === "submitted" &&
+            item.jobId &&
+            this.bindingFor(item.jobId, item.projectId)),
+      );
+      if (index < 0) throw new Error("导出准备任务过多，请等待或取消已有准备后继续");
+      submissions.splice(index, 1);
+    }
+    const auto = this.auto,
+      controller = new AbortController(),
+      now = Date.now();
+    const item: RenderSubmission = {
+      accepted: true,
+      operationId: `render-${crypto.randomUUID()}`,
+      projectId: snapshot.id,
+      revision: snapshot.revision,
+      requestToken,
+      status: "preparing",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const assertCurrent = () => {
+      const current = this.callbacks.getProject(),
+        latest = this.auto;
+      if (this.disposed || controller.signal.aborted) throw new Error("导出准备已取消");
+      if (current.id !== snapshot.id || current.revision !== snapshot.revision)
+        throw new Error("导出准备期间工程已变化，请重新读取后导出");
+      if (
+        auto?.requestToken === requestToken &&
+        (latest?.projectId !== auto.projectId ||
+          latest?.runId !== auto.runId ||
+          latest?.requestToken !== requestToken ||
+          !["agent", "waiting"].includes(latest.phase))
+      )
+        throw new Error("原自动制作请求已结束或取消，未继续提交导出");
+    };
+    assertCurrent();
+    submissions.push(item);
+    this.renderControllers.set(item.operationId, controller);
+    const receipt = this.renderSubmissions.find((value) => value.operationId === item.operationId)!;
+    void (async () => {
+      try {
+        // Persist intent before any native preparation. A reload can never silently resubmit it.
+        await this.persist();
+        assertCurrent();
+        const job = await this.render(snapshot, {
+          signal: controller.signal,
+          assertCurrent,
+          onJob: (job) => {
+            item.jobId = job.id;
+            item.status = "submitted";
+            item.updatedAt = Date.now();
+          },
+        });
+        if (controller.signal.aborted)
+          await this.requireHost().call("media.jobs.cancel", { id: job.id });
+      } catch (error) {
+        item.status = item.jobId ? "submitted" : "failed";
+        item.error =
+          (error instanceof Error ? error.message : String(error)).slice(0, 2000) || "导出准备失败";
+        item.updatedAt = Date.now();
+        if (item.jobId && controller.signal.aborted)
+          await this.requireHost()
+            .call("media.jobs.cancel", { id: item.jobId })
+            .catch(() => {});
+        await this.persist().catch(() => {});
+        if (!this.disposed) this.reportError(error);
+      } finally {
+        this.renderControllers.delete(item.operationId);
+        if (!this.disposed) {
+          this.callbacks.changed();
+          this.scheduleRefresh();
+        }
+      }
+    })();
+    this.callbacks.changed();
+    return receipt;
+  }
+  async render(
+    project: Project,
+    options: CanonicalRenderOptions & { onJob?(job: MediaJob): void } = {},
+  ): Promise<MediaJob> {
+    const assertCurrent = () => {
+      options.assertCurrent?.();
+      if (options.signal?.aborted || this.disposed) throw new Error("导出准备已取消");
+      const current = this.callbacks.getProject();
+      if (current.id !== project.id || current.revision !== project.revision)
+        throw new Error("工程已变化，请重新读取后导出");
+    };
+    assertCurrent();
+    if (this.callbacks.renderCanonical) {
+      const snapshot = validateProject(project);
+      const job = canonicalRenderMediaJob(
+        await this.callbacks.renderCanonical(snapshot, { signal: options.signal, assertCurrent }),
+      );
+      options.onJob?.(job);
+      return this.track(job, { projectId: snapshot.id, purpose: "render" });
+    }
     if (!this.status.ffmpeg.available) throw new Error("本机 FFmpeg 尚未就绪");
     const used = new Set([...project.clips, ...(project.audioClips ?? [])].map((c) => c.assetId));
     const sources: Record<string, string> = {};
@@ -1029,9 +1279,36 @@ export class ProductionController {
       project: validateProject(project),
       sources,
     })) as MediaJob;
+    options.onJob?.(job);
     return this.track(job, { projectId: project.id, purpose: "render" });
   }
+  cancelRenderSubmissions(requestToken: string): void {
+    for (const item of this.document.renderSubmissions ?? []) {
+      if (item.requestToken !== requestToken || !["preparing", "cancelling"].includes(item.status))
+        continue;
+      const controller = this.renderControllers.get(item.operationId);
+      if (controller) {
+        item.status = "cancelling";
+        item.updatedAt = Date.now();
+        controller.abort();
+      }
+    }
+    this.callbacks.changed();
+  }
   async cancel(id: string): Promise<void> {
+    const submission = this.document.renderSubmissions?.find(
+      (item) => item.operationId === id && item.projectId === this.callbacks.getProject().id,
+    );
+    if (submission) {
+      this.renderControllers.get(id)?.abort();
+      if (submission.jobId) return this.cancel(submission.jobId);
+      submission.status = this.renderControllers.has(id) ? "cancelling" : "interrupted";
+      submission.error = "正在取消导出准备";
+      submission.updatedAt = Date.now();
+      await this.persist();
+      this.callbacks.changed();
+      return;
+    }
     await this.requireHost().call("media.jobs.cancel", { id });
     await this.refresh();
   }
@@ -1081,7 +1358,38 @@ export class ProductionController {
       limit,
     });
   }
-  async waitForJobs(jobIds?: string[]): Promise<{ jobs: MediaJob[] }> {
+  async waitForJobs(
+    jobIds?: string[],
+  ): Promise<{ jobs: MediaJob[]; operations?: RenderSubmissionReceipt[] }> {
+    if (
+      jobIds?.some(
+        (id) =>
+          id.startsWith("render-") || this.renderSubmissions.some((item) => item.jobId === id),
+      ) ||
+      this.hasPendingRenderSubmission
+    ) {
+      const operations = this.renderSubmissions.filter(
+        (item) =>
+          !jobIds ||
+          jobIds.includes(item.operationId) ||
+          Boolean(item.jobId && jobIds.includes(item.jobId)),
+      );
+      if (
+        jobIds?.some(
+          (id) => id.startsWith("render-") && !operations.some((item) => item.operationId === id),
+        )
+      )
+        throw new Error("导出受理记录不属于当前工程或不存在");
+      const actualIds = new Set([
+        ...(jobIds ?? []),
+        ...operations.flatMap((item) => (item.jobId ? [item.jobId] : [])),
+      ]);
+      this.scheduleRefresh();
+      return {
+        jobs: this.currentJobs.filter((job) => !jobIds || actualIds.has(job.id)).slice(0, 50),
+        operations: operations.slice(0, 50),
+      };
+    }
     await this.refresh();
     const selected = () =>
       jobIds ? this.jobs.filter((j) => jobIds.includes(j.id)) : this.currentJobs;
@@ -1105,18 +1413,20 @@ export class ProductionController {
   async recoverReference(jobId: string): Promise<void> {
     const host = this.requireHost();
     const projectId = this.callbacks.getProject().id;
-    const operation = this.refreshQueue.catch(() => {}).then(async () => {
-      const binding = this.bindingFor(jobId, projectId);
-      if (!binding || binding.purpose !== "reference")
-        throw new Error("这条录音提取任务不属于当前工程，未保存旧工程的结果。");
-      const job = (await host.call("media.jobs.get", { id: jobId })) as MediaJob;
-      if (job.id !== jobId || job.status !== "succeeded")
-        throw new Error("录音提取尚未成功完成，请先刷新任务状态。");
-      await this.publishReference(binding, job.result);
-      await this.consume(binding);
-      this.jobs = [job, ...this.jobs.filter((item) => item.id !== job.id)];
-      this.callbacks.changed();
-    });
+    const operation = this.refreshQueue
+      .catch(() => {})
+      .then(async () => {
+        const binding = this.bindingFor(jobId, projectId);
+        if (!binding || binding.purpose !== "reference")
+          throw new Error("这条录音提取任务不属于当前工程，未保存旧工程的结果。");
+        const job = (await host.call("media.jobs.get", { id: jobId })) as MediaJob;
+        if (job.id !== jobId || job.status !== "succeeded")
+          throw new Error("录音提取尚未成功完成，请先刷新任务状态。");
+        await this.publishReference(binding, job.result);
+        await this.consume(binding);
+        this.jobs = [job, ...this.jobs.filter((item) => item.id !== job.id)];
+        this.callbacks.changed();
+      });
     this.refreshQueue = operation;
     return operation;
   }
@@ -1297,19 +1607,29 @@ export class ProductionController {
           { assetId: managed.id, inspection: result.inspection },
           this.callbacks.getProject(),
         );
-        await this.callbacks.publishAssets(projectId, [asset], {
-          label: "原声优化完成",
-          ...(binding.sourceRevision !== undefined && binding.assetId
-            ? {
-                enhancement: {
-                  jobId: job.id,
-                  assetId: asset.id,
-                  sourceMediaId: binding.assetId,
-                  baseRevision: binding.sourceRevision,
-                },
-              }
-            : {}),
-        });
+        if (this.callbacks.publishAudioEnhancement) {
+          await this.callbacks.publishAudioEnhancement(projectId, audioEnhancementReceipt(result), {
+            jobId: job.id,
+            asset,
+            ...(binding.sourceRevision === undefined
+              ? {}
+              : { baseRevision: binding.sourceRevision }),
+          });
+        } else {
+          await this.callbacks.publishAssets(projectId, [asset], {
+            label: "原声优化完成",
+            ...(binding.sourceRevision !== undefined && binding.assetId
+              ? {
+                  enhancement: {
+                    jobId: job.id,
+                    assetId: asset.id,
+                    sourceMediaId: binding.assetId,
+                    baseRevision: binding.sourceRevision,
+                  },
+                }
+              : {}),
+          });
+        }
       } else if (binding.purpose === "setup") {
         this.status = (await host.call("media.status", {})) as ProductionStatus;
       } else if (binding.purpose === "tts") {
@@ -1332,20 +1652,34 @@ export class ProductionController {
           inspection: result.inspection,
           transcription: { source: "synthesized-speech", text: result.speech.text },
         });
-        await this.callbacks.publishAssets(projectId, [asset], {
-          label: "文字配音完成",
-          ...(binding.attachAudio
-            ? {
-                audioPlacement: {
-                  clipId: `voice-${job.id}`,
-                  assetId: asset.id,
-                  startFrame: binding.startFrame ?? 0,
-                  volume: 1,
-                  ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
-                },
-              }
-            : {}),
-        });
+        if (this.callbacks.publishVoiceover) {
+          await this.callbacks.publishVoiceover(projectId, canonicalVoiceoverReceipt(result), {
+            jobId: job.id,
+            ...(binding.voiceoverOrigin ? { origin: binding.voiceoverOrigin } : {}),
+            ...(binding.attachAudio
+              ? {
+                  placement: {
+                    startFrame: binding.startFrame ?? 0,
+                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
+                  },
+                }
+              : {}),
+          });
+        } else
+          await this.callbacks.publishAssets(projectId, [asset], {
+            label: "文字配音完成",
+            ...(binding.attachAudio
+              ? {
+                  audioPlacement: {
+                    clipId: `voice-${job.id}`,
+                    assetId: asset.id,
+                    startFrame: binding.startFrame ?? 0,
+                    volume: 1,
+                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
+                  },
+                }
+              : {}),
+          });
       } else if (binding.purpose === "transcribe" && binding.assetId) {
         const preparation = this.preparations.get(binding.assetId);
         if (preparation)
@@ -1414,7 +1748,12 @@ export function preparedAsset(
 }
 
 /** Split only at recognizer-provided word times; never invent per-word timing. */
-function readableTranscriptSegments(segment: TranscriptSegment): TranscriptSegment[] {
+function readableTranscriptSegments(
+  segment: TranscriptSegment,
+  inFrame: number,
+  outFrame: number,
+  fps: number,
+): TranscriptSegment[] {
   const words = segment.words;
   if (
     !Array.isArray(words) ||
@@ -1448,7 +1787,9 @@ function readableTranscriptSegments(segment: TranscriptSegment): TranscriptSegme
     if (end > start) result.push({ start, end, text: content() });
     group = [];
   };
-  for (const word of words) {
+  for (const word of words.filter(
+    (word) => word.end * fps > inFrame && word.start * fps < outFrame,
+  )) {
     if (group.length) {
       const elapsed = group[group.length - 1]!.end - group[0]!.start;
       if (
@@ -1467,7 +1808,33 @@ function readableTranscriptSegments(segment: TranscriptSegment): TranscriptSegme
       flush();
   }
   flush();
-  return result.length ? result : [segment];
+  return result;
+}
+
+/** Only persistent sources that can actually be heard in the edited film need captions. */
+export function captionSourceAssetIds(
+  project: Project,
+  preparations: ReadonlyMap<string, PreparedMedia>,
+): string[] {
+  const used = [...project.clips, ...(project.audioClips ?? [])]
+    .filter((clip) => clip.volume > 0)
+    .map((clip) => clip.assetId);
+  return [...new Set(used)].filter((id) => {
+    const asset = project.assets.find((candidate) => candidate.id === id);
+    if (!asset?.mediaId || !["audio", "video"].includes(asset.kind) || asset.scene) return false;
+    const prepared = preparations.get(asset.mediaId);
+    return !prepared || Boolean(prepared.inspection.audio);
+  });
+}
+
+/** Keep corrected text associated with the same source occurrence when generating again. */
+function transcriptCaptionId(source: string): string {
+  let hash = 14695981039346656037n;
+  for (const char of source) {
+    hash ^= BigInt(char.charCodeAt(0));
+    hash = BigInt.asUintN(64, hash * 1099511628211n);
+  }
+  return `transcript-${hash.toString(16)}`;
 }
 
 /** Map truthful source transcript time to each used occurrence of a source. */
@@ -1477,9 +1844,15 @@ export function transcriptCaptions(
   segments: TranscriptSegment[],
 ): Caption[] {
   const captions: Caption[] = [];
-  for (const clip of timelineClips(project).filter((c) => c.assetId === assetId))
+  const placements = [
+    ...timelineClips(project).map((clip) => ({ ...clip, track: "video" })),
+    ...(project.audioClips ?? []).map((clip) => ({ ...clip, track: "audio" })),
+  ].filter((clip) => clip.assetId === assetId && clip.volume > 0);
+  const seen = new Set<string>();
+  for (const clip of placements)
     for (const original of segments) {
       if (
+        !original ||
         !Number.isFinite(original.start) ||
         !Number.isFinite(original.end) ||
         original.end <= original.start ||
@@ -1487,17 +1860,26 @@ export function transcriptCaptions(
         !original.text.trim()
       )
         continue;
-      for (const segment of readableTranscriptSegments(original)) {
-        const start = Math.max(clip.inFrame, Math.round(segment.start * 30));
-        const end = Math.min(clip.outFrame, Math.round(segment.end * 30));
-        if (end > start)
-          captions.push({
-            id: crypto.randomUUID(),
+      for (const segment of readableTranscriptSegments(
+        original,
+        clip.inFrame,
+        clip.outFrame,
+        project.fps,
+      )) {
+        const start = Math.max(clip.inFrame, Math.round(segment.start * project.fps));
+        const end = Math.min(clip.outFrame, Math.round(segment.end * project.fps));
+        if (end > start) {
+          const caption = {
+            id: transcriptCaptionId(JSON.stringify([clip.track, clip.id, assetId, start, end])),
             startFrame: clip.startFrame + start - clip.inFrame,
             endFrame: clip.startFrame + end - clip.inFrame,
             text: segment.text.trim(),
-          });
+          };
+          const key = JSON.stringify([caption.startFrame, caption.endFrame, caption.text]);
+          if (!seen.has(key)) captions.push(caption);
+          seen.add(key);
+        }
       }
     }
-  return captions;
+  return captions.sort((a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame);
 }

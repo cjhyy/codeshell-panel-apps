@@ -1,0 +1,586 @@
+.editor-workspace {
+  --ew-bg: #111918;
+  --ew-panel: #182320;
+  --ew-border: #31433c;
+  --ew-muted: #a8bbb3;
+  box-sizing: border-box;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto auto minmax(230px, 1fr) minmax(250px, 40vh);
+  overflow: hidden;
+  background: var(--ew-bg);
+  color: #edf5f1;
+  font:
+    13px/1.5 system-ui,
+    sans-serif;
+}
+.editor-workspace[hidden],
+.editor-workspace [hidden] {
+  display: none !important;
+}
+.editor-workspace *,
+.editor-workspace *::before,
+.editor-workspace *::after {
+  box-sizing: border-box;
+}
+.editor-workspace button,
+.editor-workspace input,
+.editor-workspace select,
+.editor-workspace textarea {
+  font: inherit;
+}
+.editor-workspace button {
+  min-height: 30px;
+  border: 1px solid var(--ew-border);
+  border-radius: 7px;
+  padding: 4px 10px;
+  background: #23322c;
+  color: inherit;
+  cursor: pointer;
+}
+.editor-workspace button:hover {
+  background: #31483d;
+}
+.editor-workspace button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.editor-workspace :focus-visible {
+  outline: 2px solid #8fe8ca;
+  outline-offset: 2px;
+}
+.editor-workspace input:not([type="checkbox"]):not([type="range"]),
+.editor-workspace select,
+.editor-workspace textarea {
+  min-width: 0;
+  border: 1px solid var(--ew-border);
+  border-radius: 6px;
+  background: #111b17;
+  color: inherit;
+  padding: 5px 8px;
+}
+.editor-workspace input[type="range"] {
+  accent-color: #8fe8ca;
+  min-width: 30px;
+}
+.editor-workspace .ew-primary {
+  background: #a4efca;
+  color: #10271b;
+  border-color: #a4efca;
+  font-weight: 650;
+}
+.ew-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 58px;
+  padding: 9px 15px;
+  border-bottom: 1px solid var(--ew-border);
+}
+.ew-header > strong {
+  white-space: nowrap;
+}
+.ew-project-name {
+  width: 190px;
+}
+.ew-header [data-ew-save] {
+  font-size: 11px;
+  color: var(--ew-muted);
+  white-space: nowrap;
+}
+.ew-header-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.ew-tools {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 15px;
+  border-bottom: 1px solid var(--ew-border);
+  overflow-x: auto;
+}
+.ew-tools > * {
+  flex-shrink: 0;
+}
+.ew-tools label {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.ew-tools select {
+  max-width: 200px;
+}
+.ew-spacer {
+  flex: 1;
+}
+.ew-main {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 215px minmax(240px, 1fr) 315px;
+}
+.ew-library {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-right: 1px solid var(--ew-border);
+  background: var(--ew-panel);
+}
+.ew-library-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ew-library h2 {
+  margin: 0;
+  font-size: 14px;
+}
+.ew-create {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.ew-create button {
+  flex: 1;
+  padding-inline: 4px;
+}
+.ew-assets {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ew-assets > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 10px;
+  text-align: left;
+}
+.ew-assets strong {
+  font-weight: 500;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.ew-assets small,
+.ew-empty {
+  color: var(--ew-muted);
+  font-size: 11px;
+}
+.ew-asset-kind {
+  color: #95c9b1;
+  font-size: 10px;
+}
+.ew-production-links {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  border-top: 1px solid var(--ew-border);
+  padding-top: 10px;
+}
+.ew-production-links button {
+  font-size: 11px;
+  padding-inline: 4px;
+}
+.ew-viewer {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0b100f;
+}
+.ew-canvas-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 20px;
+}
+.ew-canvas-wrap canvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  width: 100%;
+  height: 100%;
+}
+.ew-canvas-wrap [data-ew-preview-error] {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 10px;
+  background: #2c211bee;
+  padding: 10px;
+  border: 1px solid #805335;
+  border-radius: 7px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ew-player {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 48px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--ew-border);
+  font-variant-numeric: tabular-nums;
+}
+.ew-player output {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ew-player input {
+  flex: 1;
+  width: 60px;
+}
+.ew-player [data-ew-fps] {
+  color: var(--ew-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.ew-properties {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-left: 1px solid var(--ew-border);
+  background: var(--ew-panel);
+}
+.editor-workspace > [data-ew-timeline] {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--ew-border);
+}
+.editor-workspace [data-ew-timeline] .et-toolbar {
+  flex: 0 0 auto;
+}
+.editor-workspace [data-ew-timeline] .et-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.editor-workspace .et-track-head button {
+  min-height: 22px;
+  padding: 2px 4px;
+}
+.editor-workspace .et-marker {
+  min-height: 15px;
+  padding: 0;
+}
+.ew-dialog {
+  width: min(470px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--ew-border);
+  border-radius: 12px;
+  padding: 22px;
+  background: var(--ew-panel);
+  color: inherit;
+}
+.ew-dialog::backdrop {
+  background: #0009;
+}
+.ew-dialog h2 {
+  margin: 0 0 15px;
+  font-size: 18px;
+}
+.ew-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ew-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ew-dialog label:has(input[type="checkbox"]) {
+  flex-direction: row;
+  align-items: center;
+}
+.ew-form-row {
+  display: flex;
+  gap: 12px;
+}
+.ew-form-row > * {
+  flex: 1;
+  min-width: 0;
+}
+.ew-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+}
+.ew-form-error {
+  margin: 0;
+  color: #ffc099;
+  white-space: pre-wrap;
+}
+.ew-form-error:empty {
+  display: none;
+}
+@media (max-width: 1100px) {
+  .ew-main {
+    grid-template-columns: 175px minmax(190px, 1fr) 270px;
+  }
+  .ew-header {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ew-project-name {
+    width: 150px;
+  }
+  .ew-header-actions {
+    gap: 4px;
+  }
+  .ew-header-actions button {
+    font-size: 11px;
+  }
+  .ew-library {
+    padding: 10px;
+  }
+}
+@media (max-width: 780px) {
+  .editor-workspace {
+    height: auto;
+    min-height: 100dvh;
+    grid-template-rows: auto auto minmax(450px, 60vh) 300px;
+    overflow: visible;
+  }
+  .ew-header-actions {
+    width: 100%;
+  }
+  .ew-main {
+    grid-template-columns: 130px minmax(150px, 1fr);
+    grid-template-rows: minmax(230px, 1fr) 210px;
+  }
+  .ew-library {
+    grid-row: 1 / 3;
+  }
+  .ew-properties {
+    grid-column: 2;
+    grid-row: 2;
+    border-top: 1px solid var(--ew-border);
+  }
+  .ew-library-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+  .ew-production-links {
+    grid-template-columns: 1fr;
+  }
+  .ew-create {
+    flex-direction: column;
+  }
+  .ew-player {
+    gap: 5px;
+    padding-inline: 6px;
+  }
+  .ew-player [data-ew-fps] {
+    display: none;
+  }
+  .ew-canvas-wrap {
+    padding: 10px;
+  }
+}
+
+#studio[hidden] {
+  display: none;
+}
+.editor-return-button {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 25;
+  padding: 10px 15px;
+  background: #a4efca;
+  color: #10271b;
+  border: 1px solid #659b7f;
+  border-radius: 9px;
+  box-shadow: 0 3px 20px #0005;
+  cursor: pointer;
+}
+
+.editor-export-jobs {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  width: min(350px, calc(100vw - 24px));
+  max-height: 50vh;
+  overflow: auto;
+  z-index: 24;
+  border: 1px solid #466452;
+  border-radius: 9px;
+  background: #1c2c23;
+  color: #effaf2;
+  padding: 9px 12px;
+  font: 12px/1.5 system-ui;
+  box-shadow: 0 4px 24px #0006;
+}
+.editor-export-jobs summary {
+  cursor: pointer;
+}
+.editor-export-job-list section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+  border-top: 1px solid #3c5546;
+  padding-top: 9px;
+  overflow-wrap: anywhere;
+}
+.editor-export-job-list progress {
+  width: 100%;
+  accent-color: #a4efca;
+}
+.editor-export-job-list section > div {
+  display: flex;
+  gap: 6px;
+}
+.editor-export-jobs button {
+  min-height: 28px;
+  font: inherit;
+  padding: 3px 9px;
+  border-radius: 5px;
+  color: inherit;
+  background: #2c4436;
+  border: 1px solid #567862;
+  cursor: pointer;
+}
+.editor-export-jobs [data-more] {
+  margin-top: 10px;
+}
+.editor-export-jobs [hidden] {
+  display: none !important;
+}
+.editor-cleanup-warning {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: min(650px, calc(100vw - 24px));
+  padding: 12px;
+  border: 1px solid #b68d45;
+  border-radius: 8px;
+  background: #3e301a;
+  color: #fff0cd;
+  font: 13px/1.5 system-ui;
+  box-shadow: 0 3px 16px #0005;
+}
+.editor-cleanup-warning button {
+  flex: none;
+  padding: 6px 10px;
+}
+.ew-dialog fieldset {
+  min-width: 0;
+  border: 1px solid #456352;
+  border-radius: 6px;
+  padding: 9px;
+  margin: 9px 0;
+}
+.ew-dialog fieldset label {
+  margin-bottom: 8px;
+}
+.ew-dialog [hidden],
+.editor-import-status[hidden],
+.editor-import-status [hidden] {
+  display: none !important;
+}
+.editor-import-status {
+  padding: 10px;
+  border-top: 1px solid #456352;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.editor-import-status ul {
+  padding-left: 16px;
+  max-height: 200px;
+  overflow: auto;
+}
+.editor-import-status button {
+  margin: 4px;
+  font: inherit;
+  padding: 5px;
+}
+.ew-asset-limitation {
+  color: #edc183;
+}
+
+.editor-canvas-controls {
+  position: absolute;
+  overflow: visible;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.editor-canvas-controls .ec-outline {
+  fill: transparent;
+  stroke: #adf4d3;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: all;
+  cursor: move;
+}
+.editor-canvas-controls .ec-handle {
+  fill: #fff;
+  stroke: #1b5440;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  cursor: crosshair;
+}
+.editor-canvas-toolbar {
+  position: absolute;
+  top: 4px;
+  left: 5px;
+  right: 5px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  pointer-events: none;
+}
+.editor-canvas-toolbar button {
+  pointer-events: auto;
+  font-size: 11px;
+  min-height: 25px;
+  padding: 2px 6px;
+}
+.editor-canvas-toolbar button[aria-pressed="true"] {
+  border-color: #a4efca;
+  color: #a4efca;
+}
+.editor-canvas-toolbar span {
+  color: #cee4d8;
+  background: #101914d9;
+  border-radius: 4px;
+  font-size: 10px;
+  padding: 3px 5px;
+}
+
+[data-ew-font-warning] {
+  flex: 0 0 auto;
+  max-height: 72px;
+  overflow: auto;
+  padding: 6px 8px;
+  margin: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  color: #f5ddaa;
+  background: #302c22;
+  font-size: 11px;
+  line-height: 1.4;
+}

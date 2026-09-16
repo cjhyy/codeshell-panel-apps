@@ -44,6 +44,267 @@ async function until(predicate: () => boolean) {
   }
   assert.fail("condition did not settle");
 }
+function renderTask(id = crypto.randomUUID()) {
+  return {
+    id,
+    entry: { name: "editor-runtime", sha256: "e".repeat(64) },
+    input: { request: { action: "render", documentHash: "d".repeat(64), sequenceId: "main" } },
+    recovery: "retry",
+    status: "queued" as const,
+    attempt: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+test("render admission returns before storage or staging, deduplicates, and exposes only the eventual real job", async () => {
+  const host = new FakeHost(),
+    current = project(),
+    storage = deferred<void>(),
+    staging = deferred<void>();
+  let starts = 0,
+    options: any;
+  const job = renderTask();
+  const controller = new ProductionController(host, {
+    getProject: () => current,
+    publishAssets: async () => {},
+    changed() {},
+    renderCanonical: async (snapshot, control) => {
+      starts++;
+      options = control;
+      assert.deepEqual(snapshot, current);
+      await staging.promise;
+      control?.assertCurrent?.();
+      host.jobs.set(job.id, { ...job, type: "render" });
+      return job;
+    },
+  });
+  controllers.add(controller);
+  await controller.initialize();
+  await controller.setAuto({
+    projectId: current.id,
+    requestToken: "approved",
+    runId: "run-1",
+    prompt: "导出",
+    attempts: 1,
+    phase: "agent",
+    startedAt: Date.now() - 1,
+  });
+  host.handlers.set("media.document.set", async (params) => {
+    await storage.promise;
+    assert.equal(params.baseRevision, host.revision);
+    host.document = structuredClone(params.data);
+    return { revision: ++host.revision };
+  });
+  const receipt = controller.startRender(current, "approved");
+  assert.equal(receipt.status, "preparing");
+  assert.equal(receipt.jobId, undefined);
+  assert.equal(starts, 0, "Intent must persist before any native side effect");
+  assert.deepEqual(controller.startRender(current, "approved"), receipt);
+  const reading = await controller.waitForJobs([receipt.operationId]);
+  assert.deepEqual(reading.jobs, []);
+  assert.equal(reading.operations![0]!.operationId, receipt.operationId);
+  assert.equal("requestToken" in reading.operations![0]!, false);
+  storage.resolve();
+  await until(() => starts === 1);
+  await controller.setAuto({ ...controller.auto!, phase: "waiting" });
+  const automatic = new AutomaticProducer(host, controller, {
+    getProject: () => current,
+    assertEditable() {},
+    state() {},
+  });
+  await automatic.resume();
+  assert.equal(
+    host.calls.filter((call) => call.method === "agent.task.start").length,
+    0,
+    "Accepted staging must not start an extra agent round",
+  );
+  assert.doesNotThrow(
+    () => options.assertCurrent(),
+    "Normal agent completion may wait for the accepted render",
+  );
+  staging.resolve();
+  await until(() => controller.currentJobs.some((item) => item.id === job.id));
+  const submitted = await controller.waitForJobs([receipt.operationId]);
+  assert.equal(submitted.operations![0]!.status, "submitted");
+  assert.equal(submitted.operations![0]!.jobId, job.id);
+  assert.equal(submitted.jobs[0]!.id, job.id);
+  const direct = await controller.waitForJobs([job.id]);
+  assert.equal(direct.jobs[0]!.id, job.id);
+  assert.equal(
+    direct.operations![0]!.operationId,
+    receipt.operationId,
+    "Actual render IDs also use the fast cached observation path",
+  );
+  assert.equal(controller.startRender(current, "approved").jobId, job.id);
+  assert.equal(starts, 1);
+});
+
+test("cancelled, changed and failed admission never silently submit, and interrupted reload never duplicates", async () => {
+  for (const mode of ["cancel", "revision", "run", "save"] as const) {
+    const host = new FakeHost(),
+      current = project(),
+      gate = deferred<void>();
+    let starts = 0,
+      actual = 0;
+    const controller = new ProductionController(host, {
+      getProject: () => current,
+      publishAssets: async () => {},
+      changed() {},
+      renderCanonical: async (_snapshot, options) => {
+        starts++;
+        await gate.promise;
+        options?.assertCurrent?.();
+        actual++;
+        return renderTask();
+      },
+    });
+    controllers.add(controller);
+    await controller.initialize();
+    await controller.setAuto({
+      projectId: current.id,
+      requestToken: "approved",
+      runId: "run-1",
+      prompt: "导出",
+      attempts: 1,
+      phase: "agent",
+      startedAt: Date.now() - 1,
+    });
+    if (mode === "save")
+      host.handlers.set("media.document.set", () => {
+        throw Error("save failed");
+      });
+    const receipt = controller.startRender(current, "approved");
+    if (mode !== "save") {
+      await until(() => starts === 1);
+      const interruptedDocument = structuredClone(host.document);
+      const restoredHost = new FakeHost();
+      restoredHost.document = interruptedDocument;
+      const restored = new ProductionController(restoredHost, {
+        getProject: () => current,
+        publishAssets: async () => {},
+        changed() {},
+        renderCanonical: async () => {
+          assert.fail("Never restart interrupted staging");
+        },
+      });
+      controllers.add(restored);
+      await restored.initialize();
+      assert.equal(restored.startRender(current, "approved").status, "interrupted");
+      if (mode === "cancel") {
+        await controller.cancel(receipt.operationId);
+        assert.equal(controller.renderSubmissions[0]!.status, "cancelling");
+        assert.equal(controller.hasPendingRenderSubmission, true);
+      }
+      if (mode === "revision") current.revision++;
+      if (mode === "run") await controller.setAuto({ ...controller.auto!, phase: "failed" });
+    }
+    gate.resolve();
+    await until(() => controller.renderSubmissions[0]?.status === "failed");
+    assert.equal(actual, 0);
+    assert.equal(starts, mode === "save" ? 0 : 1);
+    assert.match(controller.renderSubmissions[0]!.error!, /取消|变化|结束|save failed/);
+  }
+});
+
+test("cancellation racing native admission keeps and cancels the actual job receipt", async () => {
+  const host = new FakeHost(),
+    current = project(),
+    gate = deferred<void>(),
+    job = renderTask();
+  let started = false;
+  host.handlers.set("media.jobs.cancel", ({ id }) => {
+    assert.equal(id, job.id);
+    return { ...job, status: "cancelled" };
+  });
+  const controller = new ProductionController(host, {
+    getProject: () => current,
+    publishAssets: async () => {},
+    changed() {},
+    renderCanonical: async () => {
+      started = true;
+      await gate.promise;
+      host.jobs.set(job.id, { ...job, type: "render" });
+      return job;
+    },
+  });
+  controllers.add(controller);
+  await controller.initialize();
+  const receipt = controller.startRender(current, "approved");
+  await until(() => started);
+  await controller.cancel(receipt.operationId);
+  gate.resolve();
+  await until(() => host.calls.some((call) => call.method === "media.jobs.cancel"));
+  assert.equal(controller.renderSubmissions[0]!.jobId, job.id);
+  assert.equal(
+    controller.renderSubmissions[0]!.status,
+    "submitted",
+    "An accepted native job remains a real job even after cancellation was requested",
+  );
+  assert.ok(controller.currentJobs.some((item) => item.id === job.id));
+});
+
+test("bounded render receipts retire finished admissions without losing real task bindings", async () => {
+  const host = new FakeHost(),
+    current = project(),
+    gate = deferred<void>();
+  const submissions = Array.from({ length: 100 }, (_, index) => ({
+    accepted: true,
+    operationId: `render-${crypto.randomUUID()}`,
+    projectId: current.id,
+    revision: 0,
+    status: "submitted",
+    createdAt: index,
+    updatedAt: index,
+    requestToken: `older-${index}`,
+    jobId: `job-render-${index}`,
+  }));
+  host.document = {
+    schemaVersion: 1,
+    bindings: Object.fromEntries(
+      submissions.map((item) => [
+        `${item.jobId}:${current.id}`,
+        { jobId: item.jobId, projectId: current.id, purpose: "render", consumed: true },
+      ]),
+    ),
+    auto: null,
+    renderSubmissions: submissions,
+  };
+  const controller = new ProductionController(host, {
+    getProject: () => current,
+    publishAssets: async () => {},
+    changed() {},
+    renderCanonical: async (_project, options) => {
+      await gate.promise;
+      options?.assertCurrent?.();
+      return renderTask();
+    },
+  });
+  controllers.add(controller);
+  await controller.initialize();
+  const receipt = controller.startRender(current, "current");
+  assert.equal(controller.renderSubmissions.length, 100);
+  assert.ok(controller.renderSubmissions.some((item) => item.operationId === receipt.operationId));
+  assert.equal(
+    controller.renderSubmissions.some((item) => item.operationId === submissions[0]!.operationId),
+    false,
+  );
+  await until(() =>
+    host.document.renderSubmissions.some((item: any) => item.operationId === receipt.operationId),
+  );
+  assert.equal(
+    Object.keys(host.document.bindings).length,
+    100,
+    "Native jobs stay discoverable after old admission receipts are retired",
+  );
+  await controller.cancel(receipt.operationId);
+  gate.resolve();
+  await until(
+    () =>
+      controller.renderSubmissions.find((item) => item.operationId === receipt.operationId)
+        ?.status === "failed",
+  );
+});
 function project(id = "project-a"): Project {
   const value = createProject("测试制作");
   value.id = id;

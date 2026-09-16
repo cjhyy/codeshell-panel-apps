@@ -1,4 +1,8 @@
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
+import {
+  enterLegacyProduction,
+  readSavedLegacyProject,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
@@ -260,6 +264,7 @@ async function openPage({ host = true, width = 1440, workflow } = {}) {
     { seed, sourceId, host, workflow },
   );
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   if (host)
     await page.waitForFunction(
@@ -359,14 +364,12 @@ test(
       assert.deepEqual(after.project.workflow, sheet);
       for (const key of ["assets", "clips", "audioClips", "captions"])
         assert.deepEqual(after.project[key], before[key]);
-      assert.deepEqual(
-        await page.evaluate(() => window.__documents["video-studio-current"].data),
-        after.project,
-      );
+      assert.deepEqual(await readSavedLegacyProject(page), after.project);
       await page.evaluate(() =>
         window.__completeTask(window.__documents["video-studio-production"].data.auto.taskId),
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(() => window.__panelTools?.read_video_project().project.workflow);
       await page.locator('[data-tab="ai"]').click();
       await page.locator("details.workflow-summary summary").click();

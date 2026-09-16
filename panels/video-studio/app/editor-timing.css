@@ -1,0 +1,191 @@
+.editor-timing {
+  color: #e1e9f4;
+  background: #111722;
+  font:
+    13px/1.5 system-ui,
+    sans-serif;
+  padding: 12px;
+  overflow: auto;
+  max-height: 100%;
+  box-sizing: border-box;
+  min-width: 280px;
+  color-scheme: dark;
+}
+.editor-timing * {
+  box-sizing: border-box;
+}
+.etime-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.etime-header strong {
+  font-size: 15px;
+}
+.etime-header span,
+.etime-note {
+  color: #98a9bf;
+  font-size: 12px;
+}
+.etime-section {
+  border-top: 1px solid #293447;
+  padding: 10px 0;
+}
+.etime-section > summary,
+.etime-curve > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 3px 0;
+}
+.etime-body {
+  padding-top: 9px;
+}
+.editor-timing fieldset {
+  padding: 0;
+  margin: 0;
+  border: 0;
+  min-width: 0;
+}
+.editor-timing fieldset:disabled {
+  opacity: 0.5;
+}
+.etime-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+.etime-selection {
+  margin: 0 0 10px;
+  color: #d4e8f0;
+  overflow-wrap: anywhere;
+}
+.etime-field {
+  display: grid;
+  grid-template-columns: minmax(92px, 1fr) minmax(110px, 1.4fr);
+  align-items: center;
+  gap: 10px;
+  margin: 9px 0;
+}
+.editor-timing input[type="number"],
+.editor-timing select {
+  width: 100%;
+  min-width: 0;
+  color: #e8f0f8;
+  background: #1c2636;
+  border: 1px solid #39475d;
+  border-radius: 6px;
+  padding: 7px 8px;
+  font: inherit;
+}
+.editor-timing input:focus-visible,
+.editor-timing select:focus-visible,
+.editor-timing button:focus-visible,
+.editor-timing summary:focus-visible {
+  outline: 2px solid #72d5c9;
+  outline-offset: 2px;
+}
+.editor-timing button {
+  cursor: pointer;
+  min-height: 33px;
+  border-radius: 6px;
+  border: 1px solid #3a4c63;
+  background: #223148;
+  color: #e4edf9;
+  font: inherit;
+  padding: 6px 10px;
+  margin: 5px 3px 5px 0;
+}
+.editor-timing button:hover {
+  background: #2e405b;
+}
+.editor-timing button.etime-primary {
+  background: #26766d;
+  border-color: #3a9c8e;
+  color: #f2fffa;
+}
+.editor-timing button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.etime-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.etime-check input {
+  accent-color: #67cfc0;
+}
+.etime-note {
+  margin: 7px 0 10px;
+}
+.etime-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.etime-error {
+  background: #402127;
+  color: #ffd2d7;
+  border: 1px solid #76414b;
+  border-radius: 6px;
+  padding: 9px;
+  overflow-wrap: anywhere;
+}
+.etime-curve {
+  margin-top: 15px;
+  background: #151f2d;
+  border-radius: 8px;
+  padding: 9px;
+}
+.etime-curve svg {
+  width: 100%;
+  display: block;
+  background: #0d1520;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.etime-curve svg text {
+  font-size: 9px;
+  fill: #aebdd1;
+}
+.etime-curve table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  font-size: 11px;
+}
+.etime-curve th {
+  font-weight: 500;
+  text-align: left;
+  color: #adbed2;
+  padding: 4px 2px;
+}
+.etime-curve th:nth-child(1),
+.etime-curve th:nth-child(2) {
+  width: 28%;
+}
+.etime-curve th:nth-child(3) {
+  width: 21%;
+}
+.etime-curve td {
+  padding: 3px 2px;
+  overflow-wrap: anywhere;
+}
+.etime-curve input[type="number"] {
+  padding: 5px 3px;
+  font-size: 11px;
+}
+.etime-curve td button {
+  min-height: 26px;
+  padding: 2px 6px;
+  margin: 1px;
+}
+.etime-curve-body {
+  padding-top: 5px;
+}

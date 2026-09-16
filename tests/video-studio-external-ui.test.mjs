@@ -1,3 +1,4 @@
+import { enterLegacyProduction } from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
@@ -11,11 +12,10 @@ import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 
 test("referenced original previews, retains rough cuts across fresh browser contexts, and reconnects without a capture or upload", async () => {
-  if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
-    const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
-  }
   const temp = await mkdtemp(join(tmpdir(), "video-reference-ui-"));
+  const [projectBuild] = selectProjects(await discoverProjects(), "video-studio");
+  const isolatedOutput = join(temp, "package");
+  await buildProject({ ...projectBuild, output: isolatedOutput }, { log: false });
   const original = join(temp, "original.mp4"),
     relocated = join(temp, "relocated.mp4");
   const result = spawnSync(
@@ -58,7 +58,7 @@ test("referenced original previews, retains rough cuts across fresh browser cont
     errors = [];
   let location = original,
     pickerLocation = original;
-  const output = resolve("panels/video-studio/app");
+  const output = resolve(isolatedOutput, "app");
   const server = createServer(async (request, response) => {
     try {
       const pathname = new URL(request.url, "http://test").pathname;
@@ -118,7 +118,12 @@ test("referenced original previews, retains rough cuts across fresh browser cont
       if (method === "media.document.set") {
         const old = documents.get(params.key) ?? { revision: 0 };
         assert.equal(params.baseRevision, old.revision);
-        const next = { revision: old.revision + 1, data: params.data };
+        const next = {
+          revision: old.revision + 1,
+          data: params.data,
+          label: params.label,
+          updatedAt: Date.now(),
+        };
         documents.set(params.key, structuredClone(next));
         return next;
       }
@@ -139,7 +144,19 @@ test("referenced original previews, retains rough cuts across fresh browser cont
         location = pickerLocation;
         return { references: [reference] };
       }
-      if (method === "resources.references.get") return { reference };
+      if (method === "resources.references.get") {
+        const present = await stat(location).catch(() => null);
+        return {
+          reference: {
+            ...reference,
+            state: !present
+              ? "missing"
+              : present.ino === identity.ino && present.dev === identity.dev
+                ? "available"
+                : "changed",
+          },
+        };
+      }
       throw new Error(`Unexpected reference workflow call: ${method}`);
     });
     await page.addInitScript(() => {
@@ -181,6 +198,7 @@ test("referenced original previews, retains rough cuts across fresh browser cont
       };
     });
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () =>
         document
@@ -229,6 +247,10 @@ test("referenced original previews, retains rough cuts across fresh browser cont
       () => document.querySelectorAll(".asset-card:not(.missing)").length === 1,
     );
     assert.deepEqual((await project()).roughCuts, kept.roughCuts);
+    await page.locator(`[data-preview-asset="${asset.id}"]`).scrollIntoViewIfNeeded();
+    await page
+      .locator(`[data-preview-asset="${asset.id}"] .asset-thumbnail img`)
+      .waitFor({ state: "visible" });
     assert.equal(
       await page.locator(`[data-preview-asset="${asset.id}"] .asset-thumbnail img`).count(),
       1,
@@ -241,14 +263,26 @@ test("referenced original previews, retains rough cuts across fresh browser cont
     await rename(original, relocated);
     pickerLocation = relocated;
     await page.evaluate(() => {
-      const element = window.__referenceVideos.at(-1);
+      const element = window.__referenceVideos.find(
+        (video) => video.hasAttribute("src") && video.readyState >= 2 && !video.error,
+      );
+      if (!element) throw new Error("The source preview must have a real loaded decoder");
+      window.__referenceInvalidatedVideo = element;
       element.src += "?reload-after-move";
       element.load();
     });
-    await page.waitForFunction(() => !!window.__referenceVideos.at(-1)?.error);
+    await page.waitForFunction(() => !!window.__referenceInvalidatedVideo?.error);
     await page.locator(`[data-action="reconnect-media"][data-id="${asset.id}"]`).click();
     await page.waitForFunction(
-      () => window.__referenceVideos.length === 2 && !window.__referenceVideos[1].error,
+      () =>
+        !window.__referenceInvalidatedVideo.hasAttribute("src") &&
+        window.__referenceVideos.some(
+          (video) =>
+            video !== window.__referenceInvalidatedVideo &&
+            video.hasAttribute("src") &&
+            video.readyState >= 2 &&
+            !video.error,
+        ),
     );
     await pixels();
     assert.deepEqual((await project()).roughCuts, kept.roughCuts);

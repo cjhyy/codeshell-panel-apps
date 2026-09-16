@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.5.15",
+  "version": "0.6.0",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
     "zh-CN": "视频工作台"
   },
-  "description": "AI video workbench for footage and ideas, editable script and video drafts, user-approved personal narration, real transcript alignment, installable TTS engines and recoverable MP4 export.",
+  "description": "Video editor with multi-track schema-2 projects, exact rational frame rates, keyframes, speed mapping, captions, personal narration approval and recoverable native export.",
   "entry": "app/index.html",
   "icon": "image",
   "placement": "right-dock",
@@ -26,33 +26,176 @@
     "tools": [
       {
         "name": "read_video_project",
-        "description": "Read the project by default: identity, revision, requestToken, workflowMode, assets, preparation, jobs and capabilities. Use view=jobs with optional jobIds for full results and up to 8 seconds of bounded waiting; reuse IDs instead of resubmitting. Use view=voices for actual models, voices, availability and defaults. Narration approval and recording selection remain user actions.",
+        "description": "读取旧制作工程/声音/任务，或仅传 editor 读取完整 v2 工程/原生任务。editor.view=project 支持 documentView=document/defaults、identity/path/offset/limit/format；view=jobs 支持 jobIds/offset/limit/path/pageOffset/format。完整翻页到 nextOffset=null，大值沿 path 展开，极长元数据用 format=json 拼接。v2 是 240000 ticks/秒及有理帧率，不是旧30fps投影。见 editor-v2 技能。",
         "readOnly": true,
         "inputSchema": {
           "type": "object",
-          "properties": {
-            "view": {
-              "type": "string",
-              "enum": [
-                "project",
-                "jobs",
-                "voices"
-              ],
-              "description": "Defaults to project; jobs returns full task results, voices reads the live catalog."
-            },
-            "jobIds": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "maxLength": 128,
-                "minLength": 1
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "view": {
+                  "type": "string",
+                  "enum": [
+                    "project",
+                    "jobs",
+                    "voices"
+                  ],
+                  "description": "Defaults to project; jobs returns full task results, voices reads the live catalog."
+                },
+                "jobIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 128,
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "maxItems": 50,
+                  "description": "Only for view=jobs. Reuse IDs returned by production tools."
+                }
               },
-              "minItems": 1,
-              "maxItems": 50,
-              "description": "Only for view=jobs. Reuse IDs returned by production tools."
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "editor": {
+                  "type": "object",
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "path": {
+                          "type": "string",
+                          "maxLength": 4096,
+                          "description": "Exact JSON pointer returned by a previous page; empty reads the root. Escape / as ~1 and ~ as ~0. Prototype paths are rejected."
+                        },
+                        "offset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 100
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "tree",
+                            "json"
+                          ],
+                          "description": "Default tree. json pages the exact serialized value as UTF-16 text; use for complete metadata including exceptionally long object keys. Keep the same identity while joining pages."
+                        },
+                        "documentView": {
+                          "type": "string",
+                          "enum": [
+                            "document",
+                            "defaults"
+                          ]
+                        },
+                        "view": {
+                          "type": "string",
+                          "enum": [
+                            "project"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "view"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "jobIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "minItems": 1,
+                          "maxItems": 50
+                        },
+                        "offset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 100000
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 50
+                        },
+                        "path": {
+                          "type": "string",
+                          "maxLength": 4096,
+                          "description": "Exact JSON pointer returned by a previous page; empty reads the root. Escape / as ~1 and ~ as ~0. Prototype paths are rejected."
+                        },
+                        "pageOffset": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "tree",
+                            "json"
+                          ],
+                          "description": "Default tree. json pages the exact serialized value as UTF-16 text; use for complete metadata including exceptionally long object keys. Keep the same identity while joining pages."
+                        },
+                        "view": {
+                          "type": "string",
+                          "enum": [
+                            "jobs"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "view"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "editor"
+              ],
+              "additionalProperties": false
             }
-          },
-          "additionalProperties": false
+          ]
         }
       },
       {
@@ -368,268 +511,3509 @@
       },
       {
         "name": "apply_video_edit",
-        "description": "Apply atomic edits or save a workflow sheet with current projectId, requestToken and baseRevision. Initialization accepts only one initialized workflow after jobs finish. In draft mode, save script, footage and draft-narration-* captions, then workflow review to stop for user approval. In narration mode, workflow review verifies the selected recording and real transcript, replacing only temporary captions before export. Agent edits cannot grant narration approval.",
+        "description": "应用旧授权方案，或用 editor 分支操作完整 v2 工程。editor:{identity,label,steps} 使用共享剪辑、字幕、序列、多机位规则，保存成功才发布一修订，可一步撤销；限100步骤/1000操作/256KiB。另可用互斥的 editor.separation、editor.enhancement、editor.alignment、editor.sync 运行声音分离、降噪/响度、真实声音对齐和开放工程同步；后台回执不等于完成，读状态后再应用候选。禁止伪造资源、改审批或解锁；录音/制作忙锁仍适用，旁白依赖变化退回审阅。身份过期须重新规划。同步版本采用保留快照并重置剪辑撤销栈。参数和分页规则详见 editor-v2 技能。",
         "readOnly": false,
         "inputSchema": {
           "type": "object",
-          "properties": {
-            "projectId": {
-              "type": "string",
-              "maxLength": 128
-            },
-            "requestToken": {
-              "type": "string",
-              "maxLength": 128
-            },
-            "baseRevision": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "title": {
-              "type": "string",
-              "maxLength": 200
-            },
-            "explanation": {
-              "type": "string",
-              "maxLength": 2000
-            },
-            "operations": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 100,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "trim",
-                      "split",
-                      "remove",
-                      "move",
-                      "video-move",
-                      "volume",
-                      "add",
-                      "caption",
-                      "remove-caption",
-                      "settings",
-                      "audio-add",
-                      "audio-trim",
-                      "audio-split",
-                      "audio-move",
-                      "audio-volume",
-                      "audio-remove",
-                      "workflow"
-                    ]
-                  },
-                  "clipId": {
-                    "type": "string",
-                    "maxLength": 128
-                  },
-                  "assetId": {
-                    "type": "string",
-                    "maxLength": 128
-                  },
-                  "captionId": {
-                    "type": "string",
-                    "maxLength": 128
-                  },
-                  "inFrame": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "outFrame": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "atFrame": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "toIndex": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "volume": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 2
-                  },
-                  "name": {
-                    "type": "string",
-                    "maxLength": 160
-                  },
-                  "width": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 3840
-                  },
-                  "height": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 3840
-                  },
-                  "caption": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "requestToken": {
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "title": {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                "explanation": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "operations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 100,
+                  "items": {
                     "type": "object",
                     "properties": {
-                      "id": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "trim",
+                          "split",
+                          "remove",
+                          "move",
+                          "video-move",
+                          "volume",
+                          "add",
+                          "caption",
+                          "remove-caption",
+                          "settings",
+                          "audio-add",
+                          "audio-trim",
+                          "audio-split",
+                          "audio-move",
+                          "audio-volume",
+                          "audio-remove",
+                          "workflow"
+                        ]
+                      },
+                      "clipId": {
                         "type": "string",
                         "maxLength": 128
                       },
-                      "text": {
+                      "assetId": {
                         "type": "string",
-                        "maxLength": 4000
+                        "maxLength": 128
+                      },
+                      "captionId": {
+                        "type": "string",
+                        "maxLength": 128
+                      },
+                      "inFrame": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "outFrame": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "atFrame": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "toIndex": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "volume": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 2
+                      },
+                      "name": {
+                        "type": "string",
+                        "maxLength": 160
+                      },
+                      "width": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3840
+                      },
+                      "height": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3840
+                      },
+                      "caption": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "maxLength": 128
+                          },
+                          "text": {
+                            "type": "string",
+                            "maxLength": 4000
+                          },
+                          "startFrame": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "endFrame": {
+                            "type": "integer",
+                            "minimum": 1
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "text",
+                          "startFrame",
+                          "endFrame"
+                        ],
+                        "additionalProperties": false
                       },
                       "startFrame": {
                         "type": "integer",
                         "minimum": 0
                       },
-                      "endFrame": {
-                        "type": "integer",
-                        "minimum": 1
+                      "captionStyle": {
+                        "type": "string",
+                        "enum": [
+                          "classic",
+                          "bold",
+                          "minimal"
+                        ]
+                      },
+                      "workflow": {
+                        "type": "object",
+                        "properties": {
+                          "stage": {
+                            "type": "string",
+                            "enum": [
+                              "initialized",
+                              "selects",
+                              "rough-cut",
+                              "sound",
+                              "captions",
+                              "review"
+                            ]
+                          },
+                          "brief": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000
+                          },
+                          "outline": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 4000
+                          },
+                          "sources": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "assetId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "role": {
+                                  "type": "string",
+                                  "enum": [
+                                    "main",
+                                    "broll",
+                                    "voice",
+                                    "music",
+                                    "image",
+                                    "hold"
+                                  ]
+                                },
+                                "note": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 800
+                                },
+                                "inFrame": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "outFrame": {
+                                  "type": "integer",
+                                  "minimum": 1
+                                }
+                              },
+                              "required": [
+                                "assetId",
+                                "role",
+                                "note"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "nextSteps": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 12,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 500
+                            }
+                          },
+                          "blockers": {
+                            "type": "array",
+                            "maxItems": 12,
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 500
+                            }
+                          }
+                        },
+                        "required": [
+                          "stage",
+                          "brief",
+                          "outline",
+                          "sources",
+                          "nextSteps",
+                          "blockers"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "timelineMode": {
+                        "type": "string",
+                        "enum": [
+                          "magnetic",
+                          "free"
+                        ]
                       }
                     },
                     "required": [
-                      "id",
-                      "text",
-                      "startFrame",
-                      "endFrame"
+                      "type"
                     ],
                     "additionalProperties": false
-                  },
-                  "startFrame": {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  "captionStyle": {
-                    "type": "string",
-                    "enum": [
-                      "classic",
-                      "bold",
-                      "minimal"
-                    ]
-                  },
-                  "workflow": {
-                    "type": "object",
-                    "properties": {
-                      "stage": {
-                        "type": "string",
-                        "enum": [
-                          "initialized",
-                          "selects",
-                          "rough-cut",
-                          "sound",
-                          "captions",
-                          "review"
-                        ]
-                      },
-                      "brief": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 2000
-                      },
-                      "outline": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4000
-                      },
-                      "sources": {
-                        "type": "array",
-                        "maxItems": 100,
-                        "items": {
+                  }
+                }
+              },
+              "required": [
+                "projectId",
+                "requestToken",
+                "baseRevision",
+                "title",
+                "operations"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "editor": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
                           "type": "object",
                           "properties": {
-                            "assetId": {
+                            "documentId": {
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 128
                             },
-                            "role": {
-                              "type": "string",
-                              "enum": [
-                                "main",
-                                "broll",
-                                "voice",
-                                "music",
-                                "image",
-                                "hold"
-                              ]
-                            },
-                            "note": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 800
-                            },
-                            "inFrame": {
+                            "generation": {
                               "type": "integer",
-                              "minimum": 0
+                              "minimum": 1,
+                              "maximum": 9007199254740991
                             },
-                            "outFrame": {
+                            "revision": {
                               "type": "integer",
-                              "minimum": 1
+                              "minimum": 0,
+                              "maximum": 9007199254740991
                             }
                           },
                           "required": [
-                            "assetId",
-                            "role",
-                            "note"
+                            "documentId",
+                            "generation",
+                            "revision"
                           ],
                           "additionalProperties": false
-                        }
-                      },
-                      "nextSteps": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 12,
-                        "items": {
+                        },
+                        "label": {
                           "type": "string",
                           "minLength": 1,
-                          "maxLength": 500
+                          "maxLength": 200
+                        },
+                        "steps": {
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "operations"
+                                    ]
+                                  },
+                                  "operations": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "type": {
+                                          "type": "string",
+                                          "enum": [
+                                            "asset.update",
+                                            "sequence.add",
+                                            "sequence.update",
+                                            "sequence.remove",
+                                            "sequence.rename",
+                                            "sequence.activate",
+                                            "track.add",
+                                            "track.update",
+                                            "track.remove",
+                                            "track.reorder",
+                                            "clip.add",
+                                            "clip.update",
+                                            "marker.add",
+                                            "marker.update",
+                                            "marker.remove",
+                                            "project.rename",
+                                            "project.exportProfiles"
+                                          ]
+                                        },
+                                        "assetId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 128
+                                        },
+                                        "sequenceId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 128
+                                        },
+                                        "trackId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 128
+                                        },
+                                        "clipId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 128
+                                        },
+                                        "markerId": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 128
+                                        },
+                                        "name": {
+                                          "type": "string",
+                                          "minLength": 1,
+                                          "maxLength": 200
+                                        },
+                                        "index": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "removeClips": {
+                                          "type": "boolean"
+                                        },
+                                        "trackIds": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "minItems": 1,
+                                          "maxItems": 2000
+                                        },
+                                        "sequence": {
+                                          "type": "object"
+                                        },
+                                        "track": {
+                                          "type": "object"
+                                        },
+                                        "clip": {
+                                          "type": "object"
+                                        },
+                                        "marker": {
+                                          "type": "object"
+                                        },
+                                        "patch": {
+                                          "type": "object"
+                                        },
+                                        "profiles": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object"
+                                          },
+                                          "minItems": 0,
+                                          "maxItems": 50
+                                        }
+                                      },
+                                      "required": [
+                                        "type"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 1000
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "operations"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "split"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "time": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipId",
+                                  "time"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "trim"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "localStart": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "localEnd": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipId",
+                                  "localStart",
+                                  "localEnd"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "timing"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000
+                                  },
+                                  "action": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "speed"
+                                            ]
+                                          },
+                                          "rate": {
+                                            "type": "number",
+                                            "minimum": 0.05,
+                                            "maximum": 100
+                                          },
+                                          "preservePitch": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "rate"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "map"
+                                            ]
+                                          },
+                                          "timeMap": {
+                                            "type": "object",
+                                            "properties": {
+                                              "points": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "time": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
+                                                    },
+                                                    "source": {
+                                                      "type": "integer",
+                                                      "minimum": 0,
+                                                      "maximum": 9007199254740991
+                                                    }
+                                                  },
+                                                  "required": [
+                                                    "time",
+                                                    "source"
+                                                  ],
+                                                  "additionalProperties": false
+                                                },
+                                                "minItems": 2,
+                                                "maxItems": 10000
+                                              }
+                                            },
+                                            "required": [
+                                              "points"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "timeMap"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "reverse"
+                                            ]
+                                          }
+                                        },
+                                        "required": [
+                                          "kind"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "freeze"
+                                            ]
+                                          },
+                                          "time": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "duration": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "time",
+                                          "duration"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "keep-left",
+                                              "keep-right"
+                                            ]
+                                          },
+                                          "time": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "time"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  },
+                                  "options": {
+                                    "type": "object",
+                                    "properties": {
+                                      "ripple": {
+                                        "type": "boolean"
+                                      },
+                                      "removeTransitions": {
+                                        "type": "boolean"
+                                      },
+                                      "detachCaptions": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "move"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000
+                                  },
+                                  "options": {
+                                    "type": "object",
+                                    "properties": {
+                                      "delta": {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "trackId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128
+                                      },
+                                      "anchorClipId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128
+                                      },
+                                      "direction": {
+                                        "type": "string",
+                                        "enum": [
+                                          "previous",
+                                          "next"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "delta"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds",
+                                  "options"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "remove"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "transition"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "fromClipId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "toClipId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "options": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "dissolve",
+                                          "fade-black",
+                                          "wipe-left",
+                                          "wipe-right",
+                                          "push-left",
+                                          "push-right"
+                                        ]
+                                      },
+                                      "duration": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "placement": {
+                                        "type": "string",
+                                        "enum": [
+                                          "ripple",
+                                          "overlap"
+                                        ]
+                                      },
+                                      "remove": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "kind",
+                                      "duration"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "fromClipId",
+                                  "toClipId",
+                                  "options"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "arrange"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "options": {
+                                    "type": "object",
+                                    "properties": {
+                                      "mode": {
+                                        "type": "string",
+                                        "enum": [
+                                          "magnetic",
+                                          "free"
+                                        ]
+                                      },
+                                      "trackId": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128
+                                      },
+                                      "compact": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "mode"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "options"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "group"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "ungroup"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "sequence"
+                                    ]
+                                  },
+                                  "action": {
+                                    "type": "object",
+                                    "properties": {
+                                      "kind": {
+                                        "type": "string",
+                                        "enum": [
+                                          "create"
+                                        ]
+                                      },
+                                      "name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 200
+                                      },
+                                      "width": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                      },
+                                      "height": {
+                                        "type": "integer",
+                                        "minimum": 1
+                                      },
+                                      "frameRate": {
+                                        "type": "object",
+                                        "properties": {
+                                          "numerator": {
+                                            "type": "integer",
+                                            "minimum": 1
+                                          },
+                                          "denominator": {
+                                            "type": "integer",
+                                            "minimum": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "numerator",
+                                          "denominator"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "background": {
+                                        "type": "string"
+                                      },
+                                      "activate": {
+                                        "type": "boolean"
+                                      }
+                                    },
+                                    "required": [
+                                      "kind",
+                                      "name",
+                                      "width",
+                                      "height",
+                                      "frameRate"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "sequence"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "action": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "rename"
+                                            ]
+                                          },
+                                          "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 200
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "name"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "duplicate"
+                                            ]
+                                          },
+                                          "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 200
+                                          },
+                                          "activate": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "nest"
+                                            ]
+                                          },
+                                          "childSequenceId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "at": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "trackId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "childSequenceId",
+                                          "at"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "compound"
+                                            ]
+                                          },
+                                          "clipIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          },
+                                          "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 200
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipIds",
+                                          "name"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "unpack"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "remove"
+                                            ]
+                                          }
+                                        },
+                                        "required": [
+                                          "kind"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "captions"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "action": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "import-srt"
+                                            ]
+                                          },
+                                          "text": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 262144
+                                          },
+                                          "trackId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "text"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "from-transcripts"
+                                            ]
+                                          },
+                                          "transcripts": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "assetId": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                },
+                                                "segments": {
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "id": {
+                                                        "anyOf": [
+                                                          {
+                                                            "type": "number"
+                                                          },
+                                                          {
+                                                            "type": "string",
+                                                            "maxLength": 128
+                                                          }
+                                                        ]
+                                                      },
+                                                      "text": {
+                                                        "type": "string",
+                                                        "minLength": 1,
+                                                        "maxLength": 262144
+                                                      },
+                                                      "start": {
+                                                        "type": "number",
+                                                        "minimum": 0
+                                                      },
+                                                      "end": {
+                                                        "type": "number",
+                                                        "exclusiveMinimum": 0
+                                                      },
+                                                      "words": {
+                                                        "type": "array",
+                                                        "items": {
+                                                          "type": "object",
+                                                          "properties": {
+                                                            "text": {
+                                                              "type": "string",
+                                                              "minLength": 1,
+                                                              "maxLength": 262144
+                                                            },
+                                                            "start": {
+                                                              "type": "number",
+                                                              "minimum": 0
+                                                            },
+                                                            "end": {
+                                                              "type": "number",
+                                                              "exclusiveMinimum": 0
+                                                            },
+                                                            "probability": {
+                                                              "type": "number",
+                                                              "minimum": 0,
+                                                              "maximum": 1
+                                                            }
+                                                          },
+                                                          "required": [
+                                                            "text",
+                                                            "start",
+                                                            "end"
+                                                          ],
+                                                          "additionalProperties": false
+                                                        },
+                                                        "minItems": 0,
+                                                        "maxItems": 100000
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "text",
+                                                      "start",
+                                                      "end"
+                                                    ],
+                                                    "additionalProperties": false
+                                                  },
+                                                  "minItems": 0,
+                                                  "maxItems": 100000
+                                                }
+                                              },
+                                              "required": [
+                                                "assetId",
+                                                "segments"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          },
+                                          "trackId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "assetIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          },
+                                          "wordHighlight": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "transcripts"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "text"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "text": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 262144
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId",
+                                          "text"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "style"
+                                            ]
+                                          },
+                                          "clipIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          },
+                                          "patch": {
+                                            "type": "object",
+                                            "properties": {
+                                              "fontFamily": {
+                                                "type": "string"
+                                              },
+                                              "color": {
+                                                "type": "string"
+                                              },
+                                              "strokeColor": {
+                                                "type": "string"
+                                              },
+                                              "background": {
+                                                "type": "string"
+                                              },
+                                              "highlightColor": {
+                                                "type": "string"
+                                              },
+                                              "fontSize": {
+                                                "type": "number"
+                                              },
+                                              "fontWeight": {
+                                                "type": "number"
+                                              },
+                                              "strokeWidth": {
+                                                "type": "number"
+                                              },
+                                              "backgroundRadius": {
+                                                "type": "number"
+                                              },
+                                              "padding": {
+                                                "type": "number"
+                                              },
+                                              "lineHeight": {
+                                                "type": "number"
+                                              },
+                                              "letterSpacing": {
+                                                "type": "number"
+                                              },
+                                              "maxWidth": {
+                                                "type": "number"
+                                              },
+                                              "italic": {
+                                                "type": "boolean"
+                                              },
+                                              "layout": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "box",
+                                                  "caption-stack"
+                                                ]
+                                              },
+                                              "align": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "left",
+                                                  "center",
+                                                  "right"
+                                                ]
+                                              },
+                                              "animation": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "none",
+                                                  "fade",
+                                                  "typewriter",
+                                                  "word-highlight"
+                                                ]
+                                              },
+                                              "shadow": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "color": {
+                                                    "type": "string"
+                                                  },
+                                                  "blur": {
+                                                    "type": "number"
+                                                  },
+                                                  "x": {
+                                                    "type": "number"
+                                                  },
+                                                  "y": {
+                                                    "type": "number"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "color",
+                                                  "blur",
+                                                  "x",
+                                                  "y"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipIds",
+                                          "patch"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "translate"
+                                            ]
+                                          },
+                                          "clipIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          },
+                                          "language": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 80
+                                          },
+                                          "mode": {
+                                            "type": "string",
+                                            "enum": [
+                                              "bilingual",
+                                              "translated"
+                                            ]
+                                          },
+                                          "translations": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                },
+                                                "text": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 262144
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "text"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipIds",
+                                          "language",
+                                          "mode",
+                                          "translations"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "detach"
+                                            ]
+                                          },
+                                          "clipIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipIds"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "multicam"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "action": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "create"
+                                            ]
+                                          },
+                                          "assetIds": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 128
+                                            },
+                                            "minItems": 2,
+                                            "maxItems": 32
+                                          },
+                                          "at": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 200
+                                          },
+                                          "offsets": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                              "type": "integer",
+                                              "minimum": -20736000000,
+                                              "maximum": 20736000000
+                                            }
+                                          },
+                                          "audioAssetId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "trackId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "assetIds",
+                                          "at",
+                                          "name"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "angles"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "angles": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                },
+                                                "name": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 200
+                                                },
+                                                "assetId": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                },
+                                                "offset": {
+                                                  "type": "integer",
+                                                  "minimum": -20736000000,
+                                                  "maximum": 20736000000
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "name",
+                                                "assetId",
+                                                "offset"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "minItems": 2,
+                                            "maxItems": 32
+                                          },
+                                          "audioAngleId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "trimToCommonRange": {
+                                            "type": "boolean"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "cut"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "time": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "angleId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId",
+                                          "time",
+                                          "angleId"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "switches"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "switches": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "time": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "angleId": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                }
+                                              },
+                                              "required": [
+                                                "time",
+                                                "angleId"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId",
+                                          "switches"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
+                                              "record"
+                                            ]
+                                          },
+                                          "clipId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "start": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "end": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "cuts": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "time": {
+                                                  "type": "integer",
+                                                  "minimum": 0,
+                                                  "maximum": 9007199254740991
+                                                },
+                                                "angleId": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 128
+                                                }
+                                              },
+                                              "required": [
+                                                "time",
+                                                "angleId"
+                                              ],
+                                              "additionalProperties": false
+                                            },
+                                            "minItems": 1,
+                                            "maxItems": 2000
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "clipId",
+                                          "start",
+                                          "end",
+                                          "cuts"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "duplicate"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "clipIds": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 128
+                                    },
+                                    "minItems": 1,
+                                    "maxItems": 2000,
+                                    "uniqueItems": true
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "clipIds"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "marker"
+                                    ]
+                                  },
+                                  "sequenceId": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "action": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "action": {
+                                            "type": "string",
+                                            "enum": [
+                                              "add"
+                                            ]
+                                          },
+                                          "marker": {
+                                            "type": "object",
+                                            "properties": {
+                                              "id": {
+                                                "type": "string",
+                                                "minLength": 1,
+                                                "maxLength": 128
+                                              },
+                                              "time": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "duration": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "name": {
+                                                "type": "string",
+                                                "maxLength": 200
+                                              },
+                                              "note": {
+                                                "type": "string",
+                                                "maxLength": 20000
+                                              },
+                                              "color": {
+                                                "type": "string",
+                                                "maxLength": 32
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "time",
+                                              "duration",
+                                              "name",
+                                              "note",
+                                              "color"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "action",
+                                          "marker"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "action": {
+                                            "type": "string",
+                                            "enum": [
+                                              "update"
+                                            ]
+                                          },
+                                          "markerId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          },
+                                          "patch": {
+                                            "type": "object",
+                                            "properties": {
+                                              "time": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "duration": {
+                                                "type": "integer",
+                                                "minimum": 0,
+                                                "maximum": 9007199254740991
+                                              },
+                                              "name": {
+                                                "type": "string",
+                                                "maxLength": 200
+                                              },
+                                              "note": {
+                                                "type": "string",
+                                                "maxLength": 20000
+                                              },
+                                              "color": {
+                                                "type": "string",
+                                                "maxLength": 32
+                                              }
+                                            },
+                                            "required": [],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "required": [
+                                          "action",
+                                          "markerId",
+                                          "patch"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "action": {
+                                            "type": "string",
+                                            "enum": [
+                                              "remove"
+                                            ]
+                                          },
+                                          "markerId": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 128
+                                          }
+                                        },
+                                        "required": [
+                                          "action",
+                                          "markerId"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "sequenceId",
+                                  "action"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "minItems": 1,
+                          "maxItems": 100
                         }
                       },
-                      "blockers": {
-                        "type": "array",
-                        "maxItems": 12,
-                        "items": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 500
-                        }
-                      }
+                      "required": [
+                        "identity",
+                        "label",
+                        "steps"
+                      ],
+                      "additionalProperties": false
                     },
-                    "required": [
-                      "stage",
-                      "brief",
-                      "outline",
-                      "sources",
-                      "nextSteps",
-                      "blockers"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "timelineMode": {
-                    "type": "string",
-                    "enum": [
-                      "magnetic",
-                      "free"
-                    ]
-                  }
-                },
-                "required": [
-                  "type"
-                ],
-                "additionalProperties": false
-              }
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "separation": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "status"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "refresh"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "setup"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "start"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "resume"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "retry"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "jobs"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "offset": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 100000
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "apply"
+                                  ]
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "enum": [
+                                    "vocals",
+                                    "instrumental",
+                                    "both"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "mode"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cancel"
+                                  ]
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "separation"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "sync": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "status"
+                                  ]
+                                },
+                                "offset": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 100000
+                                },
+                                "limit": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 50
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "connect"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "refresh"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "publish"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "apply"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "reviewId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "reviewId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "recover"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "preview"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "snapshotId": {
+                                  "type": "string",
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "snapshotId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "merge"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "snapshotId": {
+                                  "type": "string",
+                                  "pattern": "^[a-f0-9]{64}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "snapshotId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "choose"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "conflictKey": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "choice": {
+                                  "type": "string",
+                                  "enum": [
+                                    "base",
+                                    "left",
+                                    "right"
+                                  ]
+                                },
+                                "reviewId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "conflictKey",
+                                "choice",
+                                "reviewId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cancel"
+                                  ]
+                                },
+                                "operationId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "operationId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "inspect"
+                                  ]
+                                },
+                                "expectedReviewId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "conflictKey": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512
+                                },
+                                "side": {
+                                  "type": "string",
+                                  "enum": [
+                                    "base",
+                                    "left",
+                                    "right"
+                                  ]
+                                },
+                                "offset": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "limit": {
+                                  "type": "integer",
+                                  "minimum": 2,
+                                  "maximum": 4096
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "expectedReviewId",
+                                "conflictKey",
+                                "side"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "keep-current"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                },
+                                "expectedApplyId": {
+                                  "type": "string",
+                                  "pattern": "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$"
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "expectedApplyId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "sync"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "alignment": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "start"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "assetIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 32
+                                },
+                                "referenceAssetId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "windowSeconds": {
+                                  "type": "integer",
+                                  "minimum": 3,
+                                  "maximum": 180
+                                },
+                                "maxOffsetSeconds": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 60
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "assetIds",
+                                "referenceAssetId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cancel"
+                                  ]
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "alignment"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "enhancement": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "status"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "refresh"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "start"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "settings": {
+                                  "type": "object",
+                                  "properties": {
+                                    "preset": {
+                                      "type": "string",
+                                      "enum": [
+                                        "light",
+                                        "balanced"
+                                      ]
+                                    },
+                                    "denoise": {
+                                      "type": "boolean"
+                                    },
+                                    "normalize": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "preset",
+                                    "denoise",
+                                    "normalize"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId",
+                                "settings"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "resume"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "retry"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "jobs"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "offset": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 100000
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "apply"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cancel"
+                                  ]
+                                },
+                                "jobId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "jobId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "enhancement"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "clipboard": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "copy"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "minItems": 1,
+                                  "maxItems": 2000,
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipIds"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cut"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipIds": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 128
+                                  },
+                                  "minItems": 1,
+                                  "maxItems": 2000,
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipIds"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "paste"
+                                  ]
+                                },
+                                "sequenceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "clipboardId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "at": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "trackId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "sequenceId",
+                                "clipboardId",
+                                "at"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "clipboard"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "portable": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "status"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "inspect"
+                                  ]
+                                },
+                                "pendingId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "path": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "offset": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                },
+                                "limit": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 4096
+                                },
+                                "format": {
+                                  "type": "string",
+                                  "enum": [
+                                    "tree",
+                                    "json"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "pendingId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "export"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "import"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "resourceId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "resourceId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "continue"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "pendingId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "pendingId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "apply"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "pendingId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "pendingId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "save"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "pendingId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "pendingId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "action": {
+                                  "type": "string",
+                                  "enum": [
+                                    "cancel"
+                                  ]
+                                },
+                                "requestId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                },
+                                "pendingId": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 128
+                                }
+                              },
+                              "required": [
+                                "action",
+                                "requestId",
+                                "pendingId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "portable"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "editor"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "projectId",
-            "requestToken",
-            "baseRevision",
-            "title",
-            "operations"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       {
@@ -821,32 +4205,151 @@
       },
       {
         "name": "render_video_project",
-        "description": "Queue H.264 MP4 production from persistent assets, original sound, independent audio and burned captions. Requires current projectId, requestToken and baseRevision; returns a background job. Disabled in draft mode. Personal-narration production requires valid user approval and completed alignment using the selected recording's real transcript. Track the job to succeeded for an actual video result.",
+        "description": "旧授权制作或完整v2导出均先返回accepted/operationId/preparing，真实任务建立后才提供jobId。旧请求保持projectId/baseRevision/requestToken审批；用read_video_project({view:\"jobs\",jobIds:[operationId]})读operations和jobs。v2传editor:{identity,sequenceId,profileId,requestId?}，先保存并检查身份，再用read_video_project({editor:{view:\"jobs\",path:\"/submissions\",format:\"json\"}})查准备回执，取得真实jobId后查询任务。同请求复用回执，不为轮询重提；v2取消传editor:{identity,action:\"cancel\",operationId}。仅succeeded且真实输出验证后才算完成。",
         "readOnly": false,
         "inputSchema": {
           "type": "object",
-          "properties": {
-            "projectId": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestToken": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "required": [
+                "projectId",
+                "baseRevision",
+                "requestToken"
+              ],
+              "additionalProperties": false
             },
-            "baseRevision": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "requestToken": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
+            {
+              "type": "object",
+              "properties": {
+                "editor": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "sequenceId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "profileId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        },
+                        "requestId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "description": "同一逻辑请求使用稳定ID；重试保持ID，不得用于不同版本或预设。"
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "sequenceId",
+                        "profileId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "identity": {
+                          "type": "object",
+                          "properties": {
+                            "documentId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "generation": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "revision": {
+                              "type": "integer",
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "documentId",
+                            "generation",
+                            "revision"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "cancel"
+                          ]
+                        },
+                        "operationId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": [
+                        "identity",
+                        "action",
+                        "operationId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "editor"
+              ],
+              "additionalProperties": false
             }
-          },
-          "required": [
-            "projectId",
-            "baseRevision",
-            "requestToken"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       {
@@ -1170,6 +4673,7 @@
       }
     ],
     "skills": [
+      "agent/skills/editor-v2/SKILL.md",
       "agent/skills/video-production/SKILL.md",
       "agent/skills/tts-setup/SKILL.md",
       "agent/skills/video-init/SKILL.md",
@@ -1180,15 +4684,27 @@
   "nativeEntries": {
     "folder-scan": {
       "entry": "app/tools/folder-scan.mjs",
-      "sha256": "d89b408c3893bc4c8ed913d6d755723564ee7717accf40b57df07a4aa2763407"
+      "sha256": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25"
     },
     "voice-runtime": {
       "entry": "app/tools/voice-runtime.mjs",
-      "sha256": "e496fdb40f2a1c16569233e10e3098c195908c22aca5f0c9a7712117c1f67618"
+      "sha256": "fd6b8367a9f2d5856bc41f5ae88f1045e2043eea534a491a9685376f994b622b"
     },
     "media-runtime": {
       "entry": "app/tools/media-runtime.mjs",
-      "sha256": "c593093a4a3270b5a1174e3205cad21d856994bbbf8e6a6613bb600b29294277"
+      "sha256": "fc43bb3e6ae81df9448b1c1bb6e245f2315731a901f5a67953cf2a8ca1d70999"
+    },
+    "editor-runtime": {
+      "entry": "app/tools/editor-runtime.mjs",
+      "sha256": "fbc5584be20b861b6d679d420970fc7bf0d9f975b2c62fd62df1fb18c31f3cb7"
+    },
+    "editor-sync": {
+      "entry": "app/tools/editor-sync.mjs",
+      "sha256": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1"
+    },
+    "audio-separation": {
+      "entry": "app/tools/audio-separation.mjs",
+      "sha256": "51fb44215a63a716d3d630874c7e19e2966f32b7d4067457d257f8f3141f0c6f"
     }
   }
 }

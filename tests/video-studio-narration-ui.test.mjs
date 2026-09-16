@@ -1,3 +1,7 @@
+import {
+  enterLegacyProduction,
+  readSavedEditorDocument,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -224,24 +228,6 @@ async function openPage({ transcriptionAvailable = true } = {}) {
         persist();
         window.__events["agent.task.changed"]?.(structuredClone(tasks[id]));
       };
-      window.__completeRender = (id) => {
-        const job = jobs[id];
-        if (job?.type !== "render") throw Error("Expected a render job");
-        job.status = "succeeded";
-        job.updatedAt = Date.now();
-        job.result = {
-          asset: {
-            id: `asset-${"e".repeat(64)}`,
-            name: "Host导出结果状态夹具.mp4",
-            mimeType: "video/mp4",
-            bytes: 1024,
-            createdAt: Date.now(),
-          },
-          durationSeconds: 26,
-        };
-        persist();
-        window.__events["media.job.changed"]?.(structuredClone(job));
-      };
       window.codeshellPanel = {
         getContext: async () => ({ cwd: "/isolated/narration-ui", theme: "dark" }),
         registerTool(name, handler) {
@@ -314,7 +300,8 @@ async function openPage({ transcriptionAvailable = true } = {}) {
               ),
             };
           }
-          if (method === "media.render") return startJob("render", args);
+          if (method === "media.render")
+            throw Error("Canonical export must not use legacy media.render");
           if (method === "agent.task.start") {
             window.__taskCalls.push(structuredClone(args));
             const task = { id: `task-${crypto.randomUUID()}`, status: "running" };
@@ -335,6 +322,7 @@ async function openPage({ transcriptionAvailable = true } = {}) {
     { seed, pictureId, recordingId, transcript, transcriptionAvailable },
   );
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.waitForFunction(
     (id) => window.__panelTools?.read_video_project().preparation[id],
     recordingId,
@@ -449,6 +437,7 @@ test(
       assert.match(approved.narration.approvedFingerprint, /^[a-f0-9]{64}$/);
       assert.equal(await page.evaluate(() => window.__deviceRequests), 0);
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(() => window.__panelTools?.read_video_project().project.narration);
       await page.locator('[data-tab="ai"]').click();
       assert.deepEqual((await readState(page)).project.narration, approved.narration);
@@ -456,9 +445,22 @@ test(
       await page.locator("#narration-script").fill(script + "\n这是用户补充的新意思。");
       assert.equal(await page.locator('[data-action="record-narration"]').isDisabled(), true);
       await page.locator('[data-action="save-narration-script"]').click();
-      await page.waitForFunction(
-        () => window.__panelTools.read_video_project().project.narration.phase === "review",
-      );
+      await page
+        .waitForFunction(
+          () => window.__panelTools.read_video_project().project.narration.phase === "review",
+        )
+        .catch(async (error) => {
+          throw new Error(
+            error.message +
+              "\n" +
+              JSON.stringify(
+                await page.evaluate(() => ({
+                  toast: document.querySelector("#toast").textContent,
+                  project: window.__panelTools.read_video_project().project,
+                })),
+              ),
+          );
+        });
       const changed = (await readState(page)).project;
       assert.equal(changed.narration.approvedFingerprint, undefined);
       assert.equal(changed.narration.approvedScript, undefined);
@@ -496,6 +498,36 @@ test(
   async () => {
     const { page, context } = await openPage();
     try {
+      const initialDocument = await readSavedEditorDocument(page);
+      const sourceClip = initialDocument.sequences[0].clips.find(
+        (clip) => clip.id === "picture-clip",
+      );
+      await page.evaluate(
+        async ({ sequenceId, clipId, transform, color }) => {
+          const tools = window.__panelTools;
+          const identity = tools.read_video_project({ editor: { view: "project" } }).identity;
+          await tools.apply_video_edit({
+            editor: {
+              identity,
+              label: "保留新版画面属性",
+              steps: [
+                {
+                  kind: "operations",
+                  operations: [
+                    { type: "clip.update", sequenceId, clipId, patch: { transform, color } },
+                  ],
+                },
+              ],
+            },
+          });
+        },
+        {
+          sequenceId: initialDocument.activeSequenceId,
+          clipId: sourceClip.id,
+          transform: { ...sourceClip.transform, rotation: 17, scaleX: 0.83 },
+          color: { ...sourceClip.color, exposure: 0.4 },
+        },
+      );
       await beginDraft(page);
       await finishDraft(page);
       await approveAndBind(page);
@@ -593,13 +625,77 @@ test(
         path: resolve(artifacts, "real-recording-aligned.png"),
         fullPage: true,
       });
-      const job = await callTool(page, "render_video_project");
+      const receipt = await callTool(page, "render_video_project");
+      assert.equal(receipt.accepted, true);
+      assert.equal(receipt.status, "preparing");
+      assert.equal(receipt.jobId, undefined, "Admission never fabricates a native job ID");
+      await page.waitForFunction(async (operationId) => {
+        const state = await window.__panelTools.read_video_project({
+          view: "jobs",
+          jobIds: [operationId],
+        });
+        return state.operations?.[0]?.jobId;
+      }, receipt.operationId);
+      const job = await page.evaluate(async (operationId) => {
+        const state = await window.__panelTools.read_video_project({
+          view: "jobs",
+          jobIds: [operationId],
+        });
+        return state.jobs.find((job) => job.id === state.operations[0].jobId);
+      }, receipt.operationId);
       assert.equal(job.type, "render");
-      const renderCalls = await hostCalls(page, ["media.render"]);
-      assert.equal(renderCalls.length, 1);
-      assert.equal(renderCalls[0].args.sources["personal-recording"], recordingId);
-      assert.deepEqual(renderCalls[0].args.project.captions, aligned.captions);
-      await page.evaluate((id) => window.__completeRender(id), job.id);
+      assert.deepEqual(await hostCalls(page, ["media.render"]), []);
+      const canonical = await readSavedEditorDocument(page);
+      const requests = await page.evaluate(() => window.__editorRenderRequests);
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].document.schemaVersion, 2);
+      assert.equal(requests[0].document.id, canonical.id);
+      assert.equal(requests[0].document.revision, canonical.revision);
+      assert.deepEqual(requests[0].document.sequences, canonical.sequences);
+      const renderedSource = requests[0].document.sequences[0].clips.find(
+        (clip) => clip.id === "picture-clip",
+      );
+      assert.equal(renderedSource.transform.rotation, 17);
+      assert.equal(renderedSource.transform.scaleX, 0.83);
+      assert.equal(renderedSource.color.exposure, 0.4);
+      assert.equal(
+        requests[0].document.assets.find((asset) => asset.id === "personal-recording").resourceId,
+        recordingId,
+      );
+      const starts = await page.evaluate(() =>
+        window.__genericHostCalls
+          .filter((call) => call.method === "tasks.start" && call.args.entry === "editor-runtime")
+          .map((call) => call.args),
+      );
+      assert.deepEqual(
+        starts
+          .map((args) => args.input.request.action)
+          .filter((action) =>
+            ["stage-status", "stage-resources", "stage-document", "commit", "render"].includes(
+              action,
+            ),
+          ),
+        ["stage-status", "stage-resources", "stage-document", "commit", "render"],
+      );
+      for (const args of starts.filter(
+        (args) => args.input.request.transferId === requests[0].request.transferId,
+      )) {
+        assert.match(args.input.request.transferId, /^editor-[a-f0-9-]{36}$/);
+        assert.equal(args.recovery, "retry");
+        if (args.input.request.documentHash)
+          assert.equal(args.input.request.documentHash, requests[0].request.documentHash);
+      }
+      await page.evaluate(
+        (id) =>
+          window.__completeEditorRender(id, {
+            id: `asset-${"e".repeat(64)}`,
+            sha256: "e".repeat(64),
+            name: "Host导出结果状态夹具.mp4",
+            mimeType: "video/mp4",
+            bytes: 1024,
+          }),
+        job.id,
+      );
       await page.evaluate(() => window.__completeTask());
       await page.waitForFunction(
         () => window.__documents["video-studio-production"].data.auto.phase === "done",

@@ -219,6 +219,6 @@ export function registerProductionTools(
     const project = handlers.project();
     if (args.projectId !== project.id || args.baseRevision !== project.revision)
       throw new Error("工程已变化，请重新读取后导出");
-    return production.render(project);
+    return production.startRender(project, String(args.requestToken));
   });
 }

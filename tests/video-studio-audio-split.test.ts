@@ -161,7 +161,11 @@ test("both agent edit contracts expose audio-split with integer source frames", 
   );
   for (const name of ["propose_video_edit", "apply_video_edit"]) {
     const tool = manifest.agent.tools.find((entry: { name: string }) => entry.name === name);
-    const fields = tool.inputSchema.properties.operations.items.properties;
+    const legacy = tool.inputSchema.properties?.operations
+      ? tool.inputSchema
+      : tool.inputSchema.oneOf?.find((schema: any) => schema.properties?.operations);
+    assert.ok(legacy, `${name} retains the complete legacy edit branch`);
+    const fields = legacy.properties.operations.items.properties;
     assert.ok(fields.type.enum.includes("audio-split"), `${name} accepts audio-split`);
     assert.deepEqual(fields.atFrame, { type: "integer", minimum: 1 });
   }

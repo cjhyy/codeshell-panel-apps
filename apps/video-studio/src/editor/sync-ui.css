@@ -1,0 +1,96 @@
+.editor-sync-dialog {
+  box-sizing: border-box;
+  width: min(780px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  background: var(--surface, #20232b);
+  color: var(--text, #eee);
+  border: 1px solid #626875;
+  border-radius: 12px;
+  padding: 22px;
+  font: 14px/1.6 system-ui;
+}
+.editor-sync-dialog * {
+  box-sizing: border-box;
+}
+.editor-sync-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 21px;
+}
+.editor-sync-dialog h3 {
+  font-size: 16px;
+  margin: 16px 0 8px;
+}
+.editor-sync-dialog p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.editor-sync-dialog button,
+.editor-sync-dialog select {
+  max-width: 100%;
+  border: 1px solid #737b8b;
+  border-radius: 6px;
+  background: #303642;
+  color: inherit;
+  padding: 8px 11px;
+  font: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.editor-sync-dialog button:disabled {
+  opacity: 0.5;
+}
+.editor-sync-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.editor-sync-dialog [data-sync-apply] {
+  background: #235dc5;
+}
+.editor-sync-card {
+  border: 1px solid #505866;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.editor-sync-card[data-head="true"] {
+  border-left: 3px solid #70a5ff;
+}
+.editor-sync-card p {
+  margin: 0 0 8px;
+}
+.editor-sync-conflict {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #505866;
+  padding: 12px 0;
+}
+.editor-sync-dialog details {
+  overflow-wrap: anywhere;
+}
+.editor-sync-dialog pre {
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
+  font:
+    12px/1.5 ui-monospace,
+    monospace;
+  background: #14171d;
+  padding: 8px;
+  border-radius: 5px;
+}
+.editor-sync-note {
+  color: #afb8c9;
+}
+.editor-sync-warning {
+  color: #ffd190;
+}
+.editor-sync-dialog [role="status"] {
+  min-height: 25px;
+}
+.editor-sync-dialog::backdrop {
+  background: rgb(0 0 0 / 0.5);
+}

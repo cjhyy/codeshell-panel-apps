@@ -32,20 +32,17 @@ import {
 import {
   panel,
   setPanelBridge,
-  loadProject,
-  saveProject,
-  archiveProject,
-  listArchivedProjects,
   download,
   parseProposal,
   parseTaskProposal,
   type Proposal,
   type PanelTask,
+  type PanelBridge,
   enablePersistentStorage,
   hasPersistentStorage,
 } from "./host";
 
-import { ProductionController, type MediaJob } from "./production";
+import { ProductionController, captionSourceAssetIds, type MediaJob } from "./production";
 import { createProductionUI } from "./production-ui";
 import { AutomaticProducer } from "./automatic";
 import { registerProductionTools, registerProjectReadTool } from "./production-tools";
@@ -82,8 +79,60 @@ import {
 import { buildNarrationAlignment } from "./narration-alignment";
 import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
-import { createExternalMediaAccess, isExternalMedia } from "./external-media";
+import { createExternalMediaAccess, isExternalMedia, isResourceId } from "./external-media";
 import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
+import { EditorSession, type SessionIdentity } from "./editor/session";
+import { EditorWorkspace } from "./editor/workspace-ui";
+import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
+import {
+  projectLegacyView,
+  applyLegacyProjectChange,
+  type LegacyProjectView,
+} from "./editor/legacy-adapter";
+import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-storage";
+import type { EditorDocument } from "./editor/types";
+import { applyEditorOperations, type EditorOperation } from "./editor/operations";
+import { sequenceDuration } from "./editor/validation";
+import {
+  createEditorTaskBridge,
+  isEditorDemoNarration,
+  EDITOR_DEMO_NARRATION_SHA,
+  type EditorTaskSnapshot,
+  type PreparedEditorAudio,
+} from "./editor/task-bridge";
+import { compileAudioPlan } from "./editor/audio-plan";
+import { loadEditorPreviewAudio } from "./editor/resource-audio";
+import { EditorExportJobs } from "./editor/jobs-ui";
+import { EditorImportUI } from "./editor/import-ui";
+import { EditorSourcePreviews } from "./editor/source-previews";
+import { EditorPortableUI } from "./editor/portable-ui";
+import { EditorSyncUI } from "./editor/sync-ui";
+import { createCaptionController, type CaptionController } from "./editor/caption-controller";
+import { createCaptionServices } from "./editor/caption-services";
+import { EditorCaptionsUI } from "./editor/captions-ui";
+import { createAudioSeparationBridge } from "./editor/separation-bridge";
+import {
+  createSeparationController,
+  type SeparationController,
+} from "./editor/separation-controller";
+import { EditorSeparationUI } from "./editor/separation-ui";
+import { createAudioEnhancementBridge } from "./editor/audio-enhancement-bridge";
+import {
+  createAudioEnhancementController,
+  type AudioEnhancementController,
+} from "./editor/audio-enhancement-controller";
+import { EditorAudioEnhancementUI } from "./editor/audio-enhancement-ui";
+import { enhancedEditorAsset } from "./editor/audio-enhancement";
+import { planPublishVoiceover } from "./editor/voiceover-publication";
+import { uploadEditorResource } from "./editor/resource-upload";
+import { createEditorAgentTools } from "./editor/agent-tools";
+import { reconcileEditorProduction } from "./editor/production-guard";
+import {
+  createExportPresets,
+  validateExportProfile,
+  type ExportProfile,
+} from "./editor/export-settings";
+import { createPanelRuntime, taskValue } from "./sdk/panel-runtime";
 
 // Older guide links changed the entry URL, which the Host correctly rejects
 // for media capture. Recover only our known legacy anchors before using it.
@@ -185,8 +234,47 @@ window.addEventListener("pagehide", () => timelineMenu.destroy(), { once: true }
 let zoom = 36;
 let snapping = true;
 let search = "";
-let history: Project[] = [];
-let future: Project[] = [];
+let editorSession: EditorSession | undefined;
+let editorStorage: EditorHostStorage | undefined;
+let editorWorkspace: EditorWorkspace | undefined;
+let editorTasks: ReturnType<typeof createEditorTaskBridge> | undefined;
+let editorExportJobs: EditorExportJobs | undefined;
+let editorImportUI: EditorImportUI | undefined;
+let editorSourcePreviews: EditorSourcePreviews | undefined;
+let editorPortableUI: EditorPortableUI | undefined;
+let editorSyncUI: EditorSyncUI | undefined;
+let editorCaptionsUI: EditorCaptionsUI | undefined;
+let editorCaptions: CaptionController | undefined;
+let editorCaptionServices: ReturnType<typeof createCaptionServices> | undefined;
+let editorSeparationBridge: ReturnType<typeof createAudioSeparationBridge> | undefined;
+let editorSeparation: SeparationController | undefined;
+let editorSeparationUI: EditorSeparationUI | undefined;
+let editorAudioEnhancementBridge: ReturnType<typeof createAudioEnhancementBridge> | undefined;
+let editorAudioEnhancement: AudioEnhancementController | undefined;
+let editorAudioEnhancementUI: EditorAudioEnhancementUI | undefined;
+let disposeEditorAgentTools: (() => void) | undefined;
+let editorAgentTools: ReturnType<typeof createEditorAgentTools> | undefined;
+let preparedNative:
+  | { key: string; snapshot: EditorTaskSnapshot; audio?: PreparedEditorAudio }
+  | undefined;
+const exportTransfers = new Map<string, { transferId: string; snapshot?: EditorTaskSnapshot }>();
+const editorProxyResources = new Map<string, { sourceKey: string; resourceId: string }>();
+const editorDocumentKey = (doc: EditorDocument, sequenceId: string) =>
+  `${doc.id}:${doc.revision}:${sequenceId}`;
+const editorSourceKey = (asset: EditorDocument["assets"][number]) =>
+  JSON.stringify([
+    asset.resourceId ?? asset.id,
+    asset.fingerprint ?? "",
+    asset.duration,
+    asset.width,
+    asset.height,
+  ]);
+let legacyView: LegacyProjectView | undefined;
+let editorVisible = true;
+let legacySignature = "";
+const savedCandidates = new Map<string, string>();
+const canUndo = () => editorSession?.getState().canUndo ?? false;
+const canRedo = () => editorSession?.getState().canRedo ?? false;
 let proposal: Proposal | null = null;
 let task: PanelTask | null = null;
 let taskProjectId = "";
@@ -308,22 +396,98 @@ const folderImport = createFolderImport(
 );
 const production = new ProductionController(panel, {
   getProject: () => project,
+  renderCanonical: async (legacy, options) => {
+    assertProductionPublicationEditable();
+    if (!editorSession || !editorTasks) throw new Error("完整工程导出尚未连接");
+    const session = editorSession,
+      identity = session.getState().identity,
+      doc = session.read();
+    if (legacy.id !== doc.id || legacy.revision !== doc.revision)
+      throw new Error("工程已变化，请重新读取后导出");
+    const sequence = doc.sequences.find((item) => item.id === doc.activeSequenceId)!;
+    const profile = validateExportProfile({
+      ...createExportPresets()[0]!,
+      id: "production-current",
+      name: "当前完整序列",
+      width: sequence.width,
+      height: sequence.height,
+      frameRate: sequence.frameRate,
+    });
+    await session.flush();
+    options?.assertCurrent?.();
+    const latest = editorSession?.getState().identity;
+    if (
+      editorSession !== session ||
+      latest?.documentId !== identity.documentId ||
+      latest?.generation !== identity.generation ||
+      latest?.revision !== identity.revision
+    )
+      throw new Error("保存期间工程已变化，请重新读取后导出");
+    return (
+      await submitEditorExport(
+        doc,
+        sequence.id,
+        profile,
+        options?.signal,
+        "production",
+        options?.assertCurrent,
+      )
+    ).job;
+  },
+  captureVoiceoverOrigin: () => {
+    assertProductionPublicationEditable();
+    if (!editorSession) throw new Error("工程尚未准备好");
+    const doc = editorSession.read();
+    return { sequenceId: doc.activeSequenceId, revision: doc.revision };
+  },
+  publishVoiceover: async (projectId, result, context) => {
+    assertProductionPublicationEditable();
+    if (!editorSession || editorSession.read().id !== projectId)
+      throw new Error("配音任务属于另一个工程，请保留任务并返回对应工程");
+    const plan = planPublishVoiceover(editorSession.read(), result, context);
+    if (plan.operations.length)
+      await applyEditorDurable(
+        plan.operations,
+        editorSession.getState().identity,
+        "保存配音结果",
+        "production",
+      );
+    toast(plan.notice);
+  },
+  publishAudioEnhancement: async (projectId, result, context) => {
+    assertProductionPublicationEditable();
+    if (!editorSession || editorSession.read().id !== projectId)
+      throw new Error("优化任务属于另一个工程，请保留任务并返回对应工程");
+    const doc = editorSession.read();
+    if (!doc.assets.some((asset) => (asset.resourceId ?? asset.id) === result.sourceResourceId))
+      throw new Error("原声音已不在工程中，优化任务结果已保留，可从任务保存文件");
+    const asset = enhancedEditorAsset(result, context.asset.name),
+      existing = doc.assets.find(
+        (item) => item.resourceId === result.assetId || item.id === result.assetId,
+      );
+    if (existing) {
+      if (existing.kind !== "audio" || existing.duration !== result.duration)
+        throw new Error("已有优化素材与任务回执不一致");
+    } else
+      await applyEditorDurable(
+        [{ type: "asset.add", asset }],
+        editorSession.getState().identity,
+        "保存优化声音素材",
+        "production",
+      );
+    toast("优化声音已保存在素材库；请选择原片，在声音优化的已有任务中试听后应用");
+  },
   publishAssets: async (projectId, assets, options) => {
     if (projectId !== project.id) throw new Error("素材任务属于另一个工程，已保留任务等待恢复");
     assertEditable();
     const publication = publishProductionAssets(project, assets, options);
     if (!publication.project) return;
     const validated = reconcileNarrationEdit(project, publication.project);
-    const currentGeneration = generation,
-      revision = project.revision;
+    const currentGeneration = generation;
     aiApplying = true;
     try {
       await saveProject(validated, options?.label ?? "素材准备完成");
-      if (
-        projectId !== project.id ||
-        currentGeneration !== generation ||
-        revision !== project.revision
-      )
+      if (projectId !== project.id || currentGeneration !== generation)
         throw new Error("素材准备期间工程已变化");
     } finally {
       aiApplying = false;
@@ -447,16 +611,22 @@ const voicePreparation = createVoicePreparationUI(production, {
       throw new Error("声音库参考录音需要 3–30 秒。");
     const currentProject = project;
     const ownGeneration = generation;
-    const existing = project.assets.find((asset) => asset.kind === "audio" && asset.mediaId === mediaId);
+    const existing = project.assets.find(
+      (asset) => asset.kind === "audio" && asset.mediaId === mediaId,
+    );
     aiApplying = true;
     let next: Project | undefined;
     let reference: Asset;
     try {
-      const result = await panel.call("media.assets.get", { id: mediaId }) as {
+      const result = (await panel.call("media.assets.get", { id: mediaId })) as {
         asset: { id: string; mimeType: string; bytes: number };
       };
       const resource = result?.asset;
-      if (resource?.id !== mediaId || !resource.mimeType?.startsWith("audio/") || resource.bytes < 1)
+      if (
+        resource?.id !== mediaId ||
+        !resource.mimeType?.startsWith("audio/") ||
+        resource.bytes < 1
+      )
         throw new Error("声音库参考录音无法读取，请重新导入声音。");
       if (project !== currentProject || generation !== ownGeneration)
         throw new Error("工程已切换，声音未加入新工程。");
@@ -483,7 +653,7 @@ const voicePreparation = createVoicePreparationUI(production, {
     } finally {
       aiApplying = false;
     }
-    if (project !== currentProject || generation !== ownGeneration)
+    if (project.id !== currentProject.id || generation !== ownGeneration)
       throw new Error("工程已切换，请重新选择声音。");
     if (next) commit(next, true);
     return reference!;
@@ -514,12 +684,16 @@ async function roughCutDocumentKey(projectId: string): Promise<string> {
   return `video-studio-roughcut-ai-${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`;
 }
 async function persistRoughCutAI(snapshot: RoughCutAISnapshot | null): Promise<void> {
+  // A same-ID restore starts a different draft epoch. Failed cleanup must never revive foreign candidates.
+  const storedSnapshot = snapshot
+    ? { ...snapshot, editorEpoch: editorSession?.read().production?.roughCutEpoch ?? null }
+    : null;
   const key = await roughCutDocumentKey(snapshot?.state.projectId ?? project.id);
   const work = (roughCutWrites.get(key) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
       if (!panel) {
-        localStorage.setItem(key, JSON.stringify(snapshot));
+        localStorage.setItem(key, JSON.stringify(storedSnapshot));
         return;
       }
       let revision = roughCutRevisions.get(key);
@@ -530,7 +704,7 @@ async function persistRoughCutAI(snapshot: RoughCutAISnapshot | null): Promise<v
       const saved: any = await panel.call("media.document.set", {
         key,
         baseRevision: revision,
-        data: snapshot,
+        data: storedSnapshot,
         label: "AI 粗剪进度与候选",
       });
       roughCutRevisions.set(key, saved.revision);
@@ -548,6 +722,10 @@ async function restoreRoughCutAI(): Promise<void> {
     : { data: JSON.parse(localStorage.getItem(key) ?? "null") };
   if (ownGeneration !== generation) return;
   if (panel) roughCutRevisions.set(key, saved.revision);
+  if (
+    (saved.data?.editorEpoch ?? null) !== (editorSession?.read().production?.roughCutEpoch ?? null)
+  )
+    return;
   await roughCutAI.restore(saved.data);
 }
 const roughCutAI = new RoughCutAIController(panel, {
@@ -629,7 +807,7 @@ const roughcut = createRoughCutUI({
     } finally {
       aiApplying = false;
     }
-    if (generation !== currentGeneration || project !== current)
+    if (generation !== currentGeneration || project.id !== current.id)
       throw new Error("工程已改变，AI 候选仍保留，请重新审阅后保存");
     commit(next, true);
   },
@@ -745,7 +923,11 @@ const recording = createRecordingUI({
         try {
           await saveProject(savedProject, "保存声音参考");
         } catch (error) {
-          if (imported && library.items.get(asset.id) === imported) {
+          if (
+            imported &&
+            library.items.get(asset.id) === imported &&
+            !project.assets.some((item) => item.id === asset.id)
+          ) {
             library.release(imported);
             library.items.delete(asset.id);
           }
@@ -848,14 +1030,13 @@ const spoken = createSpokenUI({
     } finally {
       aiApplying = false;
     }
-    if (project.id !== plan.projectId || project.revision !== revision)
-      throw new Error("保存期间工程已改变");
+    if (project.id !== plan.projectId) throw new Error("保存期间工程已改变");
     commit(next, true);
   },
   undo: () => {
     void action("undo").catch(fail);
   },
-  canUndo: () => history.length > 0,
+  canUndo: () => canUndo(),
   preview: async (range) => {
     await library.enableAudio();
     await seek(range.timelineStartFrame);
@@ -880,6 +1061,43 @@ const spoken = createSpokenUI({
   },
   enhance: async (input) => {
     assertEditable();
+    if (editorSession && editorWorkspace && editorAudioEnhancement && editorAudioEnhancementUI) {
+      const doc = editorSession.read(),
+        selection = editorWorkspace.getSelection(),
+        seq = doc.sequences.find((item) => item.id === selection.sequenceId)!,
+        sources = seq.clips.filter(
+          (clip) => clip.kind === "media" && clip.assetId === input.assetId,
+        ),
+        selectedSources = sources.filter((clip) => selection.clipIds.includes(clip.id)),
+        clip =
+          selectedSources.length === 1
+            ? selectedSources[0]
+            : sources.length === 1
+              ? sources[0]
+              : undefined;
+      if (!clip) throw new Error("请在对应序列选择一个要优化的原声片段，再打开声音优化");
+      const expected = editorSession.getState().identity;
+      await editorAudioEnhancement.refresh();
+      const current = editorSession.getState().identity;
+      if (
+        expected.documentId !== current.documentId ||
+        expected.generation !== current.generation ||
+        expected.revision !== current.revision
+      )
+        throw new Error("工程已变化，请重新选择要优化的片段");
+      if (editorAudioEnhancement.getState().capability?.state !== "ready")
+        throw new Error(editorAudioEnhancement.getState().message);
+      showEditorWorkspace();
+      editorWorkspace.selectClips(seq.id, [clip.id]);
+      editorAudioEnhancementUI.open(seq.id, clip.id);
+      // The legacy action already requested processing with these settings.
+      await editorAudioEnhancement.start(seq.id, clip.id, {
+        preset: input.preset ?? "balanced",
+        denoise: input.denoise !== false,
+        normalize: input.normalize !== false,
+      });
+      return;
+    }
     await production.enhanceAudio(input.assetId, {
       preset: input.preset,
       denoise: input.denoise,
@@ -897,27 +1115,99 @@ const spoken = createSpokenUI({
 
 const { sceneDialog, versionsDialog, captionsFromTranscript, handleJobAction } = createProductionUI(
   production,
-  { project: () => project, commit, replace, restoreMedia: restoreManagedMedia, toast, render },
+  {
+    project: () => project,
+    commit,
+    replace,
+    restoreMedia: restoreManagedMedia,
+    toast,
+    render,
+    versions: () => editorStorage?.versions() ?? Promise.resolve([]),
+    readVersion: (revision) => {
+      if (!editorStorage) return Promise.reject(new Error("工程存储尚未恢复"));
+      return editorStorage.readVersion(revision);
+    },
+  },
 );
+// Preview, timeline thumbnails and legacy restoration can request the same cached
+// file concurrently. Share only an in-flight restoration in the current project;
+// replacing its Blob URL would invalidate decoders already using that URL.
+const cachedMediaRestores = new Map<
+  string,
+  { generation: number; key: string; promise: Promise<boolean> }
+>();
+function cachedMediaSourceKey(asset: Asset): string {
+  return JSON.stringify([
+    asset.id,
+    asset.kind,
+    asset.mediaId,
+    asset.size,
+    asset.lastModified,
+    asset.mimeType,
+  ]);
+}
+async function restoreCachedMedia(asset: Asset, expectedGeneration: number): Promise<boolean> {
+  const key = cachedMediaSourceKey(asset);
+  const current = () =>
+    expectedGeneration === generation &&
+    project.assets.some((value) => value.id === asset.id && cachedMediaSourceKey(value) === key);
+  if (!current()) throw new DOMException("素材或工程已变化", "AbortError");
+  if (library.items.has(asset.id)) return true;
+  const pending = cachedMediaRestores.get(asset.id);
+  if (pending?.generation === expectedGeneration && pending.key === key) return pending.promise;
+  const promise = (async () => {
+    const file = await cachedMediaFile(asset.id);
+    if (!current()) throw new DOMException("素材或工程已变化", "AbortError");
+    if (!file) return false;
+    // Recheck after IndexedDB: an explicit reconnect may have supplied this asset.
+    if (!library.items.has(asset.id)) await library.import(file, asset, { defer: true });
+    if (!current()) throw new DOMException("素材或工程已变化", "AbortError");
+    return true;
+  })();
+  const entry = { generation: expectedGeneration, key, promise };
+  cachedMediaRestores.set(asset.id, entry);
+  try {
+    return await promise;
+  } finally {
+    if (cachedMediaRestores.get(asset.id) === entry) cachedMediaRestores.delete(asset.id);
+  }
+}
 async function restoreManagedMedia(): Promise<void> {
   const currentGeneration = generation;
   for (const asset of project.assets) {
     if (!asset.mediaId && !isDemoNarration(asset)) {
-      const file = await cachedMediaFile(asset.id).catch((error) => {
-        aiMessage = String(error);
-        return null;
+      await restoreCachedMedia(asset, currentGeneration).catch((error) => {
+        if (currentGeneration === generation) aiMessage = String(error);
       });
-      if (file && currentGeneration === generation)
-        await library.import(file, asset, { defer: true }).catch(fail);
       continue;
     }
     if (currentGeneration !== generation) return;
+    if (isExternalMedia(asset.mediaId)) {
+      try {
+        const reference = await externalMedia.get(asset.mediaId!);
+        if (currentGeneration !== generation) return;
+        if (reference.state !== "available")
+          throw new Error(
+            `原文件${reference.state === "missing" ? "已移动或缺失" : "已变化"}，请重新连接：${asset.name}`,
+          );
+      } catch (error) {
+        if (currentGeneration !== generation) return;
+        const stale = library.items.get(asset.id);
+        if (stale) {
+          library.release(stale);
+          library.items.delete(asset.id);
+        }
+        aiMessage = String(error);
+        continue;
+      }
+    }
     await (
       isDemoNarration(asset) ? library.connectBuiltin(asset) : library.connectManaged(asset)
     ).catch((error) => {
       aiMessage = String(error);
     });
   }
+  if (currentGeneration === generation) editorWorkspace?.refreshMedia();
   if (currentGeneration === generation && !playback && !document.querySelector("dialog[open]"))
     render();
 }
@@ -964,8 +1254,8 @@ function views() {
     spokenMarkup: spoken.render(),
     mediaItems: library.items,
     missingAssetCount: library.missing(project).length,
-    canUndo: history.length > 0,
-    canRedo: future.length > 0,
+    canUndo: canUndo(),
+    canRedo: canRedo(),
     playing: Boolean(playback),
     connected: Boolean(panel),
     persistentStorage: hasPersistentStorage(),
@@ -1004,6 +1294,32 @@ function fail(error: unknown): void {
   toast(error instanceof Error ? error.message : String(error));
 }
 
+function reportCleanupFailure(message: string, retry: () => Promise<void>): void {
+  const warning = document.createElement("aside");
+  warning.className = "editor-cleanup-warning";
+  warning.setAttribute("role", "alert");
+  const text = document.createElement("span");
+  text.textContent = message;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.dataset.retryCleanup = "";
+  button.textContent = "重试清理";
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    void retry()
+      .then(() => warning.remove())
+      .catch((error) => {
+        text.textContent = `${message}；重试失败：${String(error)}`;
+      })
+      .finally(() => {
+        button.disabled = false;
+      });
+  });
+  warning.append(text, button);
+  document.body.append(warning);
+  toast(message);
+}
+
 async function persist(): Promise<void> {
   const version = ++saveVersion;
   saveText = "保存中…";
@@ -1027,6 +1343,21 @@ function updateSave(): void {
     $("#save-state").title = projectError;
   }
 }
+function refreshEditorSaveStatus(): void {
+  const state = editorSession?.getState();
+  if (!state) return;
+  saveText = (
+    {
+      saved: "已自动保存",
+      pending: "等待保存",
+      saving: "保存中…",
+      failed: "保存失败",
+      conflict: "版本冲突",
+    } as const
+  )[state.saveState];
+  projectError = state.error?.message ?? "";
+  updateSave();
+}
 function stop(): void {
   playback?.abort();
   playback = null;
@@ -1034,6 +1365,7 @@ function stop(): void {
 }
 
 function suspendPreview(): void {
+  editorWorkspace?.setVisible(false);
   stop();
   ++seekVersion;
   thumbnailObserver?.disconnect();
@@ -1044,14 +1376,20 @@ function suspendPreview(): void {
 window.addEventListener("pagehide", () => library.clear(), { once: true });
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) suspendPreview();
-  else if (panelVisible && productionBooted) render();
+  else if (panelVisible && productionBooted) {
+    editorWorkspace?.setVisible(editorVisible);
+    render();
+  }
 });
 panel?.on("context.changed", (payload) => {
   const visible = (payload as { visible?: boolean } | undefined)?.visible;
   if (typeof visible !== "boolean" || visible === panelVisible) return;
   panelVisible = visible;
   if (!visible) suspendPreview();
-  else if (!document.hidden && productionBooted) render();
+  else if (!document.hidden && productionBooted) {
+    editorWorkspace?.setVisible(editorVisible);
+    render();
+  }
 });
 function assertEditable(): void {
   if (storageDiscoveryError) throw new Error("工程存储尚未连接，请重新打开面板后再编辑");
@@ -1059,29 +1397,128 @@ function assertEditable(): void {
   if (aiApplying) throw new Error("正在保存自动制作版本，请稍候");
   if (exporting || mediaImporting) throw new Error("请等待当前导入或导出完成");
 }
-function commit(next: Project, alreadySaved = false, allowAlignment = false): void {
+function assertProductionPublicationEditable(): void {
   assertEditable();
-  const validated = validateProject(reconcileNarrationEdit(project, next, allowAlignment));
-  if (project.script !== validated.script) narrationScriptDraft = null;
-  stop();
-  history.push(structuredClone(project));
-  if (history.length > 80) history.shift();
-  future = [];
-  project = validated;
+  if (recording.busy) throw new Error("请先结束当前录制");
+  if (recording.hasUnsavedResult) throw new Error("请先保存或放弃本次录制结果");
+}
+function assertEditorEditable(): void {
+  assertProductionPublicationEditable();
+  if (
+    taskStarting ||
+    (production.auto?.projectId === project.id &&
+      ["preparing", "waiting", "agent"].includes(production.auto.phase))
+  )
+    throw new Error("自动制作正在处理当前工程，请等待完成或先停止制作");
+}
+function synchronizeLegacyView(): void {
+  if (!editorSession) return;
+  const doc = editorSession.read();
+  const identity = editorSession.getState().identity;
+  const signature = `${identity.documentId}:${identity.generation}:${identity.revision}`;
+  if (signature === legacySignature) return;
+  const previousSequence = legacyView?.sequenceId;
+  const previousId = project.id;
+  legacyView = projectLegacyView(doc);
+  project = structuredClone(legacyView.project);
+  legacySignature = signature;
+  if (
+    previousSequence &&
+    (previousSequence !== legacyView.sequenceId || previousId !== project.id)
+  ) {
+    generation++;
+    selected = "";
+    frame = 0;
+    narrationScriptDraft = null;
+  }
   frame = Math.min(frame, Math.max(0, duration() - 1));
   if (![...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === selected))
-    selected = project.clips[0]?.id || "";
+    selected = project.clips[0]?.id ?? "";
+}
+function legacyCandidateKey(value: Project): string {
+  return JSON.stringify(validateProject(value), (_key, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  );
+}
+function prepareLegacyCandidate(next: Project, allowAlignment: boolean) {
+  if (!editorSession || !legacyView) throw new Error("工程尚未恢复，已阻止修改");
+  const validated = validateProject(reconcileNarrationEdit(project, next, allowAlignment));
+  if (
+    next.id !== project.id ||
+    (next.revision !== project.revision + 1 &&
+      legacyCandidateKey(next) !== legacyCandidateKey(project))
+  )
+    throw new Error("工程版本已变化，请重新读取后编辑");
+  const operations = applyLegacyProjectChange(
+    editorSession.read(),
+    legacyView,
+    project,
+    validated,
+    project.revision,
+  );
+  return { operations, scriptChanged: project.script !== validated.script };
+}
+function applyLegacyCandidate(next: Project, label: string, allowAlignment: boolean): void {
+  const { operations, scriptChanged } = prepareLegacyCandidate(next, allowAlignment);
+  stop();
+  editorSession!.dispatch(operations, editorSession!.getState().identity, label);
+  if (scriptChanged) narrationScriptDraft = null;
+  synchronizeLegacyView();
+}
+async function saveProject(
+  next: Project,
+  label = "自动保存",
+  allowAlignment = false,
+): Promise<void> {
+  if (!editorSession) throw new Error("工程尚未恢复，已阻止保存");
+  const key = legacyCandidateKey(next);
+  if (key !== legacyCandidateKey(project)) {
+    const { operations, scriptChanged } = prepareLegacyCandidate(next, allowAlignment);
+    stop();
+    await editorSession.dispatchDurable(operations, editorSession.getState().identity, label);
+    if (scriptChanged) narrationScriptDraft = null;
+    synchronizeLegacyView();
+    savedCandidates.set(key, editorSession.read().id);
+    while (savedCandidates.size > 20) savedCandidates.delete(savedCandidates.keys().next().value!);
+  }
+  await editorSession.flush();
+}
+function commit(next: Project, alreadySaved = false, allowAlignment = false): void {
+  assertEditable();
+  const key = legacyCandidateKey(next);
+  if (alreadySaved && savedCandidates.get(key) === editorSession?.read().id)
+    savedCandidates.delete(key);
+  else applyLegacyCandidate(next, "编辑制作内容", allowAlignment);
+  synchronizeLegacyView();
   render();
-  if (alreadySaved) {
-    saveText = "已自动保存";
-    updateSave();
-  } else void persist();
 }
 function edit(operations: EditOperation[], baseRevision = project.revision): void {
   commit(applyOperations(project, operations, baseRevision));
 }
-async function replace(next: Project): Promise<void> {
+/** Optional upgrade for one old demo; canonical migration already validates the real document.
+ * A later v1 dialect (0.5.16) must never be rejected by this older demo-only reader. */
+function pristineLegacyDemo(value: unknown): Project | null {
+  let legacy: Project;
+  try {
+    legacy = validateProject(value);
+  } catch {
+    return null;
+  }
+  return migratePristineDemoProject(legacy);
+}
+async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promise<void> {
   assertEditable();
+  if (
+    expectedIdentity &&
+    JSON.stringify(editorSession?.getState().identity) !== JSON.stringify(expectedIdentity)
+  )
+    throw new Error("工程已变化，请重新打开工程包");
   recording.assertSafeToLeave();
   if (roughCutAI.busy) await roughCutAI.cancel();
   voiceover.stopPreview();
@@ -1090,16 +1527,22 @@ async function replace(next: Project): Promise<void> {
       ".voice-preparation-audio,.voice-preparation-reference-audio",
     )
     .forEach((audio) => audio.pause());
-  const restored = validateProject(next);
-  const validated = migratePristineDemoProject(restored) ?? restored;
+  const incoming = readEditorDocument(next);
+  const narrated =
+    (next as { schemaVersion?: number })?.schemaVersion === 1 ? pristineLegacyDemo(next) : null;
+  const validated = narrated ? migrateLegacyProject(narrated) : incoming;
   const sameProjectId = validated.id === project.id;
+  if (sameProjectId)
+    validated.production = { ...validated.production, roughCutEpoch: crypto.randomUUID() };
+  if (!editorSession || !editorStorage) throw new Error("工程存储尚未恢复");
   stop();
   const currentGeneration = generation;
   const currentRevision = project.revision;
   let previousTaskId: string | null = null;
   projectSwitching = true;
   try {
-    await archiveProject(project);
+    await editorSession.flush();
+    await editorStorage.archive(editorSession.read());
     if (currentGeneration !== generation || currentRevision !== project.revision)
       throw new Error("工程已变化，请重新打开目标工程");
     if (mediaImporting || exporting) throw new Error("请等待当前导入或导出完成");
@@ -1107,23 +1550,49 @@ async function replace(next: Project): Promise<void> {
     previousTaskId =
       task && ["queued", "running", "cancelling"].includes(task.status) ? task.id : null;
     const automaticRun = production.auto;
-    if (
+    const stopAutomatic =
       production.enabled &&
       automaticRun?.projectId === project.id &&
-      ["preparing", "agent", "waiting"].includes(automaticRun.phase)
-    ) {
-      // A portable file may reuse the same project ID. Invalidate the intent
-      // explicitly so its old Agent cannot resume against the replacement.
-      await production.setAuto({
-        ...automaticRun,
-        phase: "failed",
-        message: "工程已切换，原自动制作请求已停止；已排队媒体任务仍保留。",
-      });
-    }
-    if (sameProjectId) await roughCutAI.forgetSavedState();
-    // Archive the old project before changing any live state or autosave pointer.
+      ["preparing", "agent", "waiting"].includes(automaticRun.phase);
+    // Keep the new preview from using old source handles while replacement commits.
+    editorWorkspace?.setVisible(false);
+    if ((next as { schemaVersion?: number })?.schemaVersion === 1)
+      await editorStorage.backupLegacy(next);
+    await editorSession.replace(validated, { identity: expectedIdentity });
+    synchronizeLegacyView();
     library.clear();
-    project = validated;
+    if (stopAutomatic && automaticRun)
+      await production
+        .setAuto({
+          ...automaticRun,
+          phase: "failed",
+          message: "工程已切换，原自动制作请求已停止；已排队媒体任务仍保留。",
+        })
+        .catch((error) =>
+          reportCleanupFailure(`新工程已打开；旧任务状态保存失败：${String(error)}`, async () => {
+            if (JSON.stringify(production.auto) !== JSON.stringify(automaticRun)) return;
+            await production.setAuto({
+              ...automaticRun,
+              phase: "failed",
+              message: "工程已切换，原自动制作请求已停止；已排队媒体任务仍保留。",
+            });
+          }),
+        );
+    if (sameProjectId)
+      await roughCutAI.forgetSavedState().catch((error) => {
+        const identity = editorSession!.getState().identity;
+        reportCleanupFailure(`新工程已打开；旧粗剪草稿清理失败：${String(error)}`, async () => {
+          const current = editorSession!.getState().identity;
+          // New drafts supersede the stale record; do not erase their progress during a later retry.
+          if (
+            current.documentId !== identity.documentId ||
+            current.generation !== identity.generation ||
+            roughCutAI.state.phase !== "idle"
+          )
+            return;
+          await roughCutAI.forgetSavedState();
+        });
+      });
     narrationScriptDraft = null;
     narrationRecordingProjectId = "";
     voiceReferenceRecording = undefined;
@@ -1133,8 +1602,7 @@ async function replace(next: Project): Promise<void> {
     voiceover.resetReplacement();
     voiceover.setText(project.script ?? "");
     generation++;
-    history = [];
-    future = [];
+    savedCandidates.clear();
     frame = 0;
     sourceAssetId = "";
     mediaPreview = false;
@@ -1152,6 +1620,7 @@ async function replace(next: Project): Promise<void> {
     aiMessage = "";
   } finally {
     projectSwitching = false;
+    editorWorkspace?.setVisible(editorVisible && panelVisible && !document.hidden);
   }
   render();
   void persist();
@@ -1248,6 +1717,14 @@ function render(): void {
         }))
       : [];
   studio.innerHTML = views().shell();
+  if (editorWorkspace) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "editor-return-button";
+    back.textContent = "返回多轨编辑";
+    back.addEventListener("click", showEditorWorkspace);
+    studio.prepend(back);
+  }
   // Preserve live editors across background refreshes so input/IME events never target detached drafts.
   // Values still come from the new view, including an explicitly loaded replacement or model change.
   for (const draft of voiceEditors) {
@@ -1316,7 +1793,18 @@ function render(): void {
 }
 function draw(): void {
   const canvas = $<HTMLCanvasElement>("#preview");
-  if (canvas) renderFrame(canvas, previewProject(), library, previewFrame());
+  if (canvas && (sourcePreviewActive() || !legacyView || legacyView.renderSafe))
+    renderFrame(canvas, previewProject(), library, previewFrame());
+  else if (canvas) {
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#e3ede7";
+      ctx.font = "24px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillText("请返回多轨编辑查看完整画面", canvas.width / 2, canvas.height / 2);
+    }
+  }
 }
 
 function sourceAsset(): Asset | undefined {
@@ -1341,33 +1829,42 @@ function observeVisibleThumbnails(): void {
   const container = studio.querySelector<HTMLElement>(".library-panel");
   if (!container || tab !== "media" || !panelVisible || document.hidden) return;
   const ownGeneration = generation;
-  thumbnailObserver = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      const card = entry.target as HTMLElement;
-      if (!entry.isIntersecting) {
-        visibleThumbnailCards.delete(card);
-        continue;
+  thumbnailObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const card = entry.target as HTMLElement;
+        if (!entry.isIntersecting) {
+          visibleThumbnailCards.delete(card);
+          continue;
+        }
+        visibleThumbnailCards.add(card);
+        const id = card.dataset.asset;
+        if (!id || library.items.get(id)?.thumbnail) continue;
+        const current = () =>
+          generation === ownGeneration &&
+          card.isConnected &&
+          visibleThumbnailCards.has(card) &&
+          panelVisible &&
+          !document.hidden;
+        void library
+          .ensureThumbnail(id, current)
+          .then((thumbnail) => {
+            if (!thumbnail || !current()) return;
+            const cover = card.querySelector<HTMLElement>(".asset-thumbnail");
+            if (!cover) return;
+            const image = cover.querySelector("img") ?? document.createElement("img");
+            image.src = thumbnail;
+            image.alt = project.assets.find((asset) => asset.id === id)?.name ?? "素材封面";
+            cover.querySelector("svg")?.remove();
+            if (!image.parentElement) cover.prepend(image);
+          })
+          .catch(() => {
+            // A background cover is optional. Explicit preview reports unreadable source errors.
+          });
       }
-      visibleThumbnailCards.add(card);
-      const id = card.dataset.asset;
-      if (!id || library.items.get(id)?.thumbnail) continue;
-      const current = () =>
-        generation === ownGeneration && card.isConnected && visibleThumbnailCards.has(card) &&
-        panelVisible && !document.hidden;
-      void library.ensureThumbnail(id, current).then((thumbnail) => {
-        if (!thumbnail || !current()) return;
-        const cover = card.querySelector<HTMLElement>(".asset-thumbnail");
-        if (!cover) return;
-        const image = cover.querySelector("img") ?? document.createElement("img");
-        image.src = thumbnail;
-        image.alt = project.assets.find((asset) => asset.id === id)?.name ?? "素材封面";
-        cover.querySelector("svg")?.remove();
-        if (!image.parentElement) cover.prepend(image);
-      }).catch(() => {
-        // A background cover is optional. Explicit preview reports unreadable source errors.
-      });
-    }
-  }, { root: container });
+    },
+    { root: container },
+  );
   container.querySelectorAll<HTMLElement>(".asset-card[data-asset]").forEach((card) => {
     const asset = project.assets.find((item) => item.id === card.dataset.asset);
     if (asset?.kind === "video" && !library.items.get(asset.id)?.thumbnail)
@@ -1479,7 +1976,7 @@ async function deleteMedia(ids: string[]): Promise<void> {
   } finally {
     aiApplying = false;
   }
-  if (project !== current || generation !== ownGeneration)
+  if (project.id !== current.id || generation !== ownGeneration)
     throw new Error("工程已变化，请重新选择素材");
   // Keep source handles for undo; unused video decoders are released by the media library.
   pendingMediaDeletion = undefined;
@@ -1863,7 +2360,7 @@ async function saveNarrationUpdate(
     next = validateProject(await transform(structuredClone(project)));
     if (project.id !== id || project.revision !== revision || generation !== currentGeneration)
       throw new Error("工程已变化，请重新确认当前草稿");
-    await saveProject(next, label);
+    await saveProject(next, label, allowAlignment);
   } finally {
     aiApplying = false;
   }
@@ -1985,7 +2482,6 @@ async function importMedia(
   if (reconnectId && files.length !== 1) throw new Error("请只选择这个素材对应的一个原文件");
   stop();
   mediaImporting = true;
-  const previousSaveText = saveText;
   const importGeneration = generation;
   const next = structuredClone(project);
   if (
@@ -2016,7 +2512,22 @@ async function importMedia(
     imported.delete(id);
   };
   const releaseBatch = () => {
-    for (const id of imported.keys()) releaseImported(id);
+    for (const id of imported.keys()) {
+      const candidate = next.assets.find((asset) => asset.id === id);
+      const active =
+        project.id === next.id ? project.assets.find((asset) => asset.id === id) : undefined;
+      // A committed session can still have an unsaved dirty snapshot. Keep its decoded source available for retry/backup.
+      if (
+        candidate &&
+        active &&
+        candidate.mediaId === active.mediaId &&
+        candidate.size === active.size &&
+        candidate.lastModified === active.lastModified &&
+        candidate.durationFrames === active.durationFrames
+      )
+        continue;
+      releaseImported(id);
+    }
   };
   let added = 0,
     reconnected = 0;
@@ -2102,8 +2613,7 @@ async function importMedia(
     throw error;
   } finally {
     mediaImporting = false;
-    saveText = previousSaveText;
-    updateSave();
+    refreshEditorSaveStatus();
   }
   if (importGeneration !== generation) {
     releaseBatch();
@@ -2123,6 +2633,7 @@ async function importMedia(
         if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的声音参考");
       }
       commit(next, audioReference || fromFolder);
+      editorWorkspace?.refreshMedia();
     } catch (error) {
       releaseBatch();
       throw error;
@@ -2179,7 +2690,7 @@ ${esc(caption?.text || "")}</textarea
           type="number"
           min="0"
           max="${seconds(duration())}"
-          step="0.033333"
+          step="any"
           value="${seconds(caption?.startFrame ?? frame)}"
           required /></label
       ><label
@@ -2188,7 +2699,7 @@ ${esc(caption?.text || "")}</textarea
           type="number"
           min="0"
           max="${seconds(duration())}"
-          step="0.033333"
+          step="any"
           value="${seconds(caption?.endFrame ?? end)}"
           required
       /></label>
@@ -2516,22 +3027,24 @@ async function action(name: string, id?: string): Promise<void> {
       await replace(createProject());
       break;
     case "projects": {
-      const items = await listArchivedProjects();
+      if (!editorStorage) throw new Error("工程存储尚未恢复");
+      const items = await editorStorage.listArchived();
       const dialog = $<HTMLDialogElement>("#plan-dialog");
       dialog.innerHTML = html`<div class="dialog-heading">
           <h2>最近工程</h2>
           ${tool("close-dialog", "关闭", "close")}
         </div>
         <p class="section-description">
-          切换前保留本地快照，最多 10 个工程。容量不足时会移除较早工程；重要项目请下载 JSON
-          备份。${production.enabled ? "持久素材会自动恢复。" : "原素材仍需重新连接。"}
+          切换前保留完整工程快照；重要项目也可以下载工程备份。归档空间不足时会保留原数据并提示处理。${production.enabled
+            ? "持久素材会自动恢复。"
+            : "原素材仍需重新连接。"}
         </p>
         <div class="recent-projects">
           ${items.length
             ? items
                 .map(
                   (item) =>
-                    `<button class="full recent-project" data-project="${esc(item.id)}">${icon("film")}<span>${esc(item.name)}</span><small>${seconds(timelineDuration(item))}s</small></button>`,
+                    `<button class="full recent-project" data-project="${esc(item.id)}">${icon("film")}<span>${esc(item.name)}</span><small>${(sequenceDuration(item.sequences.find((s) => s.id === item.activeSequenceId)!) / 240000).toFixed(1)}s</small></button>`,
                 )
                 .join("")
             : '<p class="muted">还没有最近工程。</p>'}
@@ -2553,7 +3066,9 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     case "save-project":
       download(
-        new Blob([JSON.stringify(project, null, 2)], { type: "application/json" }),
+        new Blob([JSON.stringify(editorSession?.read() ?? project, null, 2)], {
+          type: "application/json",
+        }),
         project.name + ".video-project.json",
       );
       break;
@@ -2765,19 +3280,12 @@ async function action(name: string, id?: string): Promise<void> {
     case "redo": {
       assertEditable();
       stop();
-      const from = name === "undo" ? history : future;
-      const to = name === "undo" ? future : history;
-      const previous = from.pop();
-      if (!previous) return;
-      to.push(structuredClone(project));
-      project = validateProject(
-        reconcileNarrationEdit(project, { ...previous, revision: project.revision + 1 }),
-      );
+      if (!editorSession) throw new Error("工程尚未恢复");
+      if (name === "undo") editorSession.undo();
+      else editorSession.redo();
+      synchronizeLegacyView();
       narrationScriptDraft = null;
-      selected = project.clips[0]?.id || "";
-      frame = Math.min(frame, Math.max(0, duration() - 1));
       render();
-      void persist();
       break;
     }
     case "toggle-magnetic":
@@ -2836,6 +3344,11 @@ async function action(name: string, id?: string): Promise<void> {
       }
       break;
     case "play": {
+      if (legacyView && !legacyView.renderSafe && !sourcePreviewActive()) {
+        showEditorWorkspace();
+        await editorWorkspace?.togglePlayback();
+        break;
+      }
       if (sourcePreviewActive()) {
         await playSource();
         break;
@@ -2869,6 +3382,11 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "export":
+      if (editorWorkspace && (editorTasks || !legacyView?.renderSafe)) {
+        showEditorWorkspace();
+        editorWorkspace.openExport();
+        break;
+      }
       if (sourcePreviewActive()) {
         mediaPreview = false;
         tab = "media";
@@ -2877,6 +3395,11 @@ async function action(name: string, id?: string): Promise<void> {
       exportDialog();
       break;
     case "record":
+      if (legacyView && !legacyView.renderSafe) {
+        showEditorWorkspace();
+        editorWorkspace?.openExport();
+        break;
+      }
       voiceover.stopPreview();
       await record();
       break;
@@ -2884,6 +3407,11 @@ async function action(name: string, id?: string): Promise<void> {
       exporting?.abort();
       break;
     case "render-mp4":
+      if (editorWorkspace) {
+        showEditorWorkspace();
+        editorWorkspace.openExport();
+        break;
+      }
       assertEditable();
       await saveProject(project, "导出 MP4 前版本");
       await production.render(project);
@@ -2956,10 +3484,8 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "transcribe": {
-      const ids = [...new Set(project.clips.map((c) => c.assetId))].filter(
-        (id) => project.assets.find((a) => a.id === id)?.mediaId,
-      );
-      if (!ids.length) throw new Error("请先把持久素材加入时间轴");
+      const ids = captionSourceAssetIds(project, production.preparations);
+      if (!ids.length) throw new Error("请先把已保存且有声音的素材加入画面或独立音轨，并开启音量");
       await production.transcribe(ids);
       tab = "jobs";
       render();
@@ -3405,8 +3931,9 @@ $("#project-input").addEventListener("change", async (event) => {
   try {
     const file = input.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) throw new Error("工程 JSON 不能超过 2 MB");
-    const next = validateProject(JSON.parse(await file.text()));
+    if (file.size > 32 * 1024 * 1024) throw new Error("工程 JSON 不能超过 32 MB");
+    const next = JSON.parse(await file.text());
+    readEditorDocument(next);
     if (initialGeneration !== generation || initialRevision !== project.revision)
       throw new Error("读取文件期间工程已变化，请重新打开");
     await replace(next);
@@ -3447,6 +3974,7 @@ $("#srt-input").addEventListener("change", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (editorVisible && editorWorkspace) return;
   if (mediaMenu.active || timelineMenu.active) return;
   const menuClip = (event.target as HTMLElement).closest<HTMLElement>(
     "[data-clip],[data-audio-clip]",
@@ -3579,7 +4107,44 @@ window.addEventListener("pagehide", () => {
   spoken.dispose();
 });
 
-registerProjectReadTool(panel, production, () => ({
+// V1 and V2 share the manifest's established tool names. An explicit editor branch
+// never enters legacy frame conversion or automatic-request-token authorization.
+const productionToolPanel: PanelBridge | undefined = panel
+  ? {
+      getContext: () => panel!.getContext(),
+      call: (method, args) => panel!.call(method, args),
+      ...(panel.callResult
+        ? { callResult: (method: string, args?: unknown) => panel!.callResult!(method, args) }
+        : {}),
+      on: (name, handler) => panel!.on(name, handler),
+      registerTool: (name, handler) =>
+        panel!.registerTool(name, (args = {}) => {
+          if (
+            !["read_video_project", "apply_video_edit", "render_video_project"].includes(name) ||
+            !Object.hasOwn(args, "editor")
+          )
+            return handler(args);
+          if (Object.keys(args).length !== 1) throw new Error("editor 请求不能与旧工程参数混用");
+          if (!editorAgentTools) throw new Error("工程尚未恢复，请稍后读取");
+          const value = args.editor;
+          if (!value || typeof value !== "object" || Array.isArray(value))
+            throw new Error("editor 参数须为对象");
+          if (name === "apply_video_edit") return editorAgentTools.apply_editor_edit(value);
+          if (name === "render_video_project")
+            return editorAgentTools.render_editor_sequence(value);
+          const { view, ...request } = value as Record<string, unknown>;
+          if (view === "jobs") return editorAgentTools.read_editor_jobs(request);
+          if (view !== "project") throw new Error("请选择 editor 工程或后台任务视图");
+          const { documentView, ...parameters } = request;
+          return editorAgentTools.read_editor_project({
+            ...parameters,
+            ...(documentView === undefined ? {} : { view: documentView }),
+          });
+        }),
+    }
+  : undefined;
+
+registerProjectReadTool(productionToolPanel, production, () => ({
   project: structuredClone(project),
   workflowMode: automatic.mode,
   requestToken: roughCutAI.requestToken || taskRequestToken || null,
@@ -3643,7 +4208,7 @@ panel?.registerTool("propose_video_edit", async (args) => {
     status: "awaiting-user-review",
   };
 });
-registerProductionTools(panel, production, {
+registerProductionTools(productionToolPanel, production, {
   project: () => project,
   requestToken: () => roughCutAI.requestToken || automatic.requestToken,
   transcriptRead: (token, id, result) => roughCutAI.recordTranscript(token, id, result),
@@ -3687,7 +4252,7 @@ registerProductionTools(panel, production, {
     } finally {
       aiApplying = false;
     }
-    if (project.id !== id || project.revision !== baseRevision || automatic.requestToken !== token)
+    if (project.id !== id || automatic.requestToken !== token)
       throw new Error("润色期间请求已改变");
     commit(next, true);
     voiceover.setText(text);
@@ -3802,7 +4367,7 @@ registerProductionTools(panel, production, {
         candidate.requestToken !== automatic.requestToken
       )
         throw new Error("工程或制作请求已变化，未应用旧修改");
-      await saveProject(next, `自动制作：${candidate.title}`);
+      await saveProject(next, `自动制作：${candidate.title}`, aligning);
     } finally {
       aiApplying = false;
     }
@@ -3831,14 +4396,569 @@ panel?.on("agent.task.changed", (payload) => {
   void handleTask(payload as PanelTask).catch(fail);
 });
 
+function showEditorWorkspace(): void {
+  if (!editorWorkspace) return;
+  recording.assertSafeToLeave();
+  stop();
+  voiceover.stopPreview();
+  editorVisible = true;
+  studio.hidden = true;
+  editorWorkspace.setVisible(true);
+}
+async function applyEditorDurable(
+  operations: EditorOperation[],
+  identity: SessionIdentity,
+  label: string,
+  origin: "editor" | "production" = "editor",
+) {
+  // Only verified ProductionController completion callbacks select this origin.
+  // Their own automatic task must be able to publish while the general editor stays locked.
+  if (origin === "production") assertProductionPublicationEditable();
+  else assertEditorEditable();
+  if (!editorSession) throw new Error("工程尚未恢复");
+  const current = editorSession.getState().identity;
+  if (
+    current.documentId !== identity.documentId ||
+    current.generation !== identity.generation ||
+    current.revision !== identity.revision
+  )
+    throw new Error("工程已变化，请重新生成候选");
+  const before = editorSession.read(),
+    after = applyEditorOperations(before, operations, before.revision);
+  const guard = reconcileEditorProduction(before, after);
+  await editorSession.dispatchDurable([...operations, ...guard], identity, label);
+}
+function mountEditorCaptions(root: HTMLElement): void {
+  if (!editorSession || editorCaptions) return;
+  if (panel)
+    editorCaptionServices = createCaptionServices({
+      panel,
+      read: () => editorSession!.read(),
+      assertTranscriptionReady: () => {
+        if (!production.enabled || !production.status.transcription.available)
+          throw new Error("本机语音转写尚未就绪，请在制作与录音中配置 Whisper，或导入 SRT");
+      },
+      resolveResource: async (asset, signal) => {
+        if (asset.resourceId) return asset.resourceId;
+        let file: File | undefined;
+        if (isEditorDemoNarration(asset)) {
+          const response = await fetch(new URL("demo-narration.mp3", document.baseURI), { signal });
+          if (!response.ok) throw new Error("内置旁白无法读取");
+          const bytes = await response.arrayBuffer();
+          if (bytes.byteLength > 4 * 1024 * 1024) throw new Error("内置旁白文件大小异常");
+          const sha = Array.from(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("");
+          if (sha !== EDITOR_DEMO_NARRATION_SHA) throw new Error("内置旁白校验未通过");
+          file = new File([bytes], "示例旁白.mp3", { type: "audio/mpeg" });
+        } else file = (await cachedMediaFile(asset.id)) ?? undefined;
+        if (!file) throw new Error(`请重新连接声音原文件：${asset.name}`);
+        const runtime = createPanelRuntime(panel!);
+        try {
+          const uploaded = await uploadEditorResource(runtime, file, {
+            signal,
+            mimeType: file.type || (asset.kind === "video" ? "video/mp4" : "audio/wav"),
+            guard: () => {
+              const source = editorSession!.read().assets.find((item) => item.id === asset.id);
+              if (!source || editorSourceKey(source) !== editorSourceKey(asset))
+                throw new Error("声音源已变化，请重新生成字幕");
+            },
+          });
+          if (
+            asset.fingerprint &&
+            /^[a-f0-9]{64}$/.test(asset.fingerprint) &&
+            uploaded.sha256 !== asset.fingerprint
+          )
+            throw new Error("声音原文件与已保存的素材指纹不一致");
+          return uploaded.id;
+        } finally {
+          runtime.dispose();
+        }
+      },
+    });
+  editorCaptions = createCaptionController({
+    session: () => editorSession!,
+    apply: applyEditorDurable,
+    ...(editorCaptionServices
+      ? {
+          prepare: editorCaptionServices.prepare,
+          transcript: editorCaptionServices.transcript,
+          translate: editorCaptionServices.translate,
+        }
+      : {}),
+  });
+  editorCaptions.setCapabilities({ canTranscribe: false, canTranslate: false });
+  editorCaptionsUI = new EditorCaptionsUI(root, {
+    session: () => editorSession!,
+    controller: editorCaptions,
+    select: (sequenceId, ids) => editorWorkspace?.selectClips(sequenceId, ids),
+    seek: (time) => editorWorkspace?.seek(time),
+    onError: fail,
+  });
+}
+async function openEditorCaptions(sequenceId: string): Promise<void> {
+  if (!editorCaptions || !editorCaptionsUI) throw new Error("字幕面板尚未恢复");
+  const context = await panel?.getContext();
+  editorCaptions.setCapabilities({
+    canTranscribe:
+      !!editorCaptionServices && production.enabled && production.status.transcription.available,
+    canTranslate:
+      !!editorCaptionServices &&
+      ["agent.task.start", "agent.task.get", "agent.task.cancel"].every((method) =>
+        context?.availableMethods?.includes(method),
+      ),
+  });
+  editorCaptionsUI.open(sequenceId);
+}
+function mountEditorSeparation(root: HTMLElement): void {
+  if (!panel || !editorSession || editorSeparation) return;
+  editorSeparationBridge = createAudioSeparationBridge(panel);
+  editorSeparation = createSeparationController({
+    session: () => editorSession!,
+    bridge: editorSeparationBridge,
+    guard: assertEditorEditable,
+    apply: applyEditorDurable,
+  });
+  editorSeparationUI = new EditorSeparationUI(root, {
+    controller: editorSeparation,
+    preview: previewEditorAudioResource,
+    onError: fail,
+  });
+}
+async function previewEditorAudioResource(resourceId: string, signal: AbortSignal) {
+  if (!panel || !isResourceId(resourceId)) throw new Error("试听资源编号无效");
+  const runtime = createPanelRuntime(panel);
+  try {
+    if (signal.aborted) throw new DOMException("已取消试听", "AbortError");
+    const result = (await runtime.call("resources.get", { assetId: resourceId }, signal)) as {
+      asset?: { id: string; bytes: number };
+    } | null;
+    if (signal.aborted) throw new DOMException("已取消试听", "AbortError");
+    if (
+      result?.asset?.id !== resourceId ||
+      !Number.isSafeInteger(result.asset.bytes) ||
+      result.asset.bytes < 1
+    )
+      throw new Error("声音资源已不可用，请重新打开任务结果");
+    return { url: new URL(`/media/${resourceId}`, location.href).href, release() {} };
+  } finally {
+    runtime.dispose();
+  }
+}
+function mountEditorAudioEnhancement(root: HTMLElement): void {
+  if (!panel || !editorSession || editorAudioEnhancement) return;
+  editorAudioEnhancementBridge = createAudioEnhancementBridge(panel);
+  editorAudioEnhancement = createAudioEnhancementController({
+    session: () => editorSession!,
+    bridge: editorAudioEnhancementBridge,
+    guard: assertEditorEditable,
+    apply: applyEditorDurable,
+  });
+  editorAudioEnhancementUI = new EditorAudioEnhancementUI(root, {
+    controller: editorAudioEnhancement,
+    preview: previewEditorAudioResource,
+    onError: fail,
+  });
+}
+async function submitEditorExport(
+  doc: EditorDocument,
+  sequenceId: string,
+  profile: ExportProfile,
+  signal?: AbortSignal,
+  origin: "editor" | "production" = "editor",
+  beforeSubmit?: () => void,
+): Promise<{ jobId: string; job: ReturnType<typeof taskValue> }> {
+  if (origin === "production") assertProductionPublicationEditable();
+  else assertEditorEditable();
+  if (!editorTasks) throw new Error("本地媒体任务尚未连接");
+  const prepared =
+    preparedNative?.key === editorDocumentKey(doc, sequenceId) ? preparedNative : undefined;
+  const key = editorDocumentKey(doc, sequenceId);
+  const transfer = exportTransfers.get(key) ?? {
+    transferId: `editor-${crypto.randomUUID()}`,
+  };
+  exportTransfers.set(key, transfer);
+  while (exportTransfers.size > 64) exportTransfers.delete(exportTransfers.keys().next().value!);
+  const { job, snapshot } = await editorTasks.startExport(doc, sequenceId, profile, {
+    signal,
+    // A new explicit export attempt may resume a cancelled/retryable preparation.
+    // Agent receipt replay is deduplicated before reaching this method.
+    retryFailedTasks: true,
+    transferId: transfer.transferId,
+    snapshot: prepared?.snapshot ?? transfer.snapshot,
+    preparedAudio: prepared?.audio,
+    beforeSubmit,
+    onProgress: (item) => toast(`准备导出 · ${item.completed}/${item.total}`),
+  });
+  transfer.snapshot = snapshot;
+  editorExportJobs?.track(job, `${doc.name} · ${profile.name}`);
+  toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");
+  return { jobId: job.id, job };
+}
+function mountEditorAgentTools(): void {
+  if (!panel || !editorSession || disposeEditorAgentTools) return;
+  const sdk = createPanelRuntime(panel);
+  editorAgentTools = createEditorAgentTools({
+    separation: editorSeparation,
+    enhancement: editorAudioEnhancement,
+    sync: editorSyncUI,
+    portable: editorPortableUI,
+    alignMulticam: editorTasks
+      ? (document, assetIds, referenceAssetId, options) =>
+          editorTasks!.startMulticamAlignment(document, assetIds, referenceAssetId, options)
+      : undefined,
+    cancelAlignment: async (jobId, documentId) => {
+      const job = taskValue(await sdk.call("tasks.get", { id: jobId })),
+        request = (
+          job.input as
+            | { request?: { action?: string; alignment?: { origin?: { documentId?: string } } } }
+            | undefined
+        )?.request;
+      if (
+        (job.entry as { name?: string } | undefined)?.name !== "editor-runtime" ||
+        request?.action !== "align-multicam" ||
+        request.alignment?.origin?.documentId !== documentId
+      )
+        throw new Error("这不是当前工程的机位声音对齐任务");
+      const cancelled = await sdk.cancel(jobId);
+      return {
+        id: cancelled.id,
+        status: cancelled.status,
+        progress: cancelled.progress,
+        error: cancelled.error,
+      };
+    },
+    session: () => {
+      if (!editorSession) throw new Error("工程尚未恢复");
+      return editorSession;
+    },
+    authorize: ({ before, after }) => {
+      assertEditorEditable();
+      return after ? reconcileEditorProduction(before, after) : undefined;
+    },
+    exportSequence: editorTasks
+      ? ({ document, sequenceId, profile }, options) =>
+          submitEditorExport(document, sequenceId, profile, options?.signal)
+      : undefined,
+    cancelExport: async (jobId) => {
+      const job = taskValue(await sdk.call("tasks.get", { id: jobId }));
+      if (
+        (job.entry as { name?: string } | undefined)?.name !== "editor-runtime" ||
+        (job.input as { request?: { action?: string } } | undefined)?.request?.action !== "render"
+      )
+        throw new Error("这不是视频导出任务");
+      if (["succeeded", "failed", "cancelled"].includes(job.status))
+        throw new Error(`导出任务已结束（${job.status}），请读取实际结果`);
+      const cancelled = await sdk.cancel(jobId);
+      if (cancelled.status !== "cancelled") throw new Error("任务尚未确认取消，请读取实际状态");
+      return cancelled;
+    },
+    readJobs: editorTasks
+      ? async ({ jobIds, offset, limit }) => {
+          await sdk.requireMethods(["tasks.list", "tasks.get"]);
+          const entries = jobIds
+            ? jobIds.slice(offset, offset + limit).map((id) => ({ id }))
+            : await sdk.call("tasks.list", { offset, limit });
+          if (!Array.isArray(entries) || entries.length > limit)
+            throw new Error("后台任务列表返回无效数据");
+          const jobs = [];
+          for (const entry of entries) {
+            if (typeof entry?.id !== "string") throw new Error("后台任务标识无效");
+            const job = taskValue(await sdk.call("tasks.get", { id: entry.id }));
+            if (
+              !["editor-runtime", "audio-separation", "media-runtime"].includes(
+                (job.entry as { name?: string } | undefined)?.name ?? "",
+              )
+            )
+              continue;
+            // Native input may contain staged document chunks. Readers receive the task's
+            // status and complete result; canonical editing data uses read_editor_project.
+            const { input: _input, ...summary } = job;
+            jobs.push(summary);
+          }
+          const nextOffset = jobIds
+            ? offset + entries.length < jobIds.length
+              ? offset + entries.length
+              : null
+            : entries.length === limit
+              ? offset + entries.length
+              : null;
+          return { jobs, nextOffset };
+        }
+      : undefined,
+  });
+  disposeEditorAgentTools = () => {
+    editorAgentTools = undefined;
+    sdk.dispose();
+  };
+}
+async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
+  const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
+  const proxy = editorProxyResources.get(assetId);
+  if (source && proxy?.sourceKey === editorSourceKey(source))
+    return { url: new URL(`/media/${proxy.resourceId}`, location.href).href, owned: false };
+  if (signal.aborted) throw new DOMException("取消预览", "AbortError");
+  if (source?.kind === "video" && source.resourceId && editorSourcePreviews) {
+    const identity = editorSession!.getState().identity;
+    const prepared = await editorSourcePreviews.prepare(source, signal);
+    if (signal.aborted) throw new DOMException("取消预览", "AbortError");
+    const currentIdentity = editorSession!.getState().identity;
+    const current = editorSession!.read().assets.find((asset) => asset.id === source.id);
+    if (
+      identity.documentId !== currentIdentity.documentId ||
+      identity.generation !== currentIdentity.generation ||
+      !current ||
+      editorSourceKey(current) !== editorSourceKey(source)
+    )
+      throw new DOMException("素材或工程已变化", "AbortError");
+    if (
+      source.fingerprint &&
+      /^[a-f0-9]{64}$/.test(source.fingerprint) &&
+      source.fingerprint !== prepared.sourceHash
+    )
+      throw new Error("素材内容与已保存的指纹不同，请重新导入原文件");
+    const actual = { ...current, width: prepared.recipe.width, height: prepared.recipe.height };
+    editorProxyResources.set(assetId, {
+      sourceKey: editorSourceKey(actual),
+      resourceId: prepared.proxy.id,
+    });
+    while (editorProxyResources.size > 128)
+      editorProxyResources.delete(editorProxyResources.keys().next().value!);
+    if (current.width !== actual.width || current.height !== actual.height) {
+      editorSession!.dispatch(
+        [{ type: "asset.update", assetId, patch: { width: actual.width, height: actual.height } }],
+        currentIdentity,
+        "校正源素材显示尺寸",
+      );
+      if (signal.aborted) throw new DOMException("画面尺寸已校正", "AbortError");
+    }
+    return { url: new URL(`/media/${prepared.proxy.id}`, location.href).href, owned: false };
+  }
+  if (source?.resourceId)
+    return { url: new URL(`/media/${source.resourceId}`, location.href).href, owned: false };
+  let item = library.items.get(assetId);
+  if (!item) {
+    const asset = project.assets.find((asset) => asset.id === assetId);
+    if (!asset) throw new Error("素材暂不可用，请重新连接原文件");
+    if (isDemoNarration(asset)) await library.connectBuiltin(asset);
+    else if (asset.mediaId) await library.connectManaged(asset);
+    else {
+      if (!(await restoreCachedMedia(asset, generation)))
+        throw new Error(`请重新连接素材：${asset.name}`);
+    }
+    item = library.items.get(assetId);
+  }
+  if (signal.aborted) throw new DOMException("取消预览", "AbortError");
+  if (!item) throw new Error("素材无法读取，请重新连接原文件");
+  return { url: item.url, owned: false };
+}
+function mountEditorWorkspace(): void {
+  if (!editorSession || editorWorkspace) return;
+  const root = document.createElement("main");
+  root.id = "editor-workspace";
+  studio.before(root);
+  editorWorkspace = new EditorWorkspace(root, {
+    session: editorSession,
+    assertEditable: assertEditorEditable,
+    resolveAsset: resolveEditorAsset,
+    alignMulticamSources: editorTasks
+      ? (assetIds, referenceAssetId, options) =>
+          editorTasks!.alignMulticamSources(
+            editorSession!.read(),
+            assetIds,
+            referenceAssetId,
+            options,
+          )
+      : undefined,
+    timelineMedia: {
+      resolveAsset: resolveEditorAsset,
+      loadWaveform: async (assetId, signal) => {
+        if (!editorTasks || !editorSession) throw new Error("请在桌面视频面板中准备音频波形");
+        const doc = editorSession.read(),
+          source = doc.assets.find((asset) => asset.id === assetId);
+        if (!source) throw new Error("声音源已不在当前工程中");
+        if (source.resourceId)
+          return (
+            await editorTasks.analyzeWaveform(source.resourceId, {
+              sourceDuration: source.duration,
+              signal,
+            })
+          ).waveform;
+        return (
+          await editorTasks.analyzeAssetWaveform(doc, doc.activeSequenceId, assetId, { signal })
+        ).waveform;
+      },
+    },
+    prepareAudio: async (doc, sequenceId, signal) => {
+      const plan = compileAudioPlan(doc, sequenceId);
+      const video = doc.assets.some((asset) => asset.kind === "video");
+      if (!plan.lanes.length && !video) return undefined;
+      if (!editorTasks || !panel)
+        throw new Error("请在 CodeShell 桌面视频面板中准备声音和视频预览");
+      const key = editorDocumentKey(doc, sequenceId);
+      let snapshot = preparedNative?.key === key ? preparedNative.snapshot : undefined;
+      const progress = (item: { phase: string; completed: number; total: number }) => {
+        if (!signal.aborted)
+          toast(
+            `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`,
+          );
+      };
+      if (video) {
+        const prepared = await editorTasks.prepareVideoForPreview(doc, sequenceId, {
+          snapshot,
+          signal,
+          onProgress: progress,
+        });
+        snapshot = prepared.snapshot;
+        if (signal.aborted) return undefined;
+        const dimensions: EditorOperation[] = [];
+        for (const source of prepared.sources) {
+          const asset = doc.assets.find((asset) => asset.id === source.assetId)!;
+          const actual = { ...asset, width: source.recipe.width, height: source.recipe.height };
+          editorProxyResources.set(source.assetId, {
+            sourceKey: editorSourceKey(actual),
+            resourceId: source.proxy.id,
+          });
+          if (asset.width !== actual.width || asset.height !== actual.height)
+            dimensions.push({
+              type: "asset.update",
+              assetId: asset.id,
+              patch: { width: actual.width, height: actual.height },
+            });
+        }
+        if (dimensions.length) {
+          if (editorDocumentKey(editorSession!.read(), sequenceId) !== key) return undefined;
+          editorSession!.dispatch(
+            dimensions,
+            editorSession!.getState().identity,
+            "校正源素材显示尺寸",
+          );
+          toast("已按源文件校正画面尺寸，请再次点击播放完成预览准备");
+          return undefined;
+        }
+      }
+      if (!plan.lanes.length) {
+        if (snapshot) preparedNative = { key, snapshot };
+        return undefined;
+      }
+      const result = await editorTasks.prepareAudioForPreview(doc, sequenceId, {
+        snapshot,
+        signal,
+        onProgress: progress,
+      });
+      if (signal.aborted) return undefined;
+      preparedNative = { key, snapshot: result.snapshot, audio: result.preparedAudio };
+      return loadEditorPreviewAudio(
+        panel,
+        result.audioResource,
+        { documentId: doc.id, revision: doc.revision, sequenceId, sampleCount: plan.sampleCount },
+        signal,
+      );
+    },
+    exportSequence: panel
+      ? async (doc, sequenceId, profile, signal) => {
+          await submitEditorExport(doc, sequenceId, profile, signal);
+        }
+      : undefined,
+    importMedia: () => {
+      if (editorImportUI) editorImportUI.choose();
+      else $("#media-input").click();
+    },
+    openProject: () => {
+      $("#project-input").click();
+    },
+    newProject: () => replace(createProject()),
+    downloadProject: (doc) =>
+      download(
+        new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
+        `${doc.name}.video-project.json`,
+      ),
+    packProject: panel && editorTasks ? () => editorPortableUI!.exportCurrent() : undefined,
+    importProjectBundle: panel && editorTasks ? () => editorPortableUI!.chooseImport() : undefined,
+    syncProject: panel && editorTasks ? () => editorSyncUI!.open() : undefined,
+    showCaptions: openEditorCaptions,
+    showSeparation: panel
+      ? (sequenceId, clipId) => {
+          if (!editorSeparationUI) throw new Error("声音分离面板尚未连接");
+          editorSeparationUI.open(sequenceId, clipId);
+        }
+      : undefined,
+    showAudioEnhancement: panel
+      ? (sequenceId, clipId) => {
+          if (!editorAudioEnhancementUI) throw new Error("声音优化面板尚未连接");
+          editorAudioEnhancementUI.open(sequenceId, clipId);
+        }
+      : undefined,
+    showProduction: async (nextTab) => {
+      editorVisible = false;
+      editorWorkspace?.setVisible(false);
+      studio.hidden = false;
+      tab = nextTab;
+      render();
+      if (tab === "voiceover") await voiceover.load();
+    },
+    onError: fail,
+  });
+  if (panel && editorTasks)
+    editorImportUI = new EditorImportUI(editorSession, panel, root.querySelector(".ew-library")!);
+  mountEditorCaptions(root);
+  mountEditorSeparation(root);
+  mountEditorAudioEnhancement(root);
+  if (panel && editorTasks)
+    editorPortableUI = new EditorPortableUI({
+      panel,
+      tasks: editorTasks,
+      session: () => editorSession!,
+      assertEditable: assertEditorEditable,
+      replace: replaceEditorDeliveryDocument,
+      onError: fail,
+    });
+  if (panel && editorTasks)
+    editorSyncUI = new EditorSyncUI({
+      panel,
+      tasks: editorTasks,
+      session: () => editorSession!,
+      assertEditable: assertEditorEditable,
+      replace: replaceEditorDeliveryDocument,
+      onError: fail,
+      container: root,
+    });
+  studio.hidden = true;
+  render();
+}
+
+async function replaceEditorDeliveryDocument(doc: EditorDocument, identity: SessionIdentity) {
+  assertEditorEditable();
+  try {
+    await replace(doc, identity);
+  } catch (error) {
+    const current = editorSession!.getState().identity;
+    if (current.documentId !== doc.id || current.generation === identity.generation) throw error;
+    // The replacement is already durable. Ancillary failures must not offer another
+    // replacement or invalidate the import/sync receipt for this generation.
+    reportCleanupFailure(`工程已打开，附属状态恢复失败：${String(error)}`, async () => {
+      const latest = editorSession!.getState().identity;
+      if (latest.documentId !== current.documentId || latest.generation !== current.generation)
+        return;
+      await restoreManagedMedia();
+      await voicePreparation.load();
+      await folderImport.load();
+      if (production.enabled) await production.refresh();
+    });
+  }
+}
+
 async function boot(): Promise<void> {
   let storageDiscovered = !panel;
   try {
     const initialContext = await panel?.getContext();
     panelVisible = initialContext?.visible !== false;
-    sharedVoiceLibraryAvailable = Boolean(sharedVoiceLibrary) && [
-      "process.find", "process.spawn", "process.cancel", "filesystem.getKnownDirectory",
-    ].every((method) => initialContext?.availableMethods?.includes(method));
+    sharedVoiceLibraryAvailable =
+      Boolean(sharedVoiceLibrary) &&
+      ["process.find", "process.spawn", "process.cancel", "filesystem.getKnownDirectory"].every(
+        (method) => initialContext?.availableMethods?.includes(method),
+      );
     // Native engine availability must not choose which saved project is restored.
     // Discovery errors must preserve restore protection, never select a different store.
     enablePersistentStorage(
@@ -3848,15 +4968,49 @@ async function boot(): Promise<void> {
         ),
     );
     storageDiscovered = true;
-    project = (await loadProject()) || createProject();
-    const narrated = migratePristineDemoProject(project);
-    if (narrated) {
-      await saveProject(narrated, "示例工程加入内置旁白");
-      project = narrated;
+    editorStorage = await createEditorHostStorage(panel, {
+      persistent: hasPersistentStorage(),
+      scopeKey: initialContext?.cwd ?? "browser",
+    });
+    const restored = await editorStorage.read();
+    editorSession = await EditorSession.open(
+      {
+        read: async () => restored,
+        write: (doc, base, label) => editorStorage!.write(doc, base, label),
+        backupLegacy: (raw) => editorStorage!.backupLegacy(raw),
+      },
+      { initialDocument: migrateLegacyProject(createProject()) },
+    );
+    synchronizeLegacyView();
+    if ((restored.data as { schemaVersion?: number } | null)?.schemaVersion === 1) {
+      const narrated = pristineLegacyDemo(restored.data);
+      if (narrated) await saveProject(narrated, "示例工程加入内置旁白");
     }
+    if (panel && initialContext?.availableMethods?.includes("tasks.start")) {
+      editorTasks = createEditorTaskBridge(panel);
+      editorSourcePreviews = new EditorSourcePreviews(editorTasks);
+      editorExportJobs = new EditorExportJobs(panel, fail);
+      void editorExportJobs.loadMore().catch(fail);
+    }
+    synchronizeLegacyView();
+    editorSession.subscribe(() => {
+      refreshEditorSaveStatus();
+      const previous = legacySignature;
+      synchronizeLegacyView();
+      updateSave();
+      if (
+        previous !== legacySignature &&
+        productionBooted &&
+        !editorVisible &&
+        !aiApplying &&
+        !projectSwitching &&
+        !mediaImporting
+      )
+        render();
+    });
     saveText = "已就绪";
   } catch (error) {
-    if (!storageDiscovered) storageDiscoveryError = String(error);
+    if (!storageDiscovered || !editorSession) storageDiscoveryError = String(error);
     projectError = String(error);
     saveText = "恢复失败";
     toast("原有工程无法恢复，尚未覆盖。请检查存储或打开工程备份。");
@@ -3872,6 +5026,10 @@ async function boot(): Promise<void> {
   selected = project.clips[0]?.id || "";
   voiceover.setText(project.script ?? "");
   render();
+  if (editorSession) {
+    mountEditorWorkspace();
+    mountEditorAgentTools();
+  }
   await folderImport.load();
   await restoreManagedMedia();
   await production.initialize();
@@ -3889,4 +5047,28 @@ async function boot(): Promise<void> {
     if (!playback) render();
   }
 }
+window.addEventListener(
+  "pagehide",
+  () => {
+    disposeEditorAgentTools?.();
+    editorSourcePreviews?.dispose();
+    editorPortableUI?.dispose();
+    editorSyncUI?.dispose();
+    editorCaptionsUI?.dispose();
+    editorCaptions?.dispose();
+    editorCaptionServices?.dispose();
+    editorSeparationUI?.dispose();
+    editorSeparation?.dispose();
+    editorSeparationBridge?.dispose();
+    editorAudioEnhancementUI?.dispose();
+    editorAudioEnhancement?.dispose();
+    editorAudioEnhancementBridge?.dispose();
+    editorImportUI?.dispose();
+    void editorWorkspace?.dispose();
+    editorExportJobs?.dispose();
+    editorTasks?.dispose();
+    void editorSession?.close().catch(() => {});
+  },
+  { once: true },
+);
 void boot().catch(fail);

@@ -1,0 +1,81 @@
+.editor-audio-enhancement {
+  box-sizing: border-box;
+  width: min(660px, calc(100vw - 24px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  border: 1px solid #3d485e;
+  border-radius: 14px;
+  padding: 20px;
+  background: #141c2b;
+  color: #edf2fb;
+  font:
+    14px/1.5 system-ui,
+    sans-serif;
+}
+.editor-audio-enhancement::backdrop {
+  background: #0009;
+}
+.editor-audio-enhancement [hidden] {
+  display: none !important;
+}
+.editor-audio-enhancement header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.editor-audio-enhancement h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.editor-audio-enhancement p {
+  color: #b9c5da;
+}
+.editor-audio-enhancement button,
+.editor-audio-enhancement select {
+  border: 1px solid #45536c;
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: #25344f;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.editor-audio-enhancement button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.editor-audio-enhancement progress,
+.editor-audio-enhancement audio {
+  width: 100%;
+  min-width: 0;
+}
+.editor-audio-enhancement label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+}
+.audio-enhancement-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.editor-audio-enhancement [data-audio-enhancement-apply] {
+  background: #366fdb;
+}
+.editor-audio-enhancement button:focus-visible,
+.editor-audio-enhancement select:focus-visible {
+  outline: 2px solid #8fc8ff;
+  outline-offset: 2px;
+}
+
+.editor-audio-enhancement .audio-enhancement-actions label {
+  flex-direction: row;
+  align-items: center;
+  margin: 0 6px 0 0;
+}
+.editor-audio-enhancement .audio-enhancement-actions input {
+  margin: 0;
+}

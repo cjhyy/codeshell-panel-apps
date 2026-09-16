@@ -7,6 +7,7 @@ export function installGenericMediaTaskMock() {
   const listeners = new Map();
   const copy = (value) => (value === undefined ? undefined : structuredClone(value));
   const persisted = JSON.parse(localStorage.getItem("test-generic-media-tasks") || "{}");
+  const editorTransfers = JSON.parse(localStorage.getItem("test-editor-transfers") || "{}");
   const localJobs = new Map(
       Object.entries(JSON.parse(localStorage.getItem("test-generic-local-media-jobs") || "{}")),
     ),
@@ -20,10 +21,12 @@ export function installGenericMediaTaskMock() {
     documents = new Map();
   window.__genericHostCalls = [];
   window.__nativeCaptures = [];
+  window.__editorRenderRequests = [];
   const emit = (event, value) => {
     for (const listener of listeners.get(event) || []) listener(copy(value));
   };
   const persist = () => {
+    localStorage.setItem("test-editor-transfers", JSON.stringify(editorTransfers));
     localStorage.setItem(
       "test-generic-resource-uploads",
       JSON.stringify(Object.fromEntries(uploads)),
@@ -161,7 +164,7 @@ export function installGenericMediaTaskMock() {
       const { type, ...base } = value;
       return {
         ...base,
-        entry: { name: "media-runtime", sha256: "a".repeat(64) },
+        entry: { name: meta.entry ?? "media-runtime", sha256: "a".repeat(64) },
         input: { request: copy(meta.request) },
         recovery: meta.recovery,
         sequence: value.updatedAt ?? Date.now(),
@@ -187,6 +190,162 @@ export function installGenericMediaTaskMock() {
     raw.on("media.job.changed", (job) => {
       void changed(job);
     });
+    // The renderer itself is not mocked inside the app. These explicit native task
+    // receipts test the full browser staging/export hand-off, not MP4 encoding quality.
+    window.__completeEditorRender = async (id, video) => {
+      const job = localJobs.get(id),
+        meta = persisted[id];
+      if (
+        !job ||
+        meta?.entry !== "editor-runtime" ||
+        meta.action !== "render" ||
+        job.status !== "queued"
+      )
+        throw Error("Expected one queued canonical render task");
+      if (
+        !/^asset-[a-f0-9]{64}$/.test(video?.id) ||
+        video.sha256 !== video.id.slice(6) ||
+        !Number.isSafeInteger(video.bytes) ||
+        video.bytes < 1
+      )
+        throw Error("Expected a complete renderer video artifact receipt");
+      const request = meta.request,
+        document = editorTransfers[request.transferId].document;
+      const sequence = document.sequences.find((item) => item.id === request.sequenceId);
+      const duration = Math.max(0, ...sequence.clips.map((clip) => clip.start + clip.duration));
+      job.status = "succeeded";
+      job.updatedAt = Date.now();
+      job.completedAt = job.updatedAt;
+      job.result = {
+        video: copy(video),
+        verified: true,
+        durationSeconds: duration / 240000,
+        frameCount: Math.ceil(
+          (duration * request.profile.frameRate.numerator) /
+            (240000 * request.profile.frameRate.denominator),
+        ),
+      };
+      resources.set(video.id, copy(video));
+      persist();
+      await changed(job);
+    };
+    async function editorStart(args) {
+      const request = copy(args.input?.request),
+        action = request?.action;
+      if (
+        !request ||
+        !/^editor-[a-f0-9-]{36}$/.test(request.transferId) ||
+        args.recovery !== "retry"
+      )
+        throw Error("Invalid canonical editor task request");
+      if (
+        !["stage-status", "stage-resources", "stage-document", "commit", "render"].includes(action)
+      )
+        throw Error("Unsupported explicit editor fixture action " + action);
+      const transfer = (editorTransfers[request.transferId] ??= { resources: [], chunks: {} });
+      const incoming = args.input.resources ?? [];
+      if (action === "stage-resources") {
+        if (
+          !request.resourceIds?.length ||
+          incoming.length !== request.resourceIds.length ||
+          incoming.some(
+            (item, index) =>
+              item.assetId !== request.resourceIds[index] ||
+              !/^asset-[a-f0-9]{64}$/.test(item.assetId) ||
+              item.path !== `inputs/resource-${index}.bin`,
+          )
+        )
+          throw Error("Invalid canonical resource hand-off");
+        for (const id of request.resourceIds) {
+          const resource = resources.get(id) ?? (await fixture("media.assets.get", { id })).asset;
+          if (resource?.id !== id) throw Error("Canonical fixture resource was not authorized");
+          resources.set(id, copy(resource));
+          if (!transfer.resources.includes(id)) transfer.resources.push(id);
+        }
+      } else if (incoming.length) throw Error("Unexpected canonical resource authority");
+      if (action !== "stage-resources" && !/^[a-f0-9]{64}$/.test(request.documentHash ?? ""))
+        throw Error("Missing canonical document hash");
+      let result;
+      if (action === "stage-status")
+        result = {
+          resourceIds: request.resourceIds.filter((id) => transfer.resources.includes(id)),
+          chunks: Object.keys(transfer.chunks[request.documentHash] ?? {}).map(Number),
+          ...(transfer.documentHash
+            ? { committedDocumentHash: transfer.documentHash, sequenceId: transfer.sequenceId }
+            : {}),
+        };
+      else if (action === "stage-resources")
+        result = {
+          resources: request.resourceIds.map((id) => ({
+            resourceId: id,
+            sha256: id.slice(6),
+            bytes: resources.get(id).bytes,
+          })),
+        };
+      else if (action === "stage-document") {
+        if (
+          !Number.isSafeInteger(request.chunkIndex) ||
+          request.chunkIndex < 0 ||
+          request.chunkIndex >= request.chunkCount ||
+          request.chunkCount > 64 ||
+          typeof request.dataBase64 !== "string" ||
+          btoa(atob(request.dataBase64)) !== request.dataBase64
+        )
+          throw Error("Invalid canonical document chunk");
+        if (transfer.documentHash && transfer.documentHash !== request.documentHash)
+          throw Error("Committed snapshot cannot be overwritten");
+        const chunks = (transfer.chunks[request.documentHash] ??= {});
+        chunks[request.chunkIndex] = request.dataBase64;
+        result = { chunkIndex: request.chunkIndex, bytes: atob(request.dataBase64).length };
+      } else if (action === "commit") {
+        const chunks = transfer.chunks[request.documentHash];
+        if (!chunks || Object.keys(chunks).length !== request.chunkCount)
+          throw Error("Incomplete canonical snapshot");
+        const binary = Array.from({ length: request.chunkCount }, (_, index) =>
+          atob(chunks[index]),
+        ).join("");
+        const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+        const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+          .map((n) => n.toString(16).padStart(2, "0"))
+          .join("");
+        if (bytes.length !== request.byteLength || sha256 !== request.documentHash)
+          throw Error("Canonical snapshot hash mismatch");
+        const document = JSON.parse(new TextDecoder().decode(bytes));
+        if (
+          document.schemaVersion !== 2 ||
+          !document.sequences.some((item) => item.id === request.sequenceId)
+        )
+          throw Error("Expected complete schema 2 snapshot");
+        for (const asset of document.assets)
+          if (asset.resourceId && !transfer.resources.includes(asset.resourceId))
+            throw Error("Unstaged canonical resource");
+        Object.assign(transfer, { document, documentHash: sha256, sequenceId: request.sequenceId });
+        result = { documentHash: sha256, sequenceId: request.sequenceId };
+      } else {
+        if (
+          transfer.documentHash !== request.documentHash ||
+          transfer.sequenceId !== request.sequenceId ||
+          !request.profile?.frameRate
+        )
+          throw Error("Render snapshot does not match its committed document");
+        window.__editorRenderRequests.push({
+          request: copy(request),
+          document: copy(transfer.document),
+        });
+      }
+      const job = {
+        id: crypto.randomUUID(),
+        status: action === "render" ? "queued" : "succeeded",
+        attempt: 1,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ...(result ? { result } : {}),
+      };
+      localJobs.set(job.id, job);
+      persisted[job.id] = { entry: "editor-runtime", action, request, recovery: args.recovery };
+      persist();
+      return enrich(job, persisted[job.id]);
+    }
     const localSettings = () => window.__localVoiceTaskMockOptions;
     window.__completeLocalVoice = (action, error = "") => {
       const entry = [...localJobs].find(
@@ -204,22 +363,27 @@ export function installGenericMediaTaskMock() {
         localStorage.setItem("local-voice-process-test-installed", "yes");
         job.result = { providerId: params.providerId, available: true, state: "ready" };
       } else {
-        const asset = {
-          id: settings.outputAssetId,
-          name: "本人声音真实试听.wav",
-          mimeType: "audio/wav",
-          bytes: 96,
-          createdAt: Date.now(),
-        };
+        const asset = settings.outputAsset
+          ? copy(settings.outputAsset)
+          : {
+              id: settings.outputAssetId,
+              sha256: settings.outputAssetId.slice(6),
+              name: "本人声音真实试听.wav",
+              mimeType: "audio/wav",
+              bytes: 96,
+              createdAt: Date.now(),
+            };
         resources.set(asset.id, asset);
         window.__nativeCaptures.push(copy(asset));
         job.result = {
           asset,
-          inspection: {
-            kind: "audio",
-            durationSeconds: settings.durationSeconds,
-            audio: { sampleRate: 48000, channels: 1 },
-          },
+          inspection: settings.outputInspection
+            ? copy(settings.outputInspection)
+            : {
+                kind: "audio",
+                durationSeconds: settings.durationSeconds,
+                audio: { sampleRate: 48000, channels: 1 },
+              },
           speech: {
             ...params,
             engine: params.modelId,
@@ -424,6 +588,7 @@ export function installGenericMediaTaskMock() {
         if (method === "media.assets.get" && uploadedFiles.has(args.id))
           return { asset: copy(uploadedFiles.get(args.id).asset) };
         if (method === "tasks.start") {
+          if (args.entry === "editor-runtime") return editorStart(args);
           if (args.entry !== "media-runtime" || !args.input?.request)
             throw Error("Invalid reviewed task entry");
           const request = copy(args.input.request),
@@ -589,6 +754,14 @@ export function installGenericMediaTaskMock() {
         }
         if (/^media\.(?:status|prepare|tts|render|scene|audio\.)/.test(method))
           throw Error("Production business call reached raw Host: " + method);
+        if (method === "media.document.set") {
+          const receipt = await fixture(method, args);
+          return {
+            ...receipt,
+            updatedAt: receipt.updatedAt ?? Date.now(),
+            label: receipt.label ?? args.label ?? "保存",
+          };
+        }
         return fixture(method, args);
       },
     };

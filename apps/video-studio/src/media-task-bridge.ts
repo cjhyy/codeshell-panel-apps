@@ -2,6 +2,7 @@ import type { PanelBridge } from "./host";
 import type { MediaJob } from "./production";
 import { createPanelRuntime, taskValue, runtimeCancelled } from "./sdk/panel-runtime";
 import { isExternalMedia, isResourceId } from "./external-media";
+import { canonicalRenderMediaJob, isCanonicalRenderTask } from "./editor/render-media-job";
 
 type Recipe = { id: string; action: string; type: string };
 type State = { cwd: string; key: string; revision: number; recipes: Recipe[] };
@@ -22,6 +23,32 @@ const direct: Record<string, string> = {
   "media.scene": "scene",
   "media.render": "render",
 };
+const MEDIA_ACTIONS = new Set([
+  "status",
+  "voices",
+  "import",
+  "inspect",
+  "prepare",
+  "proxy",
+  "thumbnail",
+  "waveform",
+  "silence",
+  "scenes",
+  "transcribe",
+  "render",
+  "tts",
+  "tts-clone",
+  "tts-setup",
+  "audio-extract",
+  "audio-enhance",
+  "scene",
+]);
+function ownedTask(job: any) {
+  return (
+    isCanonicalRenderTask(job) ||
+    (job?.entry?.name === "media-runtime" && MEDIA_ACTIONS.has(taskRequest(job)?.action))
+  );
+}
 const clone = (value: any) => structuredClone(value);
 function taskRequest(job: any) {
   return job.input?.request ?? job.input?.input?.request;
@@ -149,8 +176,10 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
     return action;
   }
   async function normalize(jobValue: any, scope: State, save = true): Promise<MediaJob> {
-    const job = taskValue(jobValue),
-      request = taskRequest(job),
+    const job = taskValue(jobValue);
+    if (!ownedTask(job)) throw new Error("此任务不属于视频面板的媒体处理或成片导出");
+    if (isCanonicalRenderTask(job)) return canonicalRenderMediaJob(job);
+    const request = taskRequest(job),
       remembered = scope.recipes.find((r) => r.id === job.id);
     const action = remembered?.action ?? request?.action,
       type = remembered?.type ?? mediaType(action ?? "media", request?.params ?? {});
@@ -359,7 +388,23 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
     return {
       assetId: params.assetId,
       ...(transcript
-        ? { engine: data.engine, language: data.language }
+        ? {
+            engine: data.engine,
+            language: data.language,
+            // Analysis artifacts are immutable, content-addressed resources. A legacy
+            // inline transcript receives the same stable content stamp on every page.
+            revision:
+              artifact?.asset?.id ??
+              Array.from(
+                new Uint8Array(
+                  await crypto.subtle.digest(
+                    "SHA-256",
+                    new TextEncoder().encode(JSON.stringify(data)),
+                  ),
+                ),
+                (byte) => byte.toString(16).padStart(2, "0"),
+              ).join(""),
+          }
         : { kind: params.kind, detector: data.detector }),
       total: rows.length,
       offset,
@@ -382,8 +427,8 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         const known = scope.recipes.find((recipe) => recipe.id === incoming.id);
         if (known?.type === "internal") return;
         const terminal = !["queued", "running", "cancelling"].includes(incoming.status);
-        const complete =
-          !known || terminal ? await sdk.call("tasks.get", { id: incoming.id }) : incoming;
+        const complete = await sdk.call("tasks.get", { id: incoming.id });
+        if (!ownedTask(complete)) return;
         const request = taskRequest(complete);
         if (!known && (!request || ["status", "voices", "inspect"].includes(request.action)))
           return;
@@ -504,7 +549,8 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         for (let job of incoming) {
           const known = scope.recipes.find((r) => r.id === job.id);
           if (known?.type === "internal") continue;
-          if (!known) job = await sdk.call("tasks.get", { id: job.id });
+          job = await sdk.call("tasks.get", { id: job.id });
+          if (!ownedTask(job)) continue;
           const request = taskRequest(job);
           if (!known && (!request || ["status", "voices", "inspect"].includes(request.action)))
             continue;
@@ -543,12 +589,17 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
           }
           return start(action, input);
         }
+        if (!ownedTask(native)) throw new Error("此任务不属于视频面板的媒体处理或成片导出");
+        await same(scope);
         if (method === "media.jobs.cancel") native = await sdk.cancel(params.id);
         if (method === "media.jobs.retry") {
           if (native.recovery === "manual" || native.error?.retryable === false)
             throw new Error("此任务需要先检查已有结果，再重新创建，不能自动重试");
           native = await sdk.retry(params.id);
         }
+        if (!taskRequest(native) || !(native as any).entry)
+          native = await sdk.call("tasks.get", { id: params.id });
+        await same(scope);
         return normalize(native, scope);
       }
       return sdk.call(method, params);

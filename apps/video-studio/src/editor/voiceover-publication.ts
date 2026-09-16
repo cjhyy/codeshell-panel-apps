@@ -1,0 +1,206 @@
+import type { AudioClip } from "../model";
+import { isResourceId } from "../external-media";
+import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
+import { projectLegacyView } from "./legacy-adapter";
+import { applyEditorOperations, type EditorOperation } from "./operations";
+import { TICKS_PER_SECOND } from "./time";
+import type { EditorAsset, EditorDocument, JsonData, MediaClip } from "./types";
+import { sequenceDuration, validateEditorDocument } from "./validation";
+
+export interface CanonicalVoiceoverResult {
+  asset: EditorAsset;
+}
+export interface VoiceoverOrigin {
+  sequenceId: string;
+  revision: number;
+}
+export interface VoiceoverPublication {
+  jobId: string;
+  origin?: VoiceoverOrigin;
+  placement?: { startFrame: number; replaceClip?: AudioClip };
+}
+/** Native source duration stays in ticks; the old 30 fps view never determines asset length. */
+export function canonicalVoiceoverReceipt(raw: unknown): CanonicalVoiceoverResult {
+  const data = raw as any,
+    asset = data?.asset,
+    inspection = data?.inspection;
+  if (
+    !asset ||
+    !isResourceId(asset.id) ||
+    !/^asset-[a-f0-9]{64}$/.test(asset.id) ||
+    asset.sha256 !== asset.id.slice(6) ||
+    !Number.isSafeInteger(asset.bytes) ||
+    asset.bytes < 44 ||
+    asset.bytes > 20 * 1024 ** 3 ||
+    asset.mimeType !== "audio/wav" ||
+    typeof asset.name !== "string" ||
+    !asset.name.trim() ||
+    asset.name.length > 200 ||
+    inspection?.kind !== "audio" ||
+    !Number.isFinite(inspection.durationSeconds) ||
+    inspection.durationSeconds <= 0 ||
+    inspection.durationSeconds > 86400 ||
+    !data.speech ||
+    typeof data.speech.text !== "string" ||
+    !data.speech.text.trim()
+  )
+    throw new Error("配音任务没有返回完整的声音与实际时长");
+  const duration = Math.round(inspection.durationSeconds * TICKS_PER_SECOND);
+  if (!Number.isSafeInteger(duration) || duration < 1) throw new Error("配音声音时长无效");
+  return {
+    asset: {
+      id: asset.id,
+      resourceId: asset.id,
+      fingerprint: asset.sha256,
+      name: asset.name,
+      kind: "audio",
+      duration,
+      metadata: {
+        mimeType: asset.mimeType,
+        size: asset.bytes,
+        speech: structuredClone(data.speech) as JsonData,
+      },
+    },
+  };
+}
+
+/** A legacy production job can publish into v2, but cannot reconstruct or flatten its target. */
+export function planPublishVoiceover(
+  value: EditorDocument,
+  result: CanonicalVoiceoverResult,
+  context: VoiceoverPublication,
+  idFactory: () => string = () => crypto.randomUUID(),
+): { operations: EditorOperation[]; notice: string; placed: boolean } {
+  const doc = validateEditorDocument(value),
+    supplied = structuredClone(result.asset),
+    operations: EditorOperation[] = [];
+  if (
+    supplied.kind !== "audio" ||
+    !isResourceId(supplied.resourceId) ||
+    !/^asset-[a-f0-9]{64}$/.test(supplied.resourceId) ||
+    supplied.fingerprint !== supplied.resourceId.slice(6)
+  )
+    throw new Error("配音素材的真实来源无效");
+  const collision = doc.assets.find((a) => a.id === supplied.id);
+  if (collision && collision.resourceId !== supplied.resourceId)
+    throw new Error("配音素材编号已属于其他来源");
+  const matches = doc.assets.filter((a) => a.resourceId === supplied.resourceId);
+  if (matches.some((a) => a.kind !== "audio" || a.duration !== supplied.duration))
+    throw new Error("已有配音素材与任务结果不一致");
+  // Identical bytes may come from another recipe or an ordinary import. Keep both recipes
+  // rather than overwriting existing instances' metadata or losing the newly generated script.
+  const existing = matches.find(
+    (a) => JSON.stringify(a.metadata?.speech) === JSON.stringify(supplied.metadata?.speech),
+  );
+  const asset = existing ?? { ...supplied, id: collision ? idFactory() : supplied.id };
+  if (!existing) operations.push({ type: "asset.add", asset });
+  const finish = (notice: string, placed = false) => {
+    applyEditorOperations(doc, operations, doc.revision);
+    return { operations: structuredClone(operations), notice, placed };
+  };
+  const library = (reason: string) =>
+    finish(`${reason}。完整新配音已保存在素材库，当前音轨和字幕保持不变，请试听后选择使用。`);
+  if (!context.placement) return finish("完整配音已保存在素材库，可试听后加入时间线。");
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/.test(context.jobId) ||
+    !Number.isSafeInteger(context.placement.startFrame) ||
+    context.placement.startFrame < 0 ||
+    context.placement.startFrame > 2592000
+  )
+    throw new Error("配音任务的原始放置记录无效");
+  const origin = context.origin,
+    sequence = doc.sequences.find((s) => s.id === origin?.sequenceId),
+    marker = `voice-${context.jobId}`;
+  // Completion receipts can be replayed after storage succeeded but recording consumption failed.
+  const published = doc.sequences
+    .flatMap((s) => s.clips)
+    .find((c) => c.kind === "media" && c.id === marker && c.assetId === asset.id);
+  if (published) return finish("此配音已加入工程，后续剪辑保持完整。", true);
+  if (!origin || !Number.isSafeInteger(origin.revision) || origin.revision < 0 || !sequence)
+    return library("原始目标序列记录缺失");
+  const original = context.placement.replaceClip;
+  if (original) {
+    const view = projectLegacyView(doc, sequence.id),
+      mapped = view.clips.find((c) => c.collection === "audioClips" && c.legacyId === original.id),
+      target = sequence.clips.find((c) => c.id === mapped?.clipId);
+    // A successful same-ID replacement is recognizable even after later user edits.
+    if (target?.kind === "media" && target.assetId === asset.id)
+      return finish("此配音已替换，后续剪辑保持完整。", true);
+    if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未替换原配音");
+    const projected = view.project.audioClips?.find((c) => c.id === original.id);
+    if (
+      !target ||
+      target.kind !== "media" ||
+      !projected ||
+      !["id", "assetId", "inFrame", "outFrame", "startFrame", "volume"].every(
+        (key) => (projected as any)[key] === (original as any)[key],
+      )
+    )
+      return library("原配音已移动、裁剪或删除，未自动替换");
+    const oldAsset = doc.assets.find((a) => a.id === target.assetId)!;
+    if (oldAsset.duration !== asset.duration)
+      return library("新配音与原素材时长不同，需重新安排内容");
+    if (sequence.tracks.find((t) => t.id === target.trackId)!.locked)
+      return library("原配音轨道已锁定");
+    if (sequence.transitions.some((t) => t.fromClipId === target.id || t.toClipId === target.id))
+      return library("原配音参与转场，需要先审核替换区间");
+    const bound = doc.sequences.some((s) =>
+      s.clips.some(
+        (c) =>
+          c.kind === "text" &&
+          c.sourceBinding &&
+          (c.sourceBinding.clipId === target.id ||
+            c.sourceBinding.provenance?.path.includes(target.id)),
+      ),
+    );
+    if (bound) return library("原配音含来源绑定字幕，需审核新声音并重新生成对应字幕");
+    // Same source extent and the same clip ID preserve local automation, fades, links and ducking.
+    operations.push({
+      type: "clip.update",
+      sequenceId: sequence.id,
+      clipId: target.id,
+      patch: { assetId: asset.id },
+    });
+    return finish(
+      "已替换配音，保留原片段的精确时序、音量动画、声像、淡化和关联设置，可整体撤销。",
+      true,
+    );
+  }
+  if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未自动放置配音");
+  const start = context.placement.startFrame * 8000,
+    available = Math.max(0, sequenceDuration(sequence) - start);
+  if (!available) return library("原放置位置没有可用的画面时长");
+  const duration = Math.min(available, asset.duration),
+    track = createTrack(idFactory(), "audio", "生成配音");
+  if (doc.sequences.some((s) => s.clips.some((c) => c.id === marker)))
+    return library("配音结果编号与现有片段冲突");
+  const clip: MediaClip = {
+    id: marker,
+    kind: "media",
+    assetId: asset.id,
+    trackId: track.id,
+    label: asset.name,
+    start,
+    duration,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: duration, source: duration },
+      ],
+    },
+    audio: defaultAudioMix(),
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  };
+  operations.push(
+    { type: "track.add", sequenceId: sequence.id, track },
+    { type: "clip.add", sequenceId: sequence.id, clip },
+  );
+  return finish(
+    duration < asset.duration
+      ? "配音已加入原目标序列，超过画面部分保存在完整素材中，请延长画面后使用。"
+      : "配音已加入原目标序列，完整素材与文稿已保存，可整体撤销。",
+    true,
+  );
+}

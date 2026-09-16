@@ -1,3 +1,10 @@
+import {
+  enterLegacyProduction,
+  readSavedEditorDocument,
+  readSavedLegacyProject,
+  legacyProjectFromDocument,
+  pristineLegacyDemoProject,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
@@ -12,7 +19,7 @@ import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs"
 import { installLocalVoiceProcessMock } from "./helpers/video-studio-local-voice-process.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output, buildDirectory;
 const screenshots = resolve(root, "artifacts/video-studio");
 let browser;
 let server;
@@ -21,7 +28,10 @@ const errors = [];
 
 before(async () => {
   const [project] = selectProjects(await discoverProjects(), "video-studio");
-  await buildProject(project);
+  buildDirectory = await mkdtemp(resolve(tmpdir(), "video-studio-main-legacy-ui-"));
+  const isolatedOutput = resolve(buildDirectory, "package");
+  await buildProject({ ...project, output: isolatedOutput }, { log: false });
+  output = resolve(isolatedOutput, "app");
   await mkdir(screenshots, { recursive: true });
   server = createServer(async (request, response) => {
     if (
@@ -74,6 +84,7 @@ before(async () => {
 after(async () => {
   await browser?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (buildDirectory) await rm(buildDirectory, { recursive: true, force: true });
   assert.deepEqual(errors, [], "No runtime errors or CSP violations");
 });
 
@@ -110,7 +121,7 @@ async function pageWithBridge(mock = false, generic = true) {
           if (method === "media.document.get")
             return storage[`document:${params.key}`] || { revision: 0, data: null };
           if (method === "media.document.set") {
-            if (params.key === "video-studio-recent-v1" && window.__holdArchive) {
+            if (params.key === "video-studio-recent-v2" && window.__holdArchive) {
               window.__archiveStarted = true;
               await new Promise((resolve) => {
                 window.__releaseArchive = resolve;
@@ -125,7 +136,7 @@ async function pageWithBridge(mock = false, generic = true) {
           }
           if (method === "storage.get") return storage[params.key] || null;
           if (method === "storage.set") {
-            if (params.key === "video-studio-recent-v1" && window.__holdArchive) {
+            if (params.key === "video-studio-recent-v2" && window.__holdArchive) {
               window.__archiveStarted = true;
               await new Promise((resolve) => {
                 window.__releaseArchive = resolve;
@@ -152,16 +163,14 @@ async function pageWithBridge(mock = false, generic = true) {
     });
   }
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   return page;
 }
 
-const readProject = (page) =>
-  page.evaluate(
-    () =>
-      window.__panelTools?.read_video_project().project ||
-      JSON.parse(localStorage.getItem("video-studio-project-v1")),
-  );
+const readProject = async (page) =>
+  (await page.evaluate(() => window.__panelTools?.read_video_project().project ?? null)) ??
+  (await readSavedLegacyProject(page));
 async function saved(page) {
   await page.waitForFunction(
     () => document.querySelector("#save-state")?.textContent === "已自动保存",
@@ -346,10 +355,11 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   const jsonDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载工程 JSON", exact: true }).click();
   const json = JSON.parse(await readFile(await (await jsonDownload).path(), "utf8"));
-  assert.equal(json.schemaVersion, 1);
-  assert.equal(json.clips.length, 3);
+  assert.equal(json.schemaVersion, 2);
+  assert.equal((await legacyProjectFromDocument(json)).clips.length, 3);
   const revision = json.revision;
   await page.reload();
+  await enterLegacyProduction(page);
   await page.locator("#revision").waitFor();
   assert.equal((await readProject(page)).revision, revision);
 
@@ -358,6 +368,9 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   assert.equal((await readProject(page)).clips.length, 0);
   await page.getByRole("button", { name: "最近工程 / 打开工程", exact: true }).click();
   await page.locator(".recent-project").filter({ hasText: "从想法，到成片。" }).click();
+  await page.waitForFunction(
+    () => document.querySelector("#project-name")?.value === "从想法，到成片。",
+  );
   await saved(page);
   assert.equal(
     (await readProject(page)).clips.length,
@@ -450,7 +463,9 @@ test("malformed portable project never replaces the current editable project", a
     mimeType: "application/json",
     buffer: Buffer.from('{"schemaVersion":1,"clips":[]}'),
   });
-  await page.waitForFunction(() => document.querySelector("#toast")?.textContent.includes("工程"));
+  await page.waitForFunction(() =>
+    /工程|文档|schema|版本|未知字段/.test(document.querySelector("#toast")?.textContent ?? ""),
+  );
   assert.deepEqual(await readProject(page), original);
   await page.close();
 });
@@ -486,6 +501,7 @@ test("import is undoable and original media automatically reconnects after reope
     await saved(page);
     const before = await readProject(page);
     await page.reload();
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () =>
         document.querySelectorAll(".asset-card").length === 1 &&
@@ -515,6 +531,7 @@ test("original audio and rough-cut marks survive a complete browser restart", as
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.locator("#preview").waitFor();
     return page;
   };
@@ -594,6 +611,7 @@ test("legacy uncached media can reconnect without changing its saved identity", 
       asset.id,
     );
     await page.reload();
+    await enterLegacyProduction(page);
     await page.locator(`[data-rough-source="${asset.id}"]`).click();
     await page.locator(".roughcut-notice").waitFor();
     await page.locator("#media-input").setInputFiles(fixture);
@@ -605,10 +623,11 @@ test("legacy uncached media can reconnect without changing its saved identity", 
     await page.waitForFunction(() => !document.querySelector(".roughcut-notice"));
     assert.deepEqual(
       await readProject(page),
-      { ...before, revision: before.revision + 1 },
-      "Reconnection preserves IDs and ranges and saves one recovery revision",
+      before,
+      "Restoring cached bytes preserves IDs and ranges without inventing a content revision",
     );
     await page.reload();
+    await enterLegacyProduction(page);
     await page.locator(`[data-rough-source="${asset.id}"]`).click();
     await page.waitForFunction(() => !document.querySelector(".roughcut-notice"));
   } finally {
@@ -818,10 +837,8 @@ test("persistent media, versioned automatic edits, real tool contract and reload
             jobs: Object.values(jobs).map(({ result, ...j }) => j),
           };
         if (method === "media.jobs.get") return structuredClone(jobs[args.id]);
-        if (method === "media.render") {
-          window.__renderInput = args;
-          return job("render");
-        }
+        if (method === "media.render")
+          throw Error("Canonical export must not use legacy media.render");
         if (method === "media.export") {
           window.__exports.push(args.assetId);
           return { saved: true, name: "成片.mp4" };
@@ -839,6 +856,7 @@ test("persistent media, versioned automatic edits, real tool contract and reload
     };
   });
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   await page.getByRole("button", { name: "导入素材", exact: true }).first().click();
   await page.evaluate(() => window.__completeJob("import"));
@@ -853,6 +871,41 @@ test("persistent media, versioned automatic edits, real tool contract and reload
   await page.locator("[data-add-asset]").click();
   await saved(page);
   assert.equal((await readProject(page)).assets[0].mediaId, "asset-" + "a".repeat(64));
+  const initialDocument = await readSavedEditorDocument(page);
+  const initialClip = initialDocument.sequences[0].clips.find((clip) => clip.kind === "media");
+  const advancedTransform = {
+    ...initialClip.transform,
+    rotation: 13,
+    scaleX: {
+      keyframes: [
+        { time: 0, value: 0.6 },
+        { time: initialClip.duration - 1, value: 1, easing: "ease-in" },
+      ],
+    },
+  };
+  await page.evaluate(
+    async ({ sequenceId, clipId, transform }) => {
+      const tools = window.__panelTools;
+      const identity = tools.read_video_project({ editor: { view: "project" } }).identity;
+      await tools.apply_video_edit({
+        editor: {
+          identity,
+          label: "精确缩放动画",
+          steps: [
+            {
+              kind: "operations",
+              operations: [{ type: "clip.update", sequenceId, clipId, patch: { transform } }],
+            },
+          ],
+        },
+      });
+    },
+    {
+      sequenceId: initialDocument.activeSequenceId,
+      clipId: initialClip.id,
+      transform: advancedTransform,
+    },
+  );
   await page.locator('[data-tab="ai"]').click();
   await page.locator("#ai-prompt").fill("做一个带字幕的介绍视频并导出");
   const preparationCount = await page.evaluate(
@@ -910,17 +963,51 @@ test("persistent media, versioned automatic edits, real tool contract and reload
   assert.notEqual((await readProject(page)).name, "不应覆盖");
   await page.evaluate(async () => {
     const state = window.__panelTools.read_video_project();
-    await window.__panelTools.render_video_project({
+    const receipt = await window.__panelTools.render_video_project({
       projectId: state.project.id,
       requestToken: state.requestToken,
       baseRevision: state.project.revision,
     });
-    window.__completeJob("render");
+    if (!receipt.accepted || receipt.jobId) throw Error("Expected an honest early export receipt");
+    window.__renderOperation = receipt.operationId;
   });
+  await page.waitForFunction(async () => {
+    const state = await window.__panelTools.read_video_project({
+      view: "jobs",
+      jobIds: [window.__renderOperation],
+    });
+    return state.operations?.[0]?.jobId;
+  });
+  await page.evaluate(async () => {
+    const state = await window.__panelTools.read_video_project({
+      view: "jobs",
+      jobIds: [window.__renderOperation],
+    });
+    await window.__completeEditorRender(state.operations[0].jobId, {
+      id: `asset-${"b".repeat(64)}`,
+      sha256: "b".repeat(64),
+      name: "成片.mp4",
+      mimeType: "video/mp4",
+      bytes: 12345,
+    });
+  });
+  const snapshots = await page.evaluate(() => window.__editorRenderRequests);
+  assert.equal(snapshots.length, 1);
+  const canonical = await readSavedEditorDocument(page);
+  assert.deepEqual(
+    snapshots[0].document.sequences,
+    canonical.sequences,
+    "Automatic rendering receives every canonical layer and animation",
+  );
+  assert.deepEqual(
+    snapshots[0].document.sequences[0].clips.find((clip) => clip.id === initialClip.id).transform,
+    advancedTransform,
+  );
   await page.locator('[data-tab="jobs"]').click();
   await page.getByRole("button", { name: "保存 MP4", exact: true }).click();
   assert.deepEqual(await page.evaluate(() => window.__exports), ["asset-" + "b".repeat(64)]);
   await page.reload();
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   await page.waitForFunction(
     () => window.__panelTools.read_video_project().missingAssetIds.length === 0,
@@ -950,6 +1037,7 @@ test("actual preview button sends narrated demo audio to speakers, including reo
     };
   });
   await page.reload();
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   const hearAndPause = async () => {
     await page.waitForFunction(
@@ -980,17 +1068,15 @@ test("actual preview button sends narrated demo audio to speakers, including reo
   await hearAndPause();
   await audible();
   const project = await readProject(page);
-  const legacy = {
-    ...project,
-    revision: 0,
-    assets: project.assets.filter((asset) => asset.kind === "demo"),
-    audioClips: [],
-  };
+  const legacy = { ...(await pristineLegacyDemoProject()), id: project.id };
   await page.locator("#project-input").setInputFiles({
     name: "legacy-demo.json",
     mimeType: "application/json",
     buffer: Buffer.from(JSON.stringify(legacy)),
   });
+  await page.waitForFunction(() =>
+    document.querySelector("#toast")?.textContent.includes("工程已打开"),
+  );
   await saved(page);
   assert.equal(
     (await readProject(page)).audioClips.length,
@@ -1001,8 +1087,10 @@ test("actual preview button sends narrated demo audio to speakers, including reo
   await audible();
   // A delayed Host restore must not rerender/stop playback started by the user.
   await page.addInitScript(installGenericMediaTaskMock);
-  await page.addInitScript(() => {
+  const restoredDocument = await readSavedEditorDocument(page);
+  await page.addInitScript((document) => {
     let release;
+    const documents = { "video-studio-current": { revision: 1, data: document } };
     const gate = new Promise((resolve) => {
       release = resolve;
     });
@@ -1023,13 +1111,15 @@ test("actual preview button sends narrated demo audio to speakers, including reo
             hyperframes: { available: false },
           };
         if (method === "media.document.get")
-          return {
-            revision: 0,
-            data:
-              args.key === "video-studio-current"
-                ? JSON.parse(localStorage.getItem("video-studio-project-v1"))
-                : null,
-          };
+          return documents[args.key] ?? { revision: 0, data: null };
+        if (method === "media.document.set") {
+          const previous = documents[args.key] ?? { revision: 0, data: null };
+          if (previous.revision !== args.baseRevision) throw new Error("Document revision changed");
+          return (documents[args.key] = {
+            revision: previous.revision + 1,
+            data: structuredClone(args.data),
+          });
+        }
         if (method === "media.jobs.list") {
           window.__releaseRestore = release;
           await gate;
@@ -1038,8 +1128,9 @@ test("actual preview button sends narrated demo audio to speakers, including reo
         throw Error("Unexpected restore method: " + method);
       },
     };
-  });
+  }, restoredDocument);
   await page.reload();
+  await enterLegacyProduction(page);
   await page.waitForFunction(() => typeof window.__releaseRestore === "function");
   await page.getByRole("button", { name: "播放 / 暂停（空格）", exact: true }).click();
   await page.waitForFunction(
@@ -1236,6 +1327,7 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
     { initial, speechId },
   );
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   await page.waitForFunction(
     () => window.__panelTools.read_video_project().missingAssetIds.length === 0,
@@ -1527,6 +1619,7 @@ test("local voice cloning validates its own recording, uses real model preview, 
   );
   try {
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.locator("#preview").waitFor();
     await page.locator('[data-tab="voiceover"]').click();
     await page.waitForFunction(
@@ -1619,6 +1712,7 @@ test("local voice cloning validates its own recording, uses real model preview, 
     assert.deepEqual((await readProject(page)).audioClips, initial.audioClips);
 
     await page.reload();
+    await enterLegacyProduction(page);
     await page.locator("#preview").waitFor();
     await page.locator('[data-audio-clip="saved-clone-clip"]').click();
     await page.getByRole("button", { name: "修改文案 / 重新配音", exact: true }).click();
@@ -2156,10 +2250,9 @@ test("free timeline positions survive reload, accept asset drops at the cursor, 
     const positioned = await readProject(page);
     assert.equal(positioned.clips.at(-1).startFrame, 900);
     await page.reload();
+    await enterLegacyProduction(page);
     await page.locator("#revision").waitFor();
-    await page.waitForFunction(
-      () => JSON.parse(localStorage.getItem("video-studio-project-v1"))?.timelineMode === "free",
-    );
+    assert.equal((await readSavedLegacyProject(page)).timelineMode, "free");
     assert.deepEqual((await readProject(page)).clips, positioned.clips);
     await page.locator("#timeline-zoom").evaluate((input) => {
       input.value = "8";

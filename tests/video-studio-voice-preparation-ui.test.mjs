@@ -1,8 +1,14 @@
+import { createVoiceWavFixture } from "./helpers/video-studio-voice-wav.mjs";
+import {
+  enterLegacyProduction,
+  readSavedLegacyProject,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -11,18 +17,24 @@ import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs"
 import { installLocalVoiceProcessMock } from "./helpers/video-studio-local-voice-process.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output = resolve(root, "panels/video-studio/app"),
+  buildDirectory;
 const artifacts = resolve(root, "artifacts/video-studio");
 const sourceId = "asset-" + "a".repeat(64),
-  sampleId = "asset-" + "b".repeat(64),
   extractedId = "asset-" + "c".repeat(64);
-let browser, server, url;
+let browser, server, url, sampleId, sample, sampleDirectory;
 const errors = [];
 before(async () => {
   if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
     const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
+    buildDirectory = await mkdtemp(resolve(tmpdir(), "video-studio-voice-ui-"));
+    const isolatedOutput = resolve(buildDirectory, "package");
+    await buildProject({ ...project, output: isolatedOutput }, { log: false });
+    output = resolve(isolatedOutput, "app");
   }
+  sampleDirectory = await mkdtemp(resolve(tmpdir(), "video-voice-wav-"));
+  sample = await createVoiceWavFixture(resolve(output, "demo-narration.mp3"), sampleDirectory);
+  sampleId = sample.asset.id;
   await mkdir(artifacts, { recursive: true });
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
@@ -33,16 +45,18 @@ before(async () => {
     try {
       response.writeHead(200, {
         "Content-Type":
-          {
-            ".html": "text/html",
-            ".mjs": "text/javascript",
-            ".css": "text/css",
-            ".mp3": "audio/mpeg",
-          }[extname(path)] || "application/octet-stream",
+          pathname === `/media/${sampleId}`
+            ? "audio/wav"
+            : {
+                ".html": "text/html",
+                ".mjs": "text/javascript",
+                ".css": "text/css",
+                ".mp3": "audio/mpeg",
+              }[extname(path)] || "application/octet-stream",
         "Content-Security-Policy":
           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'",
       });
-      response.end(await readFile(path));
+      response.end(pathname === `/media/${sampleId}` ? sample.bytes : await readFile(path));
     } catch {
       response.writeHead(404).end();
     }
@@ -61,6 +75,8 @@ before(async () => {
 after(async () => {
   await browser?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (buildDirectory) await rm(buildDirectory, { recursive: true, force: true });
+  if (sampleDirectory) await rm(sampleDirectory, { recursive: true, force: true });
   assert.deepEqual(errors, [], "No app runtime or CSP errors");
 });
 
@@ -75,7 +91,9 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
   await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(installLocalVoiceProcessMock, {
     outputAssetId: sampleId,
-    durationSeconds: 24,
+    durationSeconds: sample.inspection.durationSeconds,
+    outputAsset: sample.asset,
+    outputInspection: sample.inspection,
     installed,
   });
   await page.addInitScript(() => {
@@ -95,10 +113,10 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
     };
   });
   // Jobs, installation and Agent calls are simulated at the Host boundary;
-  // the full controller/UI run unchanged and audio playback decodes a real MP3.
+  // the full controller/UI run unchanged and audio playback decodes actual MP3 originals and a WAV result.
   // This suite checks integration, not the naturalness of model-generated speech.
   await page.addInitScript(
-    ({ sourceId, sampleId, extractedId }) => {
+    ({ sourceId, sampleId, extractedId, sampleReceipt }) => {
       const initial = {
         schemaVersion: 1,
         id: "voice-preparation-project",
@@ -138,25 +156,31 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
           localStorage.setItem(`voice-test-${key}`, JSON.stringify(value));
         localStorage.setItem("voice-test-installed", installed ? "yes" : "no");
       };
-      const asset = (id) => ({
-        id,
-        name:
-          id === sourceId
-            ? "本人参考录音.mp3"
-            : id === sampleId
-              ? "Audio8 真实试听.mp3"
-              : "提取参考.mp3",
-        mimeType: "audio/mpeg",
-        bytes: 384865,
-        createdAt: 1,
-      });
+      const asset = (id) =>
+        id === sampleId
+          ? structuredClone(sampleReceipt.asset)
+          : {
+              id,
+              name:
+                id === sourceId
+                  ? "本人参考录音.mp3"
+                  : id === sampleId
+                    ? "Audio8 真实试听.mp3"
+                    : "提取参考.mp3",
+              mimeType: "audio/mpeg",
+              bytes: 384865,
+              createdAt: 1,
+            };
       const preparation = (id) => ({
         assetId: id,
-        inspection: {
-          kind: "audio",
-          durationSeconds: id === extractedId ? 5 : 24,
-          audio: { codec: "mp3", sampleRate: 48000, channels: 1 },
-        },
+        inspection:
+          id === sampleId
+            ? structuredClone(sampleReceipt.inspection)
+            : {
+                kind: "audio",
+                durationSeconds: id === extractedId ? 5 : 24,
+                audio: { codec: "mp3", sampleRate: 48000, channels: 1 },
+              },
         preparedAt: 1,
       });
       const catalog = () => ({
@@ -210,8 +234,8 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         else {
           const input = inputs[task.id];
           task.result = {
-            asset: asset(sampleId),
-            inspection: preparation(sampleId).inspection,
+            asset: structuredClone(sampleReceipt.asset),
+            inspection: structuredClone(sampleReceipt.inspection),
             speech: {
               text: input.text,
               modelId: input.modelId,
@@ -252,10 +276,11 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
           if (method === "media.audio.extract") return start("audio-extract", args);
           if (method === "storage.get") return structuredClone(storage[args.key] ?? null);
           if (method === "storage.set") {
-            if (window.__failVoiceSave && (
-              args.key.startsWith("video-studio-voice-preparation") ||
-              args.key === "video-studio-voice-library-v1"
-            ))
+            if (
+              window.__failVoiceSave &&
+              (args.key.startsWith("video-studio-voice-preparation") ||
+                args.key === "video-studio-voice-library-v1")
+            )
               throw Error("声音保存失败：模拟磁盘已满");
             storage[args.key] = structuredClone(args.value);
             persist();
@@ -267,7 +292,10 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
             if (
               window.__failExtractedPublication &&
               args.key === "video-studio-current" &&
-              args.data.assets?.some((item) => item.mediaId === extractedId)
+              (args.data.format === "video-studio-packed-document"
+                ? args.data.data
+                : args.data
+              ).assets?.some((item) => (item.resourceId ?? item.mediaId) === extractedId)
             )
               throw Error("参考录音已截取，工程保存失败：模拟磁盘已满");
             if ((documents[args.key]?.revision ?? 0) !== args.baseRevision)
@@ -318,9 +346,15 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         return genericCall(method, args);
       };
     },
-    { sourceId, sampleId, extractedId },
+    {
+      sourceId,
+      sampleId,
+      extractedId,
+      sampleReceipt: { asset: sample.asset, inspection: sample.inspection },
+    },
   );
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.waitForFunction(
     () => window.__panelTools.read_video_project?.().project.id === "voice-preparation-project",
   );
@@ -482,6 +516,7 @@ test(
         "这是确认声线后，准备生成的完整视频旁白。",
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.locator('[data-tab="ai"]').click();
       await page.locator(".voice-preparation-recipes").waitFor();
       assert.equal(await page.locator("#voice-prep-model").inputValue(), "audio8-tts");
@@ -528,19 +563,30 @@ test(
       assert.equal(await page.locator("#voice-prep-model").inputValue(), "");
       const newProject = await project(page);
       await page.locator('[data-action="voice-prep-use"]').click();
-      await page.waitForFunction(() =>
-        window.__panelTools.read_video_project().project.assets.some((asset) =>
-          asset.kind === "audio" && asset.mediaId === "asset-" + "a".repeat(64)),
-      ).catch(async (error) => {
-        console.error("Voice reuse state:", await page.locator(".voice-preparation").textContent());
-        console.error("Voice reuse calls:", await page.evaluate(() => window.__calls.slice(-8)));
-        throw error;
-      });
+      await page
+        .waitForFunction(() =>
+          window.__panelTools
+            .read_video_project()
+            .project.assets.some(
+              (asset) => asset.kind === "audio" && asset.mediaId === "asset-" + "a".repeat(64),
+            ),
+        )
+        .catch(async (error) => {
+          console.error(
+            "Voice reuse state:",
+            await page.locator(".voice-preparation").textContent(),
+          );
+          console.error("Voice reuse calls:", await page.evaluate(() => window.__calls.slice(-8)));
+          throw error;
+        });
       const reusedProject = await project(page);
       assert.equal(reusedProject.id, newProject.id);
       assert.deepEqual(reusedProject.clips, newProject.clips);
       assert.deepEqual(reusedProject.audioClips, newProject.audioClips);
-      assert.equal(await page.locator("#voiceover-reference-text").inputValue(), "这是我本人录下的参考声音。");
+      assert.equal(
+        await page.locator("#voiceover-reference-text").inputValue(),
+        "这是我本人录下的参考声音。",
+      );
       assert.equal(await page.locator("#voiceover-model").inputValue(), "audio8-tts");
     } finally {
       await page.close();
@@ -654,25 +700,21 @@ test(
         "succeeded",
       );
       await recover.click();
-      await page.waitForFunction(
-        () =>
-          document
-            .querySelector(".voice-preparation [role=alert]")
-            ?.textContent.includes("模拟磁盘已满"),
+      await page.waitForFunction(() =>
+        document
+          .querySelector(".voice-preparation [role=alert]")
+          ?.textContent.includes("模拟磁盘已满"),
       );
       assert.equal(await recover.isEnabled(), true, "A failed save leaves recovery available");
       await page.evaluate(() => {
         window.__failExtractedPublication = false;
       });
       await recover.click();
-      await page.waitForFunction(
-        (mediaId) => {
-          const current = window.__panelTools.read_video_project().project;
-          const asset = current.assets.find((item) => item.mediaId === mediaId);
-          return asset && document.querySelector("#voice-prep-reference")?.value === asset.id;
-        },
-        extractedId,
-      );
+      await page.waitForFunction((mediaId) => {
+        const current = window.__panelTools.read_video_project().project;
+        const asset = current.assets.find((item) => item.mediaId === mediaId);
+        return asset && document.querySelector("#voice-prep-reference")?.value === asset.id;
+      }, extractedId);
       const after = await project(page);
       const extracted = after.assets.find((asset) => asset.mediaId === extractedId);
       assert.equal(await page.locator("#voiceover-reference").inputValue(), extracted.id);
@@ -701,7 +743,7 @@ test(
         ),
         undefined,
       );
-      const durable = await page.evaluate(() => window.__documents["video-studio-current"].data);
+      const durable = await readSavedLegacyProject(page);
       assert.ok(durable.assets.some((asset) => asset.mediaId === extractedId));
     } finally {
       await page.close();
@@ -857,6 +899,7 @@ test(
         history.replaceState({ voiceGuideRecovery: "preserved" }, "", "#voice-guide-model");
       });
       await page.reload();
+      await enterLegacyProduction(page);
       await page.waitForFunction(
         () => window.__panelTools.read_video_project?.().project.id === "voice-preparation-project",
       );

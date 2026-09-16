@@ -195,7 +195,7 @@ test("all Agent production writes reject missing or superseded request identity 
       calls.push("scene");
       return { id: "scene" };
     },
-    render: async () => {
+    startRender: () => {
       calls.push("render");
       return { id: "render" };
     },
@@ -341,7 +341,7 @@ test("render waits for narration validation and rejects a cancelled request afte
   registerProductionTools(
     bridge,
     {
-      render: async () => {
+      startRender: () => {
         rendered++;
       },
     } as unknown as ProductionController,

@@ -1,0 +1,249 @@
+.editor-inspector {
+  color-scheme: dark;
+  --ei-bg: #161b24;
+  --ei-card: #202733;
+  --ei-input: #111720;
+  --ei-line: #344052;
+  --ei-text: #e8edf4;
+  --ei-muted: #9caabe;
+  --ei-accent: #84e2c1;
+  background: var(--ei-bg);
+  color: var(--ei-text);
+  font:
+    12px/1.5 system-ui,
+    -apple-system,
+    sans-serif;
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px;
+  box-sizing: border-box;
+  min-width: 250px;
+}
+.editor-inspector * {
+  box-sizing: border-box;
+}
+.editor-inspector h2,
+.editor-inspector h3,
+.editor-inspector h4,
+.editor-inspector p {
+  margin: 0;
+}
+.editor-inspector h2 {
+  font-size: 16px;
+  font-weight: 650;
+}
+.editor-inspector h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.editor-inspector .ei-header {
+  margin-bottom: 14px;
+}
+.editor-inspector .ei-hint {
+  color: var(--ei-muted);
+  font-size: 11px;
+  margin: 5px 0 10px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.editor-inspector .ei-tabs {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--ei-line);
+  background: var(--ei-input);
+  border-radius: 9px;
+  margin-bottom: 16px;
+}
+.editor-inspector .ei-tabs button {
+  flex: 1;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  white-space: nowrap;
+}
+.editor-inspector .ei-tabs [aria-selected="true"] {
+  background: #314539;
+  color: #b8f3d9;
+}
+.editor-inspector .ei-panel {
+  margin: 0;
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.editor-inspector .ei-section {
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--ei-line);
+}
+.editor-inspector .ei-section-title {
+  font-size: 13px;
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+.editor-inspector .ei-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin: 8px 0;
+}
+.editor-inspector .ei-label {
+  flex: 1 1 45%;
+  min-width: 0;
+  color: #c7d1de;
+  overflow-wrap: anywhere;
+}
+.editor-inspector .ei-input {
+  font: inherit;
+  width: 48%;
+  min-width: 72px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--ei-line);
+  border-radius: 6px;
+  background: var(--ei-input);
+  color: var(--ei-text);
+  outline: none;
+}
+.editor-inspector .ei-input::placeholder {
+  color: #73839a;
+  font-style: italic;
+}
+.editor-inspector .ei-input:focus {
+  border-color: var(--ei-accent);
+  box-shadow: 0 0 0 2px #84e2c122;
+}
+.editor-inspector .ei-field:has(textarea) {
+  flex-direction: column;
+  align-items: stretch;
+}
+.editor-inspector .ei-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 92px;
+  line-height: 1.65;
+}
+.editor-inspector .ei-number {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.editor-inspector .ei-number .ei-field {
+  flex: 1;
+  min-width: 0;
+}
+.editor-inspector .ei-button {
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  background: var(--ei-card);
+  color: var(--ei-text);
+  border: 1px solid var(--ei-line);
+  padding: 6px 10px;
+  border-radius: 6px;
+  margin: 3px 0;
+}
+.editor-inspector .ei-button:hover:not(:disabled) {
+  border-color: #73879f;
+  background: #2b3544;
+}
+.editor-inspector button:focus-visible,
+.editor-inspector summary:focus-visible,
+.editor-inspector input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ei-accent);
+  outline-offset: 2px;
+}
+.editor-inspector .ei-key-button {
+  width: 28px;
+  padding: 5px 0;
+  flex-shrink: 0;
+  color: var(--ei-accent);
+  font-size: 16px;
+}
+.editor-inspector .ei-check {
+  accent-color: var(--ei-accent);
+  width: 17px;
+  height: 17px;
+}
+.editor-inspector :disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.editor-inspector fieldset:disabled :disabled {
+  opacity: 1;
+}
+.editor-inspector fieldset:disabled {
+  opacity: 0.55;
+}
+.editor-inspector .ei-details {
+  margin: 4px 0 10px;
+  border: 1px solid #2e3949;
+  border-radius: 7px;
+  padding: 8px;
+}
+.editor-inspector .ei-details > summary {
+  cursor: pointer;
+  color: var(--ei-muted);
+  font-size: 11px;
+}
+.editor-inspector .ei-details[open] > summary {
+  color: var(--ei-accent);
+  margin-bottom: 12px;
+}
+.editor-inspector .ei-card {
+  border: 1px solid var(--ei-line);
+  padding: 9px;
+  background: #1b222e;
+  border-radius: 7px;
+  margin: 9px 0;
+}
+.editor-inspector .ei-card .ei-field {
+  flex-wrap: wrap;
+}
+.editor-inspector .ei-card .ei-input {
+  flex-grow: 1;
+}
+.editor-inspector .ei-curve {
+  width: 100%;
+  height: 96px;
+  display: block;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 23px, #283447 23px, #283447 24px),
+    repeating-linear-gradient(90deg, #111720, #111720 39px, #283447 39px, #283447 40px);
+  border-radius: 5px;
+  margin: 10px 0;
+}
+.editor-inspector .ei-curve path {
+  stroke: var(--ei-accent);
+  stroke-width: 2;
+  fill: none;
+}
+.editor-inspector .ei-notice,
+.editor-inspector .ei-error {
+  padding: 10px 12px;
+  border-radius: 7px;
+  margin: 10px 0;
+  line-height: 1.65;
+}
+.editor-inspector .ei-notice {
+  color: #ecd19a;
+  background: #45391e;
+}
+.editor-inspector .ei-error {
+  color: #ffb4b4;
+  background: #47292e;
+}
+.editor-inspector .ei-empty {
+  padding: 28px 6px;
+  color: var(--ei-muted);
+  text-align: center;
+}
+.editor-inspector .ei-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

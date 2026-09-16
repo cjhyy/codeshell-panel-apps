@@ -1,3 +1,5 @@
+import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);
+
 // native/media/media-cli.ts
 import { constants as constants3 } from "node:fs";
 import { lstat as lstat3, mkdir as mkdir13, open as open5, realpath as realpath4 } from "node:fs/promises";
@@ -54,7 +56,7 @@ async function runMediaProcess(executable, args, options) {
     const child = spawn(executable, [...args], {
       cwd: options.cwd,
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"],
       // Keep every descendant in the Host-owned tool process group.
       detached: false,
       windowsHide: true
@@ -65,8 +67,15 @@ async function runMediaProcess(executable, args, options) {
     let progressBuffer = "";
     let lastProgress = 0;
     let failure;
+    let spawnFailure;
+    let pipeFailure;
+    let exited = false;
+    let inputFinished = !options.input;
+    const inputController = new AbortController();
     let killTimer;
     let progressWork = Promise.resolve();
+    let inputWork = Promise.resolve();
+    const asError = (error) => error instanceof Error ? error : new Error(String(error));
     const kill = (signal) => {
       try {
         child.kill(signal);
@@ -74,6 +83,9 @@ async function runMediaProcess(executable, args, options) {
       }
     };
     const stop = () => {
+      inputController.abort();
+      child.stdin?.destroy();
+      if (exited) return;
       kill("SIGTERM");
       killTimer ??= setTimeout(() => kill("SIGKILL"), 1500);
       killTimer.unref();
@@ -133,22 +145,100 @@ async function runMediaProcess(executable, args, options) {
       }
     });
     child.once("error", (error) => {
-      cleanup();
-      reject(error);
+      spawnFailure = error;
+      stop();
+    });
+    child.once("exit", () => {
+      exited = true;
+      inputController.abort();
+      child.stdin?.destroy();
+    });
+    child.stdin?.on("error", (error) => {
+      if (!inputController.signal.aborted) {
+        pipeFailure = error;
+        stop();
+      }
     });
     child.once("close", async (code) => {
-      cleanup();
+      exited = true;
+      inputController.abort();
       try {
-        await progressWork;
+        await Promise.all([inputWork, progressWork]);
         if (options.signal.aborted) throw mediaAbortError();
+        if (spawnFailure) throw spawnFailure;
         if (failure) throw failure;
         if (code !== 0)
           throw new Error(`${executable} exited with code ${code}: ${stderr.slice(-4e3)}`);
+        if (pipeFailure) throw pipeFailure;
+        if (!inputFinished)
+          throw new Error(`${executable} exited before all media input was written`);
         resolve7({ stdout: Buffer.concat(stdout), stderr });
       } catch (error) {
         reject(error);
+      } finally {
+        cleanup();
       }
     });
+    if (options.input) {
+      const input = options.input;
+      const signal = inputController.signal;
+      const write = (chunk) => new Promise((accept, decline) => {
+        const aborted = () => {
+          signal.removeEventListener("abort", aborted);
+          decline(mediaAbortError());
+        };
+        const complete = (error) => {
+          signal.removeEventListener("abort", aborted);
+          if (error) decline(error);
+          else accept();
+        };
+        signal.addEventListener("abort", aborted, { once: true });
+        if (signal.aborted) return aborted();
+        try {
+          if (chunk) child.stdin.write(chunk, complete);
+          else child.stdin.end(() => complete());
+        } catch (error) {
+          complete(asError(error));
+        }
+      });
+      inputWork = (async () => {
+        let iterator;
+        let exhausted = false;
+        try {
+          if (signal.aborted) return;
+          iterator = input(signal)[Symbol.asyncIterator]();
+          while (!signal.aborted) {
+            const next = await iterator.next();
+            if (next.done) {
+              exhausted = true;
+              break;
+            }
+            if (signal.aborted) break;
+            if (!(next.value instanceof Uint8Array))
+              throw new Error("Media input must yield Uint8Array chunks");
+            await write(next.value);
+          }
+          if (!signal.aborted && exhausted) {
+            await write();
+            inputFinished = true;
+          }
+        } catch (error) {
+          if (!signal.aborted) {
+            failure ??= asError(error);
+            stop();
+          }
+        } finally {
+          if (iterator && !exhausted) {
+            try {
+              await iterator.return?.();
+            } catch (error) {
+              failure ??= asError(error);
+              stop();
+            }
+          }
+        }
+      })();
+    }
   });
 }
 

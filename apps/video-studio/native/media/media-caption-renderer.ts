@@ -166,7 +166,8 @@ export async function findCaptionBrowser(): Promise<string | undefined> {
 }
 
 type Pending = { resolve(value: any): void; reject(error: Error): void };
-class CaptionBrowser {
+/** Private-pipe transport shared by caption rendering and the full editor compositor. */
+export class CaptionBrowser {
   private child: ChildProcess;
   private pending = new Map<number, Pending>();
   private nextId = 0;

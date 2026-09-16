@@ -76,6 +76,11 @@ async function modulePage() {
   );
   await page.addStyleTag({ content: css });
   await page.addScriptTag({ content: moduleCode });
+  // The menu intentionally closes on viewport resize; finish the fixture's first layout before opening it.
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
   return page;
 }
 const menu = (page) => page.locator("#timeline-context-menu");

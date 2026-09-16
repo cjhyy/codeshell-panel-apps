@@ -1,3 +1,4 @@
+import { enterLegacyProduction } from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { createHash } from "node:crypto";
@@ -14,7 +15,7 @@ import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs"
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output;
 const artifacts = resolve(root, "artifacts/video-studio");
 const resources = new Map();
 const errors = [];
@@ -22,11 +23,11 @@ let browser, server, url, directory;
 let fixtures;
 
 before(async () => {
-  if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
-    const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
-  }
   directory = await mkdtemp(join(tmpdir(), "video-studio-library-ui-"));
+  const [project] = selectProjects(await discoverProjects(), "video-studio");
+  const isolatedOutput = join(directory, "package");
+  await buildProject({ ...project, output: isolatedOutput }, { log: false });
+  output = join(isolatedOutput, "app");
   const video = join(directory, "library-source.mp4");
   const made = spawnSync(
     "ffmpeg",
@@ -180,12 +181,12 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
   return page;
 }
 const ready = async (page) => {
+  await enterLegacyProduction(page);
   await page.locator(".asset-list").waitFor();
   await page.waitForFunction(() => {
     if (!window.__libraryTools?.read_video_project) return false;
-    const stored = JSON.parse(
-      localStorage.getItem("document:video-studio-current") || "null",
-    )?.data;
+    const raw = JSON.parse(localStorage.getItem("document:video-studio-current") || "null")?.data;
+    const stored = raw?.format === "video-studio-packed-document" ? raw.data : raw;
     const project = window.__libraryTools.read_video_project().project;
     return !stored || (project.id === stored.id && project.revision === stored.revision);
   });

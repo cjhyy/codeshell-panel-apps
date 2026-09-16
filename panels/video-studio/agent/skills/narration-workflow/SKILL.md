@@ -5,13 +5,15 @@ description: 在 Mimi 视频工作台中完成“先用素材和文字做文案�
 
 # 先做草稿，再录自己的声音
 
-用 `Panel` 工具完成。通过 `Skill` 显式加载 `video-studio:video-production` 获取共享工具与 30 fps 时间规则；需要整理素材时加载 `video-studio:video-init`。以实际 Panel schema 为准，不要求读取引用文件，不通过 shell 或外部脚本制作。被加载技能的通用“继续导出”要求不改变本技能当前阶段的范围。
+用 `Panel` 工具完成。通过 `Skill` 显式加载 `video-studio:video-production` 获取专门协调器工具及其 30 fps 兼容投影时间规则；需要整理素材时加载 `video-studio:video-init`。以实际 Panel schema 为准，不要求读取引用文件，不通过 shell 或外部脚本制作。被加载技能的通用“继续导出”要求不改变本技能当前阶段的范围。
 
 用户给出的目标、文字和已导入素材共同决定内容。将实际观察到的画面、真实原声文稿和用户说明区分开；文件名不能证明画面内容，用户提供的表达要点也不代表画面已经拍到。非关键偏好采用合理默认值；已有工程和用户修改保留，缺失镜头写明具体缺项。
 
 这个流程使用 `read_video_project.workflowMode` 的 `draft` 和 `narration` 两种模式。每次先读当前 `project`、`requestToken`、`revision` 和 `project.narration`，按面板实际启动的模式执行。所有写入都使用当前身份、令牌与修订号；旧工程或用户修改后的旧操作不能直接重放。
 
 `project.narration` 的 `phase` 为 `draft/review/approved/recorded/aligned`，`captionBasis` 为 `draft/recording`，还包含 `draftCaptionIds` 和可选的 `approvedScript/approvedFingerprint/alignmentFingerprint/recordingAssetId`。这些字段由面板协调层维护，不是 Agent 可写操作。确认文案和剪辑、选择录音、授予设备权限均由用户在面板操作；Agent 不开启设备、不代替用户确认、不复制或伪造批准快照。
+
+完整新版多轨内容通过 `read_video_project({editor:{view:"project"}})` 读取，不能用旧投影重建。通用 v2 编辑不能跳过本流程确认/录音选择；修改批准依赖会退回 review 并保留原确认追溯。
 
 ## draft：把文字和素材变成可审阅的草稿
 
@@ -30,6 +32,6 @@ description: 在 Mimi 视频工作台中完成“先用素材和文字做文案�
 3. **保留本人的声音。** 保留真实转写覆盖的所有说话内容、呼吸余量和句尾；可以依据真实静音证据裁掉无对白首尾或调整长停顿，不能为贴合草稿删除整句。明显重说需要用户先在口播编辑中决定取舍，不擅自删掉有转写的内容以通过时长限制。只有句级时间时不精切句中单词。需要补录时指出具体句子，不自动假设补录时长与旧片段相同；新录音仍须重新选择和真实转写。
 4. **按声音重排画面。** 以指定录音实际长度安排画面，先确保画面可容纳整段录音，再调用 `audio-add`，明确给出 `assetId:recordingAssetId`、`inFrame:0` 和 `outFrame:该素材实际 durationFrames` 以及合法 `startFrame`；不省略出点让默认值截短声音。若按真实静音证据拆分，所有有声文稿范围仍须保留，并留呼吸余量。画面不够长时优先调整或补用现有合适镜头、图片或实际可生成的必要场景；不能用 `min(录音长度,草稿长度)` 硬裁掉结尾，也不为填满草稿任意拉伸声音。所有音轨都应落在实际画面范围内。画面重排会连动音轨和字幕，按共享时间规则分批编辑、重读，再核实真实映射。保留现场声的片段避免重复混入同一份人声。
 5. **提交真实对齐。** 画面和实际口播音轨准备好、转写成功且无待处理任务后，重读工程，用 `apply_video_edit` 保存完整 `workflow`，设置 `stage:"review"`。协调层会检查指定录音的真实转写、每段说话是否被实际音轨保留，再删除 `draftCaptionIds` 集合中的临时字幕，将转写按实际音轨源范围映射为字幕；成功后状态才是 `phase:"aligned"`、`captionBasis:"recording"`。不要手写一批估计的“正式字幕”来绕过此步骤。
-6. **核对结果后真实导出。** 重新读取确认 `aligned` 和 `recording`，检查整段声音未截尾、字幕内容来自实录且不越界、音量和原声关系合理。字幕映射依据是：转写源秒转 30 fps 帧，与各 `audioClip.inFrame/outFrame` 取非空交集，再用 `序列帧 = audioClip.startFrame + 源帧 - audioClip.inFrame` 转换两个端点；同源多实例分别计算。保留独立标题和其他用户文字。通过检查后调用 `render_video_project` 并跟踪至 `succeeded`，交付有效视频结果。没有实际播放能力时如实说明连续观看/试听仍需用户验收，不把元数据检查描述为已经听过成片。
+6. **核对结果后真实导出。** 重新读取确认 `aligned` 和 `recording`，检查整段声音未截尾、字幕内容来自实录且不越界、音量和原声关系合理。字幕映射依据是：转写源秒转 30 fps 帧，与各 `audioClip.inFrame/outFrame` 取非空交集，再用 `序列帧 = audioClip.startFrame + 源帧 - audioClip.inFrame` 转换两个端点；同源多实例分别计算。保留独立标题和其他用户文字。通过检查后调用 `render_video_project`。收到 `accepted/operationId/preparing` 只表示已受理准备；用 `read_video_project({view:"jobs",jobIds:[operationId]})` 查询 `operations`，取得真实 `jobId` 后跟踪 `jobs` 至 `succeeded`，交付有效视频结果。重复同一已授权请求会复用回执；准备失败或重开后 `interrupted` 时先核查已有任务，不重交相同请求，也不能重新写入或伪造原审批。没有实际播放能力时如实说明连续观看/试听仍需用户验收，不把元数据检查描述为已经听过成片。
 
 转写或导出失败时保存实际任务和仍可用的工程，只在修正了输入或有明确可重试依据后重试。恢复时先复用成功来源、已保存确认和仍在运行的任务，不从头生成一份，也不跨工程应用旧录音或旧批准。

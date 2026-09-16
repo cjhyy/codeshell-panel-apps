@@ -1,8 +1,14 @@
+import { createVoiceWavFixture } from "./helpers/video-studio-voice-wav.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
+import {
+  enterLegacyProduction,
+  readSavedLegacyProject,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -10,18 +16,21 @@ import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output, directory;
 const artifacts = resolve(root, "artifacts/video-studio/capabilities-ui");
 const sourceId = "asset-" + "e".repeat(64);
-const sampleId = "asset-" + "f".repeat(64);
+let sampleId, sample;
 let browser, server, url;
 const errors = [];
 
 before(async () => {
-  if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
-    const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
-  }
+  directory = await mkdtemp(resolve(tmpdir(), "video-studio-capabilities-ui-"));
+  const [project] = selectProjects(await discoverProjects(), "video-studio");
+  const isolatedOutput = resolve(directory, "package");
+  await buildProject({ ...project, output: isolatedOutput }, { log: false });
+  output = resolve(isolatedOutput, "app");
+  sample = await createVoiceWavFixture(resolve(output, "demo-narration.mp3"), directory);
+  sampleId = sample.asset.id;
   await mkdir(artifacts, { recursive: true });
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
@@ -32,16 +41,18 @@ before(async () => {
     try {
       response.writeHead(200, {
         "Content-Type":
-          {
-            ".html": "text/html",
-            ".mjs": "text/javascript",
-            ".css": "text/css",
-            ".mp3": "audio/mpeg",
-          }[extname(path)] || "application/octet-stream",
+          pathname === `/media/${sampleId}`
+            ? "audio/wav"
+            : {
+                ".html": "text/html",
+                ".mjs": "text/javascript",
+                ".css": "text/css",
+                ".mp3": "audio/mpeg",
+              }[extname(path)] || "application/octet-stream",
         "Content-Security-Policy":
           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
       });
-      response.end(await readFile(path));
+      response.end(pathname === `/media/${sampleId}` ? sample.bytes : await readFile(path));
     } catch {
       response.writeHead(404).end();
     }
@@ -56,6 +67,7 @@ before(async () => {
 after(async () => {
   await browser?.close();
   if (server) await new Promise((resolve) => server.close(resolve));
+  if (directory) await rm(directory, { recursive: true, force: true });
   assert.deepEqual(errors, [], "The full app must not throw runtime errors or violate its CSP");
 });
 
@@ -85,15 +97,16 @@ async function isolatedPage(mockHost = false, width = 1440) {
   });
   if (mockHost) await installMockHost(page);
   await page.goto(url);
+  await enterLegacyProduction(page);
   await page.locator("#preview").waitFor();
   return { context, page };
 }
 
-// Only the bridge directory/jobs/transcript/agent are mocked below. Media playback uses real MP3.
+// Only the bridge directory/jobs/transcript/agent are mocked below. Media playback uses actual MP3 originals and a decoded WAV result.
 // This suite does not claim to test ASR/LLM/TTS quality; Host processor suites cover generation.
 async function installMockHost(page) {
   await page.addInitScript(
-    ({ sourceId, sampleId }) => {
+    ({ sourceId, sampleId, sampleReceipt }) => {
       const documents = JSON.parse(localStorage.getItem("capability-documents") || "{}");
       const storage = JSON.parse(localStorage.getItem("capability-storage") || "{}");
       const jobs = {};
@@ -142,20 +155,26 @@ async function installMockHost(page) {
           },
         ],
       });
-      const asset = (id) => ({
-        id,
-        name: id === sourceId ? "原声旁白.mp3" : "试听结果.mp3",
-        mimeType: "audio/mpeg",
-        bytes: 384865,
-        createdAt: 1,
-      });
+      const asset = (id) =>
+        id === sampleId
+          ? structuredClone(sampleReceipt.asset)
+          : {
+              id,
+              name: id === sourceId ? "原声旁白.mp3" : "试听结果.mp3",
+              mimeType: "audio/mpeg",
+              bytes: 384865,
+              createdAt: 1,
+            };
       const preparation = (id) => ({
         assetId: id,
-        inspection: {
-          kind: "audio",
-          durationSeconds: 24,
-          audio: { codec: "mp3", sampleRate: 48000, channels: 1 },
-        },
+        inspection:
+          id === sampleId
+            ? structuredClone(sampleReceipt.inspection)
+            : {
+                kind: "audio",
+                durationSeconds: 24,
+                audio: { codec: "mp3", sampleRate: 48000, channels: 1 },
+              },
         preparedAt: 1,
       });
       const startJob = (type, input) => {
@@ -180,8 +199,8 @@ async function installMockHost(page) {
         job.status = "succeeded";
         job.updatedAt = Date.now();
         job.result = {
-          asset: asset(sampleId),
-          inspection: preparation(sampleId).inspection,
+          asset: structuredClone(sampleReceipt.asset),
+          inspection: structuredClone(sampleReceipt.inspection),
           speech: {
             text: input.text,
             modelId: input.modelId,
@@ -282,7 +301,7 @@ async function installMockHost(page) {
         },
       };
     },
-    { sourceId, sampleId },
+    { sourceId, sampleId, sampleReceipt: { asset: sample.asset, inspection: sample.inspection } },
   );
 }
 
@@ -291,12 +310,9 @@ async function saved(page) {
     () => document.querySelector("#save-state")?.textContent === "已自动保存",
   );
 }
-const readProject = (page) =>
-  page.evaluate(
-    () =>
-      window.__panelTools?.read_video_project().project ||
-      JSON.parse(localStorage.getItem("video-studio-project-v1")),
-  );
+const readProject = async (page) =>
+  (await page.evaluate(() => window.__panelTools?.read_video_project().project ?? null)) ??
+  (await readSavedLegacyProject(page));
 const click = (page, name) => page.getByRole("button", { name, exact: true }).click();
 async function loadDemo(page) {
   await click(page, "试试示例工程");
@@ -327,10 +343,25 @@ test(
       );
       await page.locator("#recording-name").fill("隔离测试摄像头录制");
       await click(page, "保存到素材库");
-      await page.waitForFunction(
-        () => JSON.parse(localStorage.getItem("video-studio-project-v1"))?.assets.length === 1,
-      );
+      await page
+        .waitForFunction(() =>
+          document.querySelector("#toast")?.textContent.includes("录制已保存到素材库"),
+        )
+        .catch(async (error) => {
+          console.error(
+            "Recording publication did not complete",
+            await page.evaluate(() => ({
+              toast: document.querySelector("#toast")?.textContent,
+              save: document.querySelector("#save-state")?.textContent,
+              recording:
+                document.querySelector(".recording-panel")?.textContent ??
+                document.querySelector(".library-panel")?.textContent,
+            })),
+          );
+          throw error;
+        });
       await saved(page);
+      assert.equal((await readSavedLegacyProject(page)).assets.length, 1);
       const asset = (await readProject(page)).assets[0];
       assert.equal(asset.kind, "video");
       assert.ok(asset.durationFrames >= 30 && asset.durationFrames < 120, JSON.stringify(asset));
@@ -368,6 +399,7 @@ test(
       const before = await readProject(page);
       assert.equal(before.clips[0].assetId, asset.id);
       await page.reload();
+      await enterLegacyProduction(page);
       await page.locator("#preview").waitFor();
       await page.waitForFunction(
         () =>
@@ -380,7 +412,17 @@ test(
         0,
         "Restoring a recording never asks to reacquire a device",
       );
-      const download = page.waitForEvent("download");
+      const download = page.waitForEvent("download").catch(async (error) => {
+        console.error(
+          "Recorded video export did not finish",
+          await page.evaluate(() => ({
+            toast: document.querySelector("#toast")?.textContent,
+            export: document.querySelector("#export-dialog")?.textContent,
+            save: document.querySelector("#save-state")?.textContent,
+          })),
+        );
+        throw error;
+      });
       await click(page, "导出视频");
       await click(page, "开始导出");
       const file = await download;
@@ -643,6 +685,7 @@ test(
         0,
       );
       await page.reload();
+      await enterLegacyProduction(page);
       await page.locator("#preview").waitFor();
       assert.equal((await readProject(page)).script, rewritten);
       assert.deepEqual((await readProject(page)).audioClips, before.audioClips);
@@ -689,6 +732,7 @@ test("saved desktop project and original audio restore even when the native engi
       };
     });
     await page.reload();
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () => window.__panelTools?.read_video_project().project.name === "原片恢复不依赖制作引擎",
     );
@@ -705,12 +749,10 @@ test("saved desktop project and original audio restore even when the native engi
     await page.locator("#project-name").fill("原片已恢复，工程继续保存");
     await page.locator("#project-name").blur();
     await saved(page);
-    const stored = await page.evaluate(() =>
-      window.codeshellPanel.call("media.document.get", { key: "video-studio-current" }),
-    );
-    assert.equal(stored.data.name, "原片已恢复，工程继续保存");
+    const stored = await readSavedLegacyProject(page);
+    assert.equal(stored.name, "原片已恢复，工程继续保存");
     assert(
-      stored.data.assets.some(
+      stored.assets.some(
         (asset) => asset.id === "legacy-original-audio" && asset.mediaId === sourceId,
       ),
     );

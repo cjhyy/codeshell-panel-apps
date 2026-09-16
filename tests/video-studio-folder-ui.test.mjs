@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import {
+  enterLegacyProduction,
+  readSavedLegacyProject,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
@@ -12,7 +16,7 @@ import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const output = resolve(root, "panels/video-studio/app");
+let output;
 const artifacts = resolve(root, "artifacts/video-studio");
 const media = new Map();
 const errors = [];
@@ -54,10 +58,11 @@ async function sourceFile(folder, path, bytes, modified = 1700000000000) {
 }
 
 before(async () => {
-  if (process.env.VIDEO_STUDIO_SKIP_BUILD !== "1") {
-    const [project] = selectProjects(await discoverProjects(), "video-studio");
-    await buildProject(project);
-  }
+  temporary = await mkdtemp(join(tmpdir(), "video-folder-ui-"));
+  const [project] = selectProjects(await discoverProjects(), "video-studio");
+  const isolatedOutput = resolve(temporary, "package");
+  await buildProject({ ...project, output: isolatedOutput }, { log: false });
+  output = resolve(isolatedOutput, "app");
   const manifest = JSON.parse(
     await readFile(resolve(output, "../.codeshell-panel/panel.json"), "utf8"),
   );
@@ -72,7 +77,6 @@ before(async () => {
     entry.sha256,
     "Exercise exactly the installed, integrity-checked scanner",
   );
-  temporary = await mkdtemp(join(tmpdir(), "video-folder-ui-"));
   await mkdir(artifacts, { recursive: true });
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
@@ -134,10 +138,9 @@ function observe(page) {
   });
 }
 async function readProject(page) {
-  return page.evaluate(
-    () =>
-      window.__panelTools?.read_video_project().project ||
-      JSON.parse(localStorage.getItem("video-studio-project-v1")),
+  return (
+    (await page.evaluate(() => window.__panelTools?.read_video_project().project ?? null)) ??
+    (await readSavedLegacyProject(page))
   );
 }
 async function saved(page) {
@@ -203,6 +206,7 @@ test("a real recursive folder chooser preserves same-name sources, ignores unrel
     const page = await context.newPage();
     observe(page);
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.locator('[data-action="import-folder"]').waitFor();
     return page;
   }
@@ -334,6 +338,7 @@ test("a folder picker opened for the old project cannot import into a newly crea
   observe(page);
   try {
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.locator('[data-action="import-folder"]').waitFor();
     const choosing = page.waitForEvent("filechooser");
     await page.locator('[data-action="import-folder"]').click();
@@ -389,7 +394,9 @@ function desktopHost(folder) {
     if (method === "media.document.get")
       return structuredClone(documents.get(params.key) ?? { revision: 0, data: null });
     if (method === "media.document.set") {
-      if (params.key === "video-studio-current" && publication) {
+      const candidate =
+        params.data?.format === "video-studio-packed-document" ? params.data.data : params.data;
+      if (params.key === "video-studio-current" && candidate?.assets?.length && publication) {
         const waiting = publication;
         publication = undefined;
         waiting.started();
@@ -397,7 +404,12 @@ function desktopHost(folder) {
       }
       const previous = documents.get(params.key) ?? { revision: 0 };
       assert.equal(params.baseRevision, previous.revision);
-      const next = { revision: previous.revision + 1, data: structuredClone(params.data) };
+      const next = {
+        revision: previous.revision + 1,
+        data: structuredClone(params.data),
+        updatedAt: Date.now(),
+        label: params.label ?? "保存",
+      };
       documents.set(params.key, next);
       return next;
     }
@@ -581,6 +593,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
     observe(page);
     await host.attach(page);
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () => !document.querySelector('[data-action="folder-connect"]')?.disabled,
     );
@@ -725,6 +738,7 @@ test("stopping while a successful source publication is pending keeps the saved 
   try {
     await host.attach(page);
     await page.goto(url);
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () => !document.querySelector('[data-action="folder-connect"]')?.disabled,
     );
@@ -745,6 +759,7 @@ test("stopping while a successful source publication is pending keeps the saved 
     assert.equal(before.clips.length, 0);
     assert.equal(await page.locator(".asset-card.missing").count(), 0);
     await page.reload();
+    await enterLegacyProduction(page);
     await page.waitForFunction(
       () =>
         document.querySelectorAll(".asset-card").length === 1 &&

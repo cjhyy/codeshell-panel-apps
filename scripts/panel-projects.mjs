@@ -50,7 +50,9 @@ export async function discoverProjects(root = repositoryRoot) {
           !config ||
           typeof config !== "object" ||
           Array.isArray(config) ||
-          Object.keys(config).some((key) => !["entry", "nativeEntries"].includes(key)) ||
+          Object.keys(config).some(
+            (key) => !["entry", "nativeEntries", "browserEntries"].includes(key),
+          ) ||
           typeof config.entry !== "string" ||
           !/^src\/(?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.(?:ts|tsx|js|mjs)$/.test(config.entry) ||
           config.entry.split("/").includes("..")
@@ -71,6 +73,20 @@ export async function discoverProjects(root = repositoryRoot) {
             ))
         )
           throw new Error(`${configFile}: invalid nativeEntries`);
+        if (
+          config.browserEntries !== undefined &&
+          (!config.browserEntries ||
+            typeof config.browserEntries !== "object" ||
+            Array.isArray(config.browserEntries) ||
+            Object.entries(config.browserEntries).some(
+              ([name, entry]) =>
+                !/^[a-z][a-z0-9-]{0,63}$/.test(name) ||
+                typeof entry !== "string" ||
+                !/^src\/(?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.(?:ts|tsx|js|mjs)$/.test(entry) ||
+                entry.split("/").includes(".."),
+            ))
+        )
+          throw new Error(`${configFile}: invalid browserEntries`);
       }
       const output = config ? join(root, "panels", entry.name) : source;
       if (projects.some((project) => project.output === output)) {

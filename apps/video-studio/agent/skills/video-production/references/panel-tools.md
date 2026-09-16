@@ -1,5 +1,7 @@
 # Panel 工具契约
 
+新版完整工程优先使用 `read_video_project`、`apply_video_edit`、`render_video_project` 的 `editor` 分支，契约见 `editor-v2` 技能。以下表格保留旧制作/媒体协调器的接口；它们的令牌和30 fps规则不适用于新版通用编辑工具。
+
 使用 `Panel` 调用 video-studio 的下列工具。以本次工具返回的能力与字段为准；若旧版面板缺少工具，说明当前能力，不编造替代调用。工程素材 ID 与 Host 持久素材 ID 可能不同，始终使用对应工具返回的映射。
 
 | 工具                   | 参数                                                                                                                                          | 用途                                                                                                           |

@@ -1,8 +1,14 @@
 {
   "entry": "src/main.ts",
+  "browserEntries": {
+    "editor-renderer": "src/editor/render-entry.ts"
+  },
   "nativeEntries": {
     "folder-scan": "native/folder-scan.ts",
     "voice-runtime": "native/voice-runtime.ts",
-    "media-runtime": "native/media/cli.ts"
+    "media-runtime": "native/media/cli.ts",
+    "editor-runtime": "native/editor-runtime.ts",
+    "editor-sync": "native/editor-sync.ts",
+    "audio-separation": "native/audio-separation.ts"
   }
 }

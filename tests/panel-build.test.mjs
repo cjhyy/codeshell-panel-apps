@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { buildProject, validateBuiltPackage } from "../scripts/build-panels.mjs";
 import { discoverProjects, listFiles, repositoryRoot } from "../scripts/panel-projects.mjs";
 import { validatePackage } from "../scripts/validation/package.mjs";
@@ -97,6 +98,93 @@ test("native tool entries reject path escapes and undeclared browser imports", a
   );
   const project = (await discoverProjects(root))[0];
   await assert.rejects(buildProject(project, { log: false }), /Undeclared native tool/);
+});
+
+test("bundled CommonJS native dependencies can require Node builtins after source files are removed", async (t) => {
+  const { root, source } = await fixture(t);
+  const manifestPath = join(source, ".codeshell-panel/panel.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.permissions.push("process");
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await mkdir(join(source, "native"));
+  await writeFile(
+    join(source, "native/helper.cjs"),
+    'const os = require("node:os"); module.exports = () => os.platform();',
+  );
+  await writeFile(
+    join(source, "native/worker.ts"),
+    'import platform from "./helper.cjs"; export const result = platform();',
+  );
+  await writeFile(
+    join(source, "panel.build.json"),
+    JSON.stringify({ entry: "src/main.ts", nativeEntries: { worker: "native/worker.ts" } }),
+  );
+  const project = (await discoverProjects(root))[0];
+  await buildProject(project, { log: false });
+  await rm(source, { recursive: true });
+  const tool = await import(pathToFileURL(join(project.output, "app/tools/worker.mjs")).href);
+  assert.equal(tool.result, process.platform);
+  await validateBuiltPackage(project.output);
+});
+
+test("reviewed browser runtimes share deterministic bytes with independent native tools", async (t) => {
+  const { root, source } = await fixture(t);
+  const manifestPath = join(source, ".codeshell-panel/panel.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.permissions.push("process");
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await mkdir(join(source, "native"));
+  await writeFile(
+    join(source, "src/runtime.ts"),
+    'import { value } from "./feature.mjs"; globalThis.result = value;',
+  );
+  await writeFile(
+    join(source, "native/worker.ts"),
+    'export { source, sha256 } from "panel-browser:renderer";',
+  );
+  const config = {
+    entry: "src/main.ts",
+    nativeEntries: { worker: "native/worker.ts" },
+    browserEntries: { renderer: "src/runtime.ts" },
+  };
+  await writeFile(join(source, "panel.build.json"), JSON.stringify(config));
+  const project = (await discoverProjects(root))[0];
+  await buildProject(project, { log: false });
+  const browser = await readFile(join(project.output, "app/runtimes/renderer.mjs"), "utf8");
+  const tool = await import(pathToFileURL(join(project.output, "app/tools/worker.mjs")));
+  assert.equal(tool.source, browser);
+  assert.equal(tool.sha256, createHash("sha256").update(browser).digest("hex"));
+  assert(browser.includes("value = 42"));
+  await buildProject(project, { check: true, log: false });
+  await writeFile(
+    join(source, "src/runtime.ts"),
+    'import fs from "node:fs"; globalThis.result = fs;',
+  );
+  await assert.rejects(buildProject(project, { log: false }), /Could not resolve "node:fs"/);
+  assert.equal(await readFile(join(project.output, "app/runtimes/renderer.mjs"), "utf8"), browser);
+  await writeFile(join(source, "src/runtime.ts"), "import(globalThis.moduleUrl);");
+  await assert.rejects(buildProject(project, { log: false }), /must not have runtime imports/);
+  await writeFile(join(source, "src/runtime.ts"), "globalThis.result = 1;");
+  await mkdir(join(source, "public/runtimes"));
+  await writeFile(join(source, "public/runtimes/renderer.mjs"), "// shadow");
+  await assert.rejects(
+    buildProject(project, { log: false }),
+    /shadows a generated browser runtime/,
+  );
+  await rm(join(source, "public/runtimes"), { recursive: true });
+  await writeFile(
+    join(source, "panel.build.json"),
+    JSON.stringify({ ...config, browserEntries: { renderer: "src/../secret.ts" } }),
+  );
+  await assert.rejects(discoverProjects(root), /invalid browserEntries/);
+  await writeFile(
+    join(source, "panel.build.json"),
+    JSON.stringify({ ...config, browserEntries: {} }),
+  );
+  await assert.rejects(
+    buildProject((await discoverProjects(root))[0], { log: false }),
+    /Undeclared browser runtime/,
+  );
 });
 
 test("TypeScript builds an independent, deterministic ESM installation package", async (t) => {
@@ -243,8 +331,10 @@ test("native entries require process permission and package validation rejects c
 
 function manifestIssue(path, code) {
   return (error) => {
-    assert(error.issues?.some((issue) => issue.path.join(".") === path && issue.code === code),
-      `Expected ${code} at ${path || "manifest root"}: ${error.message}`);
+    assert(
+      error.issues?.some((issue) => issue.path.join(".") === path && issue.code === code),
+      `Expected ${code} at ${path || "manifest root"}: ${error.message}`,
+    );
     return true;
   };
 }
@@ -271,7 +361,8 @@ test("package validation accepts released Host limits and optional defaults", as
   manifest.title = { default: "t".repeat(80), en: "English", "zh-CN": "中文" };
   manifest.description = "d".repeat(500);
   manifest.agent.tools = Array.from({ length: 16 }, (_, index) => ({
-    ...sampleTool(index), description: "d".repeat(500),
+    ...sampleTool(index),
+    description: "d".repeat(500),
   }));
   for (let index = 0; index < 8; index++) {
     const skill = `agent/skills/skill-${index}/SKILL.md`;
@@ -294,48 +385,272 @@ test("package validation accepts released Host limits and optional defaults", as
 test("package checks reject manifests the released Host cannot install", async (t) => {
   const { project, manifestPath, manifest } = await agentPackage(t);
   const cases = [
-    ["17 tools", (m) => { m.agent.tools = Array.from({ length: 17 }, (_, i) => sampleTool(i)); }, "agent.tools", "too_big"],
-    ["overlong tool description", (m) => { m.agent.tools[0].description = "d".repeat(501); }, "agent.tools.0.description", "too_big"],
-    ["empty tool description", (m) => { m.agent.tools[0].description = ""; }, "agent.tools.0.description", "too_small"],
-    ["9 skills", (m) => { m.agent.skills = Array.from({ length: 9 }, (_, i) => `agent/skills/skill-${i}/SKILL.md`); }, "agent.skills", "too_big"],
-    ["duplicate skills", (m) => { m.agent.skills = ["agent/skills/sample/SKILL.md", "agent/skills/sample/SKILL.md"]; }, "agent.skills.1", "custom"],
-    ["unknown root field", (m) => { m.backend = "script.mjs"; }, "", "unrecognized_keys"],
-    ["schema v1 agent", (m) => { m.schemaVersion = 1; }, "", "unrecognized_keys"],
-    ["unknown title locale", (m) => { m.title.fr = "Titre"; }, "title", "unrecognized_keys"],
-    ["unknown agent field", (m) => { m.agent.hooks = []; }, "agent", "unrecognized_keys"],
-    ["unknown tool field", (m) => { m.agent.tools[0].handler = "worker"; }, "agent.tools.0", "unrecognized_keys"],
-    ["invalid readOnly", (m) => { m.agent.tools[0].readOnly = "yes"; }, "agent.tools.0.readOnly", "invalid_type"],
-    ["duplicate tools", (m) => { m.agent.tools.push(sampleTool()); }, "agent.tools.1.name", "custom"],
-    ["empty version", (m) => { m.version = ""; }, "version", "too_small"],
-    ["overlong version", (m) => { m.version = "v".repeat(81); }, "version", "too_big"],
-    ["overlong title", (m) => { m.title.default = "t".repeat(81); }, "title.default", "too_big"],
-    ["overlong description", (m) => { m.description = "d".repeat(501); }, "description", "too_big"],
-    ["invalid icon", (m) => { m.icon = "video-camera"; }, "icon", "invalid_enum_value"],
-    ["invalid placement", (m) => { m.placement = "left-dock"; }, "placement", "invalid_literal"],
-    ["invalid singleton", (m) => { m.singleton = "true"; }, "singleton", "invalid_type"],
-    ["unsafe entry", (m) => { m.entry = "app/../app/index.html"; }, "entry", "custom"],
-    ["unknown permission", (m) => { m.permissions = ["filesystem.everything"]; }, "permissions.0", "invalid_enum_value"],
-    ["duplicate permission", (m) => { m.permissions.push("context.workspace"); }, "permissions", "custom"],
-    ["too many permissions", (m) => { m.permissions = Array(17).fill("context.workspace"); }, "permissions", "too_big"],
-    ["workspace prerequisite", (m) => { m.permissions = ["resources"]; }, "permissions", "custom"],
-    ["session prerequisite", (m) => { m.permissions = ["agent.submitPrompt"]; }, "permissions", "custom"],
-    ["automation prerequisites", (m) => { m.permissions = ["context.workspace", "automations.manage"]; }, "permissions", "custom"],
-    ["null permissions", (m) => { m.permissions = null; }, "permissions", "invalid_type"],
-    ["null tools", (m) => { m.agent.tools = null; }, "agent.tools", "invalid_type"],
-    ["null skills", (m) => { m.agent.skills = null; }, "agent.skills", "invalid_type"],
-    ["17 native entries", (m) => {
-      m.permissions.push("process");
-      m.nativeEntries = Object.fromEntries(Array.from({ length: 17 }, (_, i) =>
-        [`worker-${i}`, { entry: `app/tools/worker-${i}.mjs`, sha256: "a".repeat(64) }]));
-    }, "nativeEntries", "custom"],
-    ["unknown native entry field", (m) => {
-      m.permissions.push("process");
-      m.nativeEntries = { worker: { entry: "app/tools/worker.mjs", sha256: "a".repeat(64), command: "node" } };
-    }, "nativeEntries.worker", "unrecognized_keys"],
-    ["unsafe native entry", (m) => {
-      m.permissions.push("process");
-      m.nativeEntries = { worker: { entry: "app/tools/../worker.mjs", sha256: "a".repeat(64) } };
-    }, "nativeEntries.worker.entry", "invalid_string"],
+    [
+      "17 tools",
+      (m) => {
+        m.agent.tools = Array.from({ length: 17 }, (_, i) => sampleTool(i));
+      },
+      "agent.tools",
+      "too_big",
+    ],
+    [
+      "overlong tool description",
+      (m) => {
+        m.agent.tools[0].description = "d".repeat(501);
+      },
+      "agent.tools.0.description",
+      "too_big",
+    ],
+    [
+      "empty tool description",
+      (m) => {
+        m.agent.tools[0].description = "";
+      },
+      "agent.tools.0.description",
+      "too_small",
+    ],
+    [
+      "9 skills",
+      (m) => {
+        m.agent.skills = Array.from({ length: 9 }, (_, i) => `agent/skills/skill-${i}/SKILL.md`);
+      },
+      "agent.skills",
+      "too_big",
+    ],
+    [
+      "duplicate skills",
+      (m) => {
+        m.agent.skills = ["agent/skills/sample/SKILL.md", "agent/skills/sample/SKILL.md"];
+      },
+      "agent.skills.1",
+      "custom",
+    ],
+    [
+      "unknown root field",
+      (m) => {
+        m.backend = "script.mjs";
+      },
+      "",
+      "unrecognized_keys",
+    ],
+    [
+      "schema v1 agent",
+      (m) => {
+        m.schemaVersion = 1;
+      },
+      "",
+      "unrecognized_keys",
+    ],
+    [
+      "unknown title locale",
+      (m) => {
+        m.title.fr = "Titre";
+      },
+      "title",
+      "unrecognized_keys",
+    ],
+    [
+      "unknown agent field",
+      (m) => {
+        m.agent.hooks = [];
+      },
+      "agent",
+      "unrecognized_keys",
+    ],
+    [
+      "unknown tool field",
+      (m) => {
+        m.agent.tools[0].handler = "worker";
+      },
+      "agent.tools.0",
+      "unrecognized_keys",
+    ],
+    [
+      "invalid readOnly",
+      (m) => {
+        m.agent.tools[0].readOnly = "yes";
+      },
+      "agent.tools.0.readOnly",
+      "invalid_type",
+    ],
+    [
+      "duplicate tools",
+      (m) => {
+        m.agent.tools.push(sampleTool());
+      },
+      "agent.tools.1.name",
+      "custom",
+    ],
+    [
+      "empty version",
+      (m) => {
+        m.version = "";
+      },
+      "version",
+      "too_small",
+    ],
+    [
+      "overlong version",
+      (m) => {
+        m.version = "v".repeat(81);
+      },
+      "version",
+      "too_big",
+    ],
+    [
+      "overlong title",
+      (m) => {
+        m.title.default = "t".repeat(81);
+      },
+      "title.default",
+      "too_big",
+    ],
+    [
+      "overlong description",
+      (m) => {
+        m.description = "d".repeat(501);
+      },
+      "description",
+      "too_big",
+    ],
+    [
+      "invalid icon",
+      (m) => {
+        m.icon = "video-camera";
+      },
+      "icon",
+      "invalid_enum_value",
+    ],
+    [
+      "invalid placement",
+      (m) => {
+        m.placement = "left-dock";
+      },
+      "placement",
+      "invalid_literal",
+    ],
+    [
+      "invalid singleton",
+      (m) => {
+        m.singleton = "true";
+      },
+      "singleton",
+      "invalid_type",
+    ],
+    [
+      "unsafe entry",
+      (m) => {
+        m.entry = "app/../app/index.html";
+      },
+      "entry",
+      "custom",
+    ],
+    [
+      "unknown permission",
+      (m) => {
+        m.permissions = ["filesystem.everything"];
+      },
+      "permissions.0",
+      "invalid_enum_value",
+    ],
+    [
+      "duplicate permission",
+      (m) => {
+        m.permissions.push("context.workspace");
+      },
+      "permissions",
+      "custom",
+    ],
+    [
+      "too many permissions",
+      (m) => {
+        m.permissions = Array(17).fill("context.workspace");
+      },
+      "permissions",
+      "too_big",
+    ],
+    [
+      "workspace prerequisite",
+      (m) => {
+        m.permissions = ["resources"];
+      },
+      "permissions",
+      "custom",
+    ],
+    [
+      "session prerequisite",
+      (m) => {
+        m.permissions = ["agent.submitPrompt"];
+      },
+      "permissions",
+      "custom",
+    ],
+    [
+      "automation prerequisites",
+      (m) => {
+        m.permissions = ["context.workspace", "automations.manage"];
+      },
+      "permissions",
+      "custom",
+    ],
+    [
+      "null permissions",
+      (m) => {
+        m.permissions = null;
+      },
+      "permissions",
+      "invalid_type",
+    ],
+    [
+      "null tools",
+      (m) => {
+        m.agent.tools = null;
+      },
+      "agent.tools",
+      "invalid_type",
+    ],
+    [
+      "null skills",
+      (m) => {
+        m.agent.skills = null;
+      },
+      "agent.skills",
+      "invalid_type",
+    ],
+    [
+      "17 native entries",
+      (m) => {
+        m.permissions.push("process");
+        m.nativeEntries = Object.fromEntries(
+          Array.from({ length: 17 }, (_, i) => [
+            `worker-${i}`,
+            { entry: `app/tools/worker-${i}.mjs`, sha256: "a".repeat(64) },
+          ]),
+        );
+      },
+      "nativeEntries",
+      "custom",
+    ],
+    [
+      "unknown native entry field",
+      (m) => {
+        m.permissions.push("process");
+        m.nativeEntries = {
+          worker: { entry: "app/tools/worker.mjs", sha256: "a".repeat(64), command: "node" },
+        };
+      },
+      "nativeEntries.worker",
+      "unrecognized_keys",
+    ],
+    [
+      "unsafe native entry",
+      (m) => {
+        m.permissions.push("process");
+        m.nativeEntries = { worker: { entry: "app/tools/../worker.mjs", sha256: "a".repeat(64) } };
+      },
+      "nativeEntries.worker.entry",
+      "invalid_string",
+    ],
   ];
   for (const [name, change, path, code] of cases) {
     await t.test(name, async () => {
@@ -369,11 +684,27 @@ test("tool schemas validate the Host subset instead of only compiling regexes", 
   await validatePackage(project.output);
   const cases = [
     ["unsupported keyword", { format: "date-time" }, /Unsupported JSON Schema keyword 'format'/i],
-    ["external ref", { $ref: "https://example.test/schema" }, /Unsupported or unresolved JSON Schema reference/i],
-    ["unresolved ref", { $ref: "#/$defs/missing" }, /Unsupported or unresolved JSON Schema reference/i],
-    ["invalid type", { properties: { value: { type: ["string", "string"] } } }, /Invalid JSON Schema type/i],
+    [
+      "external ref",
+      { $ref: "https://example.test/schema" },
+      /Unsupported or unresolved JSON Schema reference/i,
+    ],
+    [
+      "unresolved ref",
+      { $ref: "#/$defs/missing" },
+      /Unsupported or unresolved JSON Schema reference/i,
+    ],
+    [
+      "invalid type",
+      { properties: { value: { type: ["string", "string"] } } },
+      /Invalid JSON Schema type/i,
+    ],
     ["empty type", { properties: { value: { type: [] } } }, /Invalid JSON Schema type/i],
-    ["tuple items", { properties: { value: { type: "array", items: [{ type: "string" }] } } }, /Invalid JSON Schema/i],
+    [
+      "tuple items",
+      { properties: { value: { type: "array", items: [{ type: "string" }] } } },
+      /Invalid JSON Schema/i,
+    ],
     ["duplicate required", { required: ["value", "value"] }, /Invalid JSON Schema required-list/i],
     ["invalid required", { required: [1] }, /Invalid JSON Schema required-list/i],
     ["empty branch", { oneOf: [] }, /Invalid JSON Schema oneOf/i],
@@ -383,8 +714,21 @@ test("tool schemas validate the Host subset instead of only compiling regexes", 
     ["invalid multiple", { multipleOf: 0 }, /Invalid JSON Schema multipleOf/i],
     ["invalid examples", { examples: "example" }, /Invalid JSON Schema examples/i],
     ["invalid flag", { readOnly: "true" }, /Invalid JSON Schema readOnly/i],
-    ["duplicate deep enum", { enum: [{ a: 1, b: 2 }, { b: 2, a: 1 }] }, /Invalid JSON Schema enum/i],
-    ["unsafe regex", { properties: { value: { type: "string", pattern: "^(a+)+$" } } }, /Invalid JSON Schema pattern/i],
+    [
+      "duplicate deep enum",
+      {
+        enum: [
+          { a: 1, b: 2 },
+          { b: 2, a: 1 },
+        ],
+      },
+      /Invalid JSON Schema enum/i,
+    ],
+    [
+      "unsafe regex",
+      { properties: { value: { type: "string", pattern: "^(a+)+$" } } },
+      /Invalid JSON Schema pattern/i,
+    ],
     ["node budget", { default: Array(20_000).fill(0) }, /JSON value-size limit/],
   ];
   let nested = true;
@@ -405,12 +749,20 @@ test("a Host-incompatible manifest fails the build before replacing the last pac
   const previous = await readFile(join(project.output, ".codeshell-panel/panel.json"), "utf8");
   const manifest = JSON.parse(previous);
   manifest.schemaVersion = 2;
-  manifest.agent = { tools: Array.from({ length: 17 }, (_, index) => sampleTool(index)), skills: [] };
+  manifest.agent = {
+    tools: Array.from({ length: 17 }, (_, index) => sampleTool(index)),
+    skills: [],
+  };
   await writeFile(join(source, ".codeshell-panel/panel.json"), JSON.stringify(manifest));
-  await assert.rejects(buildProject(project, { log: false }), manifestIssue("agent.tools", "too_big"));
-  assert.equal(await readFile(join(project.output, ".codeshell-panel/panel.json"), "utf8"), previous);
+  await assert.rejects(
+    buildProject(project, { log: false }),
+    manifestIssue("agent.tools", "too_big"),
+  );
+  assert.equal(
+    await readFile(join(project.output, ".codeshell-panel/panel.json"), "utf8"),
+    previous,
+  );
 });
-
 
 test("installation preflight enforces file and Skill limits beyond the manifest schema", async (t) => {
   const { project, manifestPath, manifest } = await agentPackage(t);
