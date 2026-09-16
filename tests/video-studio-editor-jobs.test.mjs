@@ -53,7 +53,9 @@ async function fixture(t, specifications = [], options = {}) {
     await page.close();
     assert.deepEqual(uncaught, []);
   });
-  await page.setContent("<!doctype html><body><main>编辑器</main></body>");
+  await page.setContent(
+    '<!doctype html><body><header id="toolbar"><button data-export>导出</button></header><main><button>编辑器</button></main></body>',
+  );
   await page.addStyleTag({ content: css });
   await page.addScriptTag({ content: source });
   await page.evaluate(
@@ -126,11 +128,20 @@ async function fixture(t, specifications = [], options = {}) {
         },
       };
       panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)));
+      panel.mountTrigger(
+        document.querySelector("#toolbar"),
+        document.querySelector("[data-export]"),
+      );
       window.fixture = {
         calls,
         errors,
         track: (id) => panel.track(structuredClone(jobs.get(id)), id),
         load: () => panel.loadMore(),
+        remount: () =>
+          panel.mountTrigger(
+            document.querySelector("#toolbar"),
+            document.querySelector("[data-export]"),
+          ),
         hold: (method) => held.set(method, true),
         release: (method) => {
           held.delete(method);
@@ -168,10 +179,233 @@ const settle = (page) =>
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
 async function open(page) {
-  await page.locator("summary").click();
+  await page.getByRole("button", { name: /^导出记录/ }).click();
 }
 const calls = (page, method) =>
   page.evaluate((method) => fixture.calls.filter((call) => call.method === method), method);
+
+test("empty exports and completed history stay out of the editing area until requested", async (t) => {
+  const page = await fixture(t, [job("done", 1)]);
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  await page.evaluate(() => fixture.load());
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(await page.locator(".editor-export-jobs-badge").isVisible(), false);
+  await page.evaluate(() => fixture.remount());
+  assert.equal(await page.locator(".editor-export-jobs-trigger").count(), 1);
+  assert.equal(
+    await page
+      .locator("[data-export]")
+      .evaluate((node) =>
+        node.previousElementSibling.classList.contains("editor-export-jobs-trigger"),
+      ),
+    true,
+  );
+  await open(page);
+  assert.equal(await row(page, "done").isVisible(), true);
+  await page.getByRole("button", { name: "关闭导出任务" }).click();
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "导出记录", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+});
+
+test("an empty task history can be opened, closed with Escape and dismissed outside", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => fixture.load());
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  await open(page);
+  assert.equal(await page.getByText("暂无导出任务").isVisible(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  await open(page);
+  await page.getByRole("button", { name: "编辑器", exact: true }).click();
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "编辑器", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+});
+
+test("narrow screens keep the task view and sticky close control within the viewport", async (t) => {
+  const page = await fixture(
+    t,
+    Array.from({ length: 12 }, (_, index) =>
+      job(`long-export-${index}-${"very-long-sequence-name-".repeat(6)}`, index),
+    ),
+    { width: 360 },
+  );
+  await page.evaluate(() => fixture.load());
+  const trigger = page.getByRole("button", { name: "导出记录", exact: true });
+  assert.ok((await trigger.boundingBox()).width <= 40);
+  await trigger.click();
+  const view = page.locator(".editor-export-jobs");
+  const bounds = await view.boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 360);
+  assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 800);
+  assert.equal(await view.evaluate((node) => node.scrollWidth > node.clientWidth), false);
+  await view.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  const close = page.getByRole("button", { name: "关闭导出任务" });
+  const closeBounds = await close.boundingBox();
+  assert.ok(
+    closeBounds.y >= bounds.y && closeBounds.y + closeBounds.height <= bounds.y + bounds.height,
+  );
+  await close.click();
+  assert.equal(await view.isVisible(), false);
+});
+
+test("task controls isolate editing shortcuts while preserving normal button keyboard activation", async (t) => {
+  const page = await fixture(t, [job("done", 1)], { track: "done" });
+  await page.evaluate(() => {
+    window.editingKeys = [];
+    document.addEventListener("keydown", (event) => window.editingKeys.push(event.key));
+  });
+  await page.keyboard.press("Delete");
+  await page.keyboard.press("s");
+  await page.keyboard.press("Control+z");
+  assert.deepEqual(await page.evaluate(() => window.editingKeys), []);
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await row(page, "done")
+      .getByRole("button", { name: "保存视频" })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Space");
+  await page.waitForFunction(() => fixture.calls.some((call) => call.method === "media.export"));
+  assert.equal((await calls(page, "media.export")).length, 1);
+  assert.deepEqual(await page.evaluate(() => window.editingKeys), []);
+});
+
+test("progress updates preserve task action focus and completion keeps focus inside the open view", async (t) => {
+  const page = await fixture(t, [job("focused", 1, "running")], { track: "focused" });
+  await page.waitForFunction(() => fixture.watchers() === 1);
+  await settle(page);
+  await row(page, "focused").getByRole("button", { name: "取消", exact: true }).focus();
+  await page.evaluate(() =>
+    fixture.notify("focused", { updatedAt: 2, progress: { fraction: 0.4 } }),
+  );
+  await page.waitForFunction(
+    () => document.querySelector('[data-job-id="focused"] progress').value === 0.4,
+  );
+  assert.equal(
+    await row(page, "focused")
+      .getByRole("button", { name: "取消", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.evaluate(
+    (assetId) =>
+      fixture.notify("focused", {
+        status: "succeeded",
+        updatedAt: 3,
+        result: { verified: true, video: { id: assetId } },
+      }),
+    assetId,
+  );
+  await row(page, "focused").getByRole("button", { name: "保存视频" }).waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "关闭导出任务" })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+});
+
+test("an async task action cannot steal focus after the task view has been dismissed", async (t) => {
+  const page = await fixture(t, [job("pending-focus", 1, "running")], { track: "pending-focus" });
+  await settle(page);
+  await page.evaluate(() => fixture.hold("tasks.cancel"));
+  await row(page, "pending-focus").getByRole("button", { name: "取消", exact: true }).click();
+  await page.waitForFunction(() => fixture.pending("tasks.cancel"));
+  assert.equal(
+    await page
+      .getByRole("button", { name: "关闭导出任务" })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+  await page.getByRole("button", { name: "编辑器", exact: true }).click();
+  await page.evaluate(() => fixture.release("tasks.cancel"));
+  await page.waitForFunction(
+    () => document.querySelector('[data-job-id="pending-focus"] output').textContent === "已取消",
+  );
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "编辑器", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+  );
+});
+
+test("active history stays collapsed and progress never reopens a dismissed task view", async (t) => {
+  const page = await fixture(t, [job("active", 1, "running")]);
+  await page.evaluate(() => fixture.load());
+  await page.waitForFunction(() => fixture.watchers() === 1);
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(
+    await page.getByRole("button", { name: "导出记录，1 个任务进行中" }).isVisible(),
+    true,
+  );
+  await open(page);
+  await page.getByRole("button", { name: "关闭导出任务" }).click();
+  await settle(page);
+  await page.evaluate(
+    (assetId) =>
+      fixture.notify("active", {
+        status: "succeeded",
+        updatedAt: 2,
+        result: { verified: true, video: { id: assetId } },
+      }),
+    assetId,
+  );
+  await page.waitForFunction(
+    () => document.querySelector('[data-job-id="active"] output').textContent === "导出完成",
+  );
+  assert.equal(await page.locator(".editor-export-jobs").isVisible(), false);
+  assert.equal(await page.locator(".editor-export-jobs-badge").isVisible(), false);
+  assert.equal((await calls(page, "tasks.cancel")).length, 0);
+  await open(page);
+  assert.equal(
+    await row(page, "active").getByRole("button", { name: "保存视频" }).isVisible(),
+    true,
+  );
+});
+
+test("a lost status connection offers refresh and resumes watching without another export", async (t) => {
+  const page = await fixture(t, [job("disconnected", 1, "running")], {
+    track: "disconnected",
+    holdGet: true,
+  });
+  await page.waitForFunction(() => fixture.pending("tasks.get"));
+  await page.evaluate(() => fixture.reject("tasks.get"));
+  await row(page, "disconnected").getByRole("button", { name: "刷新状态" }).waitFor();
+  assert.equal(
+    await row(page, "disconnected").locator("output").textContent(),
+    "状态暂未同步，请刷新查看",
+  );
+  assert.equal(await row(page, "disconnected").locator("progress").isVisible(), false);
+  await row(page, "disconnected").getByRole("button", { name: "刷新状态" }).click();
+  await page.waitForFunction(() => fixture.watchers() === 1);
+  await settle(page);
+  await page.evaluate(
+    (assetId) =>
+      fixture.notify("disconnected", {
+        status: "succeeded",
+        updatedAt: 2,
+        result: { verified: true, video: { id: assetId } },
+      }),
+    assetId,
+  );
+  await row(page, "disconnected").getByRole("button", { name: "保存视频" }).waitFor();
+  assert.equal((await calls(page, "tasks.start")).length, 0);
+});
 
 test("job history loads bounded pages without skipping preparations and keeps newest exports first", async (t) => {
   const entries = [

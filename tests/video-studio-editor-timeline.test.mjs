@@ -811,6 +811,59 @@ test("vertical edge scrolling exposes more tracks and still moves the source in 
   await undo(page, before);
 });
 
+test("time ruler and markers remain aligned, seekable and clear of lower-track gestures after two-axis scrolling", async (t) => {
+  const page = await fixture(t, {
+    tracks: Array.from({ length: 12 }, (_, index) => `v${index + 1}`),
+    clips: [
+      { id: "a", trackId: "v5", start: 8, duration: 2 },
+      { id: "far", trackId: "v1", start: 100, duration: 3 },
+    ],
+    markers: [{ id: "cue", time: 12 * 240000, duration: 0, name: "检查点", note: "", color: "#e5c879" }],
+  });
+  await page.addStyleTag({ content: ".et-body{max-height:300px}" });
+  const before = (await state(page)).document;
+  const body = await page.locator(".et-body").boundingBox();
+  await page.mouse.move(body.x + 300, body.y + 150);
+  await page.mouse.wheel(0, 430);
+  await page.waitForFunction(() => document.querySelector(".et-body").scrollTop >= 400);
+  await settle(page);
+  const vertical = await page.locator(".et-body").evaluate((element) => element.scrollTop);
+  await page.mouse.wheel(320, 0);
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft >= 300);
+  await settle(page);
+  assert.equal(await page.locator(".et-body").evaluate((element) => element.scrollTop), vertical);
+  const geometry = await page.evaluate(() => {
+    const bounds = (selector) => {
+      const { top, bottom, left } = document.querySelector(selector).getBoundingClientRect();
+      return { top, bottom, left };
+    };
+    const ruler = bounds(".et-ruler");
+    return {
+      body: bounds(".et-body"), ruler, markers: bounds(".et-marker-lane"),
+      head: bounds(".et-track-top"), cap: bounds(".et-playhead > i"),
+      rulerHit: !!document.elementFromPoint(document.querySelector(".et-scroll").getBoundingClientRect().left + 25, ruler.top + 10)?.closest(".et-ruler"),
+    };
+  });
+  assert.ok(Math.abs(geometry.ruler.top - geometry.body.top) < 1);
+  assert.ok(Math.abs(geometry.head.top - geometry.body.top) < 1, JSON.stringify(geometry));
+  assert.ok(Math.abs(geometry.markers.top - geometry.ruler.bottom) < 1);
+  assert.ok(Math.abs(geometry.head.bottom - geometry.markers.bottom) < 1);
+  assert.ok(Math.abs(geometry.cap.top - geometry.ruler.top) < 1);
+  assert.equal(geometry.rulerHit, true, "The fixed ruler must receive input above scrolling clips");
+  await seek(page, 10);
+  assert.equal((await state(page)).time, 10 * 240000);
+  await page.locator('[data-et-marker="cue"]').click();
+  assert.equal((await state(page)).time, 12 * 240000);
+  const clipPosition = await clip(page, "a").boundingBox();
+  assert.ok(clipPosition.y > geometry.markers.bottom);
+  await drag(page, "a", 64);
+  const after = await state(page);
+  assert.equal(after.document.sequences[0].clips.find((item) => item.id === "a").start, 9 * 240000);
+  assert.equal(after.applied.length, 1);
+  assert.deepEqual(after.errors, []);
+  await undo(page, before);
+});
+
 test("dragging a source carries its bound subtitle in time while retaining the text track, and locked captions reject the entire move", async (t) => {
   const page = await fixture(t, { caption: true }),
     before = (await state(page)).document;

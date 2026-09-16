@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "05422b8dbacbab87bcfb18ba0292b26b23b19e350a002e5daebf4b192d4254a6",
+    ".codeshell-panel/panel.json": "acac97e01e43c80ea6e3d2e3a74def677df6721e627cc0b3ac7cdf8ae924d351",
     "agent/skills/editor-v2/SKILL.md": "15f2866fef80ea051db632f99931cbbef1f1bfb0ab454235a19755f2336c99c6",
     "agent/skills/narration-workflow/SKILL.md": "d1a966fe908b26f3a0d57fde53361b0e1076732f60fcf625ffa8988e1c0e1949",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
@@ -23,12 +23,12 @@
     "app/editor-multicam.css": "33026fe2ef22db4dda753c021d4867379ec7da3fbf9ce63dd3abd1523f4f9a9d",
     "app/editor-separation.css": "a161cd123542e8562fd926755a1003f20618565f97eb9fdb5746fd5ddba68a09",
     "app/editor-sequences.css": "a0c868734dc1e5e10a7c0707a69e4a7e2f87416cb228c5c74182f3cc35fec79a",
-    "app/editor-timeline.css": "b52b8fcf88357ad631b51c74330a5e5c4e5a6d0978c7c7f4ee75cb54a57ea943",
+    "app/editor-timeline.css": "febe6b35f022e99d1dfca4ff6aca224dfe522f490ec79fe3f51805a8581f68bd",
     "app/editor-timing.css": "a2d08830d059916e41aaa2bc9dce94d0be3c89d22e1db1c33a2fd2e30f1cf3ea",
-    "app/editor-workspace.css": "40ccbba4b58c7a6678baaf6409ed822d9fb8a47d50250e8dc76f39abc24386d1",
+    "app/editor-workspace.css": "f194384c69f6b9702614efa49d71c0eab621a8dc8e81c37c7e85265dd8e3b4f4",
     "app/index.html": "89aee4cf8efde002a05a90f0f0fffed1640ce9cd5fdcfc19bff3442ff9fe6333",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "5d9a6b71c0ab4793a05a91aa99fa70746451f22dda2bf5bf41cd1acac8686df4",
+    "app/main.mjs": "78e68d62eb3ab47aead9a7e591e25ff308242a114a42586c6c3c280355980e3e",
     "app/rough-cut.css": "78f7aa060c02a6dbb0b560ad999cc26e8d962ae2397795d655367cc15f16f42e",
     "app/runtimes/editor-renderer.mjs": "e4a351b60cbeb22aed990de000475e83f16ab10451574d1aa1966ae3330a1781",
     "app/style.css": "add9cc2d1a6df13d1d0ff23cd02274ba7b28934f612758ad7d2c1e01902e040a",
@@ -38,6 +38,6 @@
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "fc43bb3e6ae81df9448b1c1bb6e245f2315731a901f5a67953cf2a8ca1d70999",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "2b5854c353019c52aa20ee3d8a9c548313223a5d296a486e9b7ef71c32cb2811"
+    "README.md": "b326cc28d66454b11b8cfdb2639a7d0b0abac0e468c07d207de1eeb72c2c1e7b"
   }
 }

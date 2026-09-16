@@ -4,7 +4,7 @@ import {
   type EditorTimelineMediaOptions,
   type TimelineMediaStrip,
 } from "./timeline-media";
-import { escapeHtml as esc } from "../icons";
+import { escapeHtml as esc, icon as sharedIcon } from "../icons";
 import { createTrack } from "./defaults";
 import {
   copyClips,
@@ -70,6 +70,28 @@ const stamp = (time: Tick) => {
   const value = ticksToSeconds(time);
   return `${Math.floor(value / 60)}:${(value % 60).toFixed(value < 10 ? 2 : 1).padStart(value < 10 ? 5 : 4, "0")}`;
 };
+
+// The timeline shares the shell's line icons; editing-only controls stay local to this view.
+const timelineIcons: Record<string, string> = {
+  copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+  paste: '<path d="M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 12h8M8 16h6"/>',
+  duplicate: '<rect x="3" y="3" width="12" height="12" rx="2"/><path d="M9 15v4a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-4M7 9h4M9 7v4"/>',
+  group: '<rect x="3" y="3" width="18" height="18" rx="3" stroke-dasharray="2 3"/><rect x="7" y="7" width="5" height="5" rx="1"/><rect x="12" y="12" width="5" height="5" rx="1"/>',
+  ungroup: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="m14 10 7-7M15 3h6v6M3 15v6h6m-6 0 7-7"/>',
+  snap: '<path d="M5 3v10a7 7 0 0 0 14 0V3h-4v10a3 3 0 0 1-6 0V3zM5 7h4m6 0h4"/>',
+  locked: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>',
+  unlocked: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.5-2M12 14v3"/>',
+  visible: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  hidden: '<path d="m3 3 18 18M10.6 5.1A12 12 0 0 1 12 5c6.5 0 10 7 10 7a18 18 0 0 1-3.1 3.9M6.1 6.1A19 19 0 0 0 2 12s3.5 7 10 7a13 13 0 0 0 5.9-1.9M10 10a3 3 0 0 0 4 4"/>',
+  muted: '<path d="m11 4-6 5H2v6h3l6 5zM16 9l6 6m0-6-6 6"/>',
+  audio: '<path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="17" cy="16" rx="3" ry="3"/>',
+  title: '<path d="M4 5h16M12 5v15M8 20h8M4 5v3m16-3v3"/>',
+  up: '<path d="m6 14 6-6 6 6"/>',
+};
+const timelineIcon = (name: string, size = 16) =>
+  timelineIcons[name]
+    ? `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${timelineIcons[name]}</svg>`
+    : sharedIcon(name, size);
 
 /** A view of the parent's single document. All gestures commit one command batch. */
 export class EditorTimeline {
@@ -223,20 +245,37 @@ export class EditorTimeline {
       ticks.push(`<span style="left:${ticksToSeconds(time) * this.scale}px">${stamp(time)}</span>`);
       if (ticks.length > 300) break;
     }
-    const button = (action: string, label: string, disabled = false) =>
-      `<button type="button" data-et-action="${action}"${disabled ? " disabled" : ""}>${label}</button>`;
-    this.container.innerHTML = `<div class="et-toolbar">${button("split", "切分", selected.size !== 1)}${button("copy", "复制", !selected.size)}${button("paste", "粘贴", !this.clipboard)}${button("duplicate", "原位复制", !selected.size)}${button("group", "分组", selected.size < 2)}${button("ungroup", "解组", !selected.size)}${button("delete", "删除", !selected.size)}<label><input type="checkbox" data-et-snap ${this.snapping ? "checked" : ""}>吸附</label><span class="et-spacer"></span>${button("fit", "适合窗口")}<label>缩放 <input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放"></label><output>${selected.size ? `已选 ${selected.size} 个片段` : "拖动空白处框选"}</output></div>
-      <div class="et-body"><div class="et-track-heads"><div class="et-track-top">轨道</div>${sequence.tracks
+    const button = (
+      action: string,
+      label: string,
+      icon: string,
+      disabled = false,
+      shortcut?: string,
+      text = false,
+    ) => `<button type="button" data-et-action="${action}" class="et-tool${text ? " et-tool-labeled" : ""}" aria-label="${label}" title="${label}${shortcut ? ` · ${shortcut}` : ""}"${disabled ? " disabled" : ""}>${timelineIcon(icon)}${text ? `<span>${label}</span>` : ""}</button>`;
+    this.container.innerHTML = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
+        <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S")}${button("delete", "删除", "trash", !selected.size, "⌫")}</div>
+        <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C")}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D")}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G")}</div>
+        <label class="et-snap" title="吸附 · 自动对齐片段边缘"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
+        <output class="et-selection-status" aria-live="polite">${selected.size ? `已选 ${selected.size} 个片段` : ""}</output>
+        <span class="et-spacer"></span>
+        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit")}<label class="et-zoom" title="时间轴缩放">${timelineIcon("minus", 14)}<input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放">${timelineIcon("plus", 14)}</label></div>
+      </div>
+      <div class="et-body"><div class="et-track-heads"><div class="et-track-top"><span>轨道</span><span class="et-track-count">${sequence.tracks.length}</span></div>${sequence.tracks
         .slice()
         .reverse()
-        .map(
-          (track) =>
-            `<div class="et-track-head" data-track-head="${esc(track.id)}"><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}"><div><button data-et-track="${esc(track.id)}" data-et-toggle="locked" aria-label="${track.locked ? "解锁" : "锁定"}${esc(track.name)}" aria-pressed="${track.locked}">${track.locked ? "🔒" : "锁"}</button><button data-et-track="${esc(track.id)}" data-et-toggle="hidden" aria-label="${track.hidden ? "显示" : "隐藏"}${esc(track.name)}" aria-pressed="${track.hidden}"${track.locked ? " disabled" : ""}>${track.hidden ? "显" : "隐"}</button><button data-et-track="${esc(track.id)}" data-et-toggle="muted" aria-label="${track.muted ? "取消静音" : "静音"}${esc(track.name)}" aria-pressed="${track.muted}"${track.locked ? " disabled" : ""}>${track.muted ? "声" : "静"}</button><button data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}">↑</button><button data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}">↓</button></div>${track.kind !== "text" ? `<div class="et-track-mix"><label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100"${track.locked ? " disabled" : ""}></label></div>` : ""}</div>`,
-        )
-        .join(
-          "",
-        )}<div class="et-add">${button("track-video", "+ 画面")}${button("track-audio", "+ 声音")}${button("track-text", "+ 文字")}</div></div>
-      <div class="et-scroll"><div class="et-content" style="width:${width}px"><div class="et-ruler" aria-label="时间刻度">${ticks.join("")}</div><div class="et-marker-lane" aria-label="标记范围">${sequence.markers
+        .map((track, index) => {
+          const kindIcon = { video: "film", audio: "audio", text: "title" }[track.kind];
+          const toggle = (key: "locked" | "hidden" | "muted", label: string, glyph: string) =>
+            `<button type="button" data-et-track="${esc(track.id)}" data-et-toggle="${key}" aria-label="${label}${esc(track.name)}" title="${label}${esc(track.name)}" aria-pressed="${track[key]}"${key !== "locked" && track.locked ? " disabled" : ""}>${timelineIcon(glyph, 14)}</button>`;
+          return `<div class="et-track-head et-track-${track.kind}${track.locked ? " is-locked" : ""}${track.hidden ? " is-hidden" : ""}" data-track-head="${esc(track.id)}">
+            <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"></div>
+            <div class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button></div>
+            ${track.kind !== "text" ? `<div class="et-track-mix"><label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100"${track.locked ? " disabled" : ""}></label></div>` : ""}
+          </div>`;
+        })
+        .join("")}<div class="et-add" role="group" aria-label="添加轨道">${button("track-video", "+ 画面", "film", false, undefined, true)}${button("track-audio", "+ 声音", "audio", false, undefined, true)}${button("track-text", "+ 文字", "title", false, undefined, true)}</div></div>
+      <div class="et-scroll"><div class="et-content" style="width:${width}px"><div class="et-ruler" aria-label="时间刻度" style="--et-ruler-step:${step * this.scale / 4}px">${ticks.join("")}</div><div class="et-marker-lane" aria-label="标记范围">${sequence.markers
         .filter(
           (marker) =>
             ticksToSeconds(marker.time + marker.duration) * this.scale >= left - 30 &&
@@ -251,7 +290,7 @@ export class EditorTimeline {
         .reverse()
         .map(
           (track) =>
-            `<div class="et-lane${track.locked ? " locked" : ""}" data-et-lane="${esc(track.id)}" aria-label="${esc(track.name)}">${sequence.clips
+            `<div class="et-lane et-lane-${track.kind}${track.locked ? " locked" : ""}${track.hidden ? " is-hidden" : ""}" data-et-lane="${esc(track.id)}" aria-label="${esc(track.name)}">${sequence.clips
               .filter(
                 (clip) =>
                   clip.trackId === track.id &&
@@ -263,7 +302,7 @@ export class EditorTimeline {
               )
               .map(
                 (clip) =>
-                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clip.label)} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clip.label)}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
+                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clip.label)} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clip.label)}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -284,8 +323,8 @@ export class EditorTimeline {
     );
     this.container
       .querySelector<HTMLElement>(".et-body")!
-      .addEventListener("scroll", this.scheduleMedia, { passive: true });
-    this.scheduleMedia();
+      .addEventListener("scroll", this.syncVerticalScroll, { passive: true });
+    this.syncVerticalScroll();
     if (this.drag?.kind === "box") this.createBox();
     if (restoreFocus) {
       const next = focusedClip
@@ -294,6 +333,15 @@ export class EditorTimeline {
       (next ?? this.container).focus({ preventScroll: true });
     }
   }
+  private syncVerticalScroll = (): void => {
+    const body = this.container.querySelector<HTMLElement>(".et-body");
+    if (!body) return;
+    this.verticalPosition = body.scrollTop;
+    // The inner horizontal scroller is a separate sticky containing block. Keep only
+    // its time header fixed to the outer vertical viewport without shifting clip lanes.
+    this.container.style.setProperty("--et-scroll-y", `${this.verticalPosition}px`);
+    this.scheduleMedia();
+  };
   private scheduleMedia = (): void => {
     if (this.destroyed) return;
     this.media.cancel();

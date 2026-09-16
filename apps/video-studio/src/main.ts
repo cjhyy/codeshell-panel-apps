@@ -1756,6 +1756,12 @@ function render(): void {
       : [];
   const restoreAssetFocus = rememberMediaAssetFocus();
   renderStudioShell();
+  const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
+  if (exportToolbar)
+    editorExportJobs?.mountTrigger(
+      exportToolbar,
+      exportToolbar.querySelector('[data-action="export"]'),
+    );
   editorVisible = Boolean(editorWorkspace && tab === "media");
   studio.hidden = false;
   studio.querySelector(".workspace")!.classList.toggle("editor-mode", editorVisible);
@@ -5166,6 +5172,12 @@ async function boot(): Promise<void> {
       editorTasks = createEditorTaskBridge(panel);
       editorSourcePreviews = new EditorSourcePreviews(editorTasks);
       editorExportJobs = new EditorExportJobs(panel, fail);
+      const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
+      if (exportToolbar)
+        editorExportJobs.mountTrigger(
+          exportToolbar,
+          exportToolbar.querySelector('[data-action="export"]'),
+        );
       void editorExportJobs.loadMore().catch(fail);
     }
     synchronizeLegacyView();

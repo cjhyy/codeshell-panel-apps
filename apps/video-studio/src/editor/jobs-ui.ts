@@ -5,14 +5,18 @@ import {
   type RuntimeJob,
 } from "../sdk/panel-runtime";
 
+let nextExportJobsId = 0;
+
 /** A view of Host-owned durable exports. Reloads discover the original jobs rather than submitting new work. */
 export class EditorExportJobs {
   private readonly sdk;
-  private readonly root = document.createElement("details");
+  private readonly root = document.createElement("section");
+  private readonly trigger = document.createElement("button");
   private readonly rows = new Map<string, HTMLElement>();
   private readonly latest = new Map<string, RuntimeJob>();
   private readonly pending = new Set<string>();
   private readonly watching = new Map<string, AbortController>();
+  private readonly observationErrors = new Set<string>();
   private offset = 0;
   private loading = false;
   private disposed = false;
@@ -22,14 +26,80 @@ export class EditorExportJobs {
   ) {
     this.sdk = createPanelRuntime(bridge);
     this.root.className = "editor-export-jobs";
+    this.root.id = `editor-export-jobs-${++nextExportJobsId}`;
+    this.root.hidden = true;
+    this.root.setAttribute("role", "dialog");
+    this.root.setAttribute("aria-label", "导出任务");
     this.root.innerHTML =
-      '<summary>导出任务</summary><div class="editor-export-job-list"></div><button type="button" data-more>加载已有任务</button>';
+      '<header><div><strong>导出任务</strong><span data-count></span></div><button type="button" data-close aria-label="关闭导出任务" title="关闭导出任务">×</button></header><p class="editor-export-jobs-empty">暂无导出任务</p><div class="editor-export-job-list"></div><button type="button" data-more>加载已有任务</button>';
+    this.trigger.type = "button";
+    this.trigger.className = "editor-export-jobs-trigger quiet";
+    this.trigger.innerHTML =
+      '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M7 3H4v18h16V3h-3M9 3h6v4H9zM8 12h8M8 16h5"/></svg><span class="editor-export-jobs-label">导出记录</span><span class="editor-export-jobs-badge" hidden></span>';
+    this.trigger.setAttribute("aria-controls", this.root.id);
+    this.trigger.setAttribute("aria-expanded", "false");
+    this.trigger.setAttribute("aria-haspopup", "dialog");
+    this.trigger.addEventListener("click", () => (this.root.hidden ? this.show() : this.hide()));
+    this.root.querySelector("[data-close]")!.addEventListener("click", () => this.hide());
+    this.root.addEventListener("keydown", (event) => {
+      // Task controls must not also dispatch timeline editing shortcuts underneath this view.
+      event.stopPropagation();
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      this.hide();
+    });
     this.root.querySelector("[data-more]")!.addEventListener("click", () => {
       void this.loadMore().catch((error) => {
         if (!this.disposed) onError(error);
       });
     });
     document.body.append(this.root);
+    document.addEventListener("pointerdown", this.outsideClick);
+    this.updateSummary();
+  }
+  /** Keep task history beside the editor's export action instead of covering the timeline. */
+  mountTrigger(container: HTMLElement, before: ChildNode | null = null): void {
+    if (!this.disposed) container.insertBefore(this.trigger, before);
+  }
+  show(): void {
+    if (this.disposed) return;
+    this.root.hidden = false;
+    this.trigger.setAttribute("aria-expanded", "true");
+    this.root.querySelector<HTMLButtonElement>("[data-close]")!.focus();
+  }
+  hide(restoreFocus = true): void {
+    const focusedInside = this.root.contains(document.activeElement);
+    this.root.hidden = true;
+    this.trigger.setAttribute("aria-expanded", "false");
+    if (restoreFocus && focusedInside && this.trigger.isConnected) this.trigger.focus();
+  }
+  private readonly outsideClick = (event: PointerEvent): void => {
+    if (
+      !this.root.hidden &&
+      event.target instanceof Node &&
+      !this.root.contains(event.target) &&
+      !this.trigger.contains(event.target)
+    )
+      this.hide(false);
+  };
+  private updateSummary(): void {
+    const active = [...this.latest.values()].filter((job) =>
+      ["queued", "running"].includes(job.status),
+    ).length;
+    const badge = this.trigger.querySelector<HTMLElement>(".editor-export-jobs-badge")!;
+    badge.hidden = active === 0;
+    badge.textContent = String(active);
+    this.trigger.setAttribute(
+      "aria-label",
+      active ? `导出记录，${active} 个任务进行中` : "导出记录",
+    );
+    this.trigger.title = active ? `${active} 个视频正在后台导出` : "查看导出记录";
+    this.root.querySelector<HTMLElement>("[data-count]")!.textContent = active
+      ? `${active} 个进行中`
+      : this.rows.size
+        ? `${this.rows.size} 条记录`
+        : "";
+    this.root.querySelector<HTMLElement>(".editor-export-jobs-empty")!.hidden = this.rows.size > 0;
   }
   async loadMore(): Promise<void> {
     if (this.loading || this.disposed) return;
@@ -84,7 +154,7 @@ export class EditorExportJobs {
         a.dataset.jobId!.localeCompare(b.dataset.jobId!),
     ))
       list.append(row);
-    if (reveal) this.root.open = true;
+    if (reveal) this.show();
     this.update(job);
     const accepted = this.latest.get(job.id)!;
     if (["queued", "running"].includes(accepted.status) && !this.watching.has(job.id)) {
@@ -93,7 +163,11 @@ export class EditorExportJobs {
       void this.sdk
         .wait(job.id, { signal: controller.signal, changed: (value) => this.update(value) })
         .catch((error) => {
-          if (!this.disposed && !controller.signal.aborted) this.onError(error);
+          if (!this.disposed && !controller.signal.aborted) {
+            this.observationErrors.add(job.id);
+            this.update(this.latest.get(job.id)!);
+            this.onError(error);
+          }
         })
         .finally(() => {
           if (this.watching.get(job.id) === controller) this.watching.delete(job.id);
@@ -119,14 +193,19 @@ export class EditorExportJobs {
     )
       return;
     this.latest.set(job.id, job);
-    if (terminal(job)) this.watching.get(job.id)?.abort();
-    row.querySelector("output")!.textContent =
-      job.status === "failed"
+    if (terminal(job)) {
+      this.watching.get(job.id)?.abort();
+      this.observationErrors.delete(job.id);
+    }
+    row.dataset.status = job.status;
+    row.querySelector("output")!.textContent = this.observationErrors.has(job.id)
+      ? "状态暂未同步，请刷新查看"
+      : job.status === "failed"
         ? (job.error?.message ?? "导出失败")
         : (
             {
               queued: "等待导出",
-              running: "正在导出",
+              running: job.progress?.message || "正在导出",
               succeeded: "导出完成",
               cancelled: "已取消",
             } as const
@@ -136,8 +215,12 @@ export class EditorExportJobs {
     else if (Number.isFinite(job.progress?.fraction))
       bar.value = Math.max(0, Math.min(1, job.progress!.fraction!));
     else bar.removeAttribute("value");
-    bar.hidden = job.status === "failed" || job.status === "cancelled";
+    bar.hidden =
+      job.status === "failed" || job.status === "cancelled" || this.observationErrors.has(job.id);
     const actions = row.querySelector("div")!;
+    const focusedAction = actions.contains(document.activeElement)
+      ? document.activeElement?.textContent
+      : undefined;
     actions.replaceChildren();
     const button = (label: string, work: () => Promise<unknown>) => {
       const control = document.createElement("button");
@@ -148,6 +231,10 @@ export class EditorExportJobs {
       control.addEventListener("click", () => {
         if (this.disposed || this.pending.has(key)) return;
         this.pending.add(key);
+        if (!this.root.hidden && document.activeElement === control)
+          this.root
+            .querySelector<HTMLButtonElement>("[data-close]")!
+            .focus({ preventScroll: true });
         control.disabled = true;
         void work()
           .catch((error) => {
@@ -165,6 +252,12 @@ export class EditorExportJobs {
       button("取消", async () => {
         this.update(await this.sdk.cancel(job.id));
       });
+    if (this.observationErrors.has(job.id))
+      button("刷新状态", async () => {
+        const refreshed = taskValue(await this.sdk.call("tasks.get", { id: job.id }));
+        this.observationErrors.delete(job.id);
+        this.track(refreshed, row.querySelector("strong")!.textContent!, false);
+      });
     if (job.status === "failed" && job.error?.retryable)
       button("重试", async () => {
         const retried = await this.sdk.retry(job.id);
@@ -181,12 +274,23 @@ export class EditorExportJobs {
       button("保存视频", () => this.sdk.call("media.export", { assetId: result.video.id }));
       button("在文件夹中显示", () => this.sdk.call("media.reveal", { assetId: result.video.id }));
     }
+    if (focusedAction && !this.root.hidden) {
+      const replacement = [...actions.querySelectorAll("button")].find(
+        (control) => control.textContent === focusedAction && !control.disabled,
+      );
+      (replacement ?? this.root.querySelector<HTMLButtonElement>("[data-close]")!).focus({
+        preventScroll: true,
+      });
+    }
+    this.updateSummary();
   }
   dispose(): void {
     this.disposed = true;
     for (const controller of this.watching.values()) controller.abort();
     this.watching.clear();
     this.sdk.dispose();
+    document.removeEventListener("pointerdown", this.outsideClick);
+    this.trigger.remove();
     this.root.remove();
   }
 }

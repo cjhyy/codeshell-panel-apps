@@ -1,4 +1,4 @@
-import { escapeHtml as esc } from "../icons";
+import { escapeHtml as esc, icon } from "../icons";
 import { EditorMarkers } from "./marker-ui";
 import { EditorInspector } from "./inspector-ui";
 import { EditorTimeline } from "./timeline-ui";
@@ -120,6 +120,23 @@ export class EditorWorkspace {
       <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span></div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
+      for (const [action, glyph] of [
+        ["undo", "undo"],
+        ["redo", "redo"],
+        ["new-sequence", "plus"],
+        ["marker", "clock"],
+      ]) {
+        const control = this.get<HTMLButtonElement>(`[data-ew-action="${action}"]`);
+        const label = control.textContent ?? "";
+        control.setAttribute("aria-label", label);
+        control.title = label;
+        control.classList.add("ew-icon-button");
+        control.innerHTML = icon(glyph!, 16);
+      }
+      const play = this.get<HTMLButtonElement>('[data-ew-action="play"]');
+      play.classList.add("ew-icon-button");
+      play.innerHTML = icon("play", 16);
+      play.title = "播放 · 空格";
       const more = document.createElement("details");
       more.className = "ew-more";
       const summary = document.createElement("summary");
@@ -386,8 +403,12 @@ export class EditorWorkspace {
   private updatePlayButton(playing: boolean): void {
     if (this.disposed) return;
     const button = this.get<HTMLButtonElement>('[data-ew-action="play"]');
-    button.textContent = this.preparing ? "取消声音准备" : playing ? "暂停" : "播放";
-    button.setAttribute("aria-label", button.textContent);
+    const label = this.preparing ? "取消声音准备" : playing ? "暂停" : "播放";
+    if (this.options.layout === "embedded")
+      button.innerHTML = icon(this.preparing ? "close" : playing ? "pause" : "play", 16);
+    else button.textContent = label;
+    button.setAttribute("aria-label", label);
+    button.title = `${label} · 空格`;
   }
   private cancelPreparation(): void {
     this.preparing?.abort();

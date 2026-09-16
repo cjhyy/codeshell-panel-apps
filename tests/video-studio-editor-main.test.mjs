@@ -391,6 +391,31 @@ test("main retains the original studio shell and material actions add canonical 
   );
 });
 
+test("export history stays in the topbar across page changes and never covers the timeline at startup", async (t) => {
+  const page = await openPage(t, { nativeTasks: true });
+  const before = await waitSaved(page);
+  const history = page.locator(".topbar .editor-export-jobs-trigger");
+  const popover = page.getByRole("dialog", { name: "导出任务", exact: true });
+  assert.equal(await history.count(), 1);
+  assert.equal(await popover.isVisible(), false);
+  assert.equal(await history.getAttribute("aria-expanded"), "false");
+  await history.click();
+  assert.equal(await popover.isVisible(), true);
+  assert.equal(await popover.getByText("暂无导出任务", { exact: true }).isVisible(), true);
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).press("Escape");
+  assert.equal(await popover.isVisible(), false);
+  for (const tab of ["jobs", "recording", "media"]) {
+    await production(page, tab);
+    assert.equal(await history.count(), 1);
+    assert.equal(await history.isVisible(), true);
+    assert.equal(await popover.isVisible(), false);
+  }
+  await history.click();
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).press("Delete");
+  assert.deepEqual(await saved(page), before, "Task controls must not edit the timeline");
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+});
+
 test("main rail and original-source previews retain the mounted canonical canvas, timeline, selection and document", async (t) => {
   const page = await openPage(t);
   await clickEditorAction(page, "rectangle");
