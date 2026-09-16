@@ -63,6 +63,15 @@ async function fixture(t, options = {}) {
     }),
   );
   await page.goto("http://127.0.0.1:41789/workspace");
+  if (options.layout === "embedded")
+    await page.evaluate(() => {
+      const host = document.createElement("section");
+      host.className = "workspace editor-mode";
+      host.style.height = "900px";
+      const root = document.querySelector("#workspace");
+      root.before(host);
+      host.append(root);
+    });
   await page.addStyleTag({ content: css + "\nbody{display:block;margin:0;padding:0;}" });
   await page.addScriptTag({ content: source });
   await page.evaluate(async (options) => {
@@ -212,6 +221,7 @@ async function fixture(t, options = {}) {
           audioRequests.push(request);
         });
     const workspace = new editor.EditorWorkspace(document.querySelector("#workspace"), {
+      layout: options.layout,
       session,
       resolveAsset: (assetId, signal) =>
         new Promise((resolve) => {
@@ -273,6 +283,7 @@ async function fixture(t, options = {}) {
     });
     globalThis.fixture = {
       read: () => session.read(),
+      addAsset: (assetId, placement) => workspace.addAsset(assetId, placement),
       state: () => session.getState(),
       stored: () => structuredClone(stored),
       writes,
@@ -459,6 +470,99 @@ test("workspace imports into its session and adds asset plus required track as o
   assert.equal(await page.locator("[data-ew-asset]").count(), 1);
   assert.equal(await page.locator("[data-ew-asset]").getAttribute("data-ew-asset"), "imported");
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("material drops use the actual target track and snapped time, with atomic overlap and kind rejection", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const initial = await documentState(page);
+  const drop = (assetId, trackId, seconds) =>
+    page.evaluate(
+      ({ assetId, trackId, seconds }) => {
+        const lane = document.querySelector(`[data-et-lane="${trackId}"]`);
+        const viewport = document.querySelector(".et-scroll");
+        const rect = viewport.getBoundingClientRect();
+        const transfer = new DataTransfer();
+        transfer.setData("text/plain", JSON.stringify({ assetId }));
+        lane.dispatchEvent(
+          new DragEvent("drop", {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer,
+            clientX: rect.left + seconds * 64 - viewport.scrollLeft,
+            clientY: lane.getBoundingClientRect().top + 20,
+          }),
+        );
+      },
+      { assetId, trackId, seconds },
+    );
+  await drop("demo", "video", 5);
+  await settle(page);
+  const added = await documentState(page);
+  assert.equal(added.revision, initial.revision + 1);
+  assert.equal(added.sequences[0].tracks.length, initial.sequences[0].tracks.length);
+  assert.equal(added.sequences[0].clips.at(-1).start, 5 * 240000);
+  assert.equal(added.sequences[0].clips.at(-1).trackId, "video");
+  await drop("demo", "video", 5);
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /已有片段/);
+  assert.deepEqual(await documentState(page), added);
+  await drop("audio", "video", 10);
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /类型/);
+  assert.deepEqual(await documentState(page), added);
+  await page.getByRole("button", { name: "锁定画面轨", exact: true }).click();
+  const locked = await documentState(page);
+  await drop("demo", "video", 10);
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /锁定/);
+  assert.deepEqual(await documentState(page), locked);
+  await action(page, "undo").click();
+  await action(page, "undo").click();
+  assert.deepEqual(semantic(await documentState(page)), semantic(initial));
+});
+
+test("explicit material placement validates missing targets and invalid time without changing the session", async (t) => {
+  const page = await fixture(t);
+  const before = await documentState(page);
+  for (const placement of [
+    { at: -1 },
+    { at: 1.5 },
+    { at: Number.MAX_SAFE_INTEGER },
+    { trackId: "missing" },
+    { trackId: "text" },
+  ]) {
+    const result = await page.evaluate((placement) => {
+      try {
+        fixture.addAsset("demo", placement);
+        return "accepted";
+      } catch (error) {
+        return String(error);
+      }
+    }, placement);
+    assert.notEqual(result, "accepted");
+    assert.deepEqual(await documentState(page), before);
+  }
+});
+
+test("embedded controls keep their handlers while containing legacy events and repeated visibility keeps audio preparation", async (t) => {
+  const page = await fixture(t, { layout: "embedded", audio: true, separation: true });
+  assert.equal(await page.locator(".editor-workspace-embedded").count(), 1);
+  await page.locator(".ew-more summary").click();
+  assert.equal(await page.locator('.ew-more [data-ew-action="title"]').count(), 1);
+  assert.equal(await page.locator('.ew-more [data-ew-action="separate"]').count(), 1);
+  await page.evaluate(() => {
+    window.legacyClicks = 0;
+    document.body.addEventListener("click", () => window.legacyClicks++);
+  });
+  await action(page, "title").click();
+  assert.equal((await documentState(page)).sequences[0].clips.at(-1).kind, "text");
+  assert.equal(await page.evaluate(() => window.legacyClicks), 0);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => {
+    fixture.show();
+    fixture.show();
+  });
+  assert.equal((await page.evaluate(() => fixture.audio()))[0].aborted, false);
+  await page.evaluate(() => fixture.hide());
+  assert.equal((await page.evaluate(() => fixture.audio()))[0].aborted, true);
 });
 
 test("title, rectangle and ellipse are real clips with a single undo for each addition", async (t) => {

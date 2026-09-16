@@ -98,7 +98,7 @@ async function isolatedPage(mockHost = false, width = 1440) {
   if (mockHost) await installMockHost(page);
   await page.goto(url);
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
   return { context, page };
 }
 
@@ -315,7 +315,7 @@ const readProject = async (page) =>
   (await readSavedLegacyProject(page));
 const click = (page, name) => page.getByRole("button", { name, exact: true }).click();
 async function loadDemo(page) {
-  await click(page, "试试示例工程");
+  await click(page, "打开示例工程");
   await saved(page);
 }
 
@@ -400,7 +400,7 @@ test(
       assert.equal(before.clips[0].assetId, asset.id);
       await page.reload();
       await enterLegacyProduction(page);
-      await page.locator("#preview").waitFor();
+      await page.locator("#editor-workspace").waitFor({ state: "visible" });
       await page.waitForFunction(
         () =>
           document.querySelectorAll(".asset-card").length === 1 &&
@@ -686,7 +686,7 @@ test(
       );
       await page.reload();
       await enterLegacyProduction(page);
-      await page.locator("#preview").waitFor();
+      await page.locator("#editor-workspace").waitFor({ state: "visible" });
       assert.equal((await readProject(page)).script, rewritten);
       assert.deepEqual((await readProject(page)).audioClips, before.audioClips);
     } finally {

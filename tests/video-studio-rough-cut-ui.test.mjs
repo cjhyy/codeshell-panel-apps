@@ -1,6 +1,7 @@
 import {
   enterLegacyProduction,
   readSavedLegacyProject,
+  readSavedEditorDocument,
   legacyProjectFromDocument,
 } from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
@@ -146,10 +147,9 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
-  // Only persistence and tool registration are supplied by this bridge. Actual
-  // media decoding, playback, marking, edits and downloads run in the browser.
-  await page.addInitScript(installGenericMediaTaskMock);
-  await page.addInitScript(() => {
+  // Resource storage, project persistence and AI calls use boundary fixtures.
+  // Media decoding, playback, marking, edits and downloads run in the browser.
+  const installRoughCutBridge = () => {
     window.__roughCutTools = {};
     window.__roughCutAgentTasks = [];
     const listeners = new Map();
@@ -219,6 +219,19 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
         throw new Error(`Unexpected rough cut bridge call: ${method}`);
       },
     };
+    // This fixture supplies real browser media plus resource/storage and AI boundaries.
+    // It does not implement the editor's native source-proxy processor.
+    const readContext = window.codeshellPanel.getContext.bind(window.codeshellPanel);
+    window.codeshellPanel.getContext = async () => {
+      const context = await readContext();
+      return {
+        ...context,
+        availableMethods: context.availableMethods.filter((method) => !method.startsWith("tasks.")),
+      };
+    };
+  };
+  await page.addInitScript({
+    content: `(${installGenericMediaTaskMock.toString()})();(${installRoughCutBridge.toString()})();`,
   });
   await page.goto(url);
   await enterLegacyProduction(page);
@@ -438,7 +451,10 @@ test(
       );
       assert.equal(result.revision, before.revision + 1);
       assert.deepEqual(result.clips, []);
-      await page.locator('[data-action="undo"]').first().click();
+      await page
+        .locator('[data-action="undo"]:visible,[data-ew-action="undo"]:visible')
+        .first()
+        .click();
       await saved(page);
       assert.equal((await state(page)).project.roughCuts?.length ?? 0, 0);
     } finally {
@@ -846,9 +862,13 @@ async function importedPage() {
   assert.ok(audio.durationFrames > 0, "The existing real WAV fixture is decoded");
   await page.locator(`[data-add-asset="${video.id}"]`).click();
   await saved(page);
-  const clip = page.locator("[data-clip]").first();
+  const clip = page.locator("[data-et-clip]").first();
   await clip.click({ position: { x: 45, y: 20 } });
-  assert.ok((await state(page)).playheadFrame > 0);
+  await page.locator("[data-ew-seek]").fill("240000");
+  await page.waitForFunction(
+    () => window.__roughCutTools.read_video_project().playheadFrame === 30,
+  );
+  assert.equal((await state(page)).playheadFrame, 30);
   return { page, video, audio };
 }
 
@@ -914,7 +934,11 @@ async function expectPreviewFrame(page, assetId, sourceFrame) {
       canvas.width = 40;
       canvas.height = 23;
       const context = canvas.getContext("2d");
-      context.drawImage(document.querySelector("#preview"), 0, 0, canvas.width, canvas.height);
+      const monitor =
+        document.querySelector(
+          ".workspace.editor-mode:not(.editor-source-mode) [data-ew-canvas]",
+        ) ?? document.querySelector("#preview");
+      context.drawImage(monitor, 0, 0, canvas.width, canvas.height);
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
       let difference = 0;
       for (let index = 0; index < pixels.length; index++)
@@ -927,7 +951,7 @@ async function expectPreviewFrame(page, assetId, sourceFrame) {
 }
 
 async function expectTimelinePreview(page, clip, frame) {
-  assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+  assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
   assert.equal(await page.locator("[data-source-scrub],[data-roughcut-scrub]").count(), 0);
   const current = await state(page);
   assert.equal(
@@ -936,18 +960,21 @@ async function expectTimelinePreview(page, clip, frame) {
     "The new clip's beginning becomes the composition playhead",
   );
   assert.equal(current.selectedClipId, clip.id, "The inserted clip is selected for editing");
-  const timelineClip = page.locator(`[data-clip="${clip.id}"]`);
-  assert.equal(await page.locator(".timeline-panel").isVisible(), true);
+  const timelineClip = page.locator(`[data-et-clip="${clip.id}"]`);
+  assert.equal(await page.locator("[data-ew-timeline]").isVisible(), true);
+  assert.equal(await page.locator(".timeline-panel").isVisible(), false);
+  assert.equal(await timelineClip.getAttribute("aria-selected"), "true");
   await page.waitForFunction((id) => {
-    const viewport = document.querySelector("#timeline-scroll").getBoundingClientRect();
-    const segment = document.querySelector(`[data-clip="${id}"]`).getBoundingClientRect();
+    const viewport = document.querySelector(".et-scroll").getBoundingClientRect();
+    const segment = document.querySelector(`[data-et-clip="${id}"]`).getBoundingClientRect();
     return segment.left >= viewport.left - 1 && segment.left < viewport.right - 1;
   }, clip.id);
-  await timelineClip.locator(".clip-fill img").first().waitFor();
-  await page.waitForFunction((id) => {
-    const images = [...document.querySelectorAll(`[data-clip="${id}"] .clip-fill img`)];
-    return images.length > 0 && images.every((image) => image.complete && image.naturalWidth > 0);
-  }, clip.id);
+  await timelineClip.locator("canvas.et-media-strip[data-et-media-state=ready]").waitFor();
+  const pixels = await timelineClip.locator("canvas.et-media-strip").evaluate((canvas) => {
+    const bytes = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    return bytes.some((value, index) => index % 4 !== 3 && value > 0);
+  });
+  assert.equal(pixels, true, "The source strip contains actual decoded video pixels");
   await expectPreviewFrame(page, clip.assetId, clip.inFrame);
 }
 
@@ -967,15 +994,26 @@ test(
       const imported = (await state(page)).project.assets;
       const asset = imported.find((item) => item.kind === "video");
       const audio = imported.find((item) => item.kind === "audio");
-      await page.locator("#timeline-zoom").evaluate((input) => {
-        input.value = "100";
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-      });
-      assert.equal(await page.locator("#timeline-zoom").inputValue(), "100");
+      await page.locator("[data-et-zoom]").fill("2");
+      assert.equal(await page.locator("[data-et-zoom]").inputValue(), "2");
       for (const insertion of ["first", "append", "menu", "drop"]) {
-        await page.locator("#timeline-scroll").evaluate((element) => {
-          element.scrollLeft = 0;
-        });
+        const document = await readSavedEditorDocument(page);
+        const sequence = document.sequences.find((item) => item.id === document.activeSequenceId);
+        const end = Math.max(0, ...sequence.clips.map((clip) => clip.start + clip.duration));
+        const insertionTime = Math.max(0, end - 8000);
+        await page.locator("[data-ew-seek]").fill(String(insertionTime));
+        let dropTrack;
+        if (insertion === "drop") {
+          await page.locator('[data-et-action="track-video"]').click();
+          await saved(page);
+          const withTrack = await readSavedEditorDocument(page);
+          dropTrack = withTrack.sequences
+            .find((item) => item.id === withTrack.activeSequenceId)
+            .tracks.at(-1).id;
+          await page.locator(".et-scroll").evaluate((element) => {
+            element.scrollLeft = 0;
+          });
+        }
         if (insertion === "first") {
           await page.locator(`[data-preview-asset="${audio.id}"] .asset-preview-name`).click();
           assert.equal(await page.locator("[data-source-audio]").isVisible(), true);
@@ -986,34 +1024,67 @@ test(
             input.value = "120";
             input.dispatchEvent(new Event("input", { bubbles: true }));
           });
+          await expectPreviewFrame(page, asset.id, 120);
         }
-        if (insertion !== "first") await expectPreviewFrame(page, asset.id, 120);
-        const before = (await state(page)).project;
-        const start = before.clips.reduce((sum, clip) => sum + clip.outFrame - clip.inFrame, 0);
+        assert.equal(await page.locator("[data-ew-timeline]").isVisible(), true);
+        const beforeDocument = await readSavedEditorDocument(page);
+        const before = beforeDocument.sequences.find(
+          (item) => item.id === beforeDocument.activeSequenceId,
+        );
         if (insertion === "drop") {
-          await page.locator('[data-action="return-composition"]').click();
-          assert.equal(await page.locator(".timeline-panel").isVisible(), true);
-          await page.locator("#timeline-scroll").evaluate((element) => {
-            element.scrollLeft = 0;
-          });
-          await page.locator(`[data-asset="${asset.id}"]`).dragTo(page.locator("#video-track"), {
-            targetPosition: { x: 60, y: 30 },
-          });
+          await page
+            .locator(`[data-asset="${asset.id}"]`)
+            .dragTo(page.locator(`[data-et-lane="${dropTrack}"]`), {
+              targetPosition: { x: 60, y: 30 },
+            });
         } else if (insertion === "menu") {
           await page.locator(`[data-action="media-menu"][data-id="${asset.id}"]`).click();
           await page.locator('#media-context-menu [data-action="add-media"]').click();
         } else await page.locator(`[data-add-asset="${asset.id}"]`).click();
         await saved(page);
-        const project = (await state(page)).project;
+        const canonical = await readSavedEditorDocument(page);
+        const project = canonical.sequences.find((item) => item.id === canonical.activeSequenceId);
         assert.equal(project.clips.length, before.clips.length + 1);
-        assert.deepEqual(project.clips.slice(0, -1), before.clips);
-        assert.equal(await page.locator("[data-source-audio]").count(), 0);
-        await expectTimelinePreview(page, project.clips.at(-1), start);
-        if (insertion === "drop")
-          assert.ok(
-            await page.locator("#timeline-scroll").evaluate((element) => element.scrollLeft > 0),
-            "An insertion beyond the visible timeline scrolls its beginning into view",
+        assert.equal(canonical.revision, beforeDocument.revision + 1);
+        for (const original of before.clips)
+          assert.deepEqual(
+            project.clips.find((clip) => clip.id === original.id),
+            original,
           );
+        const clip = project.clips.find((clip) => !before.clips.some((old) => old.id === clip.id));
+        assert.equal(clip.kind, "media");
+        assert.equal(clip.assetId, asset.id);
+        if (insertion === "drop") {
+          assert.equal(clip.trackId, dropTrack);
+          assert.equal(
+            clip.start,
+            144000,
+            "A real drop at 60px and 100px/second uses the visible target time",
+          );
+        } else assert.equal(clip.start, insertionTime);
+        assert.equal(await page.locator("[data-source-audio]").count(), 0);
+        await expectTimelinePreview(
+          page,
+          { ...clip, inFrame: clip.timeMap.points[0].source / 8000 },
+          Math.round(clip.start / 8000),
+        ).catch(async (error) => {
+          await page.screenshot({
+            path: resolve(artifacts, "timeline-insert-failure.png"),
+            fullPage: true,
+          });
+          throw new Error(
+            `${insertion}: ${error.message}\n${JSON.stringify(await page.evaluate(() => ({ toast: document.querySelector("#toast")?.textContent, preview: document.querySelector("[data-ew-preview-error]")?.textContent, strips: [...document.querySelectorAll("canvas.et-media-strip")].map((canvas) => ({ state: canvas.dataset.etMediaState, message: canvas.title })), seek: document.querySelector("[data-ew-seek]")?.value, sourceMode: document.querySelector(".workspace")?.className })))}`,
+          );
+        });
+        if (insertion !== "first") {
+          await page.locator('[data-ew-action="undo"]').click();
+          await saved(page);
+          assert.deepEqual(
+            (await readSavedEditorDocument(page)).sequences,
+            beforeDocument.sequences,
+            "Each insertion route has one complete undo",
+          );
+        }
       }
       await page.screenshot({
         path: resolve(artifacts, "timeline-insert-preview.png"),
@@ -1241,7 +1312,7 @@ test(
       });
       await page.setViewportSize({ width: 1440, height: 1000 });
       await page.locator('[data-action="return-composition"]').click();
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal(await page.locator("[data-source-scrub]").count(), 0);
       await card.locator(".asset-preview-name").click();
       assert.equal(await page.locator("#preview").getAttribute("aria-label"), "原素材画面");
@@ -1315,18 +1386,25 @@ test(
         () => Number(document.querySelector("[data-source-scrub]")?.value) > 0,
       );
       await page.locator('[data-action="return-composition"]').click();
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal(await page.locator("[data-source-audio]").count(), 0);
       assert.equal((await state(page)).playheadFrame, before.playheadFrame);
       assert.deepEqual((await state(page)).project, before.project);
+      const canonicalBefore = await readSavedEditorDocument(page);
+      const sequenceBefore = canonicalBefore.sequences.find(
+        (item) => item.id === canonicalBefore.activeSequenceId,
+      );
       await page.locator(`[data-add-asset="${video.id}"]`).click();
       await saved(page);
-      const added = await state(page);
-      assert.equal(added.project.revision, before.project.revision + 1);
-      assert.equal(added.project.clips.length, before.project.clips.length + 1);
-      assert.deepEqual(added.project.clips.slice(0, -1), before.project.clips);
-      assert.equal(added.project.clips.at(-1).assetId, video.id);
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      const added = await readSavedEditorDocument(page);
+      const sequenceAfter = added.sequences.find((item) => item.id === added.activeSequenceId);
+      assert.equal(added.revision, canonicalBefore.revision + 1);
+      assert.equal(sequenceAfter.clips.length, sequenceBefore.clips.length + 1);
+      assert.deepEqual(sequenceAfter.clips.slice(0, -1), sequenceBefore.clips);
+      assert.equal(sequenceAfter.clips.at(-1).assetId, video.id);
+      assert.equal(sequenceAfter.clips.at(-1).start, before.playheadFrame * 8000);
+      assert.notEqual(sequenceAfter.clips.at(-1).trackId, sequenceBefore.clips[0].trackId);
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal(
         await page.locator("[data-source-scrub]").count(),
         0,
@@ -1507,11 +1585,13 @@ test(
       const blueClip = joined.clips[before.project.clips.length];
       await page.locator('[data-action="return-composition"]').click();
       await page
-        .locator(`[data-clip="${joined.clips[0].id}"]`)
+        .locator(`[data-et-clip="${joined.clips[0].id}"]`)
         .click({ position: { x: 45, y: 20 } });
+      await page.locator("[data-ew-seek]").fill("240000");
       await expectPreviewFrame(page, video.id, (await state(page)).playheadFrame);
-      await page.locator(`[data-clip="${blueClip.id}"]`).click({ position: { x: 15, y: 20 } });
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      await page.locator(`[data-et-clip="${blueClip.id}"]`).click({ position: { x: 15, y: 20 } });
+      await page.locator("[data-ew-seek]").fill(String(180 * 8000));
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       const selected = await state(page);
       assert.equal(selected.selectedClipId, blueClip.id);
       assert.ok(selected.playheadFrame >= 180 && selected.playheadFrame < 210);
@@ -1520,7 +1600,10 @@ test(
         path: resolve(artifacts, "timeline-select-from-roughcut.png"),
         fullPage: true,
       });
-      await page.locator('[data-action="undo"]').first().click();
+      await page
+        .locator('[data-action="undo"]:visible,[data-ew-action="undo"]:visible')
+        .first()
+        .click();
       await saved(page);
       const undone = (await state(page)).project;
       assert.deepEqual(
@@ -1777,7 +1860,7 @@ test(
         ]),
         [[audio.id, 0, audio.durationFrames, 0]],
       );
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal((await state(page)).playheadFrame, 0);
       assert.equal((await state(page)).selectedClipId, project.audioClips[0].id);
       const video = before.assets.find((asset) => asset.kind === "video");
@@ -1785,28 +1868,34 @@ test(
       await seekSource(page, 90);
       await expectPreviewFrame(page, video.id, 90);
       await page.locator('[data-action="return-composition"]').click();
+      await page.locator('[data-tab="ai"]').click();
       await page
         .locator(`[data-clip="${project.clips[0].id}"]`)
         .click({ position: { x: 45, y: 20 } });
       assert.ok((await state(page)).playheadFrame > 0);
       await page.locator(`[data-audio-clip="${project.audioClips[0].id}"]`).click();
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("#preview").isVisible(), true);
       assert.equal((await state(page)).playheadFrame, 0);
       await expectPreviewFrame(page, video.id, 0);
+      await page.locator('[data-tab="media"]').click();
       await page.locator(`[data-rough-source="${video.id}"]`).click();
       await seekSource(page, 90);
       await page.locator('[data-action="return-composition"]').click();
+      await page.locator('[data-tab="ai"]').click();
       await page
         .locator(`[data-clip="${project.clips[0].id}"]`)
         .click({ position: { x: 45, y: 20 } });
       assert.ok((await state(page)).playheadFrame > 0);
       await page.locator(`[data-clip="${project.clips[0].id}"]`).focus();
       await page.keyboard.press("Enter");
-      assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+      assert.equal(await page.locator("#preview").isVisible(), true);
       assert.equal((await state(page)).playheadFrame, 0);
       assert.equal((await state(page)).selectedClipId, project.clips[0].id);
       await expectPreviewFrame(page, video.id, 0);
-      await page.locator('[data-action="undo"]').first().click();
+      await page
+        .locator('[data-action="undo"]:visible,[data-ew-action="undo"]:visible')
+        .first()
+        .click();
       await saved(page);
       assert.equal((await state(page)).project.audioClips?.length ?? 0, 0);
       assert.equal(

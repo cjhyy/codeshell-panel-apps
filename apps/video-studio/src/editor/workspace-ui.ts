@@ -26,6 +26,8 @@ import { EditorMulticam, type EditorMulticamContext } from "./multicam-ui";
 import type { EditorTimelineContext } from "./timeline-ui";
 
 export interface EditorWorkspaceOptions {
+  layout?: "standalone" | "embedded";
+  showComposition?(): void;
   session: EditorSession;
   assertEditable?(): void;
   resolveAsset: EditorMediaPoolOptions["resolveAsset"];
@@ -97,6 +99,7 @@ export class EditorWorkspace {
   private playhead = 0;
   private search = "";
   private visible = true;
+  private sourcePreview = false;
   private disposed = false;
   private preparing?: AbortController;
   private audio?: PreviewAudio;
@@ -110,11 +113,34 @@ export class EditorWorkspace {
   ) {
     this.sequenceId = options.session.read().activeSequenceId;
     container.classList.add("editor-workspace");
+    container.classList.toggle("editor-workspace-embedded", options.layout === "embedded");
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
       <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span></div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
+    if (options.layout === "embedded") {
+      const more = document.createElement("details");
+      more.className = "ew-more";
+      const summary = document.createElement("summary");
+      summary.textContent = "更多工具";
+      const contents = document.createElement("div");
+      contents.className = "ew-more-actions";
+      contents.append(this.get(".ew-create"));
+      for (const action of [
+        "captions",
+        "separate",
+        "enhance-audio",
+        "pack-project",
+        "import-project-bundle",
+        "sync-project",
+      ]) {
+        const control = container.querySelector(`[data-ew-action="${action}"]`);
+        if (control) contents.append(control);
+      }
+      more.append(summary, contents);
+      this.get(".ew-tools").append(more);
+    }
     const selection = () => ({ sequenceId: this.sequenceId, clipIds: [...this.selected] });
     const read = () => options.session.read();
     const apply = (operations: EditorOperation[], label: string) => {
@@ -158,6 +184,7 @@ export class EditorWorkspace {
     });
     this.timeline = new EditorTimeline(this.get("[data-ew-timeline]"), {
       read,
+      identity: () => options.session.getState().identity,
       selection,
       apply,
       time: () => this.playhead,
@@ -178,6 +205,7 @@ export class EditorWorkspace {
         section.scrollIntoView({ block: "nearest" });
       },
       media: options.timelineMedia,
+      addAsset: (assetId, placement) => this.addAsset(assetId, placement),
       onError: options.onError,
     });
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
@@ -243,6 +271,10 @@ export class EditorWorkspace {
     container.addEventListener("change", this.change);
     container.addEventListener("input", this.input);
     container.addEventListener("keydown", this.keydown);
+    container.addEventListener("pointerdown", this.activateComposition, true);
+    if (options.layout === "embedded")
+      for (const type of this.embeddedEvents)
+        container.addEventListener(type, this.stopLegacyEvent);
     this.unsubscribe = options.session.subscribe((state) => this.refresh(state));
   }
 
@@ -325,7 +357,7 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible) this.run(() => this.seek(this.playhead));
+    if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
   }
 
   private renderAssets(): void {
@@ -434,7 +466,7 @@ export class EditorWorkspace {
     }
   }
   setVisible(visible: boolean): void {
-    if (this.disposed) return;
+    if (this.disposed || this.visible === visible) return;
     this.visible = visible;
     this.container.hidden = !visible;
     this.multicam?.setVisible(visible && !this.get("[data-ew-multicam]").hidden);
@@ -444,13 +476,25 @@ export class EditorWorkspace {
       this.preview.pause();
     } else {
       this.timeline.render();
-      this.run(() => this.seek(this.playhead));
+      if (!this.sourcePreview) this.run(() => this.seek(this.playhead));
     }
   }
   /** Called after an imported/reconnected resource becomes available without a document edit. */
   refreshMedia(): void {
-    if (this.visible) this.run(() => this.seek(this.playhead));
+    if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
   }
+  /** Browsing source footage replaces the monitor, while the canonical timeline stays mounted. */
+  setSourcePreview(active: boolean): void {
+    if (this.sourcePreview === active || this.disposed) return;
+    this.sourcePreview = active;
+    if (active) {
+      this.cancelPreparation();
+      this.preview.pause();
+    } else if (this.visible) this.run(() => this.seek(this.playhead));
+  }
+  private activateComposition = (): void => {
+    if (this.sourcePreview) this.options.showComposition?.();
+  };
   selectClips(sequenceId: string, clipIds: string[]): void {
     if (this.disposed || sequenceId !== this.sequenceId) return;
     this.canvasEditor.cancel();
@@ -465,6 +509,16 @@ export class EditorWorkspace {
   }
   getSelection(): { sequenceId: string; clipIds: string[] } {
     return { sequenceId: this.sequenceId, clipIds: [...this.selected] };
+  }
+  getPlayhead(): Tick {
+    return this.playhead;
+  }
+  revealSelection(): void {
+    const id = this.selected[0];
+    if (id)
+      this.container
+        .querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(id)}"]`)
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
 
   private track(
@@ -488,11 +542,38 @@ export class EditorWorkspace {
       operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
     };
   }
-  addAsset(assetId: string): void {
+  addAsset(assetId: string, placement: { at?: Tick; trackId?: string } = {}): void {
     const asset = this.options.session.read().assets.find((a) => a.id === assetId);
     if (!asset) throw new Error("素材已移除，请刷新后重试");
+    const at = placement.at ?? this.playhead;
+    if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
     const duration = asset.kind === "image" ? secondsToTicks(5) : asset.duration;
     if (!duration) throw new Error("素材长度尚未确认，请先完成素材准备");
+    if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
+    let kind: "video" | "audio" = asset.kind === "audio" ? "audio" : "video";
+    if (placement.trackId !== undefined) {
+      const sequence = this.sequence();
+      const track = sequence.tracks.find((track) => track.id === placement.trackId);
+      if (!track) throw new Error("目标轨道已不存在");
+      if (track.locked) throw new Error("目标轨道已锁定，请先解锁");
+      if (
+        track.kind === "text" ||
+        (asset.kind === "audio"
+          ? track.kind !== "audio"
+          : asset.kind !== "video" && track.kind !== "video")
+      )
+        throw new Error("素材类型与目标轨道不匹配");
+      if (
+        sequence.clips.some(
+          (clip) =>
+            clip.trackId === track.id &&
+            clip.start < at + duration &&
+            clip.start + clip.duration > at,
+        )
+      )
+        throw new Error("目标位置已有片段，请选择空白位置或其他轨道");
+      kind = track.kind;
+    }
     this.addClip(
       {
         kind: "media",
@@ -505,17 +586,22 @@ export class EditorWorkspace {
         duration,
         label: asset.name,
       },
-      asset.kind === "audio" ? "audio" : "video",
+      kind,
+      { ...placement, at },
     );
   }
   private addClip(
     value: Partial<EditorClip> & { duration: Tick; label: string },
     kind: "video" | "audio" | "text",
+    placement: { at?: Tick; trackId?: string } = {},
   ): void {
-    const track = this.track(kind, this.playhead, value.duration);
+    const at = placement.at ?? this.playhead;
+    const track = placement.trackId
+      ? { id: placement.trackId, operations: [] }
+      : this.track(kind, at, value.duration);
     const clip = {
       id: uid("clip"),
-      start: this.playhead,
+      start: at,
       trackId: track.id,
       transform: defaultTransform(),
       color: defaultColorAdjustment(),
@@ -530,17 +616,40 @@ export class EditorWorkspace {
     this.timeline.render();
     this.inspector.render();
     this.timing.render();
+    this.activateComposition();
+    this.run(() => this.seek(at));
+    this.revealSelection();
   }
   private click = (event: MouseEvent) => {
     const target = (event.target as Element).closest<HTMLElement>(
       "[data-ew-action],[data-ew-asset]",
     );
     if (!target) return;
+    const menu = target.closest<HTMLDetailsElement>(".ew-more");
+    if (menu) menu.open = false;
     if (target.dataset.ewAsset) {
       this.run(() => this.addAsset(target.dataset.ewAsset!));
       return;
     }
     this.run(() => this.action(target.dataset.ewAction!));
+  };
+  private readonly embeddedEvents = [
+    "click",
+    "input",
+    "change",
+    "keydown",
+    "pointerdown",
+    "pointermove",
+    "pointerup",
+    "pointercancel",
+    "dragstart",
+    "dragover",
+    "drop",
+    "contextmenu",
+  ];
+  /** The surrounding production shell owns a separate set of legacy gesture handlers. */
+  private stopLegacyEvent = (event: Event): void => {
+    event.stopPropagation();
   };
   private input = (event: Event) => {
     const target = event.target as HTMLInputElement;
@@ -559,6 +668,10 @@ export class EditorWorkspace {
         this.apply([{ type: "sequence.activate", sequenceId: target.value }], "切换序列"),
       );
   };
+  /** Shell shortcuts share the same guards as controls inside the editor. */
+  handleShortcut(event: KeyboardEvent): void {
+    if (this.visible && !this.disposed) this.keydown(event);
+  }
   private keydown = (event: KeyboardEvent) => {
     if (
       (event.target as Element).closest(
@@ -1047,6 +1160,9 @@ export class EditorWorkspace {
     this.container.removeEventListener("change", this.change);
     this.container.removeEventListener("input", this.input);
     this.container.removeEventListener("keydown", this.keydown);
+    this.container.removeEventListener("pointerdown", this.activateComposition, true);
+    for (const type of this.embeddedEvents)
+      this.container.removeEventListener(type, this.stopLegacyEvent);
     await this.preview.dispose();
     this.container.replaceChildren();
   }

@@ -75,6 +75,7 @@ export const suites = [
         "tests/video-studio-editor-audio-enhancement.test.ts",
         "tests/video-studio-editor-voiceover-publication.test.ts",
         "tests/video-studio-editor-markers.test.ts",
+        "tests/video-studio-editor-asset-removal.test.ts",
         "tests/video-studio-audio-split.test.ts",
         "tests/video-studio-timeline-controls.test.ts",
         "tests/video-studio-free-timeline.test.ts",

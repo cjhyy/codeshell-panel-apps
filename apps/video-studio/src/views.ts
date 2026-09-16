@@ -49,6 +49,7 @@ export interface ViewState {
   readonly workspace: string;
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
+  readonly editorClipCount?: number;
   readonly voiceoverMarkup?: string;
   readonly folderMarkup?: string;
   readonly voicePreparationActive?: boolean;
@@ -153,7 +154,7 @@ export function createViews(state: ViewState) {
             "导出视频",
             "upload",
             "primary",
-            !project.clips.length,
+            !(state.editorClipCount ?? project.clips.length),
           )}
         </div>
       </header>
@@ -268,8 +269,9 @@ export function createViews(state: ViewState) {
       <footer class="statusbar">
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
         ><span
-          >${project.clips.length} 个片段 <span class="dot">·</span> ${project.captions.length}
-          条字幕 <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
+          ><span data-studio-clip-count>${state.editorClipCount ?? project.clips.length}</span>
+          个片段 <span class="dot">·</span> ${project.captions.length} 条字幕
+          <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
         ><span
           >${tab === "roughcut"
             ? "I 起点 · O 终点 · + 保留"

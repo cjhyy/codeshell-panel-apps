@@ -265,7 +265,7 @@ async function openPage({ host = true, width = 1440, workflow } = {}) {
   );
   await page.goto(url);
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
   if (host)
     await page.waitForFunction(
       (id) => window.__panelTools?.read_video_project().preparation[id],

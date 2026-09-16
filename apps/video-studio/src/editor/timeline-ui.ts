@@ -19,6 +19,7 @@ import { planCutClips, duplicateClipsInPlace } from "./clipboard-edits";
 import type { EditorOperation } from "./operations";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence } from "./types";
+import type { SessionIdentity } from "./session";
 import { sequenceDuration } from "./validation";
 import {
   magneticMovementIds,
@@ -31,6 +32,7 @@ import {
 export interface EditorTimelineContext {
   media?: EditorTimelineMediaOptions;
   read(): EditorDocument;
+  identity?(): SessionIdentity;
   selection(): { sequenceId: string; clipIds: string[] };
   select(clipIds: string[]): void;
   selectedMarker?(): string | undefined;
@@ -38,6 +40,7 @@ export interface EditorTimelineContext {
   time(): Tick;
   seek(time: Tick): void | Promise<void>;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
+  addAsset?(assetId: string, placement: { at: Tick; trackId: string }): void | Promise<void>;
   onError(error: unknown): void;
 }
 type Drag = {
@@ -84,6 +87,16 @@ export class EditorTimeline {
   private autoScrollFrame: number | undefined;
   private autoScrollTime = 0;
   private autoScrollRemainder = { x: 0, y: 0 };
+  private menu?: {
+    element: HTMLElement;
+    lifetime: AbortController;
+    documentId: string;
+    revision: number;
+    generation?: number;
+    sequenceId: string;
+    clipId: string;
+    selected: string[];
+  };
   constructor(
     private readonly container: HTMLElement,
     private readonly context: EditorTimelineContext,
@@ -100,6 +113,9 @@ export class EditorTimeline {
     container.addEventListener("pointerup", this.pointerup);
     container.addEventListener("pointercancel", this.cancel);
     container.addEventListener("lostpointercapture", this.lostCapture);
+    container.addEventListener("dragover", this.dragover);
+    container.addEventListener("drop", this.drop);
+    container.addEventListener("contextmenu", this.contextmenu);
     this.render();
     this.resizeObserver = new ResizeObserver(() => this.scheduleMedia());
     this.resizeObserver.observe(container);
@@ -155,6 +171,7 @@ export class EditorTimeline {
         : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
     const { sequence, selected } = this.current();
+    if (this.menu && !this.menuCurrent()) this.closeMenu();
     for (const id of selected)
       if (!sequence.clips.some((clip) => clip.id === id)) selected.delete(id);
     if (selected.size !== this.context.selection().clipIds.length)
@@ -531,6 +548,17 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (editableTarget(event.target)) return;
+    const contextTarget =
+      event.target instanceof HTMLElement
+        ? event.target.closest<HTMLElement>("[data-et-clip]")
+        : undefined;
+    if (contextTarget && (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))) {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = contextTarget.getBoundingClientRect();
+      this.openMenu(contextTarget.dataset.etClip!, rect.left, rect.bottom);
+      return;
+    }
     if (event.key === "Escape") {
       this.cancel();
       this.select([]);
@@ -603,6 +631,134 @@ export class EditorTimeline {
       );
     }
   };
+  private menuCurrent(): boolean {
+    const menu = this.menu;
+    if (!menu) return false;
+    const { document, sequence, selected } = this.current();
+    return (
+      document.id === menu.documentId &&
+      document.revision === menu.revision &&
+      this.context.identity?.().generation === menu.generation &&
+      sequence.id === menu.sequenceId &&
+      menu.selected.length === selected.size &&
+      menu.selected.every((id) => selected.has(id) && sequence.clips.some((clip) => clip.id === id))
+    );
+  }
+  private closeMenu(restoreFocus = false): void {
+    const menu = this.menu;
+    if (!menu) return;
+    this.menu = undefined;
+    menu.lifetime.abort();
+    menu.element.remove();
+    if (restoreFocus)
+      this.container
+        .querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(menu.clipId)}"]`)
+        ?.focus({ preventScroll: true });
+  }
+  private contextmenu = (event: MouseEvent): void => {
+    const target =
+      event.target instanceof HTMLElement
+        ? event.target.closest<HTMLElement>("[data-et-clip]")
+        : undefined;
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // Some platforms emit a native context menu for Control-click; here that gesture selects additively.
+    if (event.ctrlKey) return;
+    this.openMenu(target.dataset.etClip!, event.clientX, event.clientY);
+  };
+  private openMenu(clipId: string, x: number, y: number): void {
+    this.closeMenu();
+    this.cancel();
+    const current = this.current();
+    const clip = current.sequence.clips.find((clip) => clip.id === clipId);
+    if (!clip) return;
+    this.select(
+      current.selected.has(clipId) ? current.selected : this.expanded(current.sequence, [clipId]),
+    );
+    const { document, sequence, selected } = this.current();
+    const locked = sequence.clips.some(
+      (clip) =>
+        selected.has(clip.id) && sequence.tracks.find((track) => track.id === clip.trackId)?.locked,
+    );
+    const element = globalThis.document.createElement("div");
+    element.id = "timeline-context-menu";
+    element.className = "timeline-context-menu";
+    element.setAttribute("role", "menu");
+    element.setAttribute("aria-label", "时间轴片段操作");
+    element.setAttribute("aria-describedby", "timeline-context-menu-note");
+    element.innerHTML = `<div class="timeline-context-menu-title">${esc(clip.label)}</div><button type="button" role="menuitem" class="danger" data-timeline-menu-action="remove"${locked ? " disabled" : ""}>从时间轴删除${selected.size > 1 ? ` ${selected.size} 个片段` : ""}</button><button type="button" role="menuitem" data-timeline-menu-action="cancel">取消</button><p id="timeline-context-menu-note">素材库与原文件保留，可撤销</p>`;
+    const lifetime = new AbortController();
+    this.menu = {
+      element,
+      lifetime,
+      documentId: document.id,
+      revision: document.revision,
+      generation: this.context.identity?.().generation,
+      sequenceId: sequence.id,
+      clipId,
+      selected: [...selected],
+    };
+    element.addEventListener("click", (event) => {
+      if (this.menu?.element !== element) return;
+      const button = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-timeline-menu-action]",
+      );
+      if (!button || button.disabled) return;
+      if (button.dataset.timelineMenuAction === "cancel") return this.closeMenu(true);
+      const current = this.menuCurrent();
+      this.closeMenu();
+      if (!current) return this.context.onError(new Error("工程或选择已变化，请重新打开片段菜单"));
+      this.run(() => this.action("delete"));
+    });
+    element.addEventListener("contextmenu", (event) => event.preventDefault());
+    globalThis.document.body.append(element);
+    const rect = element.getBoundingClientRect();
+    element.style.left = `${Math.max(8, Math.min(x, innerWidth - rect.width - 8))}px`;
+    element.style.top = `${Math.max(8, Math.min(y, innerHeight - rect.height - 8))}px`;
+    element
+      .querySelector<HTMLButtonElement>("button:not(:disabled)")
+      ?.focus({ preventScroll: true });
+    globalThis.document.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (!element.contains(event.target as Node)) this.closeMenu();
+      },
+      { capture: true, signal: lifetime.signal },
+    );
+    globalThis.document.addEventListener(
+      "keydown",
+      (event) => {
+        event.stopPropagation();
+        if (event.key === "Escape" || event.key === "Tab") {
+          if (event.key === "Escape") event.preventDefault();
+          return this.closeMenu(true);
+        }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        const buttons = [...element.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+        const index = buttons.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+        const next =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? buttons.length - 1
+              : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[next]?.focus({ preventScroll: true });
+      },
+      { capture: true, signal: lifetime.signal },
+    );
+    for (const type of ["wheel", "touchmove"])
+      globalThis.document.addEventListener(
+        type,
+        (event) => {
+          if (!element.contains(event.target as Node)) this.closeMenu();
+        },
+        { capture: true, passive: true, signal: lifetime.signal },
+      );
+    window.addEventListener("resize", () => this.closeMenu(), { signal: lifetime.signal });
+    window.addEventListener("blur", () => this.closeMenu(), { signal: lifetime.signal });
+  }
   private point(clientX: number): Tick {
     return secondsToTicks(
       Math.max(
@@ -612,6 +768,51 @@ export class EditorTimeline {
       ),
     );
   }
+  private dragover = (event: DragEvent): void => {
+    if (
+      !this.context.addAsset ||
+      !event.dataTransfer?.types.includes("text/plain") ||
+      !(event.target instanceof Element) ||
+      !event.target.closest("[data-et-lane]")
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+  private drop = (event: DragEvent): void => {
+    if (!this.context.addAsset || !event.dataTransfer || !(event.target instanceof Element)) return;
+    const lane = event.target.closest<HTMLElement>("[data-et-lane]");
+    if (!lane || !this.container.contains(lane)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.run(async () => {
+      const text = event.dataTransfer!.getData("text/plain");
+      if (!text || text.length > 4096) return;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (
+        !payload ||
+        typeof payload !== "object" ||
+        Array.isArray(payload) ||
+        Object.keys(payload).length !== 1 ||
+        !("assetId" in payload) ||
+        typeof payload.assetId !== "string" ||
+        !payload.assetId
+      )
+        return;
+      const { sequence } = this.current();
+      await this.context.addAsset!(payload.assetId, {
+        at: this.snap(this.point(event.clientX), sequence, new Set()),
+        trackId: lane.dataset.etLane!,
+      });
+      this.render();
+    });
+  };
   private snap(time: Tick, sequence: EditorSequence, omitted: ReadonlySet<string>): Tick {
     let target = frameToTicks(
       ticksToFrame(Math.max(0, time), sequence.frameRate),
@@ -1033,6 +1234,7 @@ export class EditorTimeline {
     if (this.drag?.pointerId === event.pointerId) this.cancel();
   };
   dispose(): void {
+    this.closeMenu();
     this.cancel();
     this.destroyed = true;
     if (this.mediaFrame !== undefined) cancelAnimationFrame(this.mediaFrame);
@@ -1046,6 +1248,9 @@ export class EditorTimeline {
     this.container.removeEventListener("pointerup", this.pointerup);
     this.container.removeEventListener("pointercancel", this.cancel);
     this.container.removeEventListener("lostpointercapture", this.lostCapture);
+    this.container.removeEventListener("dragover", this.dragover);
+    this.container.removeEventListener("drop", this.drop);
+    this.container.removeEventListener("contextmenu", this.contextmenu);
     this.container.innerHTML = "";
   }
 }

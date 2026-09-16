@@ -164,7 +164,7 @@ async function pageWithBridge(mock = false, generic = true) {
   }
   await page.goto(url);
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#studio .workspace").waitFor();
   return page;
 }
 
@@ -177,8 +177,11 @@ async function saved(page) {
   );
 }
 async function demo(page) {
-  await page.getByRole("button", { name: "试试示例工程", exact: true }).click();
+  await page.locator('[data-action="demo"]:visible').first().click();
   await saved(page);
+  // These older tests exercise the production page's frame-based controls.
+  // Canonical Material editing is covered by editor-main/workspace/timeline suites.
+  await page.locator('[data-tab="ai"]').click();
 }
 
 test("failed desktop media connection explains unavailable AI production without hiding the cause", async () => {
@@ -252,6 +255,8 @@ test("late media loading preserves an unapplied source trim draft", async () => 
   });
   try {
     await demo(page);
+    const firstClip = (await readProject(page)).clips[0];
+    await page.locator(`[data-clip="${firstClip.id}"]`).click();
     await page.locator("#trim-out").fill("3");
     release();
     await page.waitForFunction(
@@ -284,7 +289,10 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   );
   await page.locator('[data-tab="media"]').click();
   await page.screenshot({ path: resolve(screenshots, "studio-desktop.png"), fullPage: true });
+  await page.locator('[data-tab="ai"]').click();
 
+  const firstClip = (await readProject(page)).clips[0];
+  await page.locator(`[data-clip="${firstClip.id}"]`).click();
   await page.locator("#trim-out").fill("3");
   await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
   await saved(page);
@@ -491,10 +499,10 @@ test("import is undoable and original media automatically reconnects after reope
     const asset = (await readProject(page)).assets[0];
     assert.equal(asset.width, 80);
     assert.equal(asset.height, 40);
-    await page.getByRole("button", { name: "撤销（⌘ Z）", exact: true }).click();
+    await page.locator('[data-ew-action="undo"]').click();
     await saved(page);
     assert.equal((await readProject(page)).assets.length, 0);
-    await page.getByRole("button", { name: "重做（⌘ ⇧ Z）", exact: true }).click();
+    await page.locator('[data-ew-action="redo"]').click();
     await saved(page);
     assert.equal((await readProject(page)).assets[0].id, asset.id);
     await page.locator("[data-add-asset]").click();
@@ -509,7 +517,7 @@ test("import is undoable and original media automatically reconnects after reope
     );
     assert.deepEqual(await readProject(page), before, "Restoring bytes must not edit the project");
     const pixel = await page
-      .locator("#preview")
+      .locator("#preview:visible, [data-ew-canvas]:visible")
       .evaluate((canvas) => [
         ...canvas.getContext("2d").getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data,
       ]);
@@ -532,7 +540,7 @@ test("original audio and rough-cut marks survive a complete browser restart", as
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(url);
     await enterLegacyProduction(page);
-    await page.locator("#preview").waitFor();
+    await page.locator("#studio .workspace").waitFor();
     return page;
   };
   try {
@@ -719,159 +727,308 @@ test("project switching blocks concurrent media import and export", async () => 
 });
 
 test("persistent media, versioned automatic edits, real tool contract and reload recovery", async () => {
+  const sourceBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7m8AAAAASUVORK5CYII=",
+    "base64",
+  );
+  const { createHash } = await import("node:crypto");
+  const sourceHash = createHash("sha256").update(sourceBytes).digest("hex");
+  const sourceId = `asset-${sourceHash}`;
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(installGenericMediaTaskMock);
-  await page.addInitScript(() => {
-    const assetId = "asset-" + "a".repeat(64),
-      videoId = "asset-" + "b".repeat(64);
-    const asset = {
-      id: assetId,
-      name: "品牌画面.png",
-      mimeType: "image/png",
-      bytes: 68,
-      createdAt: Date.now(),
-    };
-    const documents = JSON.parse(localStorage.getItem("test-documents") || "{}");
-    const jobs = JSON.parse(localStorage.getItem("test-jobs") || "{}");
-    window.__panelTools = {};
-    window.__events = {};
-    window.__taskCalls = [];
-    window.__exports = [];
-    const store = () => {
-      localStorage.setItem("test-documents", JSON.stringify(documents));
-      localStorage.setItem("test-jobs", JSON.stringify(jobs));
-    };
-    const job = (type) => {
-      const value = {
-        id: "job-" + crypto.randomUUID(),
-        type,
-        status: "queued",
-        attempt: 1,
+  await page.addInitScript(
+    ({ sourceHash, sourceByteLength }) => {
+      const assetId = `asset-${sourceHash}`,
+        videoId = "asset-" + "b".repeat(64);
+      const asset = {
+        id: assetId,
+        name: "品牌画面.png",
+        mimeType: "image/png",
+        bytes: sourceByteLength,
+        sha256: sourceHash,
         createdAt: Date.now(),
-        updatedAt: Date.now(),
       };
-      jobs[value.id] = value;
-      store();
-      return structuredClone(value);
-    };
-    const preparation = {
-      assetId,
-      inspection: {
-        kind: "image",
-        durationSeconds: null,
-        video: { width: 1, height: 1, displayWidth: 1, displayHeight: 1 },
-      },
-      preparedAt: Date.now(),
-    };
-    window.__completeJob = (type) => {
-      const value = Object.values(jobs).find((j) => j.type === type && j.status === "queued");
-      if (!value) throw Error("No queued " + type);
-      value.status = "succeeded";
-      value.updatedAt = Date.now();
-      value.result =
-        type === "import"
-          ? { assets: [asset] }
-          : type === "prepare"
-            ? preparation
-            : type === "render"
-              ? {
-                  video: {
-                    asset: { id: videoId, name: "成片.mp4", mimeType: "video/mp4", bytes: 12345 },
-                  },
-                }
-              : {};
-      store();
-      window.__events["media.job.changed"]?.(structuredClone(value));
-      return value.id;
-    };
-    window.codeshellPanel = {
-      getContext: async () => ({ cwd: "/test/persistent-video" }),
-      registerTool(name, handler) {
-        window.__panelTools[name] = handler;
-        return () => {};
-      },
-      on(name, handler) {
-        window.__events[name] = handler;
-        return () => {};
-      },
-      async call(method, args = {}) {
-        if (method === "media.status")
-          return {
-            persistent: true,
-            ffmpeg: { available: true },
-            transcription: { available: false },
-            hyperframes: { available: true, version: "0.8.30" },
+      const documents = JSON.parse(localStorage.getItem("test-documents") || "{}");
+      const jobs = JSON.parse(localStorage.getItem("test-jobs") || "{}");
+      window.__panelTools = {};
+      window.__events = {};
+      window.__taskCalls = [];
+      window.__exports = [];
+      const store = () => {
+        localStorage.setItem("test-documents", JSON.stringify(documents));
+        localStorage.setItem("test-jobs", JSON.stringify(jobs));
+      };
+      const job = (type) => {
+        const value = {
+          id: "job-" + crypto.randomUUID(),
+          type,
+          status: "queued",
+          attempt: 1,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        jobs[value.id] = value;
+        store();
+        return structuredClone(value);
+      };
+      const preparation = {
+        assetId,
+        inspection: {
+          kind: "image",
+          durationSeconds: null,
+          video: { width: 1, height: 1, displayWidth: 1, displayHeight: 1 },
+        },
+        preparedAt: Date.now(),
+      };
+      window.__completeJob = (type) => {
+        const value = Object.values(jobs).find((j) => j.type === type && j.status === "queued");
+        if (!value) throw Error("No queued " + type);
+        value.status = "succeeded";
+        value.updatedAt = Date.now();
+        value.result =
+          type === "import"
+            ? { assets: [asset] }
+            : type === "prepare"
+              ? preparation
+              : type === "render"
+                ? {
+                    video: {
+                      asset: { id: videoId, name: "成片.mp4", mimeType: "video/mp4", bytes: 12345 },
+                    },
+                  }
+                : {};
+        store();
+        window.__events["media.job.changed"]?.(structuredClone(value));
+        return value.id;
+      };
+      window.codeshellPanel = {
+        getContext: async () => ({ cwd: "/test/persistent-video" }),
+        registerTool(name, handler) {
+          window.__panelTools[name] = handler;
+          return () => {};
+        },
+        on(name, handler) {
+          window.__events[name] = handler;
+          return () => {};
+        },
+        async call(method, args = {}) {
+          if (method === "media.status")
+            return {
+              persistent: true,
+              ffmpeg: { available: true },
+              transcription: { available: false },
+              hyperframes: { available: true, version: "0.8.30" },
+            };
+          if (method === "storage.get") return null;
+          if (method === "media.document.get") {
+            const saved = documents[args.key];
+            return saved ? structuredClone(saved) : { revision: 0, data: null };
+          }
+          if (method === "media.document.set") {
+            const before = documents[args.key];
+            if ((before?.revision ?? 0) !== args.baseRevision)
+              throw Error("Document revision conflict");
+            const saved = {
+              revision: args.baseRevision + 1,
+              data: structuredClone(args.data),
+              updatedAt: Date.now(),
+              label: args.label,
+            };
+            documents[args.key] = saved;
+            store();
+            return { revision: saved.revision, updatedAt: saved.updatedAt, label: args.label };
+          }
+          if (method === "media.document.versions") {
+            const saved = documents[args.key];
+            return saved
+              ? [{ revision: saved.revision, updatedAt: saved.updatedAt, label: saved.label }]
+              : [];
+          }
+          if (method === "media.import") throw Error("Import must use the native file importer");
+          if (method === "media.prepare") return { jobs: args.assetIds.map(() => job("prepare")) };
+          if (method === "media.assets.get") return { asset, preparation };
+          if (method === "media.jobs.list")
+            return {
+              total: Object.keys(jobs).length,
+              jobs: Object.values(jobs).map(({ result, ...j }) => j),
+            };
+          if (method === "media.jobs.get") return structuredClone(jobs[args.id]);
+          if (method === "media.render")
+            throw Error("Canonical export must not use legacy media.render");
+          if (method === "media.export") {
+            window.__exports.push(args.assetId);
+            return { saved: true, name: "成片.mp4" };
+          }
+          if (method === "agent.task.start") {
+            window.__taskCalls.push(args);
+            const task = { id: "auto-task-1", status: "running" };
+            localStorage.setItem("test-agent-task", JSON.stringify(task));
+            return task;
+          }
+          if (method === "agent.task.get")
+            return JSON.parse(localStorage.getItem("test-agent-task"));
+          if (method === "agent.task.cancel") return { id: args.id, status: "cancelled" };
+          throw Error("Unexpected persistent host call: " + method);
+        },
+      };
+      // The shared fixture owns byte uploads, durable resources and export tasks.
+      // This test adds only the reviewed source-inspection task it does not model.
+      const generic = window.codeshellPanel;
+      const inspectionJobs = JSON.parse(
+        localStorage.getItem("test-source-inspection-tasks") || "{}",
+      );
+      const inspectionListeners = new Set();
+      const saveInspectionJobs = () =>
+        localStorage.setItem("test-source-inspection-tasks", JSON.stringify(inspectionJobs));
+      window.__sourceInspectionRequests = [];
+      window.__completeSourceInspection = () => {
+        const value = Object.values(inspectionJobs).find((item) => item.status === "queued");
+        if (!value) throw Error("No queued source inspection");
+        value.status = "succeeded";
+        value.updatedAt = Date.now();
+        value.result = {
+          result: {
+            resourceId: assetId,
+            sha256: sourceHash,
+            bytes: sourceByteLength,
+            kind: "image",
+            duration: 0,
+            width: 1,
+            height: 1,
+            mimeType: "image/png",
+            inspection: {
+              schemaVersion: 1,
+              format: "png_pipe",
+              timing: {
+                origin: { numerator: "0", denominator: "1" },
+                duration: { numerator: "0", denominator: "1" },
+                tickRounding: "nearest",
+                basis: "static-image",
+              },
+              video: { codec: "png", width: 1, height: 1 },
+              compatibility: { preview: "static-image", export: "supported", limitations: [] },
+            },
+          },
+          artifacts: [],
+        };
+        saveInspectionJobs();
+        const { input, result, ...summary } = value;
+        for (const listener of inspectionListeners) listener(structuredClone(summary));
+      };
+      window.codeshellPanel = {
+        ...generic,
+        on(event, listener) {
+          const unsubscribe = generic.on(event, listener);
+          if (event === "tasks.changed") inspectionListeners.add(listener);
+          return () => {
+            unsubscribe();
+            inspectionListeners.delete(listener);
           };
-        if (method === "storage.get") return null;
-        if (method === "media.document.get") {
-          const saved = documents[args.key];
-          return saved ? structuredClone(saved) : { revision: 0, data: null };
-        }
-        if (method === "media.document.set") {
-          const before = documents[args.key];
-          if ((before?.revision ?? 0) !== args.baseRevision)
-            throw Error("Document revision conflict");
-          const saved = {
-            revision: args.baseRevision + 1,
-            data: structuredClone(args.data),
-            updatedAt: Date.now(),
-            label: args.label,
-          };
-          documents[args.key] = saved;
-          store();
-          return { revision: saved.revision, updatedAt: saved.updatedAt, label: args.label };
-        }
-        if (method === "media.document.versions") {
-          const saved = documents[args.key];
-          return saved
-            ? [{ revision: saved.revision, updatedAt: saved.updatedAt, label: saved.label }]
-            : [];
-        }
-        if (method === "media.import") return job("import");
-        if (method === "media.prepare") return { jobs: args.assetIds.map(() => job("prepare")) };
-        if (method === "media.assets.get") return { asset, preparation };
-        if (method === "media.jobs.list")
-          return {
-            total: Object.keys(jobs).length,
-            jobs: Object.values(jobs).map(({ result, ...j }) => j),
-          };
-        if (method === "media.jobs.get") return structuredClone(jobs[args.id]);
-        if (method === "media.render")
-          throw Error("Canonical export must not use legacy media.render");
-        if (method === "media.export") {
-          window.__exports.push(args.assetId);
-          return { saved: true, name: "成片.mp4" };
-        }
-        if (method === "agent.task.start") {
-          window.__taskCalls.push(args);
-          const task = { id: "auto-task-1", status: "running" };
-          localStorage.setItem("test-agent-task", JSON.stringify(task));
-          return task;
-        }
-        if (method === "agent.task.get") return JSON.parse(localStorage.getItem("test-agent-task"));
-        if (method === "agent.task.cancel") return { id: args.id, status: "cancelled" };
-        throw Error("Unexpected persistent host call: " + method);
-      },
-    };
-  });
+        },
+        async call(method, args = {}) {
+          if (
+            method === "tasks.start" &&
+            args.entry === "editor-runtime" &&
+            args.input?.request?.action === "inspect-source"
+          ) {
+            const request = args.input.request;
+            if (
+              args.recovery !== "retry" ||
+              !/^editor-[a-f0-9-]{36}$/.test(request.transferId) ||
+              JSON.stringify(request.resourceIds) !== JSON.stringify([assetId]) ||
+              JSON.stringify(args.input.resources) !==
+                JSON.stringify([{ assetId, path: "inputs/resource-0.bin" }])
+            )
+              throw Error("Invalid reviewed source inspection hand-off");
+            const uploaded = await generic.call("resources.get", { id: assetId });
+            if (uploaded.asset.sha256 !== sourceHash || uploaded.asset.bytes !== sourceByteLength)
+              throw Error("Source inspection did not receive the uploaded original");
+            window.__genericHostCalls.push({ method, args: structuredClone(args) });
+            window.__sourceInspectionRequests.push(structuredClone(args));
+            const value = {
+              id: crypto.randomUUID(),
+              status: "queued",
+              attempt: 1,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              entry: { name: "editor-runtime", sha256: "a".repeat(64) },
+              recovery: args.recovery,
+              input: structuredClone(args.input),
+            };
+            inspectionJobs[value.id] = value;
+            saveInspectionJobs();
+            return structuredClone(value);
+          }
+          if (method === "tasks.get" && inspectionJobs[args.id])
+            return structuredClone(inspectionJobs[args.id]);
+          if (method === "tasks.list") {
+            const values = await generic.call(method, args);
+            return [
+              ...values,
+              ...Object.values(inspectionJobs).map(({ input, result, ...summary }) => summary),
+            ];
+          }
+          return generic.call(method, args);
+        },
+      };
+    },
+    { sourceHash, sourceByteLength: sourceBytes.length },
+  );
   await page.goto(url);
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#studio .workspace").waitFor();
+  const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "导入素材", exact: true }).first().click();
-  await page.evaluate(() => window.__completeJob("import"));
-  await page.waitForFunction(() =>
-    Object.values(JSON.parse(localStorage.getItem("test-jobs"))).some((j) => j.type === "prepare"),
+  const chooser = await chooserPromise;
+  await chooser.setFiles({ name: "品牌画面.png", mimeType: "image/png", buffer: sourceBytes });
+  await page.waitForFunction(() => window.__sourceInspectionRequests.length === 1);
+  assert.equal(
+    (await readProject(page)).assets.length,
+    0,
+    "The original is uploaded before inspection, but not published before inspection succeeds",
   );
-  await page.evaluate(() => window.__completeJob("prepare"));
+  assert.equal((await readSavedEditorDocument(page))?.assets.length ?? 0, 0);
+  const upload = await page.evaluate(() => ({
+    file: JSON.parse(localStorage.getItem("test-generic-resource-files"))[
+      window.__sourceInspectionRequests[0].input.request.resourceIds[0]
+    ],
+    calls: window.__genericHostCalls.filter((call) => call.method.startsWith("resources.upload.")),
+    request: window.__sourceInspectionRequests[0],
+  }));
+  assert.deepEqual(
+    upload.calls.map((call) => call.method),
+    ["resources.upload.begin", "resources.upload.write", "resources.upload.finish"],
+  );
+  assert.equal(upload.file.asset.id, sourceId);
+  assert.equal(upload.file.asset.bytes, sourceBytes.length);
+  assert.deepEqual(
+    Buffer.concat(upload.file.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64"))),
+    sourceBytes,
+  );
+  assert.deepEqual(upload.request.input.resources, [
+    { assetId: sourceId, path: "inputs/resource-0.bin" },
+  ]);
+  await page.evaluate(() => window.__completeSourceInspection());
   await page.waitForFunction(
     () => window.__panelTools.read_video_project().project.assets.length === 1,
   );
   await page.locator('[data-tab="media"]').click();
   await page.locator("[data-add-asset]").click();
   await saved(page);
-  assert.equal((await readProject(page)).assets[0].mediaId, "asset-" + "a".repeat(64));
+  assert.equal((await readProject(page)).assets[0].mediaId, sourceId);
   const initialDocument = await readSavedEditorDocument(page);
+  assert.equal(initialDocument.assets[0].resourceId, sourceId);
+  assert.equal(
+    initialDocument.assets[0].duration,
+    0,
+    "Static images retain their native timeless source metadata",
+  );
+  assert.equal(initialDocument.assets[0].fingerprint, sourceHash);
+  assert.equal(
+    initialDocument.assets[0].metadata.editorInspection.compatibility.preview,
+    "static-image",
+  );
   const initialClip = initialDocument.sequences[0].clips.find((clip) => clip.kind === "media");
   const advancedTransform = {
     ...initialClip.transform,
@@ -1008,11 +1165,18 @@ test("persistent media, versioned automatic edits, real tool contract and reload
   assert.deepEqual(await page.evaluate(() => window.__exports), ["asset-" + "b".repeat(64)]);
   await page.reload();
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#studio .workspace").waitFor();
   await page.waitForFunction(
     () => window.__panelTools.read_video_project().missingAssetIds.length === 0,
   );
   assert.equal((await readProject(page)).id, current.id);
+  assert.equal((await readProject(page)).assets[0].mediaId, sourceId);
+  const reopenedDocument = await readSavedEditorDocument(page);
+  assert.equal(reopenedDocument.assets[0].fingerprint, sourceHash);
+  assert.deepEqual(
+    reopenedDocument.sequences[0].clips.find((clip) => clip.id === initialClip.id).transform,
+    advancedTransform,
+  );
   assert.equal((await readProject(page)).captions[0].text, "从想法，到成片。");
   await page.locator('[data-tab="jobs"]').click();
   await page.getByRole("button", { name: "保存 MP4", exact: true }).waitFor();
@@ -1038,7 +1202,7 @@ test("actual preview button sends narrated demo audio to speakers, including reo
   });
   await page.reload();
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#studio .workspace").waitFor();
   const hearAndPause = async () => {
     await page.waitForFunction(
       () =>
@@ -1131,6 +1295,7 @@ test("actual preview button sends narrated demo audio to speakers, including reo
   }, restoredDocument);
   await page.reload();
   await enterLegacyProduction(page);
+  await page.locator('[data-tab="ai"]').click();
   await page.waitForFunction(() => typeof window.__releaseRestore === "function");
   await page.getByRole("button", { name: "播放 / 暂停（空格）", exact: true }).click();
   await page.waitForFunction(
@@ -1328,7 +1493,7 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
   );
   await page.goto(url);
   await enterLegacyProduction(page);
-  await page.locator("#preview").waitFor();
+  await page.locator("#studio .workspace").waitFor();
   await page.waitForFunction(
     () => window.__panelTools.read_video_project().missingAssetIds.length === 0,
   );
@@ -1620,7 +1785,7 @@ test("local voice cloning validates its own recording, uses real model preview, 
   try {
     await page.goto(url);
     await enterLegacyProduction(page);
-    await page.locator("#preview").waitFor();
+    await page.locator("#studio .workspace").waitFor();
     await page.locator('[data-tab="voiceover"]').click();
     await page.waitForFunction(
       () => document.querySelector("#voiceover-model")?.value === "qwen3-tts",
@@ -1713,7 +1878,8 @@ test("local voice cloning validates its own recording, uses real model preview, 
 
     await page.reload();
     await enterLegacyProduction(page);
-    await page.locator("#preview").waitFor();
+    await page.locator("#studio .workspace").waitFor();
+    await page.locator('[data-tab="ai"]').click();
     await page.locator('[data-audio-clip="saved-clone-clip"]').click();
     await page.getByRole("button", { name: "修改文案 / 重新配音", exact: true }).click();
     assert.equal(await page.locator("#voiceover-reference").inputValue(), "my-reference");
@@ -2111,6 +2277,8 @@ test("fine timeline editing extends a trimmed source left of timeline zero and r
   const page = await pageWithBridge(true);
   try {
     await demo(page);
+    const firstClip = (await readProject(page)).clips[0];
+    await page.locator(`[data-clip="${firstClip.id}"]`).click();
     await page.locator("#trim-in").fill("2");
     await page.locator("#trim-out").fill("6");
     await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
@@ -2208,7 +2376,7 @@ test("free timeline dragging keeps gaps, rejects collisions, cancels safely and 
       last.startFrame + 45,
     );
     const black = await page
-      .locator("#preview")
+      .locator("#preview:visible, [data-ew-canvas]:visible")
       .evaluate((canvas) => [...canvas.getContext("2d").getImageData(5, 5, 1, 1).data]);
     assert.deepEqual(black, [0, 0, 0, 255]);
 
@@ -2254,13 +2422,16 @@ test("free timeline positions survive reload, accept asset drops at the cursor, 
     await page.locator("#revision").waitFor();
     assert.equal((await readSavedLegacyProject(page)).timelineMode, "free");
     assert.deepEqual((await readProject(page)).clips, positioned.clips);
-    await page.locator("#timeline-zoom").evaluate((input) => {
-      input.value = "8";
+    const canonical = await readSavedEditorDocument(page);
+    const sequence = canonical.sequences.find((item) => item.id === canonical.activeSequenceId);
+    const trackId = sequence.clips.find((clip) => clip.id === original.clips[0].id).trackId;
+    await page.locator("[data-et-zoom]").evaluate((input) => {
+      input.value = "1";
       input.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await page
       .locator(`[data-asset="${original.clips[0].assetId}"]`)
-      .dragTo(page.locator("#video-track"), { targetPosition: { x: 320, y: 25 } });
+      .dragTo(page.locator(`[data-et-lane="${trackId}"]`), { targetPosition: { x: 400, y: 25 } });
     await saved(page);
     const dropped = await readProject(page);
     assert.equal(dropped.clips.length, positioned.clips.length + 1);
@@ -2270,17 +2441,27 @@ test("free timeline positions survive reload, accept asset drops at the cursor, 
       "A library drop uses its actual timeline position",
     );
     assert.deepEqual(dropped.clips.slice(0, -1), positioned.clips);
-    await page.locator('[data-action="toggle-magnetic"]').click();
+    await page.locator(".editor-timing summary").filter({ hasText: "时间线排列" }).click();
+    await page.getByLabel("排列方式", { exact: true }).selectOption("magnetic");
     await saved(page);
-    const compacted = await readProject(page);
-    assert.equal(compacted.timelineMode, "magnetic");
-    assert.ok(compacted.clips.every((clip) => clip.startFrame === undefined));
-    await page.locator('[data-action="undo"]').click();
+    const compacted = await readSavedEditorDocument(page);
+    const compactedSequence = compacted.sequences.find(
+      (item) => item.id === compacted.activeSequenceId,
+    );
+    assert.equal(compactedSequence.timelineMode, "magnetic");
+    let end = 0;
+    for (const clip of compactedSequence.clips
+      .filter((item) => item.trackId === trackId)
+      .sort((a, b) => a.start - b.start)) {
+      assert.equal(clip.start, end, "Compaction removes every gap on the selected picture track");
+      end += clip.duration;
+    }
+    await page.locator('[data-ew-action="undo"]').click();
     await saved(page);
     const undone = await readProject(page);
     assert.equal(undone.timelineMode, "free");
     assert.deepEqual(undone.clips, dropped.clips);
-    await page.locator("#timeline-scroll").evaluate((scroll) => {
+    await page.locator(".et-scroll").evaluate((scroll) => {
       scroll.scrollLeft = 0;
     });
     await page.screenshot({ path: resolve(screenshots, "free-timeline-gaps.png") });

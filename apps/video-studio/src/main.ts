@@ -53,7 +53,7 @@ import { createVoicePreparationUI, VOICE_REFERENCE_TEXT } from "./voice-preparat
 import { createVoiceLibraryBridge, type VoiceLibraryProgress } from "./voice-library-bridge";
 import * as voiceNative from "panel-native:voice-runtime";
 import { createFolderImport } from "./folder-import";
-import { removeAssets, assetRemovalUsage } from "./asset-management";
+import { planEditorAssetRemoval } from "./editor/asset-removal";
 import {
   readMediaLibraryPreferences,
   saveMediaLibraryPreferences,
@@ -93,6 +93,7 @@ import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-s
 import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
+import { secondsToTicks } from "./editor/time";
 import {
   createEditorTaskBridge,
   isEditorDemoNarration,
@@ -237,6 +238,7 @@ let search = "";
 let editorSession: EditorSession | undefined;
 let editorStorage: EditorHostStorage | undefined;
 let editorWorkspace: EditorWorkspace | undefined;
+let editorRoot: HTMLElement | undefined;
 let editorTasks: ReturnType<typeof createEditorTaskBridge> | undefined;
 let editorExportJobs: EditorExportJobs | undefined;
 let editorImportUI: EditorImportUI | undefined;
@@ -283,6 +285,7 @@ let taskStarting = false;
 let generation = 0;
 let inspectorDraftKey = "";
 let renderedProjectId = "";
+let renderedGeneration = -1;
 const processedTasks = new Set<string>();
 let playback: AbortController | null = null;
 let exporting: AbortController | null = null;
@@ -1259,6 +1262,10 @@ function views() {
     playing: Boolean(playback),
     connected: Boolean(panel),
     persistentStorage: hasPersistentStorage(),
+    editorClipCount: editorSession
+      ?.read()
+      .sequences.find((sequence) => sequence.id === editorSession!.read().activeSequenceId)?.clips
+      .length,
     production: {
       connected: Boolean(panel),
       status: production.status,
@@ -1636,6 +1643,37 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   if (production.enabled) await production.refresh();
 }
 
+/** Keep the editor mounted while production/library views refresh around it.
+ * Detaching its canvas would lose pointer capture, focus and open editor dialogs. */
+function renderStudioShell(): void {
+  const markup = views().shell();
+  const workspace = studio.querySelector<HTMLElement>(".workspace");
+  if (!editorRoot || !workspace || !workspace.contains(editorRoot)) {
+    studio.innerHTML = markup;
+    if (editorRoot) studio.querySelector(".workspace")!.append(editorRoot);
+    return;
+  }
+  const next = document.createElement("div");
+  next.innerHTML = markup;
+  const nextWorkspace = next.querySelector<HTMLElement>(".workspace")!;
+  workspace.className = nextWorkspace.className;
+  for (const child of [...nextWorkspace.children]) {
+    const previous = [...workspace.children].find(
+      (element) => element !== editorRoot && element.classList.contains(child.classList[0]!),
+    );
+    if (previous) previous.replaceWith(child);
+    else workspace.insertBefore(child, editorRoot);
+  }
+  for (const child of [...next.children]) {
+    if (child === nextWorkspace) continue;
+    const previous = [...studio.children].find((element) =>
+      child.id ? element.id === child.id : element.className === child.className,
+    );
+    if (previous) previous.replaceWith(child);
+    else studio.append(child);
+  }
+}
+
 function render(): void {
   if (timelineGestures.deferRender()) return;
   timelineMenu.reconcile();
@@ -1716,15 +1754,16 @@ function render(): void {
           value: element.value,
         }))
       : [];
-  studio.innerHTML = views().shell();
-  if (editorWorkspace) {
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "editor-return-button";
-    back.textContent = "返回多轨编辑";
-    back.addEventListener("click", showEditorWorkspace);
-    studio.prepend(back);
-  }
+  const restoreAssetFocus = rememberMediaAssetFocus();
+  renderStudioShell();
+  editorVisible = Boolean(editorWorkspace && tab === "media");
+  studio.hidden = false;
+  studio.querySelector(".workspace")!.classList.toggle("editor-mode", editorVisible);
+  studio
+    .querySelector(".workspace")!
+    .classList.toggle("editor-source-mode", editorVisible && sourcePreviewActive());
+  editorWorkspace?.setSourcePreview(sourcePreviewActive());
+  editorWorkspace?.setVisible(editorVisible && panelVisible && !document.hidden);
   // Preserve live editors across background refreshes so input/IME events never target detached drafts.
   // Values still come from the new view, including an explicitly loaded replacement or model change.
   for (const draft of voiceEditors) {
@@ -1764,6 +1803,7 @@ function render(): void {
     } else audio?.pause();
   }
   renderedProjectId = project.id;
+  renderedGeneration = generation;
   inspectorDraftKey = draftKey;
   for (const draft of trimDraft) {
     const input = document.querySelector<HTMLInputElement>(`#${draft.id}`);
@@ -1778,10 +1818,11 @@ function render(): void {
   const workflowDetails = document.querySelector<HTMLDetailsElement>(".workflow-summary");
   if (workflowDetails && workflowOpen) workflowDetails.open = true;
   $(".library-panel").scrollTop = libraryScroll;
+  restoreAssetFocus?.();
   observeVisibleThumbnails();
   draw();
   const version = ++seekVersion;
-  if (!panelVisible || document.hidden) return;
+  if ((editorVisible && !sourcePreviewActive()) || !panelVisible || document.hidden) return;
   void library
     .seek(previewProject(), previewFrame())
     .then(() => {
@@ -1792,6 +1833,7 @@ function render(): void {
     });
 }
 function draw(): void {
+  if (editorVisible && editorWorkspace && !sourcePreviewActive()) return;
   const canvas = $<HTMLCanvasElement>("#preview");
   if (canvas && (sourcePreviewActive() || !legacyView || legacyView.renderSafe))
     renderFrame(canvas, previewProject(), library, previewFrame());
@@ -1802,7 +1844,7 @@ function draw(): void {
       ctx.fillStyle = "#e3ede7";
       ctx.font = "24px system-ui";
       ctx.textAlign = "center";
-      ctx.fillText("请返回多轨编辑查看完整画面", canvas.width / 2, canvas.height / 2);
+      ctx.fillText("请在素材页查看完整成片", canvas.width / 2, canvas.height / 2);
     }
   }
 }
@@ -1816,10 +1858,46 @@ function sourcePreviewActive(): boolean {
 }
 
 /** Register selected original files, then inspect only browser metadata/preview bytes. */
+/** Background decoding can replace cards between focus and the next keyboard event. */
+function rememberMediaAssetFocus(): (() => void) | undefined {
+  const active = document.activeElement;
+  if (
+    tab !== "media" ||
+    renderedProjectId !== project.id ||
+    renderedGeneration !== generation ||
+    !(active instanceof HTMLElement)
+  )
+    return;
+  const card = active.closest<HTMLElement>(".library-panel .asset-card[data-asset]");
+  if (!card || !studio.contains(card)) return;
+  const assetId = card.dataset.asset!,
+    projectId = project.id,
+    ownGeneration = generation;
+  const selector = [
+    ".asset-thumbnail",
+    "[data-select-media]",
+    ".asset-preview-name",
+    '[data-action="reconnect-media"]',
+    "[data-rough-source]",
+    '[data-action="media-menu"]',
+    "[data-add-asset]",
+  ].find((selector) => active.matches(selector));
+  return () => {
+    if (tab !== "media" || project.id !== projectId || generation !== ownGeneration) return;
+    const next = studio.querySelector<HTMLElement>(
+      `.library-panel .asset-card[data-asset="${CSS.escape(assetId)}"]`,
+    );
+    const target = (selector && next?.querySelector<HTMLElement>(selector)) || next;
+    target?.focus({ preventScroll: true });
+  };
+}
+
 function refreshMediaLibrary(): void {
+  const restoreAssetFocus = rememberMediaAssetFocus();
   const scroll = $(".library-panel").scrollTop;
   $(".library-panel").innerHTML = views().renderLibrary();
   $(".library-panel").scrollTop = scroll;
+  restoreAssetFocus?.();
   observeVisibleThumbnails();
 }
 
@@ -1899,6 +1977,19 @@ function openTimelineMenu(id: string, x?: number, y?: number): void {
   timelineMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
 }
 function addMediaToTimeline(id: string, startFrame?: number): void {
+  if (editorWorkspace) {
+    assertEditorEditable();
+    showEditorWorkspace();
+    editorWorkspace.addAsset(
+      id,
+      startFrame === undefined
+        ? undefined
+        : {
+            at: secondsToTicks(startFrame / project.fps),
+          },
+    );
+    return;
+  }
   const source = project.assets.find((asset) => asset.id === id);
   if (!source) throw new Error("素材已不存在");
   if (source.kind === "audio" && project.clips.length) {
@@ -1941,6 +2032,12 @@ function selectTimelineClip(id: string, atFrame?: number, reveal = false): void 
     Math.min(clip.startFrame + clip.outFrame - clip.inFrame - 1, atFrame ?? clip.startFrame),
   );
   render();
+  if (editorVisible && editorWorkspace && editorSession) {
+    editorWorkspace.selectClips(editorSession.read().activeSequenceId, [id]);
+    void editorWorkspace.seek(secondsToTicks(frame / project.fps)).catch(fail);
+    if (reveal) editorWorkspace.revealSelection();
+    return;
+  }
   if (reveal) {
     const scroll = $("#timeline-scroll");
     const left = (frame / 30) * zoom;
@@ -1965,14 +2062,19 @@ function assertMediaRemovalReady(): void {
 }
 async function deleteMedia(ids: string[]): Promise<void> {
   assertMediaRemovalReady();
+  if (!editorSession) throw new Error("工程尚未恢复");
   const current = project,
     ownGeneration = generation;
-  const next = removeAssets(current, ids);
-  if (next.revision === current.revision) return;
+  const before = editorSession.read(),
+    identity = editorSession.getState().identity,
+    { operations } = planEditorAssetRemoval(before, ids);
+  if (!operations.length) return;
+  const after = applyEditorOperations(before, operations, before.revision);
+  const guard = reconcileEditorProduction(before, after);
   stop();
   aiApplying = true;
   try {
-    await saveProject(next, "删除素材");
+    await editorSession.dispatchDurable([...operations, ...guard], identity, "删除素材");
   } finally {
     aiApplying = false;
   }
@@ -1981,7 +2083,8 @@ async function deleteMedia(ids: string[]): Promise<void> {
   // Keep source handles for undo; unused video decoders are released by the media library.
   pendingMediaDeletion = undefined;
   $<HTMLDialogElement>("#media-delete-dialog").close();
-  commit(next, true);
+  synchronizeLegacyView();
+  render();
   toast(`已从工程删除 ${new Set(ids).size} 份素材，可撤销；原文件保留`);
 }
 async function requestMediaDeletion(id?: string): Promise<void> {
@@ -1991,7 +2094,8 @@ async function requestMediaDeletion(id?: string): Promise<void> {
       ? [id]
       : project.assets.filter((asset) => selectedMedia.has(asset.id)).map((asset) => asset.id);
   if (!ids.length) throw new Error("请先选择要删除的素材");
-  const usage = assetRemovalUsage(project, ids);
+  if (!editorSession) throw new Error("工程尚未恢复");
+  const { usage } = planEditorAssetRemoval(editorSession.read(), ids);
   if (!usage.used) {
     await deleteMedia(ids);
     return;
@@ -1999,7 +2103,8 @@ async function requestMediaDeletion(id?: string): Promise<void> {
   showMediaDeletion(ids);
 }
 function showMediaDeletion(ids: string[]): void {
-  const usage = assetRemovalUsage(project, ids);
+  if (!editorSession) throw new Error("工程尚未恢复");
+  const { usage } = planEditorAssetRemoval(editorSession.read(), ids);
   stop();
   pendingMediaDeletion = { project, generation, ids };
   const dialog = $<HTMLDialogElement>("#media-delete-dialog");
@@ -2010,8 +2115,15 @@ function showMediaDeletion(ids: string[]): void {
     <p>
       这些素材正在工程中使用。删除后会同时移除 ${usage.clipCount}
       个画面片段、${usage.audioClipCount} 个音频片段和 ${usage.roughCutCount}
-      个保留段，后续字幕和音轨会随时间轴衔接。
+      个保留段。其余片段的位置保持不变。
     </p>
+    ${usage.multicamClipCount
+      ? `<p>其中包含 ${usage.multicamClipCount} 个使用这些素材的多机位片段。</p>`
+      : ""}
+    ${usage.sequenceCount > 1 ? `<p>这些使用位置分布在 ${usage.sequenceCount} 个序列中。</p>` : ""}
+    ${usage.affectedTextClipCount
+      ? `<p>还会移除 ${usage.affectedTextClipCount} 个与这些片段关联的文字或字幕。</p>`
+      : ""}
     ${usage.narrationRecording
       ? "<p>其中包含已选的本人录音，需要重新选择录音并确认字幕对齐。</p>"
       : ""}
@@ -2117,6 +2229,7 @@ async function selectSource(
 ): Promise<void> {
   if (exporting || projectSwitching) throw new Error("请等待当前导出或工程切换完成");
   recording.assertSafeToLeave();
+  syncProductionCursor();
   const asset = project.assets.find((item) => item.id === id);
   if (!asset || (mode === "roughcut" && !["video", "audio"].includes(asset.kind)))
     throw new Error("请选择视频或音频原素材");
@@ -2827,7 +2940,14 @@ async function record(): Promise<void> {
   }
 }
 
+function syncProductionCursor(): void {
+  if (!editorVisible || !editorWorkspace) return;
+  frame = Math.round((editorWorkspace.getPlayhead() / 240000) * project.fps);
+  selected = editorWorkspace.getSelection().clipIds[0] ?? "";
+}
+
 async function action(name: string, id?: string): Promise<void> {
+  syncProductionCursor();
   const releaseCapture = ["rec-stop", "rec-cancel", "rec-discard", "rec-pause"].includes(name);
   if (!releaseCapture) {
     if (projectSwitching) throw new Error("正在安全切换工程，请稍候");
@@ -2979,10 +3099,15 @@ async function action(name: string, id?: string): Promise<void> {
       refreshMediaLibrary();
       break;
     case "import":
+      assertEditorEditable();
       folderImport.assertImportReady();
       reconnectAssetId = "";
       if (folderImport.importMode === "reference") {
         await importReferencedMedia();
+        break;
+      }
+      if (editorImportUI) {
+        editorImportUI.choose();
         break;
       }
       if (production.enabled) {
@@ -3568,6 +3693,7 @@ studio.addEventListener("click", (event) => {
   }
   const nav = target.closest<HTMLElement>("[data-tab]");
   if (nav) {
+    syncProductionCursor();
     if (tab === "recording" && nav.dataset.tab !== "recording") {
       try {
         recording.assertSafeToLeave();
@@ -3974,7 +4100,6 @@ $("#srt-input").addEventListener("change", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if (editorVisible && editorWorkspace) return;
   if (mediaMenu.active || timelineMenu.active) return;
   const menuClip = (event.target as HTMLElement).closest<HTMLElement>(
     "[data-clip],[data-audio-clip]",
@@ -4004,6 +4129,22 @@ document.addEventListener("keydown", (event) => {
     document.querySelector("dialog[open]")
   )
     return;
+  if (
+    tab === "media" &&
+    ["Backspace", "Delete"].includes(event.key) &&
+    !!studio.querySelector(".library-panel")?.contains(event.target as Node) &&
+    (mediaCard || selectedMedia.size)
+  ) {
+    event.preventDefault();
+    if (mediaCard && !selectedMedia.size) selectedMedia.add(mediaCard.dataset.asset!);
+    void action("delete-media").catch(fail);
+    return;
+  }
+  if (editorVisible && editorWorkspace && !sourcePreviewActive()) {
+    if (!(event.target as Element).closest("#editor-workspace"))
+      editorWorkspace.handleShortcut(event);
+    return;
+  }
   const timelineClip = (event.target as HTMLElement).closest<HTMLElement>(
     "[data-clip],[data-audio-clip]",
   );
@@ -4015,15 +4156,7 @@ document.addEventListener("keydown", (event) => {
   let name = "";
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z")
     name = event.shiftKey ? "redo" : "undo";
-  else if (
-    tab === "media" &&
-    ["Backspace", "Delete"].includes(event.key) &&
-    !!studio.querySelector(".library-panel")?.contains(event.target as Node) &&
-    (mediaCard || selectedMedia.size)
-  ) {
-    name = "delete-media";
-    if (mediaCard && !selectedMedia.size) selectedMedia.add(mediaCard.dataset.asset!);
-  } else if (tab === "roughcut") {
+  else if (tab === "roughcut") {
     if (event.target === document.body || studio.contains(event.target as Node))
       roughcut.key(event);
     return;
@@ -4148,8 +4281,12 @@ registerProjectReadTool(productionToolPanel, production, () => ({
   project: structuredClone(project),
   workflowMode: automatic.mode,
   requestToken: roughCutAI.requestToken || taskRequestToken || null,
-  playheadFrame: frame,
-  selectedClipId: selected,
+  playheadFrame:
+    editorVisible && editorWorkspace
+      ? Math.round((editorWorkspace.getPlayhead() / 240000) * project.fps)
+      : frame,
+  selectedClipId:
+    editorVisible && editorWorkspace ? (editorWorkspace.getSelection().clipIds[0] ?? "") : selected,
   preparation: Object.fromEntries(
     [...production.preparations].map(([id, value]) => [
       id,
@@ -4401,9 +4538,9 @@ function showEditorWorkspace(): void {
   recording.assertSafeToLeave();
   stop();
   voiceover.stopPreview();
-  editorVisible = true;
-  studio.hidden = true;
-  editorWorkspace.setVisible(true);
+  mediaPreview = false;
+  tab = "media";
+  render();
 }
 async function applyEditorDurable(
   operations: EditorOperation[],
@@ -4755,10 +4892,13 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
 }
 function mountEditorWorkspace(): void {
   if (!editorSession || editorWorkspace) return;
-  const root = document.createElement("main");
+  const root = document.createElement("div");
   root.id = "editor-workspace";
-  studio.before(root);
+  editorRoot = root;
+  studio.querySelector(".workspace")!.append(root);
   editorWorkspace = new EditorWorkspace(root, {
+    layout: "embedded",
+    showComposition: showEditorWorkspace,
     session: editorSession,
     assertEditable: assertEditorEditable,
     resolveAsset: resolveEditorAsset,
@@ -4773,22 +4913,24 @@ function mountEditorWorkspace(): void {
       : undefined,
     timelineMedia: {
       resolveAsset: resolveEditorAsset,
-      loadWaveform: async (assetId, signal) => {
-        if (!editorTasks || !editorSession) throw new Error("请在桌面视频面板中准备音频波形");
-        const doc = editorSession.read(),
-          source = doc.assets.find((asset) => asset.id === assetId);
-        if (!source) throw new Error("声音源已不在当前工程中");
-        if (source.resourceId)
-          return (
-            await editorTasks.analyzeWaveform(source.resourceId, {
-              sourceDuration: source.duration,
-              signal,
-            })
-          ).waveform;
-        return (
-          await editorTasks.analyzeAssetWaveform(doc, doc.activeSequenceId, assetId, { signal })
-        ).waveform;
-      },
+      loadWaveform: editorTasks
+        ? async (assetId, signal) => {
+            if (!editorTasks || !editorSession) throw new Error("请在桌面视频面板中准备音频波形");
+            const doc = editorSession.read(),
+              source = doc.assets.find((asset) => asset.id === assetId);
+            if (!source) throw new Error("声音源已不在当前工程中");
+            if (source.resourceId)
+              return (
+                await editorTasks.analyzeWaveform(source.resourceId, {
+                  sourceDuration: source.duration,
+                  signal,
+                })
+              ).waveform;
+            return (
+              await editorTasks.analyzeAssetWaveform(doc, doc.activeSequenceId, assetId, { signal })
+            ).waveform;
+          }
+        : undefined,
     },
     prepareAudio: async (doc, sequenceId, signal) => {
       const plan = compileAudioPlan(doc, sequenceId);
@@ -4891,17 +5033,20 @@ function mountEditorWorkspace(): void {
         }
       : undefined,
     showProduction: async (nextTab) => {
-      editorVisible = false;
-      editorWorkspace?.setVisible(false);
-      studio.hidden = false;
+      recording.assertSafeToLeave();
+      mediaPreview = false;
       tab = nextTab;
       render();
       if (tab === "voiceover") await voiceover.load();
     },
     onError: fail,
   });
-  if (panel && editorTasks)
-    editorImportUI = new EditorImportUI(editorSession, panel, root.querySelector(".ew-library")!);
+  if (panel && editorTasks) {
+    const importHost = document.createElement("div");
+    importHost.className = "ew-import-host";
+    root.append(importHost);
+    editorImportUI = new EditorImportUI(editorSession, panel, importHost);
+  }
   mountEditorCaptions(root);
   mountEditorSeparation(root);
   mountEditorAudioEnhancement(root);
@@ -4924,7 +5069,6 @@ function mountEditorWorkspace(): void {
       onError: fail,
       container: root,
     });
-  studio.hidden = true;
   render();
 }
 
@@ -4996,8 +5140,34 @@ async function boot(): Promise<void> {
     editorSession.subscribe(() => {
       refreshEditorSaveStatus();
       const previous = legacySignature;
+      const previousAssets = JSON.stringify(project.assets);
       synchronizeLegacyView();
       updateSave();
+      if (editorVisible && productionBooted && !projectSwitching) {
+        const nameInput = studio.querySelector<HTMLInputElement>("#project-name");
+        if (nameInput && document.activeElement !== nameInput) nameInput.value = project.name;
+        const revision = studio.querySelector("#revision");
+        if (revision) revision.textContent = `rev ${project.revision}`;
+        const clipCount = studio.querySelector("[data-studio-clip-count]");
+        if (clipCount) {
+          const doc = editorSession!.read();
+          clipCount.textContent = String(
+            doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips.length ?? 0,
+          );
+        }
+        const exportButton = studio.querySelector<HTMLButtonElement>(
+          '.topbar [data-action="export"]',
+        );
+        if (exportButton) {
+          const doc = editorSession!.read();
+          exportButton.disabled = !doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips
+            .length;
+        }
+        if (previousAssets !== JSON.stringify(project.assets)) {
+          if (!pendingMediaDeletion) refreshMediaLibrary();
+          void restoreManagedMedia().catch(fail);
+        }
+      }
       if (
         previous !== legacySignature &&
         productionBooted &&

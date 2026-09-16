@@ -1,4 +1,7 @@
-import { enterLegacyProduction } from "./helpers/video-studio-editor-fixture.mjs";
+import {
+  enterLegacyProduction,
+  readSavedEditorDocument,
+} from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { createHash } from "node:crypto";
@@ -137,8 +140,7 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
-  await page.addInitScript(installGenericMediaTaskMock);
-  await page.addInitScript(() => {
+  const installLibraryBridge = () => {
     window.__libraryTools = {};
     window.__libraryHostCalls = [];
     window.codeshellPanel = {
@@ -175,6 +177,19 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
         throw new Error(`Unexpected library Host call: ${method}`);
       },
     };
+    // This fixture supplies resource storage and persistence. Browser decoders
+    // exercise real media; no native source-proxy or waveform processor is installed.
+    const readContext = window.codeshellPanel.getContext.bind(window.codeshellPanel);
+    window.codeshellPanel.getContext = async () => {
+      const context = await readContext();
+      return {
+        ...context,
+        availableMethods: context.availableMethods.filter((method) => !method.startsWith("tasks.")),
+      };
+    };
+  };
+  await page.addInitScript({
+    content: `(${installGenericMediaTaskMock.toString()})();(${installLibraryBridge.toString()})();`,
   });
   await page.goto(url);
   await ready(page);
@@ -192,6 +207,11 @@ const ready = async (page) => {
   });
 };
 const state = (page) => page.evaluate(() => window.__libraryTools.read_video_project());
+const canonical = (page) => readSavedEditorDocument(page);
+const selectedClipIds = (page) =>
+  page
+    .locator('[data-et-clip][aria-selected="true"]')
+    .evaluateAll((elements) => elements.map((element) => element.dataset.etClip));
 const saved = (page) =>
   page.waitForFunction(() => document.querySelector("#save-state")?.textContent === "已自动保存");
 const visibleIds = (page) =>
@@ -250,16 +270,16 @@ test(
     try {
       const before = (await state(page)).project;
       const [first, second] = before.clips;
-      await page.locator(`[data-clip="${first.id}"]`).click();
-      const beforeMenu = await state(page);
-      await page.locator(`[data-clip="${second.id}"]`).click({
+      await page.locator(`[data-et-clip="${first.id}"]`).click();
+      const beforeMenu = await page.locator("[data-ew-seek]").inputValue();
+      await page.locator(`[data-et-clip="${second.id}"]`).click({
         button: "right",
         position: { x: 20, y: 20 },
       });
       const context = page.locator("#timeline-context-menu");
       await context.waitFor({ state: "visible" });
-      assert.equal((await state(page)).selectedClipId, second.id);
-      assert.equal((await state(page)).playheadFrame, beforeMenu.playheadFrame);
+      assert.deepEqual(await selectedClipIds(page), [second.id]);
+      assert.equal(await page.locator("[data-ew-seek]").inputValue(), beforeMenu);
       assert.deepEqual((await state(page)).project, before);
       assert.match(await context.textContent(), /素材库与原文件保留，可撤销/);
       await context.locator('[data-timeline-menu-action="remove"]').click();
@@ -273,7 +293,7 @@ test(
       assert.deepEqual(changed.assets, before.assets);
       for (const asset of before.assets)
         assert.equal(await page.locator(`[data-asset="${asset.id}"]`).count(), 1);
-      await page.locator('[data-action="undo"]').first().click();
+      await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
       const undone = (await state(page)).project;
       for (const field of ["assets", "clips", "audioClips", "captions"])
@@ -281,7 +301,7 @@ test(
       await assertNoResourceDeletion(page);
 
       // A right-button gesture on a trim edge opens the menu without editing the source range.
-      const edge = page.locator(`[data-clip="${second.id}"] [data-trim="out"]`);
+      const edge = page.locator(`[data-et-clip="${second.id}"] [data-et-edge="right"]`);
       // Media restoration can redraw after undo; hover retries until the live edge is stable.
       await edge.hover();
       const rect = await edge.boundingBox();
@@ -295,7 +315,7 @@ test(
       assert.equal(await context.count(), 0);
       assert.equal(
         await page
-          .locator(`[data-clip="${second.id}"]`)
+          .locator(`[data-et-clip="${second.id}"]`)
           .evaluate((element) => element === document.activeElement),
         true,
       );
@@ -319,12 +339,12 @@ test(
       const before = (await state(page)).project;
       const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
       assert.ok(audioClip);
-      const target = page.locator(`[data-audio-clip="${audioClip.id}"]`);
+      const target = page.locator(`[data-et-clip="${audioClip.id}"]`);
       const context = page.locator("#timeline-context-menu");
-      await page.locator(`[data-clip="${before.clips[0].id}"]`).focus();
+      await page.locator(`[data-et-clip="${before.clips[0].id}"]`).focus();
       await target.click({ button: "right" });
       await context.waitFor({ state: "visible" });
-      assert.equal((await state(page)).selectedClipId, audioClip.id);
+      assert.deepEqual(await selectedClipIds(page), [audioClip.id]);
       await context.locator('[data-timeline-menu-action="cancel"]').click();
       assert.deepEqual((await state(page)).project, before);
 
@@ -339,7 +359,7 @@ test(
             bounds.y >= 8 &&
             bounds.y + bounds.height <= 836,
         );
-        assert.equal((await state(page)).selectedClipId, audioClip.id);
+        assert.deepEqual(await selectedClipIds(page), [audioClip.id]);
         await page.keyboard.press("Escape");
         assert.equal(await target.evaluate((element) => element === document.activeElement), true);
       }
@@ -362,7 +382,7 @@ test(
       assert.deepEqual(changed.clips, before.clips);
       assert.deepEqual(changed.assets, before.assets);
       assert.ok(!changed.audioClips.some((clip) => clip.id === audioClip.id));
-      await page.locator('[data-action="undo"]').first().click();
+      await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
       assert.deepEqual((await state(page)).project.audioClips, before.audioClips);
       await assertNoResourceDeletion(page);
@@ -373,13 +393,17 @@ test(
 );
 
 async function backgroundChangesWhileDeleting(page, assetId) {
-  const before = (await state(page)).project;
+  const before = await canonical(page);
   // Exercise the real edit/commit callback while the modal is mounted, as a
   // background publication would; no production implementation is replaced.
   await page.locator(`[data-add-asset="${assetId}"]`).evaluate((element) => element.click());
   await page.waitForFunction(
-    (count) => window.__libraryTools.read_video_project().project.clips.length === count + 1,
-    before.clips.length,
+    (count) =>
+      window.__libraryTools.read_video_project({
+        editor: { view: "project", path: "/sequences/0/clips" },
+      }).page.total ===
+      count + 1,
+    before.sequences[0].clips.length,
   );
   await page.locator("#media-input").setInputFiles([fixtures[2]]);
   await page.waitForFunction(() =>
@@ -390,6 +414,43 @@ async function backgroundChangesWhileDeleting(page, assetId) {
   await saved(page);
   return (await state(page)).project;
 }
+
+test(
+  "replaced or revision-stale timeline menus cannot delete another selection",
+  { timeout: 60_000 },
+  async () => {
+    const page = await demoPage();
+    try {
+      const before = (await state(page)).project;
+      const [first, second] = before.clips;
+      await page.locator(`[data-et-clip="${first.id}"]`).click({ button: "right" });
+      const staleRemove = await page
+        .locator('[data-timeline-menu-action="remove"]')
+        .elementHandle();
+      await page.locator(`[data-et-clip="${second.id}"]`).click({ button: "right" });
+      await staleRemove.evaluate((button) => button.click());
+      assert.equal(await page.locator("#timeline-context-menu").isVisible(), true);
+      assert.deepEqual((await state(page)).project, before);
+      assert.deepEqual(await selectedClipIds(page), [second.id]);
+      const replacedRemove = await page
+        .locator('[data-timeline-menu-action="remove"]')
+        .elementHandle();
+      await page.locator("#project-name").evaluate((input) => {
+        input.value = "后台更新工程名";
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await saved(page);
+      assert.equal(await page.locator("#timeline-context-menu").count(), 0);
+      await replacedRemove.evaluate((button) => button.click());
+      const after = (await state(page)).project;
+      assert.equal(after.name, "后台更新工程名");
+      assert.deepEqual(after.clips, before.clips);
+      assert.deepEqual(after.assets, before.assets);
+    } finally {
+      await page.close();
+    }
+  },
+);
 
 test(
   "long timeline clips keep real covers through zoom, trimming and undo with fixed DOM size",
@@ -406,45 +467,52 @@ test(
       await page.locator(`[data-add-asset="${asset.id}"]`).click();
       await saved(page);
       const clip = (await state(page)).project.clips[0];
-      const strip = page.locator(`[data-clip="${clip.id}"] .clip-fill`);
+      const strip = page.locator(`[data-et-clip="${clip.id}"] .et-media-strip`);
       const zoom = async (value) => {
-        await page.locator("#timeline-zoom").evaluate((input, next) => {
-          input.value = String(next);
+        await page.locator("[data-et-zoom]").evaluate((input, next) => {
+          input.value = String(Math.log10(next));
           input.dispatchEvent(new Event("change", { bubbles: true }));
         }, value);
       };
       const coverReady = () =>
         page.waitForFunction((id) => {
-          const image = document.querySelector(`[data-clip="${id}"] .clip-fill img`);
-          return image?.complete && image.naturalWidth > 0;
+          const canvas = document.querySelector(`[data-et-clip="${id}"] .et-media-strip`);
+          if (!canvas || !canvas.width || !canvas.height || canvas.dataset.etMediaState !== "ready")
+            return false;
+          const pixels = canvas
+            .getContext("2d")
+            .getImageData(0, 0, canvas.width, canvas.height).data;
+          let colorful = 0;
+          for (let index = 0; index < pixels.length; index += 4)
+            if (
+              Math.max(pixels[index], pixels[index + 1], pixels[index + 2]) -
+                Math.min(pixels[index], pixels[index + 1], pixels[index + 2]) >
+              80
+            )
+              colorful++;
+          return colorful > canvas.width * canvas.height * 0.05;
         }, clip.id);
       const assertCoveredTail = async () => {
         await coverReady();
         const pixels = PNG.sync.read(await strip.screenshot());
         assert.ok(pixels.width > 558, "The clip extends beyond the old eight-cover limit");
-        let difference = 0;
-        let samples = 0;
         let minimum = 255;
         let maximum = 0;
-        // Match the repeated cover after the old 528px cutoff against the first
-        // cover. These are representative covers, not separate source frames.
+        // Source-time thumbnails now share one viewport-sized canvas. Keep the
+        // original regression: media beyond the old eight-cover cutoff is decoded.
         for (let y = 5; y < 30; y++)
           for (let x = 4; x < 24; x++)
             for (let channel = 0; channel < 3; channel++) {
-              const first = pixels.data[(y * pixels.width + x) * 4 + channel];
               const tail = pixels.data[(y * pixels.width + x + 528) * 4 + channel];
-              difference += Math.abs(first - tail);
               minimum = Math.min(minimum, tail);
               maximum = Math.max(maximum, tail);
-              samples++;
             }
         assert.ok(maximum - minimum > 60, "The tail visibly contains the decoded colorful cover");
-        assert.ok(difference / samples < 10, "The cover repeats across the entire clip");
-        assert.equal(await strip.locator("img").count(), 1);
+        assert.equal(await strip.count(), 1);
         assert.equal(
           await strip.evaluate((element) => element.childElementCount),
-          1,
-          "Clip width does not allocate extra cover elements",
+          0,
+          "Clip width does not allocate extra thumbnail elements",
         );
       };
       await zoom(100);
@@ -456,18 +524,26 @@ test(
       await zoom(12);
       await coverReady();
       const small = await strip.boundingBox();
-      const image = await strip.locator("img").boundingBox();
-      assert.ok(small.width < 75, "Zooming out produces a narrow clip");
-      assert.equal(image.width, 66, "The first cover keeps its width instead of squeezing");
-      assert.equal(image.height, 37);
-      assert.equal(await strip.locator("img").count(), 1);
+      const actualScale = 10 ** Number(await page.locator("[data-et-zoom]").inputValue());
+      assert.ok(small.width < 80, "Zooming out produces a narrow clip");
+      assert.ok(
+        Math.abs(small.width - 6 * actualScale) < 1,
+        "The strip follows the actual logarithmic zoom control",
+      );
+      assert.equal(small.height, 32, "Source thumbnails retain their timeline strip height");
+      assert.equal(await strip.count(), 1);
       await zoom(100);
-      await page.locator("#trim-out").fill("5.8");
-      await page.locator('[data-action="trim"]').click();
+      const edge = await page
+        .locator(`[data-et-clip="${clip.id}"] [data-et-edge="right"]`)
+        .boundingBox();
+      await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(edge.x + edge.width / 2 - 20, edge.y + edge.height / 2, { steps: 4 });
+      await page.mouse.up();
       await saved(page);
       assert.equal((await state(page)).project.clips[0].outFrame, 174);
       await assertCoveredTail();
-      await page.locator('[data-action="undo"]').click();
+      await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
       assert.equal((await state(page)).project.clips[0].outFrame, clip.outFrame);
       await assertCoveredTail();
@@ -506,7 +582,7 @@ test(
       const removed = (await state(page)).project;
       assert.ok(!removed.clips.some((clip) => clip.assetId === asset.id));
       assert.equal(removed.assets.length, before.assets.length - 1);
-      await page.locator('[data-action="undo"]').first().click();
+      await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
       assert.deepEqual((await state(page)).project.assets, before.assets);
       assert.deepEqual((await state(page)).project.clips, before.clips);
@@ -614,6 +690,13 @@ test(
       const removed = (await state(page)).project;
       assert.ok(!removed.assets.some((item) => item.id === asset.id));
       assert.ok(
+        (await canonical(page)).sequences.every(
+          (sequence) =>
+            !sequence.clips.some((clip) => clip.kind === "media" && clip.assetId === asset.id),
+        ),
+        "Deletion also removes the newly added overlay from the canonical sequence",
+      );
+      assert.ok(
         removed.assets.some((item) => item.name === "Library-Bravo.png"),
         "Content published during review survives the deletion",
       );
@@ -639,11 +722,13 @@ for (const dismissal of ["button", "Escape"]) {
       const page = await demoPage();
       try {
         const before = (await state(page)).project;
+        const beforeCanonical = await canonical(page);
         const asset = before.assets.find((item) => item.kind === "demo");
         await (await menu(page, asset.id)).locator('[data-action="delete-media"]').click();
         const dialog = page.locator("#media-delete-dialog");
         await dialog.waitFor({ state: "visible" });
         const changed = await backgroundChangesWhileDeleting(page, asset.id);
+        const changedCanonical = await canonical(page);
         const imported = changed.assets.find((item) => item.name === "Library-Bravo.png");
         assert.equal(
           await page.locator(`[data-asset="${imported.id}"]`).count(),
@@ -654,7 +739,12 @@ for (const dismissal of ["button", "Escape"]) {
         else await dialog.locator('[data-action="close-dialog"]').last().click();
         await dialog.waitFor({ state: "hidden" });
         await page.locator(`[data-asset="${imported.id}"]`).waitFor();
-        assert.equal(await page.locator("[data-clip]").count(), changed.clips.length);
+        const added = changedCanonical.sequences[0].clips.filter(
+          (clip) => !beforeCanonical.sequences[0].clips.some((previous) => previous.id === clip.id),
+        );
+        assert.equal(added.length, 1);
+        assert.equal(await page.locator(`[data-et-clip="${added[0].id}"]`).isVisible(), true);
+        assert.deepEqual(await canonical(page), changedCanonical);
         assert.deepEqual((await state(page)).project, changed);
         await assertNoResourceDeletion(page);
       } finally {
@@ -819,8 +909,8 @@ async function checkContextMenu(viewport, artifact) {
       "A pointer-opened menu stays inside the viewport",
     );
     assert.equal(
-      await page.locator("#preview").getAttribute("aria-label"),
-      "当前剪辑画面",
+      await page.locator("[data-ew-canvas]").isVisible(),
+      true,
       "Right-clicking must not switch or start the source preview",
     );
     assert.deepEqual((await state(page)).project, before.project);
@@ -836,7 +926,7 @@ async function checkContextMenu(viewport, artifact) {
     await menu(page, asset.id);
     await page.locator(".section-title h2").first().click();
     assert.equal(await popup.isVisible(), false);
-    assert.equal(await page.locator("#preview").getAttribute("aria-label"), "当前剪辑画面");
+    assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
     assert.deepEqual((await state(page)).project, before.project);
   } finally {
     await page.close();
@@ -848,6 +938,78 @@ test(
   { timeout: 60_000 },
   async () => {
     await checkContextMenu({ width: 1440, height: 1000 }, "library-menu-desktop.png");
+  },
+);
+
+test(
+  "material keyboard menus and deletion remain available beside the canonical timeline",
+  { timeout: 60_000 },
+  async () => {
+    const page = await openPage();
+    let releaseMedia;
+    const mediaGate = new Promise((resolve) => {
+      releaseMedia = resolve;
+    });
+    let markRequested;
+    const mediaRequested = new Promise((resolve) => {
+      markRequested = resolve;
+    });
+    await page.route("**/demo-narration.mp3", async (route) => {
+      markRequested();
+      await mediaGate;
+      await route.continue();
+    });
+    try {
+      await page.locator('[data-action="demo"]').first().click();
+      await mediaRequested;
+      await saved(page);
+      const before = (await state(page)).project;
+      const asset = before.assets.find((item) => item.kind === "demo");
+      const card = page.locator(`.asset-list [data-asset="${asset.id}"]`);
+      const popup = page.locator("#media-context-menu");
+      await card.focus();
+      const originalCard = await card.elementHandle();
+      releaseMedia();
+      await page.waitForFunction((element) => !element.isConnected, originalCard);
+      assert.equal(
+        await card.evaluate((element) => element === document.activeElement),
+        true,
+        "Finishing a background media restore preserves the focused material card",
+      );
+      for (const key of ["Shift+F10", "ContextMenu"]) {
+        await card.focus();
+        await page.keyboard.press(key);
+        await popup.waitFor({ state: "visible" });
+        await page.keyboard.press("Escape");
+        await popup.waitFor({ state: "hidden" });
+      }
+      assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
+      await card.focus();
+      await page.keyboard.press("Delete");
+      const dialog = page.locator("#media-delete-dialog");
+      await dialog.waitFor({ state: "visible" });
+      await page.keyboard.press("Escape");
+      assert.deepEqual((await state(page)).project, before);
+      await card.focus();
+      await page.keyboard.press("Backspace");
+      await dialog.waitFor({ state: "visible" });
+      await dialog.locator('[data-action="confirm-delete-media"]').click();
+      await saved(page);
+      assert.equal(
+        (await canonical(page)).assets.some((item) => item.id === asset.id),
+        false,
+      );
+      await page.locator('[data-ew-action="undo"]').click();
+      await saved(page);
+      assert.equal(
+        (await canonical(page)).assets.some((item) => item.id === asset.id),
+        true,
+      );
+      await assertNoResourceDeletion(page);
+    } finally {
+      releaseMedia();
+      await page.close();
+    }
   },
 );
 

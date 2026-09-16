@@ -164,11 +164,13 @@ async function fixture(t, options = {}) {
     const history = new editor.EditorHistory(doc);
     let selection = [],
       time = 0,
+      generation = 1,
       timeline;
     const applied = [],
       errors = [];
     timeline = new editor.EditorTimeline(document.querySelector("#timeline"), {
       read: () => history.read(),
+      identity: () => ({ documentId: doc.id, revision: history.revision, generation }),
       selection: () => ({ sequenceId: "main", clipIds: [...selection] }),
       // Selection alone is parent view state; the component owns its own render lifecycle.
       select: (ids) => {
@@ -212,6 +214,10 @@ async function fixture(t, options = {}) {
       }),
       externalChange: () => {
         history.apply([{ type: "project.rename", name: "外部更新" }], history.revision);
+      },
+      replaceGeneration: () => {
+        generation++;
+        timeline.render();
       },
       dispose: () => timeline.dispose(),
     };
@@ -340,6 +346,20 @@ test("group and link IDs are separate namespaces during click selection", async 
   assert.deepEqual((await state(page)).selected.sort(), ["a", "b"]);
   await clickClip(page, "c");
   assert.deepEqual((await state(page)).selected, ["c"]);
+});
+
+test("a new session generation invalidates a menu even when document id and revision are unchanged", async (t) => {
+  const page = await fixture(t);
+  await page.locator('[data-et-clip="a"]').click({ button: "right" });
+  const before = await state(page);
+  const remove = await page.locator('[data-timeline-menu-action="remove"]').elementHandle();
+  await page.evaluate(() => fixture.replaceGeneration());
+  assert.equal(await page.locator("#timeline-context-menu").count(), 0);
+  await remove.evaluate((button) => button.click());
+  const after = await state(page);
+  assert.deepEqual(after.document, before.document);
+  assert.deepEqual(after.applied, []);
+  assert.deepEqual(after.errors, []);
 });
 
 test("multi-selection drag preserves relative time and track positions in one undoable batch", async (t) => {

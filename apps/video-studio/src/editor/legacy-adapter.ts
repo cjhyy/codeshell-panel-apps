@@ -13,6 +13,7 @@ import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { migrateLegacyProject } from "./migration";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { freezeTimeMap } from "./time";
 import type {
   EditorAsset,
   EditorClip,
@@ -215,6 +216,13 @@ function exactMedia(clip: MediaClip): boolean {
   const first = clip.timeMap.points[0]!.source;
   return clip.timeMap.points.every((point) => point.source === first + point.time);
 }
+/** A still image's display length is independent of its zero-duration source. */
+function staticImage(clip: MediaClip, assets: readonly EditorAsset[]): boolean {
+  return (
+    assets.some((asset) => asset.id === clip.assetId && asset.kind === "image") &&
+    clip.timeMap.points.every((point) => point.source === 0)
+  );
+}
 
 /** Legacy range extension is safe only when there is no local timing to invent or retime. */
 function assertStaticExtension(clip: EditorClip, sequence: EditorSequence): void {
@@ -307,7 +315,22 @@ export function projectLegacyView(
       id: source.id,
       name: source.name,
       kind: source.kind,
-      durationFrames: Math.floor(frames(source.duration)),
+      // Still images have no source duration. The original library needs a
+      // display length; keeping it in the projection preserves canonical zero.
+      durationFrames:
+        source.kind === "image"
+          ? Math.max(
+              source.duration === 0 ? 150 : Math.floor(frames(source.duration)),
+              ...sequence.clips
+                .filter(
+                  (clip) =>
+                    clip.kind === "media" &&
+                    clip.assetId === source.id &&
+                    staticImage(clip, document.assets),
+                )
+                .map((clip) => Math.ceil(frames(clip.duration))),
+            )
+          : Math.floor(frames(source.duration)),
       ...(source.width === undefined ? {} : { width: source.width }),
       ...(source.height === undefined ? {} : { height: source.height }),
       ...(source.resourceId === undefined ? {} : { mediaId: source.resourceId }),
@@ -365,7 +388,11 @@ export function projectLegacyView(
       restrict("missing-legacy-asset", "片段的源素材不在旧流程可用范围", clip.id);
       return;
     }
-    if (!exactMedia(clip)) {
+    const image = staticImage(clip, document.assets);
+    if (
+      !exactMedia(clip) &&
+      !(image && clip.start % LEGACY_FRAME_TICKS === 0 && clip.duration % LEGACY_FRAME_TICKS === 0)
+    ) {
       restrict(
         "time-map",
         "片段包含变速、倒放、定格或不能用 30 fps 整帧准确表达的时间；请使用新版时间线工具",
@@ -659,6 +686,15 @@ export function applyLegacyProjectChange(
       ["mediaId", "resourceId"],
     ] as const)
       if (!same(old[legacy], asset[legacy])) {
+        // This field is a synthetic display allowance for durationless images,
+        // including when an old workflow lengthens a still-image instance.
+        if (
+          legacy === "durationFrames" &&
+          current.kind === "image" &&
+          asset.kind === "image" &&
+          current.duration === 0
+        )
+          continue;
         if (asset[legacy] === undefined)
           throw new Error("旧流程不能清除素材的原始尺寸或资源引用，请使用新版素材管理");
         patch[canonical] =
@@ -803,12 +839,16 @@ export function applyLegacyProjectChange(
               assetId: next.assetId,
               start: ticks(next.startFrame),
               duration,
-              timeMap: {
-                points: [
-                  { time: 0, source: ticks(next.inFrame) },
-                  { time: duration, source: ticks(next.outFrame) },
-                ],
-              },
+              timeMap:
+                asset.kind === "image" &&
+                draft.assets.find((item) => item.id === asset.id)!.duration === 0
+                  ? freezeTimeMap(0, duration)
+                  : {
+                      points: [
+                        { time: 0, source: ticks(next.inFrame) },
+                        { time: duration, source: ticks(next.outFrame) },
+                      ],
+                    },
               transform: defaultTransform(),
               color: defaultColorAdjustment(),
               blendMode: "normal",
@@ -822,7 +862,12 @@ export function applyLegacyProjectChange(
       if (clip.kind !== "media") throw new Error("旧媒体映射已失效");
       if (old && next.assetId !== old.assetId)
         throw new Error("旧流程不能替换现有片段的源素材，请使用新版素材替换");
-      const sourceStart = clip.timeMap.points[0]!.source,
+      const image = staticImage(clip, draft.assets);
+      // Legacy image ranges are display offsets. A just-split right half still
+      // uses its old display offset until the next projection normalizes it.
+      const sourceStart = image
+          ? ticks(old?.inFrame ?? next.inFrame)
+          : clip.timeMap.points[0]!.source,
         sourceEnd = sourceStart + clip.duration;
       if (ticks(next.inFrame) !== sourceStart || ticks(next.outFrame) !== sourceEnd) {
         if (ticks(next.inFrame) < sourceStart || ticks(next.outFrame) > sourceEnd) {
@@ -831,11 +876,11 @@ export function applyLegacyProjectChange(
             end = ticks(next.outFrame);
           const asset = draft.assets.find((asset) => asset.id === clip.assetId)!;
           if (
-            !exactMedia(clip) ||
+            (!image && !exactMedia(clip)) ||
             start > sourceStart ||
             end < sourceEnd ||
             start < 0 ||
-            end > asset.duration
+            (!image && end > asset.duration)
           )
             throw new Error(
               "旧流程只能在原素材范围内延长平直原速片段，滑移或变速请使用新版裁剪工具",
@@ -848,12 +893,14 @@ export function applyLegacyProjectChange(
             clipId: clip.id,
             patch: {
               duration,
-              timeMap: {
-                points: [
-                  { time: 0, source: start },
-                  { time: duration, source: end },
-                ],
-              },
+              timeMap: image
+                ? freezeTimeMap(0, duration)
+                : {
+                    points: [
+                      { time: 0, source: start },
+                      { time: duration, source: end },
+                    ],
+                  },
             },
           });
         } else

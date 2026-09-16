@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   enterLegacyProduction,
+  readSavedEditorDocument,
   readSavedLegacyProject,
 } from "./helpers/video-studio-editor-fixture.mjs";
 import { after, before, test } from "node:test";
@@ -184,6 +185,12 @@ function timeline(project) {
     audioClips: project.audioClips,
     captions: project.captions,
     roughCuts: project.roughCuts,
+  };
+}
+async function editorComposition(page) {
+  return {
+    sequences: (await readSavedEditorDocument(page)).sequences,
+    roughCuts: (await readProject(page)).roughCuts,
   };
 }
 
@@ -622,12 +629,30 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
     assert.match(original.mediaId, /^asset-[a-f0-9]{64}$/);
     await page.locator(`[data-add-asset="${still.id}"]`).click();
     await saved(page);
+    assert.ok(
+      (await readSavedEditorDocument(page)).sequences[0].clips.some(
+        (clip) => clip.assetId === still.id,
+      ),
+      `The still image is inserted into the timeline: ${await page.locator("#toast").textContent()}`,
+    );
     await page.locator(`[data-add-asset="${original.id}"]`).click();
     await saved(page);
-    await addCut(page, original.id, "旧版本的保留段");
-    const composition = timeline(await readProject(page));
     assert.ok(
-      composition.audioClips.some((clip) => clip.assetId === original.id),
+      (await readSavedEditorDocument(page)).sequences[0].clips.some(
+        (clip) => clip.assetId === original.id,
+      ),
+      `The source audio is inserted into the timeline: ${await page.locator("#toast").textContent()}`,
+    );
+    await addCut(page, original.id, "旧版本的保留段");
+    const composition = await editorComposition(page);
+    assert.ok(
+      composition.sequences[0].clips.some(
+        (clip) =>
+          clip.assetId === original.id &&
+          composition.sequences[0].tracks.some(
+            (track) => track.id === clip.trackId && track.kind === "audio",
+          ),
+      ),
       "The original source is actually used by a saved audio clip",
     );
     await page.locator('[data-tab="media"]').click();
@@ -641,7 +666,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
     await sourceFile(folder, "b/voice.wav", wav(660));
     await check();
     await waitAssets(page, 3);
-    assert.deepEqual(timeline(await readProject(page)), composition);
+    assert.deepEqual(await editorComposition(page), composition);
     await sourceFile(folder, "a/voice.wav", wav(880), 1700000005000);
     await check();
     await waitAssets(page, 4);
@@ -653,7 +678,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
       changed.some((asset) => asset.id === original.id && asset.mediaId === original.mediaId),
     );
     assert.deepEqual(
-      timeline(project),
+      await editorComposition(page),
       composition,
       "New source versions preserve the exact existing timeline and cuts",
     );
@@ -665,7 +690,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
     );
     await settled();
     await saved(page);
-    assert.deepEqual(timeline(await readProject(page)), composition);
+    assert.deepEqual(await editorComposition(page), composition);
     await page.locator('[data-action="folder-toggle"]').click();
     await page.waitForFunction(() =>
       document.querySelector(".folder-connection")?.textContent.includes("已暂停自动检查"),
@@ -684,6 +709,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
       fullPage: true,
     });
     const beforeReload = await readProject(page);
+    const beforeReloadComposition = await editorComposition(page);
     await page.close();
     page = undefined;
     await open();
@@ -691,6 +717,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
       document.querySelector(".folder-connection")?.textContent.includes("待重新连接"),
     );
     assert.deepEqual(await readProject(page), beforeReload);
+    assert.deepEqual(await editorComposition(page), beforeReloadComposition);
     await playSource(page, original.id);
     await page.locator('[data-tab="media"]').click();
     await page.locator('[data-action="folder-reconnect"]').click();

@@ -222,11 +222,18 @@ async function openPage(t, options = {}) {
         );
       });
     await page.waitForFunction(() => window.__mainHost.tools.read_video_project);
+    await waitSaved(page);
     await settle(page);
   }
   return page;
 }
-const action = (page, name) => page.locator(`[data-ew-action="${name}"]`);
+const action = (page, name) => page.locator(`#editor-workspace [data-ew-action="${name}"]`);
+async function clickEditorAction(page, name) {
+  const control = action(page, name);
+  if (!(await control.isVisible()))
+    await control.locator("xpath=ancestor::details[1]").locator("summary").click();
+  await control.click();
+}
 const oldAction = (page, name) => page.locator(`#studio [data-action="${name}"]`);
 const settle = (page) =>
   page.evaluate(
@@ -247,18 +254,197 @@ async function property(page, label, value) {
   await field.press("Tab");
   return waitSaved(page);
 }
-async function production(page) {
-  await action(page, "production").click();
+async function production(page, tab = "ai") {
+  await page.locator(`#studio .rail [data-tab="${tab}"]`).click();
   await page.locator("#studio").waitFor({ state: "visible" });
 }
 async function returnEditor(page) {
-  await page.getByRole("button", { name: "返回多轨编辑", exact: true }).click();
+  await page.locator('#studio .rail [data-tab="media"]').click();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
 }
 const shapeFrom = (doc) =>
   doc.sequences.flatMap((sequence) => sequence.clips).find((clip) => clip.kind === "shape");
 
 // Real built main, EditorSession, legacy adapter, IndexedDB-capable browser and media document CAS.
 // The Host is a storage boundary fixture; no native engine or model is executed here.
+test("main retains the original studio shell and material actions add canonical layers through the existing topbar", async (t) => {
+  const page = await openPage(t, { nativeTasks: true });
+  for (const selector of [
+    "#studio .topbar",
+    "#studio .rail",
+    "#studio .library-panel",
+    "#studio .workspace > #editor-workspace",
+    "#editor-workspace .ew-tools",
+    "#editor-workspace .ew-viewer",
+    "#editor-workspace .ew-properties",
+    "#editor-workspace [data-ew-timeline]",
+  ])
+    assert.equal(await page.locator(selector).isVisible(), true, `${selector} remains visible`);
+  assert.deepEqual(await page.locator("#studio .rail [data-tab]").allTextContents(), [
+    "素材",
+    "粗剪",
+    "录制",
+    "口播",
+    "字幕",
+    "配音",
+    "AI 制作",
+    "任务",
+  ]);
+  assert.equal(await page.locator("#editor-workspace .ew-header").isVisible(), false);
+  assert.equal(await page.locator("#editor-workspace .ew-library").isVisible(), false);
+  assert.equal(await page.locator('[data-ew-action="production"]:visible').count(), 0);
+  assert.equal(
+    await page.locator("#studio .workspace").evaluate((node) => getComputedStyle(node).display),
+    "grid",
+  );
+  assert.equal(
+    await page.locator("#studio .topbar").evaluate((node) => getComputedStyle(node).display),
+    "flex",
+  );
+
+  await page.locator("#project-name").fill("原工作台里的完整多轨工程");
+  await page.locator("#project-name").press("Tab");
+  const before = await waitSaved(page);
+  assert.equal(before.name, "原工作台里的完整多轨工程");
+  const sequenceBefore = before.sequences.find(
+    (sequence) => sequence.id === before.activeSequenceId,
+  );
+  const originalIds = new Set(sequenceBefore.clips.map((clip) => clip.id));
+  await page.locator('[data-add-asset="demo"]').click();
+  const first = await waitSaved(page);
+  await page.locator('[data-add-asset="demo"]').click();
+  const second = await waitSaved(page);
+  const sequence = second.sequences.find((sequence) => sequence.id === second.activeSequenceId);
+  const inserted = sequence.clips.filter((clip) => !originalIds.has(clip.id));
+  assert.equal(first.revision, before.revision + 1);
+  assert.equal(second.revision, first.revision + 1);
+  assert.equal(inserted.length, 2);
+  assert.ok(
+    inserted.every((clip) => clip.kind === "media" && clip.assetId === "demo" && clip.start === 0),
+  );
+  assert.equal(
+    new Set(inserted.map((clip) => clip.trackId)).size,
+    2,
+    "Repeated material + creates overlapping layers in independent tracks",
+  );
+  assert.ok(
+    inserted.every(
+      (clip) => clip.trackId !== sequenceBefore.clips.find((clip) => clip.id === "picture").trackId,
+    ),
+  );
+  for (const original of sequenceBefore.clips)
+    assert.deepEqual(
+      sequence.clips.find((clip) => clip.id === original.id),
+      original,
+    );
+  assert.equal(
+    await page.locator(`[data-et-clip="${inserted[1].id}"]`).getAttribute("aria-selected"),
+    "true",
+  );
+
+  await oldAction(page, "export").click();
+  const dialog = page.locator("#editor-workspace .ew-dialog[open]");
+  await dialog.waitFor({ state: "visible" });
+  assert.equal(await dialog.locator("h2").textContent(), "导出视频");
+  assert.equal(
+    await dialog.locator(`input[name="sequences"][value="${sequence.id}"]`).isChecked(),
+    true,
+  );
+  await dialog.locator("[data-ew-close]").click();
+  assert.deepEqual(
+    await saved(page),
+    second,
+    "Opening canonical export from the original topbar does not edit the project",
+  );
+});
+
+test("main rail and original-source previews retain the mounted canonical canvas, timeline, selection and document", async (t) => {
+  const page = await openPage(t);
+  await clickEditorAction(page, "rectangle");
+  const before = await property(page, "旋转（度）", 19);
+  const shape = shapeFrom(before);
+  await page.locator("[data-ew-seek]").fill("240000");
+  await settle(page);
+  const playhead = await page.locator("[data-ew-seek]").inputValue();
+  await page.evaluate(() => {
+    window.__mountedEditorNodes = [
+      document.querySelector("#studio .workspace"),
+      document.querySelector("#editor-workspace"),
+      document.querySelector("[data-ew-canvas]"),
+      document.querySelector("[data-ew-timeline]"),
+    ];
+  });
+  for (const tab of ["ai", "transcript", "jobs", "recording"]) {
+    await production(page, tab);
+    assert.equal(await page.locator("#editor-workspace").isVisible(), false);
+    assert.equal(
+      await page.locator(`#studio .rail [data-tab="${tab}"]`).getAttribute("aria-pressed"),
+      "true",
+    );
+    assert.deepEqual(await saved(page), before);
+    await returnEditor(page);
+    assert.equal(
+      await page.locator(`[data-et-clip="${shape.id}"]`).getAttribute("aria-selected"),
+      "true",
+    );
+    assert.equal(await page.getByLabel("旋转（度）", { exact: true }).inputValue(), "19");
+    assert.equal(await page.locator("[data-ew-seek]").inputValue(), playhead);
+  }
+  await page.locator('[data-asset="demo"] .asset-thumbnail').click();
+  assert.equal(await page.locator("#editor-workspace").isVisible(), true);
+  assert.equal(await page.locator("#editor-workspace [data-ew-timeline]").isVisible(), true);
+  assert.equal(await page.locator("#editor-workspace .ew-tools").isVisible(), true);
+  assert.equal(await page.locator("#studio .timeline-panel").isVisible(), false);
+  assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), false);
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), false);
+  assert.equal(
+    await page.locator('#studio .viewer-panel[aria-label="原素材预览"]').isVisible(),
+    true,
+  );
+  assert.equal(await page.locator("#studio #preview").isVisible(), true);
+  assert.deepEqual(await saved(page), before);
+  await page.locator(`[data-et-clip="${shape.id}"]`).click();
+  assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), true);
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), true);
+  assert.equal(await page.locator("#studio .viewer-panel").isVisible(), false);
+  assert.equal(await page.locator("#studio .timeline-panel").isVisible(), false);
+  assert.equal(await page.locator("#studio .workspace.editor-source-mode").count(), 0);
+  assert.equal(
+    await page.locator(`[data-et-clip="${shape.id}"]`).getAttribute("aria-selected"),
+    "true",
+  );
+  assert.deepEqual(
+    await saved(page),
+    before,
+    "Returning through the canonical timeline is a view-only action",
+  );
+  await page.locator('[data-asset="demo"] .asset-thumbnail').click();
+  await oldAction(page, "return-composition").click();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(`[data-et-clip="${shape.id}"]`).getAttribute("aria-selected"),
+    "true",
+  );
+  assert.deepEqual(await saved(page), before);
+  assert.deepEqual(
+    await page.evaluate(() => {
+      const current = [
+        document.querySelector("#studio .workspace"),
+        document.querySelector("#editor-workspace"),
+        document.querySelector("[data-ew-canvas]"),
+        document.querySelector("[data-ew-timeline]"),
+      ];
+      return current.map(
+        (node, index) => node.isConnected && node === window.__mountedEditorNodes[index],
+      );
+    }),
+    [true, true, true, true],
+  );
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.deepEqual(await saved(page), before);
+});
+
 test("main restores 0.5.16 multitrack without the optional old demo upgrade blocking task setup", async (t) => {
   const original = JSON.parse(
     await readFile(new URL("./fixtures/video-studio/project-0.5.16.json", import.meta.url), "utf8"),
@@ -284,7 +470,7 @@ test("main restores 0.5.16 multitrack without the optional old demo upgrade bloc
       )?.[1][0].data.data,
   );
   assert.deepEqual(backup, original);
-  await action(page, "rectangle").click();
+  await clickEditorAction(page, "rectangle");
   const edited = await waitSaved(page);
   assert.ok(shapeFrom(edited));
   await page.reload();
@@ -293,7 +479,7 @@ test("main restores 0.5.16 multitrack without the optional old demo upgrade bloc
 });
 test("main migrates V1, preserves its exact backup, and retains v2 properties through old caption edits and reload", async (t) => {
   const page = await openPage(t);
-  await action(page, "rectangle").click();
+  await clickEditorAction(page, "rectangle");
   let doc = await waitSaved(page);
   assert.equal(doc.schemaVersion, 2);
   assert.equal(doc.revision, seed.revision + 1);
@@ -332,7 +518,7 @@ test("main migrates V1, preserves its exact backup, and retains v2 properties th
     1,
   );
   await returnEditor(page);
-  await action(page, "undo").click();
+  await clickEditorAction(page, "undo");
   doc = await waitSaved(page);
   assert.deepEqual(shapeFrom(doc), shape);
   assert.equal(
@@ -341,7 +527,7 @@ test("main migrates V1, preserves its exact backup, and retains v2 properties th
       .filter((c) => c.kind === "text" && c.text === "旧制作流程添加的新字幕").length,
     0,
   );
-  await action(page, "redo").click();
+  await clickEditorAction(page, "redo");
   doc = await waitSaved(page);
   await page.reload();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
@@ -353,7 +539,7 @@ test("main migrates V1, preserves its exact backup, and retains v2 properties th
 
 test("main save failure retains advanced edits and retries without a duplicate commit", async (t) => {
   const page = await openPage(t);
-  await action(page, "ellipse").click();
+  await clickEditorAction(page, "ellipse");
   const before = await waitSaved(page),
     shape = shapeFrom(before);
   await page.evaluate(() => window.__mainHost.fail(true));
@@ -366,18 +552,18 @@ test("main save failure retains advanced edits and retries without a duplicate c
   assert.deepEqual(await saved(page), before);
   assert.equal(await input.inputValue(), "45");
   await page.evaluate(() => window.__mainHost.fail(false));
-  await action(page, "retry-save").click();
+  await clickEditorAction(page, "retry-save");
   const after = await waitSaved(page);
   assert.equal(after.revision, before.revision + 1);
   assert.equal(shapeFrom(after).transform.scaleX, 0.45);
   assert.equal(shapeFrom(after).id, shape.id);
-  await action(page, "undo").click();
+  await clickEditorAction(page, "undo");
   assert.deepEqual(shapeFrom(await waitSaved(page)), shape);
 });
 
 test("main restores a same-ID historical v2 document with monotonic revision and preserved properties", async (t) => {
   const page = await openPage(t);
-  await action(page, "rectangle").click();
+  await clickEditorAction(page, "rectangle");
   await waitSaved(page);
   const target = await property(page, "水平位置（%）", 37);
   const targetStorageRevision = await page.evaluate(() =>
@@ -422,7 +608,7 @@ test("main restores a same-ID historical v2 document with monotonic revision and
 
 test("main rejects a failed restore without replacing its current document", async (t) => {
   const page = await openPage(t);
-  await action(page, "rectangle").click();
+  await clickEditorAction(page, "rectangle");
   const current = await property(page, "水平位置（%）", 31);
   const incoming = structuredClone(current);
   incoming.revision = 0;
@@ -438,7 +624,7 @@ test("main rejects a failed restore without replacing its current document", asy
     document.querySelector("#toast").textContent.includes("模拟磁盘保存失败"),
   );
   assert.deepEqual(await saved(page), current);
-  assert.equal(await page.locator("[data-ew-project-name]").inputValue(), current.name);
+  assert.equal(await page.locator("#project-name").inputValue(), current.name);
   await page.locator(`[data-et-clip="${shapeFrom(current).id}"]`).click();
   assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "31");
 });
@@ -462,7 +648,7 @@ test("main initial read failure never writes an empty replacement over unreadabl
 test("manual legacy rough-cut markers and assembly preserve an advanced layer and remain single-step undoable", async (t) => {
   // Range editing of an offline source is supported; source decoding is outside this metadata test.
   const page = await openPage(t, { missingAudio: true });
-  await action(page, "rectangle").click();
+  await clickEditorAction(page, "rectangle");
   const before = await property(page, "旋转（度）", 23),
     shape = shapeFrom(before);
   await production(page);
@@ -508,7 +694,7 @@ test("manual legacy rough-cut markers and assembly preserve an advanced layer an
   ]);
   assert.deepEqual(shapeFrom(assembled), shape);
   await returnEditor(page);
-  await action(page, "undo").click();
+  await clickEditorAction(page, "undo");
   const undone = await waitSaved(page);
   assert.deepEqual(undone.sequences, marked.sequences);
   assert.deepEqual(undone.production, marked.production);
@@ -565,12 +751,12 @@ test("main exposes canonical agent edits with exact frame rate, durable save and
       ["denominator", 1001],
     ],
   );
-  assert.equal(await page.locator("[data-ew-project-name]").inputValue(), "精确 NTSC 工程");
-  await action(page, "undo").click();
+  assert.equal(await page.locator("#project-name").inputValue(), "精确 NTSC 工程");
+  await clickEditorAction(page, "undo");
   const restored = await waitSaved(page);
   assert.equal(restored.name, seed.name);
   assert.deepEqual(restored.sequences[0].frameRate, { numerator: 30, denominator: 1 });
-  await action(page, "redo").click();
+  await clickEditorAction(page, "redo");
   await waitSaved(page);
   await page.reload();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
@@ -601,8 +787,8 @@ test("main agent candidate save failure leaves canonical state unchanged and req
   assert.match(result.message, /模拟磁盘保存失败/);
   assert.deepEqual(result.state.identity, result.identity);
   assert.deepEqual(await saved(page), before);
-  assert.equal(await page.locator("[data-ew-project-name]").inputValue(), seed.name);
-  await action(page, "rectangle").click();
+  assert.equal(await page.locator("#project-name").inputValue(), seed.name);
+  await clickEditorAction(page, "rectangle");
   const edited = await waitSaved(page);
   const stale = await page.evaluate(async (identity) => {
     try {
@@ -627,7 +813,7 @@ test("main agent candidate save failure leaves canonical state unchanged and req
 test("main subtitle workbench reviews SRT, retries failed durable save, and shares undo and reload", async (t) => {
   const page = await openPage(t),
     before = await saved(page);
-  await action(page, "captions").click();
+  await clickEditorAction(page, "captions");
   const dialog = page.getByRole("dialog", { name: "字幕工作台" });
   await dialog.waitFor({ state: "visible" });
   assert.equal(await dialog.getByRole("button", { name: "生成所选声音字幕" }).isDisabled(), true);
@@ -655,15 +841,15 @@ test("main subtitle workbench reviews SRT, retries failed durable save, and shar
   assert.equal(imported.start, 749520);
   assert.equal(imported.duration, 447360);
   await dialog.getByRole("button", { name: "关闭字幕" }).click();
-  await action(page, "undo").click();
+  await clickEditorAction(page, "undo");
   assert.equal(
     (await waitSaved(page)).sequences[0].clips.some((clip) => clip.text === "新导入字幕"),
     false,
   );
-  await action(page, "redo").click();
+  await clickEditorAction(page, "redo");
   await waitSaved(page);
   await page.reload();
-  await action(page, "captions").click();
+  await clickEditorAction(page, "captions");
   assert.ok(
     await page
       .getByRole("dialog", { name: "字幕工作台" })
@@ -679,7 +865,7 @@ test("main subtitle workbench reviews SRT, retries failed durable save, and shar
 test("main translation preview uses the Host model and applies bilingual subtitles only after review", async (t) => {
   const page = await openPage(t, { translation: true }),
     before = await saved(page);
-  await action(page, "captions").click();
+  await clickEditorAction(page, "captions");
   const dialog = page.getByRole("dialog", { name: "字幕工作台" });
   await dialog.getByRole("button", { name: "预览翻译", exact: true }).click();
   await dialog.locator(".ec-candidate").filter({ hasText: "Translation: 原始字幕" }).waitFor();
@@ -696,7 +882,7 @@ test("main translation preview uses the Host model and applies bilingual subtitl
   assert.equal(caption.text, "原始字幕\nTranslation: 原始字幕");
   await page.screenshot({ path: "/tmp/video-studio-caption-workbench-main.png", fullPage: true });
   await dialog.getByRole("button", { name: "关闭字幕" }).click();
-  await action(page, "undo").click();
+  await clickEditorAction(page, "undo");
   assert.equal(
     (await waitSaved(page)).sequences[0].clips.find((clip) => clip.kind === "text").text,
     "原始字幕",
@@ -705,7 +891,7 @@ test("main translation preview uses the Host model and applies bilingual subtitl
 
 test("main mounts sequence management into the shared project, copy and rename survive reload", async (t) => {
   const page = await openPage(t);
-  await action(page, "sequences").click();
+  await clickEditorAction(page, "sequences");
   const section = page.getByRole("region", { name: "序列与复合片段" });
   await section.getByRole("textbox", { name: "副本名称", exact: true }).fill("短视频副本");
   await section.getByRole("button", { name: "复制完整序列", exact: true }).click();
@@ -732,7 +918,7 @@ test("main mounts sequence management into the shared project, copy and rename s
 test("main mounts the open-format sync dialog with its bundled styles and never replaces on open", async (t) => {
   const page = await openPage(t, { nativeTasks: true }),
     before = await saved(page);
-  await action(page, "sync-project").click();
+  await clickEditorAction(page, "sync-project");
   const dialog = page.getByRole("dialog", { name: "工程同步", exact: true });
   await dialog.waitFor({ state: "visible" });
   assert.match(await dialog.innerText(), /\.mimiproject/);
@@ -791,7 +977,7 @@ test("main lazily opens multicam monitoring and releases it when returning to pr
   const page = await openPage(t),
     before = await saved(page);
   assert.equal(await page.getByRole("region", { name: "多机位剪辑", exact: true }).count(), 0);
-  await action(page, "multicam").click();
+  await clickEditorAction(page, "multicam");
   const section = page.getByRole("region", { name: "多机位剪辑", exact: true });
   await section.waitFor({ state: "visible" });
   assert.match(await section.innerText(), /创建机位组/);
@@ -800,7 +986,7 @@ test("main lazily opens multicam monitoring and releases it when returning to pr
   assert.equal(await section.isVisible(), false);
   await returnEditor(page);
   assert.equal(await section.isVisible(), true);
-  await action(page, "multicam").click();
+  await clickEditorAction(page, "multicam");
   assert.equal(await section.isVisible(), false);
   assert.deepEqual(await saved(page), before);
 });

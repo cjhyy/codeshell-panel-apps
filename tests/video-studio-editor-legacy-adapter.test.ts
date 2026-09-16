@@ -21,6 +21,7 @@ import {
 } from "../apps/video-studio/src/editor/defaults";
 import { evaluateAnimatedNumber } from "../apps/video-studio/src/editor/animation";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import { freezeTimeMap } from "../apps/video-studio/src/editor/time";
 import type { EditorDocument, MediaClip, TextClip } from "../apps/video-studio/src/editor/types";
 
 const T = LEGACY_FRAME_TICKS;
@@ -810,4 +811,193 @@ test("rich 0.5.16 projects open in the old production view without dropping thei
   assert.deepEqual(changed.sequences, before.sequences);
   assert.deepEqual(changed.assets, before.assets);
   assert.deepEqual(doc, before);
+});
+
+test("native still images remain available in the original library without rewriting their zero source duration", () => {
+  const document = migrateLegacyProject(legacy());
+  document.assets.push({
+    id: "native-still",
+    kind: "image",
+    name: "原始图片",
+    duration: 0,
+    width: 80,
+    height: 40,
+    resourceId: "asset-" + "1".repeat(64),
+  });
+  const view = projectLegacyView(validateEditorDocument(document));
+  const image = view.project.assets.find((asset) => asset.id === "native-still");
+  assert.ok(image);
+  assert.equal(image.durationFrames, 150);
+  assert.equal(
+    view.restrictions.some(
+      (item) => item.code === "asset-unavailable" && item.assetId === image.id,
+    ),
+    false,
+  );
+  const edited = structuredClone(view.project);
+  edited.assets.find((asset) => asset.id === image.id)!.name = "重命名图片";
+  edited.revision++;
+  const operations = applyLegacyProjectChange(
+    document,
+    view,
+    view.project,
+    edited,
+    document.revision,
+  );
+  const result = applyEditorOperations(document, operations, document.revision);
+  assert.deepEqual(
+    result.assets.find((asset) => asset.id === image.id),
+    { ...document.assets.at(-1), name: "重命名图片" },
+  );
+  assert.deepEqual(result.sequences, document.sequences);
+});
+
+function nativeImageDocument(durationFrames = 150): EditorDocument {
+  const doc = migrateLegacyProject({
+    schemaVersion: 1,
+    id: "native-image-project",
+    name: "静态图片",
+    revision: 0,
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    assets: [{ id: "still", kind: "image", name: "照片", durationFrames }],
+    clips: [{ id: "same", assetId: "still", inFrame: 0, outFrame: durationFrames, volume: 1 }],
+    audioClips: [],
+    captions: [],
+  });
+  doc.assets[0]!.duration = 0;
+  media(doc).timeMap = freezeTimeMap(0, durationFrames * T);
+  return validateEditorDocument(doc);
+}
+
+test("native image holds project as usable primary footage and additive production edits preserve the exact still source", () => {
+  const doc = nativeImageDocument(),
+    original = structuredClone(doc),
+    view = projectLegacyView(doc);
+  assert.equal(view.renderSafe, true);
+  assert.equal(view.timelineComplete, true);
+  assert.deepEqual(view.project.clips, [
+    { id: "same", assetId: "still", inFrame: 0, outFrame: 150, volume: 1 },
+  ]);
+  const after = structuredClone(view.project);
+  after.name = "图片字幕成片";
+  after.assets[0]!.name = "已重命名的照片";
+  after.assets.push({ id: "new-source", kind: "video", name: "新增原片", durationFrames: 300 });
+  after.captions.push({ id: "new-caption", text: "照片中的故事", startFrame: 0, endFrame: 150 });
+  const result = change(doc, after).document;
+  assert.equal(result.name, after.name);
+  assert.deepEqual(result.assets[0], { ...doc.assets[0], name: after.assets[0]!.name });
+  assert.deepEqual(media(result), media(doc));
+  assert.equal(caption(result, "new-caption").duration, 150 * T);
+  assert.equal(projectLegacyView(result).project.clips[0]!.outFrame, 150);
+  assert.deepEqual(doc, original);
+});
+
+test("long native image holds expose enough display frames while source and video freeze restrictions remain exact", () => {
+  const doc = nativeImageDocument(270),
+    view = projectLegacyView(doc);
+  assert.equal(view.project.assets[0]!.durationFrames, 270);
+  assert.equal(view.project.clips[0]!.outFrame, 270);
+  assert.deepEqual(
+    change(doc, { ...structuredClone(view.project), name: "九秒图片" }).document.assets,
+    doc.assets,
+  );
+  const video = document();
+  media(video).timeMap = freezeTimeMap(0, media(video).duration);
+  const videoView = projectLegacyView(video);
+  assert.ok(
+    videoView.restrictions.some((item) => item.clipId === "same" && item.code === "time-map"),
+  );
+  assert.equal(
+    videoView.project.clips.some((clip) => clip.id === "same"),
+    false,
+  );
+  const fractional = nativeImageDocument();
+  media(fractional).duration++;
+  media(fractional).timeMap = freezeTimeMap(0, media(fractional).duration);
+  assert.ok(
+    projectLegacyView(fractional).restrictions.some(
+      (item) => item.clipId === "same" && item.code === "time-map",
+    ),
+  );
+});
+
+test("legacy trimming, extending and splitting native image holds retain zero source maps and never invent source duration", () => {
+  const doc = nativeImageDocument(),
+    view = projectLegacyView(doc);
+  const trimmed = change(
+    doc,
+    applyOperations(
+      structuredClone(view.project),
+      [{ type: "trim", clipId: "same", inFrame: 30, outFrame: 120 }],
+      doc.revision,
+    ),
+  ).document;
+  assert.equal(media(trimmed).duration, 90 * T);
+  assert.equal(media(trimmed).start, 0);
+  assert.deepEqual(media(trimmed).timeMap, freezeTimeMap(0, 90 * T));
+  assert.equal(trimmed.assets[0]!.duration, 0);
+  assert.equal(projectLegacyView(trimmed).project.clips[0]!.outFrame, 90);
+
+  const extended = structuredClone(view.project);
+  extended.assets[0]!.durationFrames = 240;
+  extended.clips[0]!.outFrame = 240;
+  const extension = change(doc, extended).document;
+  assert.equal(extension.assets[0]!.duration, 0);
+  assert.equal(media(extension).duration, 240 * T);
+  assert.deepEqual(media(extension).timeMap, freezeTimeMap(0, 240 * T));
+  assert.equal(projectLegacyView(extension).project.assets[0]!.durationFrames, 240);
+
+  const split = change(
+    doc,
+    applyOperations(
+      structuredClone(view.project),
+      [{ type: "split", clipId: "same", atFrame: 60 }],
+      doc.revision,
+    ),
+  ).document;
+  const pieces = split.sequences[0]!.clips.filter(
+    (clip): clip is MediaClip => clip.kind === "media",
+  );
+  assert.deepEqual(
+    pieces.map((clip) => [clip.start, clip.duration]),
+    [
+      [0, 60 * T],
+      [60 * T, 90 * T],
+    ],
+  );
+  for (const piece of pieces) assert.deepEqual(piece.timeMap, freezeTimeMap(0, piece.duration));
+  assert.equal(split.assets[0]!.duration, 0);
+  assert.equal(projectLegacyView(split).project.clips.length, 2);
+});
+
+test("additive legacy image instances use static maps and unsafe extensions fail without partial edits", () => {
+  const doc = nativeImageDocument(),
+    view = projectLegacyView(doc);
+  const added = change(
+    doc,
+    applyOperations(
+      structuredClone(view.project),
+      [{ type: "add", assetId: "still", inFrame: 0, outFrame: 90 }],
+      doc.revision,
+    ),
+  ).document;
+  const newClip = added.sequences[0]!.clips.find((clip) => clip.id !== "same") as MediaClip;
+  assert.deepEqual(newClip.timeMap, freezeTimeMap(0, 90 * T));
+  assert.equal(added.assets[0]!.duration, 0);
+  const animated = nativeImageDocument();
+  media(animated).transform.x = {
+    keyframes: [
+      { time: 0, value: 0 },
+      { time: 150 * T, value: 1 },
+    ],
+  };
+  const original = structuredClone(animated),
+    extended = structuredClone(projectLegacyView(animated).project);
+  extended.name = "不能部分保存的改名";
+  extended.assets[0]!.durationFrames = 240;
+  extended.clips[0]!.outFrame = 240;
+  assert.throws(() => change(animated, extended), /延长或滑移/);
+  assert.deepEqual(animated, original);
 });

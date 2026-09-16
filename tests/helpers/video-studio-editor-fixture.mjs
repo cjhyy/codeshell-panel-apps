@@ -30,11 +30,8 @@ export async function enterLegacyProduction(page, tab = "media") {
       document.querySelector("#editor-workspace") ||
       document.querySelector("#save-state")?.textContent === "恢复失败",
   );
-  const editor = page.locator("#editor-workspace");
-  if ((await editor.count()) && (await editor.isVisible()))
-    await page.locator('[data-ew-action="production"]').click();
   await page.locator("#studio").waitFor({ state: "visible" });
-  if (tab) await page.locator(`#studio [data-tab="${tab}"]`).click();
+  if (tab) await page.locator(`#studio .rail [data-tab="${tab}"]`).click();
 }
 
 async function storedValue(page, key, revision) {
