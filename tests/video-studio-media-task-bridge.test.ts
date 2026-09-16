@@ -197,6 +197,35 @@ function fixture() {
     connection,
   };
 }
+test("restoring capabilities and managed assets does not start a native process", async () => {
+  const f = fixture();
+  try {
+    const status = (await f.bridge.call("media.status", { probe: false })) as any;
+    assert.equal(status.persistent, true);
+    assert.equal(status.runtimeChecked, false);
+    const restored = (await f.bridge.call("media.assets.get", {
+      id: sourceId,
+      inspect: false,
+    })) as any;
+    assert.equal(restored.asset.id, sourceId);
+    assert.equal(restored.preparation, null);
+    await f.bridge.call("media.jobs.list");
+    assert.equal(
+      f.calls.some((call) => ["tasks.start", "process.spawn"].includes(call.method)),
+      false,
+    );
+    await f.bridge.call("media.status", { probe: true });
+    assert.deepEqual(
+      f.calls
+        .filter((call) => call.method === "tasks.start")
+        .map((call) => call.params.input.request.action),
+      ["status"],
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
 test("all native media processing uses generic package tasks and directly materialized inputs", async () => {
   const f = fixture();
   try {

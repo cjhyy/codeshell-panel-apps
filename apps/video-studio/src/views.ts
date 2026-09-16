@@ -308,7 +308,7 @@ export function createViews(state: ViewState) {
           ? '<p class="narration-caption-basis is-draft">当前含文案估时的临时字幕。确认草稿、录完本人声音后，会按真实口播重排正式字幕。</p>'
           : ""}
         ${persistent
-          ? `<div class="library-actions">${button("transcribe", "语音转写", "spark", "", !state.production?.status.transcription.available)}${button("captions-from-transcript", "从文稿生成字幕", "text")}</div>`
+          ? `<div class="library-actions">${button("transcribe", "语音转写", "spark", "", state.production?.status.runtimeChecked !== false && !state.production?.status.transcription.available)}${button("captions-from-transcript", "从文稿生成字幕", "text")}</div>`
           : ""}
         <div class="library-actions">
           ${button("add-caption", "添加字幕", "plus")}${button(
@@ -459,7 +459,8 @@ ${esc(aiPrompt)}</textarea
               "单独生成场景",
               "spark",
               "quiet full",
-              !state.production?.status.hyperframes.available,
+              state.production?.status.runtimeChecked !== false &&
+                !state.production?.status.hyperframes.available,
             ) + button("versions", "查看历史版本", "undo", "quiet full")
           : ""}
         ${button("voiceover", "文字配音", "volume", "quiet full")}
@@ -502,7 +503,8 @@ ${esc(aiPrompt)}</textarea
             "生成章节 / 解释场景",
             "spark",
             "quiet full",
-            !state.production?.status.hyperframes.available,
+            state.production?.status.runtimeChecked !== false &&
+              !state.production?.status.hyperframes.available,
           )
         : ""}
       <div class="media-library-toolbar">

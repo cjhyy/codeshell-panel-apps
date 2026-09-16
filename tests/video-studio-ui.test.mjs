@@ -184,19 +184,57 @@ async function demo(page) {
   await page.locator('[data-tab="ai"]').click();
 }
 
-test("failed desktop media connection explains unavailable AI production without hiding the cause", async () => {
+test("an explicit native media failure keeps its cause visible and blocks automatic production", async () => {
   const page = await pageWithBridge(true);
   try {
-    await page.locator('[data-tab="ai"]').click();
-    const notice = page.locator(".library-panel > .host-required");
-    assert.match(await notice.textContent(), /媒体服务连接失败/);
-    assert.match(await notice.textContent(), /Unexpected host call: media.status/);
-    assert.equal(await page.locator('[data-action="ask-draft"]').isDisabled(), true);
-    await page.locator('[data-tab="jobs"]').click();
-    assert.match(
-      await page.locator(".conflict").textContent(),
-      /Unexpected host call: media.status/,
+    const initial = await readProject(page);
+    const nativeStatusCount = () =>
+      page.evaluate(
+        () =>
+          window.__genericHostCalls.filter(
+            (call) =>
+              call.method === "tasks.start" && call.args.input?.request?.action === "status",
+          ).length,
+      );
+    assert.equal(
+      await nativeStatusCount(),
+      0,
+      "Opening Material must not start a native capability probe",
     );
+    await page.locator('[data-tab="ai"]').click();
+    await page.locator("#ai-prompt").fill("检查素材并制作一个短片");
+    await page.locator('[data-action="ask-ai"]:enabled').first().click();
+    await page.waitForFunction(() =>
+      document.querySelector("#toast")?.textContent.includes("Unexpected host call: media.status"),
+    );
+    assert.ok(
+      (await nativeStatusCount()) > 0,
+      "The user's production action checks native availability",
+    );
+    assert.match(await page.locator("#toast").textContent(), /Unexpected host call: media.status/);
+    assert.equal(
+      await page.evaluate(() => window.__taskCalls.length),
+      0,
+      "A failed native check must not submit an automatic Agent task",
+    );
+    assert.deepEqual(
+      await readProject(page),
+      initial,
+      "A failed capability check must not edit the project",
+    );
+    const checked = await nativeStatusCount();
+    await page.locator('[data-tab="jobs"]').click();
+    await page.waitForFunction(
+      (count) =>
+        window.__genericHostCalls.filter(
+          (call) => call.method === "tasks.start" && call.args.input?.request?.action === "status",
+        ).length > count,
+      checked,
+    );
+    await page.waitForFunction(() =>
+      document.querySelector("#toast")?.textContent.includes("Unexpected host call: media.status"),
+    );
+    assert.equal(await page.evaluate(() => window.__taskCalls.length), 0);
   } finally {
     await page.close();
   }
@@ -397,7 +435,9 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
 });
 
 test("real Agent bridge contract rejects stale results and submits one task", async () => {
-  const page = await pageWithBridge(true);
+  // A Host with the Agent bridge but without native media interfaces uses the
+  // reviewed edit-plan flow. The persistent-media case covers full production.
+  const page = await pageWithBridge(true, false);
   await demo(page);
   await page.locator('[data-tab="ai"]').click();
   await page.locator("#ai-prompt").fill("调整开头音量到一半");

@@ -16,6 +16,8 @@ export type { EditorWaveform } from "./waveform";
 export interface EditorTimelineMediaOptions {
   resolveAsset?: EditorMediaPoolOptions["resolveAsset"];
   loadWaveform?(assetId: string, signal: AbortSignal): Promise<EditorWaveform>;
+  /** Native analysis may be deferred until the user explicitly starts preview playback. */
+  canLoadWaveform?(): boolean;
   /** Receives a bounded, deduplicated notification. Each affected strip also shows the error. */
   onError?(error: unknown): void;
 }
@@ -216,7 +218,11 @@ export class EditorTimelineMedia {
         // Expand only visible roots. Long projects never compile off-screen audio graphs.
         let lanes: AudioPlanLane[] = [],
           audioError: unknown;
-        if (this.options.loadWaveform && requests.length) {
+        if (
+          this.options.loadWaveform &&
+          this.options.canLoadWaveform?.() !== false &&
+          requests.length
+        ) {
           try {
             lanes = compileAudioPlan(
               {

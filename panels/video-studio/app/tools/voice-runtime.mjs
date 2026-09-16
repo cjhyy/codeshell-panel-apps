@@ -856,9 +856,9 @@ function createAudio8TtsProvider(options) {
   }
   async function execute(data, context, signal) {
     await mkdir(context.workDir, { recursive: true });
-    const request = join(context.workDir, `audio8-request-${randomUUID()}.json`);
+    const request2 = join(context.workDir, `audio8-request-${randomUUID()}.json`);
     await writeFile(
-      request,
+      request2,
       JSON.stringify({ ...data, modelPath, codePath, threads: Math.min(5, cpus().length) }),
       { mode: 384 }
     );
@@ -868,7 +868,7 @@ function createAudio8TtsProvider(options) {
     let failure;
     let progress = Promise.resolve();
     try {
-      await runMediaProcess(python, ["-I", script, request], {
+      await runMediaProcess(python, ["-I", script, request2], {
         signal,
         env: env(),
         onStdout(chunk) {
@@ -914,7 +914,7 @@ function createAudio8TtsProvider(options) {
     } finally {
       await progress.catch(() => {
       });
-      await rm(request, { force: true });
+      await rm(request2, { force: true });
     }
   }
   async function downloadResource(resource, signal, report) {
@@ -1702,14 +1702,14 @@ function createQwenTtsProvider(options) {
   }
   async function execute(data, context, signal) {
     await mkdir2(context.workDir, { recursive: true });
-    const request = join2(context.workDir, `qwen-request-${randomUUID2()}.json`);
-    await writeFile2(request, JSON.stringify({ ...data, modelPath }), { mode: 384 });
+    const request2 = join2(context.workDir, `qwen-request-${randomUUID2()}.json`);
+    await writeFile2(request2, JSON.stringify({ ...data, modelPath }), { mode: 384 });
     let pending = "";
     const decoder = new StringDecoder2("utf8");
     let result;
     let progress = Promise.resolve();
     try {
-      await runMediaProcess(python, ["-I", script, request], {
+      await runMediaProcess(python, ["-I", script, request2], {
         signal,
         env: env(data.action === "download"),
         onStdout(chunk) {
@@ -1746,7 +1746,7 @@ function createQwenTtsProvider(options) {
     } finally {
       await progress.catch(() => {
       });
-      await rm2(request, { force: true });
+      await rm2(request2, { force: true });
     }
   }
   async function verifyResources(signal, hashes) {
@@ -2609,54 +2609,54 @@ async function runCli(raw) {
       emit({ type: "result", result: await runVoiceLibrary(raw, controller.signal) });
       return;
     }
-    const request = validateVoiceRequest(raw);
+    const request2 = validateVoiceRequest(raw);
     const root = await realpath2(process.cwd());
-    const runtime = await directory2(root, ["runtime"], request.action !== "status");
-    await directory2(root, ["runtime", request.engine], false);
-    const provider = request.engine === "audio8-tts" ? createAudio8TtsProvider({ runtimeDir: runtime }) : createQwenTtsProvider({ runtimeDir: runtime });
-    if (request.action === "status") {
+    const runtime = await directory2(root, ["runtime"], request2.action !== "status");
+    await directory2(root, ["runtime", request2.engine], false);
+    const provider = request2.engine === "audio8-tts" ? createAudio8TtsProvider({ runtimeDir: runtime }) : createQwenTtsProvider({ runtimeDir: runtime });
+    if (request2.action === "status") {
       const result2 = await provider.status(controller.signal);
       emit({ type: "result", result: publicStatus(result2) });
       return;
     }
-    const job = await directory2(root, ["jobs", request.scopeKey, request.jobId], true);
+    const job = await directory2(root, ["jobs", request2.scopeKey, request2.jobId], true);
     const workDir = await directory2(job, ["work"], true);
     const outputDir = await directory2(job, ["rendered"], true);
     const signal = combineAbortSignals([
       controller.signal,
-      AbortSignal.timeout(request.action === "setup" ? 45 * 6e4 : 25 * 6e4)
+      AbortSignal.timeout(request2.action === "setup" ? 45 * 6e4 : 25 * 6e4)
     ]);
     const context = {
-      scope: { appId: "video-studio", projectPath: join5(root, "scopes", request.scopeKey) },
-      jobId: request.jobId,
+      scope: { appId: "video-studio", projectPath: join5(root, "scopes", request2.scopeKey) },
+      jobId: request2.jobId,
       attempt: 1,
       signal,
       workDir,
       outputDir,
-      cacheDir: join5(runtime, "cache", request.scopeKey),
+      cacheDir: join5(runtime, "cache", request2.scopeKey),
       reportProgress: async (progress) => {
         emit({ type: "progress", progress });
       }
     };
-    const queue = await directory2(root, ["runtime", ".queues", request.engine], true);
+    const queue = await directory2(root, ["runtime", ".queues", request2.engine], true);
     release = await acquireVoiceQueue(
       queue,
       signal,
       () => context.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" })
     );
-    if (request.action === "setup") {
+    if (request2.action === "setup") {
       emit({ type: "result", result: publicStatus(await provider.setup(context)) });
       return;
     }
-    const referencePath = join5(job, request.referenceFile);
+    const referencePath = join5(job, request2.referenceFile);
     const reference = await lstat2(referencePath);
     if (!reference.isFile() || reference.isSymbolicLink() || dirname2(await realpath2(referencePath)) !== job)
       throw new RequestError("参考录音须来自当前声音任务");
-    const validate = request.engine === "audio8-tts" ? validateAudio8TtsInput : validateQwenTtsInput;
+    const validate = request2.engine === "audio8-tts" ? validateAudio8TtsInput : validateQwenTtsInput;
     const input = validate({
-      text: request.text,
-      referenceText: request.referenceText,
-      rate: request.rate,
+      text: request2.text,
+      referenceText: request2.referenceText,
+      rate: request2.rate,
       referencePath
     });
     await rm5(join5(job, "output.wav"), { force: true });
@@ -2696,7 +2696,12 @@ async function runCli(raw) {
     process.removeListener("SIGINT", abort);
   }
 }
-export {
-  runCli,
-  validateVoiceRequest
-};
+
+// native/voice-cli.ts
+var request;
+try {
+  request = JSON.parse(process.argv.slice(2).join("") || "null");
+} catch {
+  request = null;
+}
+await runCli(request);

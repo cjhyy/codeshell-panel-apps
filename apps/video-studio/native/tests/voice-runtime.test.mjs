@@ -108,6 +108,16 @@ async function invoke(data, directory, env) {
   return child([cli, JSON.stringify(data)], { cwd: directory, env }).done;
 }
 
+test("reviewed CLI accepts a library request split across bounded arguments", async () => {
+  const appData = join(root, "reviewed-library");
+  await mkdir(appData);
+  const json = JSON.stringify({ action: "library", operation: "list" });
+  const result = await child([cli, json.slice(0, 17), json.slice(17)], { cwd: appData }).done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(events(result.stdout), [{ type: "result", result: [] }]);
+  assert.deepEqual(await readdir(appData), ["voices"]);
+});
+
 test("the standalone ESM imports without executing and status is a read-only offline operation", async () => {
   assert.equal(typeof (await import(pathToFileURL(module).href)).runCli, "function");
   const appData = join(root, "read-only");

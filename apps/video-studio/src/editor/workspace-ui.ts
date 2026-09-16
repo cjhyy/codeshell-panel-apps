@@ -495,6 +495,9 @@ export class EditorWorkspace {
   private activateComposition = (): void => {
     if (this.sourcePreview) this.options.showComposition?.();
   };
+  refreshTimelineMedia(): void {
+    if (this.visible && !this.disposed) this.timeline.render();
+  }
   selectClips(sequenceId: string, clipIds: string[]): void {
     if (this.disposed || sequenceId !== this.sequenceId) return;
     this.canvasEditor.cancel();

@@ -46,6 +46,7 @@ export function createVoiceProcessClient(bridge: PanelBridge) {
     await turn;
   }
   let environment: Promise<{ executableHandle: string; directoryHandle: string }> | undefined;
+  const entries = new Map<string, Promise<string>>();
   const dispatch = (event: string, data: any) => {
     if (typeof data?.processId !== "string") return;
     const entry = pending.get(data.processId);
@@ -96,15 +97,38 @@ export function createVoiceProcessClient(bridge: PanelBridge) {
     });
     return environment;
   }
-  async function run(
-    code: string,
+  async function runProcess(
     args: string[],
     signal: AbortSignal,
     onOutput?: (text: string) => void,
+    entryName?: string,
   ): Promise<ProcessResult> {
     if (closed || signal.aborted) throw cancelled();
     const handles = await prepare();
     if (closed || signal.aborted) throw cancelled();
+    let entryHandle: string | undefined;
+    if (entryName) {
+      let entry = entries.get(entryName);
+      if (!entry) {
+        entry = bridge
+          .call("process.resolveEntry", {
+            name: entryName,
+            executableHandle: handles.executableHandle,
+          })
+          .then((value: any) => {
+            if (typeof value?.handle !== "string" || !value.handle || value.name !== entryName)
+              throw new Error("声音库工具尚未获得有效授权，请重新打开面板后再试");
+            return value.handle as string;
+          })
+          .catch((error) => {
+            entries.delete(entryName);
+            throw error;
+          });
+        entries.set(entryName, entry);
+      }
+      entryHandle = await entry;
+      if (closed || signal.aborted) throw cancelled();
+    }
     await reserve(signal);
     return new Promise((resolve, reject) => {
       let id = "",
@@ -162,7 +186,8 @@ export function createVoiceProcessClient(bridge: PanelBridge) {
       void bridge
         .call("process.spawn", {
           ...handles,
-          args: ["--input-type=module", "--eval", code, ...args],
+          ...(entryHandle ? { entryHandle } : {}),
+          args,
         })
         .then((value: any) => {
           id = value?.processId;
@@ -185,7 +210,12 @@ export function createVoiceProcessClient(bridge: PanelBridge) {
     });
   }
   return {
-    run,
+    run(code: string, args: string[], signal: AbortSignal, onOutput?: (text: string) => void) {
+      return runProcess(["--input-type=module", "--eval", code, ...args], signal, onOutput);
+    },
+    runEntry(name: string, args: string[], signal: AbortSignal, onOutput?: (text: string) => void) {
+      return runProcess(args, signal, onOutput, name);
+    },
     dispose() {
       closed = true;
       for (const [id, entry] of pending) {

@@ -51,7 +51,6 @@ import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
 import { createVoicePreparationUI, VOICE_REFERENCE_TEXT } from "./voice-preparation-ui";
 import { createVoiceLibraryBridge, type VoiceLibraryProgress } from "./voice-library-bridge";
-import * as voiceNative from "panel-native:voice-runtime";
 import { createFolderImport } from "./folder-import";
 import { planEditorAssetRemoval } from "./editor/asset-removal";
 import {
@@ -160,7 +159,7 @@ let thumbnailObserver: IntersectionObserver | undefined;
 const visibleThumbnailCards = new Set<HTMLElement>();
 let sharedVoiceLibraryAvailable = false;
 const sharedVoiceLibrary = panel
-  ? createVoiceLibraryBridge(panel, voiceNative, { onProgress: showVoiceLibraryProgress })
+  ? createVoiceLibraryBridge(panel, { onProgress: showVoiceLibraryProgress })
   : undefined;
 window.addEventListener("pagehide", () => sharedVoiceLibrary?.dispose(), { once: true });
 const externalMedia = createExternalMediaAccess(panel);
@@ -243,6 +242,7 @@ let editorTasks: ReturnType<typeof createEditorTaskBridge> | undefined;
 let editorExportJobs: EditorExportJobs | undefined;
 let editorImportUI: EditorImportUI | undefined;
 let editorSourcePreviews: EditorSourcePreviews | undefined;
+let editorNativePreviewsActive = false;
 let editorPortableUI: EditorPortableUI | undefined;
 let editorSyncUI: EditorSyncUI | undefined;
 let editorCaptionsUI: EditorCaptionsUI | undefined;
@@ -1634,7 +1634,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   if (previousTaskId && panel)
     void panel.call("agent.task.cancel", { id: previousTaskId }).catch(() => {});
   await restoreManagedMedia();
-  await voicePreparation.load();
+  await voicePreparation.load({ runtime: tab === "voiceover" && !editorVisible });
   await folderImport.load();
   if (!sameProjectId)
     await restoreRoughCutAI().catch((error) =>
@@ -2512,6 +2512,7 @@ async function requestAI(
     await saveNarrationScript();
   }
   if (production.enabled) {
+    await production.refreshStatus();
     await automatic.start(
       aiPrompt ||
         (mode === "initialize"
@@ -2852,7 +2853,8 @@ ${esc(caption?.text || "")}</textarea
   dialog.showModal();
 }
 
-function exportDialog(): void {
+async function exportDialog(): Promise<void> {
+  await production.refreshStatus();
   const dialog = $<HTMLDialogElement>("#export-dialog");
   dialog.innerHTML = html`<div class="dialog-heading">
       <div>
@@ -3517,7 +3519,7 @@ async function action(name: string, id?: string): Promise<void> {
         tab = "media";
         render();
       }
-      exportDialog();
+      await exportDialog();
       break;
     case "record":
       if (legacyView && !legacyView.renderSafe) {
@@ -3546,6 +3548,7 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     case "show-jobs":
       tab = "jobs";
+      await production.refreshStatus();
       await production.refresh();
       render();
       break;
@@ -3553,11 +3556,12 @@ async function action(name: string, id?: string): Promise<void> {
       tab = "voiceover";
       stop();
       render();
-      await voiceover.load();
+      await Promise.all([voicePreparation.activate(), voiceover.load()]);
       break;
     case "edit-voiceover":
       tab = "voiceover";
       stop();
+      await voicePreparation.activate();
       await voiceover.load(
         project.assets.find((asset) => asset.id === clip?.assetId),
         audioClip,
@@ -3709,7 +3713,10 @@ studio.addEventListener("click", (event) => {
     if (tab === "roughcut") roughcut.setMode("single");
     render();
     if (tab === "roughcut") $(".library-panel").scrollTop = 0;
-    if (tab === "voiceover") void voiceover.load().catch(fail);
+    if (tab === "voiceover")
+      void Promise.all([voicePreparation.activate(), voiceover.load()]).catch(fail);
+    if (tab === "ai") void voicePreparation.activate().catch(fail);
+    if (["jobs", "ai", "transcript"].includes(tab)) void production.refreshStatus().catch(fail);
     return;
   }
   const preset = target.closest<HTMLElement>("[data-prompt]");
@@ -4306,6 +4313,13 @@ registerProjectReadTool(productionToolPanel, production, () => ({
   missingAssetIds: library.missing(project).map((asset) => asset.id),
   capabilities: {
     fps: 30,
+    runtimeChecked: production.enabled && production.status.runtimeChecked !== false,
+    ...(production.status.runtimeChecked === false
+      ? {
+          runtimeReason:
+            "本地制作工具尚未检查；调用制作功能时按需检查，当前 false 不代表工具未安装。",
+        }
+      : {}),
     export: production.enabled ? "mp4-background" : "webm-realtime",
     mp4RenderAvailable: production.enabled && production.status.ffmpeg.available,
     ffmpeg: production.status.ffmpeg.available,
@@ -4636,6 +4650,7 @@ function mountEditorCaptions(root: HTMLElement): void {
 }
 async function openEditorCaptions(sequenceId: string): Promise<void> {
   if (!editorCaptions || !editorCaptionsUI) throw new Error("字幕面板尚未恢复");
+  await production.refreshStatus();
   const context = await panel?.getContext();
   editorCaptions.setCapabilities({
     canTranscribe:
@@ -4836,7 +4851,12 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
   if (source && proxy?.sourceKey === editorSourceKey(source))
     return { url: new URL(`/media/${proxy.resourceId}`, location.href).href, owned: false };
   if (signal.aborted) throw new DOMException("取消预览", "AbortError");
-  if (source?.kind === "video" && source.resourceId && editorSourcePreviews) {
+  if (
+    editorNativePreviewsActive &&
+    source?.kind === "video" &&
+    source.resourceId &&
+    editorSourcePreviews
+  ) {
     const identity = editorSession!.getState().identity;
     const prepared = await editorSourcePreviews.prepare(source, signal);
     if (signal.aborted) throw new DOMException("取消预览", "AbortError");
@@ -4913,6 +4933,7 @@ function mountEditorWorkspace(): void {
       : undefined,
     timelineMedia: {
       resolveAsset: resolveEditorAsset,
+      canLoadWaveform: () => editorNativePreviewsActive,
       loadWaveform: editorTasks
         ? async (assetId, signal) => {
             if (!editorTasks || !editorSession) throw new Error("请在桌面视频面板中准备音频波形");
@@ -4933,6 +4954,11 @@ function mountEditorWorkspace(): void {
         : undefined,
     },
     prepareAudio: async (doc, sequenceId, signal) => {
+      // Native preview work starts with the user pressing Play, never with restoration.
+      if (!editorNativePreviewsActive) {
+        editorNativePreviewsActive = true;
+        editorWorkspace?.refreshTimelineMedia();
+      }
       const plan = compileAudioPlan(doc, sequenceId);
       const video = doc.assets.some((asset) => asset.kind === "video");
       if (!plan.lanes.length && !video) return undefined;
@@ -5037,7 +5063,9 @@ function mountEditorWorkspace(): void {
       mediaPreview = false;
       tab = nextTab;
       render();
-      if (tab === "voiceover") await voiceover.load();
+      if (tab === "voiceover") await Promise.all([voicePreparation.activate(), voiceover.load()]);
+      if (tab === "ai") await voicePreparation.activate();
+      if (["jobs", "ai", "transcript"].includes(tab)) await production.refreshStatus();
     },
     onError: fail,
   });
@@ -5086,7 +5114,7 @@ async function replaceEditorDeliveryDocument(doc: EditorDocument, identity: Sess
       if (latest.documentId !== current.documentId || latest.generation !== current.generation)
         return;
       await restoreManagedMedia();
-      await voicePreparation.load();
+      await voicePreparation.load({ runtime: tab === "voiceover" && !editorVisible });
       await folderImport.load();
       if (production.enabled) await production.refresh();
     });
@@ -5100,9 +5128,13 @@ async function boot(): Promise<void> {
     panelVisible = initialContext?.visible !== false;
     sharedVoiceLibraryAvailable =
       Boolean(sharedVoiceLibrary) &&
-      ["process.find", "process.spawn", "process.cancel", "filesystem.getKnownDirectory"].every(
-        (method) => initialContext?.availableMethods?.includes(method),
-      );
+      [
+        "process.find",
+        "process.spawn",
+        "process.cancel",
+        "process.resolveEntry",
+        "filesystem.getKnownDirectory",
+      ].every((method) => initialContext?.availableMethods?.includes(method));
     // Native engine availability must not choose which saved project is restored.
     // Discovery errors must preserve restore protection, never select a different store.
     enablePersistentStorage(
@@ -5207,9 +5239,10 @@ async function boot(): Promise<void> {
   await restoreRoughCutAI().catch((error) =>
     toast(`AI 粗剪草稿恢复失败，原记录已保留：${String(error)}`),
   );
-  await voicePreparation.load();
+  await voicePreparation.load({ runtime: false });
   // The voice tab can be opened while the engine is still connecting.
-  if (tab === "voiceover") await voiceover.load().catch(fail);
+  if (tab === "voiceover" && !editorVisible)
+    await Promise.all([voicePreparation.activate(), voiceover.load()]).catch(fail);
   if (production.enabled) {
     await production.restorePreparation(project);
     await production.refresh().catch(fail);

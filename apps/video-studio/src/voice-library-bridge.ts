@@ -1,5 +1,5 @@
 import type { PanelBridge } from "./host";
-import { cancelled, createVoiceProcessClient, VOICE_IO, VOICE_LAUNCH } from "./local-voice-process";
+import { cancelled, createVoiceProcessClient } from "./local-voice-process";
 import { createPanelRuntime } from "./sdk/panel-runtime";
 import { validVoiceRecipe, type LibraryVoiceRecipe } from "./voice-library";
 
@@ -64,16 +64,11 @@ function entry(value: any): Entry {
 }
 
 /** Explicit saves publish app-wide copies; imports register them in the current Host workspace. */
-export function createVoiceLibraryBridge(
-  panel: PanelBridge,
-  native: { source: string; sha256: string },
-  options: Options = {},
-) {
+export function createVoiceLibraryBridge(panel: PanelBridge, options: Options = {}) {
   const processClient = createVoiceProcessClient(panel);
   const runtime = createPanelRuntime(panel);
   const lifetime = new AbortController();
   const operations = new Map<AbortController, string | undefined>();
-  let staging: Promise<void> | undefined;
   let disposed = false;
   const unsubscribe = panel.on("context.changed", (payload) => {
     if (
@@ -94,36 +89,6 @@ export function createVoiceLibraryBridge(
   async function current(cwd: string, signal: AbortSignal) {
     if (disposed || signal.aborted || (await panel.getContext()).cwd !== cwd) throw cancelled();
   }
-  async function io(request: object, data?: string) {
-    const result = await processClient.run(
-      VOICE_IO,
-      [JSON.stringify(request), ...chunks(data ?? "")],
-      lifetime.signal,
-    );
-    const value = JSON.parse(result.stdout.trim());
-    if (result.code !== 0 || value.error) throw new Error("声音库工具准备失败，请重试");
-    return value;
-  }
-  async function stage() {
-    staging ??= (async () => {
-      progress(0, "正在准备本机声音库，首次使用需要确认本地文件权限");
-      const data = new TextEncoder().encode(native.source);
-      if (!HEX.test(native.sha256) || !data.length || data.length > 1024 * 1024)
-        throw new Error("声音库工具包无效，请重新安装面板");
-      if ((await io({ kind: "tool", action: "check", hash: native.sha256 })).valid) return;
-      const token = crypto.randomUUID();
-      for (let offset = 0; offset < data.length; offset += 32768)
-        await io(
-          { kind: "tool", action: "write", hash: native.sha256, token, offset },
-          base64(data.subarray(offset, offset + 32768)),
-        );
-      await io({ kind: "tool", action: "commit", hash: native.sha256, token });
-    })().catch((error) => {
-      staging = undefined;
-      throw error;
-    });
-    return staging;
-  }
   async function invoke(request: object, signal: AbortSignal): Promise<any> {
     const waiting = setInterval(
       () =>
@@ -135,11 +100,10 @@ export function createVoiceLibraryBridge(
     );
     let result;
     try {
-      await stage();
       if (signal.aborted || disposed) throw cancelled();
-      result = await processClient.run(
-        VOICE_LAUNCH,
-        [native.sha256, ...chunks(JSON.stringify({ action: "library", ...request }))],
+      result = await processClient.runEntry(
+        "voice-runtime",
+        chunks(JSON.stringify({ action: "library", ...request })),
         signal,
       );
     } finally {

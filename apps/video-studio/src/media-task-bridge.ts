@@ -469,6 +469,15 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       if (method === "media.status") {
         await sdk.requireMethods(REQUIRED);
         if (statusCache && Date.now() - statusCache.at < 30000) return clone(statusCache.value);
+        // Restoring the editor discovers Host support without running local tools.
+        if (params.probe === false)
+          return {
+            persistent: true,
+            runtimeChecked: false,
+            ffmpeg: { available: false },
+            transcription: { available: false },
+            hyperframes: { available: false },
+          };
         statusPending ??= completed("status")
           .then((value) => {
             statusCache = { at: Date.now(), value };
@@ -513,7 +522,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       if (method === "media.assets.get") {
         const fetched = (await sdk.call("resources.get", { id: assetId(params.id) })) as any;
         let preparation = await prepared(params.id);
-        if (!preparation?.inspection && !isExternalMedia(params.id)) {
+        if (params.inspect !== false && !preparation?.inspection && !isExternalMedia(params.id)) {
           const inspected = await completed("inspect", { assetId: params.id });
           preparation = {
             ...(preparation ?? {}),

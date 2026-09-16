@@ -744,7 +744,7 @@ test("saved desktop project and original audio restore even when the native engi
     await page.getByText(/测试：本地工具暂不可用/).waitFor();
     assert.equal(
       await page.evaluate(() => window.__panelTools.read_video_project().capabilities.autoApply),
-      false,
+      true,
     );
     await page.locator("#project-name").fill("原片已恢复，工程继续保存");
     await page.locator("#project-name").blur();
@@ -806,6 +806,54 @@ test("workspace discovery failure cannot select a different saved project or ove
       })),
       snapshot,
     );
+  } finally {
+    await context.close();
+  }
+});
+
+test("opening and reopening the panel restores the project without requesting a native process", async () => {
+  const { context, page } = await isolatedPage(true);
+  try {
+    await page.addInitScript(() => {
+      const bridge = window.codeshellPanel;
+      const getContext = bridge.getContext.bind(bridge);
+      const call = bridge.call.bind(bridge);
+      window.__startupProcessCalls = [];
+      bridge.getContext = async () => {
+        const context = await getContext();
+        return {
+          ...context,
+          availableMethods: [
+            ...context.availableMethods,
+            "process.find",
+            "process.resolveEntry",
+            "process.spawn",
+            "process.cancel",
+            "filesystem.getKnownDirectory",
+          ],
+        };
+      };
+      bridge.call = (method, params) => {
+        if (method === "tasks.start" || method === "process.spawn") {
+          window.__startupProcessCalls.push({ method, params });
+          throw new Error("Startup must not request execution approval");
+        }
+        return call(method, params);
+      };
+    });
+    await page.locator("#project-name").fill("打开时不运行后台工具");
+    await page.locator("#project-name").blur();
+    await saved(page);
+    for (let entry = 0; entry < 2; entry++) {
+      await page.reload();
+      await page.waitForFunction(
+        () => window.__panelTools?.read_video_project().project.name === "打开时不运行后台工具",
+      );
+      // Include asynchronous boot work and the first background job polling tick.
+      await page.waitForTimeout(4200);
+      assert.deepEqual(await page.evaluate(() => window.__startupProcessCalls), []);
+      assert.equal(await page.locator("#project-name").inputValue(), "打开时不运行后台工具");
+    }
   } finally {
     await context.close();
   }

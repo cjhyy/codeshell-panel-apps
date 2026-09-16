@@ -19,6 +19,8 @@ import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/a
 
 export interface ProductionStatus {
   persistent: boolean;
+  /** False until an explicit production action checks local native tools. */
+  runtimeChecked?: boolean;
   ffmpeg: { available: boolean };
   transcription: { available: boolean; engine?: string };
   hyperframes: { available: boolean; version?: string };
@@ -617,6 +619,7 @@ export class ProductionController {
   private documentRevision = 0;
   private writeQueue = Promise.resolve();
   private refreshQueue = Promise.resolve();
+  private statusPending?: Promise<void>;
   private documentFailed = false;
   private disposed = false;
   private refreshScheduled = false;
@@ -674,7 +677,7 @@ export class ProductionController {
   async initialize(): Promise<void> {
     if (!this.bridge) return;
     try {
-      const status = (await this.bridge.call("media.status")) as ProductionStatus;
+      const status = (await this.bridge.call("media.status", { probe: false })) as ProductionStatus;
       if (!status?.persistent) {
         this.error = "当前 CodeShell 尚未提供持久媒体服务。请更新桌面应用后重新打开视频工作台。";
         return;
@@ -726,6 +729,23 @@ export class ProductionController {
     for (const controller of this.renderControllers.values()) controller.abort();
     clearInterval(this.timer);
     this.unsubscribe?.();
+  }
+  async refreshStatus(): Promise<void> {
+    if (!this.enabled || this.disposed) return;
+    this.statusPending ??= (async () => {
+      const status = (await this.requireHost().call("media.status", {
+        probe: true,
+      })) as ProductionStatus;
+      if (!status?.persistent) throw new Error("当前 CodeShell 尚未提供持久媒体服务");
+      this.status = { ...status, runtimeChecked: true };
+      this.callbacks.changed();
+    })().finally(() => {
+      this.statusPending = undefined;
+    });
+    await this.statusPending;
+  }
+  private async ensureRuntime(): Promise<void> {
+    if (this.status.runtimeChecked === false) await this.refreshStatus();
   }
   private requireHost(): PanelBridge {
     if (!this.bridge || !this.enabled) throw new Error("此功能需要新版 CodeShell 的持久媒体工作台");
@@ -1012,10 +1032,11 @@ export class ProductionController {
     const projectId = this.callbacks.getProject().id;
     const ids = [...new Set(assetIds.map((id) => this.managedId(id)))];
     if (!ids.length) return { jobs: [] };
-    if (transcribe && !this.status.transcription.available)
-      throw new Error("本机语音转写尚未就绪，请先配置本地 Whisper 与模型，或导入 SRT");
     const finish = this.beginAssetRequest(projectId);
     try {
+      await this.ensureRuntime();
+      if (transcribe && !this.status.transcription.available)
+        throw new Error("本机语音转写尚未就绪，请先配置本地 Whisper 与模型，或导入 SRT");
       const result = (await this.requireHost().call("media.prepare", {
         assetIds: ids,
         transcribe,
@@ -1028,6 +1049,7 @@ export class ProductionController {
     }
   }
   async transcribe(assetIds: string[]): Promise<{ jobs: MediaJob[] }> {
+    await this.ensureRuntime();
     if (!this.status.transcription.available)
       throw new Error("本机语音转写尚未就绪，可导入 SRT 字幕");
     const projectId = this.callbacks.getProject().id;
@@ -1043,6 +1065,7 @@ export class ProductionController {
     return { jobs };
   }
   async createScene(params: Record<string, unknown>): Promise<MediaJob> {
+    await this.ensureRuntime();
     if (!this.status.hyperframes.available)
       throw new Error("HyperFrames 尚未就绪，请检查本机运行环境");
     const project = this.callbacks.getProject();
@@ -1266,6 +1289,8 @@ export class ProductionController {
       options.onJob?.(job);
       return this.track(job, { projectId: snapshot.id, purpose: "render" });
     }
+    await this.ensureRuntime();
+    assertCurrent();
     if (!this.status.ffmpeg.available) throw new Error("本机 FFmpeg 尚未就绪");
     const used = new Set([...project.clips, ...(project.audioClips ?? [])].map((c) => c.assetId));
     const sources: Record<string, string> = {};
@@ -1546,10 +1571,14 @@ export class ProductionController {
                 known.assetId === asset.id,
             ),
         );
+        // Restore completed imports without creating new native tasks on entry.
+        if (!originalsSaved && pending.length && this.status.runtimeChecked === false) continue;
         if (originalsSaved && !this.status.ffmpeg.available) {
           this.error =
-            "原片已保留在素材库，可直接剪辑。预处理工具尚未就绪，准备好后可继续生成代理和分析。";
-        } else if (pending.length) {
+            this.status.runtimeChecked === false
+              ? "原片已保留在素材库，可直接剪辑。使用制作功能时再检查本地工具并准备代理和分析。"
+              : "原片已保留在素材库，可直接剪辑。预处理工具尚未就绪，准备好后可继续生成代理和分析。";
+        } else if (pending.length && this.status.runtimeChecked !== false) {
           let prepared: { jobs: MediaJob[] } | undefined;
           try {
             prepared = (await host.call("media.prepare", {
@@ -1631,7 +1660,9 @@ export class ProductionController {
           });
         }
       } else if (binding.purpose === "setup") {
-        this.status = (await host.call("media.status", {})) as ProductionStatus;
+        this.status = (await host.call("media.status", {
+          probe: this.status.runtimeChecked !== false,
+        })) as ProductionStatus;
       } else if (binding.purpose === "tts") {
         const managed = result.asset as ManagedAsset;
         const previous = this.callbacks
@@ -1710,6 +1741,7 @@ export class ProductionController {
       try {
         const value = (await this.requireHost().call("media.assets.get", {
           id: asset.mediaId,
+          inspect: false,
         })) as { preparation?: PreparedMedia };
         if (value.preparation) this.preparations.set(asset.mediaId, value.preparation);
       } catch (error) {

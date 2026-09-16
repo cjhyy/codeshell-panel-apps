@@ -57,6 +57,35 @@ function renderTask(id = crypto.randomUUID()) {
   };
 }
 
+test("project restoration defers native checks until an explicit production request", async () => {
+  const host = new FakeHost();
+  host.handlers.set("media.status", ({ probe }) => ({
+    persistent: true,
+    runtimeChecked: probe,
+    ffmpeg: { available: probe },
+    transcription: { available: probe },
+    hyperframes: { available: probe },
+  }));
+  const f = await fixture(host);
+  await f.controller.restorePreparation(f.current);
+  await f.controller.refresh();
+  assert.equal(f.controller.enabled, true);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }],
+  );
+  assert.equal(
+    host.calls.find((call) => call.method === "media.assets.get")?.params.inspect,
+    false,
+  );
+  await f.controller.transcribe(["source"]);
+  assert.equal(f.controller.status.transcription.available, true);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }, { probe: true }],
+  );
+});
+
 test("render admission returns before storage or staging, deduplicates, and exposes only the eventual real job", async () => {
   const host = new FakeHost(),
     current = project(),

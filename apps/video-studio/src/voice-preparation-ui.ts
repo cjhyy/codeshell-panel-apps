@@ -126,6 +126,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
     locked = false,
     busy = false;
   let refreshingVersion: number | undefined;
+  let runtimeActive = true;
   let error = "",
     message = "",
     recipeName = "我的中文声音",
@@ -352,10 +353,11 @@ export function createVoicePreparationUI(production: ProductionController, conte
       if (ownVersion === version) report(reason);
     });
   }
-  async function load(): Promise<void> {
+  async function load(options: { runtime?: boolean } = {}): Promise<void> {
     const ownVersion = ++version,
       projectId = context.project().id,
       scope = context.scope();
+    runtimeActive = options.runtime !== false;
     loaded = false;
     locked = false;
     busy = false;
@@ -375,7 +377,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
       const [stored, storedLibrary, shared] = await Promise.all([
         context.read(key(projectId)),
         context.read(VOICE_LIBRARY_KEY),
-        context.listVoices?.() ?? Promise.resolve([]),
+        runtimeActive ? (context.listVoices?.() ?? Promise.resolve([])) : Promise.resolve([]),
       ]);
       if (ownVersion !== version || projectId !== context.project().id || scope !== context.scope())
         return;
@@ -396,9 +398,19 @@ export function createVoicePreparationUI(production: ProductionController, conte
       locked = true;
       report(reason);
     }
-    await refreshCatalog();
+    if (runtimeActive) await refreshCatalog();
     if (ownVersion === version) await refresh();
     if (ownVersion === version) context.changed();
+  }
+  async function activate(): Promise<void> {
+    if (!loaded || locked || !current()) return;
+    runtimeActive = true;
+    const ownVersion = version;
+    await Promise.all([refreshCatalog(), refreshLibrary()]);
+    if (ownVersion === version) {
+      await refresh();
+      context.changed();
+    }
   }
   async function refreshCatalog(): Promise<void> {
     if (!production.enabled) return;
@@ -535,7 +547,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
         };
         completionMessage = "已提取并保存参考录音。请填写逐字稿，然后生成短句试听。";
       } else if (pending.kind === "setup") {
-        await refreshCatalog();
+        if (runtimeActive) await refreshCatalog();
         if (ownVersion !== version || !current()) return;
         completionMessage = "引擎检查完成。选择本人录音并生成短试听后，才能保存自己的声音。";
       } else {
@@ -552,7 +564,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
       error = "";
       if (pending.kind === "extract" && job.status === "succeeded") {
         confirmed = false;
-        await context.useVoice(document.selection!);
+        if (runtimeActive) await context.useVoice(document.selection!);
       }
       context.changed();
     } catch (reason) {
@@ -563,6 +575,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
   }
   async function extract(assetId: string, inFrame: number, outFrame: number): Promise<void> {
     await run(async () => {
+      runtimeActive = true;
       if (working()) throw new Error("声音准备任务正在进行，请等待完成或先取消。");
       const ownVersion = version;
       const job = await production.extractReference(assetId, inFrame, outFrame);
@@ -689,6 +702,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
       return true;
     }
     await run(async () => {
+      runtimeActive = true;
       const ownVersion = version,
         value = selected();
       if (name === "voice-prep-retry") {
@@ -1123,6 +1137,7 @@ ${esc(sampleText())}</textarea
   }
   return {
     load,
+    activate,
     refresh,
     render,
     input,

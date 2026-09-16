@@ -59,6 +59,7 @@ function fixture(
   let runtimeReason = "",
     catalogReason = "";
   let changes = 0;
+  let catalogCalls = 0;
   let holdWrite: Promise<void> | undefined;
   let failUse = false;
   let recoverExtract: ((id: string) => Promise<void>) | undefined;
@@ -78,6 +79,7 @@ function fixture(
     enabled: true,
     currentJobs: jobs,
     voices: async () => {
+      catalogCalls++;
       if (catalogFailure) throw new Error("声音目录暂时无法连接");
       return {
         voices: [],
@@ -233,6 +235,7 @@ function fixture(
     project: () => project,
     scope: () => scope,
     changes: () => changes,
+    catalogCalls: () => catalogCalls,
     changeProject: (next = { ...createProject(), assets: [] as Asset[] }) => {
       project = next;
     },
@@ -265,6 +268,28 @@ function fixture(
     },
   };
 }
+
+test("quiet restoration preserves voice drafts and defers shared library and engine checks until activation", async () => {
+  let libraryCalls = 0;
+  const f = fixture({
+    listVoices: async () => {
+      libraryCalls++;
+      return [];
+    },
+  });
+  await f.ui.load({ runtime: false });
+  await f.select();
+  const draft = await f.ui.initialization();
+  await f.ui.load({ runtime: false });
+  await f.ui.refresh();
+  assert.equal(f.catalogCalls(), 0);
+  assert.equal(libraryCalls, 0);
+  assert.deepEqual(await f.ui.initialization(), draft);
+  await f.ui.activate();
+  assert.equal(f.catalogCalls(), 1);
+  assert.equal(libraryCalls, 1);
+  assert.deepEqual(await f.ui.initialization(), draft);
+});
 
 test("saved reference recording is playable and discoverable before or during model installation", async () => {
   const shown: string[] = [];

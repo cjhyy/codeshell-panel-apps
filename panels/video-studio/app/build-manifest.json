@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "80cf5cb52aa41e441fba99352e8242772031ed1f95cf3685754c9bfb546c267e",
+    ".codeshell-panel/panel.json": "05422b8dbacbab87bcfb18ba0292b26b23b19e350a002e5daebf4b192d4254a6",
     "agent/skills/editor-v2/SKILL.md": "15f2866fef80ea051db632f99931cbbef1f1bfb0ab454235a19755f2336c99c6",
     "agent/skills/narration-workflow/SKILL.md": "d1a966fe908b26f3a0d57fde53361b0e1076732f60fcf625ffa8988e1c0e1949",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
@@ -28,7 +28,7 @@
     "app/editor-workspace.css": "40ccbba4b58c7a6678baaf6409ed822d9fb8a47d50250e8dc76f39abc24386d1",
     "app/index.html": "89aee4cf8efde002a05a90f0f0fffed1640ce9cd5fdcfc19bff3442ff9fe6333",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "1e22249e77a8f3c8ab829079b5058c7af988afd4e01909982a13f263f602329c",
+    "app/main.mjs": "5d9a6b71c0ab4793a05a91aa99fa70746451f22dda2bf5bf41cd1acac8686df4",
     "app/rough-cut.css": "78f7aa060c02a6dbb0b560ad999cc26e8d962ae2397795d655367cc15f16f42e",
     "app/runtimes/editor-renderer.mjs": "e4a351b60cbeb22aed990de000475e83f16ab10451574d1aa1966ae3330a1781",
     "app/style.css": "add9cc2d1a6df13d1d0ff23cd02274ba7b28934f612758ad7d2c1e01902e040a",
@@ -37,7 +37,7 @@
     "app/tools/editor-sync.mjs": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "fc43bb3e6ae81df9448b1c1bb6e245f2315731a901f5a67953cf2a8ca1d70999",
-    "app/tools/voice-runtime.mjs": "fd6b8367a9f2d5856bc41f5ae88f1045e2043eea534a491a9685376f994b622b",
-    "README.md": "e94338cb2e6c78b61ead9cece74753dd1907090bc5ae7881a65e1b7dde6490fc"
+    "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
+    "README.md": "2b5854c353019c52aa20ee3d8a9c548313223a5d296a486e9b7ef71c32cb2811"
   }
 }

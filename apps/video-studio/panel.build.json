@@ -5,7 +5,7 @@
   },
   "nativeEntries": {
     "folder-scan": "native/folder-scan.ts",
-    "voice-runtime": "native/voice-runtime.ts",
+    "voice-runtime": "native/voice-cli.ts",
     "media-runtime": "native/media/cli.ts",
     "editor-runtime": "native/editor-runtime.ts",
     "editor-sync": "native/editor-sync.ts",

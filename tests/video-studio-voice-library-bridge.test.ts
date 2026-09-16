@@ -6,7 +6,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { runVoiceLibrary } from "../apps/video-studio/native/voice-library.ts";
 import { createVoiceLibraryBridge } from "../apps/video-studio/src/voice-library-bridge.ts";
-import { VOICE_IO, VOICE_LAUNCH } from "../apps/video-studio/src/local-voice-process.ts";
 import type { PanelBridge } from "../apps/video-studio/src/host.ts";
 import type { LibraryVoiceRecipe } from "../apps/video-studio/src/voice-library.ts";
 
@@ -130,7 +129,8 @@ async function bridgeFixture(t: any, resources = false) {
     serial = 0,
     switchOnRead = false,
     failedWrite = false,
-    visibilityEvents = false;
+    visibilityEvents = false,
+    entryDenied = false;
   const events = new Map<string, Set<(value: unknown) => void>>();
   const uploads = new Map<string, { cwd: string; chunks: Buffer[]; sequence: number }>();
   const scopes = new Map<string, Map<string, Buffer>>([
@@ -169,28 +169,32 @@ async function bridgeFixture(t: any, resources = false) {
       if (visibilityEvents)
         emit("context.changed", { cwd, visible: serial % 2 === 0, theme: "dark", busy: true });
       if (method === "process.find") return { available: true, handle: "node" };
+      if (method === "process.resolveEntry") {
+        assert.deepEqual(params, { name: "voice-runtime", executableHandle: "node" });
+        if (entryDenied) {
+          entryDenied = false;
+          throw new Error("Reviewed entry denied");
+        }
+        return { handle: "reviewed-voice-entry", name: "voice-runtime", sha256: "a".repeat(64) };
+      }
       if (method === "filesystem.getKnownDirectory") {
         assert.equal(params.name, "app-data");
         return { handle: "app-data" };
       }
       if (method === "process.spawn") {
         const processId = `proc-${++serial}`;
-        const code = params.args[2];
-        const operation =
-          code === VOICE_IO
-            ? Promise.resolve({ valid: true })
-            : (async () => {
-                assert.equal(code, VOICE_LAUNCH);
-                return f.call(JSON.parse(params.args.slice(4).join("")));
-              })();
+        assert.equal(params.executableHandle, "node");
+        assert.equal(params.directoryHandle, "app-data");
+        assert.equal(params.entryHandle, "reviewed-voice-entry");
+        assert(params.args.every((arg: string) => arg.length <= 8192));
+        assert(Buffer.byteLength(JSON.stringify(params.args)) <= 65536);
+        const operation = f.call(JSON.parse(params.args.join("")));
         void operation.then(
           (value) => {
             emit("process.output", {
               processId,
               stream: "stdout",
-              text:
-                JSON.stringify(code === VOICE_IO ? value : { type: "result", result: value }) +
-                "\n",
+              text: JSON.stringify({ type: "result", result: value }) + "\n",
             });
             emit("process.exit", { processId, code: 0 });
           },
@@ -269,11 +273,9 @@ async function bridgeFixture(t: any, resources = false) {
     },
   };
   const progress: number[] = [];
-  const bridge = createVoiceLibraryBridge(
-    panel,
-    { source: "unused fixture", sha256: "a".repeat(64) },
-    { onProgress: (value) => progress.push(value.fraction) },
-  );
+  const bridge = createVoiceLibraryBridge(panel, {
+    onProgress: (value) => progress.push(value.fraction),
+  });
   t.after(() => bridge.dispose());
   return {
     ...f,
@@ -294,8 +296,35 @@ async function bridgeFixture(t: any, resources = false) {
     visibilityEvents() {
       visibilityEvents = true;
     },
+    denyNextEntry() {
+      entryDenied = true;
+    },
   };
 }
+
+test("library reads use the installed reviewed entry without copying or evaluating executable source", async (t) => {
+  const f = await bridgeFixture(t);
+  assert.deepEqual(await f.bridge.listVoices(), []);
+  assert.deepEqual(await f.bridge.listVoices(), []);
+  assert.equal(f.calls.filter((call) => call.method === "process.resolveEntry").length, 1);
+  const spawns = f.calls.filter((call) => call.method === "process.spawn");
+  assert.equal(spawns.length, 2);
+  for (const { params } of spawns) {
+    assert.equal(params.entryHandle, "reviewed-voice-entry");
+    assert.deepEqual(JSON.parse(params.args.join("")), { action: "library", operation: "list" });
+    assert(!params.args.includes("--eval"));
+  }
+  assert.deepEqual(await readdir(f.root), ["voices"]);
+});
+
+test("an unavailable reviewed entry never falls back to raw executable code and may be retried", async (t) => {
+  const f = await bridgeFixture(t);
+  f.denyNextEntry();
+  await assert.rejects(f.bridge.listVoices(), /Reviewed entry denied/);
+  assert.equal(f.calls.filter((call) => call.method === "process.spawn").length, 0);
+  assert.deepEqual(await f.bridge.listVoices(), []);
+  assert.equal(f.calls.filter((call) => call.method === "process.resolveEntry").length, 2);
+});
 
 for (const resources of [false, true])
   test(`bridge re-registers selected library audio in another workspace (${resources ? "resources" : "legacy media"})`, async (t) => {

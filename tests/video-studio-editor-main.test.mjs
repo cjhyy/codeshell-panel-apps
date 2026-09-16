@@ -5,6 +5,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { promisify } from "node:util";
 import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 
@@ -69,6 +72,15 @@ async function openPage(t, options = {}) {
     errors = [];
   page.setDefaultTimeout(7000);
   page.on("pageerror", (error) => errors.push(error.message));
+  page.fixtureMediaRequests = [];
+  if (options.mediaResources)
+    await page.route("**/media/*", async (route) => {
+      const id = new URL(route.request().url()).pathname.split("/").at(-1);
+      const media = options.mediaResources[id];
+      if (!media) return route.fulfill({ status: 404 });
+      page.fixtureMediaRequests.push(id);
+      return route.fulfill({ status: 200, contentType: media.mimeType, body: media.bytes });
+    });
   t.after(async () => {
     await context.close();
     assert.deepEqual(errors, []);
@@ -127,6 +139,23 @@ async function openPage(t, options = {}) {
             ...(options.nativeTasks
               ? ["tasks.start", "tasks.get", "tasks.list", "tasks.cancel", "resources.get"]
               : []),
+            ...(options.fullNativeAccess
+              ? [
+                  "tasks.start",
+                  "tasks.get",
+                  "tasks.list",
+                  "tasks.cancel",
+                  "tasks.retry",
+                  "resources.get",
+                  "resources.read",
+                  "resources.list",
+                  "process.find",
+                  "process.resolveEntry",
+                  "process.spawn",
+                  "process.cancel",
+                  "filesystem.getKnownDirectory",
+                ]
+              : []),
             ...(options.translation
               ? ["agent.task.start", "agent.task.get", "agent.task.cancel"]
               : []),
@@ -144,7 +173,11 @@ async function openPage(t, options = {}) {
         },
         call: async (method, args = {}) => {
           calls.push({ method, args: structuredClone(args) });
-          if (method === "tasks.list" && options.nativeTasks) return [];
+          if (method === "tasks.list" && (options.nativeTasks || options.fullNativeAccess))
+            return [];
+          if (method === "media.jobs.list" && options.fullNativeAccess) return { jobs: [] };
+          if (method === "resources.get" && options.fullNativeAccess)
+            return { asset: structuredClone(options.mediaMetadata[args.id ?? args.assetId]) };
           if (method === "agent.task.start" && options.translation) {
             const rows = JSON.parse(args.prompt.split("Subtitle data: ")[1]);
             return {
@@ -208,7 +241,7 @@ async function openPage(t, options = {}) {
             ],
           }
         : (options.seed ?? seed),
-      options,
+      options: { ...options, mediaResources: undefined },
     },
   );
   await page.goto(url);
@@ -443,6 +476,148 @@ test("main rail and original-source previews retain the mounted canonical canvas
   await page.reload();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.deepEqual(await saved(page), before);
+});
+
+test("saved video and audio reopen without starting native proxies, waveforms or voice probes", async (t) => {
+  const videoPath = resolve(directory, "quiet-startup.mp4");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "color=c=blue:s=160x90:r=30:d=2",
+    "-an",
+    "-c:v",
+    "libx264",
+    "-pix_fmt",
+    "yuv420p",
+    "-movflags",
+    "+faststart",
+    videoPath,
+  ]);
+  const video = await readFile(videoPath),
+    audio = await readFile(new URL("./fixtures/static-tone.wav", import.meta.url));
+  const resourceId = (bytes) => `asset-${createHash("sha256").update(bytes).digest("hex")}`;
+  const videoId = resourceId(video),
+    audioId = resourceId(audio);
+  const original = {
+    ...seed,
+    id: "saved-real-media",
+    name: "已保存的视频与旁白",
+    assets: [
+      {
+        id: "saved-video",
+        name: "画面.mp4",
+        kind: "video",
+        durationFrames: 60,
+        width: 160,
+        height: 90,
+        mediaId: videoId,
+        mimeType: "video/mp4",
+        size: video.length,
+      },
+      {
+        id: "saved-audio",
+        name: "旁白.wav",
+        kind: "audio",
+        durationFrames: 60,
+        mediaId: audioId,
+        mimeType: "audio/wav",
+        size: audio.length,
+      },
+    ],
+    clips: [
+      {
+        id: "saved-picture",
+        assetId: "saved-video",
+        inFrame: 0,
+        outFrame: 60,
+        startFrame: 0,
+        volume: 1,
+      },
+    ],
+    audioClips: [
+      {
+        id: "saved-voice",
+        assetId: "saved-audio",
+        inFrame: 0,
+        outFrame: 60,
+        startFrame: 0,
+        volume: 1,
+      },
+    ],
+  };
+  const page = await openPage(t, {
+    seed: original,
+    fullNativeAccess: true,
+    mediaMetadata: {
+      [videoId]: {
+        id: videoId,
+        sha256: videoId.slice(6),
+        bytes: video.length,
+        mimeType: "video/mp4",
+        name: "画面.mp4",
+        createdAt: 1,
+      },
+      [audioId]: {
+        id: audioId,
+        sha256: audioId.slice(6),
+        bytes: audio.length,
+        mimeType: "audio/wav",
+        name: "旁白.wav",
+        createdAt: 1,
+      },
+    },
+    mediaResources: {
+      [videoId]: { mimeType: "video/mp4", bytes: video },
+      [audioId]: { mimeType: "audio/wav", bytes: audio },
+    },
+  });
+  const verifyQuietRestore = async () => {
+    await page.locator("#editor-workspace").waitFor({ state: "visible" });
+    await page.waitForFunction(() =>
+      window.__mainHost.calls.some((call) => call.method === "tasks.list"),
+    );
+    await waitSaved(page);
+    await page.waitForFunction(
+      () => document.querySelectorAll("canvas[data-et-media-state]").length >= 2,
+    );
+    assert.ok(page.fixtureMediaRequests.includes(videoId), "Saved video is opened in the browser");
+    assert.ok(page.fixtureMediaRequests.includes(audioId), "Saved audio is opened in the browser");
+    await settle(page);
+    const nativeCalls = await page.evaluate(() =>
+      window.__mainHost.calls.filter((call) =>
+        ["tasks.start", "process.spawn"].includes(call.method),
+      ),
+    );
+    assert.deepEqual(nativeCalls, [], "Opening a saved project must not request native execution");
+    const document = await saved(page);
+    assert.equal(document.id, original.id);
+    assert.equal(document.revision, original.revision);
+    assert.deepEqual(
+      document.assets.map((asset) => asset.resourceId),
+      [videoId, audioId],
+    );
+    assert.equal(
+      document.sequences
+        .flatMap((sequence) => sequence.clips)
+        .filter((clip) => clip.kind === "media").length,
+      2,
+    );
+    return document;
+  };
+  const restored = await verifyQuietRestore();
+  page.fixtureMediaRequests.length = 0;
+  await page.reload();
+  assert.deepEqual(await verifyQuietRestore(), restored);
+  await page.locator('[data-ew-action="play"]').click();
+  await page.waitForFunction(() =>
+    window.__mainHost.calls.some((call) => call.method === "tasks.start"),
+  );
+  assert.deepEqual(await saved(page), restored, "Starting preview never changes the saved edit");
 });
 
 test("main restores 0.5.16 multitrack without the optional old demo upgrade blocking task setup", async (t) => {
