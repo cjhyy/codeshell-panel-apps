@@ -1021,6 +1021,51 @@ test("long sequence wheel scroll and real zoom controls stay responsive with bou
   assert.equal((await state(page)).document.revision, 3);
 });
 
+test("resizing a docked timeline fills the expanded viewport and preserves selection and scroll", async (t) => {
+  const page = await fixture(t, {
+    clips: [{ id: "a", trackId: "v1", start: 1, duration: 7 }],
+  });
+  await page.locator("#timeline").evaluate((element) => { element.style.width = "600px"; });
+  await settle(page);
+  await clickClip(page, "a");
+  const before = (await state(page)).document;
+  const selected = (await state(page)).selected;
+  await clip(page, "a").focus();
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = 30; });
+  await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft), 30);
+  const narrow = await page.locator(".et-content").evaluate((element) => element.getBoundingClientRect().width);
+  await page.locator("#timeline").evaluate((element) => { element.style.width = "1140px"; });
+  await page.waitForFunction(() => {
+    const content = document.querySelector(".et-content").getBoundingClientRect();
+    const viewport = document.querySelector(".et-scroll").getBoundingClientRect();
+    return content.width >= viewport.width;
+  });
+  await settle(page);
+  const wide = await page.evaluate(() => ({
+    content: document.querySelector(".et-content").getBoundingClientRect().width,
+    lane: document.querySelector(".et-lane").getBoundingClientRect().width,
+    ruler: document.querySelector(".et-ruler").getBoundingClientRect().width,
+    viewport: document.querySelector(".et-scroll").getBoundingClientRect().width,
+    left: document.querySelector(".et-scroll").scrollLeft,
+    focused: document.activeElement?.dataset.etClip,
+  }));
+  assert.ok(wide.content > narrow);
+  assert.ok(wide.lane >= wide.viewport);
+  assert.equal(wide.ruler, wide.lane);
+  assert.equal(wide.left, 0, "An expanded viewport clamps scroll when the short sequence now fits");
+  assert.equal(wide.focused, "a");
+  assert.deepEqual((await state(page)).selected, selected);
+  await seek(page, 10);
+  assert.equal((await state(page)).time, 10 * 240000);
+  await page.locator("#timeline").evaluate((element) => { element.style.width = "600px"; });
+  await page.waitForFunction((width) => document.querySelector(".et-content").getBoundingClientRect().width === width, narrow);
+  await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).selected, selected);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
 test("dispose removes pointer and keyboard handlers and leaves the shared history untouched", async (t) => {
   const page = await fixture(t);
   await clickClip(page, "a");

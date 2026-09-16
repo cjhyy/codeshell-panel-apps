@@ -98,6 +98,7 @@ export class EditorTimeline {
   private media: EditorTimelineMedia;
   private mediaFrame?: number;
   private resizeObserver?: ResizeObserver;
+  private renderedWidth = 0;
   private scale = 64;
   private snapping = true;
   private clipboard?: ClipClipboard;
@@ -139,7 +140,12 @@ export class EditorTimeline {
     container.addEventListener("drop", this.drop);
     container.addEventListener("contextmenu", this.contextmenu);
     this.render();
-    this.resizeObserver = new ResizeObserver(() => this.scheduleMedia());
+    this.resizeObserver = new ResizeObserver(() => {
+      const width = container.clientWidth;
+      if (!this.destroyed && !this.drag && width > 0 && width !== this.renderedWidth)
+        this.render();
+      else this.scheduleMedia();
+    });
     this.resizeObserver.observe(container);
   }
   private current() {
@@ -202,11 +208,12 @@ export class EditorTimeline {
     if (existing) this.scrollPosition = existing.scrollLeft;
     this.verticalPosition =
       this.container.querySelector<HTMLElement>(".et-body")?.scrollTop ?? this.verticalPosition;
+    this.renderedWidth = this.container.clientWidth;
     const duration = Math.max(
         sequenceDuration(sequence),
         ...sequence.markers.map((marker) => marker.time + marker.duration),
       ),
-      viewportWidth = Math.max(400, this.container.clientWidth - 160);
+      viewportWidth = Math.max(400, this.renderedWidth - 160);
     this.scale = Math.min(this.scale, 12000000 / Math.max(1, ticksToSeconds(duration)));
     const width = Math.max(viewportWidth, ticksToSeconds(duration) * this.scale + 150);
     const left = this.scrollPosition,
