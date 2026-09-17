@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.14 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.15 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -70,14 +70,16 @@ records are reported as unverified. Existing files offer **Skip existing** or
 **Save another copy**. Size/time changes remain distinct from the original download.
 The helper checks only approved media/subtitle files under the authorized output
 directory; it refuses escapes and symlinks. History supports search, status filters,
-file checks, individual play/reveal actions and retry with original settings.
+file checks, individual play/reveal actions, deleting one record, and retry with original settings.
 A playlist records up to 200 reported output paths; larger/incomplete inventories
 are explicitly unverified. Storage pressure removes oldest history before it can
 remove any pending queue item. Clearing history never deletes disk files.
 
 The output directory defaults to the currently bound, trusted project directory.
 The Host supplies its authorized directory handle; users can still choose another
-folder. Older Hosts that do not offer the `project` known directory show a prompt
+folder. The chosen path is remembered per project. After reopening, the panel shows
+the last choice and asks the user to reselect that same folder to renew its Host
+grant before downloading. Older Hosts that do not offer the `project` known directory show a prompt
 to choose a directory instead of silently using the system Downloads folder.
 
 Retry keeps the task's original options and account, and asks the Host to
@@ -147,7 +149,9 @@ Inspection and downloading themselves never need a Session or an LLM.
 
 ## AI Find Videos
 
-Describe what you want and choose YouTube, Bilibili, or both. A bounded tool-free
+Describe what you want and choose YouTube, Bilibili, or both. Choose a Provider
+and text model from CodeShell's configured connections, including external custom
+Providers. A bounded tool-free
 model task produces search terms. Local yt-dlp retrieves actual platform candidates
 (`ytsearch` / `bilisearch`); Bilibili results without titles receive bounded metadata
 lookups. A second tool-free task selects only existing candidate IDs. The panel
@@ -163,6 +167,13 @@ single-video mode and no Cookie; **Preview** brings the link to Download where a
 account can be chosen. Cancelling stops the active model task or local search and
 ignores late results. Model/API and network availability remain prerequisites;
 there is no promise that a platform will expose every video or bypass access limits.
+Queries and up to eight verified results per query are retained per project in a
+bounded archive. You can view old results, remove individual results or whole
+queries, clear the archive, and repeat an earlier search to refresh platform data.
+Saved links are labeled historical when reopened. In Chat, `find_videos` starts
+the same asynchronous search, `get_video_search_results` reads its progress and
+results, and `list_video_search_history` and `delete_video_search_record` manage
+the archive. Chat search does not automatically queue or download results.
 
 ## Cookie safety
 

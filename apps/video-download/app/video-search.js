@@ -1,3 +1,5 @@
+import { cleanSearchRecord, readSearchArchive, writeSearchArchive } from "./video-search-archive.js";
+
 const PLATFORMS = new Set(["youtube", "bilibili"]);
 const PLATFORM_NAMES = { youtube: "YouTube", bilibili: "B 站" };
 const ACTIVE_TASK_STATES = new Set(["queued", "running", "cancelling"]);
@@ -195,6 +197,7 @@ export function mountVideoSearch({
   onQueue,
   onPreview,
   onError,
+  archiveStorage,
 }) {
   if (!container) throw new Error("AI 查询缺少挂载容器");
   container.innerHTML = `
@@ -202,18 +205,21 @@ export function mountVideoSearch({
       <div class="video-search-heading"><div><span class="step-label">AI VIDEO SEARCH</span><h2 id="video-search-title">说说你想找什么视频</h2></div><span class="video-search-local">真实平台来源</span></div>
       <p class="video-search-intro">AI 拆解需求，实时检索 YouTube 与 B 站，再从真实候选中筛选。选中后加入下载队列。</p>
       <label class="video-search-prompt"><span>视频需求</span><textarea data-search-query rows="3" maxlength="1200" placeholder="例如：适合入门的 Blender 中文教程，20 分钟左右，讲清楚建模基础"></textarea></label>
-      <div class="video-search-controls"><label><span>搜索范围</span><select data-search-scope><option value="both">YouTube + B 站</option><option value="youtube">YouTube</option><option value="bilibili">B 站</option></select></label><label><span>AI 模型</span><select data-search-model aria-label="查询使用的 AI 模型" disabled><option>正在读取模型…</option></select></label></div>
+      <div class="video-search-controls"><label><span>搜索范围</span><select data-search-scope><option value="both">YouTube + B 站</option><option value="youtube">YouTube</option><option value="bilibili">B 站</option></select></label><label><span>Provider</span><select data-search-provider aria-label="选择 AI Provider" disabled><option>正在读取连接…</option></select></label><label><span>模型</span><select data-search-model aria-label="查询使用的 AI 模型" disabled><option>正在读取模型…</option></select></label></div>
+      <p class="video-search-provider-help">显示 CodeShell 中已配置的文本模型连接，包括自定义 Provider。密钥留在 CodeShell 设置中。</p>
       <div class="video-search-actions"><button type="button" class="secondary-button" data-search-start disabled>AI 找视频</button><button type="button" class="text-button" data-search-cancel hidden>取消查询</button><button type="button" class="text-button" data-search-model-refresh>刷新模型</button></div>
       <p class="video-search-status" data-search-status role="status" aria-live="polite">正在准备查询…</p>
       <div class="video-search-plan" data-search-plan hidden></div>
       <div class="video-search-results-toolbar" data-search-toolbar hidden><label><input type="checkbox" data-search-select-all /> 全选当前结果</label><button type="button" class="secondary-button" data-search-queue disabled>加入队列 <span data-search-count>0</span></button></div>
       <div class="video-search-results" data-search-results></div>
+      <section class="video-search-library" aria-labelledby="video-search-library-title"><div class="video-search-library-heading"><div><span class="step-label">SEARCH LIBRARY</span><h3 id="video-search-library-title">查询记录</h3></div><button type="button" class="text-button" data-search-clear-history>清空记录</button></div><p data-search-library-status class="video-search-library-status" role="status"></p><div data-search-library-list class="video-search-library-list"></div></section>
     </section>`;
   const el = (selector) => container.querySelector(`[data-search-${selector}]`);
   const elements = Object.fromEntries(
     [
       "query",
       "scope",
+      "provider",
       "model",
       "start",
       "cancel",
@@ -225,6 +231,9 @@ export function mountVideoSearch({
       "queue",
       "count",
       "results",
+      "clear-history",
+      "library-status",
+      "library-list",
     ].map((name) => [name, el(name)]),
   );
   let destroyed = false;
@@ -235,6 +244,10 @@ export function mountVideoSearch({
   let initializationPending = true;
   let queuePending = false;
   let modelLoadGeneration = 0;
+  let records = [];
+  let archiveScope = "";
+  let activeRecordId = "";
+  let archiveWrite = Promise.resolve();
   const state = {
     status: "idle",
     phase: "",
@@ -261,11 +274,118 @@ export function mountVideoSearch({
     elements.status.dataset.state = status;
     syncControls();
   };
+  const providerIdOf = (model) => cleanText(model?.providerId || model?.provider || "configured", 256);
+  function renderModelChoices(providerId, preferredId = "") {
+    elements.model.replaceChildren();
+    const choices = models.filter((model) => providerIdOf(model) === providerId);
+    for (const model of choices) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = cleanText(model.label, 120);
+      elements.model.append(option);
+    }
+    elements.model.value = choices.some((model) => model.id === preferredId)
+      ? preferredId
+      : choices[0]?.id || "";
+    syncControls();
+  }
+  function renderProviders(preferredModelId = "") {
+    const picked = models.find((model) => model.id === preferredModelId) || models[0];
+    elements.provider.replaceChildren();
+    const seen = new Set();
+    for (const model of models) {
+      const providerId = providerIdOf(model);
+      if (seen.has(providerId)) continue;
+      seen.add(providerId);
+      const option = document.createElement("option");
+      option.value = providerId;
+      option.textContent = cleanText(model.provider, 120) || providerId;
+      elements.provider.append(option);
+    }
+    elements.provider.value = picked ? providerIdOf(picked) : "";
+    renderModelChoices(elements.provider.value, picked?.id);
+  }
+  function renderArchive() {
+    elements["library-list"].replaceChildren();
+    elements["clear-history"].disabled = !records.length;
+    if (!records.length) {
+      const empty = document.createElement("p");
+      empty.className = "video-search-library-empty";
+      empty.textContent = "还没有查询记录。完成查询后，结果会按项目保存在这里。";
+      elements["library-list"].append(empty);
+      return;
+    }
+    for (const record of records) {
+      const row = document.createElement("article");
+      row.className = "video-search-library-item";
+      row.dataset.recordId = record.id;
+      const copy = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = record.query;
+      const metadata = document.createElement("small");
+      metadata.textContent = `${record.platforms.map((platform) => PLATFORM_NAMES[platform]).join(" + ")} · ${record.candidates.length} 条结果 · ${new Date(record.createdAt).toLocaleString()}`;
+      const actions = document.createElement("div");
+      actions.className = "video-search-library-actions";
+      for (const [action, label] of [["view", "查看"], ["redo", "重新搜索"], ["delete", "删除"]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "text-button";
+        button.dataset.libraryAction = action;
+        button.dataset.recordId = record.id;
+        button.textContent = label;
+        actions.append(button);
+      }
+      copy.append(title, metadata, actions);
+      row.append(copy);
+      elements["library-list"].append(row);
+    }
+  }
+  function saveArchive() {
+    if (!archiveStorage) return Promise.resolve();
+    const snapshot = writeSearchArchive(records, elements.model.value, archiveScope, normalizeVideoSearchCandidates);
+    records = snapshot.records;
+    renderArchive();
+    archiveWrite = archiveWrite.catch(() => {}).then(() => archiveStorage.save(snapshot));
+    return archiveWrite.catch((error) => {
+      elements["library-status"].textContent = `记录未保存：${cleanText(error.message || String(error))}`;
+      throw error;
+    });
+  }
+  async function recordSearch(status, summary = "") {
+    if (!state.query || !["ready", "empty", "error"].includes(status)) return;
+    const record = cleanSearchRecord(
+      {
+        id: crypto.randomUUID(), query: state.query, platforms: state.platforms,
+        modelId: state.model, provider: models.find((model) => model.id === state.model)?.provider || "",
+        createdAt: Date.now(), status, summary, candidates: state.candidates,
+      },
+      normalizeVideoSearchCandidates,
+    );
+    if (!record) return;
+    records.unshift(record);
+    activeRecordId = record.id;
+    renderArchive();
+    try { await saveArchive(); }
+    catch { /* The visible result remains useful while storage is unavailable. */ }
+  }
+  function viewRecord(record) {
+    activeRecordId = record.id;
+    state.query = record.query;
+    state.platforms = record.platforms.slice();
+    state.model = record.modelId;
+    state.candidates = record.candidates.map((candidate) => ({ ...candidate }));
+    state.selected.clear();
+    elements.query.value = record.query;
+    elements.scope.value = record.platforms.length === 2 ? "both" : record.platforms[0];
+    if (models.some((model) => model.id === record.modelId)) renderProviders(record.modelId);
+    renderResults();
+    report(`这是 ${new Date(record.createdAt).toLocaleString()} 保存的结果。可选择加入队列，或重新搜索获取新结果。`, "ready");
+  }
   function syncControls() {
     if (destroyed) return;
     const working = busy();
-    for (const name of ["query", "scope", "model"])
-      elements[name].disabled = working || (name === "model" && !models.length);
+    for (const name of ["query", "scope", "provider", "model"])
+      elements[name].disabled = working || initializationPending || (["provider", "model"].includes(name) && !models.length);
     elements.start.disabled =
       working ||
       queuePending ||
@@ -355,13 +475,16 @@ export function mountVideoSearch({
       reason.textContent = candidate.reason;
       const source = document.createElement("span");
       source.className = "video-search-source";
-      source.textContent = `来源已核验 · ${new URL(candidate.sourceUrl).hostname} · 平台实时检索`;
+      source.textContent = candidate.evidence === "historical"
+        ? `历史来源 · ${new URL(candidate.sourceUrl).hostname} · 点击重新搜索可刷新`
+        : `来源已核验 · ${new URL(candidate.sourceUrl).hostname} · 平台实时检索`;
       const actions = document.createElement("div");
       actions.className = "video-search-result-actions";
       for (const [action, label] of [
         ["queue", "加入队列"],
         ["preview", "查看详情"],
         ["source", "原始页面"],
+        ["remove", "删除结果"],
       ]) {
         const button = document.createElement("button");
         button.type = "button";
@@ -394,18 +517,12 @@ export function mountVideoSearch({
       models = (Array.isArray(raw?.models) ? raw.models : []).filter(
         (model) => typeof model.id === "string" && model.id && typeof model.label === "string",
       );
-      elements.model.replaceChildren();
-      for (const model of models) {
-        const option = document.createElement("option");
-        option.value = model.id;
-        option.textContent = `${cleanText(model.provider, 80)} · ${cleanText(model.label, 120)}`;
-        elements.model.append(option);
-      }
-      elements.model.value = models.some((model) => model.id === selected)
+      const preferred = models.some((model) => model.id === selected)
         ? selected
         : models.some((model) => model.id === raw.defaultModel)
           ? raw.defaultModel
           : models[0]?.id || "";
+      renderProviders(preferred);
       if (!models.length)
         report(
           "没有可用的 AI 模型，请先在 CodeShell 设置中配置模型连接，然后刷新。",
@@ -563,12 +680,12 @@ export function mountVideoSearch({
       if (!state.candidates.length) {
         renderResults();
         clearPendingStorage();
-        report(
-          warnings.length
+        const emptyStatus = warnings.length ? "error" : "empty";
+        const emptyMessage = warnings.length
             ? `未能取得可核验的视频来源。${warnings.join("；")}`
-            : "没有找到可核验的公开视频。试试更短的关键词或调整搜索范围。",
-          warnings.length ? "error" : "empty",
-        );
+            : "没有找到可核验的公开视频。试试更短的关键词或调整搜索范围。";
+        report(emptyMessage, emptyStatus);
+        void recordSearch(emptyStatus, emptyMessage);
         return;
       }
       const retrieved = state.candidates;
@@ -601,10 +718,12 @@ export function mountVideoSearch({
         `${state.candidates.length ? `找到 ${state.candidates.length} 条结果。` : "真实检索结果中没有符合条件的视频。"}${summary ? ` ${summary}` : ""}${warnings.length ? ` ${warnings.join("；")}` : ""}`,
         state.candidates.length ? "ready" : "empty",
       );
+      void recordSearch(state.candidates.length ? "ready" : "empty", summary);
     } catch (error) {
       if (!valid()) return;
       clearPendingStorage();
       report(cleanText(error.message || String(error)), "error");
+      void recordSearch("error", error.message || String(error));
     }
   }
   async function start() {
@@ -632,6 +751,7 @@ export function mountVideoSearch({
       candidates: [],
       selected: new Set(),
     });
+    activeRecordId = "";
     renderPlan();
     renderResults();
     await runSearch(generation);
@@ -687,6 +807,11 @@ export function mountVideoSearch({
     }
   }
   listen(elements.query, "input", syncControls);
+  listen(elements.provider, "change", () => {
+    renderModelChoices(elements.provider.value);
+    void saveArchive().catch(() => undefined);
+  });
+  listen(elements.model, "change", () => { void saveArchive().catch(() => undefined); });
   listen(elements.start, "click", () => {
     void start();
   });
@@ -721,6 +846,18 @@ export function mountVideoSearch({
       void queueCandidates([candidate]);
       return;
     }
+    if (button.dataset.action === "remove") {
+      state.candidates = state.candidates.filter((item) => item.id !== candidate.id);
+      state.selected.delete(candidate.id);
+      const record = records.find((item) => item.id === activeRecordId);
+      if (record) {
+        record.candidates = record.candidates.filter((item) => item.url !== candidate.url);
+        void saveArchive().catch(() => undefined);
+      }
+      renderResults();
+      report(record ? "已从查询记录中删除这条视频。" : "已移除这条视频。", "ready");
+      return;
+    }
     const operation =
       button.dataset.action === "source"
         ? () => panel.call("external.open", { url: candidate.sourceUrl })
@@ -732,8 +869,52 @@ export function mountVideoSearch({
         onError?.(error);
       });
   });
+  listen(elements["library-list"], "click", (event) => {
+    const button = event.target.closest("[data-library-action]");
+    if (!button || busy()) return;
+    const record = records.find((item) => item.id === button.dataset.recordId);
+    if (!record) return;
+    if (button.dataset.libraryAction === "view") viewRecord(record);
+    if (button.dataset.libraryAction === "redo") {
+      viewRecord(record);
+      void start();
+    }
+    if (button.dataset.libraryAction === "delete") {
+      records = records.filter((item) => item !== record);
+      if (activeRecordId === record.id) {
+        activeRecordId = "";
+        state.candidates = [];
+        state.selected.clear();
+        renderResults();
+      }
+      renderArchive();
+      void saveArchive().catch(() => undefined);
+    }
+  });
+  listen(elements["clear-history"], "click", () => {
+    if (busy()) return;
+    records = [];
+    activeRecordId = "";
+    state.candidates = [];
+    state.selected.clear();
+    renderResults();
+    renderArchive();
+    void saveArchive().catch(() => undefined);
+  });
   const ready = (async () => {
     await refreshModels();
+    if (archiveStorage) {
+      try {
+        const loaded = await archiveStorage.load();
+        archiveScope = loaded?.scope || "";
+        const archive = readSearchArchive(loaded?.value, archiveScope, normalizeVideoSearchCandidates);
+        records = archive.records;
+        if (models.some((model) => model.id === archive.modelId)) renderProviders(archive.modelId);
+      } catch (error) {
+        elements["library-status"].textContent = `无法读取查询记录：${cleanText(error.message || String(error))}`;
+      }
+    }
+    renderArchive();
     const saved = loadPending();
     if (panel && !destroyed) {
       try {
@@ -794,11 +975,56 @@ export function mountVideoSearch({
     start,
     cancel,
     refreshModels,
+    async startFromChat(input = {}) {
+      await ready;
+      if (busy()) throw new Error("已有查询正在进行，请稍后查看结果。");
+      if (queuePending || initializationPending || typeof searchCandidates !== "function")
+        throw new Error("查询尚未就绪，请稍后重试。");
+      const query = cleanText(input.query, 1200);
+      if (!query) throw new Error("请提供想查找的视频内容。");
+      const scope = ["both", "youtube", "bilibili"].includes(input.platform) ? input.platform : "both";
+      const selected = input.modelId
+        ? models.find((model) => model.id === input.modelId)
+        : input.providerId
+          ? models.find((model) => providerIdOf(model) === input.providerId)
+          : models.find((model) => model.id === elements.model.value);
+      if (!selected) throw new Error("指定的 Provider 或模型尚未在 CodeShell 中配置。");
+      elements.query.value = query;
+      elements.scope.value = scope;
+      renderProviders(selected.id);
+      void start();
+      return { status: "started", query, platform: scope, provider: selected.provider, model: selected.label };
+    },
+    async deleteRecord(id) {
+      await ready;
+      const original = records.length;
+      records = records.filter((item) => item.id !== id);
+      if (records.length === original) return { deleted: false };
+      if (activeRecordId === id) {
+        activeRecordId = "";
+        state.candidates = [];
+        state.selected.clear();
+        renderResults();
+      }
+      renderArchive();
+      await saveArchive();
+      return { deleted: true };
+    },
+    async history() {
+      await ready;
+      return records.slice(0, 12).map(({ id, query, platforms, createdAt, status, summary, candidates }) => ({
+        id, query, platforms, createdAt, status, summary,
+        candidates: candidates.slice(0, 8).map(({ title, url, platform, author, duration, reason }) => ({
+          title, url, platform, author, duration, reason,
+        })),
+      }));
+    },
     handleTaskChanged,
     getState: () => ({
       ...state,
       selected: [...state.selected],
       candidates: state.candidates.map((candidate) => ({ ...candidate })),
+      recordCount: records.length,
     }),
     destroy() {
       destroyed = true;

@@ -1,13 +1,13 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
     "zh-CN": "Mimi Download"
   },
-  "description": "Persistent download queues, batch and playlist selection, file-verified history and duplicate checks, plus AI-assisted discovery of real YouTube and Bilibili videos.",
+  "description": "Remembered download destinations, persistent queues and file-verified history, plus AI video discovery with configured providers and a searchable result archive.",
   "entry": "app/index.html",
   "icon": "activity",
   "placement": "right-dock",
@@ -133,6 +133,45 @@
         "inputSchema": {
           "type": "object",
           "properties": {},
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "find_videos",
+        "description": "Start an asynchronous AI-assisted search for real public YouTube and Bilibili video results in the panel. An existing configured text-model Provider may be selected. This never downloads media. Call get_video_search_results later to see progress and verified results.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "maxLength": 1200, "description": "What kind of videos to find, including any desired topic or filters." },
+            "platform": { "type": "string", "enum": ["both", "youtube", "bilibili"] },
+            "providerId": { "type": "string", "maxLength": 256, "description": "Optional Provider ID from a configured CodeShell model connection." },
+            "modelId": { "type": "string", "maxLength": 256, "description": "Optional model connection ID. Takes priority over providerId." }
+          },
+          "required": ["query"],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      },
+      {
+        "name": "get_video_search_results",
+        "description": "Read the current AI video-search status and up to eight verified platform results from the panel. Search starts separately with find_videos.",
+        "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+        "readOnly": true
+      },
+      {
+        "name": "list_video_search_history",
+        "description": "Read saved AI video-search queries and their retained YouTube or Bilibili results for the current project.",
+        "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+        "readOnly": true
+      },
+      {
+        "name": "delete_video_search_record",
+        "description": "Delete one saved AI video-search record from the current project's panel archive. This does not delete downloaded files.",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "id": { "type": "string", "maxLength": 100 } },
+          "required": ["id"],
           "additionalProperties": false
         },
         "readOnly": false

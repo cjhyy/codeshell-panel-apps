@@ -3,7 +3,8 @@
 export const LIBRARY_VERSION = 2;
 export const MAX_QUEUE = 100;
 export const MAX_HISTORY = 300;
-const MAX_BYTES = 225 * 1024;
+// Leave room in the Host's 256 KiB app quota for saved video searches and preferences.
+const MAX_BYTES = 190 * 1024;
 const formats = new Set(["best", "2160", "1440", "1080", "720", "480", "360", "audio"]);
 const text = (value, limit = 4096) => (typeof value === "string" ? value.slice(0, limit) : "");
 
@@ -186,11 +187,18 @@ export function storedRecord(item) {
   };
 }
 
-export function serializeLibrary({ queue, history, queuePaused }, scope) {
+export function serializeLibrary({ queue, history, queuePaused, directoryPreference }, scope) {
   const result = {
     version: LIBRARY_VERSION,
     scope: text(scope),
     queuePaused: Boolean(queuePaused),
+    directoryPreference: directoryPreference?.path
+      ? {
+          path: text(directoryPreference.path),
+          name: text(directoryPreference.name, 160),
+          kind: directoryPreference.kind === "project" ? "project" : "chosen",
+        }
+      : null,
     queue: queue.slice(0, MAX_QUEUE).map(storedRecord).filter(Boolean),
     history: history.slice(0, MAX_HISTORY).map(storedRecord).filter(Boolean),
     truncated: false,
@@ -233,6 +241,14 @@ export function restoreLibrary(snapshot, scope) {
       .slice(0, MAX_HISTORY)
       .map(storedRecord)
       .filter(Boolean),
+    directoryPreference:
+      typeof snapshot.directoryPreference?.path === "string" && snapshot.directoryPreference.path
+        ? {
+            path: text(snapshot.directoryPreference.path),
+            name: text(snapshot.directoryPreference.name, 160),
+            kind: snapshot.directoryPreference.kind === "project" ? "project" : "chosen",
+          }
+        : null,
     queuePaused:
       queue.some((item) => ["restored", "interrupted"].includes(item.status)) ||
       snapshot.queuePaused === true,

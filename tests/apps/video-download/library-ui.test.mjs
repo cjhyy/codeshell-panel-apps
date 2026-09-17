@@ -427,6 +427,19 @@ test("the same video can be downloaded to a different selected output directory"
   assert.equal(await page.locator("#duplicate-review").isVisible(), false);
 });
 
+test("selected download directory is remembered and needs a fresh matching grant after reload", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#choose-directory").click();
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2") || "null")?.directoryPreference?.path === "/fixture/other");
+  await page.reload();
+  await page.locator("#restore-directory").waitFor({ state: "visible" });
+  assert.match(await page.locator("#destination-path").textContent(), /\/fixture\/other/);
+  assert.equal(await page.locator("#download-button").isDisabled(), true);
+  await page.locator("#restore-directory").click();
+  await page.locator("#restore-directory").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#destination-path").textContent(), "/fixture/other");
+});
+
 test("historical media and subtitles have separate file actions and missing files never launch", async (t) => {
   const page = await openPanel(t);
   await addDownload(page);

@@ -1283,6 +1283,13 @@ input:focus-visible + i {
 .destination-copy {
   min-width: 0;
 }
+.destination-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+}
 
 .destination-copy strong,
 .destination-copy small {

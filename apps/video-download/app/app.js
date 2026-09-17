@@ -81,6 +81,7 @@ const elements = {
   destinationName: document.querySelector("#destination-name"),
   destinationPath: document.querySelector("#destination-path"),
   chooseDirectory: document.querySelector("#choose-directory"),
+  restoreDirectory: document.querySelector("#restore-directory"),
   downloadButton: document.querySelector("#download-button"),
   downloadLabel: document.querySelector(".download-button .button-label"),
   errorAnalysis: document.querySelector("#error-analysis"),
@@ -191,6 +192,9 @@ const outputBuffers = { stdout: "", stderr: "" };
 let libraryReady = false;
 let libraryScope = "";
 let libraryWrite = Promise.resolve();
+let directoryPreference = null;
+let searchScopeReadyResolve;
+const searchScopeReady = new Promise((resolve) => { searchScopeReadyResolve = resolve; });
 let completionPending = false;
 let auxiliaryBusy = false;
 let auxiliaryGroups = 0;
@@ -540,7 +544,10 @@ function saveLibrary() {
   if (!libraryReady) return Promise.resolve();
   let snapshot;
   try {
-    snapshot = serializeLibrary({ queue: downloadQueue, history, queuePaused }, libraryScope);
+    snapshot = serializeLibrary(
+      { queue: downloadQueue, history, queuePaused, directoryPreference },
+      libraryScope,
+    );
   } catch (error) {
     return Promise.reject(error);
   }
@@ -571,7 +578,11 @@ async function loadLibrary() {
       downloadQueue = saved.queue;
       history = saved.history;
       queuePaused = saved.queuePaused;
+      directoryPreference = saved.directoryPreference;
     } else history = loadHistory().map(storedRecord).filter(Boolean);
+    if (directoryPreference?.path && directoryIdentity(directoryPreference) !== directoryIdentity(runtime.directory)) {
+      setDestination({ ...directoryPreference, handle: null });
+    }
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
       ["restored", "interrupted"].includes(item.status),
@@ -582,6 +593,8 @@ async function loadLibrary() {
     renderHistory();
   } catch (error) {
     libraryStatus.textContent = `无法读取下载记录，请重新打开面板：${error.message}`;
+  } finally {
+    searchScopeReadyResolve();
   }
 }
 
@@ -1878,6 +1891,10 @@ function setDestination(directory) {
     directoryGrants.set(directoryIdentity(directory), directory);
   elements.destinationName.textContent = directory?.name || "未选择目录";
   elements.destinationPath.textContent = directory?.path || "请选择一个保存位置";
+  elements.restoreDirectory.hidden = !directory?.path || Boolean(directory.handle);
+  if (directory?.path && !directory.handle) {
+    elements.destinationPath.textContent = `上次目录：${directory.path} · 点击“恢复上次目录”重新授权`;
+  }
   updateDownloadAvailability();
 }
 
@@ -2668,7 +2685,7 @@ function renderHistory() {
       if (index !== undefined) node.dataset.fileIndex = String(index);
       return node;
     };
-    actions.append(button("check", "检查文件"), button("retry", "按原设置重下"));
+    actions.append(button("check", "检查文件"), button("retry", "按原设置重下"), button("delete", "删除记录"));
     copy.append(actions);
     if (item.checkError) {
       const error = document.createElement("small");
@@ -2717,7 +2734,17 @@ async function handleHistoryAction(event) {
   button.disabled = true;
   try {
     const action = button.dataset.historyAction;
-    if (action === "retry") {
+    if (action === "delete") {
+      const previousHistory = history;
+      history = history.filter((entry) => entry !== item);
+      try {
+        await saveLibrary();
+      } catch (error) {
+        history = previousHistory;
+        throw error;
+      }
+      renderHistory();
+    } else if (action === "retry") {
       await directoryFor(item, true);
       const result = await enqueueCandidates([item]);
       activateTab("download");
@@ -2869,11 +2896,32 @@ async function chooseDirectory() {
   elements.chooseDirectory.disabled = true;
   try {
     const result = await panel.call("filesystem.pickDirectory");
-    if (!result.cancelled) setDestination(result);
+    if (!result.cancelled) {
+      setDestination({ ...result, kind: "chosen" });
+      directoryPreference = { path: result.path, name: result.name, kind: "chosen" };
+      await saveLibrary();
+    }
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
   } finally {
     elements.chooseDirectory.disabled = false;
+  }
+}
+
+async function restorePreferredDirectory() {
+  if (previewMode || !directoryPreference?.path) return;
+  elements.restoreDirectory.disabled = true;
+  try {
+    const result = await panel.call("filesystem.pickDirectory");
+    if (result.cancelled) return;
+    if (directoryIdentity(result) !== directoryIdentity(directoryPreference)) {
+      throw new Error("请选择上次使用的目录；若想改用新目录，请点击“更改”。");
+    }
+    setDestination({ ...result, kind: "chosen" });
+  } catch (error) {
+    showError(error instanceof Error ? error.message : String(error));
+  } finally {
+    elements.restoreDirectory.disabled = false;
   }
 }
 
@@ -2982,7 +3030,7 @@ function videoContextForAgent() {
         }
       : { status: "idle" },
     destination: runtime.directory
-      ? { name: runtime.directory.name, path: runtime.directory.path }
+      ? { name: runtime.directory.name, path: runtime.directory.path, ...(!runtime.directory.handle ? { reauthorizationRequired: true } : {}) }
       : null,
     initialization: {
       needed: shouldOfferSetup({
@@ -4254,6 +4302,24 @@ function registerAgentTools() {
   panel.registerTool("apply_video_download_config", async (args = {}) => applyConfiguration(args));
   panel.registerTool("start_video_download", async () => startDownloadForAgent());
   panel.registerTool("cancel_video_download", async () => cancelDownloadForAgent());
+  panel.registerTool("find_videos", async (args = {}) => {
+    activateTab("search");
+    return videoSearch.startFromChat(args);
+  });
+  panel.registerTool("get_video_search_results", async () => {
+    await videoSearch.ready;
+    const state = videoSearch.getState();
+    return {
+      status: state.status,
+      query: state.query,
+      message: state.message,
+      candidates: state.candidates.slice(0, 8).map(({ title, url, platform, author, duration, reason }) => ({
+        title, url, platform, author, duration, reason,
+      })),
+    };
+  });
+  panel.registerTool("list_video_search_history", async () => videoSearch.history());
+  panel.registerTool("delete_video_search_record", async (args = {}) => videoSearch.deleteRecord(args.id));
 }
 
 async function initializeRuntime() {
@@ -4310,6 +4376,7 @@ async function initializeRuntime() {
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, false, "Unavailable");
     showError(error instanceof Error ? error.message : String(error));
   }
+  searchScopeReadyResolve();
   updateDownloadAvailability();
 }
 
@@ -4388,6 +4455,7 @@ elements.subtitleEmbed.addEventListener("change", () => {
   showError("");
 });
 elements.chooseDirectory.addEventListener("click", chooseDirectory);
+elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
 elements.downloadButton.addEventListener("click", startDownload);
 elements.refreshVersions.addEventListener("click", () => {
   void refreshRuntimeDependencies();
@@ -4509,6 +4577,22 @@ const videoSearch = mountVideoSearch({
   panel,
   container: document.querySelector("#video-search-root"),
   searchCandidates,
+  archiveStorage: {
+    async load() {
+      await searchScopeReady;
+      const scope = libraryScope || context.cwd || runtime.directory?.path || "preview";
+      const value = !previewMode && Number(context.apiVersion) >= 14
+        ? await panel.call("storage.get", { key: "video-download.search-archive.v1" })
+        : JSON.parse(localStorage.getItem(`video-download.search-archive.v1:${scope}`) || "null");
+      return { scope, value };
+    },
+    async save(snapshot) {
+      if (!libraryReady || snapshot.scope !== libraryScope) throw new Error("项目已变化，请重新打开面板。");
+      if (!previewMode && Number(context.apiVersion) >= 14)
+        await panel.call("storage.set", { key: "video-download.search-archive.v1", value: snapshot });
+      else localStorage.setItem(`video-download.search-archive.v1:${snapshot.scope}`, JSON.stringify(snapshot));
+    },
+  },
   onQueue: async (candidates) => {
     const result = await enqueueCandidates(
       candidates.map((candidate) => ({
