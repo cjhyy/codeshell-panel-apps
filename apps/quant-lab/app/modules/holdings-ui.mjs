@@ -396,12 +396,183 @@ const VERIFICATION_LABELS = {
   "static-audit": "只能静态审计",
 };
 
-function evidenceText(value) {
-  if (value == null) return "unavailable";
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+const RULE_STATUS_LABELS = {
+  positive: "正常",
+  neutral: "中性",
+  warning: "需关注",
+  unavailable: "暂无法判断",
+};
+
+const PRIORITY_LABELS = {
+  P0: "数据完整性",
+  P1: "组合结构",
+  P2: "表现归因",
+  P3: "跟踪复盘",
+};
+
+const REASON_LABELS = {
+  "missing-fx": "缺少汇率",
+  "missing-raw-data": "缺少行情",
+  "raw-contract-conflict": "行情口径冲突",
+  "price-age-exceeded": "行情已过期",
+  "fx-age-exceeded": "汇率已过期",
+  "quote-data-unavailable": "缺少最新报价",
+  "decision-data-unavailable": "还没有决策记录",
+  "alert-data-unavailable": "还没有关注检查结果",
+  "holdings-cache-write-failed": "持仓快照写入失败",
+  "cache-stale": "持仓快照需要重建",
+  "holdings-cache-invalid": "持仓快照格式异常",
+  "holdings-cache-not-found": "还没有持仓快照",
+  "holdings-cache-not-inspected": "持仓快照尚未检查",
+  "ledger-not-found": "还没有交易记录",
+  "ledger-state-unavailable": "交易记录状态暂不可核验",
+  "raw-inventory-unavailable": "行情清单暂不可用",
+  "raw-pair-incomplete": "行情文件不完整",
+  "audit-data-unavailable": "公司行动审计数据暂不可用",
+  "fx-verification-invalid": "汇率复核数据无效",
+  "exposure-unavailable": "仓位结构暂不可计算",
+  "insufficient-exposure-data": "仓位数据不足",
+  "insufficient-history": "历史区间不足一年",
+  "short-period": "历史区间不足一年",
+  "series-unavailable": "收益序列暂不可用",
+  "pnl-data-unavailable": "盈亏数据暂不可用",
+  "invalid-pnl-data": "盈亏数据无效",
+  "invalid-hhi": "集中度数据无效",
+  "invalid-return-metric": "收益指标无效",
+  "invalid-rule-input": "规则输入无效",
+  "metric-unavailable": "指标暂不可用",
+  "negative-cash": "现金余额为负",
+  "non-positive-equity": "组合净值不为正",
+  "no-root": "没有可用收益率解",
+  "multiple-roots": "存在多个可能的收益率解",
+  "non-convergent": "收益率计算未收敛",
+  "out-of-range": "计算结果超出有效范围",
+  "portfolio-read-failed": "交易记录读取失败",
+  "not-required": "当前不需要",
+  "not-available": "暂未提供",
+  "no-positions": "当前没有持仓",
+  provisional: "数据仍是暂定状态",
+  stale: "数据需要更新",
+  unavailable: "暂不可用",
+  unknown: "原因未知",
+};
+
+const EVIDENCE_KEY_LABELS = {
+  staleCount: "过期报价数",
+  unavailableSources: "缺少来源",
+  maximumObservationAgeCalendarDays: "最大允许行情天数",
+  items: "明细",
+  symbol: "标的",
+  instrumentId: "标的标识",
+  account: "账户",
+  accountId: "账户",
+  reason: "原因",
+  count: "数量",
+  dates: "待确认日期",
+  unaudited: "尚未审计",
+  available: "是否可用",
+  date: "日期",
+  yahoo: "Yahoo 汇率",
+  ecb: "欧洲央行汇率",
+  band: "集中度区间",
+  normalized: "归一化集中度",
+  raw: "原始集中度",
+  value: "数值",
+  valueBase: "人民币金额",
+  weight: "权重",
+  maxPosition: "最高持仓权重",
+  minPosition: "最低持仓权重",
+  maxAccount: "最高账户权重",
+  minAccount: "最低账户权重",
+  targetWeight: "目标仓位",
+  basis: "口径",
+  middleFrom: "中等起点",
+  higherFrom: "较高起点",
+  equal: "记录一致",
+  currentFingerprint: "当前交易记录版本",
+  holdingsFingerprint: "持仓快照版本",
+  mismatchObserved: "曾检测到不一致",
+  fingerprintsEqual: "账本指纹一致",
+  relativeDifference: "相对差异",
+  operator: "判断符号",
+  neutralAmountBase: "持平金额",
+  direction: "盈亏方向",
+  totals: "盈亏汇总",
+  positive: "盈利",
+  negative: "亏损",
+  neutral: "持平",
+  ordering: "排序方式",
+  formula: "计算方式",
+  equalWeights: "完全等权",
+  singlePosition: "单一持仓",
+  xirr: "资金加权收益率",
+  annualizedTwr: "年化时间加权收益率",
+  gap: "口径差异",
+  counts: "结果数量",
+  ratios: "结果占比",
+  total: "总计",
+  met: "已兑现",
+  partial: "部分兑现",
+  missed: "未兑现",
+  undecidable: "无法判断",
+  notDue: "未到期",
+  reviewDue: "待复盘",
+  interpretation: "解释口径",
+};
+
+const EVIDENCE_VALUE_LABELS = {
+  higher: "较高",
+  middle: "中等",
+  lower: "较低",
+  "product-heuristic": "产品启发式分箱",
+  "absolute-contribution-desc": "按盈亏影响的绝对金额从高到低",
+  "user-recorded-outcome": "用户自行记录的复盘结果",
+  positive: "盈利",
+  negative: "亏损",
+  neutral: "持平",
+  available: "可用",
+  verified: "已核验",
+  complete: "完整",
+  provisional: "暂定",
+  stale: "需要更新",
+};
+
+function reasonLabel(reason) {
+  const code = String(reason ?? "unavailable");
+  return REASON_LABELS[code] ?? code;
+}
+
+function sourceStateLabel(state) {
+  return {
+    complete: "已核验",
+    provisional: "暂定",
+    stale: "需要更新",
+    unavailable: "暂不可用",
+  }[state] ?? state;
+}
+
+function evidenceText(value, key = "") {
+  if (value == null) return "暂不可用";
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "string") {
+    return EVIDENCE_VALUE_LABELS[value] ?? reasonLabel(value);
+  }
+  if (typeof value === "number") {
+    if (["weight", "relativeDifference", "xirr", "annualizedTwr", "gap"].includes(key)) {
+      return `${(value * 100).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}%`;
+    }
     return String(value);
   }
-  return JSON.stringify(value);
+  if (Array.isArray(value)) return value.map((item) => evidenceText(item, key)).join("；");
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([nestedKey, nested]) => {
+        const valueKey = key === "ratios" ? "relativeDifference" : nestedKey;
+        return `${EVIDENCE_KEY_LABELS[nestedKey] ?? nestedKey}：${evidenceText(nested, valueKey)}`;
+      })
+      .join(" · ");
+  }
+  return String(value);
 }
 
 function positionByKey(snapshot, accountId, instrumentId) {
@@ -420,6 +591,7 @@ export function createHoldingsController({
   ruleContext = () => ({}),
   onRecordNote = () => {},
   noteLinkCount = () => 0,
+  resolveAShare = (value) => ({ symbol: value, name: "" }),
 }) {
   let ledger = null;
   let snapshot = null;
@@ -608,7 +780,12 @@ export function createHoldingsController({
       appendText(row, "span", item.symbol, "portfolio-pnl-symbol");
       appendText(row, "span", item.account || "—", "portfolio-pnl-account");
       appendText(row, "span", `${item.valueBase} CNY`, "portfolio-pnl-value");
-      appendText(row, "span", item.direction, "portfolio-pnl-direction");
+      appendText(
+        row,
+        "span",
+        { positive: "盈利", negative: "亏损", neutral: "持平" }[item.direction] ?? item.direction,
+        "portfolio-pnl-direction",
+      );
       listNode.append(row);
     }
     parent.append(listNode);
@@ -623,16 +800,27 @@ export function createHoldingsController({
       card.dataset.priority = rule.priority;
       card.dataset.status = rule.status;
       card.tabIndex = 0;
-      card.title = `${rule.condition}；threshold ${evidenceText(rule.threshold)}`;
+      card.title = `${rule.condition}；判断标准 ${evidenceText(rule.threshold)}`;
 
       const header = document.createElement("header");
       const identity = document.createElement("div");
-      appendText(identity, "span", rule.priority, "portfolio-rule-priority");
+      const priority = appendText(
+        identity,
+        "span",
+        PRIORITY_LABELS[rule.priority] ?? rule.priority,
+        "portfolio-rule-priority",
+      );
+      priority.title = `内部优先级 ${rule.priority}`;
       appendText(identity, "h3", rule.name);
-      appendText(identity, "code", rule.id);
+      identity.title = `规则标识：${rule.id}`;
       header.append(identity);
       const badges = document.createElement("div");
-      appendText(badges, "span", rule.status, "portfolio-rule-status");
+      appendText(
+        badges,
+        "span",
+        RULE_STATUS_LABELS[rule.status] ?? rule.status,
+        "portfolio-rule-status",
+      );
       appendText(
         badges,
         "span",
@@ -654,23 +842,31 @@ export function createHoldingsController({
           : [rule.unavailable?.reason ?? "unknown"];
         card.dataset.unavailableReason = reasons[0] ?? "unknown";
         const upstream = rule.unavailable?.upstreamCode
-          ? ` · upstream ${rule.unavailable.upstreamCode}`
+          ? ` · 上游原因 ${reasonLabel(rule.unavailable.upstreamCode)}`
           : "";
-        appendEvidenceRow(facts, "ACTUAL", `unavailable · ${reasons.join(" + ")}${upstream}`);
+        appendEvidenceRow(
+          facts,
+          "当前结果",
+          `暂无法判断 · ${reasons.map(reasonLabel).join(" + ")}${upstream}`,
+        );
       } else {
-        appendEvidenceRow(facts, "ACTUAL", rule.actual);
+        appendEvidenceRow(facts, "当前结果", rule.actual);
       }
-      appendEvidenceRow(facts, "THRESHOLD", rule.threshold);
+      appendEvidenceRow(facts, "判断标准", rule.threshold);
       card.append(facts);
-      renderPnlRows(rule, card);
+      if (rule.id === "pnl-contributors") renderPnlRows(rule, card);
 
       const provenance = document.createElement("dl");
       provenance.className = "portfolio-rule-provenance";
-      appendEvidenceRow(provenance, "SOURCE", rule.data.source);
-      appendEvidenceRow(provenance, "AVAILABLE AT", rule.data.availableAt);
-      appendEvidenceRow(provenance, "STALE", rule.data.stale);
-      appendEvidenceRow(provenance, "PROVISIONAL", rule.data.provisional);
-      card.append(provenance);
+      appendEvidenceRow(provenance, "数据来源", rule.data.source);
+      appendEvidenceRow(provenance, "数据时点", rule.data.availableAt);
+      appendEvidenceRow(provenance, "是否过期", rule.data.stale);
+      appendEvidenceRow(provenance, "是否暂定", rule.data.provisional);
+      const provenanceDetails = document.createElement("details");
+      provenanceDetails.className = "portfolio-data-details portfolio-rule-details";
+      appendText(provenanceDetails, "summary", "查看数据来源与时点");
+      provenanceDetails.append(provenance);
+      card.append(provenanceDetails);
       if (rule.limitations.length) {
         appendText(card, "p", rule.limitations.join("；"), "portfolio-rule-limitations");
       }
@@ -765,8 +961,9 @@ export function createHoldingsController({
       const baseState = document.createElement("span");
       baseState.className = "portfolio-base-badge";
       baseState.textContent = position.baseUnavailable
-        ? `base unavailable · ${position.baseUnavailable.reason}`
-        : "base complete";
+        ? `人民币估值暂不可用 · ${reasonLabel(position.baseUnavailable.reason)}`
+        : "人民币估值可用";
+      baseState.title = position.baseUnavailable?.reason ?? "base-complete";
       head.append(baseState);
       row.append(head);
 
@@ -784,17 +981,17 @@ export function createHoldingsController({
         "移动均价 · 本币",
         `${money(Number(position.avgCostLocal))} ${instrument.currency}`,
       );
-      metric("现价 · 本币", latest ? `${round(latest.close)} ${instrument.currency}` : "unavailable");
+      metric("现价 · 本币", latest ? `${round(latest.close)} ${instrument.currency}` : "待补行情");
       const pnl = position.unrealizedPnlLocal;
       metric(
         "未实现盈亏 · 本币",
-        pnl == null ? "unavailable" : `${money(Number(pnl))} ${instrument.currency}`,
+        pnl == null ? "待补行情" : `${money(Number(pnl))} ${instrument.currency}`,
         pnl == null ? null : Number(pnl) < 0 ? "negative" : Number(pnl) > 0 ? "positive" : null,
       );
       metric(
-        "成本 · CNY base",
+        "人民币成本",
         position.costBasisBase == null
-          ? "unavailable · missing-fx"
+          ? "暂不可用 · 缺少汇率"
           : `${money(Number(position.costBasisBase))} CNY`,
       );
       row.append(metrics);
@@ -804,17 +1001,21 @@ export function createHoldingsController({
       provenance.className = "portfolio-source";
       provenance.dataset.state = source.state;
       for (const [label, value] of [
-        ["SOURCE", source.source],
-        ["ADJUST", source.adjust],
-        ["FINGERPRINT", source.fingerprint],
-        ["STALE / PROVISIONAL / AVAILABLE", `${source.state} · ${source.timing}`],
+        ["数据来源", source.source],
+        ["复权口径", source.adjust],
+        ["数据指纹", source.fingerprint],
+        ["状态与时点", `${sourceStateLabel(source.state)} · ${source.timing}`],
       ]) {
         const part = document.createElement("span");
         appendText(part, "span", label);
         part.append(document.createTextNode(value));
         provenance.append(part);
       }
-      row.append(provenance);
+      const provenanceDetails = document.createElement("details");
+      provenanceDetails.className = "portfolio-data-details portfolio-position-details";
+      appendText(provenanceDetails, "summary", "查看行情来源与时点");
+      provenanceDetails.append(provenance);
+      row.append(provenanceDetails);
       const noteLink = { type: "instrument", symbol: instrument.symbol, market: instrument.market };
       const record = appendText(row, "button", `记录笔记 · ${noteLinkCount(noteLink)}`, "ghost-button record-note-button");
       record.type = "button";
@@ -859,25 +1060,26 @@ export function createHoldingsController({
     const total = valuation?.totalBase ?? null;
     elements.totalBase.textContent =
       total == null
-        ? `unavailable${valuation?.unavailable ? ` · ${valuation.unavailable.code}` : ""}`
+        ? `暂无法计算${valuation?.unavailable ? ` · ${reasonLabel(valuation.unavailable.code)}` : ""}`
         : `${money(Number(total))} CNY`;
     elements.totalBase.dataset.state = total == null ? "unavailable" : "complete";
-    elements.localState.textContent = "complete · 账本本币字段";
+    elements.localState.textContent = "可用 · 账本原币种";
     const base = snapshot?.availability?.base;
     elements.baseState.textContent =
       base?.status === "complete"
-        ? "complete"
-        : `unavailable · ${base?.reason ?? "missing-fx"}`;
+        ? "可用"
+        : `暂不可用 · ${reasonLabel(base?.reason ?? "missing-fx")}`;
     elements.baseState.dataset.state = base?.status ?? "unavailable";
     elements.summaryNote.textContent =
       total == null
-        ? `总资产未显示（${valuation?.unavailable?.code ?? "unavailable"}）：至少一个现价、FX 或 base 成本不可用；本币账本仍可查看与录入。`
-        : `总资产按 ${valuation.endingDate} 检查点可得的 raw 未复权价格与 FX 计算；跨市场收盘并不同步。`;
+        ? `总资产暂未显示：至少一个现价或汇率不可用；原币种交易记录仍可查看和录入。`
+        : `总资产按 ${valuation.endingDate} 可获得的未复权行情与汇率计算；不同市场的收盘时点可能不一致。`;
     const fxSource = sourceStatus(market?.fx);
     elements.fxSource.textContent =
       market?.fx?.reason === "not-required"
-        ? "FX · not required（无 USD 流水/暴露）"
-        : `FX · SOURCE ${fxSource.source} · ADJUST ${fxSource.adjust} · FINGERPRINT ${fxSource.fingerprint} · ${fxSource.state} · ${fxSource.timing}`;
+        ? "无需汇率（当前没有美元交易或持仓）"
+        : `汇率数据 · 来源 ${fxSource.source} · 口径 ${fxSource.adjust} · 指纹 ${fxSource.fingerprint} · ${sourceStateLabel(fxSource.state)} · ${fxSource.timing}`;
+    elements.fxSource.title = market?.fx?.reason ?? fxSource.fingerprint;
     elements.fxSource.dataset.state = fxSource.state;
   }
 
@@ -885,7 +1087,7 @@ export function createHoldingsController({
     if (!ledgerExists && !ledger) {
       elements.empty.hidden = false;
       elements.workspace.hidden = true;
-      showStatus("未发现 portfolio/transactions.json。", "idle");
+      showStatus("还没有交易记录。", "idle");
       onPortfolioState({ hasPositions: false });
       onViewState({
         ledgerExists: false,
@@ -912,8 +1114,8 @@ export function createHoldingsController({
     renderTransactions();
     showStatus(
       ledgerExists
-        ? "账本已读取；行情与 FX 按标的局部降级。"
-        : "账本将在首次保存时以 create-only 建立。",
+        ? "交易记录已读取；缺少的行情或汇率会在对应标的上单独提示。"
+        : "保存第一笔交易后，会在当前项目建立交易记录。",
     );
     onPortfolioState({ hasPositions: positionCount > 0 });
     const lastCheckpoint = analysis?.series?.at(-1) ?? null;
@@ -939,7 +1141,7 @@ export function createHoldingsController({
         availableAt: ruleResults[0]?.asOf ?? now().toISOString(),
         stale: ruleResults.some((rule) => rule.data?.stale === true),
         provisional: ruleResults.some((rule) => rule.data?.provisional === true),
-        message: `${ruleResults.filter((rule) => rule.priority === "P0" && ["warning", "unavailable"].includes(rule.status)).length} 条 P0 数据状态待查看`,
+        message: `${ruleResults.filter((rule) => rule.priority === "P0" && ["warning", "unavailable"].includes(rule.status)).length} 项关键数据待查看`,
       },
     });
   }
@@ -1029,7 +1231,7 @@ export function createHoldingsController({
     elements.workspace.hidden = false;
     elements.form.hidden = false;
     setFormError();
-    showStatus("填写首笔交易；保存时才会 create-only 建立账本。", "idle");
+    showStatus("填写第一笔交易；只有点击保存后才会建立记录。", "idle");
     elements.account.focus();
   }
 
@@ -1039,7 +1241,10 @@ export function createHoldingsController({
       throw new Error("账户必须是字母或数字开头的安全标识");
     }
     const marketId = elements.market.value === "us" ? "us" : "cn";
-    const symbol = canonicalSymbol(elements.symbol.value, marketId);
+    const resolved = marketId === "cn" ? resolveAShare(elements.symbol.value) : null;
+    const symbol = marketId === "cn"
+      ? canonicalSymbol(resolved.symbol, marketId)
+      : canonicalSymbol(elements.symbol.value, marketId);
     const currency = elements.currency.value;
     const expectedCurrency = marketId === "us" ? "USD" : "CNY";
     if (currency !== expectedCurrency) throw new Error(`${marketId === "us" ? "美股" : "A 股"}币种必须是 ${expectedCurrency}`);
@@ -1077,7 +1282,7 @@ export function createHoldingsController({
           market: marketId,
           currency,
           symbol,
-          name: elements.name.value.trim() || symbol,
+          name: elements.name.value.trim() || resolved?.name || symbol,
           aliases: [],
         };
     let transactionId;
@@ -1154,10 +1359,10 @@ export function createHoldingsController({
       const baseReason = result.snapshot?.availability?.base?.reason;
       showStatus(
         result.cacheStale
-          ? `交易已提交（权威流水已保存）；holdings 缓存未更新：${result.cacheWarning?.code ?? "cache-stale"}。刷新时会自动重建，请勿重试。`
+          ? `交易已保存；持仓快照暂未更新（${reasonLabel(result.cacheWarning?.code ?? "cache-stale")}）。刷新时会自动重建，请勿重复提交。`
           : result.snapshot?.availability?.base?.status === "unavailable"
-            ? `交易已提交并刷新持仓；基准币口径 unavailable · ${baseReason ?? "missing-fx"}，本币字段完整。请勿重试。`
-            : "交易已提交并刷新持仓。",
+            ? `交易已保存并刷新持仓；人民币估值暂不可用（${reasonLabel(baseReason ?? "missing-fx")}），原币种数据完整。请勿重复提交。`
+            : "交易已保存并刷新持仓。",
         result.cacheStale || result.snapshot?.availability?.base?.status === "unavailable"
           ? "warning"
           : "idle",
@@ -1184,7 +1389,7 @@ export function createHoldingsController({
 
   function syncCurrency() {
     elements.currency.value = elements.market.value === "us" ? "USD" : "CNY";
-    elements.symbol.placeholder = elements.market.value === "us" ? "AAPL" : "SH600519";
+    elements.symbol.placeholder = elements.market.value === "us" ? "AAPL" : "贵州茅台或 600519";
   }
 
   function reset() {

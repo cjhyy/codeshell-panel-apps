@@ -8,12 +8,124 @@ const app = join(root, "apps", "quant-lab", "app");
 const fixtureRoot = join(root, "test-fixtures", "quant-lab");
 const fixture = async (name) => JSON.parse(await readFile(join(fixtureRoot, name), "utf8"));
 const news = await import(pathToFileURL(join(app, "news-feed.mjs")).href);
+const social = await import(pathToFileURL(join(app, "social-radar.mjs")).href);
 const fetcher = await import(pathToFileURL(join(app, "tools", "fetch-news.mjs")).href);
+
+const socialTask = social.buildSocialRadarTask(
+  "SZ302132 中航成飞",
+  168,
+  new Date("2026-09-03T08:00:00.000Z"),
+);
+assert.equal(socialTask.displayText, "公开社媒扫描：SZ302132 中航成飞");
+assert.match(socialTask.prompt, /WebSearch.*site:stocktwits\.com.*site:x\.com.*site:xiaohongshu\.com/us);
+assert.match(socialTask.prompt, /禁止估算全网声量.*平台总体情绪/us);
+assert.match(socialTask.prompt, /不得登录、绕过验证码、付费墙、robots/u);
+const socialSnapshotInput = {
+  schemaVersion: 1,
+  kind: "social-web-snapshot",
+  query: "SZ302132 中航成飞",
+  resolved: { symbol: "SZ302132", name: "中航成飞", market: "cn" },
+  windowHours: 168,
+  generatedAt: "2026-09-03T08:00:00.000Z",
+  summary: "公开检索样本主要讨论资产整合预期与短期估值分歧。",
+  coverage: [
+    { platform: "x", status: "sampled", query: "site:x.com 中航成飞", note: "只含公开索引" },
+    { platform: "xiaohongshu", status: "no-indexed-results", query: "site:xiaohongshu.com 中航成飞", note: "没有可核验索引结果" },
+  ],
+  themes: [
+    { label: "资产整合", direction: "mixed", summary: "样本同时讨论成长空间与兑现节奏。" },
+  ],
+  mentions: [
+    {
+      platform: "x",
+      title: "公开讨论样本",
+      url: "https://x.com/example/status/1?utm_source=test#fragment",
+      author: "example",
+      publishedAt: "2026-09-03T07:00:00.000Z",
+      stance: "bullish",
+      snippet: "这是一个可核对样本。",
+    },
+    {
+      platform: "x",
+      title: "恶意跳转必须丢弃",
+      url: "https://x.com.evil.example/status/2",
+      author: "",
+      publishedAt: null,
+      stance: "unclear",
+      snippet: "",
+    },
+  ],
+  limitations: ["Web Search 只覆盖公开且被索引的样本，不代表平台全量内容"],
+};
+const socialSnapshot = social.parseSocialRadarSnapshot(JSON.stringify(socialSnapshotInput));
+assert.equal(socialSnapshot.mentions.length, 1);
+assert.equal(socialSnapshot.mentions[0].url, "https://x.com/example/status/1");
+assert.deepEqual(social.socialRadarMetrics(socialSnapshot), {
+  samples: 1,
+  activePlatforms: 1,
+  targetPlatforms: 11,
+  checkedPlatforms: 2,
+  coveragePercent: 18,
+  sampledPlatforms: 1,
+  noResultPlatforms: 1,
+  blockedPlatforms: 0,
+  unavailablePlatforms: 0,
+  notCheckedPlatforms: 9,
+  timestamped: 1,
+  timestampPercent: 100,
+  uniqueAuthors: 1,
+  bullish: 1,
+  bearish: 0,
+  neutral: 0,
+  unclear: 0,
+});
+assert.equal(socialSnapshot.coverage.length, 11);
+assert.equal(socialSnapshot.coverage.at(-1).platform, "tiktok");
+assert.equal(socialSnapshot.coverage.at(-1).status, "not-checked");
+assert.equal(
+  social.socialRadarArchivePath(socialSnapshot),
+  "data/social-radar/history/sz302132-168h-20260903080000000.json",
+);
+const laterSocialSnapshot = social.parseSocialRadarSnapshot(JSON.stringify({
+  ...socialSnapshotInput,
+  generatedAt: "2026-09-04T08:00:00.000Z",
+  coverage: [
+    { platform: "x", status: "sampled", query: "site:x.com 中航成飞", note: "只含公开索引" },
+    { platform: "reddit", status: "sampled", query: "site:reddit.com 中航成飞", note: "只含公开索引" },
+  ],
+  mentions: [
+    socialSnapshotInput.mentions[0],
+    { platform: "reddit", title: "第二个公开样本", url: "https://www.reddit.com/r/stocks/comments/example", author: "sample", publishedAt: null, stance: "bearish", snippet: "讨论估值压力。" },
+  ],
+}));
+const socialTrend = social.socialRadarTrend([socialSnapshot, laterSocialSnapshot], laterSocialSnapshot);
+assert.equal(socialTrend.points.length, 2);
+assert.equal(socialTrend.sampleDelta, 1);
+assert.equal(socialTrend.platformDelta, 1);
+assert.equal(socialTrend.coverageDelta, 0);
+assert.match(socialTrend.disclosure, /不代表平台总声量/u);
+assert.equal(
+  social.normalizeSocialRadarTaskResult(`\`\`\`json\n${JSON.stringify(socialSnapshotInput)}\n\`\`\``)
+    .startsWith("{\n"),
+  true,
+);
+assert.throws(
+  () => social.normalizeSocialRadarTaskResult(JSON.stringify(socialSnapshotInput), {
+    subject: "AAPL Apple",
+    windowHours: 168,
+  }),
+  /与本次查询不一致/u,
+);
+assert.equal(social.normalizeSocialUrl("https://x.com.evil.example/a", "x"), null);
+assert.throws(
+  () => social.parseSocialRadarSnapshot(JSON.stringify({ ...socialSnapshotInput, limitations: [] })),
+  /必须披露检索限制/u,
+);
 
 const subscriptions = news.parseNewsSubscriptions(JSON.stringify({
   format: "codeshell.news-subscriptions",
   version: 1,
-  enabledSources: ["eastmoney-stock", "eastmoney-724", "sec-edgar"],
+  enabledSources: ["cninfo-announcement", "eastmoney-stock", "eastmoney-724", "sec-edgar"],
   symbols: [
     { symbol: "SH600519", market: "cn", origins: ["holding"] },
     { symbol: "SZ000001", market: "cn", origins: ["watch"] },
@@ -39,6 +151,22 @@ assert.equal(fast.length, 1, "unlinked 7x24 headlines must not enter the feed");
 assert.equal(fast[0].symbol, "SZ000001");
 assert.equal(fast[0].association, "confirmed");
 
+const cninfoPayload = {
+  announcements: [{
+    secCode: "600519",
+    announcementId: "1225530001",
+    announcementTitle: "<em>贵州茅台</em>2026年半年度报告",
+    announcementTime: Date.parse("2026-08-26T00:20:00.000Z"),
+    adjunctUrl: "finalpage/2026-08-26/1225530001.PDF",
+  }],
+};
+const cninfo = news.parseCninfoAnnouncements(cninfoPayload, "SH600519", "2026-08-26T06:30:00.000Z");
+assert.equal(cninfo.length, 1);
+assert.equal(cninfo[0].sourceTier, 1);
+assert.equal(cninfo[0].kind, "filing");
+assert.equal(cninfo[0].title, "贵州茅台 2026年半年度报告");
+assert.equal(cninfo[0].url, "https://static.cninfo.com.cn/finalpage/2026-08-26/1225530001.PDF");
+
 const sec = news.parseSecSubmissions(await fixture("news-sec-submissions.json"), {
   symbol: "AAPL",
   cik: "0000320193",
@@ -53,6 +181,7 @@ assert.equal(news.isAllowedNewsUrl("file:///tmp/a"), false);
 assert.equal(news.isAllowedNewsUrl("https://sec.gov.evil.example/a"), false);
 assert.equal(news.isAllowedNewsUrl("https://www.sec.gov/Archives/a"), true);
 assert.equal(news.isAllowedNewsUrl("https://finance.eastmoney.com/a/1.html"), true);
+assert.equal(news.isAllowedNewsUrl("https://static.cninfo.com.cn/finalpage/2026-08-26/1225530001.PDF"), true);
 
 const weak = news.normalizeNewsItem({
   id: "weak:1",
@@ -74,6 +203,7 @@ assert.equal(weak.title.includes("<system>"), false);
 
 const previous = news.emptyNewsCache("2026-08-26T05:00:00.000Z");
 const first = news.mergeNewsCache(previous, [
+  { source: "cninfo-announcement", status: "ok", items: cninfo },
   { source: "eastmoney-stock", status: "ok", items: stock },
   { source: "eastmoney-724", status: "ok", items: fast },
   { source: "sec-edgar", status: "ok", items: sec }
@@ -85,7 +215,7 @@ const stale = news.mergeNewsCache(first, [
 assert.equal(stale.sources["eastmoney-stock"].lastSuccessAt, "2026-08-26T06:30:00.000Z");
 assert.equal(stale.sources["eastmoney-stock"].items[0].stale, true);
 assert.equal(stale.sources["eastmoney-724"].status, "ok");
-for (const source of ["eastmoney-stock", "eastmoney-724", "sec-edgar"]) {
+for (const source of ["cninfo-announcement", "eastmoney-stock", "eastmoney-724", "sec-edgar"]) {
   const failed = news.mergeNewsCache(first, [{ source, status: "error", errorCode: "TIMEOUT" }], subscriptions, "2026-08-26T07:05:00.000Z");
   assert.equal(failed.sources[source].items.length, first.sources[source].items.length, `${source} must keep its old cache`);
   assert.equal(failed.sources[source].lastSuccessAt, first.sources[source].lastSuccessAt);
@@ -111,10 +241,11 @@ const feed = news.buildNewsFeed({
     }
   }
 }, subscriptions, "2026-08-26T07:00:00.000Z");
-assert.equal(feed.items.filter((item) => item.title === stock[0].title).length, 2, "different symbols must not cluster");
-const clustered = feed.items.find((item) => item.symbol === "SH600519" && item.title === stock[0].title);
-assert.equal(clustered.source, "sec-edgar", "official source must become the primary card");
-assert.equal(clustered.occurrences.length, 2, "all event sources must be retained");
+assert.equal(feed.items.filter((item) => item.occurrences.some((entry) => entry.title === stock[0].title)).length, 2, "different symbols must not cluster");
+const clustered = feed.items.find((item) => item.symbol === "SH600519" && item.occurrences.some((entry) => entry.title === stock[0].title));
+assert.equal(clustered.source, "cninfo-announcement", "the official A-share disclosure must become the primary card");
+assert.equal(clustered.occurrences.length, 3, "all event sources, including the official A-share disclosure, must be retained");
+assert(clustered.occurrences.some((item) => item.source === "cninfo-announcement"));
 news.parseNewsFeed(JSON.stringify(feed));
 news.parseNewsCache(JSON.stringify(stale));
 
@@ -278,12 +409,17 @@ const fetchImpl = async (url, init) => {
   seenRequests.push({ url: parsed.toString(), headers: init.headers });
   if (parsed.hostname === "np-listapi.eastmoney.com") return new Response(JSON.stringify(await fixture("news-eastmoney-stock.json")));
   if (parsed.hostname === "np-weblist.eastmoney.com") return new Response(JSON.stringify(await fixture("news-eastmoney-724.json")));
+  if (parsed.hostname === "www.cninfo.com.cn") {
+    assert.equal(init.method, "POST");
+    assert.match(String(init.body), /searchkey=(?:600519|000001)/u);
+    return new Response(JSON.stringify(cninfoPayload));
+  }
   if (parsed.pathname.endsWith("company_tickers.json")) return new Response(JSON.stringify(tickerMap));
   if (parsed.hostname === "data.sec.gov") return new Response(JSON.stringify(await fixture("news-sec-submissions.json")));
   return new Response("missing", { status: 404 });
 };
 const fetched = await fetcher.runNewsFetch({ subscriptions, previousCache: news.emptyNewsCache("2026-08-26T05:00:00.000Z"), now: "2026-08-26T06:30:00.000Z", fetchImpl, sleep: async () => {} });
-assert.deepEqual(fetched.attempts.map((item) => item.status), ["ok", "ok", "ok"]);
+assert.deepEqual(fetched.attempts.map((item) => item.status), ["ok", "ok", "ok", "ok"]);
 assert(seenRequests.find((item) => item.url.includes("getFastNewsList")).url.includes("sortEnd="));
 assert.equal(seenRequests.find((item) => item.url.includes("company_tickers")).headers["User-Agent"], "Quant Lab quant@example.com");
 const failedFetch = await fetcher.runNewsFetch({

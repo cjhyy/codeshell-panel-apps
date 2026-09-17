@@ -53,8 +53,11 @@ impact, delistings, borrow, taxes, corporate actions, or order queueing.
   difference between strategy and benchmark total return.
 - Annualized volatility is the sample standard deviation of close-to-close strategy equity returns
   multiplied by `sqrt(252)`.
-- Sharpe uses close-to-close strategy equity returns, a zero risk-free rate, and sample standard
-  deviation, annualized by `sqrt(252)`.
+- Sharpe uses close-to-close strategy equity returns, the configured annual risk-free rate, and
+  sample standard deviation, annualized by `sqrt(252)`.
+- Downside deviation is the root mean square of returns below the daily risk-free target,
+  annualized by `sqrt(252)`. Sortino divides annualized mean excess return by that downside
+  deviation and is unavailable when the sample contains no downside observations.
 - Calmar is annualized return divided by the absolute maximum drawdown and is unavailable when
   drawdown is zero.
 - Profit factor is gross winning P&L divided by absolute gross losing P&L and is unavailable when
@@ -71,14 +74,26 @@ Saved `*.quant.json` files use:
 ```json
 {
   "format": "codeshell.quant-strategy",
-  "version": 1,
+  "version": 2,
   "name": "AAPL SMA 20/50",
+  "engine": {
+    "version": "1.3.0",
+    "revisedAt": "2026-09-04",
+    "signalTiming": "close-to-next-open",
+    "positionSide": "long-only",
+    "note": "Close signal, next-open execution; costs, sizing and stops are included."
+  },
   "dataset": "data/market/AAPL.csv",
   "sample": {
     "bars": 1258,
     "from": "2021-01-04",
     "to": "2025-12-31",
     "fingerprint": "fnv1a32:1a2b3c4d"
+  },
+  "datasetMeta": {
+    "adjust": "adj",
+    "source": "yahoo-chart",
+    "syncedAt": "2026-09-04T00:00:00.000Z"
   },
   "strategy": {
     "type": "sma-cross",
@@ -89,13 +104,16 @@ Saved `*.quant.json` files use:
     "initialCapital": 100000,
     "feeBps": 5,
     "slippageBps": 2,
-    "stopLossPct": 8
+    "stopLossPct": 8,
+    "signalMode": "state",
+    "sizer": { "type": "all-in" },
+    "riskFreeRate": 0
   }
 }
 ```
 
-Validate saved specs with the colocated `references/quant-strategy-v1.schema.json` schema when a
-JSON Schema validator is available. The engine additionally enforces cross-field rules such as
+Validate new saved specs with the colocated `formats/quant-strategy-v2.schema.json` schema when a
+JSON Schema validator is available. The v1 schema remains packaged for older saved files. The engine additionally enforces cross-field rules such as
 `fast < slow` and `oversold < overbought`, and rejects lookback periods that leave fewer than two
 bars after indicator warm-up.
 

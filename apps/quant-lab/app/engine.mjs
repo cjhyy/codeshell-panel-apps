@@ -1,6 +1,16 @@
 /* Deterministic research engine used only by the Quant Lab Panel App. */
 const TRADING_DAYS = 252;
 
+// Bump this release whenever execution semantics change. Saved strategies and
+// exported results carry it so an old run is not mistaken for a current one.
+export const BACKTEST_ENGINE_RELEASE = Object.freeze({
+  version: "1.3.0",
+  revisedAt: "2026-09-04",
+  signalTiming: "close-to-next-open",
+  positionSide: "long-only",
+  note: "收盘生成信号、次日开盘执行；A 股买入当日不卖出，费用、滑点、仓位、止损与最大持有期均进入结果。",
+});
+
 export function markdownInlineCode(value) {
   const text = String(value).replaceAll("\n", " ");
   const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
@@ -295,6 +305,17 @@ function metricsFor(equity, initialCapital, trades, exposureDays, benchmarkRetur
   const dailyRiskFree = (1 + riskFreeRate) ** (1 / TRADING_DAYS) - 1;
   const sharpe =
     volatility === 0 ? 0 : ((meanDaily - dailyRiskFree) / volatility) * Math.sqrt(TRADING_DAYS);
+  // Sortino uses only returns below the daily minimum acceptable return. Keep
+  // the ratio unavailable when no downside observations exist; infinity would
+  // look precise while carrying no useful comparison signal.
+  const downsideSquares = dailyReturns.map((value) => Math.min(0, value - dailyRiskFree) ** 2);
+  const downsideDeviationDaily = downsideSquares.length
+    ? Math.sqrt(downsideSquares.reduce((sum, value) => sum + value, 0) / downsideSquares.length)
+    : 0;
+  const downsideDeviation = downsideDeviationDaily * Math.sqrt(TRADING_DAYS);
+  const sortino = downsideDeviationDaily === 0
+    ? null
+    : ((meanDaily - dailyRiskFree) / downsideDeviationDaily) * Math.sqrt(TRADING_DAYS);
   const winners = trades.filter((trade) => trade.pnl > 0).length;
   const grossProfit = trades.reduce((sum, trade) => sum + Math.max(0, trade.pnl), 0);
   const grossLoss = trades.reduce((sum, trade) => sum + Math.max(0, -trade.pnl), 0);
@@ -305,6 +326,8 @@ function metricsFor(equity, initialCapital, trades, exposureDays, benchmarkRetur
     maximumDrawdown,
     sharpe,
     annualizedVolatility: volatility * Math.sqrt(TRADING_DAYS),
+    downsideDeviation,
+    sortino,
     calmar: maximumDrawdown === 0 ? null : annualizedReturn / Math.abs(maximumDrawdown),
     benchmarkReturn,
     excessReturn: totalReturn - benchmarkReturn,
@@ -532,12 +555,16 @@ export function runBacktest(bars, configuration) {
   const feeRate = finiteNumber(configuration.feeBps, "fee bps") / 10_000;
   const slippageRate = finiteNumber(configuration.slippageBps, "slippage bps") / 10_000;
   const stopLossRate = finiteNumber(configuration.stopLossPct, "stop loss") / 100;
+  const maxHoldingDays = Number(configuration.maxHoldingDays ?? 0);
   if (initialCapital <= 0) throw new Error("initial capital must be positive");
   if (feeRate < 0 || feeRate >= 1 || slippageRate < 0 || slippageRate >= 1) {
     throw new Error("fee and slippage assumptions must be between 0 and 10000 bps");
   }
   if (stopLossRate < 0 || stopLossRate >= 1) {
     throw new Error("stop loss must be between 0% (inclusive) and 100% (exclusive)");
+  }
+  if (!Number.isInteger(maxHoldingDays) || maxHoldingDays < 0 || maxHoldingDays > 10_000) {
+    throw new Error("max holding days must be an integer within [0, 10000]");
   }
   validateStrategy(configuration.strategy, bars.length);
   const sizer = validateSizer(configuration.sizer);
@@ -593,7 +620,10 @@ export function runBacktest(bars, configuration) {
       let exitedThisBar = false;
       if (shares > 0) {
         const stopPrice = stopLossRate > 0 ? entry.price * (1 - stopLossRate) : 0;
-        if (stopPrice > 0 && bar.low <= stopPrice) {
+        if (maxHoldingDays > 0 && index - entry.index >= maxHoldingDays) {
+          exitPosition(bar, bar.open * (1 - slippageRate), "max-hold");
+          exitedThisBar = true;
+        } else if (stopPrice > 0 && bar.low <= stopPrice) {
           const executableStop = Math.min(bar.open, stopPrice) * (1 - slippageRate);
           exitPosition(bar, executableStop, "stop");
           exitedThisBar = true;
@@ -622,14 +652,8 @@ export function runBacktest(bars, configuration) {
         const cost = shares * entryPrice;
         const entryFee = cost * feeRate;
         cash -= cost + entryFee;
-        entry = { date: bar.date, price: entryPrice, cashBefore };
+        entry = { date: bar.date, price: entryPrice, cashBefore, index };
         exposedThisBar = true;
-      }
-      if (shares > 0 && entry.date === bar.date && stopLossRate > 0) {
-        const stopPrice = entry.price * (1 - stopLossRate);
-        if (bar.low <= stopPrice) {
-          exitPosition(bar, stopPrice * (1 - slippageRate), "stop");
-        }
       }
     }
     if (index < tradingFromIndex) {
@@ -666,6 +690,7 @@ export function runBacktest(bars, configuration) {
     "maximumDrawdown",
     "sharpe",
     "annualizedVolatility",
+    "downsideDeviation",
     "benchmarkReturn",
     "excessReturn",
     "averageTradeReturn",
@@ -678,6 +703,7 @@ export function runBacktest(bars, configuration) {
     benchmark.some((point) => !Number.isFinite(point.value)) ||
     finiteMetrics.some((key) => !Number.isFinite(metrics[key])) ||
     (metrics.calmar != null && !Number.isFinite(metrics.calmar)) ||
+    (metrics.sortino != null && !Number.isFinite(metrics.sortino)) ||
     (metrics.profitFactor != null && !Number.isFinite(metrics.profitFactor))
   ) {
     throw new Error("backtest result is numerically unstable; check price magnitudes and inputs");
@@ -1093,11 +1119,11 @@ export function researchEvidence(result, options = {}) {
 // the backtester uses, so an alert can be validated by the same walk-forward
 // machinery rather than being an unbacktestable heuristic.
 
-const ALERT_RULES = ["signal-entry", "rsi-oversold", "price-below", "drawdown-from-high"];
+const ALERT_RULES = ["signal-entry", "rsi-oversold", "price-below", "drawdown-from-high", "compound"];
+const PRIMITIVE_ALERT_RULES = ALERT_RULES.filter((type) => type !== "compound");
 
-export function validateAlertRule(rule) {
-  if (!rule || typeof rule !== "object") throw new Error("alert rule is required");
-  if (!ALERT_RULES.includes(rule.type)) throw new Error(`unknown alert rule: ${rule.type}`);
+function validatePrimitiveAlertRule(rule) {
+  if (!PRIMITIVE_ALERT_RULES.includes(rule.type)) throw new Error(`unknown alert rule: ${rule.type}`);
   if (rule.type === "price-below") {
     const price = finiteNumber(rule.price, "alert price");
     if (price <= 0) throw new Error("alert price must be positive");
@@ -1120,20 +1146,31 @@ export function validateAlertRule(rule) {
   return { type: rule.type, strategy: rule.strategy ?? null };
 }
 
-// Evaluates one symbol. Returns a structured verdict rather than a message, so
-// the caller decides how to present it and the agent never invents numbers.
-export function evaluateWatchItem(bars, item) {
-  if (!Array.isArray(bars) || bars.length < 2) throw new Error("need at least two bars");
-  const rule = validateAlertRule(item.rule);
+export function validateAlertRule(rule) {
+  if (!rule || typeof rule !== "object") throw new Error("alert rule is required");
+  if (!ALERT_RULES.includes(rule.type)) throw new Error(`unknown alert rule: ${rule.type}`);
+  if (rule.type === "compound") {
+    const operator = rule.operator === "or" ? "or" : rule.operator === "and" ? "and" : null;
+    if (!operator) throw new Error("compound alert operator must be and or or");
+    if (!Array.isArray(rule.conditions) || rule.conditions.length < 2 || rule.conditions.length > 4) {
+      throw new Error("compound alert needs 2 to 4 conditions");
+    }
+    return {
+      type: rule.type,
+      operator,
+      conditions: rule.conditions.map((condition) => {
+        if (condition?.type === "compound") throw new Error("nested compound alerts are not supported");
+        if (!condition || typeof condition !== "object") throw new Error("compound alert condition is invalid");
+        return validatePrimitiveAlertRule(condition);
+      }),
+    };
+  }
+  return validatePrimitiveAlertRule(rule);
+}
+
+function evaluatePrimitiveWatchRule(bars, item, rule, base) {
   const last = bars.at(-1);
   const closes = bars.map((bar) => bar.close);
-  const base = {
-    symbol: item.symbol,
-    asOf: last.date,
-    close: last.close,
-    changePct: closes.at(-2) > 0 ? last.close / closes.at(-2) - 1 : 0,
-    rule: rule.type,
-  };
 
   if (rule.type === "price-below") {
     return {
@@ -1184,6 +1221,47 @@ export function evaluateWatchItem(bars, item) {
         ? `${strategyRuleLabel(strategy)} 处于持有区间，但今日无新信号`
         : `${strategyRuleLabel(strategy)} 未触发`,
     distance: null,
+  };
+}
+
+// Evaluates one symbol. Returns a structured verdict rather than a message, so
+// the caller decides how to present it and the agent never invents numbers.
+export function evaluateWatchItem(bars, item) {
+  if (!Array.isArray(bars) || bars.length < 2) throw new Error("need at least two bars");
+  const rule = validateAlertRule(item.rule);
+  const last = bars.at(-1);
+  const closes = bars.map((bar) => bar.close);
+  const base = {
+    symbol: item.symbol,
+    asOf: last.date,
+    close: last.close,
+    changePct: closes.at(-2) > 0 ? last.close / closes.at(-2) - 1 : 0,
+    rule: rule.type,
+  };
+
+  if (rule.type !== "compound") return evaluatePrimitiveWatchRule(bars, item, rule, base);
+
+  const conditions = rule.conditions.map((condition) =>
+    evaluatePrimitiveWatchRule(bars, item, condition, { ...base, rule: condition.type }),
+  );
+  const hitCount = conditions.filter((condition) => condition.triggered).length;
+  const triggered = rule.operator === "and" ? hitCount === conditions.length : hitCount > 0;
+  const finiteDistances = conditions
+    .map((condition) => condition.distance)
+    .filter((distance) => Number.isFinite(distance));
+  const distance = finiteDistances.length
+    ? rule.operator === "and"
+      ? Math.max(...finiteDistances)
+      : Math.min(...finiteDistances)
+    : null;
+  const modeLabel = rule.operator === "and" ? "全部满足" : "任一满足";
+  return {
+    ...base,
+    triggered,
+    operator: rule.operator,
+    conditions,
+    detail: `${modeLabel} ${hitCount}/${conditions.length}：${conditions.map((condition) => condition.detail).join("；")}`,
+    distance,
   };
 }
 

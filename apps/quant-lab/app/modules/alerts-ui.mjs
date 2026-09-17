@@ -139,6 +139,7 @@ export function createAlertsController({
   const state = {
     tasks: { cn: null, us: null },
     errors: { cn: null, us: null },
+    retryIntent: { cn: null, us: null },
     legacy: [],
     loaded: false,
     inFlight: false,
@@ -191,10 +192,19 @@ export function createAlertsController({
               : "empty";
     setText(row.time, MARKET_TASKS[market].scheduleLabel);
     const binding = (item) =>
-      `${item.permissionLevel ?? "full"} · ${item.resumeSessionId ? "绑定会话" : "依赖当前会话"}`;
+      `${item.permissionLevel === "full" ? "允许联网检查" : "权限受限"} · ${item.resumeSessionId ? "跟随当前会话" : "需要当前会话可用"}`;
     if (error) {
       setText(row.status, `失败 · ${error}`);
-      setText(row.button, task ? "关闭" : "重试");
+      setText(
+        row.button,
+        state.retryIntent[market] === "read"
+          ? "重试读取"
+          : state.retryIntent[market] === "remove"
+            ? "重试关闭"
+            : task
+              ? "重试更新"
+              : "重试开启",
+      );
     } else if (task && !plan) {
       setText(row.status, `已开启 · ${binding(task)} · 本市场已无关注标的，任务仍在按旧清单运行`);
       setText(row.button, "关闭");
@@ -224,7 +234,11 @@ export function createAlertsController({
       elements.master,
       requiredCount > 0 && activeCount === requiredCount ? "关闭分市场提醒" : "开启分市场提醒",
     );
-    elements.master.disabled = state.inFlight || requiredCount === 0 || blocked();
+    elements.master.disabled =
+      state.inFlight ||
+      requiredCount === 0 ||
+      blocked() ||
+      Object.values(state.retryIntent).includes("read");
     setText(
       elements.summary,
       `${activeCount}/${requiredCount} 个所需市场任务已开启${state.legacy.length ? ` · ${state.legacy.length} 个旧任务仍保留` : ""}`,
@@ -250,6 +264,10 @@ export function createAlertsController({
     for (const market of MARKET_ORDER) {
       const plan = planFor(market) ?? MARKET_TASKS[market];
       state.tasks[market] = exactTask(tasks, plan);
+      if (state.retryIntent[market] === "read") {
+        state.errors[market] = null;
+        state.retryIntent[market] = null;
+      }
     }
     state.legacy = tasks.filter((task) => typeof task?.name === "string" && LEGACY_NAME.test(task.name));
     state.loaded = true;
@@ -298,9 +316,11 @@ export function createAlertsController({
         throw new Error("创建后 list 验证不一致");
       }
       state.tasks[market] = task;
+      state.retryIntent[market] = null;
       return task;
     } catch (error) {
       state.errors[market] = error instanceof Error ? error.message : "任务操作失败";
+      state.retryIntent[market] = "ensure";
       return null;
     } finally {
       render();
@@ -314,14 +334,17 @@ export function createAlertsController({
       const task = exactTask(tasks, MARKET_TASKS[market]);
       if (!task) {
         state.tasks[market] = null;
+        state.retryIntent[market] = null;
         return true;
       }
       const result = await hostCall("automations.delete", { id: task.id });
       if (result?.ok === false) throw new Error("Host 未删除任务");
       state.tasks[market] = null;
+      state.retryIntent[market] = null;
       return true;
     } catch (error) {
       state.errors[market] = error instanceof Error ? error.message : "任务关闭失败";
+      state.retryIntent[market] = "remove";
       return false;
     } finally {
       render();
@@ -361,14 +384,35 @@ export function createAlertsController({
   }
 
   async function toggleMarket(market) {
+    let action = state.retryIntent[market];
     await withFlight(async () => {
       if (blocked()) return notify("请先处理关注迁移状态；现有提醒保持不变", "error");
-      await readState();
-      const plan = planFor(market);
-      const task = state.tasks[market];
-      if (task && usablePlan(plan) && !taskMatches(task, plan)) await ensureMarket(market);
-      else if (task) await deleteMarket(market);
-      else await ensureMarket(market);
+      try {
+        await readState();
+        if (action === "read") {
+          for (const candidate of MARKET_ORDER) {
+            if (state.retryIntent[candidate] !== "read") continue;
+            state.errors[candidate] = null;
+            state.retryIntent[candidate] = null;
+          }
+          notify("分市场提醒状态已重新读取");
+          render();
+          return;
+        }
+        const plan = planFor(market);
+        const task = state.tasks[market];
+        action ??= task && usablePlan(plan) && !taskMatches(task, plan)
+          ? "ensure"
+          : task
+            ? "remove"
+            : "ensure";
+        if (action === "remove") await deleteMarket(market);
+        else await ensureMarket(market);
+      } catch (error) {
+        state.errors[market] = error instanceof Error ? error.message : "无法读取任务";
+        state.retryIntent[market] = action ?? "read";
+        render();
+      }
     });
   }
 
@@ -403,6 +447,8 @@ export function createAlertsController({
       const message = error instanceof Error ? error.message : "无法读取任务";
       state.errors.cn = message;
       state.errors.us = message;
+      state.retryIntent.cn = "read";
+      state.retryIntent.us = "read";
       render();
     }),
     render,
@@ -415,6 +461,8 @@ export function createAlertsController({
       state.tasks.us = null;
       state.errors.cn = null;
       state.errors.us = null;
+      state.retryIntent.cn = null;
+      state.retryIntent.us = null;
       state.legacy = [];
       state.loaded = false;
       state.inFlight = false;

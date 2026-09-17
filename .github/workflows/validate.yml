@@ -26,6 +26,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y ffmpeg
       - run: npm run test:media:video-studio
       - run: npm test
+      - run: npm run test:ui:quant-lab
       - run: npm run test:ui:video-studio
       - run: npm run test:large-doc
       - run: npm run test:fidelity
