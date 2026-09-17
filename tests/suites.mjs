@@ -19,6 +19,11 @@ export const suites = [
     ),
   },
   {
+    id: "video-download",
+    label: "Video Download cookie selection and authorization",
+    commands: [["--test", "tests/apps/video-download/cookie-runtime.test.mjs"]],
+  },
+  {
     id: "video-studio",
     label: "Video Studio project model and Host contracts",
     commands: [

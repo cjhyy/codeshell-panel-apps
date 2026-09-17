@@ -88,6 +88,10 @@ const elements = {
   taskLog: document.querySelector("#task-log"),
   historyList: document.querySelector("#history-list"),
   clearHistory: document.querySelector("#clear-history"),
+  queueList: document.querySelector("#queue-list"),
+  queueSummary: document.querySelector("#queue-summary"),
+  queuePause: document.querySelector("#queue-pause"),
+  queueClear: document.querySelector("#queue-clear"),
   ytdlpDot: document.querySelector("#ytdlp-dot"),
   ytdlpStatus: document.querySelector("#ytdlp-status"),
   ffmpegDot: document.querySelector("#ffmpeg-dot"),
@@ -118,16 +122,7 @@ const FFMPEG_RELEASE_BASE = "https://github.com/yt-dlp/FFmpeg-Builds/releases/do
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
-const SUPPORTED_FORMATS = new Set([
-  "best",
-  "2160",
-  "1440",
-  "1080",
-  "720",
-  "480",
-  "360",
-  "audio",
-]);
+const SUPPORTED_FORMATS = new Set(["best", "2160", "1440", "1080", "720", "480", "360", "audio"]);
 const SUBTITLE_MODES = new Set(["manual", "auto", "both"]);
 const SUBTITLE_LANGUAGE_PRESETS = {
   "zh-en": "zh-Hans,zh-Hant,zh.*,en.*",
@@ -139,6 +134,10 @@ const SUBTITLE_LANGUAGE_PRESETS = {
 const TAB_NAMES = ["download", "task", "history"];
 
 let currentJob = null;
+let downloadQueue = [];
+let lastDownloadDirectory = null;
+let queuePaused = false;
+let queueSubmissionPending = false;
 let inspectionJob = null;
 let inspectedVideo = null;
 let context = { apiVersion: 0 };
@@ -168,6 +167,11 @@ let cookieAccountsUrl = "";
 let cookieLoading = false;
 let cookieAuthorization = null;
 let cookieReloadTimer = null;
+let cookieRequestId = 0;
+let cookieLoginPending = false;
+let cookieAccountsError = "";
+let cookieRenderedAccountsUrl = "";
+const cookieSelections = new Map();
 const ignoredProbeProcessIds = new Set();
 const outputBuffers = { stdout: "", stderr: "" };
 
@@ -422,8 +426,12 @@ function renderVersionInfo() {
   elements.refreshVersions.disabled =
     versionRefreshPending ||
     dependencyRefreshPending ||
-    Boolean(currentJob?.running || inspectionJob?.running);
-  elements.refreshVersions.textContent = versionRefreshPending ? "查询中…" : "刷新";
+    Boolean(currentJob?.running || inspectionJob?.running || queueSubmissionPending);
+  elements.refreshVersions.textContent = dependencyRefreshPending
+    ? "检测中…"
+    : versionRefreshPending
+      ? "查询中…"
+      : "刷新环境";
 
   if (versionRefreshPending) {
     elements.versionComparison.dataset.state = "checking";
@@ -509,6 +517,20 @@ function normalizedUrl(options = {}) {
   }
 }
 
+function cookieRequestUrl(urlValue) {
+  try {
+    const url = new URL(urlValue);
+    if (url.protocol !== "https:" || url.username || url.password) return null;
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    // These short links belong to the same video service. Use its login site
+    // consistently for account lookup, login, and the Host authorization check.
+    const siteHost = { "youtu.be": "youtube.com", "b23.tv": "bilibili.com" }[host] || host;
+    return `https://${siteHost}/`;
+  } catch {
+    return null;
+  }
+}
+
 function cookieSite(urlValue) {
   const url = new URL(urlValue);
   const host = url.hostname.toLowerCase().replace(/^www\./, "");
@@ -524,100 +546,167 @@ function cookieSite(urlValue) {
   };
 }
 
+function cookieErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/trusted workspace/i.test(message)) {
+    return "请先在 CodeShell 中信任当前项目，再刷新 Cookie 账号。";
+  }
+  if (/active project-bound task|scope is not bound|scope binding timed out/i.test(message)) {
+    return "当前面板尚未绑定项目，请从项目中重新打开面板后刷新。";
+  }
+  if (/unavailable|unknown.*method|unsupported|permission.*credentials\.cookies/i.test(message)) {
+    return "当前 CodeShell 未提供 Cookie 访问，请更新 CodeShell 并确认面板已获凭证权限。";
+  }
+  if (/valid https URL/i.test(message)) return "Cookie 需要 HTTPS 链接，请检查视频网址。";
+  return `无法读取 Cookie 账号：${message}`;
+}
+
 function invalidateCookieAuthorization() {
   cookieAuthorization = null;
 }
 
-function renderCookieAccounts(message = "", preferredId = "") {
-  const selected = preferredId || elements.cookieSelect.value;
+function rememberCookieSelection() {
+  if (cookieRenderedAccountsUrl) {
+    cookieSelections.set(cookieRenderedAccountsUrl, elements.cookieSelect.value);
+  }
+}
+
+function cookieControlsUnavailable() {
+  return (
+    queueSubmissionPending ||
+    inspectionJob?.running ||
+    cookieLoading ||
+    cookieLoginPending ||
+    !cookieRequestUrl(normalizedUrl()) ||
+    Number(context.apiVersion) < 10
+  );
+}
+
+function renderCookieAccounts(message = "", preferredId = null) {
+  const url = cookieRequestUrl(normalizedUrl());
+  const selected = preferredId ?? (cookieAccountsUrl === url ? elements.cookieSelect.value : "");
   elements.cookieSelect.replaceChildren();
   const none = document.createElement("option");
   none.value = "";
   none.textContent = "不使用 Cookie";
   elements.cookieSelect.append(none);
-  for (const account of cookieAccounts) {
+  const accounts = cookieAccountsUrl === url ? cookieAccounts : [];
+  cookieRenderedAccountsUrl = cookieAccountsUrl === url ? url : "";
+  for (const account of accounts) {
     const option = document.createElement("option");
     option.value = account.id;
-    option.textContent = account.health === "corrupted" ? `${account.label}（需要重新登录）` : account.label;
+    option.textContent =
+      account.health === "corrupted" ? `${account.label}（需要重新登录）` : account.label;
     option.disabled = account.health === "corrupted";
     elements.cookieSelect.append(option);
   }
-  if (cookieAccounts.some((account) => account.id === selected && account.health !== "corrupted")) {
+  if (accounts.some((account) => account.id === selected && account.health !== "corrupted")) {
     elements.cookieSelect.value = selected;
   }
+  const unavailable = cookieControlsUnavailable();
+  elements.cookieSelect.disabled = unavailable;
+  elements.cookieRefresh.disabled = unavailable;
+  elements.cookieLogin.disabled = unavailable;
   const validUrl = Boolean(normalizedUrl());
-  const available = Number(context.apiVersion) >= 10;
-  elements.cookieSelect.disabled = cookieLoading || !validUrl || !available;
-  elements.cookieRefresh.disabled = cookieLoading || !validUrl || !available;
-  elements.cookieLogin.disabled = cookieLoading || !validUrl || !available;
-  elements.cookieHelp.textContent = message
-    ? message
-    : !validUrl
+  elements.cookieHelp.textContent =
+    message ||
+    cookieAccountsError ||
+    (!validUrl
       ? "粘贴链接后会显示与该网站匹配的已保存账号。"
-      : !available
-        ? "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。"
-        : cookieLoading
-          ? "正在读取与该网站匹配的已保存账号…"
-          : cookieAccounts.length
-            ? `找到 ${cookieAccounts.length} 个匹配账号；Cookie 内容不会暴露给面板。`
-            : "没有匹配账号，可点击“登录并保存”创建一个。";
+      : !url
+        ? "Cookie 仅支持 HTTPS 链接，请使用网站的 HTTPS 视频网址。"
+        : Number(context.apiVersion) < 10
+          ? "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。"
+          : cookieLoginPending
+            ? "请在 CodeShell 打开的登录窗口中完成登录，然后保存。"
+            : cookieLoading
+              ? "正在读取与该网站匹配的已保存账号…"
+              : accounts.length
+                ? elements.cookieSelect.value
+                  ? `已选择 ${accounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；首次使用时会确认授权。`
+                  : `找到 ${accounts.length} 个匹配账号，请在上方选择要使用的账号。`
+                : "未找到该网站的已保存账号。可点击“登录并保存”；不会自动读取系统浏览器的 Cookie。");
 }
 
 async function refreshCookieAccounts(options = {}) {
-  const url = normalizedUrl();
+  if (cookieReloadTimer) clearTimeout(cookieReloadTimer);
+  cookieReloadTimer = null;
+  const requestId = ++cookieRequestId;
+  const url = cookieRequestUrl(normalizedUrl());
+  rememberCookieSelection();
+  const selected =
+    typeof options.selectId === "string" ? options.selectId : cookieSelections.get(url) || "";
   invalidateCookieAuthorization();
+  cookieAccountsError = "";
   if (!url || Number(context.apiVersion) < 10) {
     cookieAccounts = [];
     cookieAccountsUrl = "";
+    cookieLoading = false;
     renderCookieAccounts();
     return [];
   }
-  if (previewMode) {
-    cookieAccounts = [{ id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname }];
-    cookieAccountsUrl = url;
-    renderCookieAccounts("预览模式：已显示一个示例 Cookie 账号。");
-    return cookieAccounts;
-  }
   cookieLoading = true;
   renderCookieAccounts();
-  let finalMessage = "";
-  let preferredId = "";
   try {
-    const result = await panel.call("credentials.cookies.list", { url });
-    if (normalizedUrl() !== url) return [];
-    cookieAccounts = Array.isArray(result?.accounts)
-      ? result.accounts.filter(
-          (account) =>
-            account &&
-            typeof account.id === "string" &&
-            typeof account.label === "string" &&
-            account.id.length <= 160,
-        )
-      : [];
+    const result = previewMode
+      ? {
+          accounts: [
+            { id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname },
+          ],
+        }
+      : await panel.call("credentials.cookies.list", { url });
+    if (requestId !== cookieRequestId || cookieRequestUrl(normalizedUrl()) !== url) return [];
+    if (!Array.isArray(result?.accounts))
+      throw new Error("CodeShell 没有返回有效的账号列表，请刷新重试。");
+    cookieAccounts = result.accounts.filter(
+      (account) =>
+        account &&
+        typeof account.id === "string" &&
+        account.id.length > 0 &&
+        account.id.length <= 160 &&
+        typeof account.label === "string",
+    );
     cookieAccountsUrl = url;
-    if (
-      typeof options.selectId === "string" &&
-      cookieAccounts.some(
-        (account) => account.id === options.selectId && account.health !== "corrupted",
-      )
-    ) {
-      preferredId = options.selectId;
-    }
+    renderCookieAccounts("", selected);
+    rememberCookieSelection();
     return cookieAccounts;
   } catch (error) {
+    if (requestId !== cookieRequestId || cookieRequestUrl(normalizedUrl()) !== url) return [];
     cookieAccounts = [];
     cookieAccountsUrl = "";
-    finalMessage = `无法读取 Cookie 账号：${error instanceof Error ? error.message : String(error)}`;
+    cookieAccountsError = cookieErrorMessage(error);
     return [];
   } finally {
-    cookieLoading = false;
-    renderCookieAccounts(finalMessage, preferredId);
-    updateActionAvailability();
+    if (requestId === cookieRequestId) {
+      cookieLoading = false;
+      renderCookieAccounts();
+      updateActionAvailability();
+    }
   }
+}
+
+function clearCookieAccounts() {
+  if (cookieReloadTimer) clearTimeout(cookieReloadTimer);
+  cookieReloadTimer = null;
+  cookieRequestId += 1;
+  rememberCookieSelection();
+  cookieAccounts = [];
+  cookieAccountsUrl = "";
+  cookieAccountsError = "";
+  cookieLoading = false;
+  invalidateCookieAuthorization();
+  renderCookieAccounts();
 }
 
 function scheduleCookieAccountsRefresh() {
   if (cookieReloadTimer) clearTimeout(cookieReloadTimer);
+  rememberCookieSelection();
+  // Invalidate immediately, before the debounce: a failed old request must not
+  // clear the new site's accounts or release another request's loading state.
+  cookieRequestId += 1;
+  cookieLoading = false;
+  cookieAccountsError = "";
+  invalidateCookieAuthorization();
   renderCookieAccounts();
   cookieReloadTimer = setTimeout(() => {
     cookieReloadTimer = null;
@@ -626,9 +715,9 @@ function scheduleCookieAccountsRefresh() {
 }
 
 async function loginAndSaveCookie() {
-  const url = normalizedUrl();
+  const url = cookieRequestUrl(normalizedUrl());
   if (!url) {
-    showError("请先粘贴要下载的网站链接，再登录并保存 Cookie。");
+    showError("请先粘贴 HTTPS 视频链接，再登录并保存 Cookie。");
     return;
   }
   if (Number(context.apiVersion) < 10 || previewMode) {
@@ -638,8 +727,9 @@ async function loginAndSaveCookie() {
     return;
   }
   const site = cookieSite(url);
-  cookieLoading = true;
-  renderCookieAccounts("请在 CodeShell 打开的隔离窗口中完成登录，然后保存。 ");
+  cookieLoginPending = true;
+  cookieAccountsError = "";
+  renderCookieAccounts();
   let finalMessage = "";
   try {
     const result = await panel.call("credentials.cookies.loginAndSave", {
@@ -648,49 +738,75 @@ async function loginAndSaveCookie() {
       url,
     });
     if (!result?.ok) {
-      finalMessage = result?.cancelled ? "已取消登录。" : result?.error || "没有保存 Cookie，请重试。";
+      finalMessage = result?.cancelled
+        ? "已取消登录。"
+        : result?.error || "没有保存 Cookie，请重试。";
       return;
     }
+    if (cookieRequestUrl(normalizedUrl()) !== url) return;
     await refreshCookieAccounts({ selectId: result.credential?.id });
-    finalMessage = `已保存并选择 ${result.credential?.label || "登录账号"}。`;
+    if (cookieAccountsError) return;
+    finalMessage =
+      elements.cookieSelect.value === result.credential?.id
+        ? `已保存并选择 ${result.credential?.label || "登录账号"}。`
+        : "已保存登录账号，但未匹配当前网站，请刷新账号列表。";
   } catch (error) {
-    finalMessage = `登录失败：${error instanceof Error ? error.message : String(error)}`;
+    finalMessage = cookieErrorMessage(error);
   } finally {
-    cookieLoading = false;
-    renderCookieAccounts(finalMessage);
+    cookieLoginPending = false;
+    renderCookieAccounts(cookieRequestUrl(normalizedUrl()) === url ? finalMessage : "");
+    updateActionAvailability();
   }
 }
 
 async function cookieFileArguments(url) {
-  if (cookieAccountsUrl !== url) await refreshCookieAccounts();
+  const targetUrl = cookieRequestUrl(url);
+  if (!targetUrl || Number(context.apiVersion) < 10) return [];
+  if (cookieLoading || cookieAccountsUrl !== targetUrl) await refreshCookieAccounts();
+  if (cookieRequestUrl(normalizedUrl()) !== targetUrl) {
+    throw new Error("链接已变化，请重新获取视频信息或加入下载队列。");
+  }
+  if (cookieAccountsError && cookieSelections.get(targetUrl)) throw new Error(cookieAccountsError);
   const credentialId = elements.cookieSelect.value;
   if (!credentialId) return [];
+  const account = cookieAccounts.find((item) => item.id === credentialId);
+  if (!account || account.health === "corrupted")
+    throw new Error("这个 Cookie 已失效，请重新登录并保存。");
   if (!runtime.ytDlp?.handle) throw new Error("yt-dlp 还没有准备好。");
   if (previewMode) return ["preview-cookie"];
-  const host = new URL(url).hostname.toLowerCase();
+  const host = new URL(targetUrl).hostname;
+  const executableHandle = runtime.ytDlp.handle;
   if (
     cookieAuthorization?.credentialId === credentialId &&
-    cookieAuthorization.executableHandle === runtime.ytDlp.handle &&
+    cookieAuthorization.executableHandle === executableHandle &&
     cookieAuthorization.host === host
   ) {
     return [cookieAuthorization.fileArgumentHandle];
   }
   const result = await panel.call("credentials.cookies.authorizeProcess", {
     credentialId,
-    url,
-    executableHandle: runtime.ytDlp.handle,
+    url: targetUrl,
+    executableHandle,
   });
   if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
-    throw new Error(result?.invalid ? "这个 Cookie 已失效，请重新登录并保存。" : "已取消使用 Cookie。");
+    throw new Error(
+      result?.invalid ? "这个 Cookie 已失效，请重新登录并保存。" : "已取消使用 Cookie。",
+    );
+  }
+  if (
+    cookieRequestUrl(normalizedUrl()) !== targetUrl ||
+    elements.cookieSelect.value !== credentialId ||
+    runtime.ytDlp?.handle !== executableHandle
+  ) {
+    throw new Error("链接或 Cookie 账号已变化，请重新确认下载配置。");
   }
   cookieAuthorization = {
     credentialId,
-    executableHandle: runtime.ytDlp.handle,
+    executableHandle,
     host,
     fileArgumentHandle: result.fileArgumentHandle,
   };
-  const account = cookieAccounts.find((item) => item.id === credentialId);
-  elements.cookieHelp.textContent = `本次面板将使用 ${account?.label || "所选账号"}；关闭面板后授权自动失效。`;
+  elements.cookieHelp.textContent = `本次面板将使用 ${account.label}；关闭面板后授权自动失效。`;
   return [result.fileArgumentHandle];
 }
 
@@ -804,7 +920,8 @@ function updateConditionalOptions() {
   elements.subtitleOptions.hidden = !elements.subtitles.checked;
   elements.subtitleCustomRow.hidden = elements.subtitleLanguagePreset.value !== "custom";
   const canEmbed = Boolean(runtime.ffmpeg?.handle) && selectedFormat() !== "audio";
-  elements.subtitleEmbed.disabled = !canEmbed || Boolean(currentJob?.running);
+  elements.subtitleEmbed.disabled =
+    !canEmbed || Boolean(inspectionJob?.running || queueSubmissionPending);
   elements.subtitleHelp.textContent = !runtime.ffmpeg?.handle
     ? "当前没有 ffmpeg，将保留网站提供的独立字幕文件。"
     : elements.subtitleEmbed.checked
@@ -1105,14 +1222,21 @@ function clearFailure() {
   updateTabIndicators();
 }
 
-function recordFailure({ operation, url, message, stderr = "", exitCode = null }) {
+function recordFailure({
+  operation,
+  url,
+  message,
+  stderr = "",
+  exitCode = null,
+  configuration = currentConfiguration(),
+}) {
   lastFailure = {
     operation,
     url: sanitizeDiagnosticUrl(url),
     message: sanitizeDiagnosticText(message, 1_000),
     stderr: sanitizeDiagnosticText(stderr, 8_000),
     exitCode: Number.isInteger(exitCode) ? exitCode : null,
-    configuration: currentConfiguration(),
+    configuration,
     occurredAt: new Date().toISOString(),
     analysisSubmitted: false,
     analysisError: "",
@@ -1169,7 +1293,7 @@ function renderSetupCard() {
     installedYtDlpVersion: runtime.ytDlp?.version,
     latestYtDlpVersion: runtime.latestYtDlpVersion,
   });
-  const setupActive = Boolean(setupTaskId) || directSetupRunning;
+  const setupActive = Boolean(setupTaskId) || directSetupRunning || setupSubmissionPending;
   const showSetupCard = Boolean(
     setupNeeded ||
     setupActive ||
@@ -1198,7 +1322,8 @@ function renderSetupCard() {
   const processBusy = Boolean(
     currentJob?.running ||
     inspectionJob?.running ||
-    (dependencyProbeJob?.running && !dependencyProbeJob.id),
+    dependencyProbeJob?.running ||
+    queueSubmissionPending,
   );
   elements.setupUpdateButton.disabled =
     Boolean(setupTaskId) ||
@@ -1254,13 +1379,20 @@ function updateActionAvailability() {
   const ready = Boolean(runtime.ytDlp?.handle && runtime.directory?.handle);
   const validUrl = Boolean(normalizedUrl());
   const processBusy = Boolean(
-    currentJob?.running ||
-    inspectionJob?.running ||
-    (dependencyProbeJob?.running && !dependencyProbeJob.id),
+    currentJob?.running || inspectionJob?.running || dependencyProbeJob?.running,
   );
-  const setupActive = Boolean(setupTaskId) || directSetupRunning;
-  elements.downloadButton.disabled = !ready || !validUrl || processBusy || setupActive;
-  elements.inspectButton.disabled = !ready || !validUrl || processBusy || setupActive;
+  const setupActive = Boolean(setupTaskId) || directSetupRunning || setupSubmissionPending;
+  elements.downloadButton.disabled =
+    !ready ||
+    !validUrl ||
+    Boolean(inspectionJob?.running) ||
+    dependencyRefreshPending ||
+    versionRefreshPending ||
+    queueSubmissionPending ||
+    setupActive;
+  elements.downloadLabel.textContent = queueSubmissionPending ? "正在加入…" : "加入下载队列";
+  elements.inspectButton.disabled =
+    !ready || !validUrl || processBusy || queueSubmissionPending || setupActive;
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
   const canAnalyze =
@@ -1297,6 +1429,8 @@ function updateDownloadAvailability() {
 }
 
 function setControlsBusy(busy, operation = "download") {
+  // An active download owns a snapshot. The form is available for the next item.
+  busy = Boolean(inspectionJob?.running || queueSubmissionPending);
   elements.urlInput.disabled = busy;
   elements.clearUrl.disabled = busy;
   elements.chooseDirectory.disabled = busy;
@@ -1304,8 +1438,7 @@ function setControlsBusy(busy, operation = "download") {
   elements.playlistItems.disabled = busy;
   elements.playlistEnd.disabled = busy;
   elements.qualitySelect.disabled = busy;
-  const cookieUnavailable =
-    busy || cookieLoading || !normalizedUrl() || Number(context.apiVersion) < 10;
+  const cookieUnavailable = busy || cookieControlsUnavailable();
   elements.cookieSelect.disabled = cookieUnavailable;
   elements.cookieRefresh.disabled = cookieUnavailable;
   elements.cookieLogin.disabled = cookieUnavailable;
@@ -1316,9 +1449,8 @@ function setControlsBusy(busy, operation = "download") {
   elements.subtitleEmbed.disabled = busy || selectedFormat() === "audio" || !runtime.ffmpeg?.handle;
   elements.inspectButton.textContent =
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
-  elements.downloadLabel.textContent = busy && operation === "download" ? "正在下载…" : "开始下载";
-  elements.cancelButton.hidden = !(busy && operation === "download");
-  elements.cancelButton.disabled = false;
+  elements.cancelButton.hidden = !currentJob?.running;
+  elements.cancelButton.disabled = Boolean(currentJob?.cancelRequested);
   updateConditionalOptions();
   updateActionAvailability();
 }
@@ -1333,7 +1465,7 @@ function setDestination(directory) {
 function updateTask({ state, title, percent, speed, eta, status }) {
   elements.taskStateIcon.dataset.state = state;
   elements.taskStateIcon.textContent =
-    state === "completed" ? "✓" : state === "failed" ? "!" : state === "running" ? "↓" : "↓";
+    state === "completed" ? "✓" : state === "failed" ? "!" : state === "cancelled" ? "—" : "↓";
   elements.taskTitle.textContent = title;
   elements.taskKicker.textContent = state === "running" ? "DOWNLOADING" : "CURRENT TASK";
   elements.taskPercent.textContent = Number.isFinite(percent) ? `${Math.round(percent)}%` : "—";
@@ -1351,6 +1483,7 @@ function updateTask({ state, title, percent, speed, eta, status }) {
     elements.progressBar.style.width = state === "completed" ? "100%" : "0";
   }
   updateTabIndicators();
+  updateQueueProgress();
 }
 
 function appendLog(line) {
@@ -1388,6 +1521,7 @@ function parseOutputLine(line, stream = "stdout") {
   if (clean.startsWith("meta:")) {
     currentJob.title = clean.slice(5).trim() || currentJob.title;
     elements.taskTitle.textContent = currentJob.title;
+    updateQueueProgress();
     appendLog(clean);
     return;
   }
@@ -1542,6 +1676,7 @@ function finishInspection(succeeded, error = "", exitCode = null) {
   }
   updateActionAvailability();
   for (const resolve of job.waiters) resolve(result);
+  void runNextDownload();
 }
 
 async function inspectVideo() {
@@ -1555,7 +1690,12 @@ async function inspectVideo() {
     showError("下载器或保存目录还没有准备好。");
     return;
   }
-  if (currentJob?.running || inspectionJob?.running || dependencyProbeJob?.running) {
+  if (
+    currentJob?.running ||
+    inspectionJob?.running ||
+    dependencyProbeJob?.running ||
+    queueSubmissionPending
+  ) {
     showError("当前已有任务正在执行。");
     return;
   }
@@ -1704,80 +1844,276 @@ function defaultTaskTitle(url) {
   }
 }
 
+function queueStatusText(item) {
+  if (item.status === "running") {
+    if (item.cancelRequested) return "正在取消";
+    return Number.isFinite(item.percent) ? `下载中 · ${Math.round(item.percent)}%` : "正在连接";
+  }
+  return (
+    {
+      queued: queuePaused ? "已暂停 · 等待下载" : "等待下载",
+      completed: "已完成",
+      failed: "下载失败",
+      cancelled: "已取消",
+    }[item.status] || "等待下载"
+  );
+}
+
+function updateQueueProgress() {
+  if (!currentJob) return;
+  const row = [...elements.queueList.children].find(
+    (item) => item.dataset.queueId === currentJob.queueId,
+  );
+  if (!row) return;
+  row.querySelector(".queue-status").textContent = queueStatusText(currentJob);
+  row.querySelector(".queue-copy strong").textContent = currentJob.title;
+}
+
+function renderQueue() {
+  const waiting = downloadQueue.filter((item) => item.status === "queued").length;
+  const settled = downloadQueue.filter(
+    (item) => !["queued", "running"].includes(item.status),
+  ).length;
+  elements.queueSummary.textContent = downloadQueue.length
+    ? `${currentJob?.running ? "1 项下载中 · " : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
+    : "暂无任务 · 按添加顺序下载";
+  elements.queuePause.textContent = queuePaused ? "继续队列" : "暂停队列";
+  elements.queuePause.setAttribute("aria-pressed", String(queuePaused));
+  elements.queueClear.disabled = !settled;
+  elements.queueList.replaceChildren();
+  if (!downloadQueue.length) {
+    const empty = document.createElement("p");
+    empty.className = "queue-empty";
+    empty.textContent = "添加视频链接后，任务会在这里依次下载。下载期间可继续添加。";
+    elements.queueList.append(empty);
+    return;
+  }
+  for (const item of downloadQueue) {
+    const row = document.createElement("article");
+    row.className = "queue-item";
+    row.dataset.queueId = item.queueId;
+    row.dataset.state = item.status;
+    const copy = document.createElement("div");
+    copy.className = "queue-copy";
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const meta = document.createElement("small");
+    meta.className = "queue-meta";
+    const format = item.configuration.format;
+    meta.textContent = `${defaultTaskTitle(item.url)} · ${format === "best" ? "最高画质" : format === "audio" ? "MP3" : format + "p"} · ${item.directory.name}`;
+    meta.title = item.directory.path || item.directory.name;
+    const status = document.createElement("span");
+    status.className = "queue-status";
+    status.textContent = queueStatusText(item);
+    copy.append(title, meta, status);
+    if (item.error) {
+      const error = document.createElement("small");
+      error.className = "queue-error";
+      error.textContent = item.error;
+      copy.append(error);
+    }
+    const actions = document.createElement("div");
+    actions.className = "queue-actions";
+    const action = (name, label) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "text-button";
+      button.dataset.queueAction = name;
+      button.dataset.queueId = item.queueId;
+      button.textContent = label;
+      button.setAttribute("aria-label", `${label}：${item.title}`);
+      actions.append(button);
+      return button;
+    };
+    if (item.status === "running") {
+      action("details", "详情");
+      action("cancel", "取消").disabled = item.cancelRequested;
+    } else if (item.status === "queued") {
+      action("remove", "移除");
+    } else if (item.status === "failed" || item.status === "cancelled") {
+      action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
+        item.retryPending,
+      );
+    }
+    row.append(copy, actions);
+    elements.queueList.append(row);
+  }
+  updateTabIndicators();
+}
+
 async function startDownload() {
+  if (queueSubmissionPending) return null;
   showError("");
   const url = normalizedUrl();
   if (!url) {
     showError("请输入完整的 http 或 https 视频链接。");
     updateDownloadAvailability();
-    return;
+    return null;
   }
   if (!runtime.ytDlp?.handle || !runtime.directory?.handle) {
     showError("下载器或保存目录还没有准备好。");
-    return;
+    return null;
+  }
+  if (
+    inspectionJob?.running ||
+    setupTaskId ||
+    directSetupRunning ||
+    setupSubmissionPending ||
+    dependencyRefreshPending ||
+    versionRefreshPending
+  ) {
+    showError("请等待当前信息读取或环境检查完成后再添加任务。");
+    return null;
+  }
+  if (downloadQueue.length >= 100) {
+    showError("队列最多保留 100 项，请先清除已结束的任务。");
+    return null;
   }
   if (selectedFormat() === "audio" && !runtime.ffmpeg?.handle) {
     showError("仅音频模式需要 ffmpeg。可使用一键安装；完成后面板会立即复检。");
-    return;
+    return null;
   }
+  queueSubmissionPending = true;
+  setControlsBusy(true);
   try {
-    if (elements.playlist.checked) {
-      normalizedPlaylistItems();
-      normalizedPlaylistEnd();
-    }
-    if (elements.subtitles.checked && selectedFormat() !== "audio") {
-      selectedSubtitleLanguages();
-    }
+    // Freeze all mutable form data before awaiting the Host's Cookie confirmation.
+    const item = {
+      queueId: crypto.randomUUID(),
+      id: null,
+      url,
+      title: inspectedVideo?.url === url ? inspectedVideo.title : defaultTaskTitle(url),
+      configuration: currentConfiguration(),
+      executable: { ...runtime.ytDlp },
+      directory: { ...runtime.directory },
+      args: buildArguments(url),
+      fileArgumentHandles: await cookieFileArguments(url),
+      cookieCredentialId: elements.cookieSelect.value || "",
+      status: "queued",
+      file: "",
+      percent: 0,
+      running: false,
+      cancelRequested: false,
+      log: [],
+      stderrTail: [],
+      error: "",
+    };
+    item.configuration.cookieAccount = item.cookieCredentialId
+      ? cookieAccounts.find((account) => account.id === item.cookieCredentialId)?.label ||
+        "已选择账号"
+      : null;
+    downloadQueue.push(item);
+    renderQueue();
+    void runNextDownload();
+    return item;
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
-    return;
+    return null;
+  } finally {
+    queueSubmissionPending = false;
+    setControlsBusy(false);
   }
-  clearFailure();
-  currentJob = {
+}
+
+async function runNextDownload() {
+  if (
+    queuePaused ||
+    currentJob?.running ||
+    inspectionJob?.running ||
+    dependencyProbeJob?.running ||
+    dependencyRefreshPending ||
+    versionRefreshPending ||
+    setupTaskId ||
+    directSetupRunning ||
+    setupSubmissionPending
+  )
+    return;
+  const job = downloadQueue.find((item) => item.status === "queued");
+  if (!job) return;
+  currentJob = job;
+  lastDownloadDirectory = job.directory;
+  Object.assign(job, {
     id: null,
-    url,
-    title: inspectedVideo?.url === url ? inspectedVideo.title : defaultTaskTitle(url),
-    file: "",
-    percent: 0,
-    startedAt: Date.now(),
+    status: "running",
     running: true,
     cancelRequested: false,
+    percent: Number.NaN,
+    file: "",
+    error: "",
     log: [],
     stderrTail: [],
-  };
+    startedAt: Date.now(),
+  });
   outputBuffers.stdout = "";
   outputBuffers.stderr = "";
   elements.taskLog.textContent = "正在启动 yt-dlp…";
-  setControlsBusy(true, "download");
+  renderQueue();
+  setControlsBusy(false);
   updateTask({
     state: "running",
-    title: currentJob.title,
+    title: job.title,
     percent: Number.NaN,
     speed: "—",
     eta: "—",
     status: "正在连接",
   });
-  activateTab("task");
-
   if (previewMode) {
-    currentJob.id = "preview";
+    job.id = "preview";
     appendLog("Browser preview: no local process was started.");
     return;
   }
-
   try {
-    const fileArgumentHandles = await cookieFileArguments(url);
     const result = await panel.call("process.spawn", {
-      executableHandle: runtime.ytDlp.handle,
-      directoryHandle: runtime.directory.handle,
-      fileArgumentHandles,
-      args: buildArguments(url),
+      executableHandle: job.executable.handle,
+      directoryHandle: job.directory.handle,
+      fileArgumentHandles: job.fileArgumentHandles,
+      args: job.args,
     });
-    if (!currentJob?.running) return;
-    currentJob.id = result.processId;
+    // Fast processes can exit before spawn resolves. Never attach their ID to the next item.
+    if (currentJob !== job || !job.running) return;
+    job.id ||= result.processId;
     appendLog(`Started ${result.executable}`);
+    if (job.cancelRequested) await cancelCurrentJob();
   } catch (error) {
-    finishJob(false, error instanceof Error ? error.message : String(error));
+    if (currentJob === job && job.running) {
+      finishJob(false, error instanceof Error ? error.message : String(error));
+    }
+  }
+}
+
+async function retryQueuedDownload(item) {
+  if (item.retryPending || !["failed", "cancelled"].includes(item.status)) return;
+  item.retryPending = true;
+  renderQueue();
+  try {
+    if (item.cookieCredentialId && !previewMode) {
+      // A login may have been refreshed since the failure. Materialize the saved
+      // account again, without silently substituting the next form's account.
+      const result = await panel.call("credentials.cookies.authorizeProcess", {
+        credentialId: item.cookieCredentialId,
+        url: cookieRequestUrl(item.url),
+        executableHandle: item.executable.handle,
+      });
+      if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
+        throw new Error(
+          result?.invalid
+            ? "原 Cookie 账号已失效，请重新登录后添加任务。"
+            : "已取消使用 Cookie，任务未重新下载。",
+        );
+      }
+      item.fileArgumentHandles = [result.fileArgumentHandle];
+    }
+    // The user may clear finished rows while the Host authorization is open.
+    if (!downloadQueue.includes(item)) return;
+    item.status = "queued";
+    item.error = "";
+    item.percent = 0;
+    downloadQueue = [...downloadQueue.filter((entry) => entry !== item), item];
+  } catch (error) {
+    item.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    item.retryPending = false;
+    renderQueue();
+    void runNextDownload();
   }
 }
 
@@ -1785,7 +2121,7 @@ function finishJob(succeeded, error = "", exitCode = null) {
   if (!currentJob) return;
   const job = currentJob;
   const cancelled = job.cancelRequested;
-  const state = succeeded ? "completed" : "failed";
+  const state = succeeded ? "completed" : cancelled ? "cancelled" : "failed";
   const status = succeeded ? "已完成" : cancelled ? "已取消" : "下载失败";
   if (outputBuffers.stdout) parseOutputLine(outputBuffers.stdout, "stdout");
   if (outputBuffers.stderr) parseOutputLine(outputBuffers.stderr, "stderr");
@@ -1802,6 +2138,7 @@ function finishJob(succeeded, error = "", exitCode = null) {
       message: error || "下载失败",
       stderr: job.stderrTail.join("\n"),
       exitCode,
+      configuration: job.configuration,
     });
   }
   updateTask({
@@ -1816,7 +2153,7 @@ function finishJob(succeeded, error = "", exitCode = null) {
     title: job.title,
     url: job.url,
     file: job.file,
-    state: succeeded ? "completed" : "failed",
+    state,
     status,
     finishedAt: Date.now(),
   });
@@ -1824,20 +2161,38 @@ function finishJob(succeeded, error = "", exitCode = null) {
   saveHistory();
   renderHistory();
   job.running = false;
+  job.status = state;
+  job.error = cancelled || succeeded ? "" : error || "下载失败";
+  job.percent = succeeded ? 100 : job.percent;
+  rememberIgnoredProbeProcess(job.id);
   currentJob = null;
   setControlsBusy(false);
+  renderQueue();
+  void runNextDownload();
 }
 
 async function cancelCurrentJob() {
-  if (!currentJob?.running || !currentJob.id || previewMode) return;
-  currentJob.cancelRequested = true;
+  if (!currentJob?.running) return;
+  const job = currentJob;
+  job.cancelRequested = true;
   elements.cancelButton.disabled = true;
   elements.taskStatus.textContent = "正在取消";
+  renderQueue();
+  if (previewMode) {
+    finishJob(false);
+    return;
+  }
+  // spawn may still be awaiting Host confirmation; cancel as soon as its ID arrives.
+  if (!job.id) return;
   try {
-    await panel.call("process.cancel", { processId: currentJob.id });
+    await panel.call("process.cancel", { processId: job.id });
   } catch (error) {
+    if (currentJob !== job) return;
+    job.cancelRequested = false;
     elements.cancelButton.disabled = false;
+    elements.taskStatus.textContent = "取消失败，下载仍在继续";
     appendLog(error instanceof Error ? error.message : String(error));
+    renderQueue();
   }
 }
 
@@ -1861,7 +2216,7 @@ function renderHistory() {
     const icon = document.createElement("span");
     icon.className = "history-icon";
     icon.dataset.state = item.state;
-    icon.textContent = item.state === "completed" ? "✓" : "!";
+    icon.textContent = item.state === "completed" ? "✓" : item.state === "cancelled" ? "—" : "!";
     const copy = document.createElement("div");
     copy.className = "history-copy";
     const title = document.createElement("strong");
@@ -1897,7 +2252,7 @@ async function chooseDirectory() {
 }
 
 function applyConfiguration(input) {
-  if (currentJob?.running || inspectionJob?.running) {
+  if (queueSubmissionPending || inspectionJob?.running) {
     throw new Error("当前已有任务正在执行，暂时不能修改配置");
   }
   const format = SUPPORTED_FORMATS.has(input?.format) ? input.format : null;
@@ -1939,7 +2294,8 @@ function applyConfiguration(input) {
   if (typeof input.embedSubtitles === "boolean") {
     elements.subtitleEmbed.checked = input.embedSubtitles;
   }
-  elements.subtitles.disabled = format === "audio" || Boolean(currentJob?.running);
+  elements.subtitles.disabled =
+    format === "audio" || Boolean(inspectionJob?.running || queueSubmissionPending);
   updateConditionalOptions();
   if (inspectionModeChanged && inspectedVideo) {
     clearInspectedVideo("播放列表模式已由 Session 修改，请重新获取视频信息");
@@ -1979,6 +2335,18 @@ function videoContextForAgent() {
       url: inspectionJob?.url || inspectedVideo?.url || normalizedUrl(),
     },
     configuration: currentConfiguration(),
+    queue: downloadQueue.map((item) => ({
+      id: item.queueId,
+      url: item.url,
+      title: item.title,
+      status: item.status,
+      percent: Number.isFinite(item.percent) ? item.percent : null,
+      format: item.configuration.format,
+      configuration: item.configuration,
+      destination: { name: item.directory.name, path: item.directory.path },
+      error: item.error || null,
+    })),
+    queuePaused,
     download: currentJob?.running
       ? {
           status: currentJob.cancelRequested ? "cancelling" : "running",
@@ -2006,6 +2374,7 @@ function videoContextForAgent() {
           operation: lastFailure.operation,
           message: lastFailure.message,
           exitCode: lastFailure.exitCode,
+          configuration: lastFailure.configuration,
           occurredAt: lastFailure.occurredAt,
           logTail: lastFailure.stderr.slice(-4_000),
         }
@@ -2062,7 +2431,7 @@ function setVideoUrlForAgent(value) {
 }
 
 async function inspectVideoForAgent(args = {}) {
-  if (currentJob?.running || inspectionJob?.running) {
+  if (currentJob?.running || inspectionJob?.running || queueSubmissionPending) {
     throw new Error("当前已有任务正在执行");
   }
   if (typeof args.url === "string") setVideoUrlForAgent(args.url);
@@ -2097,22 +2466,19 @@ async function inspectVideoForAgent(args = {}) {
 }
 
 async function startDownloadForAgent() {
-  if (currentJob?.running || inspectionJob?.running) {
-    throw new Error("当前已有任务正在执行");
-  }
   if (!normalizedUrl()) throw new Error("面板中没有有效视频链接");
-  await startDownload();
-  if (!currentJob?.running) {
-    throw new Error(elements.formError.textContent || "下载任务启动失败");
+  const item = await startDownload();
+  if (!item) {
+    throw new Error(elements.formError.textContent || "无法加入下载队列");
   }
   return {
-    started: true,
-    title: currentJob.title,
-    url: currentJob.url,
-    configuration: currentConfiguration(),
-    destination: runtime.directory
-      ? { name: runtime.directory.name, path: runtime.directory.path }
-      : null,
+    started: item.status === "running",
+    queued: item.status === "queued",
+    queueId: item.queueId,
+    title: item.title,
+    url: item.url,
+    configuration: item.configuration,
+    destination: { name: item.directory.name, path: item.directory.path },
   };
 }
 
@@ -2680,7 +3046,13 @@ async function requestDirectSetup() {
     if (processId) await panel.call("process.cancel", { processId }).catch(() => undefined);
     return;
   }
-  if (setupTaskId || setupSubmissionPending || currentJob?.running || inspectionJob?.running)
+  if (
+    setupTaskId ||
+    setupSubmissionPending ||
+    currentJob?.running ||
+    inspectionJob?.running ||
+    queueSubmissionPending
+  )
     return;
   if (previewMode) {
     setupTaskActivity = [
@@ -2724,6 +3096,7 @@ async function requestDirectSetup() {
     directSetupRunning = false;
     directSetupProcessJob = null;
     updateActionAvailability();
+    void runNextDownload();
   }
 }
 
@@ -2742,7 +3115,12 @@ async function requestAiSetup() {
     }
     return;
   }
-  if (setupSubmissionPending || currentJob?.running || inspectionJob?.running) {
+  if (
+    setupSubmissionPending ||
+    currentJob?.running ||
+    inspectionJob?.running ||
+    queueSubmissionPending
+  ) {
     updateActionAvailability();
     return;
   }
@@ -2797,6 +3175,7 @@ async function requestAiSetup() {
   } finally {
     setupSubmissionPending = false;
     updateActionAvailability();
+    void runNextDownload();
   }
 }
 
@@ -3031,7 +3410,12 @@ async function refreshVersionInfo() {
     renderVersionInfo();
     return { installed: null, latest: null };
   }
-  if (currentJob?.running || inspectionJob?.running || dependencyProbeJob?.running) {
+  if (
+    currentJob?.running ||
+    inspectionJob?.running ||
+    dependencyProbeJob?.running ||
+    queueSubmissionPending
+  ) {
     return {
       installed: runtime.ytDlp.version || null,
       latest: runtime.latestYtDlpVersion,
@@ -3099,6 +3483,7 @@ async function refreshVersionInfo() {
       );
     }
     updateActionAvailability();
+    void runNextDownload();
   }
   return {
     installed: runtime.ytDlp.version || null,
@@ -3115,7 +3500,7 @@ async function refreshRuntimeDependencies() {
     updateActionAvailability();
     return { ready: true, ytDlp: true, ffmpeg: true, versions, preview: true };
   }
-  if (currentJob?.running || inspectionJob?.running) {
+  if (currentJob?.running || inspectionJob?.running || queueSubmissionPending) {
     return {
       ready: false,
       ytDlp: Boolean(runtime.ytDlp?.handle),
@@ -3125,6 +3510,14 @@ async function refreshRuntimeDependencies() {
   }
 
   dependencyRefreshPending = true;
+  setRuntimeBadge("loading", "Checking");
+  setDependency(elements.ytdlpDot, elements.ytdlpStatus, Boolean(runtime.ytDlp?.handle), "检测中…");
+  setDependency(
+    elements.ffmpegDot,
+    elements.ffmpegStatus,
+    Boolean(runtime.ffmpeg?.handle),
+    "检测中…",
+  );
   updateActionAvailability();
   try {
     const [ytDlp, ffmpeg] = await Promise.all([
@@ -3195,6 +3588,7 @@ async function refreshRuntimeDependencies() {
   } finally {
     dependencyRefreshPending = false;
     updateActionAvailability();
+    void runNextDownload();
   }
 }
 
@@ -3220,10 +3614,11 @@ function registerAgentTools() {
 
 async function initializeRuntime() {
   renderHistory();
+  renderQueue();
   if (previewMode) {
     runtime.ytDlp = { handle: "preview-ytdlp" };
     runtime.ffmpeg = { handle: "preview-ffmpeg" };
-    setDestination({ handle: "preview-directory", name: "Downloads", path: "~/Downloads" });
+    setDestination({ handle: "preview-directory", name: "当前项目（预览）", path: "项目目录" });
     setDependency(elements.ytdlpDot, elements.ytdlpStatus, true, "Ready");
     setDependency(elements.ffmpegDot, elements.ffmpegStatus, true, "Ready");
     dependenciesChecked = true;
@@ -3248,8 +3643,18 @@ async function initializeRuntime() {
       const activeSetup = tasks.find((task) => task?.key === "setup" && taskIsActive(task));
       if (activeSetup) await handleAgentTaskChanged(activeSetup);
     }
-    const directory = await panel.call("filesystem.getKnownDirectory", { name: "downloads" });
-    setDestination(directory);
+    try {
+      const directory = await panel.call("filesystem.getKnownDirectory", { name: "project" });
+      setDestination(directory);
+    } catch (error) {
+      // Never silently write to Downloads when the requested project grant is unavailable.
+      setDestination(null);
+      const detail = error instanceof Error ? error.message : String(error);
+      elements.destinationPath.textContent = /unsupported known directory/i.test(detail)
+        ? "当前 CodeShell 暂不支持项目目录，请点击“更改”选择项目目录。"
+        : "无法使用当前项目目录，请确认项目已信任，或点击“更改”选择保存位置。";
+      showError(elements.destinationPath.textContent);
+    }
     await refreshRuntimeDependencies();
     await refreshCookieAccounts();
   } catch (error) {
@@ -3288,10 +3693,7 @@ elements.clearUrl.addEventListener("click", () => {
   elements.urlInput.value = "";
   showError("");
   clearFailure();
-  cookieAccounts = [];
-  cookieAccountsUrl = "";
-  invalidateCookieAuthorization();
-  renderCookieAccounts();
+  clearCookieAccounts();
   clearInspectedVideo();
   elements.urlInput.focus();
   updateActionAvailability();
@@ -3300,6 +3702,7 @@ elements.inspectButton.addEventListener("click", inspectVideo);
 elements.cookieRefresh.addEventListener("click", () => void refreshCookieAccounts());
 elements.cookieLogin.addEventListener("click", () => void loginAndSaveCookie());
 elements.cookieSelect.addEventListener("change", () => {
+  rememberCookieSelection();
   invalidateCookieAuthorization();
   clearFailure();
   clearInspectedVideo("Cookie 账号已变化，请重新获取视频信息");
@@ -3339,7 +3742,7 @@ elements.subtitleEmbed.addEventListener("change", () => {
 elements.chooseDirectory.addEventListener("click", chooseDirectory);
 elements.downloadButton.addEventListener("click", startDownload);
 elements.refreshVersions.addEventListener("click", () => {
-  void refreshVersionInfo();
+  void refreshRuntimeDependencies();
 });
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
 elements.setupAiButton.addEventListener("click", requestAiSetup);
@@ -3351,10 +3754,35 @@ elements.taskModelSelects.forEach((select) => {
   select.addEventListener("change", () => chooseTaskModel(select.value));
 });
 elements.cancelButton.addEventListener("click", cancelCurrentJob);
+elements.queuePause.addEventListener("click", () => {
+  queuePaused = !queuePaused;
+  renderQueue();
+  void runNextDownload();
+});
+elements.queueClear.addEventListener("click", () => {
+  downloadQueue = downloadQueue.filter((item) => ["queued", "running"].includes(item.status));
+  renderQueue();
+});
+elements.queueList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-queue-action]");
+  if (!button) return;
+  const item = downloadQueue.find((entry) => entry.queueId === button.dataset.queueId);
+  if (!item) return;
+  if (button.dataset.queueAction === "details") activateTab("task");
+  if (button.dataset.queueAction === "cancel" && item === currentJob) void cancelCurrentJob();
+  if (button.dataset.queueAction === "remove" && item.status === "queued") {
+    downloadQueue = downloadQueue.filter((entry) => entry !== item);
+    renderQueue();
+  }
+  if (button.dataset.queueAction === "retry" && ["failed", "cancelled"].includes(item.status)) {
+    void retryQueuedDownload(item);
+  }
+});
 elements.openDirectory.addEventListener("click", async () => {
-  if (!runtime.directory?.handle || previewMode) return;
+  const directory = currentJob?.directory || lastDownloadDirectory || runtime.directory;
+  if (!directory?.handle || previewMode) return;
   try {
-    await panel.call("filesystem.openDirectory", { handle: runtime.directory.handle });
+    await panel.call("filesystem.openDirectory", { handle: directory.handle });
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
   }
@@ -3371,10 +3799,14 @@ elements.clearHistory.addEventListener("click", () => {
 elements.qualitySelect.addEventListener("change", () => {
   const audioOnly = selectedFormat() === "audio";
   if (audioOnly) elements.subtitles.checked = false;
-  elements.subtitles.disabled = audioOnly || Boolean(currentJob?.running);
-  elements.subtitleMode.disabled = audioOnly || Boolean(currentJob?.running);
-  elements.subtitleLanguagePreset.disabled = audioOnly || Boolean(currentJob?.running);
-  elements.subtitleLanguages.disabled = audioOnly || Boolean(currentJob?.running);
+  elements.subtitles.disabled =
+    audioOnly || Boolean(inspectionJob?.running || queueSubmissionPending);
+  elements.subtitleMode.disabled =
+    audioOnly || Boolean(inspectionJob?.running || queueSubmissionPending);
+  elements.subtitleLanguagePreset.disabled =
+    audioOnly || Boolean(inspectionJob?.running || queueSubmissionPending);
+  elements.subtitleLanguages.disabled =
+    audioOnly || Boolean(inspectionJob?.running || queueSubmissionPending);
   updateConditionalOptions();
   updateActionAvailability();
 });
@@ -3480,6 +3912,11 @@ if (panel) {
     if (!currentJob?.running || typeof payload?.processId !== "string") return;
     if (currentJob.id && payload.processId !== currentJob.id) return;
     currentJob.id ||= payload.processId;
+    // yt-dlp may emit its final filename without a trailing newline.
+    if (outputBuffers.stdout) parseOutputLine(outputBuffers.stdout, "stdout");
+    if (outputBuffers.stderr) parseOutputLine(outputBuffers.stderr, "stderr");
+    outputBuffers.stdout = "";
+    outputBuffers.stderr = "";
     const cancelled = currentJob.cancelRequested;
     const succeeded = payload.code === 0 && !cancelled && Boolean(currentJob.file);
     const detail = cancelled

@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.12 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.13 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -45,6 +45,29 @@ also renders the actual download list: a single link shows one item, while a
 playlist marks every visible entry as `will download` or `skipped` as its range
 changes.
 
+Downloads run through a visible, sequential queue. Adding a task captures its
+quality, playlist/subtitle options, output directory, and explicitly authorized
+Cookie handle. The form stays editable during downloads, so another URL can be
+added without changing earlier tasks. Waiting tasks can be removed; the queue
+can pause before the next task; failed or cancelled tasks can be retried. One
+failure does not block the following task. Queue entries belong to the current
+open panel; closing it cancels active Host processes and clears waiting entries.
+Recent outcomes remain in local history.
+
+The output directory defaults to the currently bound, trusted project directory.
+The Host supplies its authorized directory handle; users can still choose another
+folder. Older Hosts that do not offer the `project` known directory show a prompt
+to choose a directory instead of silently using the system Downloads folder.
+
+Retry keeps the task's original options and account, and asks the Host to
+authorize a fresh Cookie file for that saved account. It does not reuse stale
+login data or switch silently to the account selected for the next task.
+
+The layout uses the available panel width with left-aligned navigation and
+readable controls. Wide panels keep the queue beside the form; narrow panels
+stack the queue below the active tab. The primary link form comes before the
+environment and version controls.
+
 The interface is split into three compact tabs: **Download** contains setup and
 download options, **Task** contains live progress, logs, and error analysis, and
 **History** contains completed downloads. Task failures automatically open the
@@ -67,7 +90,11 @@ download, or writes into the current conversation.
 The deterministic inspection and download path uses only `process`. CodeShell
 resolves an executable to an opaque, app-scoped handle, runs it with
 `shell: false`, and streams bounded stdout/stderr events back to the Panel. The
-first execution of an executable requires Host confirmation.
+first execution of an executable requires Host confirmation. In current Desktop
+Hosts, **Allow and remember** keeps that approval across Panel App updates and
+Host restarts for the same app and executable. A changed executable still needs
+confirmation; older per-version approvals retain their original scope until the
+user confirms the new choice.
 
 Panel API v10 authorizes a selected Cookie account as an opaque file-argument
 handle bound to the resolved `yt-dlp` executable. CodeShell creates the
@@ -87,8 +114,10 @@ both introduced in Panel API v9. The Panel exposes six domain tools:
 - `inspect_video` sets an optional URL and retrieves video or playlist metadata with local `yt-dlp`.
 - `get_video_download_context` reads metadata, configuration, destination, and task status.
 - `refresh_video_download_dependencies` re-checks `yt-dlp` and `ffmpeg` after setup.
+- The **刷新环境** action performs the same dependency re-check from the panel, then refreshes
+  the installed and official `yt-dlp` versions without requiring an AI Task or an app restart.
 - `apply_video_download_config` changes format, playlist range, and subtitle settings.
-- `start_video_download` explicitly starts the configured download.
+- `start_video_download` explicitly adds the configured download to the queue and starts it when the queue is ready.
 - `cancel_video_download` cancels the active download.
 
 This still lets an ordinary Session operate the Panel directly when the user
@@ -101,7 +130,11 @@ Mimi Download never reads a browser profile or asks the user to paste Cookie
 contents. A saved account is matched to the target website by the Host, and the
 user must explicitly select and authorize it before `yt-dlp` receives the
 temporary file. Choosing **Do not use Cookie** keeps the public-media path
-unchanged.
+unchanged. Account lookup ignores stale responses, keeps explicit selections
+for the same site during this panel session, and maps YouTube/Bilibili short
+links to their login sites. Cookie access requires HTTPS. Empty, unavailable,
+and failed account lookups are explained separately in the interface; the panel
+does not automatically import a system browser profile.
 
 ## Install from GitHub
 

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.12.0",
+  "version": "0.13.1",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
@@ -37,7 +37,7 @@
       },
       {
         "name": "get_video_download_context",
-        "description": "Read the current URL, inspection and download status, inspected video metadata, destination, available local dependencies, and download configuration.",
+        "description": "Read the current URL, inspection and download status, sequential download queue and pause state, inspected video metadata, destination, available local dependencies, and download configuration.",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -108,7 +108,7 @@
       },
       {
         "name": "start_video_download",
-        "description": "Start downloading the current video URL with the configuration and destination shown in the panel. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
+        "description": "Add the current video URL to the sequential download queue with a snapshot of the configuration, selected Cookie authorization, and destination shown in the panel. The queue starts automatically unless paused. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
         "inputSchema": {
           "type": "object",
           "properties": {},
