@@ -353,7 +353,7 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
       sampleReceipt: { asset: sample.asset, inspection: sample.inspection },
     },
   );
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.waitForFunction(
     () => window.__panelTools.read_video_project?.().project.id === "voice-preparation-project",

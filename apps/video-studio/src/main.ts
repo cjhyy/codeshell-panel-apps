@@ -133,6 +133,7 @@ import {
   type ExportProfile,
 } from "./editor/export-settings";
 import { createPanelRuntime, taskValue } from "./sdk/panel-runtime";
+import { createWorkspaceLayout, type WorkspaceLayoutSizes } from "./workspace-layout";
 
 // Older guide links changed the entry URL, which the Host correctly rejects
 // for media capture. Recover only our known legacy anchors before using it.
@@ -153,6 +154,39 @@ if (panel) {
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
 const studio = $("#studio");
+// Browser-only compatibility view keeps the earlier frame-based workflows testable
+// while the installed desktop panel uses the shared multitrack workspace.
+const legacyWorkspacePreview =
+  /^https?:$/.test(location.protocol) &&
+  new URLSearchParams(location.search).get("legacyWorkspace") === "1";
+const workspaceLayoutKey = "video-studio-workspace-layout-v1";
+const workspaceLayout = createWorkspaceLayout(studio, {
+  async load() {
+    if (panel)
+      try {
+        const saved = await panel.call("storage.get", { key: workspaceLayoutKey });
+        if (saved) return saved;
+      } catch {
+        // Browser storage can still keep a local layout when Host storage is unavailable.
+      }
+    try {
+      return JSON.parse(localStorage.getItem(workspaceLayoutKey) ?? "null");
+    } catch {
+      return null;
+    }
+  },
+  async save(sizes: WorkspaceLayoutSizes) {
+    if (panel)
+      try {
+        await panel.call("storage.set", { key: workspaceLayoutKey, value: sizes });
+        return;
+      } catch {
+        // A layout preference must never block editing or saving the video document.
+      }
+    localStorage.setItem(workspaceLayoutKey, JSON.stringify(sizes));
+  },
+});
+window.addEventListener("pagehide", () => workspaceLayout.dispose(), { once: true });
 const library = new MediaLibrary();
 let panelVisible = true;
 let thumbnailObserver: IntersectionObserver | undefined;
@@ -168,6 +202,9 @@ let project = createProject();
 let selected = "";
 let frame = 0;
 let tab = "media";
+let renderedFeatureTab = "";
+let libraryView: "feature" | "assets" = "feature";
+const showingMediaLibrary = () => tab === "media" || libraryView === "assets";
 let sourceAssetId = "";
 let sourceFrame = 0;
 let mediaPreview = false;
@@ -348,7 +385,7 @@ const folderImport = createFolderImport(
       !["running", "queued"].includes(task?.status ?? ""),
     changed: () => {
       if (
-        tab === "media" &&
+        showingMediaLibrary() &&
         !playback &&
         !exporting &&
         !recording.busy &&
@@ -1221,6 +1258,8 @@ function views() {
     selected,
     frame,
     tab,
+    libraryTab: showingMediaLibrary() ? "media" : tab,
+    unifiedWorkspace: !legacyWorkspacePreview,
     zoom,
     snapping,
     search,
@@ -1634,7 +1673,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   if (previousTaskId && panel)
     void panel.call("agent.task.cancel", { id: previousTaskId }).catch(() => {});
   await restoreManagedMedia();
-  await voicePreparation.load({ runtime: tab === "voiceover" && !editorVisible });
+  await voicePreparation.load({ runtime: tab === "voiceover" });
   await folderImport.load();
   if (!sameProjectId)
     await restoreRoughCutAI().catch((error) =>
@@ -1676,6 +1715,10 @@ function renderStudioShell(): void {
 
 function render(): void {
   if (timelineGestures.deferRender()) return;
+  if (renderedFeatureTab !== tab) {
+    libraryView = "feature";
+    renderedFeatureTab = tab;
+  }
   timelineMenu.reconcile();
   // Background jobs may update the project while a deletion is being reviewed.
   // Keep the modal mounted; confirmation rechecks the latest project below.
@@ -1762,14 +1805,16 @@ function render(): void {
       exportToolbar,
       exportToolbar.querySelector('[data-action="export"]'),
     );
-  editorVisible = Boolean(editorWorkspace && tab === "media");
+  editorVisible = Boolean(editorWorkspace && (tab === "media" || !legacyWorkspacePreview));
   studio.hidden = false;
-  studio.querySelector(".workspace")!.classList.toggle("editor-mode", editorVisible);
-  studio
-    .querySelector(".workspace")!
-    .classList.toggle("editor-source-mode", editorVisible && sourcePreviewActive());
+  const workspaceElement = studio.querySelector(".workspace")!;
+  workspaceElement.classList.toggle("editor-mode", editorVisible);
+  workspaceElement.classList.toggle("editor-source-mode", editorVisible && sourcePreviewActive());
+  workspaceElement.classList.toggle("editor-ai-mode", editorVisible && tab === "ai");
+  if (editorVisible) workspaceElement.classList.remove("voice-mode");
   editorWorkspace?.setSourcePreview(sourcePreviewActive());
   editorWorkspace?.setVisible(editorVisible && panelVisible && !document.hidden);
+  workspaceLayout.apply();
   // Preserve live editors across background refreshes so input/IME events never target detached drafts.
   // Values still come from the new view, including an explicitly loaded replacement or model change.
   for (const draft of voiceEditors) {
@@ -1868,7 +1913,7 @@ function sourcePreviewActive(): boolean {
 function rememberMediaAssetFocus(): (() => void) | undefined {
   const active = document.activeElement;
   if (
-    tab !== "media" ||
+    !showingMediaLibrary() ||
     renderedProjectId !== project.id ||
     renderedGeneration !== generation ||
     !(active instanceof HTMLElement)
@@ -1889,7 +1934,7 @@ function rememberMediaAssetFocus(): (() => void) | undefined {
     "[data-add-asset]",
   ].find((selector) => active.matches(selector));
   return () => {
-    if (tab !== "media" || project.id !== projectId || generation !== ownGeneration) return;
+    if (!showingMediaLibrary() || project.id !== projectId || generation !== ownGeneration) return;
     const next = studio.querySelector<HTMLElement>(
       `.library-panel .asset-card[data-asset="${CSS.escape(assetId)}"]`,
     );
@@ -1911,7 +1956,7 @@ function observeVisibleThumbnails(): void {
   thumbnailObserver?.disconnect();
   visibleThumbnailCards.clear();
   const container = studio.querySelector<HTMLElement>(".library-panel");
-  if (!container || tab !== "media" || !panelVisible || document.hidden) return;
+  if (!container || !showingMediaLibrary() || !panelVisible || document.hidden) return;
   const ownGeneration = generation;
   thumbnailObserver = new IntersectionObserver(
     (entries) => {
@@ -2245,6 +2290,7 @@ async function selectSource(
   sourceAssetId = id;
   mediaPreview = mode === "media";
   tab = mode;
+  libraryView = "feature";
   if (mode === "roughcut") {
     roughcut.setAsset(id);
     if (tools !== "preserve") roughcut.setMode(tools);
@@ -3716,6 +3762,7 @@ studio.addEventListener("click", (event) => {
     stop();
     mediaPreview = false;
     tab = nav.dataset.tab!;
+    libraryView = "feature";
     if (tab === "roughcut") roughcut.setMode("single");
     render();
     if (tab === "roughcut") $(".library-panel").scrollTop = 0;
@@ -3723,6 +3770,13 @@ studio.addEventListener("click", (event) => {
       void Promise.all([voicePreparation.activate(), voiceover.load()]).catch(fail);
     if (tab === "ai") void voicePreparation.activate().catch(fail);
     if (["jobs", "ai", "transcript"].includes(tab)) void production.refreshStatus().catch(fail);
+    return;
+  }
+  const librarySwitch = target.closest<HTMLElement>("[data-library-view]");
+  if (librarySwitch) {
+    libraryView = librarySwitch.dataset.libraryView === "assets" ? "assets" : "feature";
+    render();
+    $(".library-panel").scrollTop = 0;
     return;
   }
   const preset = target.closest<HTMLElement>("[data-prompt]");
@@ -3782,7 +3836,7 @@ studio.addEventListener("contextmenu", (event) => {
     return;
   }
   const card = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
-  if (!card || tab !== "media") return;
+  if (!card || !showingMediaLibrary()) return;
   event.preventDefault();
   openMediaMenu(card.dataset.asset!, event.clientX, event.clientY);
 });
@@ -4128,7 +4182,7 @@ document.addEventListener("keydown", (event) => {
   }
   const mediaCard = (event.target as HTMLElement).closest<HTMLElement>("[data-asset]");
   if (
-    tab === "media" &&
+    showingMediaLibrary() &&
     mediaCard &&
     (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
   ) {
@@ -4143,7 +4197,7 @@ document.addEventListener("keydown", (event) => {
   )
     return;
   if (
-    tab === "media" &&
+    showingMediaLibrary() &&
     ["Backspace", "Delete"].includes(event.key) &&
     !!studio.querySelector(".library-panel")?.contains(event.target as Node) &&
     (mediaCard || selectedMedia.size)
@@ -5081,6 +5135,7 @@ function mountEditorWorkspace(): void {
       recording.assertSafeToLeave();
       mediaPreview = false;
       tab = nextTab;
+      libraryView = "feature";
       render();
       if (tab === "voiceover") await Promise.all([voicePreparation.activate(), voiceover.load()]);
       if (tab === "ai") await voicePreparation.activate();
@@ -5133,7 +5188,7 @@ async function replaceEditorDeliveryDocument(doc: EditorDocument, identity: Sess
       if (latest.documentId !== current.documentId || latest.generation !== current.generation)
         return;
       await restoreManagedMedia();
-      await voicePreparation.load({ runtime: tab === "voiceover" && !editorVisible });
+      await voicePreparation.load({ runtime: tab === "voiceover" });
       await folderImport.load();
       if (production.enabled) await production.refresh();
     });
@@ -5228,7 +5283,7 @@ async function boot(): Promise<void> {
       if (
         previous !== legacySignature &&
         productionBooted &&
-        !editorVisible &&
+        tab !== "media" &&
         !aiApplying &&
         !projectSwitching &&
         !mediaImporting
@@ -5256,6 +5311,7 @@ async function boot(): Promise<void> {
   if (editorSession) {
     mountEditorWorkspace();
     mountEditorAgentTools();
+    await workspaceLayout.load();
   }
   await folderImport.load();
   await restoreManagedMedia();
@@ -5266,7 +5322,7 @@ async function boot(): Promise<void> {
   );
   await voicePreparation.load({ runtime: false });
   // The voice tab can be opened while the engine is still connecting.
-  if (tab === "voiceover" && !editorVisible)
+  if (tab === "voiceover")
     await Promise.all([voicePreparation.activate(), voiceover.load()]).catch(fail);
   if (production.enabled) {
     await production.restorePreparation(project);

@@ -102,7 +102,7 @@ async function page() {
       return stream;
     };
   });
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await page.locator("#recording-mode").waitFor();
   return page;
 }

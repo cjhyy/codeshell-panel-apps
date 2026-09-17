@@ -212,7 +212,7 @@ test("a real recursive folder chooser preserves same-name sources, ignores unrel
     });
     const page = await context.newPage();
     observe(page);
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.locator('[data-action="import-folder"]').waitFor();
     return page;
@@ -344,7 +344,7 @@ test("a folder picker opened for the old project cannot import into a newly crea
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   observe(page);
   try {
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.locator('[data-action="import-folder"]').waitFor();
     const choosing = page.waitForEvent("filechooser");
@@ -599,7 +599,7 @@ test("an authorized desktop folder scans the installed tool, imports new and cha
     page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     observe(page);
     await host.attach(page);
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.waitForFunction(
       () => !document.querySelector('[data-action="folder-connect"]')?.disabled,
@@ -764,7 +764,7 @@ test("stopping while a successful source publication is pending keeps the saved 
   let held, timer;
   try {
     await host.attach(page);
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.waitForFunction(
       () => !document.querySelector('[data-action="folder-connect"]')?.disabled,

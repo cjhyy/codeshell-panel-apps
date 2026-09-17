@@ -263,7 +263,7 @@ async function openPage({ host = true, width = 1440, workflow } = {}) {
     },
     { seed, sourceId, host, workflow },
   );
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   if (host)

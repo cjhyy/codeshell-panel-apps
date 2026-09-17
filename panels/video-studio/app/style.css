@@ -321,6 +321,30 @@ h3 {
   display: flex;
   flex-direction: column;
 }
+.library-view-switch {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 3px;
+  margin: -7px 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #1b1e21;
+}
+.library-view-switch button {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #9ba4a9;
+  font-size: 12px;
+}
+.library-view-switch button[aria-pressed="true"] {
+  background: #303b37;
+  color: #bceacb;
+}
 .section-title {
   display: flex;
   align-items: center;

@@ -39,7 +39,7 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.6.5 is maintained in `apps/video-studio/` and installed from the
+Video Studio 0.6.7 is maintained in `apps/video-studio/` and installed from the
 prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
@@ -56,6 +56,11 @@ Version 0.6.5 shows persistent playback/export preparation stages, explains stal
 panel sessions after an update, and defers optional waveforms until playback
 preparation completes. Slow resource staging on older Hosts additionally needs
 the Host authorization performance fix.
+
+Version 0.6.7 keeps the multitrack preview and timeline mounted across the desktop
+feature tabs, lets the left panel switch between assets and the active tool, and
+adds draggable dividers with saved local sizes. Version 0.6.6 prepares a smaller,
+faster preview proxy for 4K footage while retaining the full-quality export path.
 
 Version 0.6.4 also keeps the timeline fitted to the available width when resizing
 or expanding a docked panel, preserving selection and scroll position.

@@ -321,7 +321,7 @@ async function openPage({ transcriptionAvailable = true } = {}) {
     },
     { seed, pictureId, recordingId, transcript, transcriptionAvailable },
   );
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.waitForFunction(
     (id) => window.__panelTools?.read_video_project().preparation[id],

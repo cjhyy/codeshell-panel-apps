@@ -191,7 +191,7 @@ async function openPage(viewport = { width: 1440, height: 1000 }) {
   await page.addInitScript({
     content: `(${installGenericMediaTaskMock.toString()})();(${installLibraryBridge.toString()})();`,
   });
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await ready(page);
   return page;
 }

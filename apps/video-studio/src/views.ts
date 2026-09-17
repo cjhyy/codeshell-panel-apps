@@ -32,6 +32,8 @@ export interface ViewState {
   readonly selected: string;
   readonly frame: number;
   readonly tab: string;
+  readonly libraryTab?: string;
+  readonly unifiedWorkspace?: boolean;
   readonly zoom: number;
   readonly snapping?: boolean;
   readonly search: string;
@@ -265,6 +267,9 @@ export function createViews(state: ViewState) {
         </section>
         <aside class="inspector">${renderInspector()}</aside>
         <section class="timeline-panel" aria-label="剪辑时间轴">${renderTimeline()}</section>
+        <div class="studio-resize-library workspace-resizer" data-resize-pane="library" role="separator" tabindex="0" aria-label="调整素材面板宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="500" aria-valuenow="260"></div>
+        <div class="studio-resize-inspector workspace-resizer" data-resize-pane="inspector" role="separator" tabindex="0" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="500" aria-valuenow="270"></div>
+        <div class="studio-resize-timeline workspace-resizer" data-resize-pane="timeline" role="separator" tabindex="0" aria-label="调整多轨时间线高度" aria-orientation="horizontal" aria-valuemin="200" aria-valuemax="720" aria-valuenow="308"></div>
       </main>
       <footer class="statusbar">
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
@@ -286,19 +291,20 @@ export function createViews(state: ViewState) {
       <dialog id="media-delete-dialog" aria-labelledby="media-delete-heading"></dialog>`;
   }
 
-  function renderLibrary(): string {
-    if (tab === "roughcut") return state.roughcutMarkup ?? "";
-    if (tab === "recording") return state.recordingMarkup ?? "";
-    if (tab === "spoken") return state.spokenMarkup ?? "";
-    if (tab === "voiceover")
+  function renderLibraryContent(): string {
+    const libraryTab = state.libraryTab ?? tab;
+    if (libraryTab === "roughcut") return state.roughcutMarkup ?? "";
+    if (libraryTab === "recording") return state.recordingMarkup ?? "";
+    if (libraryTab === "spoken") return state.spokenMarkup ?? "";
+    if (libraryTab === "voiceover")
       return (
         (state.voicePreparationMarkup ?? "") +
         (state.voicePreparationActive
           ? `<details class="voiceover-alternative"><summary>其他文字配音 · 使用预置音色</summary>${state.voiceoverMarkup ?? ""}</details>`
           : (state.voiceoverMarkup ?? ""))
       );
-    if (tab === "jobs" && state.production) return renderProductionJobs(state.production);
-    if (tab === "transcript")
+    if (libraryTab === "jobs" && state.production) return renderProductionJobs(state.production);
+    if (libraryTab === "transcript")
       return html`<div class="section-title">
           <h2>文稿与字幕</h2>
           ${tool("import-srt", "导入 SRT 字幕", "upload")}
@@ -334,7 +340,7 @@ export function createViews(state: ViewState) {
               button("import-srt", "导入 SRT", "upload") +
               "</div>"}
         </div>`;
-    if (tab === "ai")
+    if (libraryTab === "ai")
       return html`<div class="section-title">
           <h2>AI 自动制作</h2>
           <span class="tiny-badge">PRODUCTION</span>
@@ -680,6 +686,23 @@ ${esc(aiPrompt)}</textarea
             : "导入素材保存在此浏览器，重新打开自动恢复；清除网站数据会移除本地副本。"}</span
         >
       </div>`;
+  }
+
+  function renderLibrary(): string {
+    if (tab === "media" || !state.unifiedWorkspace) return renderLibraryContent();
+    const label = (
+      {
+        roughcut: "粗剪",
+        recording: "录制",
+        spoken: "口播",
+        transcript: "字幕",
+        voiceover: "配音",
+        ai: "AI 制作",
+        jobs: "任务",
+      } as Record<string, string>
+    )[tab] ?? "工具";
+    const assets = state.libraryTab === "media";
+    return `<div class="library-view-switch" role="group" aria-label="左侧面板"><button type="button" data-library-view="assets" aria-pressed="${assets}">素材</button><button type="button" data-library-view="feature" aria-pressed="${!assets}">${esc(label)}</button></div>${renderLibraryContent()}`;
   }
 
   function renderInspector(): string {

@@ -162,7 +162,7 @@ async function pageWithBridge(mock = false, generic = true) {
       };
     });
   }
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.locator("#studio .workspace").waitFor();
   return page;
@@ -578,7 +578,7 @@ test("original audio and rough-cut marks survive a complete browser restart", as
     });
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.locator("#studio .workspace").waitFor();
     return page;
@@ -1015,7 +1015,7 @@ test("persistent media, versioned automatic edits, real tool contract and reload
     },
     { sourceHash, sourceByteLength: sourceBytes.length },
   );
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.locator("#studio .workspace").waitFor();
   const chooserPromise = page.waitForEvent("filechooser");
@@ -1531,7 +1531,7 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
     },
     { initial, speechId },
   );
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.locator("#studio .workspace").waitFor();
   await page.waitForFunction(
@@ -1823,7 +1823,7 @@ test("local voice cloning validates its own recording, uses real model preview, 
     { initial },
   );
   try {
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.locator("#studio .workspace").waitFor();
     await page.locator('[data-tab="voiceover"]').click();

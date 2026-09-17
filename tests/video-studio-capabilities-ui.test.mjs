@@ -96,7 +96,7 @@ async function isolatedPage(mockHost = false, width = 1440) {
     };
   });
   if (mockHost) await installMockHost(page);
-  await page.goto(url);
+  await page.goto(`${url}/?legacyWorkspace=1`);
   await enterLegacyProduction(page);
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   return { context, page };

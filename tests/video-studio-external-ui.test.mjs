@@ -197,7 +197,7 @@ test("referenced original previews, retains rough cuts across fresh browser cont
         call: (method, params) => window.__referenceCall(method, params),
       };
     });
-    await page.goto(url);
+    await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.waitForFunction(
       () =>

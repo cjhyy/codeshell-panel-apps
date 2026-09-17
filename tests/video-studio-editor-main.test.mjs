@@ -436,11 +436,17 @@ test("main rail and original-source previews retain the mounted canonical canvas
   });
   for (const tab of ["ai", "transcript", "jobs", "recording"]) {
     await production(page, tab);
-    assert.equal(await page.locator("#editor-workspace").isVisible(), false);
+    assert.equal(await page.locator("#editor-workspace").isVisible(), true);
+    assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), true);
+    assert.equal(await page.locator("#editor-workspace [data-ew-timeline]").isVisible(), true);
     assert.equal(
       await page.locator(`#studio .rail [data-tab="${tab}"]`).getAttribute("aria-pressed"),
       "true",
     );
+    await page.locator('[data-library-view="assets"]').click();
+    assert.equal(await page.locator('[data-asset="demo"]').isVisible(), true);
+    assert.equal(await page.locator("#editor-workspace [data-ew-timeline]").isVisible(), true);
+    await page.locator('[data-library-view="feature"]').click();
     assert.deepEqual(await saved(page), before);
     await returnEditor(page);
     assert.equal(
@@ -503,6 +509,33 @@ test("main rail and original-source previews retain the mounted canonical canvas
   await page.reload();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.deepEqual(await saved(page), before);
+});
+
+test("workspace dividers resize the fixed editor and keep their sizes across tabs and reload", async (t) => {
+  const page = await openPage(t);
+  const width = (selector) => page.locator(selector).evaluate((element) => element.getBoundingClientRect().width);
+  const height = (selector) => page.locator(selector).evaluate((element) => element.getBoundingClientRect().height);
+  const originalLibrary = await width(".library-panel");
+  const originalTimeline = await height("[data-ew-timeline]");
+  const divider = page.locator('[data-resize-pane="library"]');
+  const bounds = await divider.boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 60);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 64, bounds.y + 60, { steps: 4 });
+  await page.mouse.up();
+  assert.ok((await width(".library-panel")) >= originalLibrary + 50);
+  await page.locator('[data-resize-pane="timeline"]').focus();
+  await page.keyboard.press("ArrowUp");
+  assert.ok((await height("[data-ew-timeline]")) >= originalTimeline + 10);
+  const resizedLibrary = await width(".library-panel");
+  const resizedTimeline = await height("[data-ew-timeline]");
+  await production(page, "voiceover");
+  assert.equal(await page.locator("[data-ew-timeline]").isVisible(), true);
+  assert.ok(Math.abs((await width(".library-panel")) - resizedLibrary) <= 1);
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.ok(Math.abs((await width(".library-panel")) - resizedLibrary) <= 1);
+  assert.ok(Math.abs((await height("[data-ew-timeline]")) - resizedTimeline) <= 1);
 });
 
 test("saved video and audio reopen without starting native proxies, waveforms or voice probes", async (t) => {

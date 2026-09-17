@@ -667,7 +667,8 @@
    Standalone editor mounts keep their existing component layout. */
 .workspace.editor-mode {
   position: relative;
-  grid-template-rows: minmax(260px, 1fr) auto minmax(300px, 44vh);
+  grid-template-columns: 66px var(--studio-library-width, 260px) minmax(320px, 1fr) var(--studio-inspector-width, 270px);
+  grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 308px);
 }
 .workspace.editor-mode > .rail {
   grid-row: 1 / -1;
@@ -679,6 +680,70 @@
 }
 .workspace.editor-mode > :is(.viewer-panel, .inspector, .timeline-panel) {
   display: none;
+}
+.workspace.editor-mode.editor-ai-mode > .inspector {
+  display: block;
+  grid-column: 4;
+  grid-row: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.workspace.editor-mode.editor-ai-mode .ew-properties {
+  display: none;
+}
+.workspace-resizer {
+  display: none;
+}
+.workspace.editor-mode > .workspace-resizer {
+  display: block;
+  z-index: 30;
+  outline: none;
+  touch-action: none;
+}
+.workspace.editor-mode > .workspace-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.workspace.editor-mode > .workspace-resizer:is(:hover, :focus-visible)::after,
+.is-resizing-workspace .workspace-resizer::after {
+  background: #bceacb;
+}
+.workspace.editor-mode > .studio-resize-library,
+.workspace.editor-mode > .studio-resize-inspector {
+  grid-row: 1;
+  width: 10px;
+  cursor: col-resize;
+}
+.workspace.editor-mode > :is(.studio-resize-library, .studio-resize-inspector)::after {
+  width: 2px;
+}
+.workspace.editor-mode > .studio-resize-library {
+  grid-column: 2;
+  justify-self: end;
+  transform: translateX(50%);
+}
+.workspace.editor-mode > .studio-resize-inspector {
+  grid-column: 4;
+  justify-self: start;
+  transform: translateX(-50%);
+}
+.workspace.editor-mode > .studio-resize-timeline {
+  grid-column: 2 / -1;
+  grid-row: 3;
+  align-self: start;
+  height: 10px;
+  cursor: row-resize;
+  transform: translateY(-50%);
+}
+.workspace.editor-mode > .studio-resize-timeline::after {
+  height: 2px;
+}
+.is-resizing-workspace {
+  user-select: none;
 }
 .editor-workspace.editor-workspace-embedded {
   --ew-bg: #17191c;
@@ -881,7 +946,11 @@
 }
 @media (max-width: 900px) {
   .workspace.editor-mode {
+    grid-template-columns: 55px 220px minmax(250px, 1fr);
     grid-template-rows: minmax(300px, 45vh) auto 280px minmax(240px, 420px);
+  }
+  .workspace.editor-mode > .workspace-resizer {
+    display: none;
   }
   .editor-workspace-embedded .ew-properties {
     grid-column: 2 / -1;
@@ -889,9 +958,14 @@
     border-top: 1px solid var(--ew-border);
     border-left: 0;
   }
+  .workspace.editor-mode.editor-ai-mode > .inspector {
+    grid-column: 2 / -1;
+    grid-row: 4;
+  }
 }
 @media (max-width: 620px) {
   .workspace.editor-mode {
+    grid-template-columns: 46px minmax(0, 1fr);
     grid-template-rows: minmax(240px, 38vh) 300px auto 280px minmax(240px, 420px);
   }
   .workspace.editor-mode > .library-panel {
@@ -908,6 +982,10 @@
     grid-row: 4;
   }
   .editor-workspace-embedded .ew-properties {
+    grid-row: 5;
+  }
+  .workspace.editor-mode.editor-ai-mode > .inspector {
+    grid-column: 2;
     grid-row: 5;
   }
 }
