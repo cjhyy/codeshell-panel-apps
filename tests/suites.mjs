@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "panel-ui",
+    label: "Shared Panel App controls",
+    commands: [["--test", "tests/panel-select-ui.test.mjs"]],
+  },
+  {
     id: "packages",
     label: "Package rules and existing application regressions",
     commands: [["scripts/validate.mjs"]],

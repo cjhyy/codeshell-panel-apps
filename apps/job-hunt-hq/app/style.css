@@ -18,6 +18,12 @@
   --muted: #667085;
   --faint: #98a2b3;
   --accent: #356df3;
+  --panel-select-surface: var(--surface);
+  --panel-select-menu-surface: var(--surface);
+  --panel-select-text: var(--text);
+  --panel-select-accent: var(--accent);
+  --panel-select-ring: rgb(53 109 243 / 15%);
+  --panel-select-hover-surface: var(--surface-2);
   --accent-ink: #ffffff;
   --paper: #ffffff;
   --paper-text: #1f211d;

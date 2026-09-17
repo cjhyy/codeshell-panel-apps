@@ -15,7 +15,7 @@ permission; their application logic belongs to the Panel package.
 | Job Hunt HQ        | `apps/job-hunt-hq`    | Project/session-bound job discovery, company research, resume, and interview visualization                                         |
 | Quant Lab          | `apps/quant-lab`      | Local-first investment desk with portfolio rules, linked plain-text notes, Today, reminders, opt-in news/SEC filings, and research |
 | Video Download     | `apps/video-download` | Local yt-dlp downloads plus isolated setup and error-analysis Tasks                                                                |
-| Video Studio 0.6.5 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
+| Video Studio 0.6.9 | `panels/video-studio` | Media organization, local video editing, source rough cuts, captions, AI workflows, and panel-owned media and voice tools          |
 | Starter            | `templates/starter`   | Minimal template for creating another Panel App                                                                                    |
 
 ## Install from GitHub
@@ -39,7 +39,17 @@ shows its Host permissions, and installs an immutable snapshot. After new
 commits are pushed, use **Update from source** on the installed app card to
 review and apply the new version.
 
-Video Studio 0.6.7 is maintained in `apps/video-studio/` and installed from the
+## Shared panel controls
+
+Dropdowns across all five apps use `shared/panel-select.css` and
+`shared/panel-select.js`. Each installable package includes its own copy, so it
+works when installed by itself. Edit the shared files, run
+`npm run sync:panel-select`, then build Video Studio. The default `npm run check`
+verifies the copies and exercises pointer, keyboard, dynamic options, and dialog
+menus. App themes set `--panel-select-*` variables; the native `<select>` stays
+in place for forms and existing change handlers.
+
+Video Studio 0.6.9 is maintained in `apps/video-studio/` and installed from the
 prebuilt `panels/video-studio/` package. It owns media processing, subtitles,
 Whisper transcription, HyperFrames rendering, and all voice adapters and model
 setup. CodeShell 0.9.11+ / Panel API 14 supplies generic durable tasks, resource
@@ -52,8 +62,10 @@ entry, available before model installation. Video and audio timeline clips now
 have a right-click removal menu with undo. This release changes only the Panel,
 with no new Host permissions.
 
-Version 0.6.5 shows persistent playback/export preparation stages, explains stale
-panel sessions after an update, and defers optional waveforms until playback
+Version 0.6.9 adds the same themed dropdown control to all Panel Apps while
+preserving native form values and change events. Video Studio 0.6.5 shows persistent
+playback/export preparation stages, explains stale panel sessions after an update,
+and defers optional waveforms until playback
 preparation completes. Slow resource staging on older Hosts additionally needs
 the Host authorization performance fix.
 

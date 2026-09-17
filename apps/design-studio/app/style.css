@@ -24,6 +24,12 @@
   --accent-ink: #162204;
   --blue: #6d9cff;
   --focus-ring: #6d9cff;
+  --panel-select-surface: var(--surface-2);
+  --panel-select-menu-surface: var(--surface);
+  --panel-select-text: var(--text);
+  --panel-select-accent: var(--focus-ring);
+  --panel-select-ring: rgb(109 156 255 / 17%);
+  --panel-select-hover-surface: var(--surface-3);
   --success: #79dda0;
   --warning: #ffca6d;
   --danger: #ff7676;

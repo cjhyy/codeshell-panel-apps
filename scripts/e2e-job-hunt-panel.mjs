@@ -323,7 +323,7 @@ try {
       apps: [
         {
           id: "job-hunt-hq",
-          version: "4.1.0",
+          version: "4.1.1",
           source: panelSource,
           installedAt: now,
           lastUpdated: now,
@@ -374,7 +374,7 @@ try {
   );
   const panel = panels.find((item) => item.appId === "job-hunt-hq");
   assert(panel, "Job Hunt HQ was not listed for the bound project");
-  assert(panel.version === "4.1.0", `expected Job Hunt HQ 4.1.0, got ${panel.version}`);
+  assert(panel.version === "4.1.1", `expected Job Hunt HQ 4.1.1, got ${panel.version}`);
   const prepared = await win.evaluate(({ id, cwd }) => window.codeshell.preparePanelApp(id, cwd), {
     id: panel.id,
     cwd: projectDir,

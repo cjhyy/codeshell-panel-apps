@@ -91,7 +91,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.5.0");
+assert.equal(manifest.version, "0.5.1");
 assert.equal(manifest.title.default, "投资工作台");
 assert.equal(manifest.title["zh-CN"], "投资工作台");
 assert(manifest.permissions.includes("external.open"), "M4 external links require the real Host permission");

@@ -23,6 +23,7 @@ function run(arguments_) {
 
 if (!testsOnly) {
   console.log("Checking source types and committed build output");
+  run(["scripts/sync-panel-select.mjs", "--check"]);
   run(["node_modules/typescript/bin/tsc", "--project", "tsconfig.json"]);
   run(["scripts/build-panels.mjs", "--check"]);
 }

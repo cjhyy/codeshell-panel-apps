@@ -18,6 +18,12 @@
   --muted: #8f9d96;
   --faint: #66716b;
   --green: #57e39a;
+  --panel-select-surface: var(--surface-2);
+  --panel-select-menu-surface: var(--surface);
+  --panel-select-text: var(--text);
+  --panel-select-accent: var(--green);
+  --panel-select-ring: rgb(87 227 154 / 15%);
+  --panel-select-hover-surface: var(--surface-3);
   --green-soft: rgba(87, 227, 154, 0.13);
   --amber: #f0bd66;
   --red: #f37c75;

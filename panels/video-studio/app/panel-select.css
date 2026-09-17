@@ -1,0 +1,102 @@
+/* Shared Panel App select control. Apps provide the theme variables below. */
+select:not([multiple]):not([size]):not([data-native-select]) {
+  appearance: none !important;
+  min-height: 30px;
+  padding: 5px 28px 5px 10px;
+  border: 1px solid var(--panel-select-border, var(--line, #555));
+  border-radius: 8px;
+  color: var(--panel-select-text, currentColor);
+  background-color: var(--panel-select-surface, transparent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='m1 1 5 5 5-5' fill='none' stroke='%23939aa3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+select:not([multiple]):not([size]):not([data-native-select]):hover:not(:disabled) {
+  border-color: var(--panel-select-hover-border, var(--line-strong, var(--line, #777)));
+}
+
+select:not([multiple]):not([size]):not([data-native-select])[aria-expanded="true"] {
+  border-color: var(--panel-select-accent, var(--accent, #58ab82));
+  box-shadow: 0 0 0 2px var(--panel-select-ring, transparent);
+}
+
+select:not([multiple]):not([size]):not([data-native-select]):disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.panel-select-menu {
+  position: fixed;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  width: max-content;
+  padding: 5px;
+  border: 1px solid var(--panel-select-border, var(--line, #555));
+  border-radius: 10px;
+  color: var(--panel-select-text, inherit);
+  background: var(--panel-select-menu-surface, var(--panel-select-surface, #202326));
+  box-shadow: 0 14px 38px rgb(0 0 0 / 24%), 0 2px 8px rgb(0 0 0 / 10%);
+  font: inherit;
+  overscroll-behavior: contain;
+}
+
+.panel-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 31px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.35;
+}
+
+.panel-select-option:hover,
+.panel-select-option.is-active {
+  background: var(--panel-select-hover-surface, rgb(128 128 128 / 13%));
+}
+
+.panel-select-option[aria-selected="true"] {
+  color: var(--panel-select-accent, var(--accent, currentColor));
+  font-weight: 600;
+}
+
+.panel-select-option[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.panel-select-option[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
+.panel-select-label {
+  overflow: hidden;
+  max-width: min(46vw, 420px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panel-select-check {
+  min-width: 12px;
+  color: var(--panel-select-accent, var(--accent, currentColor));
+  font-size: 13px;
+}
+
+.panel-select-group {
+  padding: 8px 9px 4px;
+  color: var(--panel-select-muted, var(--muted, #888));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.panel-select-empty {
+  padding: 10px;
+  color: var(--panel-select-muted, var(--muted, #888));
+}

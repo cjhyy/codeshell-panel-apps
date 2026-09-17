@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "quant-lab",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "title": {
     "default": "投资工作台",
     "en": "Investment Desk",

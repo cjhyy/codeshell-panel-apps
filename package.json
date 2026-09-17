@@ -15,6 +15,7 @@
     "test:ui:quant-lab": "node scripts/quant-lab-ui.mjs",
     "build": "node scripts/build-panels.mjs",
     "build:check": "node scripts/build-panels.mjs --check",
+    "sync:panel-select": "node scripts/sync-panel-select.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "dev": "node scripts/preview-panels.mjs --watch",
     "preview": "node scripts/preview-panels.mjs",

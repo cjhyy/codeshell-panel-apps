@@ -244,7 +244,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "0.18.0", `${packagePath}: responsive-layout version mismatch`);
+    assert.equal(manifest.version, "0.18.1", `${packagePath}: responsive-layout version mismatch`);
     assert.deepEqual(
       [...registeredToolNames].sort(),
       [...toolNames].sort(),
@@ -282,7 +282,7 @@ async function validatePackage(packagePath) {
 
     assert.equal(manifest.schemaVersion, 1, `${packagePath}: v1 must keep schemaVersion 1`);
     assert.equal(manifest.id, "quant-lab", `${packagePath}: installed app id must stay stable`);
-    assert.equal(manifest.version, "0.5.0", `${packagePath}: investment desk version mismatch`);
+    assert.equal(manifest.version, "0.5.1", `${packagePath}: investment desk version mismatch`);
     assert.deepEqual(
       manifest.title,
       { default: "投资工作台", en: "Investment Desk", "zh-CN": "投资工作台" },
@@ -425,7 +425,7 @@ async function validatePackage(packagePath) {
     const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
       (match) => match[1],
     );
-    assert.equal(manifest.version, "4.1.0", `${packagePath}: guided workflow version mismatch`);
+    assert.equal(manifest.version, "4.1.1", `${packagePath}: guided workflow version mismatch`);
     for (const id of ["view-today", "view-dashboard", "view-resumes", "view-interviews", "view-materials"]) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing v4 primary workspace ${id}`);
     }
@@ -5588,7 +5588,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.13.1", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.13.2", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",

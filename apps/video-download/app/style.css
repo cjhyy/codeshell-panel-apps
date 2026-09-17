@@ -21,6 +21,12 @@
   --line: #e2e3e7;
   --line-strong: #d2d4d9;
   --accent: #f05a36;
+  --panel-select-surface: var(--surface-raised);
+  --panel-select-menu-surface: var(--surface-raised);
+  --panel-select-text: var(--ink);
+  --panel-select-accent: var(--accent);
+  --panel-select-ring: rgb(240 90 54 / 15%);
+  --panel-select-hover-surface: var(--surface-muted);
   --accent-hover: #dd4928;
   --accent-soft: #fff0eb;
   --success: #23956b;

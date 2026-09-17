@@ -16,6 +16,12 @@
   --accent: #b8edc8;
   --accent-ink: #183c29;
   --panel: #17191c;
+  --panel-select-surface: #202429;
+  --panel-select-menu-surface: #1c2023;
+  --panel-select-text: #e2e8e4;
+  --panel-select-accent: var(--accent);
+  --panel-select-ring: rgb(184 237 200 / 14%);
+  --panel-select-hover-surface: #2b3431;
 }
 * {
   box-sizing: border-box;
