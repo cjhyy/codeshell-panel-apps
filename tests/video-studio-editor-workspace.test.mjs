@@ -208,8 +208,8 @@ async function fixture(t, options = {}) {
     );
     let prepareAudio;
     if (options.audio)
-      prepareAudio = (doc, sequenceId, signal) =>
-        new Promise((resolve) => {
+      prepareAudio = (doc, sequenceId, signal, onProgress) =>
+        new Promise((resolve, reject) => {
           const request = {
             documentId: doc.id,
             revision: doc.revision,
@@ -217,6 +217,8 @@ async function fixture(t, options = {}) {
             signal,
             duration: editor.sequenceDuration(doc.sequences.find((s) => s.id === sequenceId)),
             resolve,
+            reject,
+            onProgress,
           };
           audioRequests.push(request);
         });
@@ -362,6 +364,8 @@ async function fixture(t, options = {}) {
           aborted: signal.aborted,
           disposed: disposed ?? 0,
         })),
+      audioProgress: (index, message) => audioRequests[index].onProgress?.(message),
+      rejectAudio: (index, message) => audioRequests[index].reject(new Error(message)),
       resolveAudio: (index, stream = false) => {
         const request = audioRequests[index];
         request.resolve({
@@ -734,11 +738,75 @@ test("failed autosave exposes retry and retains the edited session until persist
   assert.equal(await action(page, "retry-save").isVisible(), false);
 });
 
+test("playback preparation stays visible while task start waits, cancels locally and ignores stale progress", async (t) => {
+  const page = await fixture(t, { audio: true, layout: "embedded" });
+  const before = await documentState(page);
+  const status = page.locator("[data-ew-preview-error]");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  assert.equal(await status.isVisible(), true);
+  assert.match(await status.textContent(), /正在准备播放素材/);
+  assert.match(await status.textContent(), /素材复制可能仍会完成/);
+  assert.equal(await action(page, "play").getAttribute("aria-busy"), "true");
+  await page.evaluate(() => fixture.audioProgress(0, "正在准备视频素材并等待主程序提交任务…"));
+  await settle(page);
+  assert.match(await status.textContent(), /正在准备视频素材并等待主程序提交任务/);
+  await action(page, "play").click();
+  assert.equal(await status.isVisible(), false);
+  assert.equal(await action(page, "play").getAttribute("aria-busy"), "false");
+  assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), true);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => {
+    fixture.audioProgress(1, "正在准备声音…");
+    fixture.audioProgress(0, "过期任务的进度");
+    fixture.resolveAudio(0);
+  });
+  await settle(page);
+  assert.match(await status.textContent(), /正在准备声音/);
+  await page.evaluate(() => fixture.resolveAudio(1));
+  await page.waitForFunction(() =>
+    document.querySelector('[data-ew-action="play"]').getAttribute("aria-label") === "暂停",
+  );
+  assert.equal(await status.isVisible(), false);
+  assert.equal(await status.getAttribute("data-preview-preparing"), null);
+  assert.deepEqual(await documentState(page), before);
+  await action(page, "play").click();
+});
+
+test("failed playback preparation clears busy state and explains an outdated panel without changing edits", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => fixture.externalEdit());
+  await page.evaluate(() => fixture.flush());
+  const before = await documentState(page);
+  const status = page.locator("[data-ew-preview-error]");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() =>
+    fixture.rejectAudio(0, "Installed tool task version or permissions changed"),
+  );
+  await page.waitForFunction(() => fixture.errors.length === 1);
+  assert.equal(await status.isVisible(), true);
+  assert.match(await status.textContent(), /当前页面已过期/);
+  assert.match(await status.textContent(), /确认工程已保存后，关闭并重新打开视频工作台/);
+  assert.equal(await status.getAttribute("data-preview-preparing"), null);
+  assert.equal(await action(page, "play").getAttribute("aria-busy"), "false");
+  assert.equal(await action(page, "play").textContent(), "播放");
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  assert.match(await status.textContent(), /正在准备播放素材/);
+  await action(page, "play").click();
+  assert.equal(await status.isVisible(), false);
+  await page.evaluate(() => fixture.resolveAudio(1));
+});
+
 test("cancelled native audio completion never plays or contaminates the next preparation", async (t) => {
   const page = await fixture(t, { audio: true });
   await action(page, "play").click();
   await page.waitForFunction(() => fixture.audio().length === 1);
-  assert.equal(await action(page, "play").textContent(), "取消声音准备");
+  assert.equal(await action(page, "play").textContent(), "取消播放准备");
   await action(page, "play").click();
   assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), true);
   await page.evaluate(() => fixture.resolveAudio(0));
@@ -806,7 +874,7 @@ test("a stale audio request resolving after its replacement cannot cancel or rep
   await page.waitForFunction(() => fixture.audio().length === 2);
   await page.evaluate(() => fixture.resolveAudio(0));
   await settle(page);
-  assert.equal(await action(page, "play").textContent(), "取消声音准备");
+  assert.equal(await action(page, "play").textContent(), "取消播放准备");
   assert.equal(await page.locator("[data-ew-seek]").inputValue(), "0");
   assert.equal(await page.evaluate(() => fixture.audio()[1].aborted), false);
   await page.evaluate(() => fixture.resolveAudio(1));
@@ -1187,6 +1255,8 @@ test("partial export failure retries remaining combinations from the original fr
     true,
   );
   assert.match(await page.locator("[data-export-progress]").textContent(), /已提交 1\/4/);
+  assert.match(await page.locator("[data-export-progress]").textContent(), /提交已停止/);
+  assert.equal(await page.locator("[data-export-progress]").getAttribute("data-submitting"), null);
   assert.equal(await page.locator("dialog button[type=submit]").isEnabled(), true);
   await page.evaluate(() => fixture.externalEdit());
   await page.evaluate(() => fixture.flush());
@@ -1214,6 +1284,9 @@ test("cancel remaining submissions keeps a late accepted receipt and starts no f
   await page.locator("dialog button[type=submit]").click();
   await page.waitForFunction(() => fixture.exportAttempts().length === 1);
   assert.equal(await page.locator("[data-ew-close]").textContent(), "取消剩余提交");
+  assert.match(await page.locator("[data-export-progress]").textContent(), /正在准备导出素材并提交任务/);
+  assert.match(await page.locator("[data-export-progress]").textContent(), /素材复制可能仍会完成/);
+  assert.equal(await page.locator("[data-export-progress]").getAttribute("data-submitting"), "true");
   await page.locator("[data-ew-close]").click();
   await page.locator("dialog").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => fixture.exportAttempts()[0].aborted), true);

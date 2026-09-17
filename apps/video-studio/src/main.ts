@@ -4959,12 +4959,14 @@ function mountEditorWorkspace(): void {
           }
         : undefined,
     },
-    prepareAudio: async (doc, sequenceId, signal) => {
-      // Native preview work starts with the user pressing Play, never with restoration.
-      if (!editorNativePreviewsActive) {
+    prepareAudio: async (doc, sequenceId, signal, onProgress) => {
+      // Finish the first playback preparation before requesting optional timeline
+      // waveforms. Both paths may need to stage the same original video.
+      const activateTimelineMedia = () => {
+        if (signal.aborted || editorNativePreviewsActive) return;
         editorNativePreviewsActive = true;
         editorWorkspace?.refreshTimelineMedia();
-      }
+      };
       const plan = compileAudioPlan(doc, sequenceId);
       const video = doc.assets.some((asset) => asset.kind === "video");
       if (!plan.lanes.length && !video) return undefined;
@@ -4973,12 +4975,12 @@ function mountEditorWorkspace(): void {
       const key = editorDocumentKey(doc, sequenceId);
       let snapshot = preparedNative?.key === key ? preparedNative.snapshot : undefined;
       const progress = (item: { phase: string; completed: number; total: number }) => {
-        if (!signal.aborted)
-          toast(
-            `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`,
-          );
+        if (signal.aborted) return;
+        const message = `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`;
+        onProgress?.(message);
       };
       if (video) {
+        onProgress?.("正在读取和校验视频素材，准备播放画面…");
         const prepared = await editorTasks.prepareVideoForPreview(doc, sequenceId, {
           snapshot,
           signal,
@@ -5014,8 +5016,10 @@ function mountEditorWorkspace(): void {
       }
       if (!plan.lanes.length) {
         if (snapshot) preparedNative = { key, snapshot };
+        activateTimelineMedia();
         return undefined;
       }
+      onProgress?.("正在读取声音素材并准备预览混音…");
       const result = await editorTasks.prepareAudioForPreview(doc, sequenceId, {
         snapshot,
         signal,
@@ -5023,12 +5027,15 @@ function mountEditorWorkspace(): void {
       });
       if (signal.aborted) return undefined;
       preparedNative = { key, snapshot: result.snapshot, audio: result.preparedAudio };
-      return loadEditorPreviewAudio(
+      onProgress?.("正在加载声音，即将开始播放…");
+      const audio = await loadEditorPreviewAudio(
         panel,
         result.audioResource,
         { documentId: doc.id, revision: doc.revision, sequenceId, sampleCount: plan.sampleCount },
         signal,
       );
+      activateTimelineMedia();
+      return audio;
     },
     exportSequence: panel
       ? async (doc, sequenceId, profile, signal) => {

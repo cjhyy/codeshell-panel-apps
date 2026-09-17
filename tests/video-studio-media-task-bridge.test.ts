@@ -379,6 +379,38 @@ test("SDK uses structured bridge errors, advertised limits and the actual proces
   }
 });
 
+test("SDK explains stale installed tasks in Chinese and preserves structured and legacy error codes", async () => {
+  for (const structured of [true, false]) {
+    const stale = Object.assign(new Error("Installed tool task version or permissions changed"), {
+      code: "PERMISSION_DENIED",
+      retryAfterMs: 250,
+    });
+    const sdk = createPanelRuntime({
+      getContext: async () => ({ availableMethods: ["tasks.start", "tasks.get", "resources.get"] }),
+      on: () => () => {},
+      call: async () => { throw stale; },
+      ...(structured ? {
+        callResult: async () => ({
+          ok: false as const,
+          error: { code: stale.code, message: stale.message, retryAfterMs: stale.retryAfterMs },
+        }),
+      } : {}),
+    });
+    try {
+      await assert.rejects(sdk.start({ entry: "editor-runtime" }), (error: any) => {
+        assert.equal(error.code, "PERMISSION_DENIED");
+        assert.equal(error.retryAfterMs, 250);
+        assert.match(error.message, /当前页面已过期/);
+        assert.match(error.message, /确认工程已保存后，关闭并重新打开视频工作台/);
+        assert.equal(error.cause.message, stale.message);
+        return true;
+      });
+    } finally {
+      sdk.dispose();
+    }
+  }
+});
+
 test("task events normalize state, fetch terminal artifacts and omit internal checks", async () => {
   const f = fixture(),
     observed: any[] = [];

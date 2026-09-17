@@ -175,6 +175,8 @@ async function openPage(t, options = {}) {
           calls.push({ method, args: structuredClone(args) });
           if (method === "tasks.list" && (options.nativeTasks || options.fullNativeAccess))
             return [];
+          if (method === "tasks.start" && options.holdNativeStart)
+            return new Promise(() => {});
           if (method === "media.jobs.list" && options.fullNativeAccess) return { jobs: [] };
           if (method === "resources.get" && options.fullNativeAccess)
             return { asset: structuredClone(options.mediaMetadata[args.id ?? args.assetId]) };
@@ -578,6 +580,7 @@ test("saved video and audio reopen without starting native proxies, waveforms or
   const page = await openPage(t, {
     seed: original,
     fullNativeAccess: true,
+    holdNativeStart: true,
     mediaMetadata: {
       [videoId]: {
         id: videoId,
@@ -641,6 +644,14 @@ test("saved video and audio reopen without starting native proxies, waveforms or
   await page.locator('[data-ew-action="play"]').click();
   await page.waitForFunction(() =>
     window.__mainHost.calls.some((call) => call.method === "tasks.start"),
+  );
+  await settle(page);
+  assert.deepEqual(
+    await page.evaluate(() => window.__mainHost.calls
+      .filter((call) => call.method === "tasks.start")
+      .map((call) => call.args.input.request.action)),
+    ["stage-status"],
+    "Optional timeline media must not duplicate source preparation while Play is still preparing",
   );
   assert.deepEqual(await saved(page), restored, "Starting preview never changes the saved edit");
 });

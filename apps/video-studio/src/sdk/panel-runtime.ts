@@ -20,6 +20,12 @@ export interface RuntimeJob {
   error?: { code: string; message: string; retryable: boolean };
   [key: string]: unknown;
 }
+export function panelRuntimeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message === "Installed tool task version or permissions changed"
+    ? "面板版本或权限已更新，当前页面已过期。请确认工程已保存后，关闭并重新打开视频工作台，再重试。"
+    : message;
+}
 export function taskValue(value: any): RuntimeJob {
   let job = value?.job ?? value?.task ?? value;
   if (job?.status === "interrupted")
@@ -106,16 +112,26 @@ export function createPanelRuntime(bridge: RuntimeBridge) {
     return current;
   }
   async function invoke(method: string, params?: unknown) {
-    if (!bridge.callResult) return bridge.call(method, params);
-    const result = await bridge.callResult(method, params);
-    if (result.ok) return result.value;
-    throw Object.assign(new Error(result.error.message), {
-      name: "PanelBridgeError",
-      code: result.error.code,
-      ...(Number.isFinite(result.error.retryAfterMs)
-        ? { retryAfterMs: result.error.retryAfterMs }
-        : {}),
-    });
+    try {
+      if (!bridge.callResult) return await bridge.call(method, params);
+      const result = await bridge.callResult(method, params);
+      if (result.ok) return result.value;
+      throw Object.assign(new Error(result.error.message), {
+        name: "PanelBridgeError",
+        code: result.error.code,
+        ...(Number.isFinite(result.error.retryAfterMs)
+          ? { retryAfterMs: result.error.retryAfterMs }
+          : {}),
+      });
+    } catch (error) {
+      const message = panelRuntimeErrorMessage(error);
+      if (error instanceof Error && message !== error.message)
+        throw Object.assign(new Error(message, { cause: error }), error, {
+          name: error.name,
+          message,
+        });
+      throw error;
+    }
   }
   async function call(method: string, params?: unknown, signal?: AbortSignal) {
     const current = await discover(),

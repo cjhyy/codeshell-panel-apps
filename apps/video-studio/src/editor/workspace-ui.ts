@@ -24,6 +24,7 @@ import { EditorCanvas } from "./canvas-ui";
 import { EditorSequences } from "./sequences-ui";
 import { EditorMulticam, type EditorMulticamContext } from "./multicam-ui";
 import type { EditorTimelineContext } from "./timeline-ui";
+import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
@@ -37,6 +38,7 @@ export interface EditorWorkspaceOptions {
     document: EditorDocument,
     sequenceId: string,
     signal: AbortSignal,
+    onProgress?: (message: string) => void,
   ): Promise<PreviewAudio | undefined>;
   exportSequence?(
     document: EditorDocument,
@@ -238,7 +240,7 @@ export class EditorWorkspace {
       },
       onPlaybackChange: (playing) => this.updatePlayButton(playing),
       onBuffering: (buffering) => {
-        if (this.disposed) return;
+        if (this.disposed || this.preparing) return;
         const output = this.get("[data-ew-preview-error]");
         if (buffering) {
           output.dataset.audioBuffering = "true";
@@ -403,24 +405,43 @@ export class EditorWorkspace {
   private updatePlayButton(playing: boolean): void {
     if (this.disposed) return;
     const button = this.get<HTMLButtonElement>('[data-ew-action="play"]');
-    const label = this.preparing ? "取消声音准备" : playing ? "暂停" : "播放";
+    const label = this.preparing ? "取消播放准备" : playing ? "暂停" : "播放";
     if (this.options.layout === "embedded")
       button.innerHTML = icon(this.preparing ? "close" : playing ? "pause" : "play", 16);
     else button.textContent = label;
     button.setAttribute("aria-label", label);
+    button.setAttribute("aria-busy", String(Boolean(this.preparing)));
     button.title = `${label} · 空格`;
   }
   private cancelPreparation(): void {
     this.preparing?.abort();
     this.preparing = undefined;
+    this.clearPreparationStatus();
     this.preview?.pause();
     this.updatePlayButton(false);
   }
   private previewError(error: unknown): void {
     if (this.disposed) return;
     const output = this.get("[data-ew-preview-error]");
+    delete output.dataset.previewPreparing;
+    delete output.dataset.audioBuffering;
     output.hidden = false;
-    output.textContent = error instanceof Error ? error.message : String(error);
+    output.textContent = panelRuntimeErrorMessage(error);
+  }
+  private preparationStatus(controller: AbortController, message: string): void {
+    if (this.disposed || this.preparing !== controller || controller.signal.aborted) return;
+    const output = this.get("[data-ew-preview-error]");
+    delete output.dataset.audioBuffering;
+    output.dataset.previewPreparing = "true";
+    output.textContent = `${message} 再次点击播放按钮可取消等待；已开始的素材复制可能仍会完成。`;
+    output.hidden = false;
+  }
+  private clearPreparationStatus(): void {
+    const output = this.get("[data-ew-preview-error]");
+    if (!output?.dataset.previewPreparing) return;
+    delete output.dataset.previewPreparing;
+    output.textContent = "";
+    output.hidden = true;
   }
   async seek(time: Tick): Promise<void> {
     if (this.disposed) return;
@@ -430,7 +451,7 @@ export class EditorWorkspace {
     this.updateTime();
     try {
       await this.preview.seek(time);
-      if (!this.disposed) this.get("[data-ew-preview-error]").hidden = true;
+      if (!this.disposed && !this.preparing) this.get("[data-ew-preview-error]").hidden = true;
     } catch (error) {
       this.previewError(error);
     }
@@ -448,12 +469,16 @@ export class EditorWorkspace {
     const controller = new AbortController();
     this.preparing = controller;
     this.updatePlayButton(false);
+    this.preparationStatus(controller, "正在准备播放素材，首次准备可能需要一些时间。");
     const doc = this.options.session.read(),
       sequenceId = this.sequenceId,
       signature = this.revision;
     try {
       const prepared =
-        this.audio ?? (await this.options.prepareAudio?.(doc, sequenceId, controller.signal));
+        this.audio ??
+        (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
+          this.preparationStatus(controller, message),
+        ));
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -464,6 +489,7 @@ export class EditorWorkspace {
         return;
       }
       this.audio = prepared;
+      this.preparationStatus(controller, "正在载入画面并同步声音…");
       // Resource preparation may replace an incompatible source with a verified preview proxy.
       this.preview.setDocument(doc, sequenceId);
       await this.preview.seek(this.playhead);
@@ -482,7 +508,10 @@ export class EditorWorkspace {
         throw error;
       }
     } finally {
-      if (this.preparing === controller) this.preparing = undefined;
+      if (this.preparing === controller) {
+        this.preparing = undefined;
+        this.clearPreparationStatus();
+      }
       this.updatePlayButton(this.preview.playing);
     }
   }
@@ -914,8 +943,7 @@ export class EditorWorkspace {
           if (!controller.signal.aborted && dialog.isConnected) dialog.close();
         } catch (error) {
           if (controller.signal.aborted || !dialog.isConnected) return;
-          form.querySelector(".ew-form-error")!.textContent =
-            error instanceof Error ? error.message : String(error);
+          form.querySelector(".ew-form-error")!.textContent = panelRuntimeErrorMessage(error);
         } finally {
           pending = false;
           if (dialog.isConnected)
@@ -1063,6 +1091,9 @@ export class EditorWorkspace {
       </fieldset><p data-export-progress role="status">每个所选序列都会按所选格式分别导出。</p>`,
       async (form, signal) => {
         this.pendingExport = true;
+        const progressOutput = form.querySelector<HTMLElement>("[data-export-progress]")!;
+        progressOutput.textContent = "正在保存工程并准备导出…";
+        progressOutput.dataset.submitting = "true";
         try {
           if (!batch) {
             assertSnapshot();
@@ -1083,10 +1114,20 @@ export class EditorWorkspace {
           form.querySelector("[data-ew-close]")!.textContent = "取消剩余提交";
           await batch.submit(this.options.exportSequence!, signal, (progress) => {
             if (!form.isConnected) return;
-            form.querySelector("[data-export-progress]")!.textContent =
-              `已提交 ${progress.completed}/${progress.total} · ${progress.sequence} · ${progress.profile}`;
+            progressOutput.textContent =
+              `已提交 ${progress.completed}/${progress.total} · ${progress.sequence} · ${progress.profile}` +
+              (progress.completed < progress.total
+                ? " · 正在准备导出素材并提交任务，大素材可能需要一些时间。取消仅停止剩余提交，已开始的素材复制可能仍会完成。"
+                : "");
           });
+        } catch (error) {
+          if (form.isConnected && !signal.aborted)
+            progressOutput.textContent = batch
+              ? `提交已停止 · 已提交 ${batch.progress.completed}/${batch.progress.total}`
+              : "导出尚未提交";
+          throw error;
         } finally {
+          delete progressOutput.dataset.submitting;
           this.pendingExport = false;
         }
       },

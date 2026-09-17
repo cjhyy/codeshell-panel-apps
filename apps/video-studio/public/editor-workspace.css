@@ -225,6 +225,11 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+.ew-canvas-wrap [data-ew-preview-error][data-preview-preparing] {
+  background: #182824ee;
+  border-color: #3b7768;
+  color: #d7f3e8;
+}
 .ew-player {
   display: flex;
   align-items: center;
