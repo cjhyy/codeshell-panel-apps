@@ -190,11 +190,12 @@ export function describeEditorVideo(stream: any) {
   };
 }
 
-/** Full display resolution, SDR conversion explicitly described by the recipe, lossless VP9 intermediate. */
+/** Export uses a lossless full-size intermediate; interactive playback uses a smaller fast preview. */
 export async function prepareEditorProxy(
   path: string,
   sourceHash: string,
   context: ProxyContext,
+  purpose: "export" | "preview" = "export",
 ): Promise<EditorProxy> {
   const probe = JSON.parse(
     (
@@ -232,13 +233,19 @@ export async function prepareEditorProxy(
   const sourceOriginSeconds = Number(probe.format?.start_time ?? 0);
   if (!Number.isFinite(sourceOriginSeconds))
     throw new EditorTaskError("INVALID_MEDIA", "源视频起始时间无效");
+  const previewScale = Math.min(1, 1920 / width, 1080 / height);
+  const encodedWidth =
+    purpose === "preview" ? Math.max(2, Math.round((width * previewScale) / 2) * 2) : width;
+  const encodedHeight =
+    purpose === "preview" ? Math.max(2, Math.round((height * previewScale) / 2) * 2) : height;
   const recipeHash = digest({
-    version: "editor-sdr-proxy-v2-duration",
+    version: purpose === "preview" ? "editor-sdr-preview-v1" : "editor-sdr-proxy-v2-duration",
     sourceHash,
     ffmpeg: context.ffmpegVersion,
     stream: stream.index,
     width,
     height,
+    ...(purpose === "preview" ? { encodedWidth, encodedHeight } : {}),
     rotation,
     sar,
     inputMatrix,
@@ -262,7 +269,7 @@ export async function prepareEditorProxy(
       "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点",
     );
   const output = join(context.workDir, `proxy-${randomUUID()}.mp4`);
-  const filter = `scale=${width}:${height}:flags=lanczos,setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=yuv444p:dither=fsb`;
+  const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
     await runMediaProcess(
       context.ffmpegPath,
@@ -287,17 +294,13 @@ export async function prepareEditorProxy(
         "-enc_time_base",
         "1:240000",
         "-c:v",
-        "libvpx-vp9",
-        "-lossless",
-        "1",
-        "-pix_fmt",
-        "yuv444p",
-        "-deadline",
-        "good",
-        "-cpu-used",
-        "4",
-        "-row-mt",
-        "1",
+        purpose === "preview" ? "libx264" : "libvpx-vp9",
+        ...(purpose === "preview"
+          ? ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p"]
+          : [
+              "-lossless", "1", "-pix_fmt", "yuv444p", "-deadline", "good",
+              "-cpu-used", "4", "-row-mt", "1",
+            ]),
         "-color_primaries",
         "bt709",
         "-color_trc",

@@ -4985,6 +4985,12 @@ function mountEditorWorkspace(): void {
           snapshot,
           signal,
           onProgress: progress,
+          onTask: () => onProgress?.("正在生成快速预览画面，首次播放需要处理原片…"),
+          onJobChanged: (job) => {
+            if (signal.aborted || job.progress?.stage !== "prepare-video") return;
+            const percent = Math.round((job.progress.fraction ?? 0) * 100);
+            onProgress?.(`正在生成快速预览画面 · ${percent}%`);
+          },
         });
         snapshot = prepared.snapshot;
         if (signal.aborted) return undefined;

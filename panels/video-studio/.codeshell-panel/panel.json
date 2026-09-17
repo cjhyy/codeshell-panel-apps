@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
@@ -4696,7 +4696,7 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "fbc5584be20b861b6d679d420970fc7bf0d9f975b2c62fd62df1fb18c31f3cb7"
+      "sha256": "957a81328daf75a3368daf9a767d9cd256e1a89744db09208bdb329f67cdbb32"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",

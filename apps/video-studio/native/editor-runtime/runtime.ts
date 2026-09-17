@@ -644,12 +644,16 @@ export async function runEditorRequest(
       signal: context.signal,
     };
     const videos = new Map<string, EditorProxy>();
-    const video = async (assetId: string, requireGeometry: boolean) => {
+    const video = async (
+      assetId: string,
+      requireGeometry: boolean,
+      purpose: "export" | "preview" = "export",
+    ) => {
       const asset = selected.document.assets.find((item) => item.id === assetId);
       if (asset?.kind !== "video")
         throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
       const input = original(assetId),
-        proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext);
+        proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext, purpose);
       if (requireGeometry && (asset.width !== proxy.width || asset.height !== proxy.height))
         throw new EditorTaskError(
           "SOURCE_GEOMETRY_MISMATCH",
@@ -662,7 +666,7 @@ export async function runEditorRequest(
       const sources: any[] = [];
       for (let index = 0; index < request.assetIds!.length; index++) {
         const assetId = request.assetIds![index]!,
-          proxy = await video(assetId, false),
+          proxy = await video(assetId, false, "preview"),
           { path: _path, ...recipe } = proxy;
         const asset = await add(proxy.path, "mp4", "video/mp4", "editor-video-source");
         sources.push({ assetId, proxy: asset, recipe });

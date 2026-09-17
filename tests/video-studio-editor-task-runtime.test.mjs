@@ -345,7 +345,7 @@ test(
   },
 );
 test(
-  "ProRes SDR proxy retains NTSC timestamps and is frame-seekable in the shared Chromium renderer",
+  "fast SDR preview retains NTSC timestamps and is frame-seekable in the shared Chromium renderer",
   { timeout: 120000 },
   async (t) => {
     const d = document(),
@@ -371,6 +371,11 @@ test(
     assert.equal(source.recipe.height, 48);
     const path = artifactPath(prepared, "editor-video-source"),
       workDir = await mkdtemp(join(temp, "frames-"));
+    const previewStream = JSON.parse(
+      spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_streams", "-of", "json", path]).stdout,
+    ).streams[0];
+    assert.equal(previewStream.codec_name, "h264");
+    assert.equal(previewStream.pix_fmt, "yuv420p");
     const renderer = await api.EditorFrameRenderer.create({
       document: d,
       sequenceId: "main",
@@ -522,6 +527,7 @@ test(
     const meta = JSON.parse(
       spawnSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", proxy.path]).stdout,
     ).streams[0];
+    assert.equal(meta.codec_name, "vp9");
     assert.equal(meta.sample_aspect_ratio, "1:1");
     assert.equal(meta.width, 24);
     assert.equal(meta.height, 64);

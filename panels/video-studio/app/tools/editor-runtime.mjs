@@ -6982,7 +6982,7 @@ function describeEditorVideo(stream) {
     sourceBitDepth
   };
 }
-async function prepareEditorProxy(path, sourceHash, context) {
+async function prepareEditorProxy(path, sourceHash, context, purpose = "export") {
   const probe = JSON.parse(
     (await runMediaProcess(
       context.ffprobePath,
@@ -7012,13 +7012,17 @@ async function prepareEditorProxy(path, sourceHash, context) {
   const sourceOriginSeconds = Number(probe.format?.start_time ?? 0);
   if (!Number.isFinite(sourceOriginSeconds))
     throw new EditorTaskError("INVALID_MEDIA", "源视频起始时间无效");
+  const previewScale = Math.min(1, 1920 / width, 1080 / height);
+  const encodedWidth = purpose === "preview" ? Math.max(2, Math.round(width * previewScale / 2) * 2) : width;
+  const encodedHeight = purpose === "preview" ? Math.max(2, Math.round(height * previewScale / 2) * 2) : height;
   const recipeHash = digest2({
-    version: "editor-sdr-proxy-v2-duration",
+    version: purpose === "preview" ? "editor-sdr-preview-v1" : "editor-sdr-proxy-v2-duration",
     sourceHash,
     ffmpeg: context.ffmpegVersion,
     stream: stream.index,
     width,
     height,
+    ...purpose === "preview" ? { encodedWidth, encodedHeight } : {},
     rotation,
     sar,
     inputMatrix,
@@ -7042,7 +7046,7 @@ async function prepareEditorProxy(path, sourceHash, context) {
       "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
     );
   const output = join10(context.workDir, `proxy-${randomUUID6()}.mp4`);
-  const filter = `scale=${width}:${height}:flags=lanczos,setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=yuv444p:dither=fsb`;
+  const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
     await runMediaProcess(
       context.ffmpegPath,
@@ -7067,17 +7071,19 @@ async function prepareEditorProxy(path, sourceHash, context) {
         "-enc_time_base",
         "1:240000",
         "-c:v",
-        "libvpx-vp9",
-        "-lossless",
-        "1",
-        "-pix_fmt",
-        "yuv444p",
-        "-deadline",
-        "good",
-        "-cpu-used",
-        "4",
-        "-row-mt",
-        "1",
+        purpose === "preview" ? "libx264" : "libvpx-vp9",
+        ...purpose === "preview" ? ["-crf", "23", "-preset", "ultrafast", "-pix_fmt", "yuv420p"] : [
+          "-lossless",
+          "1",
+          "-pix_fmt",
+          "yuv444p",
+          "-deadline",
+          "good",
+          "-cpu-used",
+          "4",
+          "-row-mt",
+          "1"
+        ],
         "-color_primaries",
         "bt709",
         "-color_trc",
@@ -7905,11 +7911,11 @@ async function runEditorRequest(raw, context) {
       signal: context.signal
     };
     const videos = /* @__PURE__ */ new Map();
-    const video = async (assetId, requireGeometry) => {
+    const video = async (assetId, requireGeometry, purpose = "export") => {
       const asset2 = selected.document.assets.find((item) => item.id === assetId);
       if (asset2?.kind !== "video")
         throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
-      const input = original(assetId), proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext);
+      const input = original(assetId), proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext, purpose);
       if (requireGeometry && (asset2.width !== proxy.width || asset2.height !== proxy.height))
         throw new EditorTaskError(
           "SOURCE_GEOMETRY_MISMATCH",
@@ -7921,7 +7927,7 @@ async function runEditorRequest(raw, context) {
     if (request.action === "prepare-video") {
       const sources = [];
       for (let index = 0; index < request.assetIds.length; index++) {
-        const assetId = request.assetIds[index], proxy = await video(assetId, false), { path: _path, ...recipe } = proxy;
+        const assetId = request.assetIds[index], proxy = await video(assetId, false, "preview"), { path: _path, ...recipe } = proxy;
         const asset2 = await add2(proxy.path, "mp4", "video/mp4", "editor-video-source");
         sources.push({ assetId, proxy: asset2, recipe });
         await progress2((index + 1) / request.assetIds.length, "prepare-video");
