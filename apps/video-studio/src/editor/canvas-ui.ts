@@ -12,6 +12,7 @@ import type { EditorDocument } from "./types";
 import type { SessionIdentity } from "./session";
 import type { Tick } from "./time";
 import { visualPointToCanvas, type VisualPoint } from "./visual-layout";
+import { icon } from "../icons";
 
 export interface EditorCanvasContext {
   read(): EditorDocument;
@@ -45,6 +46,11 @@ function svg<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 const labels: Record<CanvasEditMode, string> = { transform: "画面", crop: "裁切", mask: "蒙版" };
+const tooltips: Record<CanvasEditMode, string> = {
+  transform: "移动与缩放画面",
+  crop: "裁切画面",
+  mask: "调整蒙版",
+};
 const pointText = (points: VisualPoint[]) =>
   points.map((point) => `${point.x},${point.y}`).join(" ");
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -79,9 +85,10 @@ export class EditorCanvas {
     for (const mode of ["transform", "crop", "mask"] as const) {
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = labels[mode];
+      button.innerHTML = icon(mode, 16);
       button.dataset.canvasMode = mode;
       button.setAttribute("aria-label", `画布${labels[mode]}工具`);
+      button.title = tooltips[mode];
       button.addEventListener("click", () => {
         this.cancel();
         this.mode = mode;
@@ -89,10 +96,6 @@ export class EditorCanvas {
       });
       this.controls.append(button);
     }
-    const hint = document.createElement("span");
-    hint.dataset.canvasHint = "";
-    hint.textContent = "拖动画面调整位置";
-    this.controls.append(hint);
     canvas.parentElement!.append(this.overlay, this.controls);
     this.overlay.addEventListener("pointerdown", this.down);
     this.overlay.addEventListener("pointermove", this.move);
@@ -159,6 +162,22 @@ export class EditorCanvas {
             { x: 0, y: 1 },
           ].map((point) => maskPointOnCanvas(target, point))
         : canvasTargetCorners(target, this.mode !== "crop");
+    if (
+      corners.some(
+        ({ x, y }) => x < 0 || y < 0 || x > target.canvas.width || y > target.canvas.height,
+      )
+    ) {
+      const inset = 1 / this.box.ratio;
+      this.overlay.append(
+        svg("rect", {
+          x: inset,
+          y: inset,
+          width: target.canvas.width - inset * 2,
+          height: target.canvas.height - inset * 2,
+          class: "ec-viewport-outline",
+        }),
+      );
+    }
     const outline = svg("polygon", {
       points: pointText(corners),
       class: "ec-outline",
@@ -236,7 +255,7 @@ export class EditorCanvas {
         : undefined;
     for (const button of this.controls.querySelectorAll<HTMLButtonElement>("button"))
       button.setAttribute("aria-pressed", String(button.dataset.canvasMode === this.mode));
-    this.controls.querySelector("span")!.textContent = this.target?.locked
+    const hint = this.target?.locked
       ? "轨道已锁定"
       : !this.target
         ? "在画面或时间线上选择一个片段"
@@ -247,6 +266,7 @@ export class EditorCanvas {
               ? "拖动蒙版或顶点调整"
               : "在右侧蒙版属性中选择形状"
             : "拖动移动 · Alt 自由缩放 · Shift 旋转吸附";
+    this.overlay.setAttribute("aria-description", hint);
     this.layout();
   }
   private point(event: PointerEvent): VisualPoint {

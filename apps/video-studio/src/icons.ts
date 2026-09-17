@@ -25,6 +25,10 @@ const paths: Record<string, string> = {
   volume: '<path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/>',
   image:
     '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1"/><path d="m3 17 6-6 4 4 3-3 5 5"/>',
+  transform:
+    '<path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5M12 8v8m-4-4h8m-4-4-2 2m2-2 2 2m-2 6-2-2m2 2 2-2"/>',
+  crop: '<path d="M5 3v13a3 3 0 0 0 3 3h13M3 5h13a3 3 0 0 1 3 3v13"/>',
+  mask: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="5"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',

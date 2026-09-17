@@ -601,7 +601,7 @@
 
 .editor-canvas-controls {
   position: absolute;
-  overflow: visible;
+  overflow: hidden;
   touch-action: none;
   user-select: none;
   outline: none;
@@ -614,6 +614,15 @@
   pointer-events: all;
   cursor: move;
 }
+.editor-canvas-controls .ec-viewport-outline {
+  fill: none;
+  stroke: #adf4d3;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+  opacity: 0.75;
+}
 .editor-canvas-controls .ec-handle {
   fill: #fff;
   stroke: #1b5440;
@@ -623,30 +632,36 @@
 }
 .editor-canvas-toolbar {
   position: absolute;
-  top: 4px;
-  left: 5px;
-  right: 5px;
+  top: 8px;
+  right: 8px;
   display: flex;
-  gap: 4px;
+  gap: 2px;
   align-items: center;
-  pointer-events: none;
+  padding: 3px;
+  border: 1px solid #454b49;
+  border-radius: 9px;
+  background: #1c2120e8;
+  z-index: 2;
 }
+.editor-workspace .editor-canvas-toolbar button,
 .editor-canvas-toolbar button {
-  pointer-events: auto;
-  font-size: 11px;
-  min-height: 25px;
-  padding: 2px 6px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  min-height: 27px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #c1c8c5;
+}
+.editor-canvas-toolbar button:hover {
+  background: #363c39;
 }
 .editor-canvas-toolbar button[aria-pressed="true"] {
-  border-color: #a4efca;
+  background: #304239;
   color: #a4efca;
-}
-.editor-canvas-toolbar span {
-  color: #cee4d8;
-  background: #101914d9;
-  border-radius: 4px;
-  font-size: 10px;
-  padding: 3px 5px;
 }
 
 [data-ew-font-warning] {
@@ -936,12 +951,8 @@
 .editor-workspace-embedded .et-toolbar > * {
   flex-shrink: 0;
 }
-.editor-workspace-embedded .editor-canvas-toolbar span {
-  background: #191b1ee6;
-  color: #c5cbd0;
-}
 .editor-workspace-embedded .editor-canvas-toolbar button[aria-pressed="true"] {
-  border-color: var(--accent, #b8edc8);
+  background: #35483d;
   color: var(--accent, #b8edc8);
 }
 @media (max-width: 900px) {

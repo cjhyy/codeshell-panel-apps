@@ -73,8 +73,8 @@ async function fixture(t, options = {}) {
       audio: api.defaultAudioMix(),
       transform: {
         ...api.defaultTransform(),
-        scaleX: 0.5,
-        scaleY: 0.5,
+        scaleX: options.oversized ? 1.4 : 0.5,
+        scaleY: options.oversized ? 1.4 : 0.5,
         ...(options.animated
           ? {
               x: {
@@ -257,6 +257,10 @@ async function fixture(t, options = {}) {
         await preview.seek(value);
         controls.render();
       },
+      clearSelection: () => {
+        selected = [];
+        controls.render();
+      },
     };
   }, options);
   await settle(page);
@@ -278,6 +282,31 @@ async function drag(page, locator, dx, dy, beforeUp) {
   await settle(page);
 }
 const handle = (page, name) => page.locator(`[data-canvas-handle="${name}"]`);
+test("canvas tools are compact icons and selecting an oversized picture keeps its outline inside the preview", async (t) => {
+  const page = await fixture(t, { oversized: true });
+  const toolbar = page.locator(".editor-canvas-toolbar");
+  const buttons = toolbar.getByRole("button");
+  assert.equal(await buttons.count(), 3);
+  assert.deepEqual(await buttons.allTextContents(), ["", "", ""]);
+  const toolbarBox = await toolbar.boundingBox();
+  assert.ok(toolbarBox.width < 110);
+  await page.evaluate(() => f.clearSelection());
+  const overlay = page.locator(".editor-canvas-controls");
+  const box = await overlay.boundingBox();
+  assert.ok(toolbarBox.x > box.x + box.width / 2);
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  assert.equal(await overlay.getAttribute("data-clip-id"), "picture");
+  assert.equal(await page.evaluate(() => f.read().revision), 1);
+  assert.equal(await overlay.locator(".ec-viewport-outline").count(), 1);
+  assert.equal(
+    await page.evaluate(() => {
+      const overlay = document.querySelector(".editor-canvas-controls");
+      const rect = overlay.getBoundingClientRect();
+      return overlay.contains(document.elementFromPoint(rect.right + 12, rect.top + rect.height / 2));
+    }),
+    false,
+  );
+});
 test("canvas drag previews real pixels without publishing candidates or reopening the image, then commits once and undoes", async (t) => {
   const page = await fixture(t);
   const before = await page.evaluate(() => f.read());
