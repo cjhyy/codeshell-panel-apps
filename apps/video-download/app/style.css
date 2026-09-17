@@ -1533,7 +1533,7 @@ input:focus-visible + i {
 
 .history-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 9px;
   min-height: 49px;
@@ -1888,6 +1888,213 @@ input:focus-visible + i {
 
   .local-only {
     margin-left: 0;
+  }
+}
+
+.history-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 150px) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.history-tools label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.history-tools label > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-tools input,
+.history-tools select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.history-tools > button {
+  min-height: 36px;
+}
+
+.history-actions,
+.queue-toolbar-actions,
+.download-list-actions,
+.duplicate-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.history-actions {
+  grid-column: 2 / -1;
+}
+
+.history-actions button {
+  font-size: 11px;
+}
+
+.history-copy > .history-actions {
+  margin-top: 8px;
+}
+
+.history-files {
+  min-width: 0;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.history-files > summary {
+  padding: 10px 0 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.history-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-file:last-child {
+  border-bottom: 0;
+}
+
+.history-file > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.history-file > small {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.history-file > .history-actions {
+  grid-column: 1 / -1;
+  gap: 12px;
+}
+
+.queue-toolbar-actions {
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.library-status,
+.batch-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.library-status:empty,
+.batch-status:empty,
+.batch-status[hidden],
+.duplicate-review[hidden] {
+  display: none;
+}
+
+.library-status[data-state="error"],
+.batch-status[data-state="error"] {
+  color: var(--danger);
+}
+
+.duplicate-review {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.duplicate-review > strong,
+.duplicate-review > p,
+.duplicate-review > h3 {
+  flex-basis: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.duplicate-review h3 {
+  font-size: 13px;
+}
+
+.duplicate-review button {
+  font-size: 12px;
+}
+
+.download-list-actions {
+  margin-top: 10px;
+}
+
+.download-list-actions > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.download-list-item:has(input[type="checkbox"]) {
+  grid-template-columns: 16px 24px minmax(0, 1fr) auto;
+}
+
+.download-list-item input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 680px) {
+  .history-tools {
+    grid-template-columns: minmax(0, 1fr) minmax(100px, 140px);
+  }
+
+  .history-tools > button {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
+@media (max-width: 520px) {
+  .panel-tabs {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .panel-tab {
+    flex: none;
+  }
+
+  .queue-toolbar {
+    align-items: flex-start;
+  }
+
+  .queue-toolbar-actions {
+    justify-content: flex-start;
   }
 }
 

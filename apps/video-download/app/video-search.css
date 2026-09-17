@@ -1,0 +1,203 @@
+.video-search {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+.video-search-heading,
+.video-search-actions,
+.video-search-results-toolbar,
+.video-search-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.video-search-heading,
+.video-search-results-toolbar {
+  justify-content: space-between;
+}
+.video-search-heading h2 {
+  margin: 4px 0 0;
+  font-size: 17px;
+}
+.video-search-local {
+  color: var(--success);
+  font-size: 11px;
+}
+.video-search-intro {
+  margin: 10px 0 18px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.video-search-prompt,
+.video-search-controls label {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+.video-search-prompt > span,
+.video-search-controls label > span {
+  font-size: 12px;
+  font-weight: 650;
+}
+.video-search textarea,
+.video-search select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.6;
+}
+.video-search textarea {
+  resize: vertical;
+  min-height: 100px;
+}
+.video-search textarea::placeholder {
+  color: var(--muted);
+}
+.video-search select {
+  min-height: 38px;
+  padding-block: 6px;
+}
+.video-search-controls {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  margin-top: 14px;
+}
+.video-search-actions {
+  margin-top: 16px;
+}
+.video-search [data-search-start] {
+  padding: 8px 15px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+.video-search [data-search-start]:disabled {
+  opacity: 0.5;
+}
+.video-search-status {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.video-search-status[data-state="error"],
+.video-search-status[data-state="cancel-error"] {
+  color: var(--danger);
+}
+.video-search-status[data-state="planning"],
+.video-search-status[data-state="searching"],
+.video-search-status[data-state="ranking"] {
+  color: var(--accent);
+}
+.video-search-plan {
+  margin-top: 14px;
+  padding: 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-muted);
+  border-radius: 0 6px 6px 0;
+}
+.video-search-plan p {
+  margin: 0 0 7px;
+  font-size: 12px;
+}
+.video-search-plan > span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.video-search-results-toolbar {
+  margin-top: 20px;
+  padding: 14px 0 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.video-search-results-toolbar label {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+.video-search-results {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.video-search-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.video-search input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.video-search-result-copy {
+  min-width: 0;
+}
+.video-search-result h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.video-search-metadata {
+  margin: 5px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.video-search-reason {
+  margin: 9px 0;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.video-search-source {
+  display: block;
+  color: var(--success);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.video-search-result-actions {
+  margin-top: 11px;
+  gap: 8px 14px;
+}
+.video-search-result-actions button {
+  font-size: 11px;
+}
+.video-search [hidden] {
+  display: none;
+}
+@media (max-width: 520px) {
+  .video-search {
+    padding: 14px;
+  }
+  .video-search-controls {
+    grid-template-columns: 1fr;
+  }
+  .video-search-heading {
+    align-items: flex-start;
+  }
+  .video-search-result {
+    padding: 12px;
+    gap: 9px;
+  }
+}

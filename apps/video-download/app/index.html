@@ -9,6 +9,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mimi Download</title>
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./video-search.css" />
     <link rel="stylesheet" href="./panel-select.css" />
     <script defer src="./panel-select.js"></script>
   </head>
@@ -71,7 +72,31 @@
           <strong>记录</strong>
           <small id="history-tab-indicator" hidden></small>
         </button>
+        <button
+          id="tab-search"
+          class="panel-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="page-search"
+          tabindex="-1"
+          data-tab="search"
+        >
+          <span class="panel-tab-icon" aria-hidden="true">⌕</span>
+          <strong>AI 查询</strong>
+        </button>
       </nav>
+
+      <div
+        id="page-search"
+        class="tab-page"
+        role="tabpanel"
+        aria-labelledby="tab-search"
+        data-tab-page="search"
+        hidden
+      >
+        <div id="video-search-root"></div>
+      </div>
 
       <div
         id="page-download"
@@ -103,6 +128,14 @@
           <p id="url-help" class="field-help">
             支持 yt-dlp 可识别的网站；链接只发送给本地下载程序。
           </p>
+
+          <section
+            id="duplicate-review"
+            class="duplicate-review"
+            aria-live="polite"
+            hidden
+          ></section>
+          <p id="batch-status" class="batch-status" role="status" aria-live="polite"></p>
 
           <div class="cookie-picker" aria-labelledby="cookie-picker-title">
             <div class="cookie-picker-heading">
@@ -278,6 +311,11 @@
               </div>
               <span id="download-list-count">0 项</span>
             </div>
+            <div id="download-list-actions" class="download-list-actions">
+              <button id="playlist-select-all" class="text-button" type="button">全选</button>
+              <button id="playlist-select-none" class="text-button" type="button">取消全选</button>
+              <span>勾选本次需要下载的视频</span>
+            </div>
             <div id="download-list-items" class="download-list-items"></div>
             <p id="download-list-note" class="download-list-note"></p>
           </section>
@@ -451,10 +489,32 @@
         <section class="history-section" aria-labelledby="history-title">
           <div class="section-heading compact">
             <div>
-              <span class="step-label">RECENT</span>
-              <h2 id="history-title">最近下载</h2>
+              <span class="step-label">DOWNLOAD LIBRARY</span>
+              <h2 id="history-title">下载记录</h2>
             </div>
             <button id="clear-history" class="text-button" type="button">清除</button>
+          </div>
+          <div class="history-tools">
+            <label class="history-search-field">
+              <span>搜索记录</span>
+              <input
+                id="history-search"
+                type="search"
+                maxlength="300"
+                placeholder="标题、网址或文件名"
+              />
+            </label>
+            <label class="history-filter-field">
+              <span>下载状态</span>
+              <select id="history-filter">
+                <option value="all">全部状态</option>
+                <option value="completed">已完成</option>
+                <option value="failed">下载失败</option>
+                <option value="cancelled">已取消</option>
+                <option value="missing">文件已缺失</option>
+              </select>
+            </label>
+            <button id="history-check" class="secondary-button" type="button">检查本地文件</button>
           </div>
           <div id="history-list" class="history-list">
             <div class="empty-history">
@@ -473,13 +533,19 @@
           </div>
           <button id="queue-clear" class="text-button" type="button" disabled>清除已结束</button>
         </div>
+        <p id="library-status" class="library-status" role="status" aria-live="polite"></p>
         <div class="queue-toolbar">
           <p id="queue-summary" class="queue-summary" aria-live="polite">
             暂无任务 · 按添加顺序下载
           </p>
-          <button id="queue-pause" class="secondary-button" type="button" aria-pressed="false">
-            暂停队列
-          </button>
+          <div class="queue-toolbar-actions">
+            <button id="queue-restore" class="secondary-button" type="button" hidden>
+              恢复未完成任务
+            </button>
+            <button id="queue-pause" class="secondary-button" type="button" aria-pressed="false">
+              暂停队列
+            </button>
+          </div>
         </div>
         <div id="queue-list" class="queue-list"></div>
       </section>
@@ -495,7 +561,7 @@
           <span>ffmpeg</span>
           <b id="ffmpeg-status">检查中</b>
         </div>
-        <span class="local-only">LOCAL FIRST · AI ON ERROR</span>
+        <span class="local-only">LOCAL DOWNLOAD · AI SEARCH</span>
       </footer>
     </main>
 

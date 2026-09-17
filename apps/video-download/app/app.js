@@ -1,4 +1,18 @@
 import {
+  parseVideoLinks,
+  videoUrl,
+  duplicateCandidates,
+  directoryIdentity,
+  fileInventoryState,
+  storedRecord,
+  serializeLibrary,
+  restoreLibrary,
+  MAX_HISTORY,
+  configurationKey,
+} from "./download-library.js";
+import { createLibraryProcess } from "./library-process.js";
+import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
+import {
   compareYtDlpVersions,
   parseGitHubLatestRelease,
   parseGitHubRelease,
@@ -131,7 +145,7 @@ const SUBTITLE_LANGUAGE_PRESETS = {
   en: "en.*",
   all: "all",
 };
-const TAB_NAMES = ["download", "task", "history"];
+const TAB_NAMES = ["download", "search", "task", "history"];
 
 let currentJob = null;
 let downloadQueue = [];
@@ -156,7 +170,7 @@ let setupTaskActivity = [];
 let analysisTaskId = "";
 let analysisFailureAt = "";
 let lastFailure = null;
-let history = loadHistory();
+let history = [];
 let dependencyProbeJob = null;
 let versionRefreshPending = false;
 let versionRefreshError = "";
@@ -174,6 +188,39 @@ let cookieRenderedAccountsUrl = "";
 const cookieSelections = new Map();
 const ignoredProbeProcessIds = new Set();
 const outputBuffers = { stdout: "", stderr: "" };
+let libraryReady = false;
+let libraryScope = "";
+let libraryWrite = Promise.resolve();
+let completionPending = false;
+let auxiliaryBusy = false;
+let auxiliaryGroups = 0;
+let playlistSelectionEmpty = false;
+let pendingDuplicates = [];
+const directoryGrants = new Map();
+const libraryKey = "video-download.library.v2";
+const libraryStatus = document.querySelector("#library-status");
+const batchStatus = document.querySelector("#batch-status");
+const duplicateReview = document.querySelector("#duplicate-review");
+const queueRestore = document.querySelector("#queue-restore");
+const auxiliary = createLibraryProcess(panel, {
+  beforeStart() {
+    if (
+      inspectionJob?.running ||
+      dependencyProbeJob?.running ||
+      directSetupRunning ||
+      setupSubmissionPending ||
+      setupTaskId ||
+      (currentJob?.running && !currentJob.id)
+    ) {
+      throw new Error("请等待当前操作完成后再检查或搜索。");
+    }
+  },
+  onBusy(busy) {
+    auxiliaryBusy = busy || auxiliaryGroups > 0;
+    updateActionAvailability();
+    if (!auxiliaryBusy) void runNextDownload();
+  },
+});
 
 function storedTab() {
   try {
@@ -480,10 +527,343 @@ function loadHistory() {
 }
 
 function saveHistory() {
+  void saveLibrary().catch(reportLibraryError);
+}
+
+function reportLibraryError(error) {
+  libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。队列已暂停，请重试或清理记录。`;
+  queuePaused = true;
+  renderQueue();
+}
+
+function saveLibrary() {
+  if (!libraryReady) return Promise.resolve();
+  let snapshot;
   try {
-    localStorage.setItem("video-download.history.v1", JSON.stringify(history.slice(0, 8)));
-  } catch {
-    // History is a convenience; a storage failure must not affect downloading.
+    snapshot = serializeLibrary({ queue: downloadQueue, history, queuePaused }, libraryScope);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  libraryWrite = libraryWrite
+    .catch(() => {})
+    .then(async () => {
+      if (!libraryReady || (context.cwd && context.cwd !== libraryScope))
+        throw new Error("项目已变化，请重新打开面板。");
+      if (!previewMode && Number(context.apiVersion) >= 14)
+        await panel.call("storage.set", { key: libraryKey, value: snapshot });
+      else localStorage.setItem(`${libraryKey}:${libraryScope}`, JSON.stringify(snapshot));
+      libraryStatus.textContent = snapshot.truncated
+        ? "记录空间有限，已清理最早记录；待下载任务已保存。"
+        : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
+    });
+  return libraryWrite;
+}
+
+async function loadLibrary() {
+  libraryScope = context.cwd || runtime.directory?.path || "preview";
+  try {
+    const raw =
+      !previewMode && Number(context.apiVersion) >= 14
+        ? await panel.call("storage.get", { key: libraryKey })
+        : JSON.parse(localStorage.getItem(`${libraryKey}:${libraryScope}`) || "null");
+    const saved = restoreLibrary(raw, libraryScope);
+    if (saved) {
+      downloadQueue = saved.queue;
+      history = saved.history;
+      queuePaused = saved.queuePaused;
+    } else history = loadHistory().map(storedRecord).filter(Boolean);
+    libraryReady = true;
+    libraryStatus.textContent = downloadQueue.some((item) =>
+      ["restored", "interrupted"].includes(item.status),
+    )
+      ? "已找回上次队列。点击“恢复队列”后重新确认目录和账号。"
+      : "队列和记录按项目保存。";
+    renderQueue();
+    renderHistory();
+  } catch (error) {
+    libraryStatus.textContent = `无法读取下载记录，请重新打开面板：${error.message}`;
+  }
+}
+
+async function directoryFor(item, allowPick = false) {
+  const key = directoryIdentity(item.directory);
+  if (directoryGrants.has(key)) return directoryGrants.get(key);
+  if (!allowPick) throw new Error("原目录尚未授权，请点击记录中的“检查文件”重新选择原目录。");
+  const result = await panel.call("filesystem.pickDirectory");
+  if (result?.cancelled || !result?.handle) throw new Error("已取消选择目录。");
+  if (directoryIdentity(result) !== key)
+    throw new Error("请选择原保存目录，避免将其他目录中的同名文件当成已下载文件。");
+  directoryGrants.set(key, result);
+  return result;
+}
+
+async function checkFiles(item, allowPick = false) {
+  auxiliaryGroups++;
+  auxiliaryBusy = true;
+  updateActionAvailability();
+  try {
+    if (previewMode || Number(context.apiVersion) < 14)
+      throw new Error("文件检查需要更新 CodeShell。");
+    if (!item.files?.length) throw new Error("旧记录没有完整文件清单，可重新下载。");
+    const directory = await directoryFor(item, allowPick);
+    const checked = [];
+    for (let index = 0; index < item.files.length; index += 8)
+      checked.push(
+        ...(await auxiliary.files(directory, "check", item.files.slice(index, index + 8))),
+      );
+    item.files = checked.map((file, index) => ({
+      ...file,
+      ...(Number.isSafeInteger(item.files[index].bytes) ? { bytes: item.files[index].bytes } : {}),
+      ...(Number.isSafeInteger(item.files[index].modifiedAt)
+        ? { modifiedAt: item.files[index].modifiedAt }
+        : {}),
+    }));
+    item.checkError = "";
+  } catch (error) {
+    item.files = (item.files || []).map((file) => ({ ...file, status: "unavailable" }));
+    item.checkError = error.message;
+  }
+  item.checkedAt = Date.now();
+  auxiliaryGroups--;
+  auxiliaryBusy = auxiliary.busy || auxiliaryGroups > 0;
+  updateActionAvailability();
+  if (!auxiliaryBusy) void runNextDownload();
+  return fileInventoryState(item);
+}
+
+function renderDuplicates() {
+  duplicateReview.replaceChildren();
+  duplicateReview.hidden = !pendingDuplicates.length;
+  if (!pendingDuplicates.length) return;
+  const heading = document.createElement("strong");
+  heading.textContent = `${pendingDuplicates.length} 项已有文件，选择如何处理`;
+  duplicateReview.append(heading);
+  for (const item of pendingDuplicates) {
+    const row = document.createElement("p");
+    row.textContent = item.title;
+    duplicateReview.append(row);
+  }
+  for (const [action, label] of [
+    ["skip", "跳过已有"],
+    ["copy", "另存一份"],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button";
+    button.dataset.duplicateAction = action;
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      if (queueSubmissionPending || auxiliaryBusy) return;
+      const pending = pendingDuplicates.slice();
+      if (action === "skip") {
+        pendingDuplicates = [];
+        renderDuplicates();
+        batchStatus.textContent = `已跳过 ${pending.length} 项已有文件。`;
+        return;
+      }
+      try {
+        const result = await enqueueCandidates(pending, { copy: true });
+        if (result.added) {
+          pendingDuplicates = [];
+          renderDuplicates();
+        }
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+    duplicateReview.append(button);
+  }
+}
+
+async function prepareItem(item, allowPick = false) {
+  if (!runtime.ytDlp?.handle) throw new Error("请先安装下载器。");
+  if (item.configuration.format === "audio" && !runtime.ffmpeg?.handle)
+    throw new Error("仅音频模式需要 ffmpeg。");
+  item.directory = await directoryFor(item, allowPick);
+  item.executable = { ...runtime.ytDlp };
+  item.args = buildArguments(item.url, item.configuration, item.copySuffix);
+  item.fileArgumentHandles = [];
+  if (item.cookieCredentialId && !previewMode) {
+    const result = await panel.call("credentials.cookies.authorizeProcess", {
+      credentialId: item.cookieCredentialId,
+      url: cookieRequestUrl(item.url),
+      executableHandle: item.executable.handle,
+    });
+    if (!result?.authorized || !result.fileArgumentHandle)
+      throw new Error(
+        result?.invalid
+          ? "原 Cookie 账号已失效，请重新登录后添加。"
+          : "已取消使用 Cookie，任务尚未添加。",
+      );
+    item.fileArgumentHandles = [result.fileArgumentHandle];
+  }
+  return item;
+}
+
+async function enqueueCandidates(candidates, { copy = false } = {}) {
+  if (!libraryReady) throw new Error("下载记录尚未准备好，请稍后重试。");
+  if (
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    inspectionJob?.running ||
+    setupTaskId ||
+    directSetupRunning ||
+    setupSubmissionPending ||
+    dependencyRefreshPending ||
+    versionRefreshPending
+  )
+    throw new Error("请等待当前操作完成后再添加任务。");
+  if (!runtime.ytDlp?.handle || !runtime.directory?.handle)
+    throw new Error("下载器或保存目录还没有准备好。");
+  if (candidates.length + downloadQueue.length > 100)
+    throw new Error("队列最多保留 100 项，请先清除已结束任务。");
+  queueSubmissionPending = true;
+  setControlsBusy(true);
+  const accepted = [],
+    pending = [];
+  let duplicates = 0,
+    missing = 0,
+    unknown = 0;
+  try {
+    const configuration = currentConfiguration();
+    if (
+      configuration.playlist &&
+      playlistSelectionEmpty &&
+      candidates.some((candidate) => !candidate?.configuration)
+    )
+      throw new Error("请至少选择一集。");
+    const credentialId = elements.cookieSelect.value || "";
+    for (const candidate of candidates) {
+      const url = videoUrl(typeof candidate === "string" ? candidate : candidate.url);
+      if (!url) throw new Error("请输入完整的 http 或 https 视频链接。");
+      const isSnapshot = Boolean(candidate?.configuration && candidate?.directory);
+      if (
+        !isSnapshot &&
+        credentialId &&
+        cookieRequestUrl(url) !== cookieRequestUrl(normalizedUrl())
+      )
+        throw new Error("批量链接来自不同网站，请先选择“不使用 Cookie”，或按网站分批添加。");
+      const item = {
+        queueId: crypto.randomUUID(),
+        url,
+        title:
+          candidate?.title ||
+          (inspectedVideo?.url === url ? inspectedVideo.title : defaultTaskTitle(url)),
+        configuration: isSnapshot ? { ...candidate.configuration } : { ...configuration },
+        directory: isSnapshot ? { ...candidate.directory } : { ...runtime.directory },
+        cookieCredentialId: isSnapshot ? candidate.cookieCredentialId || "" : credentialId,
+        status: "queued",
+        addedAt: Date.now(),
+        files: [],
+        filesComplete: true,
+        error: "",
+        percent: 0,
+        ...(copy
+          ? { copySuffix: crypto.randomUUID().slice(0, 8) }
+          : candidate?.copySuffix
+            ? { copySuffix: candidate.copySuffix }
+            : {}),
+      };
+      item.url = sanitizeMediaUrl(new URL(item.url), item.configuration.playlist);
+      // Validate the frozen settings before any authorization or queue mutation.
+      buildArguments(item.url, item.configuration, item.copySuffix);
+      if (!copy) {
+        const matches = duplicateCandidates(item, [...downloadQueue, ...accepted], history);
+        if (matches.queued) {
+          duplicates++;
+          continue;
+        }
+        let existing = false;
+        for (const record of matches.history.filter(
+          (record) => directoryIdentity(record.directory) === directoryIdentity(item.directory),
+        )) {
+          const state = await checkFiles(record);
+          if (state === "present" && !item.configuration.playlist) {
+            existing = true;
+            break;
+          }
+          if (state === "missing") {
+            missing++;
+            if (record.files.some((file) => ["empty", "changed"].includes(file.status)))
+              item.copySuffix = crypto.randomUUID().slice(0, 8);
+          } else unknown++;
+        }
+        if (existing) {
+          pending.push(item);
+          continue;
+        }
+      }
+      // A snapshot must reacquire its original directory and Cookie grants.
+      if (!isSnapshot && item.cookieCredentialId) {
+        item.executable = { ...runtime.ytDlp };
+        item.args = buildArguments(item.url, item.configuration, item.copySuffix);
+        // Cookie grants are scoped by site; the first link is already validated by the form.
+        item.fileArgumentHandles = await cookieFileArguments(normalizedUrl());
+      } else await prepareItem(item, false);
+      accepted.push(item);
+    }
+    downloadQueue.push(...accepted);
+    try {
+      await saveLibrary();
+    } catch (error) {
+      downloadQueue = downloadQueue.filter((item) => !accepted.includes(item));
+      reportLibraryError(error);
+      throw error;
+    }
+    pendingDuplicates.push(
+      ...pending.filter(
+        (item) =>
+          !pendingDuplicates.some(
+            (old) =>
+              old.url === item.url &&
+              configurationKey(old.configuration) === configurationKey(item.configuration) &&
+              directoryIdentity(old.directory) === directoryIdentity(item.directory),
+          ),
+      ),
+    );
+    renderDuplicates();
+    renderHistory();
+    renderQueue();
+    batchStatus.textContent = `已添加 ${accepted.length} 项${duplicates ? `，${duplicates} 项已在队列中` : ""}${pending.length ? `，${pending.length} 项已有文件待确认` : ""}${missing ? "；已删除或变化的文件可重新下载" : ""}${unknown ? "；部分旧文件无法确认，允许重新下载" : ""}。`;
+    return {
+      added: accepted.length,
+      duplicates,
+      pending: pending.length,
+      first: accepted[0] || null,
+    };
+  } finally {
+    queueSubmissionPending = false;
+    setControlsBusy(false);
+    void runNextDownload();
+  }
+}
+
+async function restoreQueue() {
+  if (queueSubmissionPending || auxiliaryBusy) return;
+  queueSubmissionPending = true;
+  queuePaused = true;
+  setControlsBusy(true);
+  try {
+    for (const item of downloadQueue.filter((item) =>
+      ["restored", "interrupted"].includes(item.status),
+    )) {
+      try {
+        await prepareItem(item, true);
+        item.status = "queued";
+        item.error = "";
+      } catch (error) {
+        item.error = error.message;
+      }
+    }
+    queuePaused = false;
+    await saveLibrary();
+  } catch (error) {
+    reportLibraryError(error);
+  } finally {
+    queueSubmissionPending = false;
+    renderQueue();
+    setControlsBusy(false);
+    void runNextDownload();
   }
 }
 
@@ -505,16 +885,10 @@ function sanitizeMediaUrl(url, playlistMode) {
 }
 
 function normalizedUrl(options = {}) {
-  const value = elements.urlInput.value.trim();
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) return null;
-    const playlistMode = options.playlist ?? elements.playlist.checked;
-    return sanitizeMediaUrl(url, playlistMode);
-  } catch {
-    return null;
-  }
+  const value = parseVideoLinks(elements.urlInput.value).urls[0];
+  return value
+    ? sanitizeMediaUrl(new URL(value), options.playlist ?? elements.playlist.checked)
+    : null;
 }
 
 function cookieRequestUrl(urlValue) {
@@ -987,6 +1361,7 @@ function normalizeInspectedVideo(raw, url) {
 }
 
 function currentPlaylistSelection() {
+  if (playlistSelectionEmpty) return { valid: true, includes: () => false };
   try {
     const items = normalizedPlaylistItems();
     const end = normalizedPlaylistEnd();
@@ -1019,6 +1394,7 @@ function renderDownloadList() {
   }
 
   const isPlaylist = inspectedVideo.isPlaylist;
+  document.querySelector("#download-list-actions").hidden = !isPlaylist;
   const entries = isPlaylist
     ? inspectedVideo.playlistEntries
     : [
@@ -1056,6 +1432,24 @@ function renderDownloadList() {
     const status = document.createElement("span");
     status.className = "download-list-status";
     status.textContent = !selection.valid ? "待修正" : selected ? "将下载" : "跳过";
+    if (isPlaylist) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = selected;
+      checkbox.setAttribute("aria-label", `下载第 ${entry.index} 集：${entry.title}`);
+      checkbox.addEventListener("change", () => {
+        const selectedIndices = entries
+          .filter((other) =>
+            other.index === entry.index ? checkbox.checked : selection.includes(other.index),
+          )
+          .map((other) => other.index);
+        playlistSelectionEmpty = !selectedIndices.length;
+        elements.playlistItems.value = compactIndices(selectedIndices);
+        elements.playlistEnd.value = "";
+        renderDownloadList();
+      });
+      row.append(checkbox);
+    }
     row.append(index, copy, status);
     fragment.append(row);
   }
@@ -1084,6 +1478,7 @@ function renderDownloadList() {
 
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
   inspectedVideo = null;
+  playlistSelectionEmpty = false;
   elements.videoInfo.hidden = true;
   renderQualityOptions(null);
   renderDownloadList();
@@ -1153,6 +1548,11 @@ function currentConfiguration() {
 }
 
 function updateSessionContext(next) {
+  if (libraryReady && context.cwd && next?.cwd && next.cwd !== context.cwd) {
+    libraryReady = false;
+    queuePaused = true;
+    libraryStatus.textContent = "项目已变化，请重新打开面板载入该项目的下载记录。";
+  }
   context = { ...context, ...(next || {}) };
   updateActionAvailability();
 }
@@ -1323,7 +1723,9 @@ function renderSetupCard() {
     currentJob?.running ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
-    queueSubmissionPending,
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    completionPending,
   );
   elements.setupUpdateButton.disabled =
     Boolean(setupTaskId) ||
@@ -1378,12 +1780,20 @@ function renderSetupCard() {
 function updateActionAvailability() {
   const ready = Boolean(runtime.ytDlp?.handle && runtime.directory?.handle);
   const validUrl = Boolean(normalizedUrl());
+  const multipleUrls = parseVideoLinks(elements.urlInput.value).urls.length > 1;
   const processBusy = Boolean(
-    currentJob?.running || inspectionJob?.running || dependencyProbeJob?.running,
+    auxiliaryBusy ||
+    completionPending ||
+    currentJob?.running ||
+    inspectionJob?.running ||
+    dependencyProbeJob?.running,
   );
   const setupActive = Boolean(setupTaskId) || directSetupRunning || setupSubmissionPending;
   elements.downloadButton.disabled =
     !ready ||
+    !libraryReady ||
+    auxiliaryBusy ||
+    completionPending ||
     !validUrl ||
     Boolean(inspectionJob?.running) ||
     dependencyRefreshPending ||
@@ -1392,7 +1802,14 @@ function updateActionAvailability() {
     setupActive;
   elements.downloadLabel.textContent = queueSubmissionPending ? "正在加入…" : "加入下载队列";
   elements.inspectButton.disabled =
-    !ready || !validUrl || processBusy || queueSubmissionPending || setupActive;
+    !ready ||
+    !validUrl ||
+    multipleUrls ||
+    auxiliaryBusy ||
+    completionPending ||
+    processBusy ||
+    queueSubmissionPending ||
+    setupActive;
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
   const canAnalyze =
@@ -1457,6 +1874,8 @@ function setControlsBusy(busy, operation = "download") {
 
 function setDestination(directory) {
   runtime.directory = directory;
+  if (directory?.handle && directory?.path)
+    directoryGrants.set(directoryIdentity(directory), directory);
   elements.destinationName.textContent = directory?.name || "未选择目录";
   elements.destinationPath.textContent = directory?.path || "请选择一个保存位置";
   updateDownloadAvailability();
@@ -1525,8 +1944,34 @@ function parseOutputLine(line, stream = "stdout") {
     appendLog(clean);
     return;
   }
+  if (clean.startsWith("files:")) {
+    try {
+      const files = JSON.parse(clean.slice(6));
+      if (!files || typeof files !== "object" || Array.isArray(files))
+        throw new Error("invalid inventory");
+      for (const [source, destination] of Object.entries(files)) {
+        const path = typeof destination === "string" && destination ? destination : source;
+        if (typeof path !== "string" || !path || path.length > 4096) {
+          currentJob.filesComplete = false;
+          continue;
+        }
+        if (!currentJob.files.some((file) => file.path === path)) {
+          if (currentJob.files.length < 200) currentJob.files.push({ path, status: "unavailable" });
+          else currentJob.filesComplete = false;
+        }
+      }
+    } catch {
+      currentJob.filesComplete = false;
+    }
+    return;
+  }
   if (clean.startsWith("file:")) {
     currentJob.file = clean.slice(5).trim();
+    if (!currentJob.files.some((file) => file.path === currentJob.file)) {
+      if (currentJob.files.length < 200)
+        currentJob.files.push({ path: currentJob.file, status: "unavailable" });
+      else currentJob.filesComplete = false;
+    }
     appendLog(clean);
     return;
   }
@@ -1694,6 +2139,8 @@ async function inspectVideo() {
     currentJob?.running ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
+    auxiliaryBusy ||
+    completionPending ||
     queueSubmissionPending
   ) {
     showError("当前已有任务正在执行。");
@@ -1770,8 +2217,11 @@ async function inspectVideo() {
   }
 }
 
-function buildArguments(url) {
-  const format = selectedFormat();
+function buildArguments(url, configuration = currentConfiguration(), copySuffix = "") {
+  let variant = 2166136261;
+  for (const char of configurationKey({ ...configuration, playlist: false }))
+    variant = Math.imul(variant ^ char.charCodeAt(0), 16777619) >>> 0;
+  const format = configuration.format;
   const args = [
     "--ignore-config",
     "--continue",
@@ -1783,11 +2233,13 @@ function buildArguments(url) {
     "before_dl:meta:%(title)s",
     "--print",
     "after_move:file:%(filepath)s",
+    "--print",
+    "after_move:files:%(__files_to_move)j",
     "--trim-filenames",
     "180",
     "--no-overwrites",
     "--output",
-    "%(title).150B_%(id)s.%(ext)s",
+    `%(title).130B_%(id)s_${format}-${variant.toString(36)}${copySuffix ? "_copy-" + copySuffix : ""}.%(ext)s`,
     ...networkArguments(),
   ];
   if (format === "audio") {
@@ -1812,27 +2264,32 @@ function buildArguments(url) {
       args.push("best[ext=mp4]/best");
     }
   }
-  if (elements.playlist.checked) {
+  if (configuration.playlist) {
     args.push("--yes-playlist");
-    const playlistItems = normalizedPlaylistItems();
-    const playlistEnd = normalizedPlaylistEnd();
+    const playlistItems = normalizedPlaylistItems(configuration.playlistItems);
+    const playlistEnd = normalizedPlaylistEnd(configuration.playlistEnd);
     if (playlistItems) args.push("--playlist-items", playlistItems);
     else if (playlistEnd) args.push("--playlist-end", String(playlistEnd));
   } else {
     args.push("--no-playlist");
   }
-  if (elements.subtitles.checked && format !== "audio") {
-    const subtitleMode = selectedSubtitleMode();
+  if (configuration.subtitles && format !== "audio") {
+    const subtitleMode = configuration.subtitleMode;
     if (subtitleMode === "manual" || subtitleMode === "both") args.push("--write-subs");
     if (subtitleMode === "auto" || subtitleMode === "both") args.push("--write-auto-subs");
-    args.push("--sub-format", "vtt", "--sub-langs", selectedSubtitleLanguages());
+    args.push(
+      "--sub-format",
+      "vtt",
+      "--sub-langs",
+      normalizedSubtitleLanguages(configuration.subtitleLanguages),
+    );
     if (runtime.ffmpeg?.handle) {
       args.push("--convert-subs", "srt");
-      if (elements.subtitleEmbed.checked) args.push("--embed-subs");
+      if (configuration.embedSubtitles) args.push("--embed-subs");
     }
     args.push("--ignore-errors");
   }
-  args.push(url);
+  args.push("--", url);
   return args;
 }
 
@@ -1851,6 +2308,8 @@ function queueStatusText(item) {
   }
   return (
     {
+      restored: "待恢复",
+      interrupted: "上次中断 · 待恢复",
       queued: queuePaused ? "已暂停 · 等待下载" : "等待下载",
       completed: "已完成",
       failed: "下载失败",
@@ -1870,9 +2329,11 @@ function updateQueueProgress() {
 }
 
 function renderQueue() {
-  const waiting = downloadQueue.filter((item) => item.status === "queued").length;
+  const waiting = downloadQueue.filter((item) =>
+    ["queued", "restored", "interrupted"].includes(item.status),
+  ).length;
   const settled = downloadQueue.filter(
-    (item) => !["queued", "running"].includes(item.status),
+    (item) => !["queued", "running", "restored", "interrupted"].includes(item.status),
   ).length;
   elements.queueSummary.textContent = downloadQueue.length
     ? `${currentJob?.running ? "1 项下载中 · " : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
@@ -1880,6 +2341,10 @@ function renderQueue() {
   elements.queuePause.textContent = queuePaused ? "继续队列" : "暂停队列";
   elements.queuePause.setAttribute("aria-pressed", String(queuePaused));
   elements.queueClear.disabled = !settled;
+  queueRestore.hidden = !downloadQueue.some((item) =>
+    ["restored", "interrupted"].includes(item.status),
+  );
+  queueRestore.disabled = queueSubmissionPending || auxiliaryBusy;
   elements.queueList.replaceChildren();
   if (!downloadQueue.length) {
     const empty = document.createElement("p");
@@ -1928,7 +2393,7 @@ function renderQueue() {
     if (item.status === "running") {
       action("details", "详情");
       action("cancel", "取消").disabled = item.cancelRequested;
-    } else if (item.status === "queued") {
+    } else if (["queued", "restored", "interrupted"].includes(item.status)) {
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
       action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
@@ -1942,80 +2407,27 @@ function renderQueue() {
 }
 
 async function startDownload() {
-  if (queueSubmissionPending) return null;
   showError("");
-  const url = normalizedUrl();
-  if (!url) {
-    showError("请输入完整的 http 或 https 视频链接。");
-    updateDownloadAvailability();
-    return null;
-  }
-  if (!runtime.ytDlp?.handle || !runtime.directory?.handle) {
-    showError("下载器或保存目录还没有准备好。");
-    return null;
-  }
-  if (
-    inspectionJob?.running ||
-    setupTaskId ||
-    directSetupRunning ||
-    setupSubmissionPending ||
-    dependencyRefreshPending ||
-    versionRefreshPending
-  ) {
-    showError("请等待当前信息读取或环境检查完成后再添加任务。");
-    return null;
-  }
-  if (downloadQueue.length >= 100) {
-    showError("队列最多保留 100 项，请先清除已结束的任务。");
-    return null;
-  }
-  if (selectedFormat() === "audio" && !runtime.ffmpeg?.handle) {
-    showError("仅音频模式需要 ffmpeg。可使用一键安装；完成后面板会立即复检。");
-    return null;
-  }
-  queueSubmissionPending = true;
-  setControlsBusy(true);
   try {
-    // Freeze all mutable form data before awaiting the Host's Cookie confirmation.
-    const item = {
-      queueId: crypto.randomUUID(),
-      id: null,
-      url,
-      title: inspectedVideo?.url === url ? inspectedVideo.title : defaultTaskTitle(url),
-      configuration: currentConfiguration(),
-      executable: { ...runtime.ytDlp },
-      directory: { ...runtime.directory },
-      args: buildArguments(url),
-      fileArgumentHandles: await cookieFileArguments(url),
-      cookieCredentialId: elements.cookieSelect.value || "",
-      status: "queued",
-      file: "",
-      percent: 0,
-      running: false,
-      cancelRequested: false,
-      log: [],
-      stderrTail: [],
-      error: "",
-    };
-    item.configuration.cookieAccount = item.cookieCredentialId
-      ? cookieAccounts.find((account) => account.id === item.cookieCredentialId)?.label ||
-        "已选择账号"
-      : null;
-    downloadQueue.push(item);
-    renderQueue();
-    void runNextDownload();
-    return item;
+    const parsed = parseVideoLinks(elements.urlInput.value);
+    if (!parsed.urls.length || parsed.invalid.length || parsed.overflow)
+      throw new Error("请输入完整链接，每行一条；每批最多 100 条。");
+    const result = await enqueueCandidates(parsed.urls);
+    if (parsed.duplicates.length)
+      batchStatus.textContent += ` 已合并 ${parsed.duplicates.length} 条重复链接。`;
+    return result.first;
   } catch (error) {
-    showError(error instanceof Error ? error.message : String(error));
+    showError(error.message);
     return null;
-  } finally {
-    queueSubmissionPending = false;
-    setControlsBusy(false);
   }
 }
 
 async function runNextDownload() {
   if (
+    !libraryReady ||
+    completionPending ||
+    auxiliaryBusy ||
+    queueSubmissionPending ||
     queuePaused ||
     currentJob?.running ||
     inspectionJob?.running ||
@@ -2041,6 +2453,8 @@ async function runNextDownload() {
     error: "",
     log: [],
     stderrTail: [],
+    files: [],
+    filesComplete: true,
     startedAt: Date.now(),
   });
   outputBuffers.stdout = "";
@@ -2062,6 +2476,7 @@ async function runNextDownload() {
     return;
   }
   try {
+    await saveLibrary();
     const result = await panel.call("process.spawn", {
       executableHandle: job.executable.handle,
       directoryHandle: job.directory.handle,
@@ -2081,43 +2496,34 @@ async function runNextDownload() {
 }
 
 async function retryQueuedDownload(item) {
-  if (item.retryPending || !["failed", "cancelled"].includes(item.status)) return;
+  if (item.retryPending || queueSubmissionPending || !["failed", "cancelled"].includes(item.status))
+    return;
   item.retryPending = true;
+  queueSubmissionPending = true;
   renderQueue();
   try {
-    if (item.cookieCredentialId && !previewMode) {
-      // A login may have been refreshed since the failure. Materialize the saved
-      // account again, without silently substituting the next form's account.
-      const result = await panel.call("credentials.cookies.authorizeProcess", {
-        credentialId: item.cookieCredentialId,
-        url: cookieRequestUrl(item.url),
-        executableHandle: item.executable.handle,
-      });
-      if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
-        throw new Error(
-          result?.invalid
-            ? "原 Cookie 账号已失效，请重新登录后添加任务。"
-            : "已取消使用 Cookie，任务未重新下载。",
-        );
-      }
-      item.fileArgumentHandles = [result.fileArgumentHandle];
-    }
-    // The user may clear finished rows while the Host authorization is open.
+    await prepareItem(item, true);
     if (!downloadQueue.includes(item)) return;
     item.status = "queued";
     item.error = "";
     item.percent = 0;
     downloadQueue = [...downloadQueue.filter((entry) => entry !== item), item];
+    await saveLibrary();
   } catch (error) {
-    item.error = error instanceof Error ? error.message : String(error);
+    item.error = error.message;
+    if (item.status === "queued") {
+      item.status = "failed";
+      reportLibraryError(error);
+    }
   } finally {
     item.retryPending = false;
+    queueSubmissionPending = false;
     renderQueue();
     void runNextDownload();
   }
 }
 
-function finishJob(succeeded, error = "", exitCode = null) {
+async function finishJob(succeeded, error = "", exitCode = null) {
   if (!currentJob) return;
   const job = currentJob;
   const cancelled = job.cancelRequested;
@@ -2149,26 +2555,36 @@ function finishJob(succeeded, error = "", exitCode = null) {
     eta: "—",
     status,
   });
-  history.unshift({
-    title: job.title,
-    url: job.url,
-    file: job.file,
-    state,
-    status,
-    finishedAt: Date.now(),
-  });
-  history = history.slice(0, 8);
-  saveHistory();
-  renderHistory();
+  completionPending = true;
+
   job.running = false;
   job.status = state;
   job.error = cancelled || succeeded ? "" : error || "下载失败";
   job.percent = succeeded ? 100 : job.percent;
   rememberIgnoredProbeProcess(job.id);
   currentJob = null;
-  setControlsBusy(false);
-  renderQueue();
-  void runNextDownload();
+  job.finishedAt = Date.now();
+  if (job.stderrTail.some((line) => /ERROR:/i.test(line))) job.filesComplete = false;
+  // Persist the finished task before optional checks; a close during a check loses no queue work.
+  history.unshift(storedRecord(job));
+  history = history.slice(0, MAX_HISTORY);
+  const record = history[0];
+  try {
+    await saveLibrary();
+    if (succeeded && Number(context.apiVersion) >= 14) {
+      await checkFiles(record);
+      job.files = record.files;
+      await saveLibrary();
+    }
+  } catch (error) {
+    reportLibraryError(error);
+  } finally {
+    completionPending = false;
+    renderHistory();
+    setControlsBusy(false);
+    renderQueue();
+    void runNextDownload();
+  }
 }
 
 async function cancelCurrentJob() {
@@ -2199,43 +2615,253 @@ async function cancelCurrentJob() {
 function renderHistory() {
   elements.historyList.replaceChildren();
   updateTabIndicators();
-  if (history.length === 0) {
-    const empty = document.createElement("div");
+  const query = document.querySelector("#history-search").value.trim().toLowerCase();
+  const filter = document.querySelector("#history-filter").value;
+  const entries = history.filter(
+    (item) =>
+      (!query ||
+        `${item.title} ${item.url} ${item.directory?.path || ""} ${(item.files || []).map((file) => file.path).join(" ")}`
+          .toLowerCase()
+          .includes(query)) &&
+      (filter === "all" ||
+        (filter === "missing" ? fileInventoryState(item) === "missing" : item.status === filter)),
+  );
+  if (!entries.length) {
+    const empty = document.createElement("p");
     empty.className = "empty-history";
-    const icon = document.createElement("span");
-    icon.textContent = "↓";
-    const message = document.createElement("p");
-    message.textContent = "完成的任务会留在这里";
-    empty.append(icon, message);
+    empty.textContent = history.length ? "没有符合条件的记录" : "完成的任务会留在这里";
     elements.historyList.append(empty);
     return;
   }
-  for (const item of history) {
+  for (const item of entries) {
     const row = document.createElement("article");
     row.className = "history-item";
-    const icon = document.createElement("span");
-    icon.className = "history-icon";
-    icon.dataset.state = item.state;
-    icon.textContent = item.state === "completed" ? "✓" : item.state === "cancelled" ? "—" : "!";
+    row.dataset.historyId = item.queueId;
     const copy = document.createElement("div");
     copy.className = "history-copy";
     const title = document.createElement("strong");
     title.textContent = item.title || "未命名视频";
     const detail = document.createElement("small");
-    detail.textContent = item.file || item.url;
+    const inventory = fileInventoryState(item);
+    const inventoryLabel =
+      inventory === "present"
+        ? "上次检查文件存在"
+        : inventory === "missing"
+          ? "文件已删除或变化"
+          : "文件待检查";
+    detail.textContent = `${queueStatusText(item)} · ${item.configuration?.format === "best" ? "最高画质" : item.configuration?.format || "原设置"} · ${item.files?.length || 0} 个文件 · ${inventoryLabel}`;
+    const destination = document.createElement("small");
+    destination.textContent = item.directory?.path || item.url;
     const time = document.createElement("time");
     time.className = "history-time";
-    time.dateTime = new Date(item.finishedAt).toISOString();
-    time.textContent = new Intl.DateTimeFormat(undefined, {
-      month: "numeric",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(item.finishedAt);
-    copy.append(title, detail);
-    row.append(icon, copy, time);
+    time.textContent = item.finishedAt ? new Date(item.finishedAt).toLocaleString() : "";
+    copy.append(title, detail, destination, time);
+    const actions = document.createElement("div");
+    actions.className = "history-actions";
+    const button = (action, label, index) => {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = "text-button";
+      node.textContent = label;
+      node.dataset.historyAction = action;
+      node.dataset.historyId = item.queueId;
+      if (index !== undefined) node.dataset.fileIndex = String(index);
+      return node;
+    };
+    actions.append(button("check", "检查文件"), button("retry", "按原设置重下"));
+    copy.append(actions);
+    if (item.checkError) {
+      const error = document.createElement("small");
+      error.textContent = item.checkError;
+      copy.append(error);
+    }
+    if (item.files?.length) {
+      const details = document.createElement("details");
+      details.className = "history-files";
+      const summary = document.createElement("summary");
+      summary.textContent = `查看 ${item.files.length} 个文件${item.filesComplete ? "" : "（清单不完整）"}`;
+      details.append(summary);
+      item.files.forEach((file, index) => {
+        const line = document.createElement("div");
+        line.className = "history-file";
+        const name = document.createElement("span");
+        name.textContent = file.path;
+        name.title = file.path;
+        const state = document.createElement("small");
+        state.textContent =
+          {
+            present: "存在",
+            missing: "已删除",
+            empty: "空文件",
+            changed: "已变化",
+            unavailable: "待检查",
+          }[file.status] || "待检查";
+        const controls = document.createElement("div");
+        controls.className = "history-actions";
+        controls.append(button("open", "播放", index), button("reveal", "定位文件", index));
+        line.append(name, state, controls);
+        details.append(line);
+      });
+      copy.append(details);
+    }
+    row.append(copy);
     elements.historyList.append(row);
   }
+}
+
+async function handleHistoryAction(event) {
+  const button = event.target.closest("[data-history-action]");
+  if (!button || auxiliaryBusy || queueSubmissionPending) return;
+  const item = history.find((entry) => entry.queueId === button.dataset.historyId);
+  if (!item) return;
+  button.disabled = true;
+  try {
+    const action = button.dataset.historyAction;
+    if (action === "retry") {
+      await directoryFor(item, true);
+      const result = await enqueueCandidates([item]);
+      activateTab("download");
+      if (result.pending) duplicateReview.scrollIntoView({ block: "nearest" });
+    } else if (action === "check") {
+      await checkFiles(item, true);
+      await saveLibrary();
+      renderHistory();
+    } else if (["open", "reveal"].includes(action)) {
+      const file = item.files[Number(button.dataset.fileIndex)];
+      if (!file) return;
+      const directory = await directoryFor(item, true);
+      const [result] = await auxiliary.files(directory, action, [file]);
+      if (result.status !== "present")
+        throw new Error("文件已删除、变化或暂时无法访问。可按原设置重新下载。");
+      item.files[Number(button.dataset.fileIndex)] = result;
+      await saveLibrary();
+    }
+  } catch (error) {
+    item.checkError = error.message;
+    renderHistory();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function compactIndices(indices) {
+  const ranges = [];
+  for (const index of indices) {
+    const last = ranges.at(-1);
+    if (last && last[1] + 1 === index) last[1] = index;
+    else ranges.push([index, index]);
+  }
+  return ranges
+    .map(([start, end]) => (start === end ? String(start) : `${start}-${end}`))
+    .join(",");
+}
+
+async function searchCandidates(options) {
+  auxiliaryGroups++;
+  auxiliaryBusy = true;
+  updateActionAvailability();
+  try {
+    return await searchPlatformCandidates(options);
+  } finally {
+    auxiliaryGroups--;
+    auxiliaryBusy = auxiliary.busy || auxiliaryGroups > 0;
+    updateActionAvailability();
+    if (!auxiliaryBusy) void runNextDownload();
+  }
+}
+
+async function searchPlatformCandidates({ query, platforms, limit = 8, signal }) {
+  if (previewMode) throw new Error("请在 CodeShell 中使用平台实时搜索。");
+  if (Number(context.apiVersion) < 14) throw new Error("AI 找视频需要更新 CodeShell。");
+  if (!runtime.ytDlp?.handle || !runtime.directory?.handle)
+    throw new Error("请先在下载页安装 yt-dlp 并选择保存目录。");
+  const candidates = [],
+    warnings = [];
+  const count = Math.max(1, Math.min(8, Number(limit) || 8));
+  for (const platform of platforms) {
+    if (signal?.aborted) throw new Error("已取消");
+    if (!["youtube", "bilibili"].includes(platform)) continue;
+    try {
+      const prefix = platform === "youtube" ? "ytsearch" : "bilisearch";
+      const args = [
+        "--ignore-config",
+        "--no-cache-dir",
+        "--skip-download",
+        "--flat-playlist",
+        "--dump-single-json",
+        "--socket-timeout",
+        "15",
+        "--retries",
+        "1",
+        "--extractor-retries",
+        "1",
+        "--",
+        `${prefix}${count}:${String(query).slice(0, 300)}`,
+      ];
+      const result = await auxiliary.run({
+        executableHandle: runtime.ytDlp.handle,
+        directoryHandle: runtime.directory.handle,
+        args,
+        signal,
+      });
+      if (result.code !== 0)
+        throw new Error(friendlyYtDlpError(result.stderr, "平台检索", result.code));
+      const raw = JSON.parse(result.stdout);
+      for (const row of (Array.isArray(raw.entries) ? raw.entries : []).slice(0, count)) {
+        if (!row) continue;
+        let metadata = row;
+        const url =
+          row.webpage_url ||
+          row.url ||
+          (platform === "youtube" && row.id ? `https://www.youtube.com/watch?v=${row.id}` : "");
+        if (normalizeVideoSearchUrl(url)?.platform !== platform) continue;
+        if (!row.title && platform === "bilibili") {
+          // Bilibili's flat search only returns IDs/URLs. Fetch real metadata for
+          // these bounded results before handing any title to the AI selector.
+          const detail = await auxiliary.run({
+            executableHandle: runtime.ytDlp.handle,
+            directoryHandle: runtime.directory.handle,
+            args: [
+              "--ignore-config",
+              "--no-cache-dir",
+              "--skip-download",
+              "--no-playlist",
+              "--dump-single-json",
+              "--socket-timeout",
+              "12",
+              "--retries",
+              "0",
+              "--extractor-retries",
+              "0",
+              "--",
+              url,
+            ],
+            signal,
+            timeout: 45_000,
+          });
+          if (detail.code !== 0) {
+            warnings.push("B站部分视频暂时无法读取信息。");
+            continue;
+          }
+          metadata = JSON.parse(detail.stdout);
+        }
+        if (metadata.title)
+          candidates.push({
+            title: metadata.title,
+            url,
+            platform,
+            author: metadata.uploader || metadata.channel || "",
+            duration: metadata.duration,
+          });
+      }
+    } catch (error) {
+      if (signal?.aborted) throw new Error("已取消");
+      warnings.push(
+        `${platform === "youtube" ? "YouTube" : "B站"}：${error.message || "检索暂不可用"}`,
+      );
+    }
+  }
+  return { candidates, warnings: [...new Set(warnings)] };
 }
 
 async function chooseDirectory() {
@@ -2431,7 +3057,13 @@ function setVideoUrlForAgent(value) {
 }
 
 async function inspectVideoForAgent(args = {}) {
-  if (currentJob?.running || inspectionJob?.running || queueSubmissionPending) {
+  if (
+    currentJob?.running ||
+    inspectionJob?.running ||
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    completionPending
+  ) {
     throw new Error("当前已有任务正在执行");
   }
   if (typeof args.url === "string") setVideoUrlForAgent(args.url);
@@ -3051,6 +3683,8 @@ async function requestDirectSetup() {
     setupSubmissionPending ||
     currentJob?.running ||
     inspectionJob?.running ||
+    auxiliaryBusy ||
+    completionPending ||
     queueSubmissionPending
   )
     return;
@@ -3119,6 +3753,8 @@ async function requestAiSetup() {
     setupSubmissionPending ||
     currentJob?.running ||
     inspectionJob?.running ||
+    auxiliaryBusy ||
+    completionPending ||
     queueSubmissionPending
   ) {
     updateActionAvailability();
@@ -3414,6 +4050,8 @@ async function refreshVersionInfo() {
     currentJob?.running ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
+    auxiliaryBusy ||
+    completionPending ||
     queueSubmissionPending
   ) {
     return {
@@ -3500,7 +4138,13 @@ async function refreshRuntimeDependencies() {
     updateActionAvailability();
     return { ready: true, ytDlp: true, ffmpeg: true, versions, preview: true };
   }
-  if (currentJob?.running || inspectionJob?.running || queueSubmissionPending) {
+  if (
+    currentJob?.running ||
+    inspectionJob?.running ||
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    completionPending
+  ) {
     return {
       ready: false,
       ytDlp: Boolean(runtime.ytDlp?.handle),
@@ -3626,6 +4270,7 @@ async function initializeRuntime() {
     updateSessionContext({ apiVersion: 10 });
     renderQualityOptions(null);
     renderCookieAccounts();
+    await loadLibrary();
     await loadTaskModels();
     await refreshVersionInfo();
     updateActionAvailability();
@@ -3645,7 +4290,7 @@ async function initializeRuntime() {
     }
     try {
       const directory = await panel.call("filesystem.getKnownDirectory", { name: "project" });
-      setDestination(directory);
+      setDestination({ ...directory, kind: "project" });
     } catch (error) {
       // Never silently write to Downloads when the requested project grant is unavailable.
       setDestination(null);
@@ -3655,6 +4300,7 @@ async function initializeRuntime() {
         : "无法使用当前项目目录，请确认项目已信任，或点击“更改”选择保存位置。";
       showError(elements.destinationPath.textContent);
     }
+    await loadLibrary();
     await refreshRuntimeDependencies();
     await refreshCookieAccounts();
   } catch (error) {
@@ -3718,10 +4364,12 @@ elements.playlist.addEventListener("change", () => {
   clearInspectedVideo("播放列表模式已变化，请重新获取视频信息");
 });
 elements.playlistItems.addEventListener("input", () => {
+  playlistSelectionEmpty = false;
   showError("");
   renderDownloadList();
 });
 elements.playlistEnd.addEventListener("input", () => {
+  playlistSelectionEmpty = false;
   showError("");
   renderDownloadList();
 });
@@ -3757,11 +4405,14 @@ elements.cancelButton.addEventListener("click", cancelCurrentJob);
 elements.queuePause.addEventListener("click", () => {
   queuePaused = !queuePaused;
   renderQueue();
-  void runNextDownload();
+  void saveLibrary().then(runNextDownload).catch(reportLibraryError);
 });
 elements.queueClear.addEventListener("click", () => {
-  downloadQueue = downloadQueue.filter((item) => ["queued", "running"].includes(item.status));
+  downloadQueue = downloadQueue.filter((item) =>
+    ["queued", "running", "restored", "interrupted"].includes(item.status),
+  );
   renderQueue();
+  void saveLibrary().catch(reportLibraryError);
 });
 elements.queueList.addEventListener("click", (event) => {
   const button = event.target.closest("[data-queue-action]");
@@ -3770,9 +4421,13 @@ elements.queueList.addEventListener("click", (event) => {
   if (!item) return;
   if (button.dataset.queueAction === "details") activateTab("task");
   if (button.dataset.queueAction === "cancel" && item === currentJob) void cancelCurrentJob();
-  if (button.dataset.queueAction === "remove" && item.status === "queued") {
+  if (
+    button.dataset.queueAction === "remove" &&
+    ["queued", "restored", "interrupted"].includes(item.status)
+  ) {
     downloadQueue = downloadQueue.filter((entry) => entry !== item);
     renderQueue();
+    void saveLibrary().catch(reportLibraryError);
   }
   if (button.dataset.queueAction === "retry" && ["failed", "cancelled"].includes(item.status)) {
     void retryQueuedDownload(item);
@@ -3813,16 +4468,84 @@ elements.qualitySelect.addEventListener("change", () => {
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
     event.preventDefault();
-    if (!elements.downloadButton.disabled) startDownload();
+    if (
+      document.querySelector('[data-tab="download"]').getAttribute("aria-selected") === "true" &&
+      !elements.downloadButton.disabled
+    )
+      startDownload();
   }
+});
+
+queueRestore.addEventListener("click", restoreQueue);
+elements.historyList.addEventListener("click", handleHistoryAction);
+document.querySelector("#history-search").addEventListener("input", renderHistory);
+document.querySelector("#history-filter").addEventListener("change", renderHistory);
+document.querySelector("#history-check").addEventListener("click", async (event) => {
+  if (auxiliaryBusy || queueSubmissionPending) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    for (const item of history) if (item.files?.length) await checkFiles(item);
+    await saveLibrary();
+    renderHistory();
+  } catch (error) {
+    reportLibraryError(error);
+  } finally {
+    button.disabled = false;
+  }
+});
+for (const [id, selected] of [
+  ["playlist-select-all", true],
+  ["playlist-select-none", false],
+]) {
+  document.querySelector(`#${id}`).addEventListener("click", () => {
+    playlistSelectionEmpty = !selected;
+    elements.playlistItems.value = "";
+    elements.playlistEnd.value = "";
+    renderDownloadList();
+  });
+}
+const videoSearch = mountVideoSearch({
+  panel,
+  container: document.querySelector("#video-search-root"),
+  searchCandidates,
+  onQueue: async (candidates) => {
+    const result = await enqueueCandidates(
+      candidates.map((candidate) => ({
+        ...candidate,
+        configuration: { ...currentConfiguration(), playlist: false },
+        directory: { ...runtime.directory },
+        cookieCredentialId: "",
+      })),
+    );
+    if (result.pending) activateTab("download");
+    return result;
+  },
+  onPreview: (candidate) => {
+    elements.urlInput.value = candidate.url;
+    elements.playlist.checked = false;
+    clearInspectedVideo();
+    scheduleCookieAccountsRefresh();
+    updateActionAvailability();
+    activateTab("download");
+  },
+  onError: (error) => showError(error.message || String(error)),
 });
 
 if (panel) {
   panel.on("context.changed", (payload) => updateSessionContext(payload));
   panel.on("agent.task.changed", (payload) => {
     void handleAgentTaskChanged(payload);
+    videoSearch.handleTaskChanged(payload);
   });
   panel.on("process.output", (payload) => {
+    if (
+      auxiliary.ignores(payload) &&
+      ![currentJob?.id, inspectionJob?.id, dependencyProbeJob?.id, directSetupProcessJob?.id]
+        .filter(Boolean)
+        .includes(payload?.processId)
+    )
+      return;
     if (typeof payload?.processId === "string" && ignoredProbeProcessIds.has(payload.processId)) {
       return;
     }
@@ -3867,6 +4590,13 @@ if (panel) {
     if (typeof payload.text === "string") consumeOutput(stream, payload.text);
   });
   panel.on("process.exit", (payload) => {
+    if (
+      auxiliary.ignores(payload) &&
+      ![currentJob?.id, inspectionJob?.id, dependencyProbeJob?.id, directSetupProcessJob?.id]
+        .filter(Boolean)
+        .includes(payload?.processId)
+    )
+      return;
     if (typeof payload?.processId === "string" && ignoredProbeProcessIds.has(payload.processId)) {
       ignoredProbeProcessIds.delete(payload.processId);
       return;

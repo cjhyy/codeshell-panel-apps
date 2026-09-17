@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import test from "node:test";
+import { parseVideoLinks } from "../../../apps/video-download/app/download-library.js";
 
 const source = await readFile(
   new URL("../../../apps/video-download/app/app.js", import.meta.url),
@@ -43,6 +44,11 @@ function mount({ url = "https://www.youtube.com/watch?v=example", apiVersion = 1
   const calls = [];
   const timers = new Map();
   const elements = {
+    urlInput: {
+      get value() {
+        return sandbox.currentUrl || "";
+      },
+    },
     cookieSelect: new Select(),
     cookieRefresh: {},
     cookieLogin: {},
@@ -50,6 +56,7 @@ function mount({ url = "https://www.youtube.com/watch?v=example", apiVersion = 1
   };
   const sandbox = vm.createContext({
     URL,
+    parseVideoLinks,
     Error,
     Map,
     elements,

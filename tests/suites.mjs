@@ -23,8 +23,22 @@ export const suites = [
   },
   {
     id: "video-download",
-    label: "Video Download cookie selection and authorization",
-    commands: [["--test", "tests/apps/video-download/cookie-runtime.test.mjs"]],
+    label: "Video Download queue, verified library and AI search",
+    commands: [
+      [
+        "--test",
+        ...[
+          "cookie-runtime",
+          "download-library",
+          "library-native",
+          "package",
+          "library-process",
+          "queue-ui",
+          "library-ui",
+          "video-search",
+        ].map((name) => `tests/apps/video-download/${name}.test.mjs`),
+      ],
+    ],
   },
   {
     id: "video-studio",

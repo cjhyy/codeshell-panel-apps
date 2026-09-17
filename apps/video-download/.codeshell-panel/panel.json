@@ -1,18 +1,25 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.13.2",
+  "version": "0.14.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
     "zh-CN": "Mimi Download"
   },
-  "description": "Install or update yt-dlp and ffmpeg deterministically without AI, then inspect and download locally. An optional model-selected AI Task handles unusual setup failures and error analysis.",
+  "description": "Persistent download queues, batch and playlist selection, file-verified history and duplicate checks, plus AI-assisted discovery of real YouTube and Bilibili videos.",
   "entry": "app/index.html",
   "icon": "activity",
   "placement": "right-dock",
   "singleton": true,
-  "permissions": ["process", "credentials.cookies", "agent.task"],
+  "permissions": [
+    "process",
+    "credentials.cookies",
+    "agent.task",
+    "storage",
+    "context.workspace",
+    "external.open"
+  ],
   "agent": {
     "tools": [
       {
@@ -65,7 +72,9 @@
               "type": "string",
               "enum": ["best", "2160", "1440", "1080", "720", "480", "360", "audio"]
             },
-            "playlist": { "type": "boolean" },
+            "playlist": {
+              "type": "boolean"
+            },
             "playlistItems": {
               "type": "string",
               "maxLength": 120,
@@ -77,7 +86,9 @@
               "maximum": 500,
               "description": "Optional maximum playlist item number. Use 0 to clear it. Ignored when playlistItems is set."
             },
-            "subtitles": { "type": "boolean" },
+            "subtitles": {
+              "type": "boolean"
+            },
             "subtitleMode": {
               "type": "string",
               "enum": ["manual", "auto", "both"],
@@ -128,5 +139,11 @@
       }
     ],
     "skills": ["agent/skills/video-download-setup/SKILL.md"]
+  },
+  "nativeEntries": {
+    "download-library": {
+      "entry": "app/tools/library.mjs",
+      "sha256": "0de0e1c1b04686ee2fd4d8c771f0f3731b14a98b3a0d37d6ce79133723ae4888"
+    }
   }
 }
