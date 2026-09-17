@@ -277,11 +277,11 @@ function evaluateStaleQuotes(analysis, context) {
   );
   return makeRule("stale-quotes", context, {
     status: stale.length ? "warning" : "positive",
-    condition: "每个标的 quoteTime 均在其市场常规收盘 freshness 窗口内",
+    condition: "每个标的的最新报价都在对应市场的有效时限内",
     actual: { staleCount: stale.length, items: stale },
     items: stale.length ? stale : quotes.items,
     baseline: { staleCount: 0 },
-    limitations: ["按逐标的 quoteTime 判断；全局 fetchedAt 不替代单标的新鲜度"],
+    limitations: ["逐一按报价时间判断；整体同步时间不能掩盖某个标的的旧报价"],
   });
 }
 
@@ -304,7 +304,7 @@ function evaluateFingerprint(analysis, context) {
     ledger.currentFingerprint !== ledger.holdingsFingerprint;
   return makeRule("ledger-fingerprint-mismatch", context, {
     status: mismatch ? "warning" : "positive",
-    condition: "holdings.transactionsFingerprint === transactions fingerprint",
+    condition: "持仓快照所对应的交易记录与当前交易记录一致",
     actual: {
       equal: !mismatch,
       currentFingerprint: ledger.currentFingerprint ?? null,
@@ -312,7 +312,7 @@ function evaluateFingerprint(analysis, context) {
       mismatchObserved: ledger.mismatchObserved === true,
     },
     baseline: { equal: true },
-    limitations: ["holdings 仅为可重建缓存；指纹不符时结论记录发生过并使用重放结果"],
+    limitations: ["持仓快照可以重新生成；记录不一致时会保留提示，并使用重新计算的结果"],
   });
 }
 
@@ -347,7 +347,7 @@ function evaluateRawCompleteness(analysis, context) {
     );
   return makeRule("missing-raw-data", context, {
     status: missing.length ? "warning" : "positive",
-    condition: "每个持仓均有通过 path/purpose/adjust/fingerprint 校验的 raw 未复权行情",
+    condition: "每个持仓都有来源、用途、复权口径和版本一致的未复权行情",
     actual: {
       unavailableSources: missing.length,
       items: missing.map((item) => ({
@@ -358,7 +358,7 @@ function evaluateRawCompleteness(analysis, context) {
     },
     items: missing.length ? missing : raw.items,
     baseline: { unavailableSources: 0 },
-    limitations: ["复权研究行情不能替代 portfolio-valuation raw 行情"],
+    limitations: ["用于研究的复权行情不能替代持仓估值所需的未复权行情"],
   });
 }
 
@@ -414,7 +414,7 @@ function evaluateCorporateAction(analysis, context) {
   }
   return makeRule("suspected-missing-corporate-action", context, {
     status: values.length ? "warning" : "positive",
-    condition: "附近无公司行动事件且未复权价单日绝对变化 >= 35%",
+    condition: "附近没有已记录的公司行动，且未复权价格单日变化达到 35%",
     actual: { count: values.length, items: values, unaudited },
     items: values,
     baseline: { count: 0 },
@@ -427,7 +427,7 @@ function evaluateFxDivergence(analysis, context) {
   if (!context.fxVerification || verification.status === "not-available") {
     return makeRule("fx-source-divergence", context, {
       status: "neutral",
-      condition: "同日 |Yahoo - ECB| / ECB > 1%",
+      condition: "同日 Yahoo 与欧洲央行汇率的相对差异超过 1%",
       actual: { available: false },
       data: dataFrom([], context, { source: "fx-verification not available" }),
       limitations: ["ECB 校验文件缺失时不触发；核算源仍固定为 Yahoo"],
@@ -454,7 +454,7 @@ function evaluateFxDivergence(analysis, context) {
     ecb * PORTFOLIO_RULE_THRESHOLDS["fx-source-divergence"].relativeDifference + 1e-12;
   return makeRule("fx-source-divergence", context, {
     status: triggered ? "warning" : "positive",
-    condition: "同日 |Yahoo - ECB| / ECB > 1%",
+    condition: "同日 Yahoo 与欧洲央行汇率的相对差异超过 1%",
     actual: { date: verification.date ?? null, yahoo, ecb, relativeDifference },
     items: [verification],
     baseline: { relativeDifference: 0 },
@@ -473,7 +473,7 @@ function evaluateProvisional(analysis, context) {
   const checkpoints = provisionalEntries(analysis);
   return makeRule("provisional-checkpoints", context, {
     status: checkpoints.length ? "warning" : "positive",
-    condition: "序列尾部 provisional 检查点数 > 0",
+    condition: "收益序列尾部仍有等待后续数据确认的日期",
     actual: { count: checkpoints.length, dates: checkpoints.map((entry) => entry.date) },
     data: dataFrom(checkpoints, context, {
       source: "portfolio-value-series",
@@ -516,13 +516,13 @@ function evaluateConcentration(analysis, context) {
   return makeRule("concentration-band", context, {
     status: "neutral",
     condition:
-      "归一化 H* 连续展示（0 = 等权，1 = 全押）；描述性分箱：H* >= 0.50 为 higher；>= 0.25 且 < 0.50 为 middle；其余为 lower",
+      "集中度从 0（完全等权）到 1（集中于单一标的）连续展示；0.25 和 0.50 仅作区间参考",
     actual: { normalized, raw, count, band },
     items: analysis?.summary?.exposure?.byInstrument,
     baseline: { formula: "(H - 1/n) / (1 - 1/n)", equalWeights: 0, singlePosition: 1 },
     limitations: [
       "权重不含现金；按标的而非发行人聚合",
-      "0.25/0.50 为产品启发式分箱，非行业标准，只作描述不贴好坏",
+      "0.25 和 0.50 是产品内的描述区间，并非行业标准，也不代表好坏",
     ],
   });
 }
@@ -561,7 +561,7 @@ function evaluateWeightExtremes(analysis, context) {
   }
   return makeRule("position-weight-extremes", context, {
     status: "neutral",
-    condition: "展示最大/最小正证券权重与最大/最小账户证券权重，不设目标权重",
+    condition: "展示持仓和账户的最高、最低证券权重，不预设目标仓位",
     actual: {
       maxPosition: positions[0],
       minPosition: positions.at(-1),
@@ -664,7 +664,7 @@ function evaluatePnlContributors(analysis, context) {
   const publicItems = items.map(({ _minor: _discardMinor, _evidence: _discardEvidence, ...item }) => item);
   return makeRule("pnl-contributors", context, {
     status: "neutral",
-    condition: "全部标的按 |基准币盈亏贡献| 降序；盈利、亏损与持平使用同一字段",
+    condition: "全部标的按盈亏影响的绝对金额排序，最大盈利和最大亏损都会优先展示",
     actual: {
       items: publicItems,
       totals: Object.fromEntries(
@@ -730,11 +730,11 @@ function evaluateReturnGap(analysis, context) {
   }
   return makeRule("return-method-gap", context, {
     status: "neutral",
-    condition: "收益口径差 = XIRR - 年化 TWR；只比较跨度 >= 365 日的年化口径",
+    condition: "资金加权收益率减去年化时间加权收益率；只比较至少一年的数据",
     actual: { xirr, annualizedTwr, gap: Number((xirr - annualizedTwr).toPrecision(15)) },
     data: dataFrom([], context, { source: "portfolio-value-series" }),
     baseline: { gap: 0 },
-    limitations: ["口径差不命名为择时贡献、alpha 或 drag"],
+    limitations: ["两种收益口径的差异不等同于择时能力、超额收益或拖累"],
   });
 }
 
@@ -773,7 +773,7 @@ function evaluateDecisionOutcomes(analysis, context) {
   );
   return makeRule("decision-outcomes", context, {
     status: "neutral",
-    condition: "met/partial/missed/undecidable/未到期/待复盘完整并列",
+    condition: "完整并列展示已兑现、部分兑现、未兑现、无法判断、未到期和待复盘",
     actual: { counts, ratios, total },
     items: [context.decisions],
     baseline: { interpretation: "user-recorded-outcome" },
@@ -791,7 +791,7 @@ function evaluateReviewDue(analysis, context) {
   const count = decisionCounts(context.decisions).reviewDue;
   return makeRule("review-due", context, {
     status: count > 0 ? "warning" : "positive",
-    condition: "reviewAt 已到且尚无 outcome 的决策数 > 0",
+    condition: "复盘日期已到、但还没有填写结果的决策",
     actual: { count },
     items: [context.decisions],
     baseline: { count: 0 },
@@ -825,7 +825,7 @@ function evaluateAlerts(analysis, context) {
     );
   return makeRule("alerts-triggered", context, {
     status: triggered.length ? "warning" : "positive",
-    condition: "关注规则最近一次检查 triggered === true 的项目数 > 0",
+    condition: "最近一次检查中已满足提醒条件的关注项",
     actual: { count: triggered.length, items: triggered },
     items: triggered.length ? triggered : [alerts],
     baseline: { count: 0 },

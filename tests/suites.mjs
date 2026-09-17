@@ -19,9 +19,7 @@ export const suites = [
   {
     id: "quant-lab",
     label: "Quant Lab data, portfolio and market workflows",
-    commands: ["portfolio", "portfolio-rules", "portfolio-data", "today", "news", "notes"].map(
-      (name) => [`scripts/quant-lab-${name}.mjs`],
-    ),
+    commands: [["scripts/test-quant-lab.mjs"]],
   },
   {
     id: "video-download",

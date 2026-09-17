@@ -9,6 +9,7 @@ import {
   isAllowedNewsUrl,
   mergeNewsCache,
   newsFeedMatchesCache,
+  parseCninfoAnnouncements,
   parseEastmoney724,
   parseEastmoneyStock,
   parseNewsCache,
@@ -68,6 +69,8 @@ async function responseBytes(response) {
 export async function requestNewsJson(url, {
   fetchImpl,
   headers = {},
+  method = "GET",
+  body,
   timeoutMs = REQUEST_TIMEOUT_MS,
   redirects = 0,
   retry5xx = true,
@@ -79,7 +82,8 @@ export async function requestNewsJson(url, {
   let response;
   try {
     response = await fetchImpl(url, {
-      method: "GET",
+      method,
+      body,
       headers: { Accept: "application/json", ...headers },
       redirect: "manual",
       signal: controller.signal,
@@ -95,12 +99,12 @@ export async function requestNewsJson(url, {
     if (!location || redirects >= MAX_REDIRECTS) throw new SourceFetchError("REDIRECT_REJECTED");
     const next = new URL(location, url).toString();
     if (!isAllowedNewsUrl(next)) throw new SourceFetchError("REDIRECT_NOT_ALLOWED");
-    return requestNewsJson(next, { fetchImpl, headers, timeoutMs, redirects: redirects + 1, retry5xx, sleep });
+    return requestNewsJson(next, { fetchImpl, headers, method, body, timeoutMs, redirects: redirects + 1, retry5xx, sleep });
   }
   if (response.status === 429) throw new SourceFetchError("HTTP_429");
   if (response.status >= 500 && retry5xx) {
     await sleep(25);
-    return requestNewsJson(url, { fetchImpl, headers, timeoutMs, redirects, retry5xx: false, sleep });
+    return requestNewsJson(url, { fetchImpl, headers, method, body, timeoutMs, redirects, retry5xx: false, sleep });
   }
   if (!response.ok) throw new SourceFetchError(`HTTP_${response.status}`);
   const text = new TextDecoder().decode(await responseBytes(response));
@@ -129,6 +133,48 @@ async function fetchEastmoneyStock(subscriptions, options) {
     items.push(...parseEastmoneyStock(payload, entry.symbol, options.now));
   }
   return { source: "eastmoney-stock", status: "ok", items };
+}
+
+function cninfoRequest(symbol, now) {
+  const end = new Date(now);
+  const start = new Date(end.getTime() - 120 * 24 * 60 * 60 * 1_000);
+  const date = (value) => value.toISOString().slice(0, 10);
+  return new URLSearchParams({
+    pageNum: "1",
+    pageSize: "20",
+    column: "szse",
+    tabName: "fulltext",
+    plate: "",
+    stock: "",
+    searchkey: symbol.slice(2),
+    secid: "",
+    category: "",
+    trade: "",
+    seDate: `${date(start)}~${date(end)}`,
+    sortName: "",
+    sortType: "",
+    isHLtitle: "true",
+  }).toString();
+}
+
+async function fetchCninfoAnnouncements(subscriptions, options) {
+  const items = [];
+  const symbols = subscriptions.symbols.filter((item) => item.market === "cn").slice(0, 30);
+  for (const [index, entry] of symbols.entries()) {
+    if (index > 0) await options.sleep(100);
+    const payload = await requestNewsJson("https://www.cninfo.com.cn/new/hisAnnouncement/query", {
+      ...options,
+      method: "POST",
+      body: cninfoRequest(entry.symbol, options.now),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "QuantLab/0.31 local official disclosure feed",
+        Referer: "https://www.cninfo.com.cn/",
+      },
+    });
+    items.push(...parseCninfoAnnouncements(payload, entry.symbol, options.now));
+  }
+  return { source: "cninfo-announcement", status: "ok", items };
 }
 
 async function fetchEastmoney724(subscriptions, options) {
@@ -178,13 +224,18 @@ export async function runNewsFetch({
 } = {}) {
   if (!["all", "cn", "us"].includes(market)) throw new Error("market must be all, cn or us");
   if (typeof fetchImpl !== "function") throw new Error("fetch implementation required");
-  const sources = market === "cn" ? ["eastmoney-stock", "eastmoney-724"] : market === "us" ? ["sec-edgar"] : ["eastmoney-stock", "eastmoney-724", "sec-edgar"];
+  const sources = market === "cn"
+    ? ["cninfo-announcement", "eastmoney-stock", "eastmoney-724"]
+    : market === "us"
+      ? ["sec-edgar"]
+      : ["cninfo-announcement", "eastmoney-stock", "eastmoney-724", "sec-edgar"];
   const attempts = [];
   const options = { fetchImpl, sleep, now: new Date(now).toISOString() };
   for (const source of sources) {
     if (!subscriptions.enabledSources.includes(source)) continue;
     try {
-      if (source === "eastmoney-stock") attempts.push(await fetchEastmoneyStock(subscriptions, options));
+      if (source === "cninfo-announcement") attempts.push(await fetchCninfoAnnouncements(subscriptions, options));
+      else if (source === "eastmoney-stock") attempts.push(await fetchEastmoneyStock(subscriptions, options));
       else if (source === "eastmoney-724") attempts.push(await fetchEastmoney724(subscriptions, options));
       else attempts.push(await fetchSec(subscriptions, options));
     } catch (error) {

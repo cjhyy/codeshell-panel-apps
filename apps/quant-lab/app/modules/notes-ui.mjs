@@ -10,24 +10,57 @@ function appendText(parent, tag, text, className) {
 }
 
 function linkLabel(link) {
-  if (link.type === "instrument") return `标的 ${link.symbol} · ${link.market}`;
+  if (link.type === "instrument") return `标的 ${link.symbol} · ${link.market === "cn" ? "A 股" : "美股"}`;
   if (link.type === "transaction") return `交易 ${link.transactionId}`;
-  if (link.type === "news") return `资讯 ${link.newsItemId} · ${link.fingerprint}`;
-  return `规则 ${link.ruleId} · evidence ${link.evidenceAsOf}`;
+  if (link.type === "news") return `资讯 ${link.newsItemId}`;
+  return `规则 ${link.ruleId} · 数据时点 ${link.evidenceAsOf}`;
+}
+
+const LINK_STATUS_LABELS = {
+  current: "关联有效",
+  changed: "关联内容有更新",
+  orphan: "原关联已不存在",
+};
+
+const TIMELINE_TYPE_LABELS = {
+  note: "笔记",
+  transaction: "交易",
+  news: "资讯",
+  rule: "规则",
+  holding: "持仓快照",
+};
+
+function sourceLabel(source) {
+  const value = String(source ?? "");
+  if (value.includes("journal.json")) return "本地笔记";
+  if (value.includes("transactions.json")) return "交易记录";
+  if (value.includes("holdings.json")) return "持仓快照";
+  if (value.includes("news/feed.json")) return "资讯信息流";
+  if (value.includes("portfolio-rules")) return "持仓规则";
+  return value || "未知";
 }
 
 function recordSummary(item, ctx) {
   if (item.type === "note") return `${item.record.title} · ${item.record.body}`.slice(0, 300);
   if (item.type === "transaction") {
     const instrument = (ctx.ledger?.instruments ?? []).find((entry) => entry.id === item.record.instrumentId);
-    return `${item.record.type ?? "transaction"} · ${instrument?.symbol ?? item.record.instrumentId ?? item.record.currency ?? "—"} · ${item.record.id}`;
+    const type = item.record.type === "buy" ? "买入" : item.record.type === "sell" ? "卖出" : "交易";
+    return `${type} · ${instrument?.symbol ?? item.record.instrumentId ?? item.record.currency ?? "—"} · ${item.record.id}`;
   }
-  if (item.type === "news") return `external/untrusted title · ${item.record.title ?? "—"}`;
-  if (item.type === "rule") return `${item.record.condition ?? item.record.name ?? item.record.id} · actual ${JSON.stringify(item.record.actual ?? null)}`;
-  return `derived holding snapshot · positions ${(item.record.positionsByAccount ?? []).length}`;
+  if (item.type === "news") return `外部资讯标题 · ${item.record.title ?? "—"}`;
+  if (item.type === "rule") return `${item.record.condition ?? item.record.name ?? item.record.id} · 当前结果 ${JSON.stringify(item.record.actual ?? null)}`;
+  return `持仓快照 · ${(item.record.positionsByAccount ?? []).length} 个持仓`;
 }
 
-export function createNotesController({ hostCall, root, currentEpoch, context, now = () => new Date(), onChange = () => {} }) {
+export function createNotesController({
+  hostCall,
+  root,
+  currentEpoch,
+  context,
+  now = () => new Date(),
+  onChange = () => {},
+  resolveAShare = () => ({ ok: false }),
+}) {
   const byId = (id) => root.querySelector(`#${id}`);
   const elements = {
     live: byId("notes-live"), newButton: byId("notes-new"), form: byId("notes-form"), editId: byId("notes-edit-id"),
@@ -52,6 +85,7 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
     for (const link of state.draftLinks) {
       const chip = document.createElement("span");
       chip.className = "notes-link-chip";
+      if (link.type === "news") chip.title = `资讯指纹 ${link.fingerprint}`;
       appendText(chip, "span", linkLabel(link));
       const remove = appendText(chip, "button", "移除");
       remove.type = "button";
@@ -85,11 +119,25 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
   }
 
   function filteredEntries() {
-    const instrument = elements.filterInstrument.value.trim().toUpperCase();
+    const instrumentInput = elements.filterInstrument.value.trim();
+    const instrument = instrumentInput.toLocaleUpperCase("zh-CN");
+    const resolved = resolveAShare(instrumentInput);
+    const resolvedSymbol = resolved?.ok ? resolved.symbol : "";
+    const ledgerInstruments = sourceContext().ledger?.instruments ?? [];
+    const matchesInstrument = (note) => note.links.some((link) => {
+      if (link.type !== "instrument") return false;
+      const current = ledgerInstruments.find((item) => item.symbol === link.symbol);
+      return [link.symbol, current?.name, current?.id]
+        .filter(Boolean)
+        .some((value) => {
+          const normalized = String(value).toLocaleUpperCase("zh-CN");
+          return normalized.includes(instrument) || (resolvedSymbol && normalized === resolvedSymbol);
+        });
+    });
     const tag = elements.filterTag.value.trim();
     const type = elements.filterLink.value;
     return (state.document?.entries ?? []).filter((note) =>
-      (!instrument || note.links.some((link) => link.type === "instrument" && link.symbol.includes(instrument))) &&
+      (!instrument || matchesInstrument(note)) &&
       (!tag || note.tags.includes(tag)) &&
       (type === "all" || note.links.some((link) => link.type === type)));
   }
@@ -111,9 +159,10 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
       const header = document.createElement("header");
       const identity = document.createElement("div");
       appendText(identity, "h3", note.title);
-      appendText(identity, "small", `${note.id} · revision ${note.revision} · ${note.updatedAt}`);
+      const updated = appendText(identity, "small", `更新于 ${note.updatedAt}`);
+      updated.title = `笔记标识 ${note.id} · 版本 ${note.revision}`;
       header.append(identity);
-      appendText(header, "span", resolved.status, "note-link-state");
+      appendText(header, "span", LINK_STATUS_LABELS[resolved.status] ?? resolved.status, "note-link-state");
       card.append(header);
       appendText(card, "pre", note.body, "note-body");
       const tags = document.createElement("div");
@@ -123,11 +172,19 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
       linkList.className = "notes-link-list";
       for (const item of resolved.links) {
         let comparison = "";
-        if (item.link.type === "news") comparison = ` · saved fingerprint ${item.link.fingerprint} → current fingerprint ${item.current?.fingerprint ?? "missing"}${item.current?.title ? ` · external/untrusted: ${item.current.title}` : ""}`;
-        else if (item.link.type === "rule") comparison = ` · saved asOf ${item.link.evidenceAsOf} → current asOf ${item.current?.asOf ?? "missing"}`;
-        else if (item.link.type === "instrument") comparison = ` · current ${item.current ? `${item.current.symbol} / ${item.current.name ?? item.current.id}` : "missing"}`;
-        else comparison = ` · current ${item.current ? `${item.current.type ?? "transaction"} / ${item.current.id}` : "missing"}`;
-        appendText(linkList, "span", `${item.status} · ${linkLabel(item.link)}${comparison}`, "notes-resolved-link");
+        if (item.link.type === "news") comparison = item.status === "changed" ? " · 已保存内容与当前内容不同" : "";
+        else if (item.link.type === "rule") comparison = ` · 当前数据时点 ${item.current?.asOf ?? "未找到"}`;
+        else if (item.link.type === "instrument") comparison = ` · 当前 ${item.current ? `${item.current.symbol} / ${item.current.name ?? item.current.id}` : "未找到"}`;
+        else comparison = ` · 当前 ${item.current ? `${item.current.type ?? "交易"} / ${item.current.id}` : "未找到"}`;
+        const resolvedLink = appendText(
+          linkList,
+          "span",
+          `${LINK_STATUS_LABELS[item.status] ?? item.status} · ${linkLabel(item.link)}${comparison}`,
+          "notes-resolved-link",
+        );
+        if (item.link.type === "news") {
+          resolvedLink.title = `保存指纹 ${item.link.fingerprint} · 当前指纹 ${item.current?.fingerprint ?? "missing"}`;
+        }
       }
       card.append(linkList);
       const actions = document.createElement("div");
@@ -156,10 +213,15 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
       row.className = "notes-timeline-item";
       row.dataset.type = item.type;
       row.dataset.linkState = item.currentStatus;
-      appendText(row, "b", `${item.type} · ${item.id}`);
+      appendText(row, "b", `${TIMELINE_TYPE_LABELS[item.type] ?? item.type} · ${item.id}`);
       appendText(row, "p", `当时记录 · ${recordSummary(item, ctx)}`);
-      appendText(row, "span", `${item.occurredAt ?? "time unavailable"} · ${item.source}`);
-      appendText(row, "span", `current ${item.currentStatus} · 关联笔记 ${item.noteIds.length}`);
+      const source = appendText(
+        row,
+        "span",
+        `时间 ${item.occurredAt ?? "未知"} · 来源 ${sourceLabel(item.source)}`,
+      );
+      source.title = String(item.source ?? "");
+      appendText(row, "span", `当前状态 ${LINK_STATUS_LABELS[item.currentStatus] ?? item.currentStatus} · 关联笔记 ${item.noteIds.length}`);
       elements.timeline.append(row);
     }
   }
@@ -188,7 +250,7 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
       state.readError = null;
       closeForm();
       render();
-      setLive("笔记已条件写入并重新读取核对。", "success");
+      setLive("笔记已保存并重新读取核对。", "success");
       onChange(facts());
       elements.newButton.focus();
     } catch (error) {
@@ -204,7 +266,7 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
           }`,
         );
       } else {
-        setError(`保存失败：${error instanceof Error ? error.message : "unknown"}`);
+        setError(`保存失败：${error instanceof Error ? error.message : "未知错误"}`);
       }
       elements.error.focus();
     } finally {
@@ -247,13 +309,17 @@ export function createNotesController({ hostCall, root, currentEpoch, context, n
 
   async function load(expectedEpoch = currentEpoch()) {
     reset();
-    setLive("正在读取 portfolio/journal.json…");
+    setLive("正在读取本地笔记…");
     try {
       const result = await loadNotes(hostCall, { expectedEpoch, currentEpoch });
       if (expectedEpoch !== currentEpoch()) return;
       state.file = result.file;
       state.document = result.document;
-      setLive(result.document ? `已读取 ${result.document.entries.length} 条笔记。` : "尚无 portfolio/journal.json；首次确认保存将 create-only 建立。");
+      setLive(
+        result.document
+          ? `已读取 ${result.document.entries.length} 条笔记。`
+          : "还没有笔记；保存第一条后会在当前项目建立本地笔记文件。",
+      );
       render();
       onChange(facts());
     } catch (error) {

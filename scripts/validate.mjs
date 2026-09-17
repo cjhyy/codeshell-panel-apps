@@ -19,6 +19,7 @@ import { discoverProjects } from "./panel-projects.mjs";
 import { validatePackage as validateSourcePackage } from "./validation/package.mjs";
 import { validateSyntax as validateSourceSyntax } from "./validation/syntax.mjs";
 import { runSchemaPatternTests } from "../tests/validation/schema-pattern.test.mjs";
+import { runPackageContract as runQuantLabPackageContract } from "../tests/apps/quant-lab/package-contract.test.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packages = [
@@ -273,61 +274,7 @@ async function validatePackage(packagePath) {
     assert.match(html, /id="delivery-tab"/, `${packagePath}: delivery workflow is required`);
   }
   if (manifest.id === "quant-lab") {
-    const appScript = await readFile(join(root, "app", "app.js"), "utf8");
-    const queriedIds = [...appScript.matchAll(/document\.querySelector\("#([a-z0-9-]+)"\)/g)].map(
-      (match) => match[1],
-    );
-    const htmlIds = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-    const moduleOrder = ["today", "holdings", "watch", "research", "news", "notes"];
-
-    assert.equal(manifest.schemaVersion, 1, `${packagePath}: v1 must keep schemaVersion 1`);
-    assert.equal(manifest.id, "quant-lab", `${packagePath}: installed app id must stay stable`);
-    assert.equal(manifest.version, "0.5.1", `${packagePath}: investment desk version mismatch`);
-    assert.deepEqual(
-      manifest.title,
-      { default: "投资工作台", en: "Investment Desk", "zh-CN": "投资工作台" },
-      `${packagePath}: investment desk display name mismatch`,
-    );
-    assert.deepEqual(
-      manifest.permissions,
-      [
-        "context.session",
-        "context.workspace",
-        "workspace.info",
-        "workspace.read",
-        "workspace.write",
-        "external.open",
-        "storage",
-        "agent.submitPrompt",
-        "automations.manage",
-        "notifications.send",
-      ],
-      `${packagePath}: M4 permissions must include only the implemented Host surface`,
-    );
-    assert.deepEqual(
-      [...html.matchAll(/data-module-tab="([a-z]+)"/g)].map((match) => match[1]),
-      moduleOrder,
-      `${packagePath}: top-level module tabs must keep the product order`,
-    );
-    assert.deepEqual(
-      [...html.matchAll(/<section[^>]+data-module="([a-z]+)"/g)].map((match) => match[1]),
-      moduleOrder,
-      `${packagePath}: module panels must match the navigation order`,
-    );
-    assert.equal(
-      [...html.matchAll(/<h1\b/g)].length,
-      moduleOrder.length,
-      `${packagePath}: every module needs exactly one h1`,
-    );
-    assert.equal(new Set(htmlIds).size, htmlIds.length, `${packagePath}: DOM ids must be unique`);
-    for (const id of queriedIds) {
-      assert(htmlIds.includes(id), `${packagePath}: missing #${id}`);
-    }
-    assert.doesNotMatch(
-      `${html}\n${appScript}`,
-      /不建议使用|考虑买入持有|投入真钱|小仓位试跑/u,
-      `${packagePath}: research output must describe evidence, not investment actions`,
-    );
+    await runQuantLabPackageContract({ root, manifest, html, packagePath });
   }
   if (manifest.id === "job-hunt-hq") {
     const appScript = await readFile(join(root, "app", "app.js"), "utf8");

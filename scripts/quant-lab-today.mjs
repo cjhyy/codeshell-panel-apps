@@ -551,6 +551,35 @@ function fakeHost(seed = []) {
   assert.equal(elements.markets.cn.root.dataset.state, "active");
 }
 {
+  // A transient list failure must not turn the retry button into a destructive
+  // toggle. Once the authoritative state can be read, the existing task stays.
+  const items = [{ id: "a", symbol: "SH600519", rule: { type: "price-below", price: 1 } }];
+  const [plan] = buildDeskAutomations(items);
+  const host = fakeHost([
+    { id: "existing", name: plan.name, schedule: plan.schedule, timezone: plan.timezone, prompt: plan.prompt },
+  ]);
+  const originalCall = host.call;
+  let failNextList = true;
+  const elements = fakeElements();
+  const controller = createAlertsController({
+    hostCall: async (method, params) => {
+      if (method === "automations.list" && failNextList) {
+        failNextList = false;
+        throw new Error("temporary list failure");
+      }
+      return originalCall(method, params);
+    },
+    elements,
+    watchlist: () => items,
+  });
+  await controller.load();
+  assert.equal(elements.markets.cn.button.textContent, "重试读取");
+  await controller.toggleMarket("cn");
+  assert.equal(host.automations.length, 1, "重试读取不能关闭已经存在的提醒任务");
+  assert.equal(host.calls.filter((call) => call.method === "automations.delete").length, 0);
+  assert.equal(elements.markets.cn.root.dataset.state, "active");
+}
+{
   // Over-limit prompt: no Host call is attempted and the market shows the reason.
   const many = oversizedWatchlist();
   const host = fakeHost();

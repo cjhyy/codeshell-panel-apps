@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Auditable strategy format used by Quant Lab from backtest engine 1.1.0 onward. v1 remains readable.",
+  "title": "CodeShell Quant Strategy v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "name", "engine", "dataset", "sample", "datasetMeta", "strategy", "execution"],
+  "properties": {
+    "format": { "const": "codeshell.quant-strategy" },
+    "version": { "const": 2 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "engine": { "$ref": "#/$defs/engine" },
+    "dataset": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "sample": { "$ref": "#/$defs/sample" },
+    "datasetMeta": { "$ref": "#/$defs/datasetMeta" },
+    "strategy": {
+      "oneOf": [
+        { "$ref": "#/$defs/smaCross" },
+        { "$ref": "#/$defs/rsiReversion" },
+        { "$ref": "#/$defs/breakout" }
+      ]
+    },
+    "execution": { "$ref": "#/$defs/execution" }
+  },
+  "$defs": {
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "revisedAt", "signalTiming", "positionSide", "note"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "revisedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "signalTiming": { "const": "close-to-next-open" },
+        "positionSide": { "const": "long-only" },
+        "note": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bars", "from", "to", "fingerprint"],
+      "properties": {
+        "bars": { "type": "integer", "minimum": 20, "maximum": 100000 },
+        "from": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "to": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "fingerprint": { "type": "string", "pattern": "^fnv1a32:[0-9a-f]{8}$" }
+      }
+    },
+    "datasetMeta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adjust", "source"],
+      "properties": {
+        "adjust": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "source": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "syncedAt": { "type": ["string", "null"], "maxLength": 50 }
+      }
+    },
+    "smaCross": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "fast", "slow"],
+      "properties": {
+        "type": { "const": "sma-cross" },
+        "fast": { "type": "integer", "minimum": 2 },
+        "slow": { "type": "integer", "minimum": 3 }
+      }
+    },
+    "rsiReversion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "period", "oversold", "overbought"],
+      "properties": {
+        "type": { "const": "rsi-reversion" },
+        "period": { "type": "integer", "minimum": 2 },
+        "oversold": { "type": "number", "minimum": 0, "maximum": 100 },
+        "overbought": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "breakout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "lookback"],
+      "properties": {
+        "type": { "const": "breakout" },
+        "lookback": { "type": "integer", "minimum": 2 }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["initialCapital", "feeBps", "slippageBps", "stopLossPct", "signalMode", "sizer", "riskFreeRate"],
+      "properties": {
+        "initialCapital": { "type": "number", "exclusiveMinimum": 0 },
+        "feeBps": { "type": "number", "minimum": 0, "exclusiveMaximum": 10000 },
+        "slippageBps": { "type": "number", "minimum": 0, "exclusiveMaximum": 10000 },
+        "stopLossPct": { "type": "number", "minimum": 0, "exclusiveMaximum": 100 },
+        "maxHoldingDays": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "signalMode": { "enum": ["state", "edge"] },
+        "sizer": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "all-in" } }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "pct"],
+              "properties": {
+                "type": { "const": "fixed-fraction" },
+                "pct": { "type": "number", "minimum": 1, "maximum": 100 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "annual", "lookback"],
+              "properties": {
+                "type": { "const": "volatility-target" },
+                "annual": { "type": "number", "minimum": 1, "maximum": 200 },
+                "lookback": { "type": "number", "minimum": 2, "maximum": 2000 }
+              }
+            }
+          ]
+        },
+        "riskFreeRate": { "type": "number", "minimum": -1, "maximum": 1 }
+      }
+    }
+  }
+}
