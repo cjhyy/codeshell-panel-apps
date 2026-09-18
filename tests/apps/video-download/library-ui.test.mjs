@@ -706,6 +706,44 @@ test("metadata failure, retry and cancellation affect only inspection during a d
   assert.equal(await page.locator("#inspect-button").isEnabled(), true);
 });
 
+test("save-only tasks survive reopening, stay deduplicated and require explicit start", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#enqueue-button").click();
+  await page.waitForFunction(() => document.querySelector('.queue-item[data-state="pending"]'));
+  const saved = (await readState(page)).queue[0];
+  await page.reload();
+  await ready(page);
+  assert.equal((await downloads(page)).length, 0);
+  assert.equal((await readState(page)).queue[0].status, "pending");
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#enqueue-button").click();
+  assert.equal((await readState(page)).queue.length, 1);
+  assert.equal((await downloads(page)).length, 0);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  assert.equal((await readState(page)).queue[0].id, saved.id);
+  assert.equal((await readState(page)).queue[0].status, "running");
+});
+
+test("saving another copy preserves the save-only choice through duplicate review", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await downloadForm(page);
+  await page.waitForFunction(() => !document.querySelector("#enqueue-button").disabled);
+  await page.locator("#enqueue-button").click();
+  await page.waitForFunction(() => !document.querySelector("#duplicate-review").hidden);
+  await page.locator('[data-duplicate-action="copy"]').click();
+  await page.waitForFunction(() => document.querySelector('.queue-item[data-state="pending"]'));
+  assert.equal((await downloads(page)).length, 1);
+  const pending = (await readState(page)).queue.find((item) => item.status === "pending");
+  await page.locator(`[data-queue-id="${pending.id}"][data-queue-action="resume"]`).click();
+  await page.waitForFunction(() => window.__downloads.length === 2);
+  assert.match((await downloads(page))[1].args.join(" "), /copy-/);
+});
+
 test("Chat can inspect a new URL while a download is running", async (t) => {
   const page = await openPanel(t);
   await addDownload(page);

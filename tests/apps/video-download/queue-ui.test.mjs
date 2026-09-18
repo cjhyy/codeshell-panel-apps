@@ -212,11 +212,11 @@ async function downloadForm(page) {
   }
 }
 
-async function addDownload(page, url) {
+async function addDownload(page, url, { start = true } = {}) {
   await downloadForm(page);
   const before = (await readState(page)).queue.length;
   await page.locator("#url-input").fill(url);
-  await page.locator("#download-button").click();
+  await page.locator(start ? "#download-button" : "#enqueue-button").click();
   await page.waitForFunction(
     (count) => document.querySelectorAll(".queue-item").length === count,
     before + 1,
@@ -1225,6 +1225,80 @@ for (const [width, colorScheme] of [
     });
   });
 }
+
+test("save-only queue items stay pending while explicit downloads start and complete", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const saved = await addDownload(page, firstUrl, { start: false });
+  assert.equal((await downloads(page)).length, 0);
+  await waitForStatus(page, saved.id, "pending");
+  assert.equal(await page.locator("#queue-restore").textContent(), "全部下载");
+  assert.equal(await page.locator("#queue-pause").isDisabled(), true);
+  const immediate = await addDownload(page, secondUrl);
+  const [process] = await waitForDownloads(page, 1);
+  assert.equal(process.args.at(-1), secondUrl);
+  await completeDownload(page, process.processId);
+  await waitForStatus(page, immediate.id, "completed");
+  await waitForStatus(page, saved.id, "pending");
+  assert.equal((await downloads(page)).length, 1);
+  await page.locator("#queue-clear").click();
+  assert.equal((await readState(page)).queue.length, 1);
+  await action(page, saved.id, "resume").click();
+  const started = await waitForDownloads(page, 2);
+  assert.equal(started[1].args.at(-1), firstUrl);
+});
+
+test("saved batches support individual start and download-all with the configured limit", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+  assert.match(await page.locator("#download-button").textContent(), /立即下载 · 3 条/);
+  assert.equal(await page.locator("#enqueue-button").textContent(), "加入队列 · 3 条");
+  await page.locator("#enqueue-button").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="pending"]').length === 3,
+  );
+  const items = (await readState(page)).queue;
+  assert.equal((await downloads(page)).length, 0);
+  await page.locator('[data-tab="task"]').click();
+  await taskAction(page, items[1].id, "resume").click();
+  await waitForDownloads(page, 1);
+  assert.deepEqual(
+    (await readState(page)).queue.map((item) => item.status),
+    ["pending", "running", "pending"],
+  );
+  await page.locator("#queue-restore").click();
+  const [a, b] = await waitForDownloads(page, 2);
+  assert.deepEqual(
+    (await readState(page)).queue.map((item) => item.status),
+    ["running", "running", "queued"],
+  );
+  await completeDownload(page, a.processId);
+  const all = await waitForDownloads(page, 3);
+  assert.equal(all[2].args.at(-1), thirdUrl);
+  assert.notEqual(a.processId, b.processId);
+});
+
+test("immediate download starts an existing pending item instead of creating a duplicate", async (t) => {
+  const page = await openPanel(t);
+  const saved = await addDownload(page, firstUrl, { start: false });
+  await page.locator("#download-button").click();
+  await waitForDownloads(page, 1);
+  const state = await readState(page);
+  assert.equal(state.queue.length, 1);
+  assert.equal(state.queue[0].id, saved.id);
+  assert.equal(state.queue[0].status, "running");
+});
+
+test("immediate download after pause-all leaves earlier tasks paused", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  await waitForDownloads(page, 1);
+  await page.locator("#queue-pause").click();
+  await waitForStatus(page, first.id, "paused");
+  const next = await addDownload(page, secondUrl);
+  await waitForDownloads(page, 2);
+  await waitForStatus(page, first.id, "paused");
+  await waitForStatus(page, next.id, "running");
+});
 
 test("continue all never restarts completed or cancelled downloads", async (t) => {
   const page = await openPanel(t, 1280, "", 3);

@@ -83,6 +83,7 @@ const elements = {
   chooseDirectory: document.querySelector("#choose-directory"),
   restoreDirectory: document.querySelector("#restore-directory"),
   downloadButton: document.querySelector("#download-button"),
+  enqueueButton: document.querySelector("#enqueue-button"),
   downloadLabel: document.querySelector(".download-button .button-label"),
   errorAnalysis: document.querySelector("#error-analysis"),
   errorAnalysisHelp: document.querySelector("#error-analysis-help"),
@@ -779,7 +780,7 @@ async function prepareItem(item, allowPick = false) {
   return item;
 }
 
-async function enqueueCandidates(candidates, { copy = false } = {}) {
+async function enqueueCandidates(candidates, { copy = false, start = true } = {}) {
   if (!libraryReady) throw new Error("下载记录尚未准备好，请稍后重试。");
   if (
     queueSubmissionPending ||
@@ -798,6 +799,9 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
     throw new Error("队列最多保留 100 项，请先清除已结束任务。");
   queueSubmissionPending = true;
   setControlsBusy(true);
+  const revision = queueControlRevision;
+  let submitted = false;
+  const requested = [];
   const accepted = [],
     pending = [];
   let duplicates = 0,
@@ -837,7 +841,7 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
         configuration: isSnapshot ? { ...candidate.configuration } : { ...configuration },
         directory: isSnapshot ? { ...candidate.directory } : { ...runtime.directory },
         cookieCredentialId: isSnapshot ? candidate.cookieCredentialId || "" : credentialId,
-        status: "queued",
+        status: start && candidate?.status !== "pending" ? "queued" : "pending",
         addedAt: Date.now(),
         files: [],
         filesComplete: true,
@@ -856,6 +860,8 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
         const matches = duplicateCandidates(item, [...downloadQueue, ...accepted], history);
         if (matches.queued) {
           duplicates++;
+          if (start && matches.queued.status === "pending" && !requested.includes(matches.queued))
+            requested.push(matches.queued);
           continue;
         }
         let existing = false;
@@ -906,20 +912,28 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
           ),
       ),
     );
+    submitted = true;
     renderDuplicates();
     renderHistory();
     renderQueue();
-    batchStatus.textContent = `已添加 ${accepted.length} 项${duplicates ? `，${duplicates} 项已在队列中` : ""}${pending.length ? `，${pending.length} 项已有文件待确认` : ""}${missing ? "；已删除或变化的文件可重新下载" : ""}${unknown ? "；部分旧文件无法确认，允许重新下载" : ""}。`;
+    batchStatus.textContent = `已添加 ${accepted.length} 项${!start && accepted.length ? "，等待手动开始" : ""}${duplicates ? `，${duplicates} 项已在队列中` : ""}${pending.length ? `，${pending.length} 项已有文件待确认` : ""}${missing ? "；已删除或变化的文件可重新下载" : ""}${unknown ? "；部分旧文件无法确认，允许重新下载" : ""}。`;
     return {
       added: accepted.length,
       duplicates,
       pending: pending.length,
-      first: accepted[0] || null,
+      first: accepted[0] || requested[0] || null,
     };
   } finally {
     queueSubmissionPending = false;
     setControlsBusy(false);
-    void runNextDownload();
+    if (
+      submitted &&
+      start &&
+      revision === queueControlRevision &&
+      (queuePaused || requested.length)
+    )
+      await restoreQueue([...accepted.filter((item) => item.status === "queued"), ...requested]);
+    else void runNextDownload();
   }
 }
 
@@ -934,7 +948,7 @@ async function restoreQueue(items = null) {
   const candidates =
     items ||
     downloadQueue.filter((item) =>
-      ["queued", "paused", "restored", "interrupted"].includes(item.status),
+      ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status),
     );
   if (!candidates.length) return;
   const revision = ++queueControlRevision;
@@ -951,10 +965,14 @@ async function restoreQueue(items = null) {
   try {
     for (const item of candidates) {
       if (revision !== queueControlRevision) break;
-      if (item.finishing || !["queued", "paused", "restored", "interrupted"].includes(item.status))
+      if (
+        item.finishing ||
+        !["pending", "queued", "paused", "restored", "interrupted"].includes(item.status)
+      )
         continue;
       try {
-        if (item.status !== "queued" || !item.executable?.handle) await prepareItem(item, true);
+        if (!["queued", "pending"].includes(item.status) || !item.executable?.handle)
+          await prepareItem(item, true);
         if (revision !== queueControlRevision) break;
         if (!downloadQueue.includes(item)) continue;
         item.resumeFromPause = ["paused", "interrupted"].includes(item.status);
@@ -2038,11 +2056,17 @@ function updateActionAvailability() {
     versionRefreshPending ||
     queueSubmissionPending ||
     setupActive;
-  elements.downloadLabel.textContent = queueSubmissionPending
-    ? "正在加入…"
+  elements.enqueueButton.disabled = elements.downloadButton.disabled;
+  elements.enqueueButton.textContent = queueSubmissionPending
+    ? "正在添加…"
     : multipleUrls
       ? `加入队列 · ${linkCount} 条`
       : "加入下载队列";
+  elements.downloadLabel.textContent = queueSubmissionPending
+    ? "正在添加…"
+    : multipleUrls
+      ? `立即下载 · ${linkCount} 条`
+      : "立即下载";
   document.querySelector("#download-readiness").textContent = queueSubmissionPending
     ? "正在保存任务与下载设置…"
     : inspectionJob?.running
@@ -2058,8 +2082,8 @@ function updateActionAvailability() {
               : !validUrl
                 ? "先粘贴链接，或使用 AI 找视频。"
                 : hasRunningDownloads()
-                  ? `正在下载 ${runningDownloads().length} 项，可继续添加；最多同时 ${maxConcurrent} 项。`
-                  : `${linkCount} 条链接 · ${queuePaused ? "队列已暂停，加入后等待继续" : `最多同时下载 ${maxConcurrent} 项`}`;
+                  ? `正在下载 ${runningDownloads().length} 项；立即下载会自动等待空位，加入队列后需手动开始。`
+                  : `${linkCount} 条链接 · 立即下载按并行数开始，加入队列仅保存任务。`;
   elements.inspectButton.disabled = !ready || !validUrl || inspectionIsBusy();
   elements.inspectButton.textContent = inspectionJob?.running
     ? "正在获取…"
@@ -2143,12 +2167,15 @@ function setControlsBusy(busy, operation = "download") {
   );
   elements.pauseButton.hidden =
     !currentJob ||
-    !["running", "queued", "paused", "restored", "interrupted"].includes(currentJob.status);
-  elements.pauseButton.textContent = ["paused", "restored", "interrupted"].includes(
-    currentJob?.status,
-  )
-    ? "继续下载"
-    : "暂停下载";
+    !["pending", "running", "queued", "paused", "restored", "interrupted"].includes(
+      currentJob.status,
+    );
+  elements.pauseButton.textContent =
+    currentJob?.status === "pending"
+      ? "开始下载"
+      : ["paused", "restored", "interrupted"].includes(currentJob?.status)
+        ? "继续下载"
+        : "暂停下载";
   elements.pauseButton.disabled = Boolean(
     queueSubmissionPending ||
     currentJob?.finishing ||
@@ -2719,6 +2746,7 @@ function queueStatusText(item) {
   }
   return (
     {
+      pending: "待开始 · 手动下载",
       paused: Number.isFinite(item.percent) ? `已暂停 · ${Math.round(item.percent)}%` : "已暂停",
       restored: "待恢复",
       interrupted: "上次中断 · 待恢复",
@@ -2761,7 +2789,11 @@ function selectDownloadTask(job) {
     job.display
       ? { ...job.display, title: job.title }
       : {
-          state: job.running ? "running" : job.status === "paused" ? "paused" : "idle",
+          state: job.running
+            ? "running"
+            : ["paused", "pending"].includes(job.status)
+              ? job.status
+              : "idle",
           title: job.title,
           percent: job.percent,
           status: queueStatusText(job),
@@ -2822,15 +2854,18 @@ function updateTaskOverviewItem(job, row) {
   const action =
     job.running || job.status === "queued"
       ? "pause"
-      : ["paused", "restored", "interrupted"].includes(job.status)
+      : ["pending", "paused", "restored", "interrupted"].includes(job.status)
         ? "resume"
         : job.status === "completed"
           ? "history"
           : "retry";
   primary.dataset.taskAction = action;
-  primary.textContent = { pause: "暂停", resume: "继续", history: "查看记录", retry: "重试" }[
-    action
-  ];
+  primary.textContent = {
+    pause: "暂停",
+    resume: job.status === "pending" ? "开始下载" : "继续",
+    history: "查看记录",
+    retry: "重试",
+  }[action];
   primary.disabled =
     action === "history"
       ? false
@@ -2879,7 +2914,7 @@ function renderTaskOverview() {
   const count = (status) => downloadQueue.filter((job) => status.includes(job.status)).length;
   document.querySelector("#task-overview-count").textContent = `${downloadQueue.length} 项`;
   document.querySelector("#task-overview-summary").textContent = downloadQueue.length
-    ? `${count(["running"])} 项下载中 · ${count(["queued", "restored", "interrupted"])} 项等待 · ${count(["paused"])} 项已暂停 · ${count(["completed", "failed", "cancelled"])} 项已结束`
+    ? `${count(["running"])} 项下载中 · ${count(["pending", "queued", "restored", "interrupted"])} 项等待 · ${count(["paused"])} 项已暂停 · ${count(["completed", "failed", "cancelled"])} 项已结束`
     : "添加视频后，每项任务的进度都会显示在这里。";
   document.querySelector("#task-overview-empty").hidden = downloadQueue.length > 0;
 }
@@ -2902,7 +2937,7 @@ function updateQueueProgress(job = currentJob) {
 function updateQueueControls() {
   renderTaskOverview();
   const waiting = downloadQueue.filter((item) =>
-    ["queued", "restored", "interrupted"].includes(item.status),
+    ["pending", "queued", "restored", "interrupted"].includes(item.status),
   ).length;
   const paused = downloadQueue.filter((item) => item.status === "paused").length;
   const settled = downloadQueue.filter((item) =>
@@ -2912,7 +2947,7 @@ function updateQueueControls() {
   elements.queuePause.textContent = "全部暂停";
   elements.queuePause.disabled = !(
     resumingQueue ||
-    waiting ||
+    downloadQueue.some((item) => ["queued", "restored", "interrupted"].includes(item.status)) ||
     runningDownloads().some((item) => !item.pauseRequested && !item.cancelRequested)
   );
   elements.queueClear.disabled = !settled;
@@ -2944,10 +2979,11 @@ function updateQueueControls() {
 
 function renderQueue() {
   const waiting = downloadQueue.filter((item) =>
-    ["queued", "restored", "interrupted"].includes(item.status),
+    ["pending", "queued", "restored", "interrupted"].includes(item.status),
   ).length;
   const settled = downloadQueue.filter(
-    (item) => !["queued", "running", "paused", "restored", "interrupted"].includes(item.status),
+    (item) =>
+      !["pending", "queued", "running", "paused", "restored", "interrupted"].includes(item.status),
   ).length;
   const paused = downloadQueue.filter((item) => item.status === "paused").length;
   const runningCount = runningDownloads().length;
@@ -3028,10 +3064,10 @@ function renderQueue() {
       action("details", "详情");
       action("pause", "暂停").disabled = item.pauseRequested || item.cancelRequested;
       action("cancel", "取消").disabled = item.cancelRequested || item.pauseRequested;
-    } else if (["queued", "paused", "restored", "interrupted"].includes(item.status)) {
+    } else if (["pending", "queued", "paused", "restored", "interrupted"].includes(item.status)) {
       if (item.status === "queued") action("pause", "暂停").disabled = queueSubmissionPending;
       else
-        action("resume", "继续").disabled =
+        action("resume", item.status === "pending" ? "开始下载" : "继续").disabled =
           queueSubmissionPending || auxiliaryBusy || Boolean(completionPending) || stopping;
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
@@ -3045,13 +3081,13 @@ function renderQueue() {
   updateTabIndicators();
 }
 
-async function startDownload() {
+async function startDownload({ start = true } = {}) {
   showError("");
   try {
     const parsed = parseVideoLinks(elements.urlInput.value);
     if (!parsed.urls.length || parsed.invalid.length || parsed.overflow)
       throw new Error("请输入完整链接，每行一条；每批最多 100 条。");
-    const result = await enqueueCandidates(parsed.urls);
+    const result = await enqueueCandidates(parsed.urls, { start });
     if (parsed.duplicates.length)
       batchStatus.textContent += ` 已合并 ${parsed.duplicates.length} 条重复链接。`;
     return result.first;
@@ -3767,8 +3803,8 @@ function videoContextForAgent() {
           percent: currentJob.percent,
           file: currentJob.file || null,
         }
-      : currentJob?.status === "paused"
-        ? { status: "paused", title: currentJob.title, percent: currentJob.percent }
+      : ["pending", "paused"].includes(currentJob?.status)
+        ? { status: currentJob.status, title: currentJob.title, percent: currentJob.percent }
         : { status: "idle" },
     destination: runtime.directory
       ? {
@@ -5244,7 +5280,8 @@ elements.subtitleEmbed.addEventListener("change", () => {
 });
 elements.chooseDirectory.addEventListener("click", chooseDirectory);
 elements.restoreDirectory.addEventListener("click", restorePreferredDirectory);
-elements.downloadButton.addEventListener("click", startDownload);
+elements.downloadButton.addEventListener("click", () => void startDownload());
+elements.enqueueButton.addEventListener("click", () => void startDownload({ start: false }));
 elements.refreshVersions.addEventListener("click", () => {
   void refreshRuntimeDependencies();
 });
@@ -5259,14 +5296,14 @@ elements.taskModelSelects.forEach((select) => {
 });
 elements.cancelButton.addEventListener("click", () => void cancelCurrentJob());
 elements.pauseButton.addEventListener("click", () => {
-  if (["paused", "restored", "interrupted"].includes(currentJob?.status))
+  if (["pending", "paused", "restored", "interrupted"].includes(currentJob?.status))
     void restoreQueue([currentJob]);
   else void pauseDownload();
 });
 elements.queuePause.addEventListener("click", () => void pauseAllDownloads());
 elements.queueClear.addEventListener("click", () => {
   downloadQueue = downloadQueue.filter((item) =>
-    ["queued", "running", "paused", "restored", "interrupted"].includes(item.status),
+    ["pending", "queued", "running", "paused", "restored", "interrupted"].includes(item.status),
   );
   renderQueue();
   void saveLibrary().catch(reportLibraryError);
@@ -5291,7 +5328,7 @@ function handleDownloadAction(event) {
   if (action === "resume") void restoreQueue([item]);
   if (
     action === "remove" &&
-    ["queued", "paused", "restored", "interrupted"].includes(item.status)
+    ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status)
   ) {
     downloadQueue = downloadQueue.filter((entry) => entry !== item);
     renderQueue();
@@ -5433,6 +5470,7 @@ const videoSearch = mountVideoSearch({
         directory: { ...runtime.directory },
         cookieCredentialId: "",
       })),
+      { start: false },
     );
     if (result.pending) activateTab("download");
     return result;

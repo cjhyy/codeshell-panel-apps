@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.19.2</span></h1>
+          <h1>Mimi Download <span class="app-version">0.20.0</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -367,11 +367,28 @@
           </div>
           <div class="submit-row">
             <p id="download-readiness" class="download-readiness" role="status">粘贴链接即可开始</p>
-            <button id="download-button" class="download-button" type="button" disabled>
-              <span class="button-icon" aria-hidden="true">↓</span>
-              <span class="button-label">加入下载队列</span>
-              <kbd>⌘↵</kbd>
-            </button>
+            <div class="submit-actions">
+              <button
+                id="enqueue-button"
+                class="secondary-button"
+                type="button"
+                disabled
+                title="只保存到队列，稍后手动开始"
+              >
+                加入下载队列
+              </button>
+              <button
+                id="download-button"
+                class="download-button"
+                type="button"
+                disabled
+                title="按同时下载数量开始任务，满额时自动等待空位"
+              >
+                <span class="button-icon" aria-hidden="true">↓</span>
+                <span class="button-label">立即下载</span>
+                <kbd>⌘↵</kbd>
+              </button>
+            </div>
           </div>
           <p id="form-error" class="form-error" role="alert" hidden></p>
         </section>

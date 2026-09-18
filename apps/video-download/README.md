@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.19.2 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.20.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -47,6 +47,15 @@ also renders the actual download list: a single link shows its metadata, while a
 playlist marks every visible entry as `will download` or `skipped` as its range
 changes.
 
+The form has two explicit actions. **Download now** starts the selected links up to
+the configured concurrency, with excess tasks waiting automatically for a free slot.
+**Add to queue** saves them as **Waiting to start**, without starting any download.
+Saved tasks remain waiting when other downloads finish or the panel reopens. Start
+one from its card, or use **Download all**. Download now reuses a matching saved task
+instead of adding a duplicate. Starting new links after Pause all leaves older
+paused tasks untouched. The keyboard shortcut uses Download now. AI search's
+**Add to queue** controls also save tasks for a later manual start.
+
 Downloads run through a visible queue with **three concurrent tasks by default**.
 The queue selector supports one to four tasks and remembers the setting per project.
 Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
@@ -57,7 +66,7 @@ active downloads, from the form or Chat, including batch inspection and retries.
 Cancelling inspection leaves ongoing downloads alone. Download progress and
 metadata results keep separate process ownership even when spawn receipts arrive late;
 completed downloads wait for inspection to finish before checking their saved files.
-Each running or waiting task can be paused;
+Each running or scheduled task can be paused; saved tasks can be started or removed;
 paused tasks can be continued or removed. **Download all / Continue all** starts
 waiting and paused work up to the configured limit. **Pause all** stops active
 download processes and holds pending work; it no longer just stops scheduling.

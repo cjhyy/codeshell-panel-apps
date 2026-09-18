@@ -500,6 +500,16 @@ button {
   font-size: 11px;
   line-height: 1.6;
 }
+.submit-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.submit-actions > .secondary-button {
+  min-height: 40px;
+  font-size: 12px;
+}
 .download-button {
   display: flex;
   width: auto;
@@ -1052,6 +1062,12 @@ button {
   .download-button {
     width: 100%;
     justify-content: center;
+  }
+  .submit-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
   }
   .download-button kbd {
     display: none;
