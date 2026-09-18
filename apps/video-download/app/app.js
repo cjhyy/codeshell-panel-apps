@@ -1547,7 +1547,11 @@ function renderInspectedVideo(video) {
   renderQualityOptions(video);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "ready";
-  elements.inspectStatus.textContent = "信息已获取；链接变化后需要重新获取";
+  const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
+  elements.inspectStatus.textContent =
+    linkCount > 1
+      ? `已获取首条视频信息；其余 ${linkCount - 1} 条仍可加入下载队列。`
+      : "信息已获取；链接变化后需要重新获取";
   updateActionAvailability();
 }
 
@@ -1839,12 +1843,16 @@ function updateActionAvailability() {
   elements.inspectButton.disabled =
     !ready ||
     !validUrl ||
-    multipleUrls ||
     auxiliaryBusy ||
     completionPending ||
     processBusy ||
     queueSubmissionPending ||
     setupActive;
+  elements.inspectButton.textContent = inspectionJob?.running
+    ? "正在获取…"
+    : multipleUrls
+      ? "获取首条视频信息"
+      : "获取视频信息";
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
   const canAnalyze =
@@ -4417,7 +4425,14 @@ elements.urlInput.addEventListener("input", () => {
   showError("");
   clearFailure();
   invalidateCookieAuthorization();
-  clearInspectedVideo("链接已变化，请重新获取视频信息");
+  const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
+  clearInspectedVideo(
+    linkCount > 1
+      ? `已识别 ${linkCount} 条链接；获取信息只预览第一条，加入下载队列会包含全部。`
+      : linkCount === 1
+        ? "链接已就绪，点击“获取视频信息”查看标题和清晰度。"
+        : undefined,
+  );
   scheduleCookieAccountsRefresh();
   updateActionAvailability();
 });

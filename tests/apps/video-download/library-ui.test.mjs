@@ -358,6 +358,22 @@ test("batch paste deduplicates video aliases and adds each unique link once", as
   assert.match(await page.locator("#batch-status").textContent(), /重复|2|两/);
 });
 
+test("batch links can inspect the first video without implying every link was inspected", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+  assert.equal(await page.locator("#inspect-button").textContent(), "获取首条视频信息");
+  assert.match(await page.locator("#inspect-status").textContent(), /只预览第一条/);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => document.querySelector("#inspect-status")?.dataset.state === "ready");
+  const inspection = await page.evaluate(() =>
+    window.__calls.find((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
+  );
+  assert.equal(inspection.args.args.at(-1), firstUrl);
+  assert.match(await page.locator("#inspect-status").textContent(), /其余 1 条/);
+  assert.equal((await readState(page)).queue.length, 0);
+});
+
 test("reloading restores pending work paused and only an explicit restore action can start it", async (t) => {
   const page = await openPanel(t);
   await addDownload(page, `${firstUrl}\n${secondUrl}`);
