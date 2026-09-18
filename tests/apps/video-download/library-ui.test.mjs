@@ -10,6 +10,7 @@ const root = fileURLToPath(new URL("../../../", import.meta.url));
 const appDirectory = resolve(root, "apps/video-download/app");
 const firstUrl = "https://www.youtube.com/watch?v=library-first";
 const secondUrl = "https://www.youtube.com/watch?v=library-second";
+const otherSiteUrl = "https://www.bilibili.com/video/BVfixture";
 let browser;
 let server;
 let baseUrl;
@@ -84,6 +85,8 @@ async function openPanel(t) {
     window.__holdNextNative = false;
     window.__heldNativeSpawns = {};
     window.__inspectionPayload = null;
+    window.__inspectionPayloadByUrl = {};
+    window.__inspectionFailureByUrl = {};
     window.__nativeRequests = [];
     window.__fileMap = JSON.parse(localStorage.getItem("fixture.files") || "{}");
     window.__searchPayload = { entries: [] };
@@ -222,15 +225,30 @@ async function openPanel(t) {
           } else if (argv.some((arg) => /^ytsearch/.test(arg))) {
             setTimeout(() => finish(processId, JSON.stringify(window.__searchPayload) + "\n"), 0);
           } else if (argv.includes("--dump-single-json") || argv.includes("--dump-json")) {
+            const sourceUrl = argv.at(-1);
+            const payload = Object.hasOwn(window.__inspectionPayloadByUrl, sourceUrl)
+              ? window.__inspectionPayloadByUrl[sourceUrl]
+              : window.__inspectionPayload;
+            if (window.__inspectionFailureByUrl[sourceUrl]) {
+              setTimeout(() => {
+                window.__emit("process.output", {
+                  processId,
+                  stream: "stderr",
+                  text: `ERROR: ${window.__inspectionFailureByUrl[sourceUrl]}`,
+                });
+                finish(processId, "", 1);
+              }, 0);
+              return { processId, executable: args.executableHandle };
+            }
             setTimeout(
               () =>
                 finish(
                   processId,
                   JSON.stringify(
-                    window.__inspectionPayload || {
+                    payload || {
                       id: "fixture-video",
-                      title: "Fixture video",
-                      webpage_url: argv.at(-1),
+                      title: `Fixture video ${sourceUrl}`,
+                      webpage_url: sourceUrl,
                       duration: 60,
                       formats: [],
                     },
@@ -350,7 +368,11 @@ async function completeDownload(page, processId, files = [`/fixture/project/${pr
 // library UI. Native security and process-receipt behavior have independent tests.
 test("batch paste deduplicates video aliases and adds each unique link once", async (t) => {
   const page = await openPanel(t);
-  await addDownload(page, `${firstUrl}\nhttps://youtu.be/library-first?si=duplicate\n${secondUrl}`);
+  await downloadForm(page);
+  await page.locator("#url-input").fill(`${firstUrl}\nhttps://youtu.be/library-first?si=duplicate\n${secondUrl}`);
+  assert.match(await page.locator("#batch-status").textContent(), /已合并 1 条重复链接/);
+  assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
+  await page.locator("#download-button").click();
   await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 2);
   const state = await readState(page);
   assert.equal(state.queue.length, 2);
@@ -358,20 +380,77 @@ test("batch paste deduplicates video aliases and adds each unique link once", as
   assert.match(await page.locator("#batch-status").textContent(), /重复|2|两/);
 });
 
-test("batch links can inspect the first video without implying every link was inspected", async (t) => {
+test("one failed link does not hide another batch link's verified information", async (t) => {
   const page = await openPanel(t);
+  await page.evaluate((url) => {
+    window.__inspectionFailureByUrl[url] = "Second video unavailable";
+  }, secondUrl);
   await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
-  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
-  assert.equal(await page.locator("#inspect-button").textContent(), "获取首条视频信息");
-  assert.match(await page.locator("#inspect-status").textContent(), /只预览第一条/);
   await page.locator("#inspect-button").click();
-  await page.waitForFunction(() => document.querySelector("#inspect-status")?.dataset.state === "ready");
-  const inspection = await page.evaluate(() =>
-    window.__calls.find((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
+  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 1/2 条"));
+  assert.equal(await page.locator("#download-list-items article").count(), 2);
+  assert.match(await page.locator("#download-list-items article").first().textContent(), /Fixture video/);
+  assert.match(await page.locator("#download-list-items article").last().textContent(), /待获取/);
+  assert.equal(await page.locator("#download-button").isEnabled(), true);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(async () => (await window.__panelTools.get_video_download_context()).queue.length === 2);
+  assert.equal((await readState(page)).queue.length, 2);
+});
+
+test("mixed-site batch inspection works when no Cookie account is selected", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#url-input").fill(`${firstUrl}\n${otherSiteUrl}`);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"));
+  const inspections = await page.evaluate(() =>
+    window.__calls.filter((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
   );
-  assert.equal(inspection.args.args.at(-1), firstUrl);
-  assert.match(await page.locator("#inspect-status").textContent(), /其余 1 条/);
+  assert.deepEqual(inspections.map((entry) => entry.args.args.at(-1)), [firstUrl, otherSiteUrl]);
+  assert.equal(await page.locator("#download-list-items article").count(), 2);
+});
+
+test("batch links inspect each video and preserve distinct titles when queued", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(({ firstUrl, secondUrl }) => {
+    window.__inspectionPayloadByUrl[firstUrl] = {
+      id: "first",
+      title: "First video",
+      webpage_url: firstUrl,
+      duration: 90,
+      formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
+    };
+    window.__inspectionPayloadByUrl[secondUrl] = {
+      id: "second",
+      title: "Second video",
+      webpage_url: secondUrl,
+      duration: 120,
+      formats: [{ height: 2160, vcodec: "avc1", acodec: "none" }],
+    };
+  }, { firstUrl, secondUrl });
+  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+  assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
+  assert.equal(await page.locator("#download-list-items article").count(), 2);
+  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+  assert.equal(await page.locator("#inspect-button").textContent(), "获取全部视频信息");
+  assert.match(await page.locator("#inspect-status").textContent(), /逐条核对/);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"));
+  const inspections = await page.evaluate(() =>
+    window.__calls.filter((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
+  );
+  assert.deepEqual(inspections.map((entry) => entry.args.args.at(-1)), [firstUrl, secondUrl]);
+  assert.match(await page.locator("#inspect-status").textContent(), /已获取 2\/2 条/);
+  assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
+  assert.equal(await page.locator("#download-list-items article").count(), 2);
+  assert.deepEqual(await page.locator("#download-list-items article strong").allTextContents(), ["First video", "Second video"]);
+  assert.match(await page.locator("#quality-help").textContent(), /分别使用实际可用的画质/);
+  assert.equal(await page.locator('#quality-select option[value="2160"]').count(), 1);
   assert.equal((await readState(page)).queue.length, 0);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(async () => (await window.__panelTools.get_video_download_context()).queue.length === 2);
+  const queue = (await readState(page)).queue;
+  assert.deepEqual(queue.map((item) => item.url), [firstUrl, secondUrl]);
+  assert.deepEqual(queue.map((item) => item.title), ["First video", "Second video"]);
 });
 
 test("reloading restores pending work paused and only an explicit restore action can start it", async (t) => {

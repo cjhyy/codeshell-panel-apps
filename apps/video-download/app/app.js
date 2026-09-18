@@ -155,6 +155,7 @@ let queuePaused = false;
 let queueSubmissionPending = false;
 let inspectionJob = null;
 let inspectedVideo = null;
+let inspectedBatch = new Map();
 let context = { apiVersion: 0 };
 let dependenciesChecked = false;
 let dependencyRefreshPending = false;
@@ -771,6 +772,12 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
         url,
         title:
           candidate?.title ||
+          inspectedBatch.get(
+            sanitizeMediaUrl(
+              new URL(url),
+              isSnapshot ? candidate.configuration.playlist : configuration.playlist,
+            ),
+          )?.title ||
           (inspectedVideo?.url === url ? inspectedVideo.title : defaultTaskTitle(url)),
         configuration: isSnapshot ? { ...candidate.configuration } : { ...configuration },
         directory: isSnapshot ? { ...candidate.directory } : { ...runtime.directory },
@@ -1171,6 +1178,7 @@ async function loginAndSaveCookie() {
 async function cookieFileArguments(url) {
   const targetUrl = cookieRequestUrl(url);
   if (!targetUrl || Number(context.apiVersion) < 10) return [];
+  if (!elements.cookieSelect.value && !cookieSelections.get(targetUrl)) return [];
   if (cookieLoading || cookieAccountsUrl !== targetUrl) await refreshCookieAccounts();
   if (cookieRequestUrl(normalizedUrl()) !== targetUrl) {
     throw new Error("链接已变化，请重新获取视频信息或加入下载队列。");
@@ -1280,6 +1288,7 @@ function selectedSubtitleLanguages() {
 function renderQualityOptions(video = inspectedVideo) {
   const previous = selectedFormat();
   const standardHeights = [2160, 1440, 1080, 720, 480, 360];
+  const batchMode = parseVideoLinks(elements.urlInput.value).urls.length > 1;
   const available = new Set(
     Array.isArray(video?.availableHeights) && video.availableHeights.length
       ? video.availableHeights
@@ -1288,7 +1297,10 @@ function renderQualityOptions(video = inspectedVideo) {
   const choices = [
     { value: "best", label: "自动 · 最高可用画质" },
     ...standardHeights
-      .filter((height) => !video || available.has(height) || height <= Number(video.maxHeight || 0))
+      .filter(
+        (height) =>
+          !video || batchMode || available.has(height) || height <= Number(video.maxHeight || 0),
+      )
       .map((height) => ({
         value: String(height),
         label:
@@ -1317,11 +1329,13 @@ function renderQualityOptions(video = inspectedVideo) {
   elements.qualitySelect.value = choices.some((choice) => choice.value === previous)
     ? previous
     : "best";
-  elements.qualityHelp.textContent = video
-    ? video.isPlaylist
-      ? "播放列表会按每条视频的实际可用画质下载。"
-      : `已按视频实际清晰度更新；最高 ${video.maxHeight ? `${video.maxHeight}p` : "未知"}。`
-    : "获取视频信息后，会根据实际可用清晰度更新选项。";
+  elements.qualityHelp.textContent = batchMode
+    ? "批量链接会分别使用实际可用的画质；每条视频可单独核对。"
+    : video
+      ? video.isPlaylist
+        ? "播放列表会按每条视频的实际可用画质下载。"
+        : `已按视频实际清晰度更新；最高 ${video.maxHeight ? `${video.maxHeight}p` : "未知"}。`
+      : "获取视频信息后，会根据实际可用清晰度更新选项。";
 }
 
 function updateConditionalOptions() {
@@ -1421,6 +1435,40 @@ function currentPlaylistSelection() {
 
 function renderDownloadList() {
   elements.downloadListItems.replaceChildren();
+  const batchUrls = parseVideoLinks(elements.urlInput.value).urls;
+  if (batchUrls.length > 1) {
+    document.querySelector("#download-list-actions").hidden = true;
+    const fragment = document.createDocumentFragment();
+    for (const [index, url] of batchUrls.entries()) {
+      const row = document.createElement("article");
+      row.className = "download-list-item";
+      row.dataset.state = "selected";
+      const number = document.createElement("span");
+      number.className = "download-list-index";
+      number.textContent = String(index + 1);
+      const copy = document.createElement("div");
+      copy.className = "download-list-copy";
+      const title = document.createElement("strong");
+      const preview = inspectedBatch.get(sanitizeMediaUrl(new URL(url), elements.playlist.checked));
+      title.textContent = preview?.title || url;
+      title.title = url;
+      const detail = document.createElement("small");
+      detail.textContent = preview
+        ? `时长 ${formatDuration(preview.duration)} · 已获取信息`
+        : "标题和时长将在下载时获取";
+      copy.append(title, detail);
+      const status = document.createElement("span");
+      status.className = "download-list-status";
+      status.textContent = preview ? "已获取" : "待获取";
+      row.append(number, copy, status);
+      fragment.append(row);
+    }
+    elements.downloadListItems.append(fragment);
+    elements.downloadListCount.textContent = `${batchUrls.length} 条链接`;
+    elements.downloadListNote.textContent = "这里显示已识别的链接及已获取的信息；加入下载队列会逐条创建任务。";
+    elements.downloadList.hidden = false;
+    return;
+  }
   if (!inspectedVideo) {
     elements.downloadList.hidden = true;
     elements.downloadListCount.textContent = "0 项";
@@ -1513,6 +1561,7 @@ function renderDownloadList() {
 
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
   inspectedVideo = null;
+  inspectedBatch = new Map();
   playlistSelectionEmpty = false;
   elements.videoInfo.hidden = true;
   renderQualityOptions(null);
@@ -1524,7 +1573,8 @@ function clearInspectedVideo(message = "粘贴链接后先读取标题、时长�
 
 function renderInspectedVideo(video) {
   inspectedVideo = video;
-  elements.videoPlatform.textContent = video.extractor.toUpperCase();
+  const batchPrefix = parseVideoLinks(elements.urlInput.value).urls.length > 1 ? "第 1 条 · " : "";
+  elements.videoPlatform.textContent = `${batchPrefix}${video.extractor.toUpperCase()}`;
   elements.videoTitle.textContent = video.title;
   elements.videoUploader.textContent = video.uploader;
   elements.videoDuration.textContent = video.isPlaylist
@@ -1550,7 +1600,7 @@ function renderInspectedVideo(video) {
   const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
   elements.inspectStatus.textContent =
     linkCount > 1
-      ? `已获取首条视频信息；其余 ${linkCount - 1} 条仍可加入下载队列。`
+      ? `已获取 ${inspectedBatch.size}/${linkCount} 条视频信息；加入下载队列会包含全部链接。`
       : "信息已获取；链接变化后需要重新获取";
   updateActionAvailability();
 }
@@ -1819,7 +1869,8 @@ function renderSetupCard() {
 function updateActionAvailability() {
   const ready = Boolean(runtime.ytDlp?.handle && runtime.directory?.handle);
   const validUrl = Boolean(normalizedUrl());
-  const multipleUrls = parseVideoLinks(elements.urlInput.value).urls.length > 1;
+  const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
+  const multipleUrls = linkCount > 1;
   const processBusy = Boolean(
     auxiliaryBusy ||
     completionPending ||
@@ -1851,7 +1902,11 @@ function updateActionAvailability() {
   elements.inspectButton.textContent = inspectionJob?.running
     ? "正在获取…"
     : multipleUrls
-      ? "获取首条视频信息"
+      ? elements.playlist.checked
+        ? "获取首条播放列表信息"
+        : linkCount > 10
+          ? "获取前 10 条视频信息"
+          : "获取全部视频信息"
       : "获取视频信息";
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
@@ -2126,49 +2181,97 @@ function finishInspection(succeeded, error = "", exitCode = null) {
   if (!inspectionJob) return;
   const job = inspectionJob;
   if (job.timeout) clearTimeout(job.timeout);
-  inspectionJob = null;
-  setControlsBusy(false, "inspect");
-  let result;
-  if (!succeeded) {
-    const detail = error || friendlyYtDlpError(job.stderr, "获取视频信息");
-    elements.inspectStatus.dataset.state = "error";
-    elements.inspectStatus.textContent = detail;
-    recordFailure({
-      operation: "获取视频信息",
-      url: job.url,
-      message: detail,
-      stderr: job.stderr,
-      exitCode,
-    });
-    result = {
-      status: "failed",
-      url: job.url,
-      error: detail,
-    };
-    updateActionAvailability();
-  } else {
+  if (job.id) job.completedIds.add(job.id);
+  const url = job.urls[job.index];
+  let detail = error || (succeeded ? "" : friendlyYtDlpError(job.stderr, "获取视频信息", exitCode));
+  if (succeeded) {
     try {
       const raw = JSON.parse(job.stdout.trim());
-      renderInspectedVideo(normalizeInspectedVideo(raw, job.url));
-      clearFailure();
-      result = { status: "ready", inspected: inspectedVideoForAgent() };
+      const video = normalizeInspectedVideo(raw, url);
+      inspectedBatch.set(url, video);
+      if (job.index === 0) renderInspectedVideo(video);
+      else renderDownloadList();
     } catch (parseError) {
-      const message = parseError instanceof Error ? parseError.message : "无法解析视频信息";
-      elements.inspectStatus.dataset.state = "error";
-      elements.inspectStatus.textContent = message;
-      recordFailure({
-        operation: "解析视频信息",
-        url: job.url,
-        message,
-        stderr: [job.stderr, job.stdout.slice(-4_000)].filter(Boolean).join("\n"),
-        exitCode,
-      });
-      result = { status: "failed", url: job.url, error: message };
+      detail = parseError instanceof Error ? parseError.message : "无法解析视频信息";
     }
   }
+  if (detail) job.failures.push({ url, detail, stderr: job.stderr, exitCode });
+  job.index += 1;
+  if (job.index < job.urls.length) {
+    job.id = null;
+    job.stdout = "";
+    job.stderr = "";
+    job.timedOut = false;
+    job.timeout = null;
+    elements.inspectStatus.dataset.state = "loading";
+    elements.inspectStatus.textContent = `已获取 ${inspectedBatch.size} 条；正在获取第 ${job.index + 1}/${job.urls.length} 条视频信息…`;
+    void spawnInspection(job);
+    return;
+  }
+  inspectionJob = null;
+  setControlsBusy(false, "inspect");
+  const total = parseVideoLinks(elements.urlInput.value).urls.length;
+  const count = inspectedBatch.size;
+  const result = job.failures.length
+    ? {
+        status: count ? "partial" : "failed",
+        inspected: inspectedVideoForAgent(),
+        error: job.failures[0].detail,
+        count,
+        total,
+      }
+    : { status: "ready", inspected: inspectedVideoForAgent(), count, total };
+  if (job.failures.length) {
+    elements.inspectStatus.dataset.state = "error";
+    elements.inspectStatus.textContent = count
+      ? `已获取 ${count}/${total} 条；${job.failures.length} 条失败。${job.failures[0].detail}`
+      : job.failures[0].detail;
+    if (!count) {
+      recordFailure({
+        operation: "获取视频信息",
+        url: job.failures[0].url,
+        message: job.failures[0].detail,
+        stderr: job.failures[0].stderr,
+        exitCode: job.failures[0].exitCode,
+      });
+    }
+  } else {
+    clearFailure();
+    elements.inspectStatus.dataset.state = "ready";
+    elements.inspectStatus.textContent =
+      total > 1
+        ? `已获取 ${count}/${total} 条视频信息${total > job.urls.length ? `；其余 ${total - job.urls.length} 条未预览` : ""}。`
+        : "信息已获取；链接变化后需要重新获取";
+  }
+  renderDownloadList();
   updateActionAvailability();
   for (const resolve of job.waiters) resolve(result);
   void runNextDownload();
+}
+
+async function spawnInspection(job) {
+  const index = job.index;
+  const url = job.urls[index];
+  try {
+    const fileArgumentHandles = await cookieFileArguments(url);
+    if (inspectionJob !== job || job.index !== index) return;
+    const result = await panel.call("process.spawn", {
+      executableHandle: runtime.ytDlp.handle,
+      directoryHandle: runtime.directory.handle,
+      fileArgumentHandles,
+      args: inspectionArguments(url),
+    });
+    if (inspectionJob !== job || job.index !== index || !job.running) return;
+    job.id ||= result.processId;
+    job.timeout = setTimeout(() => {
+      if (inspectionJob !== job || job.id !== result.processId) return;
+      job.timedOut = true;
+      void panel.call("process.cancel", { processId: result.processId });
+    }, 60_000);
+  } catch (spawnError) {
+    if (inspectionJob === job && job.index === index)
+      finishInspection(false, spawnError instanceof Error ? spawnError.message : String(spawnError));
+  }
 }
 
 async function inspectVideo() {
@@ -2195,13 +2298,25 @@ async function inspectVideo() {
   }
   clearFailure();
   inspectedVideo = null;
+  inspectedBatch = new Map();
+  const allUrls = parseVideoLinks(elements.urlInput.value).urls;
+  const urls = elements.playlist.checked
+    ? [url]
+    : allUrls.slice(0, 10).map((value) => sanitizeMediaUrl(new URL(value), false));
   elements.videoInfo.hidden = true;
   renderDownloadList();
   elements.inspectStatus.dataset.state = "loading";
-  elements.inspectStatus.textContent = "正在通过本地 yt-dlp 获取信息…";
+  elements.inspectStatus.textContent =
+    urls.length > 1
+      ? `正在获取第 1/${urls.length} 条视频信息…`
+      : "正在通过本地 yt-dlp 获取信息…";
   inspectionJob = {
     id: null,
     url,
+    urls,
+    index: 0,
+    failures: [],
+    completedIds: new Set(),
     stdout: "",
     stderr: "",
     running: true,
@@ -2218,7 +2333,7 @@ async function inspectVideo() {
       title: `示例播放列表视频 ${index + 1}`,
       durationSeconds: 180 + index * 24,
     }));
-    renderInspectedVideo({
+    const previewVideo = {
       id: "preview",
       url,
       title: elements.playlist.checked
@@ -2237,31 +2352,21 @@ async function inspectVideo() {
       isPlaylist: elements.playlist.checked,
       entryCount: elements.playlist.checked ? previewEntries.length : 0,
       playlistEntries: elements.playlist.checked ? previewEntries : [],
-    });
+    };
+    for (const [index, previewUrl] of urls.entries())
+      inspectedBatch.set(previewUrl, {
+        ...previewVideo,
+        url: previewUrl,
+        title: index ? `示例视频 ${index + 1}：批量预览` : previewVideo.title,
+      });
+    renderInspectedVideo(previewVideo);
     clearFailure();
     inspectionJob = null;
     setControlsBusy(false, "inspect");
     return;
   }
 
-  try {
-    const fileArgumentHandles = await cookieFileArguments(url);
-    const result = await panel.call("process.spawn", {
-      executableHandle: runtime.ytDlp.handle,
-      directoryHandle: runtime.directory.handle,
-      fileArgumentHandles,
-      args: inspectionArguments(url),
-    });
-    if (!inspectionJob?.running) return;
-    inspectionJob.id ||= result.processId;
-    inspectionJob.timeout = setTimeout(() => {
-      if (!inspectionJob?.running || inspectionJob.id !== result.processId) return;
-      inspectionJob.timedOut = true;
-      void panel.call("process.cancel", { processId: result.processId });
-    }, 60_000);
-  } catch (error) {
-    finishInspection(false, error instanceof Error ? error.message : String(error));
-  }
+  await spawnInspection(inspectionJob);
 }
 
 function buildArguments(url, configuration = currentConfiguration(), copySuffix = "") {
@@ -3163,8 +3268,8 @@ async function inspectVideoForAgent(args = {}) {
   }
   if (!normalizedUrl()) throw new Error("面板中没有有效链接，请提供 url");
   await inspectVideo();
-  if (inspectedVideo) return { status: "ready", inspected: inspectedVideoForAgent() };
   if (!inspectionJob?.running) {
+    if (inspectedVideo) return { status: "ready", inspected: inspectedVideoForAgent() };
     throw new Error(elements.formError.textContent || elements.inspectStatus.textContent);
   }
   const job = inspectionJob;
@@ -4425,10 +4530,18 @@ elements.urlInput.addEventListener("input", () => {
   showError("");
   clearFailure();
   invalidateCookieAuthorization();
-  const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
+  const parsed = parseVideoLinks(elements.urlInput.value);
+  const linkCount = parsed.urls.length;
+  batchStatus.textContent = [
+    parsed.duplicates.length ? `已合并 ${parsed.duplicates.length} 条重复链接` : "",
+    parsed.invalid.length ? `${parsed.invalid.length} 条内容不是有效链接` : "",
+    parsed.overflow ? `超过每批 100 条的上限 ${parsed.overflow} 条` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
   clearInspectedVideo(
     linkCount > 1
-      ? `已识别 ${linkCount} 条链接；获取信息只预览第一条，加入下载队列会包含全部。`
+      ? `已识别 ${linkCount} 条链接；可逐条核对视频信息，加入下载队列会包含全部。`
       : linkCount === 1
         ? "链接已就绪，点击“获取视频信息”查看标题和清晰度。"
         : undefined,
@@ -4706,7 +4819,10 @@ if (panel) {
       }
     }
     if (inspectionJob?.running && typeof payload?.processId === "string") {
-      if (!inspectionJob.id || payload.processId === inspectionJob.id) {
+      if (
+        !inspectionJob.completedIds.has(payload.processId) &&
+        (!inspectionJob.id || payload.processId === inspectionJob.id)
+      ) {
         inspectionJob.id ||= payload.processId;
         const stream = payload.stream === "stderr" ? "stderr" : "stdout";
         if (typeof payload.text === "string") {
@@ -4757,7 +4873,10 @@ if (panel) {
       }
     }
     if (inspectionJob?.running && typeof payload?.processId === "string") {
-      if (!inspectionJob.id || payload.processId === inspectionJob.id) {
+      if (
+        !inspectionJob.completedIds.has(payload.processId) &&
+        (!inspectionJob.id || payload.processId === inspectionJob.id)
+      ) {
         inspectionJob.id ||= payload.processId;
         const succeeded = payload.code === 0 && !inspectionJob.timedOut;
         const detail = inspectionJob.timedOut
@@ -4765,7 +4884,7 @@ if (panel) {
           : friendlyYtDlpError(inspectionJob.stderr, "获取视频信息", payload.code);
         finishInspection(
           succeeded,
-          detail || `yt-dlp exited with code ${payload.code ?? "unknown"}`,
+          succeeded ? "" : detail || `yt-dlp exited with code ${payload.code ?? "unknown"}`,
           payload.code,
         );
         return;
