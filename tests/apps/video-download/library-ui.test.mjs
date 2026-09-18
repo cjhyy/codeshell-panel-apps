@@ -1506,3 +1506,22 @@ test("paused tasks survive reload, block duplicates and resume without a second 
   await page.locator('[data-tab="history"]').click();
   assert.equal(await page.locator(".history-item").count(), 1);
 });
+
+test("inspection errors identify the failing link and can be dismissed without a download task", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate((url) => {
+    window.__inspectionFailureByUrl[url] = "ERROR: inspection network failure";
+  }, firstUrl);
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").dataset.state === "error",
+  );
+  await page.locator('[data-tab="task"]').click();
+  assert.equal(await page.locator("#error-analysis-title").textContent(), "获取视频信息失败");
+  assert.equal(await page.locator("#error-source-url").textContent(), firstUrl);
+  assert.equal(await page.locator("#error-task-link").isVisible(), false);
+  await page.locator("#dismiss-error").click();
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  assert.equal((await readState(page)).queue.length, 0);
+});

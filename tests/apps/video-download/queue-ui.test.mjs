@@ -88,6 +88,8 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
       window.__agentTasks = {};
       window.__holdAnalysisStart = false;
       window.__analysisStartError = "";
+      window.__rejectAnalysisCancel = false;
+      window.__holdAnalysisCancel = false;
       window.__heldSpawns = {};
       window.__holdNextDownload = false;
       window.__cookieAccounts = [];
@@ -135,6 +137,17 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
             return structuredClone(task);
           }
           if (method === "agent.task.get") return structuredClone(window.__agentTasks[args.id]);
+          if (method === "agent.task.cancel") {
+            if (window.__rejectAnalysisCancel) throw new Error("Fixture cancellation unavailable");
+            const task = window.__agentTasks[args.id];
+            task.status = "cancelling";
+            if (!window.__holdAnalysisCancel)
+              setTimeout(() => {
+                task.status = "cancelled";
+                window.__emit("agent.task.changed", task);
+              }, 10);
+            return structuredClone(task);
+          }
           if (method === "filesystem.getKnownDirectory") {
             if (args.name !== "project")
               throw new Error(`Unexpected known directory: ${args.name}`);
@@ -1501,3 +1514,203 @@ for (const error of ["", "Fixture model connection unavailable"]) {
     );
   });
 }
+
+async function nameDownload(page, processId, title) {
+  await page.evaluate(
+    ({ processId, title }) =>
+      window.__emit("process.output", { processId, stream: "stdout", text: `meta:${title}\n` }),
+    { processId, title },
+  );
+}
+
+test("error cards identify their video and operation, stay dismissed and reopen from the matching task", async (t) => {
+  const page = await openPanel(t, 1280, "", 3, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const third = await addDownload(page, thirdUrl);
+  const processes = await waitForDownloads(page, 3);
+  await nameDownload(page, processes[0].processId, "Blender 入门：基础建模");
+  await nameDownload(page, processes[1].processId, "AI 剪辑：素材整理");
+  await completeDownload(page, processes[0].processId, {
+    code: 1,
+    error: "ERROR: first video needs login",
+  });
+  await waitForStatus(page, first.id, "failed");
+  await completeDownload(page, processes[1].processId, {
+    code: 1,
+    error: "ERROR: second video network failed",
+  });
+  await waitForStatus(page, second.id, "failed");
+  assert.equal(await page.locator("#error-analysis-title").textContent(), "下载失败");
+  assert.equal(await page.locator("#error-source-title").textContent(), "AI 剪辑：素材整理");
+  assert.equal(await page.locator("#error-source-url").textContent(), secondUrl);
+  assert.match(await page.locator("#error-source-time").textContent(), /发生于/);
+  assert.match(await page.locator("#error-summary").textContent(), /second video network failed/);
+  await page.locator("#dismiss-error").click();
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  assert.equal((await readState(page)).lastFailure, null);
+  await page.evaluate(
+    (processId) =>
+      window.__emit("process.output", {
+        processId,
+        stream: "stdout",
+        text: "progress:32%|1MiB/s|00:20\n",
+      }),
+    processes[2].processId,
+  );
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  assert.equal((await readState(page)).queue.length, 3);
+  await action(page, first.id, "details").click();
+  assert.equal(await page.locator("#error-source-title").textContent(), "Blender 入门：基础建模");
+  assert.equal((await readState(page)).lastFailure.queueId, first.id);
+  assert.match(await page.locator("#error-summary").textContent(), /first video needs login/);
+  await page.locator("#error-task-link").click();
+  assert.equal(await page.locator("#task-title").textContent(), "Blender 入门：基础建模");
+  for (const width of [1280, 340]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.locator("#dismiss-error").isVisible(), true);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.screenshot({
+      path: resolve(artifacts, `error-context-${width}.png`),
+      fullPage: true,
+    });
+    await page
+      .locator("#error-analysis")
+      .screenshot({ path: resolve(artifacts, `error-card-${width}.png`) });
+  }
+  await taskAction(page, second.id, "details").click();
+  assert.equal(await page.locator("#error-source-url").textContent(), secondUrl);
+  await action(page, third.id, "details").click();
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  await action(page, first.id, "details").click();
+  await action(page, first.id, "retry").click();
+  await waitForDownloads(page, 4);
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+});
+
+test("stopping AI analysis waits for its task to stop and leaves video downloads running", async (t) => {
+  const page = await openPanel(t, 1280, "", 2, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const processes = await waitForDownloads(page, 2);
+  await completeDownload(page, processes[1].processId, { code: 1 });
+  await waitForStatus(page, second.id, "failed");
+  await page.locator('[data-tab="task"]').click();
+  await page.locator("#analyze-error-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#analyze-error-label").textContent === "AI 分析中…",
+  );
+  await page.evaluate(() => {
+    window.__holdAnalysisCancel = true;
+  });
+  await page.locator("#cancel-error-analysis").click();
+  assert.equal(await page.locator("#analyze-error-button").isEnabled(), false);
+  assert.match(await page.locator("#analyze-error-label").textContent(), /正在停止/);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__calls.filter((call) => call.method === "agent.task.cancel").map((call) => call.args),
+    ),
+    [{ id: "analysis-1" }],
+  );
+  await page.evaluate(() =>
+    window.__emit("agent.task.changed", {
+      id: "analysis-1",
+      key: "error-analysis",
+      status: "cancelled",
+    }),
+  );
+  await page.waitForFunction(() => !document.querySelector("#analyze-error-button").disabled);
+  assert.match(await page.locator("#error-analysis-help").textContent(), /AI 分析已停止/);
+  assert.equal(await page.locator("#error-analysis").isVisible(), true);
+  assert.equal((await readState(page)).queue.find((job) => job.id === first.id).status, "running");
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "process.cancel").length,
+    ),
+    0,
+  );
+});
+
+test("closing an error during AI creation cancels its late receipt and stays closed", async (t) => {
+  const page = await openPanel(t, 1280, "", 1, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const [process] = await waitForDownloads(page, 1);
+  await completeDownload(page, process.processId, { code: 1 });
+  await waitForStatus(page, first.id, "failed");
+  await page.evaluate(() => {
+    window.__holdAnalysisStart = true;
+  });
+  await page.locator("#analyze-error-button").click();
+  assert.equal(await page.locator("#dismiss-error").textContent(), "停止并关闭");
+  await page.locator("#dismiss-error").click();
+  assert.match(await page.locator("#analyze-error-label").textContent(), /正在停止/);
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "agent.task.cancel").length,
+    ),
+    0,
+  );
+  await page.evaluate(() => window.__releaseAnalysisStart());
+  await page.waitForFunction(() => document.querySelector("#error-analysis").hidden);
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "agent.task.cancel").length,
+    ),
+    1,
+  );
+  await finishAnalysis(page, "analysis-1", "停止后迟到的回复");
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  await action(page, first.id, "details").click();
+  assert.equal(await page.locator("#error-analysis-result").isVisible(), false);
+  assert.match(await page.locator("#error-analysis-help").textContent(), /已停止/);
+});
+
+test("failed AI cancellation keeps a retryable stop control instead of pretending the task stopped", async (t) => {
+  const page = await openPanel(t, 1280, "", 1, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const [process] = await waitForDownloads(page, 1);
+  await completeDownload(page, process.processId, { code: 1 });
+  await waitForStatus(page, first.id, "failed");
+  await page.locator("#analyze-error-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#analyze-error-label").textContent === "AI 分析中…",
+  );
+  await page.evaluate(() => {
+    window.__rejectAnalysisCancel = true;
+  });
+  await page.locator("#dismiss-error").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#error-analysis-help").textContent.includes("停止分析失败"),
+  );
+  assert.equal(await page.locator("#cancel-error-analysis").isEnabled(), true);
+  assert.equal(await page.locator("#analyze-error-button").isEnabled(), false);
+  await page.evaluate(() => {
+    window.__rejectAnalysisCancel = false;
+  });
+  await page.locator("#dismiss-error").click();
+  await page.waitForFunction(() => document.querySelector("#error-analysis").hidden);
+});
+
+test("saved failed tasks recover their own error details after reopening without showing a stale banner", async (t) => {
+  const page = await openPanel(t, 1280, "", 1, { models: analysisModels });
+  const job = await addDownload(page, firstUrl);
+  const [process] = await waitForDownloads(page, 1);
+  await nameDownload(page, process.processId, "重新打开后可查看的错误");
+  await completeDownload(page, process.processId, {
+    code: 1,
+    error: "ERROR: saved task network failure",
+  });
+  await waitForStatus(page, job.id, "failed");
+  await page.reload();
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#installed-ytdlp-version").textContent === "2026.09.17" &&
+      !document.querySelector("#refresh-versions").disabled,
+  );
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  await action(page, job.id, "details").click();
+  assert.equal(await page.locator("#error-source-title").textContent(), "重新打开后可查看的错误");
+  assert.equal(await page.locator("#error-source-url").textContent(), firstUrl);
+  assert.match(await page.locator("#error-summary").textContent(), /saved task network failure/);
+  assert.equal((await readState(page)).lastFailure.queueId, job.id);
+});

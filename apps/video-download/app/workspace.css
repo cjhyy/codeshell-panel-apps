@@ -735,6 +735,38 @@ button {
   padding: 16px;
   border-radius: 10px;
 }
+.error-heading p {
+  flex: 1;
+  min-width: 0;
+}
+.error-heading > .text-button {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.error-analysis > .error-source {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.error-analysis > .task-model-picker:not([hidden]) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.error-source strong,
+.error-source small {
+  overflow-wrap: anywhere;
+}
+.error-source .text-button {
+  justify-self: start;
+  margin-top: 3px;
+  font-size: 11px;
+}
+#cancel-error-analysis {
+  justify-self: center;
+  font-size: 11px;
+}
 .history-tools {
   gap: 8px;
 }

@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.21.1</span></h1>
+          <h1>Mimi Download <span class="app-version">0.22.0</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -548,14 +548,23 @@
           aria-labelledby="error-analysis-title"
           hidden
         >
-          <div>
+          <div class="error-heading">
             <span class="error-analysis-icon" aria-hidden="true">!</span>
             <p>
-              <strong id="error-analysis-title">任务遇到问题</strong>
-              <small id="error-analysis-help">可启动一个独立 AI Task 分析脱敏后的错误。</small>
+              <strong id="error-analysis-title">操作失败</strong>
+              <small id="error-source-time"></small>
             </p>
+            <button id="dismiss-error" class="text-button" type="button">关闭提示</button>
+          </div>
+          <div class="error-source">
+            <strong id="error-source-title"></strong>
+            <small id="error-source-url"></small>
+            <button id="error-task-link" class="text-button" type="button" hidden>
+              定位到这个任务
+            </button>
           </div>
           <p id="error-summary" class="error-summary"></p>
+          <small id="error-analysis-help">这次操作已经结束。可关闭提示，或让 AI 分析原因。</small>
           <pre id="error-analysis-result" class="task-result" hidden></pre>
           <div class="task-model-picker compact" data-task-model-picker hidden>
             <label>
@@ -577,6 +586,9 @@
           >
             <span aria-hidden="true">✦</span>
             <span id="analyze-error-label">让 AI 分析错误</span>
+          </button>
+          <button id="cancel-error-analysis" class="text-button" type="button" hidden>
+            停止 AI 分析
           </button>
           <button id="refresh-analysis-models" class="text-button" type="button" hidden>
             刷新模型
