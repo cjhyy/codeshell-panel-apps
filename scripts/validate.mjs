@@ -5535,7 +5535,7 @@ async function validatePackage(packagePath) {
     const versionHelpers = await import(
       `${pathToFileURL(join(root, "app", "version.js")).href}?validate=${Date.now()}`
     );
-    assert.equal(manifest.version, "0.19.0", `${packagePath}: download engine version mismatch`);
+    assert.equal(manifest.version, "0.19.1", `${packagePath}: download engine version mismatch`);
     assert.equal(
       versionHelpers.parseYtDlpVersionOutput("2026.7.4\n"),
       "2026.07.04",

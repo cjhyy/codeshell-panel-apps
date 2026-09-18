@@ -203,6 +203,8 @@ const downloads = (page) => page.evaluate(() => structuredClone(window.__downloa
 const row = (page, id) => page.locator(`.queue-item[data-queue-id="${id}"]`);
 const action = (page, id, name) =>
   page.locator(`[data-queue-id="${id}"][data-queue-action="${name}"]`);
+const taskRow = (page, id) => page.locator(`.task-overview-item[data-task-id="${id}"]`);
+const taskAction = (page, id, name) => taskRow(page, id).locator(`[data-task-action="${name}"]`);
 
 async function downloadForm(page) {
   if (!(await page.locator("#url-input").isVisible())) {
@@ -1088,6 +1090,141 @@ test("pause all during resume authorization wins over the late preparation resul
   assert.equal((await downloads(page)).length, 1);
   assert.equal((await readState(page)).queuePaused, true);
 });
+
+test("task overview shows every concurrent task, preserves focus and selects independent details", async (t) => {
+  const page = await openPanel(t, 1280, "", null);
+  await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+  await page.locator("#download-button").click();
+  const processes = await waitForDownloads(page, 3);
+  const items = (await readState(page)).queue;
+  await page.locator('[data-tab="task"]').click();
+  assert.equal(await page.locator(".task-overview-item:visible").count(), 3);
+  assert.equal(await page.locator("#task-overview-count").textContent(), "3 项");
+  assert.match(await page.locator("#task-overview-summary").textContent(), /3 项下载中/);
+  await taskAction(page, items[1].id, "open").focus();
+  await page.evaluate((processes) => {
+    processes.forEach(({ processId }, index) => {
+      window.__emit("process.output", {
+        processId,
+        stream: "stdout",
+        text: `meta:视频 ${index + 1}\nprogress:${(index + 1) * 25}%|${index + 1}MiB/s|00:12\n日志 ${index + 1}\n`,
+      });
+    });
+  }, processes);
+  for (let index = 0; index < 3; index++) {
+    const card = taskRow(page, items[index].id);
+    assert.equal(await card.locator(".task-overview-title").textContent(), `视频 ${index + 1}`);
+    assert.equal(
+      await card.locator(".task-overview-status").textContent(),
+      `下载中 · ${(index + 1) * 25}%`,
+    );
+    assert.equal(
+      await card.locator(".task-overview-metrics").textContent(),
+      `${index + 1}MiB/s · 剩余 00:12`,
+    );
+    assert.equal(
+      await card.locator(".task-overview-track span").evaluate((el) => el.style.width),
+      `${(index + 1) * 25}%`,
+    );
+  }
+  assert.equal(
+    await taskAction(page, items[1].id, "open").evaluate((el) => el === document.activeElement),
+    true,
+  );
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#task-title").textContent(), "视频 2");
+  assert.match(await page.locator("#task-log").textContent(), /日志 2/);
+  assert.doesNotMatch(await page.locator("#task-log").textContent(), /日志 [13]/);
+  assert.equal(await page.locator('.task-overview-open[aria-pressed="true"]').count(), 1);
+  assert.equal(await taskAction(page, items[1].id, "open").getAttribute("aria-pressed"), "true");
+  // A state update for another task must preserve the focused card and selection.
+  await completeDownload(page, processes[0].processId, { title: "视频 1" });
+  await waitForStatus(page, items[0].id, "completed");
+  assert.equal(await taskRow(page, items[0].id).getAttribute("data-state"), "completed");
+  assert.equal(
+    await taskAction(page, items[1].id, "open").evaluate((el) => el === document.activeElement),
+    true,
+  );
+  await taskAction(page, items[0].id, "open").click();
+  assert.equal(
+    await page.locator(".history-highlight").getAttribute("data-history-id"),
+    items[0].id,
+  );
+  await page.locator('[data-tab="task"]').click();
+  await taskAction(page, items[1].id, "pause").click();
+  await waitForStatus(page, items[1].id, "paused");
+  assert.equal(await taskRow(page, items[1].id).getAttribute("data-state"), "paused");
+  assert.match(await taskRow(page, items[1].id).textContent(), /已暂停 · 50%/);
+  assert.equal(await taskRow(page, items[2].id).getAttribute("data-state"), "running");
+  await taskAction(page, items[1].id, "resume").click();
+  const resumed = await waitForDownloads(page, 4);
+  assert.equal(resumed[3].args.at(-1), secondUrl);
+  await page.locator("#queue-clear").click();
+  assert.equal(await taskRow(page, items[0].id).count(), 0);
+  assert.equal(await page.locator(".task-overview-item").count(), 2);
+  assert.equal(await page.locator("#task-overview-count").textContent(), "2 项");
+});
+
+for (const [width, colorScheme] of [
+  [340, "light"],
+  [620, "light"],
+  [1280, "light"],
+  [1280, "dark"],
+]) {
+  test(`task overview keeps three downloads accessible at ${width}px in ${colorScheme} mode`, async (t) => {
+    const page = await openPanel(t, width, "", null);
+    await page.emulateMedia({ colorScheme });
+    await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+    await page.locator("#download-button").click();
+    const processes = await waitForDownloads(page, 3);
+    await page.evaluate((processes) => {
+      const titles = [
+        "Blender 与 AI：从想法到三维模型的完整工作流",
+        "AI 辅助建模：镜头、材质与灯光实战",
+        "视频素材与参考管理 · " + "LongVideoTitle".repeat(12),
+      ];
+      processes.forEach(({ processId }, index) => {
+        window.__emit("process.output", {
+          processId,
+          stream: "stdout",
+          text: `meta:${titles[index]}\nprogress:${[25, 62, 81][index]}%|3.2MiB/s|00:30\n`,
+        });
+      });
+    }, processes);
+    await page.locator('[data-tab="task"]').click();
+    assert.equal(await page.locator(".task-overview-item:visible").count(), 3);
+    const dimensions = await page.evaluate(() => ({
+      page: document.documentElement.scrollWidth,
+      list: document.querySelector("#task-overview-list").getBoundingClientRect().toJSON(),
+      cards: [...document.querySelectorAll(".task-overview-item")].map((el) =>
+        el.getBoundingClientRect().toJSON(),
+      ),
+    }));
+    assert.ok(dimensions.page <= width, JSON.stringify(dimensions));
+    for (const card of dimensions.cards) {
+      assert.ok(
+        card.left >= dimensions.list.left && card.right <= dimensions.list.right,
+        JSON.stringify(dimensions),
+      );
+      assert.ok(
+        card.top >= dimensions.list.top && card.bottom <= dimensions.list.bottom,
+        JSON.stringify(dimensions),
+      );
+    }
+    for (const item of (await readState(page)).queue) {
+      await taskAction(page, item.id, "open").click();
+      assert.equal(await page.locator("#task-title").textContent(), item.title);
+    }
+    await page.locator("#task-overview-list").evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: resolve(artifacts, `task-overview-${width}-${colorScheme}.png`),
+      fullPage: true,
+    });
+  });
+}
 
 test("continue all never restarts completed or cancelled downloads", async (t) => {
   const page = await openPanel(t, 1280, "", 3);

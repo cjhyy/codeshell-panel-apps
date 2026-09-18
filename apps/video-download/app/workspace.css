@@ -1271,3 +1271,120 @@ button {
   color: var(--muted);
   background: var(--surface-muted);
 }
+
+.task-overview .section-heading {
+  margin-bottom: 8px;
+}
+.task-overview h2 {
+  font-size: 16px;
+}
+.task-overview-summary {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.task-overview-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 215px), 1fr));
+  gap: 10px;
+  max-height: 450px;
+  overflow-y: auto;
+  padding: 3px;
+}
+.task-overview-item {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 12px;
+}
+.task-overview-item.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.task-overview-open {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.task-overview-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.task-overview-selection {
+  color: var(--muted);
+  font-size: 10px;
+}
+.is-selected .task-overview-selection {
+  color: var(--accent);
+}
+.task-overview-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+  min-height: 39px;
+}
+.task-overview-status {
+  font-size: 11px;
+  color: var(--muted);
+}
+.task-overview-item[data-state="running"] .task-overview-status {
+  color: var(--accent);
+}
+.task-overview-item[data-state="failed"] .task-overview-status {
+  color: var(--danger);
+}
+.task-overview-item[data-state="completed"] .task-overview-status {
+  color: var(--success);
+}
+.task-overview-track {
+  display: block;
+  height: 4px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.task-overview-track > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 0.2s ease;
+}
+.task-overview-track[data-indeterminate="true"] > span {
+  width: 25% !important;
+  opacity: 0.45;
+}
+.task-overview-metrics {
+  font-size: 10px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.task-overview-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+}
+.task-overview-actions .text-button {
+  font-size: 11px;
+}
+@media (max-width: 740px) {
+  .task-overview-list {
+    max-height: none;
+    overflow: visible;
+  }
+}

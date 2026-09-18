@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.19.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.19.1</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -466,12 +466,28 @@
         data-tab-page="task"
         hidden
       >
+        <section class="task-card task-overview" aria-labelledby="task-overview-title">
+          <div class="section-heading">
+            <div>
+              <span class="step-label">所有任务</span>
+              <h2 id="task-overview-title">下载任务</h2>
+            </div>
+            <span id="task-overview-count" class="queue-count">0 项</span>
+          </div>
+          <p id="task-overview-summary" class="task-overview-summary" role="status">
+            添加视频后，每项任务的进度都会显示在这里。
+          </p>
+          <div id="task-overview-list" class="task-overview-list" aria-label="全部下载任务"></div>
+          <p id="task-overview-empty" class="task-guidance">
+            支持同时下载多个视频；点击任务查看详情。
+          </p>
+        </section>
         <section id="task-card" class="task-card" aria-labelledby="task-title">
           <div class="task-topline">
             <div class="task-state">
               <span id="task-state-icon" class="task-state-icon" data-state="idle">↓</span>
               <div>
-                <span id="task-kicker" class="step-label">当前任务</span>
+                <span id="task-kicker" class="step-label">任务详情</span>
                 <h2 id="task-title">还没有下载任务</h2>
               </div>
             </div>

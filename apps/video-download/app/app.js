@@ -102,6 +102,7 @@ const elements = {
   openDirectory: document.querySelector("#open-directory"),
   toggleLog: document.querySelector("#toggle-log"),
   taskLog: document.querySelector("#task-log"),
+  taskOverviewList: document.querySelector("#task-overview-list"),
   historyList: document.querySelector("#history-list"),
   clearHistory: document.querySelector("#clear-history"),
   queueList: document.querySelector("#queue-list"),
@@ -2176,7 +2177,7 @@ function updateTask({ state, title, percent, speed, eta, status }) {
             ? "Ⅱ"
             : "↓";
   elements.taskTitle.textContent = title;
-  elements.taskKicker.textContent = state === "running" ? "正在下载" : "当前任务";
+  elements.taskKicker.textContent = state === "running" ? "任务详情 · 正在下载" : "任务详情";
   document.querySelector("#task-guidance").hidden = state !== "idle";
   const progress = elements.progressBar.parentElement;
   if (Number.isFinite(percent))
@@ -2777,8 +2778,105 @@ function showDownloadHistory(job) {
   }
 }
 
+function updateTaskOverviewItem(job, row) {
+  if (!row) return;
+  row.dataset.state = job.status;
+  const selected = currentJob === job;
+  row.classList.toggle("is-selected", selected);
+  const finished = ["completed", "failed", "cancelled"].includes(job.status);
+  const open = row.querySelector(".task-overview-open");
+  open.setAttribute("aria-pressed", String(selected));
+  open.setAttribute("aria-label", `${finished ? "查看下载记录" : "查看任务详情"}：${job.title}`);
+  row.querySelector(".task-overview-title").textContent = job.title;
+  row.querySelector(".task-overview-title").title = job.title;
+  row.querySelector(".task-overview-status").textContent = queueStatusText(job);
+  row.querySelector(".task-overview-selection").textContent = selected
+    ? "当前详情"
+    : finished
+      ? "查看记录"
+      : "查看详情";
+  const percent = Number.isFinite(job.percent) ? Math.min(100, Math.max(0, job.percent)) : 0;
+  row.querySelector(".task-overview-track span").style.width = `${percent}%`;
+  row.querySelector(".task-overview-track").dataset.indeterminate = String(
+    job.running && !Number.isFinite(job.percent),
+  );
+  row.querySelector(".task-overview-metrics").textContent = job.running
+    ? `${job.display?.speed || "—"} · 剩余 ${job.display?.eta || "—"}`
+    : `${job.configuration.format === "best" ? "最高画质" : job.configuration.format === "audio" ? "MP3" : job.configuration.format + "p"} · ${job.directory.name}`;
+  const primary = row.querySelector(".task-overview-primary");
+  const secondary = row.querySelector(".task-overview-secondary");
+  const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
+  const action =
+    job.running || job.status === "queued"
+      ? "pause"
+      : ["paused", "restored", "interrupted"].includes(job.status)
+        ? "resume"
+        : job.status === "completed"
+          ? "history"
+          : "retry";
+  primary.dataset.taskAction = action;
+  primary.textContent = { pause: "暂停", resume: "继续", history: "查看记录", retry: "重试" }[
+    action
+  ];
+  primary.disabled =
+    action === "history"
+      ? false
+      : Boolean(
+          queueSubmissionPending ||
+          job.finishing ||
+          job.pauseRequested ||
+          job.cancelRequested ||
+          (action === "resume" && (auxiliaryBusy || completionPending || stopping)) ||
+          job.retryPending,
+        );
+  primary.setAttribute("aria-label", `${primary.textContent}：${job.title}`);
+  secondary.hidden = finished;
+  secondary.dataset.taskAction = job.running ? "cancel" : "remove";
+  secondary.textContent = job.running ? "取消" : "移除";
+  secondary.disabled = Boolean(job.finishing || job.pauseRequested || job.cancelRequested);
+  secondary.setAttribute("aria-label", `${secondary.textContent}：${job.title}`);
+}
+
+function renderTaskOverview() {
+  const list = elements.taskOverviewList;
+  const existing = new Map([...list.children].map((row) => [row.dataset.taskId, row]));
+  const activeIds = new Set(downloadQueue.map((job) => job.queueId));
+  for (const [id, row] of existing) if (!activeIds.has(id)) row.remove();
+  downloadQueue.forEach((job, index) => {
+    let row = existing.get(job.queueId);
+    if (!row) {
+      row = document.createElement("article");
+      row.className = "task-overview-item";
+      row.dataset.taskId = job.queueId;
+      // This static skeleton contains no media or user-provided HTML.
+      row.innerHTML = `<button type="button" class="task-overview-open" data-task-action="open">
+        <span class="task-overview-selection"></span><strong class="task-overview-title"></strong>
+        <span class="task-overview-status"></span>
+        <span class="task-overview-track" aria-hidden="true"><span></span></span>
+        <span class="task-overview-metrics"></span>
+      </button><div class="task-overview-actions">
+        <button type="button" class="text-button task-overview-primary"></button>
+        <button type="button" class="text-button task-overview-secondary"></button>
+      </div>`;
+    }
+    // Reuse cards so incoming progress and other task updates preserve keyboard focus.
+    if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
+    updateTaskOverviewItem(job, row);
+  });
+  const count = (status) => downloadQueue.filter((job) => status.includes(job.status)).length;
+  document.querySelector("#task-overview-count").textContent = `${downloadQueue.length} 项`;
+  document.querySelector("#task-overview-summary").textContent = downloadQueue.length
+    ? `${count(["running"])} 项下载中 · ${count(["queued", "restored", "interrupted"])} 项等待 · ${count(["paused"])} 项已暂停 · ${count(["completed", "failed", "cancelled"])} 项已结束`
+    : "添加视频后，每项任务的进度都会显示在这里。";
+  document.querySelector("#task-overview-empty").hidden = downloadQueue.length > 0;
+}
+
 function updateQueueProgress(job = currentJob) {
   if (!job) return;
+  updateTaskOverviewItem(
+    job,
+    [...elements.taskOverviewList.children].find((row) => row.dataset.taskId === job.queueId),
+  );
   const row = [...elements.queueList.children].find((item) => item.dataset.queueId === job.queueId);
   if (!row) return;
   row.querySelector(".queue-status").textContent = queueStatusText(job);
@@ -2789,6 +2887,7 @@ function updateQueueProgress(job = currentJob) {
 }
 
 function updateQueueControls() {
+  renderTaskOverview();
   const waiting = downloadQueue.filter((item) =>
     ["queued", "restored", "interrupted"].includes(item.status),
   ).length;
@@ -5156,32 +5255,39 @@ elements.queueClear.addEventListener("click", () => {
   renderQueue();
   void saveLibrary().catch(reportLibraryError);
 });
-elements.queueList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-queue-action]") || event.target.closest(".queue-item");
+function handleDownloadAction(event) {
+  const button =
+    event.target.closest("[data-task-action], [data-queue-action]") ||
+    event.target.closest(".queue-item");
   if (!button) return;
-  const item = downloadQueue.find((entry) => entry.queueId === button.dataset.queueId);
+  const id = button.dataset.queueId || button.closest("[data-task-id]")?.dataset.taskId;
+  const action = button.dataset.queueAction || button.dataset.taskAction;
+  const item = downloadQueue.find((entry) => entry.queueId === id);
   if (!item) return;
-  if (!button.dataset.queueAction || button.dataset.queueAction === "open") {
+  if (!action || action === "open") {
     if (["completed", "failed", "cancelled"].includes(item.status)) showDownloadHistory(item);
     else selectDownloadTask(item);
   }
-  if (button.dataset.queueAction === "details") selectDownloadTask(item);
-  if (button.dataset.queueAction === "history") showDownloadHistory(item);
-  if (button.dataset.queueAction === "cancel") void cancelCurrentJob(item);
-  if (button.dataset.queueAction === "pause") void pauseDownload(item);
-  if (button.dataset.queueAction === "resume") void restoreQueue([item]);
+  if (action === "details") selectDownloadTask(item);
+  if (action === "history") showDownloadHistory(item);
+  if (action === "cancel") void cancelCurrentJob(item);
+  if (action === "pause") void pauseDownload(item);
+  if (action === "resume") void restoreQueue([item]);
   if (
-    button.dataset.queueAction === "remove" &&
+    action === "remove" &&
     ["queued", "paused", "restored", "interrupted"].includes(item.status)
   ) {
     downloadQueue = downloadQueue.filter((entry) => entry !== item);
     renderQueue();
     void saveLibrary().catch(reportLibraryError);
   }
-  if (button.dataset.queueAction === "retry" && ["failed", "cancelled"].includes(item.status)) {
+  if (action === "retry" && ["failed", "cancelled"].includes(item.status)) {
     void retryQueuedDownload(item);
   }
-});
+}
+elements.queueList.addEventListener("click", handleDownloadAction);
+elements.taskOverviewList.addEventListener("click", handleDownloadAction);
+
 document.querySelector("#queue-concurrency").addEventListener("change", async (event) => {
   const control = event.target;
   const previous = maxConcurrent;

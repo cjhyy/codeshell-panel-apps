@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.19.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.19.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -125,7 +125,8 @@ link form comes before the collapsed environment and version controls.
 
 The interface is split into four compact tabs: **Download** contains setup and
 download options, **AI Find Videos** discovers real platform results, **Task**
-contains live progress, logs, and error analysis, and **History** contains download
+shows every queued task with its own live progress, speed, status and pause/continue controls.
+Selecting a task opens its detailed progress, logs and error analysis, while **History** contains download
 records. Download failures open the Task tab; information-query failures stay
 beside their links. Small badges keep dependency, progress, and history state
 visible without making the page long. Search offers example prompts, visible
