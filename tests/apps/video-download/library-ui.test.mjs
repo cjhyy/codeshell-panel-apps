@@ -781,67 +781,149 @@ test("mixed-site batch inspection works when no Cookie account is selected", asy
   assert.equal(await page.locator("#download-list-items article").count(), 2);
 });
 
-test("batch links inspect each video and preserve distinct titles when queued", async (t) => {
+for (const playlist of [false, true]) {
+  test(`batch links inspect each video and preserve distinct titles when queued (playlist=${playlist})`, async (t) => {
+    const page = await openPanel(t);
+    if (playlist) await page.locator("#playlist-toggle").locator("..").click();
+    await page.evaluate(
+      ({ firstUrl, secondUrl }) => {
+        window.__inspectionPayloadByUrl[firstUrl] = {
+          id: "first",
+          title: "First video",
+          webpage_url: firstUrl,
+          duration: 90,
+          formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
+        };
+        window.__inspectionPayloadByUrl[secondUrl] = {
+          id: "second",
+          title: "Second video",
+          webpage_url: secondUrl,
+          duration: 120,
+          formats: [{ height: 2160, vcodec: "avc1", acodec: "none" }],
+        };
+      },
+      { firstUrl, secondUrl },
+    );
+    await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+    assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
+    assert.equal(await page.locator("#download-list-items article").count(), 2);
+    assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+    assert.equal(await page.locator("#inspect-button").textContent(), "获取全部视频信息");
+    assert.match(await page.locator("#inspect-status").textContent(), /逐条核对/);
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() =>
+      document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"),
+    );
+    const inspections = await page.evaluate(() =>
+      window.__calls.filter(
+        (call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+      ),
+    );
+    assert.deepEqual(
+      inspections.map((entry) => entry.args.args.at(-1)),
+      [firstUrl, secondUrl],
+    );
+    assert.ok(
+      inspections.every((entry) =>
+        entry.args.args.includes(playlist ? "--yes-playlist" : "--no-playlist"),
+      ),
+    );
+    assert.match(await page.locator("#inspect-status").textContent(), /已获取 2\/2 条/);
+    assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
+    assert.equal(await page.locator("#download-list-items article").count(), 2);
+    assert.deepEqual(await page.locator("#download-list-items article strong").allTextContents(), [
+      "First video",
+      "Second video",
+    ]);
+    assert.match(await page.locator("#quality-help").textContent(), /分别使用实际可用的画质/);
+    assert.equal(await page.locator('#quality-select option[value="2160"]').count(), 1);
+    assert.equal((await readState(page)).queue.length, 0);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 2);
+    const queue = (await readState(page)).queue;
+    assert.deepEqual(
+      queue.map((item) => item.url),
+      [firstUrl, secondUrl],
+    );
+    assert.deepEqual(
+      queue.map((item) => item.title),
+      ["First video", "Second video"],
+    );
+  });
+}
+
+test("playlist mode inspects a mixed batch and retries only the failed link", async (t) => {
   const page = await openPanel(t);
+  const playlistUrl = "https://www.youtube.com/playlist?list=fixture-playlist";
   await page.evaluate(
-    ({ firstUrl, secondUrl }) => {
-      window.__inspectionPayloadByUrl[firstUrl] = {
-        id: "first",
-        title: "First video",
-        webpage_url: firstUrl,
-        duration: 90,
-        formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
+    ({ playlistUrl, secondUrl }) => {
+      window.__inspectionPayloadByUrl[playlistUrl] = {
+        _type: "playlist",
+        title: "A complete playlist",
+        playlist_count: 3,
+        entries: [1, 2, 3].map((index) => ({ id: `episode-${index}`, title: `Episode ${index}` })),
       };
-      window.__inspectionPayloadByUrl[secondUrl] = {
-        id: "second",
-        title: "Second video",
-        webpage_url: secondUrl,
-        duration: 120,
-        formats: [{ height: 2160, vcodec: "avc1", acodec: "none" }],
-      };
+      window.__inspectionFailureByUrl[secondUrl] = "connection reset by peer";
     },
-    { firstUrl, secondUrl },
+    { playlistUrl, secondUrl },
   );
-  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
-  assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
-  assert.equal(await page.locator("#download-list-items article").count(), 2);
-  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
-  assert.equal(await page.locator("#inspect-button").textContent(), "获取全部视频信息");
-  assert.match(await page.locator("#inspect-status").textContent(), /逐条核对/);
+  await page.locator("#playlist-toggle").locator("..").click();
+  await page.locator("#url-input").fill(`${playlistUrl}\n${secondUrl}`);
   await page.locator("#inspect-button").click();
   await page.waitForFunction(() =>
-    document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"),
+    document.querySelector("#inspect-status").textContent.includes("已获取 1/2 条；1 条失败"),
   );
-  const inspections = await page.evaluate(() =>
-    window.__calls.filter(
-      (call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+  const rows = page.locator("#download-list-items article");
+  assert.match(await rows.first().textContent(), /A complete playlist.*播放列表.*3 个视频/);
+  assert.match(await rows.last().textContent(), /视频来源连接中断或超时.*获取失败/);
+  await page.evaluate((url) => {
+    delete window.__inspectionFailureByUrl[url];
+  }, secondUrl);
+  await page.locator("#retry-inspect").click();
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").textContent === "已获取 2/2 条视频信息。",
+  );
+  assert.equal(await page.locator("#playlist-toggle").isChecked(), true);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__calls
+        .filter(
+          (call) =>
+            call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+        )
+        .map((call) => call.args.args.at(-1)),
     ),
+    [playlistUrl, secondUrl, secondUrl],
   );
-  assert.deepEqual(
-    inspections.map((entry) => entry.args.args.at(-1)),
-    [firstUrl, secondUrl],
+  assert.equal((await downloads(page)).length, 0);
+});
+
+test("large playlist batches explain the preview limit and retain every download link", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#playlist-toggle").locator("..").click();
+  await page
+    .locator("#url-input")
+    .fill(
+      Array.from(
+        { length: 11 },
+        (_, index) => `https://www.youtube.com/playlist?list=fixture-${index}`,
+      ).join("\n"),
+    );
+  assert.equal(await page.locator("#inspect-button").textContent(), "获取前 10 条视频信息");
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("已获取 10/11 条视频信息"),
   );
-  assert.match(await page.locator("#inspect-status").textContent(), /已获取 2\/2 条/);
-  assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
-  assert.equal(await page.locator("#download-list-items article").count(), 2);
-  assert.deepEqual(await page.locator("#download-list-items article strong").allTextContents(), [
-    "First video",
-    "Second video",
-  ]);
-  assert.match(await page.locator("#quality-help").textContent(), /分别使用实际可用的画质/);
-  assert.equal(await page.locator('#quality-select option[value="2160"]').count(), 1);
-  assert.equal((await readState(page)).queue.length, 0);
-  await page.locator("#download-button").click();
-  await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 2);
-  const queue = (await readState(page)).queue;
-  assert.deepEqual(
-    queue.map((item) => item.url),
-    [firstUrl, secondUrl],
+  assert.match(
+    await page.locator("#inspect-status").textContent(),
+    /最多预览 10 条.*其余 1 条将在下载时获取信息/,
   );
-  assert.deepEqual(
-    queue.map((item) => item.title),
-    ["First video", "Second video"],
+  assert.equal(await page.locator("#download-list-items article").count(), 11);
+  assert.equal(
+    await page.locator('#download-list-items article[data-state="verified"]').count(),
+    10,
   );
+  assert.equal((await downloads(page)).length, 0);
 });
 
 test("reloading restores pending work paused and only an explicit restore action can start it", async (t) => {

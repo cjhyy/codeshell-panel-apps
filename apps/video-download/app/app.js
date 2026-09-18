@@ -1601,16 +1601,19 @@ function renderDownloadList() {
       const copy = document.createElement("div");
       copy.className = "download-list-copy";
       const title = document.createElement("strong");
-      const preview = inspectedBatch.get(sanitizeMediaUrl(new URL(url), elements.playlist.checked));
+      const inspectionUrl = sanitizeMediaUrl(new URL(url), elements.playlist.checked);
+      const preview = inspectedBatch.get(inspectionUrl);
       title.textContent = preview?.title || url;
       title.title = url;
       const detail = document.createElement("small");
-      const failure = inspectionFailures.get(url);
+      const failure = inspectionFailures.get(inspectionUrl);
       row.dataset.state = preview ? "verified" : failure ? "failed" : "pending";
       detail.textContent = preview
         ? [
             preview.uploader,
-            `时长 ${formatDuration(preview.duration)}`,
+            preview.isPlaylist
+              ? `播放列表${preview.entryCount ? ` · ${preview.entryCount} 个视频` : ""}`
+              : `时长 ${formatDuration(preview.duration)}`,
             preview.maxHeight ? `${preview.maxHeight}p` : "",
             "已获取信息",
           ]
@@ -2124,11 +2127,9 @@ function updateActionAvailability() {
   elements.inspectButton.textContent = inspectionJob?.running
     ? "正在获取…"
     : multipleUrls
-      ? elements.playlist.checked
-        ? "获取首条播放列表信息"
-        : linkCount > 10
-          ? "获取前 10 条视频信息"
-          : "获取全部视频信息"
+      ? linkCount > 10
+        ? "获取前 10 条视频信息"
+        : "获取全部视频信息"
       : "获取视频信息";
   elements.inspectButton.title = elements.inspectButton.disabled
     ? document.querySelector("#download-readiness").textContent
@@ -2579,7 +2580,7 @@ function finishInspection(succeeded, error = "", exitCode = null) {
     elements.inspectStatus.dataset.state = "ready";
     elements.inspectStatus.textContent =
       total > 1
-        ? `已获取 ${count}/${total} 条视频信息${total > count ? `；其余 ${total - count} 条未预览` : ""}。`
+        ? `已获取 ${count}/${total} 条视频信息${total > count ? `；本次最多预览 10 条，其余 ${total - count} 条将在下载时获取信息` : ""}。`
         : "信息已获取；链接变化后需要重新获取";
   }
   renderDownloadList();
@@ -2665,9 +2666,9 @@ async function inspectVideo({ retryFailed = false } = {}) {
     inspectionFailures = new Map();
   }
   const allUrls = parseVideoLinks(elements.urlInput.value).urls;
-  let urls = elements.playlist.checked
-    ? [url]
-    : allUrls.slice(0, 10).map((value) => sanitizeMediaUrl(new URL(value), false));
+  let urls = allUrls
+    .slice(0, 10)
+    .map((value) => sanitizeMediaUrl(new URL(value), elements.playlist.checked));
   if (retryFailed) urls = urls.filter((value) => failedUrls.has(value));
   if (!urls.length) return;
   elements.videoInfo.hidden = !inspectedVideo || (allUrls.length > 1 && !inspectedVideo.isPlaylist);
