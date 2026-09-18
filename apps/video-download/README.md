@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.16 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.16.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -153,14 +153,17 @@ Inspection and downloading themselves never need a Session or an LLM.
 Describe what you want and choose YouTube, Bilibili, or both. Choose a Provider
 and text model from CodeShell's configured connections, including external custom
 Providers. A bounded tool-free
-model task produces search terms. Local yt-dlp retrieves actual platform candidates
-(`ytsearch` / `bilisearch`); Bilibili results without titles receive bounded metadata
-lookups. A second tool-free task selects only existing candidate IDs. The panel
-always takes title, author and canonical link from the platform result, never from
-model-generated URLs. If ranking fails, the real candidates remain selectable.
-If a platform fails, its error is shown alongside available results; connection
-failures do not become fabricated results. Searches use public metadata and do not
-send a Cookie account, private conversation or project files to the model.
+model task produces search terms. A bounded local search helper reads YouTube's
+public search page directly, with `yt-dlp` search as a backup. Bilibili uses
+`yt-dlp` search first; if its connection or metadata lookup fails, the helper
+looks for canonical video links in Bing's public search index. The index search
+tries a shorter query when the planned terms return no matches. Indexed links
+are labeled as such: their current platform availability is **not verified**.
+The second tool-free model task selects only returned candidate IDs and receives
+each candidate's evidence level. The panel never accepts model-generated URLs.
+If ranking fails, retrieved candidates remain selectable. Queries sent to the
+fallback index contain only the video's search terms, never Cookie values,
+private conversation or project files.
 
 Results open their source only when clicked, and enter the download queue only
 when explicitly selected. Result downloads use the current quality/subtitle options,

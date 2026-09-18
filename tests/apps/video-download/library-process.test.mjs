@@ -195,6 +195,18 @@ test("file checks reuse only the reviewed entry handles and parse the native JSO
   );
 });
 
+test("video search runs only the reviewed native entry with bounded query input", async () => {
+  const response = { candidates: [{ title: "Blender AI", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }], source: "platform-search" };
+  const app = fixture({
+    "process.get": () => receipt([event(1, "stdout", JSON.stringify(response))]),
+  });
+  assert.deepEqual(await app.process.search({ handle: "dir" }, "youtube", "Blender AI", 8), response);
+  assert.equal(app.calls.find(({ method }) => method === "process.resolveEntry").params.name, "video-search");
+  assert.equal(app.calls.find(({ method }) => method === "process.spawn").params.entryHandle, "entry-handle");
+  assert.equal(app.calls.find(({ method }) => method === "process.write").params.text,
+    JSON.stringify({ platform: "youtube", query: "Blender AI", limit: 8 }));
+});
+
 test("a failed native entry lookup can be retried instead of caching its rejection", async () => {
   let finds = 0;
   const app = fixture({

@@ -2815,88 +2815,97 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
   const candidates = [],
     warnings = [];
   const count = Math.max(1, Math.min(8, Number(limit) || 8));
-  for (const platform of platforms) {
-    if (signal?.aborted) throw new Error("已取消");
-    if (!["youtube", "bilibili"].includes(platform)) continue;
-    try {
-      const prefix = platform === "youtube" ? "ytsearch" : "bilisearch";
-      const args = [
-        "--ignore-config",
-        "--no-cache-dir",
-        "--skip-download",
-        "--flat-playlist",
-        "--dump-single-json",
-        "--socket-timeout",
-        "15",
-        "--retries",
-        "1",
-        "--extractor-retries",
-        "1",
-        "--",
-        `${prefix}${count}:${String(query).slice(0, 300)}`,
-      ];
-      const result = await auxiliary.run({
-        executableHandle: runtime.ytDlp.handle,
-        directoryHandle: runtime.directory.handle,
-        args,
-        signal,
-      });
-      if (result.code !== 0)
-        throw new Error(friendlyYtDlpError(result.stderr, "平台检索", result.code));
-      const raw = JSON.parse(result.stdout);
-      for (const row of (Array.isArray(raw.entries) ? raw.entries : []).slice(0, count)) {
-        if (!row) continue;
-        let metadata = row;
-        const url =
-          row.webpage_url ||
-          row.url ||
-          (platform === "youtube" && row.id ? `https://www.youtube.com/watch?v=${row.id}` : "");
-        if (normalizeVideoSearchUrl(url)?.platform !== platform) continue;
-        if (!row.title && platform === "bilibili") {
-          // Bilibili's flat search only returns IDs/URLs. Fetch real metadata for
-          // these bounded results before handing any title to the AI selector.
+  async function localSearch(platform) {
+    const prefix = platform === "youtube" ? "ytsearch" : "bilisearch";
+    const result = await auxiliary.run({
+      executableHandle: runtime.ytDlp.handle,
+      directoryHandle: runtime.directory.handle,
+      args: [
+        "--ignore-config", "--no-cache-dir", "--skip-download", "--flat-playlist",
+        "--dump-single-json", "--socket-timeout", "10", "--retries", "0",
+        "--extractor-retries", "0", "--", `${prefix}${count}:${String(query).slice(0, 300)}`,
+      ],
+      signal,
+      timeout: 25_000,
+    });
+    if (result.code !== 0)
+      throw new Error(friendlyYtDlpError(result.stderr, "平台检索", result.code));
+    const raw = JSON.parse(result.stdout);
+    const rows = Array.isArray(raw.entries) ? raw.entries.slice(0, count) : [];
+    async function resolveRow(row) {
+      if (signal?.aborted) throw new Error("已取消");
+      if (!row) return null;
+      let metadata = row;
+      const url =
+        row.webpage_url ||
+        row.url ||
+        (platform === "youtube" && row.id ? `https://www.youtube.com/watch?v=${row.id}` : "");
+      if (normalizeVideoSearchUrl(url)?.platform !== platform) return null;
+      if (!row.title && platform === "bilibili") {
+        try {
           const detail = await auxiliary.run({
             executableHandle: runtime.ytDlp.handle,
             directoryHandle: runtime.directory.handle,
             args: [
-              "--ignore-config",
-              "--no-cache-dir",
-              "--skip-download",
-              "--no-playlist",
-              "--dump-single-json",
-              "--socket-timeout",
-              "12",
-              "--retries",
-              "0",
-              "--extractor-retries",
-              "0",
-              "--",
-              url,
+              "--ignore-config", "--no-cache-dir", "--skip-download", "--no-playlist",
+              "--dump-single-json", "--socket-timeout", "8", "--retries", "0",
+              "--extractor-retries", "0", "--", url,
             ],
             signal,
-            timeout: 45_000,
+            timeout: 12_000,
           });
-          if (detail.code !== 0) {
-            warnings.push("B站部分视频暂时无法读取信息。");
-            continue;
-          }
+          if (detail.code !== 0) return null;
           metadata = JSON.parse(detail.stdout);
+        } catch (error) {
+          if (signal?.aborted) throw new Error("已取消");
+          return null;
         }
-        if (metadata.title)
-          candidates.push({
-            title: metadata.title,
-            url,
-            platform,
-            author: metadata.uploader || metadata.channel || "",
-            duration: metadata.duration,
-          });
       }
-    } catch (error) {
-      if (signal?.aborted) throw new Error("已取消");
-      warnings.push(
-        `${platform === "youtube" ? "YouTube" : "B站"}：${error.message || "检索暂不可用"}`,
-      );
+      return metadata.title
+        ? {
+          title: metadata.title,
+          url,
+          platform,
+          author: metadata.uploader || metadata.channel || "",
+          duration: metadata.duration,
+          evidence: "platform-search",
+        }
+        : null;
     }
+    const found = [];
+    for (let index = 0; index < rows.length; index += 2) {
+      const batch = await Promise.all(rows.slice(index, index + 2).map(resolveRow));
+      found.push(...batch.filter(Boolean));
+    }
+    return found;
+  }
+  async function alternativeSearch(platform) {
+    const result = await auxiliary.search(runtime.directory, platform, String(query).slice(0, 300), count, signal);
+    if (result.candidates.length && result.source === "search-index")
+      warnings.push(
+        `${platform === "youtube" ? "YouTube" : "B站"}直连暂不可用；以下链接来自公开搜索索引，页面是否仍可访问请打开原始页面确认。`,
+      );
+    return result.candidates;
+  }
+  for (const platform of platforms) {
+    if (signal?.aborted) throw new Error("已取消");
+    if (!["youtube", "bilibili"].includes(platform)) continue;
+    const errors = [];
+    const attempts = platform === "youtube" ? [alternativeSearch, localSearch] : [localSearch, alternativeSearch];
+    let found = [];
+    for (const attempt of attempts) {
+      if (signal?.aborted) throw new Error("已取消");
+      try {
+        found = await attempt(platform);
+        if (found.length) break;
+      } catch (error) {
+        if (signal?.aborted) throw new Error("已取消");
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    candidates.push(...found);
+    if (!found.length && errors.length)
+      warnings.push(`${platform === "youtube" ? "YouTube" : "B站"}：${errors.join("；")}`);
   }
   return { candidates, warnings: [...new Set(warnings)] };
 }

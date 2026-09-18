@@ -13,6 +13,11 @@ export function cleanSearchRecord(value, normalizeCandidates) {
   const reasons = new Map(
     (Array.isArray(value.candidates) ? value.candidates : []).map((item) => [item?.url, bounded(item?.reason, 400)]),
   );
+  const indexed = new Set(
+    (Array.isArray(value.candidates) ? value.candidates : [])
+      .filter((item) => ["search-index", "historical-index"].includes(item?.evidence))
+      .map((item) => item.url),
+  );
   return {
     id: bounded(value.id, 100) || crypto.randomUUID(),
     query,
@@ -22,7 +27,7 @@ export function cleanSearchRecord(value, normalizeCandidates) {
     createdAt: Number.isFinite(value.createdAt) && value.createdAt > 0 ? value.createdAt : Date.now(),
     status: ["ready", "empty", "error"].includes(value.status) ? value.status : "ready",
     summary: bounded(value.summary, 500),
-    candidates: safe.map((candidate) => ({ ...candidate, reason: reasons.get(candidate.url) || candidate.reason, evidence: "historical" })),
+    candidates: safe.map((candidate) => ({ ...candidate, reason: reasons.get(candidate.url) || candidate.reason, evidence: indexed.has(candidate.url) ? "historical-index" : "historical" })),
   };
 }
 

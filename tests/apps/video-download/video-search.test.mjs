@@ -126,6 +126,19 @@ test("saved searches remain project-scoped and discard invented or unsafe video 
   assert.equal(readSearchArchive(snapshot, "/project/a", normalizeVideoSearchCandidates).modelId, "custom-model");
 });
 
+test("indexed results stay visibly unverified after ranking and archive reload", () => {
+  const [candidate] = normalizeVideoSearchCandidates([{ ...candidates[1], evidence: "search-index" }]);
+  assert.equal(candidate.evidence, "search-index");
+  const ranked = rankVideoSearchCandidates(JSON.stringify({ selected: [{ id: candidate.id }] }), [candidate]);
+  assert.equal(ranked.candidates[0].evidence, "search-index");
+  const archive = writeSearchArchive([{
+    id: "index-one", query: "Blender AI", platforms: ["bilibili"],
+    candidates: ranked.candidates,
+  }], "model", "/project/a", normalizeVideoSearchCandidates);
+  assert.equal(archive.records[0].candidates[0].evidence, "historical-index");
+  assert.equal(readSearchArchive(archive, "/project/a", normalizeVideoSearchCandidates).records[0].candidates[0].evidence, "historical-index");
+});
+
 let browser;
 let server;
 let baseUrl;
@@ -265,7 +278,9 @@ async function openSearch(t, options = {}) {
           return {
             candidates: candidates.filter((candidate) =>
               request.platforms.includes(candidate.platform),
-            ),
+            ).map((candidate) => options.indexed && candidate.platform === "bilibili"
+              ? { ...candidate, evidence: "search-index" }
+              : candidate),
             warnings: [],
           };
         },
@@ -323,6 +338,16 @@ test("two AI stages use zero tools and result actions preserve real platform evi
     await page.locator("[data-search-status]").textContent(),
     /1 条已在队列中.*1 条已存在文件/,
   );
+});
+
+test("indexed links are labeled unverified in the live search and history", async (t) => {
+  const page = await openSearch(t, { indexed: true });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  assert.match(await page.locator(".video-search-result").first().textContent(), /公开搜索索引.*页面可访问性待确认/);
+  await page.waitForFunction(() => window.archiveSnapshot?.records?.length);
+  const archive = await page.evaluate(() => window.archiveSnapshot);
+  assert.equal(archive.records[0].candidates.find((item) => item.platform === "bilibili").evidence, "historical-index");
 });
 
 test("failed platform searches do not display model memory as results", async (t) => {

@@ -3,8 +3,8 @@
 export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = () => {} } = {}) {
   const ids = new Set();
   let active = 0,
-    pendingStarts = 0,
-    entryPromise;
+    pendingStarts = 0;
+  const entryPromises = new Map();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   function changed(delta) {
     active += delta;
@@ -99,23 +99,23 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       changed(-1);
     }
   }
-  async function entry() {
-    if (!entryPromise)
-      entryPromise = (async () => {
+  async function entry(name) {
+    if (!entryPromises.has(name))
+      entryPromises.set(name, (async () => {
         const executable = await panel.call("process.find", { name: "node" });
         if (!executable?.available || !executable.handle)
           throw new Error("无法使用文件检查工具，请更新 CodeShell 后重试");
         const result = await panel.call("process.resolveEntry", {
-          name: "download-library",
+          name,
           executableHandle: executable.handle,
         });
         if (!result?.handle) throw new Error("无法校验下载记录工具，请更新面板");
         return { executableHandle: executable.handle, entryHandle: result.handle };
       })().catch((error) => {
-        entryPromise = null;
+        entryPromises.delete(name);
         throw error;
-      });
-    return entryPromise;
+      }));
+    return entryPromises.get(name);
   }
   return {
     run,
@@ -126,7 +126,7 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
       return pendingStarts > 0 || ids.has(payload?.processId);
     },
     async files(directory, action, files, signal) {
-      const handles = await entry();
+      const handles = await entry("download-library");
       const result = await run({
         ...handles,
         directoryHandle: directory.handle,
@@ -163,6 +163,27 @@ export function createLibraryProcess(panel, { onBusy = () => {}, beforeStart = (
         }
       }
       return response.files;
+    },
+    async search(directory, platform, query, limit, signal) {
+      const handles = await entry("video-search");
+      const result = await run({
+        ...handles,
+        directoryHandle: directory.handle,
+        input: { platform, query, limit },
+        signal,
+        timeout: 38_000,
+      });
+      let response;
+      try {
+        response = JSON.parse(result.stdout);
+      } catch {
+        throw new Error("备用检索未返回有效结果");
+      }
+      if (result.code !== 0 || response?.error)
+        throw new Error(response?.error || "备用检索失败");
+      if (!Array.isArray(response?.candidates) || !["platform-search", "search-index"].includes(response.source))
+        throw new Error("备用检索结果不完整");
+      return response;
     },
   };
 }

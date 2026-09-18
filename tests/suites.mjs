@@ -35,6 +35,7 @@ export const suites = [
           "library-process",
           "queue-ui",
           "library-ui",
+          "search-source",
           "video-search",
         ].map((name) => `tests/apps/video-download/${name}.test.mjs`),
       ],
