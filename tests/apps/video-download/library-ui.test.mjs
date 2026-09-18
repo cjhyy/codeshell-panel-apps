@@ -308,11 +308,15 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
           });
           const files = request.files.map(fileResult);
           if (request.action !== "check" && files.every(({ status }) => status === "present")) {
-            window.__fileActions.push({
-              action: request.action,
-              files,
-              directoryHandle: record.args.directoryHandle,
-            });
+            if (window.__failFileOpen) files[0].error = "unable-to-open-file";
+            else {
+              if (request.action === "play") files[0].player = "Google Chrome";
+              window.__fileActions.push({
+                action: request.action,
+                files,
+                directoryHandle: record.args.directoryHandle,
+              });
+            }
           }
           finish(args.processId, JSON.stringify({ files }) + "\n");
           return { ended: true };
@@ -1003,6 +1007,84 @@ test("historical media and subtitles have separate file actions and missing file
   assert.equal(await page.locator(".history-item").count(), 1);
 });
 
+test("play and reveal still work during a background file check", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.locator('[data-tab="history"]').click();
+  await page.evaluate(() => {
+    window.__holdNextNative = true;
+  });
+  await page.locator("#history-check").click();
+  await page.waitForFunction(() => Object.keys(window.__heldNativeSpawns).length === 1);
+  for (const action of ["play", "reveal"]) {
+    await page.locator(`[data-history-shortcut="${action}"]`).click();
+    await page.waitForFunction(
+      (action) => window.__fileActions.some((item) => item.action === action),
+      action,
+    );
+    await page.waitForFunction(() =>
+      document.querySelector("#history-action-status").textContent.startsWith("已"),
+    );
+  }
+  await page.evaluate(() => {
+    for (const release of Object.values(window.__heldNativeSpawns)) release();
+  });
+  await page.waitForFunction(() => !document.querySelector("#history-check").disabled);
+  assert.equal(await page.locator(".history-error").count(), 0);
+});
+
+test("failed playback names the opening problem and a successful retry clears it", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.locator('[data-tab="history"]').click();
+  await page.evaluate(() => {
+    window.__failFileOpen = true;
+  });
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() =>
+    document.querySelector(".history-error")?.textContent.includes("播放器未能打开"),
+  );
+  assert.equal(await page.locator('[data-history-shortcut="retry"]').count(), 0);
+  await page.evaluate(() => {
+    window.__failFileOpen = false;
+  });
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() => !document.querySelector(".history-error"));
+  assert.match(await page.locator("#history-action-status").textContent(), /Google Chrome/);
+});
+
+test("a restored task opens its folder using a fresh directory grant", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await page.reload();
+  await ready(page);
+  await page.locator('[data-tab="task"]').click();
+  await page.locator('[data-task-action="open"]').first().click();
+  await page.locator("#open-directory").click();
+  await page.waitForFunction(() =>
+    window.__calls.some((call) => call.method === "filesystem.openDirectory"),
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__calls
+        .filter((call) => call.method === "filesystem.openDirectory")
+        .map((call) => call.args),
+    ),
+    [{ handle: "directory-project" }],
+  );
+  assert.equal(
+    await page.evaluate(() =>
+      window.__calls.some((call) => call.method === "filesystem.pickDirectory"),
+    ),
+    false,
+  );
+});
+
 test("a storage failure rolls back newly added work and never starts its download", async (t) => {
   const page = await openPanel(t);
   await page.evaluate(() => {
@@ -1450,9 +1532,9 @@ for (const [width, colorScheme] of [
       fullPage: true,
     });
     if (width === 1280 && colorScheme === "light") {
-      await first.locator('[data-history-shortcut="open"]').click();
+      await first.locator('[data-history-shortcut="play"]').click();
       await page.waitForFunction(() =>
-        window.__fileActions.some((action) => action.action === "open"),
+        window.__fileActions.some((action) => action.action === "play"),
       );
       await first.locator('[data-history-shortcut="reveal"]').click();
       await page.waitForFunction(() =>

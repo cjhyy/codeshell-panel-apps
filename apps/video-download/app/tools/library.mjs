@@ -48,7 +48,7 @@ export function parseLibraryRequest(value) {
   if (!object(value) || Object.keys(value).some((key) => !["action", "files"].includes(key))) {
     throw new Error("invalid-request");
   }
-  if (!["check", "open", "reveal"].includes(value.action) || !Array.isArray(value.files)) {
+  if (!["check", "play", "open", "reveal"].includes(value.action) || !Array.isArray(value.files)) {
     throw new Error("invalid-request");
   }
   if (
@@ -233,15 +233,51 @@ export function openCommand(
   throw new Error("unsupported-platform-opener");
 }
 
-async function launch(command, args, spawnProcess) {
+async function launch(command, args, spawnProcess, platform) {
   await new Promise((resolveLaunch, rejectLaunch) => {
     const child = spawnProcess(command, args, { shell: false, stdio: "ignore", windowsHide: true });
     child.once("error", rejectLaunch);
-    child.once("spawn", () => {
-      child.unref();
-      resolveLaunch();
+    // macOS open exits once Launch Services accepts the request. Other platform
+    // openers may stay alive for the entire application session.
+    if (platform !== "darwin")
+      child.once("spawn", () => {
+        child.unref();
+        resolveLaunch();
+      });
+    child.once("close", (code) => {
+      if (code === 0) resolveLaunch();
+      else rejectLaunch(new Error("unable-to-open-file"));
     });
   });
+}
+
+async function playbackCommand(file, { fs, platform, windowsRoot }) {
+  const fallback = {
+    ...openCommand("open", file, { platform, windowsRoot }),
+    player: "系统播放器",
+  };
+  if (platform !== "darwin") return fallback;
+  // Downloaded MP4s can contain VP9/Opus rather than QuickTime-compatible media.
+  // Prefer an existing compatible app; never install apps or change associations.
+  const players = [
+    ["IINA", "/Applications/IINA.app"],
+    ["VLC", "/Applications/VLC.app"],
+  ];
+  if (/\.(mp4|m4v|webm)$/i.test(file))
+    players.push(
+      ["Google Chrome", "/Applications/Google Chrome.app"],
+      ["Microsoft Edge", "/Applications/Microsoft Edge.app"],
+    );
+  for (const [player, app] of players) {
+    if (
+      await fs.stat(app).then(
+        (metadata) => metadata.isDirectory(),
+        () => false,
+      )
+    )
+      return { command: "/usr/bin/open", args: ["-a", app, "--", file], player };
+  }
+  return fallback;
 }
 
 export async function handleLibraryRequest(
@@ -271,13 +307,15 @@ export async function handleLibraryRequest(
     const checked = await inspectFile(root, file, fs, resolve(cwd));
     if (request.action !== "check" && checked.result.status === "present") {
       try {
-        const { command, args } = openCommand(request.action, checked.resolved, {
-          platform,
-          windowsRoot,
-        });
-        await launch(command, args, spawnProcess);
+        const { command, args, player } =
+          request.action === "play"
+            ? await playbackCommand(checked.resolved, { fs, platform, windowsRoot })
+            : openCommand(request.action, checked.resolved, { platform, windowsRoot });
+        await launch(command, args, spawnProcess, platform);
+        if (player) checked.result.player = player;
       } catch {
-        checked.result = unavailable(file.path, "unable-to-open-file");
+        // Opening failure does not mean that a verified download disappeared.
+        checked.result.error = "unable-to-open-file";
       }
     }
     files.push(checked.result);

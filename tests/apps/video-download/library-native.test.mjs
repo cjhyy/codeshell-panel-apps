@@ -37,12 +37,13 @@ function mockSpawn(calls, failure = false) {
     calls.push({ command, args, options });
     const child = new EventEmitter();
     child.unref = () => {};
-    queueMicrotask(() =>
-      child.emit(
-        failure ? "error" : "spawn",
-        failure ? new Error("private system error") : undefined,
-      ),
-    );
+    queueMicrotask(() => {
+      if (failure) child.emit("error", new Error("private system error"));
+      else {
+        child.emit("spawn");
+        child.emit("close", 0);
+      }
+    });
     return child;
   };
 }
@@ -228,7 +229,7 @@ test("check never opens files and open/reveal refuse missing, empty, changed and
   const calls = [];
   const options = { cwd, platform: "darwin", spawnProcess: mockSpawn(calls) };
   await handleLibraryRequest({ action: "check", files: [{ path: "video.mp4" }] }, options);
-  for (const action of ["open", "reveal"]) {
+  for (const action of ["play", "open", "reveal"]) {
     for (const file of [
       { path: "missing.mp4" },
       { path: "empty.mp4" },
@@ -249,9 +250,76 @@ test("open failures produce only a bounded public error", async (t) => {
     { action: "reveal", files: [{ path: "video.mp4" }] },
     { cwd, platform: "darwin", spawnProcess: mockSpawn([], true) },
   );
-  assert.deepEqual(result, {
-    files: [{ path: "video.mp4", status: "unavailable", error: "unable-to-open-file" }],
-  });
+  assert.equal(result.files[0].status, "present");
+  assert.equal(result.files[0].error, "unable-to-open-file");
+  assert.equal(JSON.stringify(result).includes("private system error"), false);
+});
+
+test("an opener must finish successfully; spawning alone cannot report success", async (t) => {
+  const { cwd } = await fixture(t);
+  await fs.writeFile(join(cwd, "video.mp4"), "media");
+  for (const code of [0, 1, null]) {
+    let child, started;
+    const spawned = new Promise((resolve) => {
+      started = resolve;
+    });
+    let settled = false;
+    const request = handleLibraryRequest(
+      { action: "reveal", files: [{ path: "video.mp4" }] },
+      {
+        cwd,
+        platform: "darwin",
+        spawnProcess() {
+          child = new EventEmitter();
+          queueMicrotask(() => {
+            child.emit("spawn");
+            started();
+          });
+          return child;
+        },
+      },
+    ).then((result) => {
+      settled = true;
+      return result;
+    });
+    await spawned;
+    assert.equal(settled, false);
+    child.emit("close", code);
+    const result = await request;
+    assert.equal(result.files[0].status, "present");
+    assert.equal(result.files[0].error, code === 0 ? undefined : "unable-to-open-file");
+  }
+});
+
+test("macOS playback uses existing compatible players and keeps system open separate", async (t) => {
+  const { cwd } = await fixture(t);
+  const path = join(cwd, "download.mp4");
+  await fs.writeFile(path, "media");
+  for (const installed of [[], ["Google Chrome"], ["VLC", "Google Chrome"], ["IINA", "VLC"]]) {
+    const calls = [];
+    const playerFs = {
+      ...fs,
+      async stat(path, ...args) {
+        if (path.startsWith("/Applications/")) {
+          return {
+            isDirectory: () => installed.some((app) => path === `/Applications/${app}.app`),
+          };
+        }
+        return fs.stat(path, ...args);
+      },
+    };
+    const options = { cwd, fs: playerFs, platform: "darwin", spawnProcess: mockSpawn(calls) };
+    const result = await handleLibraryRequest({ action: "play", files: [{ path }] }, options);
+    assert.equal(result.files[0].player, installed[0] || "系统播放器");
+    assert.deepEqual(
+      calls[0].args,
+      installed.length
+        ? ["-a", `/Applications/${installed[0]}.app`, "--", await fs.realpath(path)]
+        : ["--", await fs.realpath(path)],
+    );
+    await handleLibraryRequest({ action: "open", files: [{ path }] }, options);
+    assert.deepEqual(calls[1].args, ["--", await fs.realpath(path)]);
+  }
 });
 
 test("validates action, file count, fields and metadata before touching the filesystem", async () => {

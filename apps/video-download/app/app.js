@@ -224,6 +224,8 @@ let auxiliaryGroups = 0;
 let playlistSelectionEmpty = false;
 let pendingDuplicates = [];
 const directoryGrants = new Map();
+const historyActionsPending = new Set();
+let openingDirectory = false;
 const libraryKey = "video-download.library.v2";
 const libraryStatus = document.querySelector("#library-status");
 const batchStatus = document.querySelector("#batch-status");
@@ -2138,7 +2140,9 @@ function updateActionAvailability() {
   document.querySelector("#retry-inspect").hidden =
     !inspectionFailures.size || Boolean(inspectionJob?.running);
   document.querySelector("#retry-inspect").disabled = elements.inspectButton.disabled;
-  elements.openDirectory.disabled = !runtime.directory?.handle;
+  elements.openDirectory.disabled =
+    openingDirectory ||
+    !(currentJob?.directory?.path || lastDownloadDirectory?.path || runtime.directory?.path);
   // Error analysis is a tool-free AI request; native downloads and file checks
   // do not own its controls or its task identity.
   const analysisPending = analysisSubmissionPending || Boolean(analysisTaskId);
@@ -3541,6 +3545,7 @@ function renderHistory() {
     const row = document.createElement("article");
     row.className = "history-item";
     row.dataset.historyId = item.queueId;
+    row.setAttribute("aria-busy", String(historyActionsPending.has(item.queueId)));
     row.classList.toggle("history-highlight", item.queueId === highlightedHistoryId);
     const files = item.files || [];
     const inventory = fileInventoryState(item);
@@ -3626,6 +3631,7 @@ function renderHistory() {
       node.title = label;
       node.dataset[shortcut ? "historyShortcut" : "historyAction"] = action;
       node.dataset.historyId = item.queueId;
+      node.disabled = historyActionsPending.has(item.queueId);
       node.setAttribute(
         "aria-label",
         `${label}：${index === undefined ? item.title : historyFileName(files[index]?.path)}`,
@@ -3674,7 +3680,8 @@ function renderHistory() {
       retry.prepend(historyIcon("retry"));
       actions.append(retry);
     } else if (mediaIndex >= 0) {
-      const play = button("open", "播放", mediaIndex, true);
+      const play = button("play", "播放", mediaIndex, true);
+      play.title = "优先使用已安装的兼容播放器；详情中的“打开”使用系统默认应用";
       play.classList.add("history-primary-action");
       play.prepend(historyIcon("play"));
       actions.append(play);
@@ -3714,12 +3721,24 @@ function renderHistory() {
 
 async function handleHistoryAction(event) {
   const button = event.target.closest("[data-history-action], [data-history-shortcut]");
-  if (!button || auxiliaryBusy || queueSubmissionPending) return;
+  if (!button) return;
   const item = history.find((entry) => entry.queueId === button.dataset.historyId);
-  if (!item) return;
-  button.disabled = true;
+  if (!item || historyActionsPending.has(item.queueId)) return;
+  const action = button.dataset.historyAction || button.dataset.historyShortcut;
+  const fileAction = ["play", "open", "reveal"].includes(action);
+  const feedback = document.querySelector("#history-action-status");
+  if (!fileAction && (auxiliaryBusy || queueSubmissionPending)) {
+    feedback.textContent = "正在处理文件或保存任务，请稍后再试。播放和定位文件仍可使用。";
+    return;
+  }
+  feedback.textContent = fileAction
+    ? `${action === "reveal" ? "正在定位" : "正在打开"}：${item.title || "下载文件"}…`
+    : "";
+  historyActionsPending.add(item.queueId);
+  const pendingRow = button.closest(".history-item");
+  pendingRow?.setAttribute("aria-busy", "true");
+  for (const control of pendingRow?.querySelectorAll("button") || []) control.disabled = true;
   try {
-    const action = button.dataset.historyAction || button.dataset.historyShortcut;
     const menu = button.closest(".history-menu");
     if (menu) menu.open = false;
     if (action === "delete") {
@@ -3742,24 +3761,35 @@ async function handleHistoryAction(event) {
       await checkFiles(item, true);
       await saveLibrary();
       renderHistory();
-    } else if (["open", "reveal"].includes(action)) {
+    } else if (fileAction) {
       const file = item.files[Number(button.dataset.fileIndex)];
       if (!file) return;
       const directory = await directoryFor(item, true);
       const [result] = await auxiliary.files(directory, action, [file]);
+      if (result.error === "unable-to-open-file")
+        throw new Error(
+          action === "reveal"
+            ? "文件存在，但未能打开文件夹，请稍后重试。"
+            : "文件存在，但播放器未能打开。可以先定位文件，再选择其他播放器打开。",
+        );
       if (result.status !== "present")
         throw new Error("文件已删除、变化或暂时无法访问。可按原设置重新下载。");
       item.files[Number(button.dataset.fileIndex)] = result;
+      item.checkError = "";
       await saveLibrary();
+      feedback.textContent = `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
     }
   } catch (error) {
     item.checkError = error.message;
+    feedback.textContent = error.message;
     renderHistory();
     const row = [...elements.historyList.children].find(
       (row) => row.dataset.historyId === item.queueId,
     );
     if (row) row.querySelector(".history-files").open = true;
   } finally {
+    historyActionsPending.delete(item.queueId);
+    renderHistory();
     button.disabled = false;
   }
 }
@@ -5724,12 +5754,19 @@ document.querySelector("#queue-concurrency").addEventListener("change", async (e
   }
 });
 elements.openDirectory.addEventListener("click", async () => {
-  const directory = currentJob?.directory || lastDownloadDirectory || runtime.directory;
-  if (!directory?.handle || previewMode) return;
+  if (openingDirectory || previewMode) return;
+  const savedDirectory = currentJob?.directory || lastDownloadDirectory || runtime.directory;
+  if (!savedDirectory?.path) return;
+  openingDirectory = true;
+  updateActionAvailability();
   try {
+    const directory = await directoryFor({ directory: savedDirectory }, true);
     await panel.call("filesystem.openDirectory", { handle: directory.handle });
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
+  } finally {
+    openingDirectory = false;
+    updateActionAvailability();
   }
 });
 elements.toggleLog.addEventListener("click", () => {

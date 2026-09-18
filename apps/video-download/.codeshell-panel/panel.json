@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.22.1",
+  "version": "0.22.2",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
@@ -200,7 +200,7 @@
   "nativeEntries": {
     "download-library": {
       "entry": "app/tools/library.mjs",
-      "sha256": "0de0e1c1b04686ee2fd4d8c771f0f3731b14a98b3a0d37d6ce79133723ae4888"
+      "sha256": "3dd7bb938c3fe77a1bb0968220af855ac53d10ebb0eb8144f5fdac157b1ee9b0"
     },
     "video-search": {
       "entry": "app/tools/search.mjs",

@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.22.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.22.2 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -275,3 +275,13 @@ In CodeShell, choose **Extensions → Panel Apps → From GitHub** and enter:
 
 Only download media that you have permission to save, and follow the source
 website's terms and applicable law.
+
+### Playback and file actions
+
+The history Play button checks the actual file and, on macOS, uses an installed
+IINA or VLC first, then Chrome or Edge for MP4/M4V/WebM, falling back to the system
+player. This avoids QuickTime silently presenting VP9/Opus downloads as audio only.
+The expanded Open action still uses the system default application. No app is
+installed and no file association is changed. History actions remain available
+during background file checks, show launch feedback, and keep opener failures
+separate from missing downloads. Restored task folders use fresh directory grants.
