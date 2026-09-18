@@ -17,6 +17,7 @@ const flags = Object.fromEntries(
     return pairs;
   }, []),
 );
+const pauseOnly = flags["--pause-only"] === "true";
 const ytdlp = flags["--yt-dlp"];
 const ffmpeg = flags["--ffmpeg"];
 if (!ytdlp || !ffmpeg || !isAbsolute(ytdlp) || !isAbsolute(ffmpeg))
@@ -66,6 +67,25 @@ execFileSync(
   { env },
 );
 const media = await readFile(sample);
+// Exceed filesystem buffering so a killed process has flushed resumable bytes.
+const slowSample = join(temporary, "slow-sample.mp4");
+execFileSync(
+  ffmpeg,
+  [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-stream_loop",
+    "127",
+    "-i",
+    sample,
+    "-c",
+    "copy",
+    slowSample,
+  ],
+  { env },
+);
+const slowMedia = await readFile(slowSample);
 const probe = (file) =>
   JSON.parse(
     execFileSync(
@@ -76,8 +96,39 @@ const probe = (file) =>
   );
 const version = execFileSync(ytdlp, ["--version"], { encoding: "utf8", env }).trim();
 const appRoot = join(root, "apps/video-download/app");
+const resumeRequests = [];
+let pausedPartBytes = 0;
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, "http://localhost").pathname;
+  if (pathname === "/media/slow.mp4") {
+    const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range || "");
+    const start = range ? Number(range[1]) : 0;
+    const end = range?.[2]
+      ? Math.min(Number(range[2]), slowMedia.length - 1)
+      : slowMedia.length - 1;
+    if (range) resumeRequests.push(start);
+    if (start >= slowMedia.length || end < start) return response.writeHead(416).end();
+    response.writeHead(range ? 206 : 200, {
+      "Content-Type": "video/mp4",
+      "Content-Length": end - start + 1,
+      "Accept-Ranges": "bytes",
+      ...(range ? { "Content-Range": `bytes ${start}-${end}/${slowMedia.length}` } : {}),
+    });
+    if (request.method === "HEAD") return response.end();
+    let offset = start;
+    const timer = setInterval(() => {
+      if (response.destroyed) return clearInterval(timer);
+      const next = Math.min(end + 1, offset + 64 * 1024);
+      response.write(slowMedia.subarray(offset, next));
+      offset = next;
+      if (offset > end) {
+        clearInterval(timer);
+        response.end();
+      }
+    }, 75);
+    response.on("close", () => clearInterval(timer));
+    return;
+  }
   if (pathname.startsWith("/media/") && pathname.endsWith(".mp4")) {
     response.writeHead(200, {
       "Content-Type": "video/mp4",
@@ -289,6 +340,7 @@ await page.addInitScript((cwd) => {
   };
 }, downloads);
 const checks = [];
+let videoFiles = [];
 const passed = (name) => {
   checks.push(name);
   console.log(`PASS ${name}`);
@@ -317,88 +369,136 @@ const waitCompleted = (count) =>
 try {
   await page.goto(origin);
   await waitReady();
-  const urls = [`${origin}/media/clip-a.mp4`, `${origin}/media/clip-b.mp4`];
-  await page.locator("#url-input").fill(urls.join("\n"));
-  await page.locator("#inspect-button").click();
-  await page.waitForFunction(
-    () => document.querySelector("#inspect-status").textContent.includes("已获取 2/2 条"),
-    null,
-    { timeout: 150_000 },
-  );
-  passed("real metadata for two independent media links");
-  await page.locator("#download-button").click();
-  await waitCompleted(2);
-  const videoFiles = (await readdir(downloads)).filter((name) => name.endsWith(".mp4"));
-  assert.equal(videoFiles.length, 2);
-  for (const file of videoFiles) {
-    assert.ok((await stat(join(downloads, file))).size > 1000);
-    const metadata = probe(join(downloads, file));
-    assert.ok(Number(metadata.format.duration) >= 1.9);
-    assert.ok(metadata.streams.some((stream) => stream.codec_type === "video"));
-    assert.ok(metadata.streams.some((stream) => stream.codec_type === "audio"));
-  }
-  assert.ok(peakConcurrentDownloads >= 2, "Both real yt-dlp downloads must overlap");
-  passed("concurrent downloads produce two independent playable MP4 files");
-  await page.locator(".queue-open").first().click();
-  assert.equal(await page.locator(".history-highlight").count(), 1);
-  assert.match(await page.locator("#history-jump-status").textContent(), /已定位/);
-  passed("completed queue item opens and highlights its real download record");
-  await page.locator('[data-tab="download"]').click();
-  await writeFile(
-    join(artifacts, "download-checkpoint.json"),
-    JSON.stringify(
-      {
-        library: [...store.entries()],
-        output: [...processes.values()].flatMap((record) =>
-          record.events
-            .filter((event) => event.event === "process.output")
-            .map((event) => event.payload),
-        ),
-      },
+  if (!pauseOnly) {
+    const urls = [`${origin}/media/clip-a.mp4`, `${origin}/media/clip-b.mp4`];
+    await page.locator("#url-input").fill(urls.join("\n"));
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(
+      () => document.querySelector("#inspect-status").textContent.includes("已获取 2/2 条"),
       null,
-      2,
-    ),
+      { timeout: 150_000 },
+    );
+    passed("real metadata for two independent media links");
+    await page.locator("#download-button").click();
+    await waitCompleted(2);
+    videoFiles = (await readdir(downloads)).filter((name) => name.endsWith(".mp4"));
+    assert.equal(videoFiles.length, 2);
+    for (const file of videoFiles) {
+      assert.ok((await stat(join(downloads, file))).size > 1000);
+      const metadata = probe(join(downloads, file));
+      assert.ok(Number(metadata.format.duration) >= 1.9);
+      assert.ok(metadata.streams.some((stream) => stream.codec_type === "video"));
+      assert.ok(metadata.streams.some((stream) => stream.codec_type === "audio"));
+    }
+    assert.ok(peakConcurrentDownloads >= 2, "Both real yt-dlp downloads must overlap");
+    passed("concurrent downloads produce two independent playable MP4 files");
+    await page.locator(".queue-open").first().click();
+    assert.equal(await page.locator(".history-highlight").count(), 1);
+    assert.match(await page.locator("#history-jump-status").textContent(), /已定位/);
+    passed("completed queue item opens and highlights its real download record");
+    await page.locator('[data-tab="download"]').click();
+    await writeFile(
+      join(artifacts, "download-checkpoint.json"),
+      JSON.stringify(
+        {
+          library: [...store.entries()],
+          output: [...processes.values()].flatMap((record) =>
+            record.events
+              .filter((event) => event.event === "process.output")
+              .map((event) => event.payload),
+          ),
+        },
+        null,
+        2,
+      ),
+    );
+    await page.locator("#url-input").fill(urls[0]);
+    await page.locator("#download-button").click();
+    await page.locator("#duplicate-review").waitFor({ state: "visible" });
+    assert.equal(actualDownloads, 2);
+    await page.locator('[data-duplicate-action="skip"]').click();
+    passed("duplicate check verifies the existing file and prevents an extra download");
+    const deleted = videoFiles.find((name) => name.includes("clip-a"));
+    assert.ok(deleted);
+    await rm(join(downloads, deleted));
+    await page.locator("#download-button").click();
+    await waitCompleted(3);
+    assert.ok((await stat(join(downloads, deleted))).size > 1000);
+    passed("deleted output can be downloaded again despite a retained history link");
+    await page.locator("#quality-select").selectOption("audio");
+    await page.locator("#download-button").click();
+    await waitCompleted(4);
+    const audioFiles = (await readdir(downloads)).filter((name) => name.endsWith(".mp3"));
+    assert.equal(audioFiles.length, 1);
+    assert.ok(
+      probe(join(downloads, audioFiles[0])).streams.every(
+        (stream) => stream.codec_type === "audio",
+      ),
+    );
+    passed("audio-only mode runs real FFmpeg conversion and produces MP3");
+    await page.locator("#quality-select").selectOption("best");
+    await page.locator("#url-input").fill(`${origin}/media/lesson.html`);
+    await page.getByText("同时下载字幕", { exact: true }).click();
+    assert.equal(await page.locator("#subtitle-toggle").isChecked(), true);
+    await page.locator("#subtitle-language-preset").selectOption("en");
+    await page.locator("#download-button").click();
+    await waitCompleted(5);
+    assert.ok((await readdir(downloads)).some((name) => name.endsWith(".srt")));
+    const subtitledFile = (await readdir(downloads)).find(
+      (name) => name.includes("lesson") && name.endsWith(".mp4"),
+    );
+    assert.ok(subtitledFile);
+    assert.ok(
+      probe(join(downloads, subtitledFile)).streams.some(
+        (stream) => stream.codec_type === "subtitle",
+      ),
+    );
+    passed("HTML5 captions are downloaded and converted to SRT alongside the video");
+  }
+  if (await page.locator("#subtitle-toggle").isChecked())
+    await page.getByText("同时下载字幕", { exact: true }).click();
+  await page.locator("#url-input").fill(`${origin}/media/slow.mp4`);
+  await page.locator("#download-button").click();
+  // Wait for bytes on disk: stopping during yt-dlp startup is valid but cannot test resume.
+  const partialDeadline = Date.now() + 90_000;
+  for (;;) {
+    const name = (await readdir(downloads)).find(
+      (name) => name.includes("slow") && name.endsWith(".part"),
+    );
+    if (name && (await stat(join(downloads, name))).size > 0) break;
+    if (Date.now() > partialDeadline) throw new Error("No partial download appeared on disk");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  const slow = (
+    await page.evaluate(() => window.__panelTools.get_video_download_context())
+  ).queue.find((item) => item.url.endsWith("slow.mp4"));
+  await page.locator(`[data-queue-id="${slow.id}"][data-queue-action="pause"]`).click();
+  await page.waitForFunction(
+    (id) =>
+      document.querySelector(`.queue-item[data-queue-id="${id}"]`)?.dataset.state === "paused",
+    slow.id,
   );
-  await page.locator("#url-input").fill(urls[0]);
-  await page.locator("#download-button").click();
-  await page.locator("#duplicate-review").waitFor({ state: "visible" });
-  assert.equal(actualDownloads, 2);
-  await page.locator('[data-duplicate-action="skip"]').click();
-  passed("duplicate check verifies the existing file and prevents an extra download");
-  const deleted = videoFiles.find((name) => name.includes("clip-a"));
-  assert.ok(deleted);
-  await rm(join(downloads, deleted));
-  await page.locator("#download-button").click();
-  await waitCompleted(3);
-  assert.ok((await stat(join(downloads, deleted))).size > 1000);
-  passed("deleted output can be downloaded again despite a retained history link");
-  await page.locator("#quality-select").selectOption("audio");
-  await page.locator("#download-button").click();
-  await waitCompleted(4);
-  const audioFiles = (await readdir(downloads)).filter((name) => name.endsWith(".mp3"));
-  assert.equal(audioFiles.length, 1);
+  const part = (await readdir(downloads)).find(
+    (name) => name.includes("slow") && name.endsWith(".part"),
+  );
+  assert.ok(part, "Pausing must retain the partially downloaded file");
+  pausedPartBytes = (await stat(join(downloads, part))).size;
+  assert.ok(pausedPartBytes > 0 && pausedPartBytes < slowMedia.length);
+  passed("pausing a real download stops its process and retains the partial file");
+  await page.locator(`[data-queue-id="${slow.id}"][data-queue-action="resume"]`).click();
+  await waitCompleted(pauseOnly ? 1 : 6);
   assert.ok(
-    probe(join(downloads, audioFiles[0])).streams.every((stream) => stream.codec_type === "audio"),
+    resumeRequests.some((offset) => offset > 0),
+    "yt-dlp must request the remaining byte range",
   );
-  passed("audio-only mode runs real FFmpeg conversion and produces MP3");
-  await page.locator("#quality-select").selectOption("best");
-  await page.locator("#url-input").fill(`${origin}/media/lesson.html`);
-  await page.getByText("同时下载字幕", { exact: true }).click();
-  assert.equal(await page.locator("#subtitle-toggle").isChecked(), true);
-  await page.locator("#subtitle-language-preset").selectOption("en");
-  await page.locator("#download-button").click();
-  await waitCompleted(5);
-  assert.ok((await readdir(downloads)).some((name) => name.endsWith(".srt")));
-  const subtitledFile = (await readdir(downloads)).find(
-    (name) => name.includes("lesson") && name.endsWith(".mp4"),
+  const resumedFile = (await readdir(downloads)).find(
+    (name) => name.includes("slow") && name.endsWith(".mp4"),
   );
-  assert.ok(subtitledFile);
   assert.ok(
-    probe(join(downloads, subtitledFile)).streams.some(
-      (stream) => stream.codec_type === "subtitle",
-    ),
+    (await readFile(join(downloads, resumedFile))).equals(slowMedia),
+    "Resumed output must exactly match the original media",
   );
-  passed("HTML5 captions are downloaded and converted to SRT alongside the video");
+  passed("continue resumes from a nonzero byte offset and produces the complete original video");
   await page.locator("#choose-directory").click();
   await page.waitForFunction(
     () =>
@@ -415,13 +515,14 @@ try {
   );
   passed("chosen directory survives a panel reload");
   await page.locator('[data-tab="history"]').click();
-  assert.equal(await page.locator(".history-item").count(), 5);
+  assert.equal(await page.locator(".history-item").count(), pauseOnly ? 1 : 6);
   await page.locator("#history-check").click();
   await page.waitForFunction(() => !document.querySelector("#history-check").disabled);
   assert.match(await page.locator("#history-list").textContent(), /上次检查文件存在/);
   passed("history survives reload and native file checks inspect real output files");
   await page.screenshot({ path: join(artifacts, "real-download-history.png"), fullPage: true });
   assert.deepEqual(errors, []);
+  assert.ok(peakConcurrentDownloads >= 1 && peakConcurrentDownloads <= 3);
   await writeFile(
     join(artifacts, "report.json"),
     JSON.stringify(
@@ -431,6 +532,8 @@ try {
         checks,
         actualDownloads,
         peakConcurrentDownloads,
+        pausedPartBytes,
+        resumeRequests,
         downloads,
         videoFiles,
         limitations: [
@@ -455,6 +558,7 @@ try {
         errors,
         library: [...store.entries()],
         state: await page.evaluate(() => window.__panelTools?.get_video_download_context?.()),
+        output: [...processes.values()].flatMap((record) => record.events),
         stderr: [...processes.values()]
           .map((record) =>
             record.events

@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.18.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.19.0</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -497,6 +497,9 @@
           </div>
           <div class="task-actions">
             <button id="task-add-download" class="secondary-button" type="button">添加下载</button>
+            <button id="pause-button" class="secondary-button" type="button" hidden>
+              暂停下载
+            </button>
             <button id="cancel-button" class="danger-button" type="button" hidden>取消任务</button>
             <button id="open-directory" class="secondary-button" type="button" disabled>
               打开文件夹
@@ -618,14 +621,15 @@
             暂无任务 · 最多同时下载 3 项
           </p>
           <div class="queue-toolbar-actions">
-            <button id="queue-restore" class="secondary-button" type="button" hidden>
-              恢复未完成任务
+            <button id="queue-restore" class="secondary-button" type="button" disabled>
+              全部下载
             </button>
-            <button id="queue-pause" class="secondary-button" type="button" aria-pressed="false">
-              暂停队列
+            <button id="queue-pause" class="secondary-button" type="button" disabled>
+              全部暂停
             </button>
           </div>
         </div>
+        <p class="queue-resume-note">暂停会保留已下载的部分，继续时自动尝试续传。</p>
         <div id="queue-list" class="queue-list"></div>
       </section>
 

@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.18.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.19.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -52,12 +52,26 @@ The queue selector supports one to four tasks and remembers the setting per proj
 Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
 quality, playlist/subtitle options, output directory, and explicitly authorized
 Cookie handle. The form stays editable during downloads, so another URL can be
-added without changing earlier tasks. Waiting tasks can be removed; the queue
-can pause before any further tasks start; failed or cancelled tasks can be retried. One
+added without changing earlier tasks. Each running or waiting task can be paused;
+paused tasks can be continued or removed. **Download all / Continue all** starts
+waiting and paused work up to the configured limit. **Pause all** stops active
+download processes and holds pending work; it no longer just stops scheduling.
+Completed and cancelled tasks are not restarted by the bulk control. Failed or
+cancelled tasks can be retried individually. One
 failure does not stop the other downloads. Each task owns its process identity, progress, logs and output inventory. The queue and up to 300 history records persist per project in Host storage.
 Closing the panel stops active processes; reopening restores pending and interrupted
-items without starting them. **Restore queue** reacquires directory and saved-account
-grants before continuing. No executable handle, directory grant, Cookie file handle,
+items without starting them. Paused tasks remain paused, keep their last progress,
+and still participate in duplicate detection. **Continue all** or a task’s
+**Continue** button reacquires directory and saved-account grants before continuing.
+Continuing one task leaves the other paused tasks untouched.
+
+Pause waits for the process to exit before enabling Continue. It retains local
+partial files and uses the same output name with `yt-dlp --continue` on restart.
+Byte or fragment continuation depends on the source; if it cannot resume, yt-dlp
+may restart the transfer. Pausing creates no completed or failed history record.
+A failed pause is visibly reported while the task stays running, so it can be retried.
+
+No executable handle, directory grant, Cookie file handle,
 Cookie value or process argument list is persisted. If storage fails, new work does
 not start and the queue pauses.
 

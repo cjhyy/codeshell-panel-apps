@@ -1113,3 +1113,37 @@ test("concurrent exits keep independent native inventories and persist both comp
   await page.locator('[data-tab="history"]').click();
   assert.equal(await page.locator(".history-item").count(), 2);
 });
+
+test("paused tasks survive reload, block duplicates and resume without a second queue record", async (t) => {
+  const page = await openPanel(t, { concurrency: 2 });
+  await addDownload(page, firstUrl);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const [old] = await downloads(page);
+  await page.evaluate(
+    (processId) =>
+      window.__emit("process.output", {
+        processId,
+        stream: "stdout",
+        text: "progress:38%|2MiB/s|00:12\n",
+      }),
+    old.processId,
+  );
+  await page.locator('[data-queue-action="pause"]').click();
+  await page.waitForFunction(() => document.querySelector('.queue-item[data-state="paused"]'));
+  await page.reload();
+  await ready(page);
+  const initial = await readState(page);
+  assert.equal(initial.queue[0].status, "paused");
+  assert.equal(initial.queue[0].percent, 38);
+  assert.equal(initial.runningCount, 0);
+  await addDownload(page, firstUrl);
+  assert.equal((await readState(page)).queue.length, 1);
+  assert.equal((await downloads(page)).length, 0);
+  await page.locator('[data-queue-action="resume"]').click();
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const [resumed] = await downloads(page);
+  assert.deepEqual(resumed.args, old.args);
+  await completeDownload(page, resumed.processId);
+  await page.locator('[data-tab="history"]').click();
+  assert.equal(await page.locator(".history-item").count(), 1);
+});

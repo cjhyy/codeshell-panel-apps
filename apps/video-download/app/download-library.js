@@ -121,7 +121,7 @@ export function duplicateCandidates(candidate, queue, history) {
   return {
     queued: queue.find(
       (item) =>
-        ["queued", "running", "restored", "interrupted"].includes(item.status) &&
+        ["queued", "running", "paused", "restored", "interrupted"].includes(item.status) &&
         matches(item) &&
         directoryIdentity(item.directory) === directory,
     ),
@@ -168,13 +168,21 @@ export function storedRecord(item) {
     },
     cookieCredentialId: text(item.cookieCredentialId, 200),
     status: text(
-      ["queued", "running", "restored", "interrupted", "completed", "failed", "cancelled"].includes(
-        item.status,
-      )
+      [
+        "queued",
+        "running",
+        "paused",
+        "restored",
+        "interrupted",
+        "completed",
+        "failed",
+        "cancelled",
+      ].includes(item.status)
         ? item.status
         : item.state,
       20,
     ),
+    percent: Number.isFinite(item.percent) ? Math.min(100, Math.max(0, item.percent)) : null,
     error: text(item.error, 500),
     finishedAt: Number.isFinite(item.finishedAt) ? item.finishedAt : null,
     addedAt: Number.isFinite(item.addedAt) ? item.addedAt : Date.now(),
@@ -223,7 +231,7 @@ export function serializeLibrary(
   // drop work. Terminal queue inventories can be dropped with an explicit flag.
   if (bytes() > MAX_BYTES) {
     for (const item of result.queue) {
-      if (!["queued", "running", "restored", "interrupted"].includes(item.status)) {
+      if (!["queued", "running", "paused", "restored", "interrupted"].includes(item.status)) {
         item.files = [];
         item.filesComplete = false;
         result.truncated = true;

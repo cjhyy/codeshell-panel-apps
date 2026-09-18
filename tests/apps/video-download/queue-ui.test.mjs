@@ -89,6 +89,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
       window.__cookieAuthorizationCount = 0;
       window.__denyCookieAuthorization = false;
       window.__rejectCancellation = false;
+      window.__holdCancellation = false;
       window.__nextDirectory = {
         handle: "directory-second",
         name: "Second folder",
@@ -169,6 +170,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
           }
           if (method === "process.cancel") {
             if (window.__rejectCancellation) throw new Error("Fixture cancellation unavailable");
+            if (window.__holdCancellation) return { cancelled: true };
             setTimeout(
               () => window.__emit("process.exit", { processId: args.processId, code: null }),
               0,
@@ -380,51 +382,39 @@ test("an unavailable project grant requires a chosen directory instead of silent
   assert.equal(started.directoryHandle, "directory-second");
 });
 
-test("pause, remove, resume, cancel and clear only affect the selected queue entries", async (t) => {
+test("pause, remove, resume, cancel and clear keep unfinished work intact", async (t) => {
   const page = await openPanel(t);
   const first = await addDownload(page, firstUrl);
-  const [firstProcess] = await waitForDownloads(page, 1);
+  await waitForDownloads(page, 1);
   const second = await addDownload(page, secondUrl);
   const third = await addDownload(page, thirdUrl);
   await page.locator("#queue-pause").click();
+  await waitForStatus(page, first.id, "paused");
+  await waitForStatus(page, second.id, "paused");
   await action(page, third.id, "remove").click();
   assert.equal(await row(page, third.id).count(), 0);
   assert.equal(
-    (await readState(page)).queue.some((item) => item.id === third.id),
-    false,
+    await page.locator("#queue-clear").isDisabled(),
+    true,
+    "Paused tasks are unfinished",
   );
-  await completeDownload(page, firstProcess.processId);
+  await page.locator("#queue-restore").click();
+  const [, resumed] = await waitForDownloads(page, 2);
+  await completeDownload(page, resumed.processId);
   await waitForStatus(page, first.id, "completed");
-  await waitForStatus(page, second.id, "queued");
-  assert.equal(
-    (await downloads(page)).length,
-    1,
-    "Paused queues must not advance after completion",
-  );
+  const [, , secondProcess] = await waitForDownloads(page, 3);
   await page.locator("#queue-clear").click();
   assert.equal(await row(page, first.id).count(), 0);
-  assert.equal(await row(page, second.id).count(), 1, "Clear keeps pending work");
-
-  await page.locator("#queue-pause").click();
-  const [, secondProcess] = await waitForDownloads(page, 2);
+  assert.equal(await row(page, second.id).count(), 1);
   const fourth = await addDownload(page, "https://www.youtube.com/watch?v=queue-fourth");
   await action(page, second.id, "cancel").click();
   await waitForStatus(page, second.id, "cancelled");
-  const [, , fourthProcess] = await waitForDownloads(page, 3);
+  await waitForDownloads(page, 4);
   await waitForStatus(page, fourth.id, "running");
-  const cancelled = await page.evaluate(() =>
-    window.__calls.filter(({ method }) => method === "process.cancel"),
-  );
-  assert.deepEqual(
-    cancelled.map(({ args }) => args.processId),
-    [secondProcess.processId],
-  );
   assert.ok((await downloads(page)).every((item) => item.args.at(-1) !== thirdUrl));
   await page.locator("#queue-clear").click();
   assert.equal(await row(page, second.id).count(), 0);
-  assert.equal(await row(page, fourth.id).count(), 1, "Clear keeps the running download");
-  await completeDownload(page, fourthProcess.processId);
-  await waitForStatus(page, fourth.id, "completed");
+  assert.equal(await row(page, fourth.id).count(), 1);
 });
 
 test("failed entries preserve their error as the queue advances and can be retried", async (t) => {
@@ -836,22 +826,34 @@ test("the agent can cancel a specified task while another task is selected", asy
   await waitForStatus(page, first.id, "running");
 });
 
-test("pausing a concurrent queue allows in-flight work to finish without filling freed slots", async (t) => {
+test("pause all stops active downloads, holds pending tasks and resumes up to the configured limit", async (t) => {
   const page = await openPanel(t, 1280, "", 2);
   await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
   await page.locator("#download-button").click();
   const [a, b] = await waitForDownloads(page, 2);
   await page.locator("#queue-pause").click();
-  await completeDownload(page, b.processId);
-  await completeDownload(page, a.processId);
   await page.waitForFunction(
-    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 2,
+    () => document.querySelectorAll('.queue-item[data-state="paused"]').length === 3,
   );
   assert.equal((await downloads(page)).length, 2);
   assert.equal((await readState(page)).runningCount, 0);
-  await page.locator("#queue-pause").click();
-  await waitForDownloads(page, 3);
-  assert.equal((await readState(page)).runningCount, 1);
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__calls
+        .filter((call) => call.method === "process.cancel")
+        .map((call) => call.args.processId),
+    ),
+    [a.processId, b.processId],
+  );
+  assert.equal(await page.locator("#queue-restore").textContent(), "全部继续");
+  await page.locator("#queue-restore").click();
+  const all = await waitForDownloads(page, 4);
+  assert.equal((await readState(page)).runningCount, 2);
+  assert.deepEqual(all[2].args, a.args);
+  assert.deepEqual(all[3].args, b.args);
+  await completeDownload(page, all[2].processId);
+  await waitForDownloads(page, 5);
+  assert.equal((await readState(page)).runningCount, 2);
 });
 
 test("an early concurrent exit and late receipt never steal an already running process", async (t) => {
@@ -925,5 +927,185 @@ test("retrying an early failure ignores that attempt's delayed spawn receipt", a
         .map((call) => call.args.processId),
     ),
     [retry.processId],
+  );
+});
+
+test("an individual pause frees one slot and resume keeps the original settings and filename", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const third = await addDownload(page, thirdUrl);
+  const [a, b] = await waitForDownloads(page, 2);
+  await page.evaluate(
+    (id) =>
+      window.__emit("process.output", {
+        processId: id,
+        stream: "stdout",
+        text: "meta:Alpha\nprogress:41%|1MiB/s|00:10\n",
+      }),
+    a.processId,
+  );
+  await action(page, first.id, "open").click();
+  await page.locator("#pause-button").click();
+  await waitForStatus(page, first.id, "paused");
+  await waitForDownloads(page, 3);
+  await waitForStatus(page, second.id, "running");
+  await waitForStatus(page, third.id, "running");
+  assert.match(await row(page, first.id).textContent(), /41%/);
+  assert.equal((await readState(page)).queuePaused, false);
+  assert.equal(
+    await page.locator(".history-item").count(),
+    0,
+    "Pausing creates no terminal record",
+  );
+  await action(page, first.id, "open").click();
+  assert.equal(await page.locator("#pause-button").textContent(), "继续下载");
+  await page.locator("#pause-button").click();
+  await waitForStatus(page, first.id, "queued");
+  await completeDownload(page, b.processId);
+  const all = await waitForDownloads(page, 4);
+  assert.deepEqual(all[3].args, a.args);
+  assert.equal(all[3].directoryHandle, a.directoryHandle);
+  assert.ok(all[3].args.includes("--continue"));
+});
+
+test("resume remains disabled until pause is confirmed by process exit", async (t) => {
+  const page = await openPanel(t);
+  const first = await addDownload(page, firstUrl);
+  const [a] = await waitForDownloads(page, 1);
+  await page.evaluate(() => {
+    window.__holdCancellation = true;
+  });
+  await action(page, first.id, "pause").click();
+  await waitForStatus(page, first.id, "running");
+  assert.match(await row(page, first.id).textContent(), /正在暂停/);
+  assert.equal(await action(page, first.id, "pause").isDisabled(), true);
+  assert.equal(await page.locator("#queue-restore").isDisabled(), true);
+  await page.evaluate(
+    (processId) => window.__emit("process.exit", { processId, code: null }),
+    a.processId,
+  );
+  await waitForStatus(page, first.id, "paused");
+  await action(page, first.id, "resume").click();
+  await waitForDownloads(page, 2);
+});
+
+test("a failed pause stays visibly running and can be retried", async (t) => {
+  const page = await openPanel(t);
+  const first = await addDownload(page, firstUrl);
+  await waitForDownloads(page, 1);
+  const second = await addDownload(page, secondUrl);
+  await page.evaluate(() => {
+    window.__rejectCancellation = true;
+  });
+  await page.locator("#queue-pause").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#queue-list").textContent.includes("暂停失败"),
+  );
+  await waitForStatus(page, first.id, "running");
+  await waitForStatus(page, second.id, "paused");
+  assert.equal((await downloads(page)).length, 1);
+  await page.evaluate(() => {
+    window.__rejectCancellation = false;
+  });
+  await page.locator("#queue-pause").click();
+  await waitForStatus(page, first.id, "paused");
+  assert.equal((await readState(page)).runningCount, 0);
+});
+
+test("pause while spawn is pending targets the late process and ignores its delayed output after resume", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    window.__holdNextDownload = true;
+  });
+  const item = await addDownload(page, firstUrl);
+  const [old] = await waitForDownloads(page, 1);
+  await action(page, item.id, "pause").click();
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "process.cancel").length,
+    ),
+    0,
+  );
+  await page.evaluate((id) => window.__heldSpawns[id](), old.processId);
+  await waitForStatus(page, item.id, "paused");
+  await action(page, item.id, "resume").click();
+  const [, resumed] = await waitForDownloads(page, 2);
+  await completeDownload(page, old.processId, { code: 1, error: "ERROR: old paused process" });
+  await waitForStatus(page, item.id, "running");
+  await completeDownload(page, resumed.processId);
+  await waitForStatus(page, item.id, "completed");
+});
+
+test("continuing one task after pause all leaves every other task paused", async (t) => {
+  const page = await openPanel(t, 1280, "", 3);
+  await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+  await page.locator("#download-button").click();
+  await waitForDownloads(page, 3);
+  const state = await readState(page);
+  await page.locator("#queue-pause").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="paused"]').length === 3,
+  );
+  await action(page, state.queue[1].id, "resume").click();
+  await waitForDownloads(page, 4);
+  assert.deepEqual(
+    (await readState(page)).queue.map((item) => item.status),
+    ["paused", "running", "paused"],
+  );
+  await page.screenshot({ path: resolve(artifacts, "pause-resume.png"), fullPage: true });
+});
+
+test("pause all during resume authorization wins over the late preparation result", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    window.__cookieAccounts = [{ id: "account-original", label: "Fixture", health: "healthy" }];
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("account-original");
+  await page.locator("#download-button").click();
+  await waitForDownloads(page, 1);
+  const first = (await readState(page)).queue[0];
+  await action(page, first.id, "pause").click();
+  await waitForStatus(page, first.id, "paused");
+  await page.evaluate(() => {
+    const call = window.codeshellPanel.call.bind(window.codeshellPanel);
+    window.codeshellPanel.call = async (method, args) => {
+      if (method === "credentials.cookies.authorizeProcess")
+        await new Promise((resolve) => {
+          window.__releaseResumeAuthorization = resolve;
+        });
+      return call(method, args);
+    };
+  });
+  await page.locator("#queue-restore").click();
+  await page.waitForFunction(() => typeof window.__releaseResumeAuthorization === "function");
+  await page.locator("#queue-pause").click();
+  await page.evaluate(() => window.__releaseResumeAuthorization());
+  await page.waitForFunction(() => !document.querySelector("#queue-restore").disabled);
+  await waitForStatus(page, first.id, "paused");
+  assert.equal((await downloads(page)).length, 1);
+  assert.equal((await readState(page)).queuePaused, true);
+});
+
+test("continue all never restarts completed or cancelled downloads", async (t) => {
+  const page = await openPanel(t, 1280, "", 3);
+  await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+  await page.locator("#download-button").click();
+  const [a, b, c] = await waitForDownloads(page, 3);
+  const items = (await readState(page)).queue;
+  await completeDownload(page, a.processId);
+  await waitForStatus(page, items[0].id, "completed");
+  await action(page, items[1].id, "cancel").click();
+  await waitForStatus(page, items[1].id, "cancelled");
+  await page.locator("#queue-pause").click();
+  await waitForStatus(page, items[2].id, "paused");
+  await page.locator("#queue-restore").click();
+  const all = await waitForDownloads(page, 4);
+  assert.equal(all[3].args.at(-1), thirdUrl);
+  assert.deepEqual(
+    (await readState(page)).queue.map((item) => item.status),
+    ["completed", "cancelled", "running"],
   );
 });

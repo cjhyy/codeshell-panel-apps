@@ -1260,3 +1260,14 @@ button {
   box-shadow: inset 3px 0 var(--accent);
   outline: none;
 }
+
+.queue-resume-note {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+.queue-item[data-state="paused"] .queue-status {
+  color: var(--muted);
+  background: var(--surface-muted);
+}

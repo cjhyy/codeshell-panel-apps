@@ -98,6 +98,7 @@ const elements = {
   taskEta: document.querySelector("#task-eta"),
   taskStatus: document.querySelector("#task-status"),
   cancelButton: document.querySelector("#cancel-button"),
+  pauseButton: document.querySelector("#pause-button"),
   openDirectory: document.querySelector("#open-directory"),
   toggleLog: document.querySelector("#toggle-log"),
   taskLog: document.querySelector("#task-log"),
@@ -158,6 +159,8 @@ const hasRunningDownloads = () => runningDownloads().length > 0;
 let downloadQueue = [];
 let lastDownloadDirectory = null;
 let queuePaused = false;
+let queueControlRevision = 0;
+let resumingQueue = false;
 let queueSubmissionPending = false;
 let inspectionJob = null;
 let inspectedVideo = null;
@@ -647,9 +650,9 @@ async function loadLibrary() {
     document.querySelector("#queue-concurrency").value = String(maxConcurrent);
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
-      ["restored", "interrupted"].includes(item.status),
+      ["paused", "restored", "interrupted"].includes(item.status),
     )
-      ? "已找回上次队列。点击“恢复队列”后重新确认目录和账号。"
+      ? "已找回上次队列。点击“全部继续”恢复未完成的下载。"
       : "队列和记录按项目保存。";
     renderQueue();
     renderHistory();
@@ -919,33 +922,91 @@ async function enqueueCandidates(candidates, { copy = false } = {}) {
   }
 }
 
-async function restoreQueue() {
-  if (queueSubmissionPending || auxiliaryBusy) return;
+async function restoreQueue(items = null) {
+  if (
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    completionPending ||
+    runningDownloads().some((item) => item.pauseRequested || item.cancelRequested)
+  )
+    return;
+  const candidates =
+    items ||
+    downloadQueue.filter((item) =>
+      ["queued", "paused", "restored", "interrupted"].includes(item.status),
+    );
+  if (!candidates.length) return;
+  const revision = ++queueControlRevision;
+  // Continuing one task after "pause all" must leave the other waiting tasks paused.
+  if (items && queuePaused) {
+    for (const item of downloadQueue)
+      if (item.status === "queued" && !items.includes(item)) item.status = "paused";
+  }
   queueSubmissionPending = true;
+  resumingQueue = true;
   queuePaused = true;
   setControlsBusy(true);
+  renderQueue();
   try {
-    for (const item of downloadQueue.filter((item) =>
-      ["restored", "interrupted"].includes(item.status),
-    )) {
+    for (const item of candidates) {
+      if (revision !== queueControlRevision) break;
+      if (item.finishing || !["queued", "paused", "restored", "interrupted"].includes(item.status))
+        continue;
       try {
-        await prepareItem(item, true);
+        if (item.status !== "queued" || !item.executable?.handle) await prepareItem(item, true);
+        if (revision !== queueControlRevision) break;
+        if (!downloadQueue.includes(item)) continue;
+        item.resumeFromPause = ["paused", "interrupted"].includes(item.status);
         item.status = "queued";
         item.error = "";
       } catch (error) {
         item.error = error.message;
       }
     }
-    queuePaused = false;
+    if (revision === queueControlRevision) queuePaused = false;
     await saveLibrary();
   } catch (error) {
     reportLibraryError(error);
   } finally {
     queueSubmissionPending = false;
+    resumingQueue = false;
     renderQueue();
     setControlsBusy(false);
     void runNextDownload();
   }
+}
+
+async function pauseDownload(job = currentJob, { persist = true } = {}) {
+  if (!job || job.finishing) return;
+  if (job.running) return requestDownloadStop(job, "pause");
+  if (!["queued", "restored", "interrupted"].includes(job.status)) return;
+  job.status = "paused";
+  job.error = "";
+  updateDownloadTask(job, {
+    state: "paused",
+    title: job.title,
+    percent: job.percent,
+    status: "已暂停",
+  });
+  if (!persist) return;
+  renderQueue();
+  setControlsBusy(false);
+  try {
+    await saveLibrary();
+  } catch (error) {
+    reportLibraryError(error);
+  }
+}
+
+async function pauseAllDownloads() {
+  ++queueControlRevision;
+  queuePaused = true;
+  // Set every pending state synchronously before any exit can refill a free slot.
+  const stops = downloadQueue.map((job) => pauseDownload(job, { persist: false }));
+  renderQueue();
+  await Promise.allSettled([...stops, saveLibrary().catch(reportLibraryError)]);
+  setControlsBusy(false);
+  renderQueue();
 }
 
 function selectedFormat() {
@@ -2039,6 +2100,7 @@ function updateActionAvailability() {
   }
   renderSetupCard();
   renderVersionInfo();
+  updateQueueControls();
 }
 
 function updateDownloadAvailability() {
@@ -2067,7 +2129,23 @@ function setControlsBusy(busy, operation = "download") {
   elements.inspectButton.textContent =
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
   elements.cancelButton.hidden = !currentJob?.running;
-  elements.cancelButton.disabled = Boolean(currentJob?.cancelRequested);
+  elements.cancelButton.disabled = Boolean(
+    currentJob?.cancelRequested || currentJob?.pauseRequested,
+  );
+  elements.pauseButton.hidden =
+    !currentJob ||
+    !["running", "queued", "paused", "restored", "interrupted"].includes(currentJob.status);
+  elements.pauseButton.textContent = ["paused", "restored", "interrupted"].includes(
+    currentJob?.status,
+  )
+    ? "继续下载"
+    : "暂停下载";
+  elements.pauseButton.disabled = Boolean(
+    queueSubmissionPending ||
+    currentJob?.finishing ||
+    currentJob?.cancelRequested ||
+    currentJob?.pauseRequested,
+  );
   updateConditionalOptions();
   updateActionAvailability();
 }
@@ -2088,7 +2166,15 @@ function setDestination(directory) {
 function updateTask({ state, title, percent, speed, eta, status }) {
   elements.taskStateIcon.dataset.state = state;
   elements.taskStateIcon.textContent =
-    state === "completed" ? "✓" : state === "failed" ? "!" : state === "cancelled" ? "—" : "↓";
+    state === "completed"
+      ? "✓"
+      : state === "failed"
+        ? "!"
+        : state === "cancelled"
+          ? "—"
+          : state === "paused"
+            ? "Ⅱ"
+            : "↓";
   elements.taskTitle.textContent = title;
   elements.taskKicker.textContent = state === "running" ? "正在下载" : "当前任务";
   document.querySelector("#task-guidance").hidden = state !== "idle";
@@ -2613,11 +2699,13 @@ function defaultTaskTitle(url) {
 
 function queueStatusText(item) {
   if (item.status === "running") {
+    if (item.pauseRequested) return "正在暂停";
     if (item.cancelRequested) return "正在取消";
     return Number.isFinite(item.percent) ? `下载中 · ${Math.round(item.percent)}%` : "正在连接";
   }
   return (
     {
+      paused: Number.isFinite(item.percent) ? `已暂停 · ${Math.round(item.percent)}%` : "已暂停",
       restored: "待恢复",
       interrupted: "上次中断 · 待恢复",
       queued: queuePaused ? "已暂停 · 等待下载" : "等待下载",
@@ -2642,6 +2730,8 @@ function downloadJobForPayload(payload) {
 }
 
 function updateDownloadTask(job, display) {
+  if (display.state === "running" && (job.pauseRequested || job.cancelRequested))
+    display = { ...display, status: job.pauseRequested ? "正在暂停" : "正在取消" };
   job.display = display;
   if (currentJob === job) updateTask(display);
   else {
@@ -2657,7 +2747,7 @@ function selectDownloadTask(job) {
     job.display
       ? { ...job.display, title: job.title }
       : {
-          state: job.running ? "running" : "idle",
+          state: job.running ? "running" : job.status === "paused" ? "paused" : "idle",
           title: job.title,
           percent: job.percent,
           status: queueStatusText(job),
@@ -2698,28 +2788,66 @@ function updateQueueProgress(job = currentJob) {
   if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(job.percent) || 0))}%`;
 }
 
+function updateQueueControls() {
+  const waiting = downloadQueue.filter((item) =>
+    ["queued", "restored", "interrupted"].includes(item.status),
+  ).length;
+  const paused = downloadQueue.filter((item) => item.status === "paused").length;
+  const settled = downloadQueue.filter((item) =>
+    ["completed", "failed", "cancelled"].includes(item.status),
+  ).length;
+  const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
+  elements.queuePause.textContent = "全部暂停";
+  elements.queuePause.disabled = !(
+    resumingQueue ||
+    waiting ||
+    runningDownloads().some((item) => !item.pauseRequested && !item.cancelRequested)
+  );
+  elements.queueClear.disabled = !settled;
+  queueRestore.hidden = false;
+  queueRestore.textContent = resumingQueue
+    ? "准备继续…"
+    : paused ||
+        queuePaused ||
+        downloadQueue.some((item) => ["restored", "interrupted"].includes(item.status))
+      ? "全部继续"
+      : "全部下载";
+  queueRestore.title = "开始所有等待或暂停的任务，按设置的数量同时下载";
+  queueRestore.disabled =
+    !(waiting + paused) ||
+    queueSubmissionPending ||
+    auxiliaryBusy ||
+    Boolean(completionPending) ||
+    stopping;
+  for (const button of elements.queueList.querySelectorAll('[data-queue-action="resume"]'))
+    button.disabled =
+      queueSubmissionPending || auxiliaryBusy || Boolean(completionPending) || stopping;
+  for (const button of elements.queueList.querySelectorAll('[data-queue-action="pause"]')) {
+    const job = downloadQueue.find((item) => item.queueId === button.dataset.queueId);
+    button.disabled = Boolean(
+      queueSubmissionPending || job?.finishing || job?.pauseRequested || job?.cancelRequested,
+    );
+  }
+}
+
 function renderQueue() {
   const waiting = downloadQueue.filter((item) =>
     ["queued", "restored", "interrupted"].includes(item.status),
   ).length;
   const settled = downloadQueue.filter(
-    (item) => !["queued", "running", "restored", "interrupted"].includes(item.status),
+    (item) => !["queued", "running", "paused", "restored", "interrupted"].includes(item.status),
   ).length;
+  const paused = downloadQueue.filter((item) => item.status === "paused").length;
   const runningCount = runningDownloads().length;
-  const activeCount = waiting + runningCount;
+  const activeCount = waiting + runningCount + paused;
   document.querySelector("#queue-jump-count").textContent = String(activeCount);
   document.querySelector("#queue-jump").dataset.active = String(activeCount > 0);
   document.querySelector("#queue-count").textContent = String(downloadQueue.length);
   elements.queueSummary.textContent = downloadQueue.length
-    ? `${runningCount ? `${runningCount} 项下载中 · ` : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
+    ? `${runningCount ? `${runningCount} 项下载中 · ` : ""}${waiting} 项等待 · ${paused ? `${paused} 项已暂停 · ` : ""}${settled} 项已结束${queuePaused ? " · 队列已暂停" : ""}`
     : `暂无任务 · 最多同时下载 ${maxConcurrent} 项`;
-  elements.queuePause.textContent = queuePaused ? "继续队列" : "暂停队列";
-  elements.queuePause.setAttribute("aria-pressed", String(queuePaused));
-  elements.queueClear.disabled = !settled;
-  queueRestore.hidden = !downloadQueue.some((item) =>
-    ["restored", "interrupted"].includes(item.status),
-  );
-  queueRestore.disabled = queueSubmissionPending || auxiliaryBusy;
+  const stopping = runningDownloads().some((item) => item.pauseRequested || item.cancelRequested);
+  updateQueueControls();
   elements.queueList.replaceChildren();
   if (!downloadQueue.length) {
     const empty = document.createElement("p");
@@ -2786,8 +2914,13 @@ function renderQueue() {
     };
     if (item.status === "running") {
       action("details", "详情");
-      action("cancel", "取消").disabled = item.cancelRequested;
-    } else if (["queued", "restored", "interrupted"].includes(item.status)) {
+      action("pause", "暂停").disabled = item.pauseRequested || item.cancelRequested;
+      action("cancel", "取消").disabled = item.cancelRequested || item.pauseRequested;
+    } else if (["queued", "paused", "restored", "interrupted"].includes(item.status)) {
+      if (item.status === "queued") action("pause", "暂停").disabled = queueSubmissionPending;
+      else
+        action("resume", "继续").disabled =
+          queueSubmissionPending || auxiliaryBusy || Boolean(completionPending) || stopping;
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
       action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
@@ -2846,12 +2979,15 @@ async function runNextDownload() {
   job.releaseLaunch = releaseLaunch;
   if (!currentJob?.running) currentJob = job;
   lastDownloadDirectory = job.directory;
+  const resumePercent = job.resumeFromPause ? job.percent : Number.NaN;
   Object.assign(job, {
     id: null,
     status: "running",
     running: true,
     cancelRequested: false,
-    percent: Number.NaN,
+    pauseRequested: false,
+    stopPending: false,
+    percent: resumePercent,
     file: "",
     error: "",
     log: [],
@@ -2867,10 +3003,10 @@ async function runNextDownload() {
   updateDownloadTask(job, {
     state: "running",
     title: job.title,
-    percent: Number.NaN,
+    percent: resumePercent,
     speed: "—",
     eta: "—",
-    status: "正在连接",
+    status: job.resumeFromPause ? "正在继续下载" : "正在连接",
   });
   if (previewMode) {
     job.id = `preview-${job.queueId}`;
@@ -2892,7 +3028,8 @@ async function runNextDownload() {
     if (!job.running || job.launchToken !== launchToken) return;
     job.id ||= result.processId;
     appendLog(`Started ${result.executable}`, job);
-    if (job.cancelRequested) await cancelCurrentJob(job);
+    if (job.pauseRequested || job.cancelRequested)
+      await requestDownloadStop(job, job.pauseRequested ? "pause" : "cancel");
   } catch (error) {
     if (job.running && job.launchToken === launchToken) {
       void finishJob(false, error instanceof Error ? error.message : String(error), null, job);
@@ -2941,15 +3078,22 @@ async function finishJob(succeeded, error = "", exitCode = null, job = currentJo
   if (!job?.running || job.finishing) return;
   job.finishing = true;
   const cancelled = job.cancelRequested;
-  const state = succeeded ? "completed" : cancelled ? "cancelled" : "failed";
-  const status = succeeded ? "已完成" : cancelled ? "已取消" : "下载失败";
+  const paused = job.pauseRequested && !succeeded;
+  const state = succeeded ? "completed" : paused ? "paused" : cancelled ? "cancelled" : "failed";
+  const status = succeeded
+    ? "已完成"
+    : paused
+      ? "已暂停，可继续下载"
+      : cancelled
+        ? "已取消"
+        : "下载失败";
   if (job.outputBuffers.stdout) parseOutputLine(job.outputBuffers.stdout, "stdout", job);
   if (job.outputBuffers.stderr) parseOutputLine(job.outputBuffers.stderr, "stderr", job);
   job.outputBuffers.stdout = "";
   job.outputBuffers.stderr = "";
-  if (error) appendLog(error, job);
-  if (currentJob === job) showError(succeeded || cancelled ? "" : error);
-  if (succeeded || cancelled) {
+  if (error && !paused) appendLog(error, job);
+  if (currentJob === job) showError(succeeded || cancelled || paused ? "" : error);
+  if (succeeded || cancelled || paused) {
     if (currentJob === job) clearFailure();
   } else {
     recordFailure({
@@ -2974,16 +3118,20 @@ async function finishJob(succeeded, error = "", exitCode = null, job = currentJo
 
   job.running = false;
   job.status = state;
-  job.error = cancelled || succeeded ? "" : error || "下载失败";
+  job.error = cancelled || succeeded || paused ? "" : error || "下载失败";
+  job.pauseRequested = false;
+  job.cancelRequested = false;
   job.percent = succeeded ? 100 : job.percent;
   rememberIgnoredProbeProcess(job.id);
-  job.finishedAt = Date.now();
+  job.finishedAt = paused ? null : Date.now();
   if (job.stderrTail.some((line) => /ERROR:/i.test(line))) job.filesComplete = false;
   // Persist the finished task before optional checks; a close during a check loses no queue work.
-  history = history.filter((entry) => entry.queueId !== job.queueId);
-  history.unshift(storedRecord(job));
-  history = history.slice(0, MAX_HISTORY);
-  const record = history[0];
+  const record = paused ? null : storedRecord(job);
+  if (record) {
+    history = history.filter((entry) => entry.queueId !== job.queueId);
+    history.unshift(record);
+    history = history.slice(0, MAX_HISTORY);
+  }
   try {
     await saveLibrary();
     if (startingDownload) await startingDownload.launchFinished;
@@ -3005,29 +3153,35 @@ async function finishJob(succeeded, error = "", exitCode = null, job = currentJo
 }
 
 async function cancelCurrentJob(job = currentJob) {
-  if (!job?.running) return;
-  job.cancelRequested = true;
-  if (currentJob === job) {
-    elements.cancelButton.disabled = true;
-    elements.taskStatus.textContent = "正在取消";
-  }
+  return requestDownloadStop(job, "cancel");
+}
+
+async function requestDownloadStop(job, intent) {
+  if (!job?.running || job.stopPending || (intent === "pause" && job.cancelRequested)) return;
+  const pausing = intent === "pause";
+  job.pauseRequested = pausing;
+  job.cancelRequested = !pausing;
+  job.error = "";
+  updateDownloadTask(job, { ...job.display, status: pausing ? "正在暂停" : "正在取消" });
+  setControlsBusy(false);
   renderQueue();
-  if (previewMode) {
-    void finishJob(false, "", null, job);
-    return;
-  }
-  // spawn may still be awaiting Host confirmation; cancel as soon as its ID arrives.
+  if (previewMode) return finishJob(false, "", null, job);
+  // Do not claim the pause is complete until the Host reports process exit.
   if (!job.id) return;
+  const launchToken = job.launchToken;
+  job.stopPending = true;
   try {
     await panel.call("process.cancel", { processId: job.id });
   } catch (error) {
-    if (!job.running) return;
+    if (!job.running || job.launchToken !== launchToken) return;
     job.cancelRequested = false;
-    if (currentJob === job) {
-      elements.cancelButton.disabled = false;
-      elements.taskStatus.textContent = "取消失败，下载仍在继续";
-    }
+    job.pauseRequested = false;
+    job.error = `${pausing ? "暂停" : "取消"}失败，下载仍在继续，可重试。`;
+    updateDownloadTask(job, { ...job.display, status: job.error });
     appendLog(error instanceof Error ? error.message : String(error), job);
+  } finally {
+    if (job.launchToken === launchToken) job.stopPending = false;
+    setControlsBusy(false);
     renderQueue();
   }
 }
@@ -3483,12 +3637,18 @@ function videoContextForAgent() {
     runningCount: runningDownloads().length,
     download: currentJob?.running
       ? {
-          status: currentJob.cancelRequested ? "cancelling" : "running",
+          status: currentJob.pauseRequested
+            ? "pausing"
+            : currentJob.cancelRequested
+              ? "cancelling"
+              : "running",
           title: currentJob.title,
           percent: currentJob.percent,
           file: currentJob.file || null,
         }
-      : { status: "idle" },
+      : currentJob?.status === "paused"
+        ? { status: "paused", title: currentJob.title, percent: currentJob.percent }
+        : { status: "idle" },
     destination: runtime.directory
       ? {
           name: runtime.directory.name,
@@ -3634,7 +3794,11 @@ async function cancelDownloadForAgent({ queueId } = {}) {
       : runningDownloads()[0];
   if (!job) throw new Error("当前没有对应的运行中下载任务");
   await cancelCurrentJob(job);
-  return { cancelRequested: job.cancelRequested, queueId: job.queueId, title: job.title };
+  return {
+    cancelRequested: job.cancelRequested || job.status === "cancelled",
+    queueId: job.queueId,
+    title: job.title,
+  };
 }
 
 function pushSetupActivity(message, status = "running", kind = "tool", toolName = "") {
@@ -4979,14 +5143,15 @@ elements.taskModelSelects.forEach((select) => {
   select.addEventListener("change", () => chooseTaskModel(select.value));
 });
 elements.cancelButton.addEventListener("click", () => void cancelCurrentJob());
-elements.queuePause.addEventListener("click", () => {
-  queuePaused = !queuePaused;
-  renderQueue();
-  void saveLibrary().then(runNextDownload).catch(reportLibraryError);
+elements.pauseButton.addEventListener("click", () => {
+  if (["paused", "restored", "interrupted"].includes(currentJob?.status))
+    void restoreQueue([currentJob]);
+  else void pauseDownload();
 });
+elements.queuePause.addEventListener("click", () => void pauseAllDownloads());
 elements.queueClear.addEventListener("click", () => {
   downloadQueue = downloadQueue.filter((item) =>
-    ["queued", "running", "restored", "interrupted"].includes(item.status),
+    ["queued", "running", "paused", "restored", "interrupted"].includes(item.status),
   );
   renderQueue();
   void saveLibrary().catch(reportLibraryError);
@@ -5003,9 +5168,11 @@ elements.queueList.addEventListener("click", (event) => {
   if (button.dataset.queueAction === "details") selectDownloadTask(item);
   if (button.dataset.queueAction === "history") showDownloadHistory(item);
   if (button.dataset.queueAction === "cancel") void cancelCurrentJob(item);
+  if (button.dataset.queueAction === "pause") void pauseDownload(item);
+  if (button.dataset.queueAction === "resume") void restoreQueue([item]);
   if (
     button.dataset.queueAction === "remove" &&
-    ["queued", "restored", "interrupted"].includes(item.status)
+    ["queued", "paused", "restored", "interrupted"].includes(item.status)
   ) {
     downloadQueue = downloadQueue.filter((entry) => entry !== item);
     renderQueue();
@@ -5078,7 +5245,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-queueRestore.addEventListener("click", restoreQueue);
+queueRestore.addEventListener("click", () => void restoreQueue());
 elements.historyList.addEventListener("click", handleHistoryAction);
 document.querySelector("#history-search").addEventListener("input", renderHistory);
 document.querySelector("#history-filter").addEventListener("change", renderHistory);
@@ -5293,9 +5460,10 @@ if (panel) {
     job.outputBuffers.stderr = "";
     const cancelled = job.cancelRequested;
     const succeeded = payload.code === 0 && !cancelled && Boolean(job.file);
-    const detail = cancelled
-      ? ""
-      : friendlyYtDlpError(job.stderrTail.join("\n"), "下载", payload.code);
+    const detail =
+      cancelled || job.pauseRequested
+        ? ""
+        : friendlyYtDlpError(job.stderrTail.join("\n"), "下载", payload.code);
     void finishJob(succeeded, succeeded ? "" : detail, payload.code, job);
   });
 }
