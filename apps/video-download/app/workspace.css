@@ -1296,17 +1296,11 @@ button {
   border-radius: 3px;
 }
 .history-jump-status {
-  color: var(--accent);
+  color: var(--muted);
   font-size: 12px;
 }
 .history-jump-status:empty {
   display: none;
-}
-.history-item.history-highlight {
-  background: var(--accent-soft);
-  border-radius: 8px;
-  box-shadow: inset 3px 0 var(--accent);
-  outline: none;
 }
 
 .queue-resume-note {
@@ -1504,8 +1498,9 @@ button {
 }
 .history-item.history-highlight {
   border-radius: 6px;
-  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
-  box-shadow: inset 2px 0 var(--accent);
+  background: color-mix(in srgb, #708fb1 12%, transparent);
+  box-shadow: inset 2px 0 #708fb1;
+  outline: none;
 }
 .history-files {
   margin: 0;

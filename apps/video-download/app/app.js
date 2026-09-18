@@ -156,6 +156,7 @@ let currentJob = null;
 let startingDownload = null;
 let maxConcurrent = 3;
 let highlightedHistoryId = null;
+let historyHighlightTimer = null;
 const runningDownloads = () => downloadQueue.filter((job) => job.running);
 const hasRunningDownloads = () => runningDownloads().length > 0;
 let downloadQueue = [];
@@ -424,6 +425,7 @@ function taskModelStartFields() {
 
 function activateTab(name, options = {}) {
   const next = TAB_NAMES.includes(name) ? name : "download";
+  if (next !== "history") clearHistoryHighlight();
   for (const button of elements.tabs) {
     const selected = button.dataset.tab === next;
     button.setAttribute("aria-selected", String(selected));
@@ -2884,7 +2886,17 @@ function selectDownloadTask(job) {
   activateTab("task");
 }
 
+function clearHistoryHighlight() {
+  clearTimeout(historyHighlightTimer);
+  historyHighlightTimer = null;
+  highlightedHistoryId = null;
+  for (const row of elements.historyList.querySelectorAll(".history-highlight"))
+    row.classList.remove("history-highlight");
+  document.querySelector("#history-jump-status").textContent = "";
+}
+
 function showDownloadHistory(job) {
+  clearHistoryHighlight();
   highlightedHistoryId = job.queueId;
   document.querySelector("#history-search").value = "";
   document.querySelector("#history-filter").value = "all";
@@ -2900,6 +2912,7 @@ function showDownloadHistory(job) {
     row.tabIndex = -1;
     row.focus({ preventScroll: true });
     row.scrollIntoView({ block: "center" });
+    historyHighlightTimer = setTimeout(clearHistoryHighlight, 3000);
   }
 }
 
@@ -3718,6 +3731,7 @@ async function handleHistoryAction(event) {
         history = previousHistory;
         throw error;
       }
+      if (highlightedHistoryId === item.queueId) clearHistoryHighlight();
       renderHistory();
     } else if (action === "retry") {
       await directoryFor(item, true);
@@ -5724,6 +5738,7 @@ elements.toggleLog.addEventListener("click", () => {
 });
 elements.clearHistory.addEventListener("click", () => {
   history = [];
+  clearHistoryHighlight();
   saveHistory();
   renderHistory();
 });
@@ -5767,8 +5782,14 @@ elements.historyList.addEventListener("keydown", (event) => {
     event.preventDefault();
   }
 });
-document.querySelector("#history-search").addEventListener("input", renderHistory);
-document.querySelector("#history-filter").addEventListener("change", renderHistory);
+document.querySelector("#history-search").addEventListener("input", () => {
+  clearHistoryHighlight();
+  renderHistory();
+});
+document.querySelector("#history-filter").addEventListener("change", () => {
+  clearHistoryHighlight();
+  renderHistory();
+});
 document.querySelector("#history-check").addEventListener("click", async (event) => {
   if (auxiliaryBusy || queueSubmissionPending) return;
   const button = event.currentTarget;

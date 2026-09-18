@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.22.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.22.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -93,6 +93,9 @@ Click a completed, failed or cancelled queue item to open and highlight its down
 record. History filters are reset so the target remains visible. Clicking a running
 or waiting item opens its own progress and log. Queue entries also support keyboard
 activation. Removing a history record leaves its files intact.
+The history locator uses a quiet blue highlight that clears after three seconds,
+when leaving History, or when changing its search/filter. It does not mark an error,
+and later history refreshes do not restore an expired highlight.
 
 History uses a compact file list. Each row shows its title, status, format and a
 short date, with direct **Play** and **Reveal** actions; missing or failed downloads

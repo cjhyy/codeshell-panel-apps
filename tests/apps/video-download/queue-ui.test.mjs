@@ -1714,3 +1714,41 @@ test("saved failed tasks recover their own error details after reopening without
   assert.match(await page.locator("#error-summary").textContent(), /saved task network failure/);
   assert.equal((await readState(page)).lastFailure.queueId, job.id);
 });
+
+test("successful retry replaces failure and history navigation highlights expire without returning on refresh", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const [a, b] = await waitForDownloads(page, 2);
+  await completeDownload(page, a.processId, { code: 1 });
+  await waitForStatus(page, first.id, "failed");
+  await action(page, first.id, "retry").click();
+  const resumed = (await waitForDownloads(page, 3))[2];
+  await completeDownload(page, resumed.processId, {
+    title: "Getting started - Blender for complete beginners",
+  });
+  await waitForStatus(page, first.id, "completed");
+  assert.equal((await readState(page)).queue.find((job) => job.id === first.id).error, null);
+  assert.equal(await page.locator("#error-analysis").isVisible(), false);
+  await action(page, first.id, "open").click();
+  assert.equal(await page.locator(".history-item").count(), 1);
+  assert.match(await page.locator(".history-status").textContent(), /已完成/);
+  assert.equal(await page.locator(".history-highlight").count(), 1);
+  await page.screenshot({ path: resolve(artifacts, "history-locate-neutral.png"), fullPage: true });
+  await page.waitForFunction(() => !document.querySelector(".history-highlight"), null, {
+    timeout: 4500,
+  });
+  assert.equal(await page.locator("#history-jump-status").textContent(), "");
+  await completeDownload(page, b.processId, { title: "Another completed video" });
+  await waitForStatus(page, second.id, "completed");
+  assert.equal(await page.locator(".history-highlight").count(), 0);
+  await action(page, first.id, "open").click();
+  await page.locator("#history-search").fill("Getting started");
+  assert.equal(await page.locator(".history-highlight").count(), 0);
+  await action(page, first.id, "open").click();
+  await page.locator('[data-tab="download"]').click();
+  await page.locator('[data-tab="history"]').click();
+  assert.equal(await page.locator(".history-highlight").count(), 0);
+  assert.equal(await page.locator("#history-jump-status").textContent(), "");
+  await page.screenshot({ path: resolve(artifacts, "history-locate-cleared.png"), fullPage: true });
+});
