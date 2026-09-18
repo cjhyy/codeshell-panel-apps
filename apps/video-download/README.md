@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.15 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.16 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -77,9 +77,10 @@ remove any pending queue item. Clearing history never deletes disk files.
 
 The output directory defaults to the currently bound, trusted project directory.
 The Host supplies its authorized directory handle; users can still choose another
-folder. The chosen path is remembered per project. After reopening, the panel shows
-the last choice and asks the user to reselect that same folder to renew its Host
-grant before downloading. Older Hosts that do not offer the `project` known directory show a prompt
+folder. The chosen path is remembered per project. On a Host with directory
+bookmarks, reopening silently restores a fresh directory grant after checking
+the original folder's identity. Older Hosts require selecting that folder once
+more. Older Hosts that do not offer the `project` known directory show a prompt
 to choose a directory instead of silently using the system Downloads folder.
 
 Retry keeps the task's original options and account, and asks the Host to
@@ -105,7 +106,7 @@ download, or writes into the current conversation.
 
 ## Requirements
 
-- CodeShell Desktop 0.9.16 or newer is recommended. The full feature set requires Panel API v14, bundled Node, and `process`, `credentials.cookies`, `agent.task`, `storage`, `context.workspace`, and `external.open` permissions. Older Hosts retain basic downloading; file verification and platform search explain the required update.
+- CodeShell Desktop 0.9.17 or newer is recommended for automatic output-folder restoration and Panel execution without repeat dialogs. The full feature set requires Panel API v14, bundled Node, and `process`, `credentials.cookies`, `agent.task`, `storage`, `context.workspace`, and `external.open` permissions. Older Hosts retain basic downloading; file verification and platform search explain the required update.
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available on the Desktop app's PATH, or initialize it from the panel.
 - `ffmpeg` is recommended for merging video/audio streams and MP3 conversion.
 - `curl` is optional and used only to read the official latest yt-dlp release tag.

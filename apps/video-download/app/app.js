@@ -581,7 +581,17 @@ async function loadLibrary() {
       directoryPreference = saved.directoryPreference;
     } else history = loadHistory().map(storedRecord).filter(Boolean);
     if (directoryPreference?.path && directoryIdentity(directoryPreference) !== directoryIdentity(runtime.directory)) {
-      setDestination({ ...directoryPreference, handle: null });
+      let restored = null;
+      if (directoryPreference.bookmark && !previewMode) {
+        try {
+          restored = await panel.call("filesystem.restoreDirectory", { bookmark: directoryPreference.bookmark });
+        } catch {
+          // Older Hosts and changed directories still offer explicit re-selection.
+        }
+      }
+      setDestination(restored?.handle && directoryIdentity(restored) === directoryIdentity(directoryPreference)
+        ? { ...restored, kind: "chosen" }
+        : { ...directoryPreference, handle: null });
     }
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
@@ -2898,7 +2908,7 @@ async function chooseDirectory() {
     const result = await panel.call("filesystem.pickDirectory");
     if (!result.cancelled) {
       setDestination({ ...result, kind: "chosen" });
-      directoryPreference = { path: result.path, name: result.name, kind: "chosen" };
+      directoryPreference = { path: result.path, name: result.name, kind: "chosen", bookmark: result.bookmark };
       await saveLibrary();
     }
   } catch (error) {
@@ -2918,6 +2928,8 @@ async function restorePreferredDirectory() {
       throw new Error("请选择上次使用的目录；若想改用新目录，请点击“更改”。");
     }
     setDestination({ ...result, kind: "chosen" });
+    directoryPreference = { path: result.path, name: result.name, kind: "chosen", bookmark: result.bookmark };
+    await saveLibrary();
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
   } finally {

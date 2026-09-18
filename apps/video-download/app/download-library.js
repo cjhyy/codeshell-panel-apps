@@ -197,6 +197,9 @@ export function serializeLibrary({ queue, history, queuePaused, directoryPrefere
           path: text(directoryPreference.path),
           name: text(directoryPreference.name, 160),
           kind: directoryPreference.kind === "project" ? "project" : "chosen",
+          ...(typeof directoryPreference.bookmark === "string" && /^[a-f0-9-]{36}$/i.test(directoryPreference.bookmark)
+            ? { bookmark: directoryPreference.bookmark }
+            : {}),
         }
       : null,
     queue: queue.slice(0, MAX_QUEUE).map(storedRecord).filter(Boolean),
@@ -247,6 +250,9 @@ export function restoreLibrary(snapshot, scope) {
             path: text(snapshot.directoryPreference.path),
             name: text(snapshot.directoryPreference.name, 160),
             kind: snapshot.directoryPreference.kind === "project" ? "project" : "chosen",
+            ...(typeof snapshot.directoryPreference.bookmark === "string" && /^[a-f0-9-]{36}$/i.test(snapshot.directoryPreference.bookmark)
+              ? { bookmark: snapshot.directoryPreference.bookmark }
+              : {}),
           }
         : null,
     queuePaused:

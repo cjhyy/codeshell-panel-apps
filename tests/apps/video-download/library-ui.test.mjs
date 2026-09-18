@@ -87,7 +87,8 @@ async function openPanel(t) {
     window.__nativeRequests = [];
     window.__fileMap = JSON.parse(localStorage.getItem("fixture.files") || "{}");
     window.__searchPayload = { entries: [] };
-    window.__nextDirectory = { handle: "directory-other", name: "Other", path: "/fixture/other" };
+    window.__nextDirectory = { handle: "directory-other", name: "Other", path: "/fixture/other", bookmark: "a0123456-1234-4567-8901-123456789abc" };
+    window.__restoreDirectoryUnavailable = localStorage.getItem("fixture.legacyHost") === "true";
     window.__setFiles = (files) => {
       Object.assign(window.__fileMap, files);
       localStorage.setItem("fixture.files", JSON.stringify(window.__fileMap));
@@ -159,6 +160,11 @@ async function openPanel(t) {
           return { handle: "directory-project", name: "Project", path: "/fixture/project" };
         }
         if (method === "filesystem.pickDirectory") return structuredClone(window.__nextDirectory);
+        if (method === "filesystem.restoreDirectory") {
+          if (window.__restoreDirectoryUnavailable) throw new Error("unknown Panel App method");
+          if (args.bookmark !== window.__nextDirectory.bookmark) throw new Error("invalid bookmark");
+          return structuredClone(window.__nextDirectory);
+        }
         if (method === "filesystem.openDirectory") return { opened: true };
         if (method === "credentials.cookies.list")
           return { accounts: structuredClone(window.__cookieAccounts) };
@@ -427,17 +433,27 @@ test("the same video can be downloaded to a different selected output directory"
   assert.equal(await page.locator("#duplicate-review").isVisible(), false);
 });
 
-test("selected download directory is remembered and needs a fresh matching grant after reload", async (t) => {
+test("selected download directory restores a fresh grant without another picker after reload", async (t) => {
   const page = await openPanel(t);
   await page.locator("#choose-directory").click();
   await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2") || "null")?.directoryPreference?.path === "/fixture/other");
+  await page.reload();
+  await page.locator("#restore-directory").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#destination-path").textContent(), "/fixture/other");
+  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "filesystem.pickDirectory").length), 0);
+  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "filesystem.restoreDirectory").length), 1);
+});
+
+test("older Hosts still offer manual re-selection for remembered directories", async (t) => {
+  const page = await openPanel(t);
+  await page.locator("#choose-directory").click();
+  await page.evaluate(() => localStorage.setItem("fixture.legacyHost", "true"));
   await page.reload();
   await page.locator("#restore-directory").waitFor({ state: "visible" });
   assert.match(await page.locator("#destination-path").textContent(), /\/fixture\/other/);
   assert.equal(await page.locator("#download-button").isDisabled(), true);
   await page.locator("#restore-directory").click();
   await page.locator("#restore-directory").waitFor({ state: "hidden" });
-  assert.equal(await page.locator("#destination-path").textContent(), "/fixture/other");
 });
 
 test("historical media and subtitles have separate file actions and missing files never launch", async (t) => {
