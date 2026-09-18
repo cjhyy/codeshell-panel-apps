@@ -18,6 +18,7 @@ const flags = Object.fromEntries(
   }, []),
 );
 const pauseOnly = flags["--pause-only"] === "true";
+const inspectDuringDownload = flags["--inspect-during-download"] === "true";
 const ytdlp = flags["--yt-dlp"];
 const ffmpeg = flags["--ffmpeg"];
 if (!ytdlp || !ffmpeg || !isAbsolute(ytdlp) || !isAbsolute(ffmpeg))
@@ -98,6 +99,7 @@ const version = execFileSync(ytdlp, ["--version"], { encoding: "utf8", env }).tr
 const appRoot = join(root, "apps/video-download/app");
 const resumeRequests = [];
 let pausedPartBytes = 0;
+let inspectionVerified = !inspectDuringDownload;
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, "http://localhost").pathname;
   if (pathname === "/media/slow.mp4") {
@@ -118,7 +120,10 @@ const server = createServer(async (request, response) => {
     let offset = start;
     const timer = setInterval(() => {
       if (response.destroyed) return clearInterval(timer);
-      const next = Math.min(end + 1, offset + 64 * 1024);
+      // Keep this local transfer alive while a fresh yt-dlp metadata process
+      // starts (packaged binaries can take longer than a short test download).
+      const chunkBytes = !inspectionVerified && offset >= 512 * 1024 ? 1024 : 64 * 1024;
+      const next = Math.min(end + 1, offset + chunkBytes);
       response.write(slowMedia.subarray(offset, next));
       offset = next;
       if (offset > end) {
@@ -472,6 +477,23 @@ try {
   const slow = (
     await page.evaluate(() => window.__panelTools.get_video_download_context())
   ).queue.find((item) => item.url.endsWith("slow.mp4"));
+  if (inspectDuringDownload) {
+    await page.locator("#url-input").fill(`${origin}/media/inspect-next.mp4`);
+    assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(
+      () => document.querySelector("#inspect-status").dataset.state === "ready",
+      null,
+      { timeout: 90_000 },
+    );
+    const state = await page.evaluate(() => window.__panelTools.get_video_download_context());
+    assert.match(state.inspected.title, /inspect-next/);
+    assert.equal(state.queue.find((item) => item.id === slow.id).status, "running");
+    assert.equal(actualDownloads, pauseOnly ? 1 : 6);
+    inspectionVerified = true;
+    passed("real metadata for a new URL succeeds while the existing download remains running");
+    await page.screenshot({ path: join(artifacts, "inspect-during-download.png"), fullPage: true });
+  }
   await page.locator(`[data-queue-id="${slow.id}"][data-queue-action="pause"]`).click();
   await page.waitForFunction(
     (id) =>

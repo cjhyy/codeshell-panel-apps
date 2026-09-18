@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.19.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.19.2 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -52,7 +52,12 @@ The queue selector supports one to four tasks and remembers the setting per proj
 Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
 quality, playlist/subtitle options, output directory, and explicitly authorized
 Cookie handle. The form stays editable during downloads, so another URL can be
-added without changing earlier tasks. Each running or waiting task can be paused;
+added without changing earlier tasks. Video information can also be inspected during
+active downloads, from the form or Chat, including batch inspection and retries.
+Cancelling inspection leaves ongoing downloads alone. Download progress and
+metadata results keep separate process ownership even when spawn receipts arrive late;
+completed downloads wait for inspection to finish before checking their saved files.
+Each running or waiting task can be paused;
 paused tasks can be continued or removed. **Download all / Continue all** starts
 waiting and paused work up to the configured limit. **Pause all** stops active
 download processes and holds pending work; it no longer just stops scheduling.

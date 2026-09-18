@@ -89,6 +89,7 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
     window.__inspectionFailureByUrl = {};
     window.__holdInspection = false;
     window.__holdInspectionSpawn = false;
+    window.__holdNextDownload = false;
     window.__rejectInspectionCancel = false;
     window.__nativeRequests = [];
     window.__fileMap = JSON.parse(localStorage.getItem("fixture.files") || "{}");
@@ -275,6 +276,12 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
             );
           } else {
             window.__downloads.push({ ...structuredClone(args), processId });
+            if (window.__holdNextDownload) {
+              window.__holdNextDownload = false;
+              return new Promise((resolve) => {
+                window.__releaseDownloadSpawn = () => resolve({ processId });
+              });
+            }
           }
           return { processId, executable: args.executableHandle };
         }
@@ -541,6 +548,176 @@ test("rejected metadata cancellation keeps the query active and allows retry", a
     document.querySelector("#inspect-status").textContent.includes("已取消获取"),
   );
   assert.equal(await page.locator("#download-button").isEnabled(), true);
+});
+
+test("batch metadata and three live downloads keep separate output, completion and history", async (t) => {
+  const page = await openPanel(t, { concurrency: 3 });
+  const thirdUrl = "https://www.youtube.com/watch?v=library-third";
+  const newUrl = "https://www.youtube.com/watch?v=library-new";
+  await addDownload(page, [firstUrl, secondUrl, thirdUrl].join("\n"));
+  await page.waitForFunction(() => window.__downloads.length === 3);
+  const [first, second] = await downloads(page);
+  await downloadForm(page);
+  await page.evaluate(() => {
+    window.__holdInspection = true;
+    window.__holdInspectionSpawn = true;
+  });
+  await page.locator("#url-input").fill(`${newUrl}\n${otherSiteUrl}`);
+  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => window.__heldInspection);
+  const inspection = await page.evaluate(() => window.__heldInspection);
+  await page.evaluate((processId) => {
+    window.__emit("process.output", {
+      processId,
+      stream: "stdout",
+      text: "meta:正在下载的视频\nprogress:45%|2MiB/s|00:10\n仅下载日志\n",
+    });
+  }, second.processId);
+  await completeDownload(page, first.processId);
+  assert.equal((await readState(page)).runningCount, 2);
+  const running = (await readState(page)).queue.find((item) => item.url === secondUrl);
+  assert.equal(running.percent, 45);
+  assert.equal(running.title, "正在下载的视频");
+  assert.equal((await readState(page)).inspection.status, "running");
+  // Finishing a download must not claim an unreceived inspection ID or skip
+  // the completed file's check. Metadata may also finish before its own receipt.
+  await page.evaluate(
+    ({ first, inspection, newUrl }) => {
+      window.__emit("process.output", {
+        processId: first,
+        stream: "stdout",
+        text: "late download noise\n",
+      });
+      window.__holdInspection = false;
+      window.__emit("process.output", {
+        processId: inspection.processId,
+        stream: "stdout",
+        text:
+          JSON.stringify({
+            id: "new-video",
+            title: "新链接解析成功",
+            webpage_url: newUrl,
+            duration: 90,
+            formats: [],
+          }) + "\n",
+      });
+      window.__emit("process.exit", { processId: inspection.processId, code: 0 });
+    },
+    { first: first.processId, inspection, newUrl },
+  );
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("已获取 2/2 条"),
+  );
+  await page.evaluate(() => window.__releaseInspectionSpawn());
+  await page.waitForFunction(() => !document.querySelector("#download-button").disabled);
+  const history = await page.evaluate(
+    () => JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2")).history,
+  );
+  assert.equal(history[0].files[0].status, "present");
+  assert.equal(history[0].checkError || "", "");
+  assert.equal((await readState(page)).runningCount, 2);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".queue-item").length === 5 && window.__downloads.length === 4,
+  );
+  const state = await readState(page);
+  assert.equal(state.queue.find((item) => item.url === newUrl).title, "新链接解析成功");
+  assert.equal(
+    state.queue.find((item) => item.url === otherSiteUrl).title,
+    `Fixture video ${otherSiteUrl}`,
+  );
+  assert.equal(state.runningCount, 3);
+});
+
+test("inspection waits for a pending download receipt without stealing its early progress", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    window.__holdNextDownload = true;
+  });
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const [download] = await downloads(page);
+  await downloadForm(page);
+  await page.locator("#url-input").fill(secondUrl);
+  await page.locator("#inspect-button").click();
+  assert.equal(await page.locator("#cancel-inspect").isVisible(), true);
+  await page.evaluate((processId) => {
+    window.__emit("process.output", {
+      processId,
+      stream: "stdout",
+      text: "meta:下载任务\nprogress:37%|1MiB/s|00:15\n",
+    });
+  }, download.processId);
+  assert.equal((await readState(page)).queue[0].percent, 37);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.__calls.filter(
+          (call) =>
+            call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+        ).length,
+    ),
+    0,
+  );
+  await page.evaluate(() => window.__releaseDownloadSpawn());
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").dataset.state === "ready",
+  );
+  assert.equal((await readState(page)).inspected.title, `Fixture video ${secondUrl}`);
+  assert.equal((await readState(page)).queue[0].title, "下载任务");
+  assert.equal((await readState(page)).queue[0].status, "running");
+});
+
+test("metadata failure, retry and cancellation affect only inspection during a download", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const [download] = await downloads(page);
+  await downloadForm(page);
+  await page.evaluate((url) => {
+    window.__inspectionFailureByUrl[url] = "connection reset by peer";
+  }, secondUrl);
+  await page.locator("#url-input").fill(secondUrl);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").dataset.state === "error",
+  );
+  assert.equal((await readState(page)).queue[0].status, "running");
+  await page.evaluate(() => {
+    window.__holdInspection = true;
+    window.__holdInspectionSpawn = true;
+  });
+  await page.locator("#retry-inspect").click();
+  await page.waitForFunction(() => window.__heldInspection);
+  await page.locator("#cancel-inspect").click();
+  await page.evaluate(() => window.__releaseInspectionSpawn());
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("已取消获取"),
+  );
+  const cancellations = await page.evaluate(() =>
+    window.__calls
+      .filter((call) => call.method === "process.cancel")
+      .map((call) => call.args.processId),
+  );
+  assert.equal(cancellations.includes(download.processId), false);
+  assert.equal(cancellations.length, 1);
+  assert.equal((await readState(page)).queue[0].status, "running");
+  assert.equal(await page.locator("#inspect-button").isEnabled(), true);
+});
+
+test("Chat can inspect a new URL while a download is running", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  const result = await page.evaluate(
+    (url) => window.__panelTools.inspect_video({ url }),
+    secondUrl,
+  );
+  assert.equal(result.status, "ready");
+  assert.equal(result.inspected.title, `Fixture video ${secondUrl}`);
+  assert.equal((await readState(page)).queue[0].status, "running");
+  assert.equal((await readState(page)).runningCount, 1);
 });
 
 test("mixed-site batch inspection works when no Cookie account is selected", async (t) => {

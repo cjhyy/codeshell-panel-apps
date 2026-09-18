@@ -1999,6 +1999,21 @@ function renderSetupCard() {
   }
 }
 
+function inspectionIsBusy() {
+  return Boolean(
+    inspectionJob?.running ||
+    dependencyProbeJob?.running ||
+    dependencyRefreshPending ||
+    versionRefreshPending ||
+    auxiliaryBusy ||
+    completionPending ||
+    queueSubmissionPending ||
+    setupTaskId ||
+    directSetupRunning ||
+    setupSubmissionPending,
+  );
+}
+
 function updateActionAvailability() {
   const ready = Boolean(runtime.ytDlp?.handle && runtime.directory?.handle);
   const validUrl = Boolean(normalizedUrl());
@@ -2045,14 +2060,7 @@ function updateActionAvailability() {
                 : hasRunningDownloads()
                   ? `正在下载 ${runningDownloads().length} 项，可继续添加；最多同时 ${maxConcurrent} 项。`
                   : `${linkCount} 条链接 · ${queuePaused ? "队列已暂停，加入后等待继续" : `最多同时下载 ${maxConcurrent} 项`}`;
-  elements.inspectButton.disabled =
-    !ready ||
-    !validUrl ||
-    auxiliaryBusy ||
-    completionPending ||
-    processBusy ||
-    queueSubmissionPending ||
-    setupActive;
+  elements.inspectButton.disabled = !ready || !validUrl || inspectionIsBusy();
   elements.inspectButton.textContent = inspectionJob?.running
     ? "正在获取…"
     : multipleUrls
@@ -2062,10 +2070,10 @@ function updateActionAvailability() {
           ? "获取前 10 条视频信息"
           : "获取全部视频信息"
       : "获取视频信息";
-  elements.inspectButton.title = hasRunningDownloads()
-    ? "当前下载结束后可获取信息；也可直接加入队列。"
-    : elements.inspectButton.disabled
-      ? document.querySelector("#download-readiness").textContent
+  elements.inspectButton.title = elements.inspectButton.disabled
+    ? document.querySelector("#download-readiness").textContent
+    : hasRunningDownloads()
+      ? "可在下载期间获取新链接的信息，不会中断正在下载的任务。"
       : "";
   document.querySelector("#cancel-inspect").hidden = !inspectionJob?.running;
   document.querySelector("#cancel-inspect").disabled = Boolean(inspectionJob?.cancelRequested);
@@ -2384,7 +2392,11 @@ function finishInspection(succeeded, error = "", exitCode = null) {
   if (!inspectionJob) return;
   const job = inspectionJob;
   if (job.timeout) clearTimeout(job.timeout);
-  if (job.id) job.completedIds.add(job.id);
+  if (job.id) {
+    job.completedIds.add(job.id);
+    rememberIgnoredProbeProcess(job.id);
+  }
+  job.spawning = false;
   const url = job.urls[job.index];
   let detail = error || (succeeded ? "" : friendlyYtDlpError(job.stderr, "获取视频信息", exitCode));
   if (succeeded && !job.cancelRequested) {
@@ -2469,9 +2481,15 @@ async function spawnInspection(job) {
   const index = job.index;
   const url = job.urls[index];
   try {
+    // Resolve any in-flight download launch first. Only one new process may
+    // claim events emitted before its spawn receipt supplies the process ID.
+    if (startingDownload) await startingDownload.launchFinished;
+    if (inspectionJob !== job || job.index !== index) return;
+    if (job.cancelRequested) return finishInspection(false);
     const fileArgumentHandles = await cookieFileArguments(url);
     if (inspectionJob !== job || job.index !== index) return;
     if (job.cancelRequested) return finishInspection(false);
+    job.spawning = true;
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
@@ -2479,6 +2497,7 @@ async function spawnInspection(job) {
       args: inspectionArguments(url),
     });
     if (inspectionJob !== job || job.index !== index || !job.running) return;
+    job.spawning = false;
     job.id ||= result.processId;
     job.timeout = setTimeout(() => {
       if (inspectionJob !== job || job.id !== result.processId) return;
@@ -2523,15 +2542,8 @@ async function inspectVideo({ retryFailed = false } = {}) {
     showError("下载器或保存目录还没有准备好。");
     return;
   }
-  if (
-    hasRunningDownloads() ||
-    inspectionJob?.running ||
-    dependencyProbeJob?.running ||
-    auxiliaryBusy ||
-    completionPending ||
-    queueSubmissionPending
-  ) {
-    showError("当前已有任务正在执行。");
+  if (inspectionIsBusy()) {
+    showError("请等待当前信息查询或准备操作完成后再获取视频信息。");
     return;
   }
   clearFailure();
@@ -2562,6 +2574,7 @@ async function inspectVideo({ retryFailed = false } = {}) {
     stdout: "",
     stderr: "",
     running: true,
+    spawning: false,
     timedOut: false,
     cancelRequested: false,
     timeout: null,
@@ -3235,6 +3248,15 @@ async function finishJob(succeeded, error = "", exitCode = null, job = currentJo
     await saveLibrary();
     if (startingDownload) await startingDownload.launchFinished;
     if (succeeded && Number(context.apiVersion) >= 14) {
+      // The metadata process owns early events until its receipt arrives.
+      // Keep completion checks from competing with that process; the download
+      // is already recorded as complete and other active downloads keep running.
+      if (inspectionJob?.running) {
+        renderHistory();
+        setControlsBusy(false);
+        renderQueue();
+        await new Promise((resolve) => inspectionJob.waiters.push(resolve));
+      }
       await checkFiles(record);
       job.files = record.files;
       await saveLibrary();
@@ -3828,14 +3850,8 @@ function setVideoUrlForAgent(value) {
 }
 
 async function inspectVideoForAgent(args = {}) {
-  if (
-    hasRunningDownloads() ||
-    inspectionJob?.running ||
-    queueSubmissionPending ||
-    auxiliaryBusy ||
-    completionPending
-  ) {
-    throw new Error("当前已有任务正在执行");
+  if (inspectionIsBusy()) {
+    throw new Error("请等待当前信息查询或准备操作完成后再获取视频信息");
   }
   if (typeof args.url === "string") setVideoUrlForAgent(args.url);
   if (typeof args.playlist === "boolean") {
@@ -5478,10 +5494,11 @@ if (panel) {
         return;
       }
     }
-    if (inspectionJob?.running && typeof payload?.processId === "string") {
+    const job = downloadJobForPayload(payload);
+    if (!job && inspectionJob?.running && typeof payload?.processId === "string") {
       if (
         !inspectionJob.completedIds.has(payload.processId) &&
-        (!inspectionJob.id || payload.processId === inspectionJob.id)
+        ((!inspectionJob.id && inspectionJob.spawning) || payload.processId === inspectionJob.id)
       ) {
         inspectionJob.id ||= payload.processId;
         const stream = payload.stream === "stderr" ? "stderr" : "stdout";
@@ -5491,7 +5508,6 @@ if (panel) {
         return;
       }
     }
-    const job = downloadJobForPayload(payload);
     if (!job) return;
     const stream = payload.stream === "stderr" ? "stderr" : "stdout";
     if (typeof payload.text === "string") consumeOutput(stream, payload.text, job);
@@ -5535,10 +5551,11 @@ if (panel) {
         return;
       }
     }
-    if (inspectionJob?.running && typeof payload?.processId === "string") {
+    const job = downloadJobForPayload(payload);
+    if (!job && inspectionJob?.running && typeof payload?.processId === "string") {
       if (
         !inspectionJob.completedIds.has(payload.processId) &&
-        (!inspectionJob.id || payload.processId === inspectionJob.id)
+        ((!inspectionJob.id && inspectionJob.spawning) || payload.processId === inspectionJob.id)
       ) {
         inspectionJob.id ||= payload.processId;
         const succeeded = payload.code === 0 && !inspectionJob.timedOut;
@@ -5553,7 +5570,6 @@ if (panel) {
         return;
       }
     }
-    const job = downloadJobForPayload(payload);
     if (!job) return;
     // yt-dlp may emit its final filename without a trailing newline.
     // An observed exit establishes ownership even if the spawn receipt is late.
