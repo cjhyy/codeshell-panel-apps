@@ -729,7 +729,7 @@ button {
   gap: 8px;
 }
 .history-item {
-  padding: 16px 0;
+  padding: 16px 12px;
   border-bottom: 1px solid var(--line);
 }
 .history-copy strong {
@@ -1210,4 +1210,53 @@ button {
 }
 .video-search-plan > p {
   margin-top: 10px;
+}
+
+.queue-concurrency {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.queue-concurrency > span {
+  flex: none;
+}
+.queue-concurrency select {
+  min-height: 32px;
+}
+.queue-open {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.queue-open:hover strong {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.queue-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.history-jump-status {
+  color: var(--accent);
+  font-size: 12px;
+}
+.history-jump-status:empty {
+  display: none;
+}
+.history-item.history-highlight {
+  background: var(--accent-soft);
+  border-radius: 8px;
+  box-shadow: inset 3px 0 var(--accent);
+  outline: none;
 }

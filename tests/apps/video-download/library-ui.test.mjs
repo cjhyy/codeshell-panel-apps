@@ -49,7 +49,7 @@ after(async () => {
 // Real page/module/event behavior with a synthetic API 14 Host. Host storage is
 // backed by this isolated browser context's localStorage so reload tests model
 // a new Panel lifetime without touching accounts, real files or remote services.
-async function openPanel(t, { width = 1100, colorScheme = "light" } = {}) {
+async function openPanel(t, { width = 1100, colorScheme = "light", concurrency = 1 } = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme });
   const page = await context.newPage();
   page.setDefaultTimeout(6000);
@@ -340,6 +340,8 @@ async function openPanel(t, { width = 1100, colorScheme = "light" } = {}) {
   });
   await page.goto(baseUrl);
   await ready(page);
+  if (concurrency !== null)
+    await page.locator("#queue-concurrency").selectOption(String(concurrency));
   return page;
 }
 
@@ -1059,3 +1061,55 @@ for (const [width, colorScheme] of [
     assert.equal(await page.locator("#page-search").isVisible(), true);
   });
 }
+
+test("concurrent exits keep independent native inventories and persist both completed records", async (t) => {
+  const page = await openPanel(t, { concurrency: 2 });
+  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => window.__downloads.length === 2);
+  const [a, b] = await downloads(page);
+  await page.evaluate(
+    ([a, b]) => {
+      window.__setFiles({
+        "/fixture/project/alpha.mp4": { status: "present", bytes: 111, modifiedAt: 1000 },
+        "/fixture/project/beta.mp4": { status: "present", bytes: 222, modifiedAt: 2000 },
+      });
+      for (const [processId, title, path] of [
+        [b, "Beta", "beta"],
+        [a, "Alpha", "alpha"],
+      ]) {
+        window.__emit("process.output", {
+          processId,
+          stream: "stdout",
+          text: `meta:${title}\nfile:/fixture/project/${path}.mp4\nfiles:[]\n`,
+        });
+        window.__emit("process.exit", { processId, code: 0 });
+      }
+    },
+    [a.processId, b.processId],
+  );
+  await page.waitForFunction(() => {
+    const saved = JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2"));
+    return (
+      saved?.history.length === 2 &&
+      saved.history.every((item) => item.files[0]?.status === "present")
+    );
+  });
+  const saved = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2")),
+  );
+  assert.deepEqual(
+    saved.history.map((item) => [item.title, item.files[0].bytes, item.files[0].path]).sort(),
+    [
+      ["Alpha", 111, "/fixture/project/alpha.mp4"],
+      ["Beta", 222, "/fixture/project/beta.mp4"],
+    ],
+  );
+  assert.equal((await readState(page)).runningCount, 0);
+  assert.equal((await readState(page)).queuePaused, false);
+  await page.reload();
+  await ready(page);
+  assert.equal(await page.locator("#queue-concurrency").inputValue(), "2");
+  await page.locator('[data-tab="history"]').click();
+  assert.equal(await page.locator(".history-item").count(), 2);
+});

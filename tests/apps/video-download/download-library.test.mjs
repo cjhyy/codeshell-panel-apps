@@ -247,3 +247,18 @@ test("copy downloads preserve their distinct output suffix when restored or used
   assert.equal(snapshot.history[0].copySuffix, "a1b2c3d4");
   assert.equal(restoreLibrary(snapshot, "/project").queue[0].copySuffix, "a1b2c3d4");
 });
+
+test("concurrency preference round-trips and older or invalid preferences default to three", () => {
+  for (const maxConcurrent of [1, 2, 3, 4]) {
+    const saved = serializeLibrary({ queue: [], history: [], maxConcurrent }, "fixture");
+    assert.equal(restoreLibrary(saved, "fixture").maxConcurrent, maxConcurrent);
+  }
+  for (const maxConcurrent of [undefined, null, 0, -1, 5, 2.5, "4"]) {
+    assert.equal(
+      restoreLibrary({ version: LIBRARY_VERSION, scope: "fixture", maxConcurrent }, "fixture")
+        .maxConcurrent,
+      3,
+    );
+    assert.equal(serializeLibrary({ queue: [], history: [], maxConcurrent }).maxConcurrent, 3);
+  }
+});

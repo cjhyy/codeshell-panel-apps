@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.17.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.18.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -47,17 +47,24 @@ also renders the actual download list: a single link shows its metadata, while a
 playlist marks every visible entry as `will download` or `skipped` as its range
 changes.
 
-Downloads run through a visible, sequential queue. Adding a task captures its
+Downloads run through a visible queue with **three concurrent tasks by default**.
+The queue selector supports one to four tasks and remembers the setting per project.
+Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
 quality, playlist/subtitle options, output directory, and explicitly authorized
 Cookie handle. The form stays editable during downloads, so another URL can be
 added without changing earlier tasks. Waiting tasks can be removed; the queue
-can pause before the next task; failed or cancelled tasks can be retried. One
-failure does not block the following task. The queue and up to 300 history records persist per project in Host storage.
+can pause before any further tasks start; failed or cancelled tasks can be retried. One
+failure does not stop the other downloads. Each task owns its process identity, progress, logs and output inventory. The queue and up to 300 history records persist per project in Host storage.
 Closing the panel stops active processes; reopening restores pending and interrupted
 items without starting them. **Restore queue** reacquires directory and saved-account
 grants before continuing. No executable handle, directory grant, Cookie file handle,
 Cookie value or process argument list is persisted. If storage fails, new work does
 not start and the queue pauses.
+
+Click a completed, failed or cancelled queue item to open and highlight its download
+record. History filters are reset so the target remains visible. Clicking a running
+or waiting item opens its own progress and log. Queue entries also support keyboard
+activation. Removing a history record leaves its files intact.
 
 Paste up to 100 links at once (including ordinary share text). Canonical video
 aliases are deduplicated within the batch and queue. The form lists every recognized
@@ -154,7 +161,7 @@ both introduced in Panel API v9. The Panel exposes six domain tools:
   the installed and official `yt-dlp` versions without requiring an AI Task or an app restart.
 - `apply_video_download_config` changes format, playlist range, and subtitle settings.
 - `start_video_download` explicitly adds the configured download to the queue and starts it when the queue is ready.
-- `cancel_video_download` cancels the active download.
+- `cancel_video_download` cancels one running download; optional `queueId` selects a specific task.
 
 This still lets an ordinary Session operate the Panel directly when the user
 asks in the conversation. Starting a download remains a separate mutating tool.

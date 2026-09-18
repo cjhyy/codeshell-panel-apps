@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",
@@ -44,7 +44,7 @@
       },
       {
         "name": "get_video_download_context",
-        "description": "Read the current URL, inspection and download status, sequential download queue and pause state, inspected video metadata, destination, available local dependencies, and download configuration.",
+        "description": "Read the current URL, inspection and download status, concurrent download queue, concurrency limit and pause state, inspected video metadata, destination, available local dependencies, and download configuration.",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -119,7 +119,7 @@
       },
       {
         "name": "start_video_download",
-        "description": "Add the current video URL to the sequential download queue with a snapshot of the configuration, selected Cookie authorization, and destination shown in the panel. The queue starts automatically unless paused. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
+        "description": "Add the current video URL to the bounded concurrent download queue with a snapshot of the configuration, selected Cookie authorization, and destination shown in the panel. The queue starts automatically unless paused. Invoke only when the user explicitly asks to download; configuration alone must never call this tool.",
         "inputSchema": {
           "type": "object",
           "properties": {},
@@ -129,10 +129,16 @@
       },
       {
         "name": "cancel_video_download",
-        "description": "Cancel the download currently running in the Mimi Download panel.",
+        "description": "Cancel one running download. Pass queueId from get_video_download_context to target a task; otherwise cancels the selected running task or the first running task.",
         "inputSchema": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "queueId": {
+              "type": "string",
+              "maxLength": 160,
+              "description": "Optional queue item ID to cancel."
+            }
+          },
           "additionalProperties": false
         },
         "readOnly": false
@@ -143,10 +149,22 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "query": { "type": "string", "maxLength": 1200, "description": "What kind of videos to find, including any desired topic or filters." },
+            "query": {
+              "type": "string",
+              "maxLength": 1200,
+              "description": "What kind of videos to find, including any desired topic or filters."
+            },
             "platform": { "type": "string", "enum": ["both", "youtube", "bilibili"] },
-            "providerId": { "type": "string", "maxLength": 256, "description": "Optional Provider ID from a configured CodeShell model connection." },
-            "modelId": { "type": "string", "maxLength": 256, "description": "Optional model connection ID. Takes priority over providerId." }
+            "providerId": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "Optional Provider ID from a configured CodeShell model connection."
+            },
+            "modelId": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "Optional model connection ID. Takes priority over providerId."
+            }
           },
           "required": ["query"],
           "additionalProperties": false

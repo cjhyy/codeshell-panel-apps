@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.17.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.18.0</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -585,6 +585,7 @@
             </label>
             <button id="history-check" class="secondary-button" type="button">检查本地文件</button>
           </div>
+          <p id="history-jump-status" class="history-jump-status" role="status"></p>
           <div id="history-list" class="history-list">
             <div class="empty-history">
               <span>↓</span>
@@ -597,15 +598,24 @@
       <section id="queue-section" class="queue-section" tabindex="-1" aria-labelledby="queue-title">
         <div class="section-heading compact">
           <div>
-            <span class="step-label">按顺序下载</span>
+            <span class="step-label">支持同时下载</span>
             <h2 id="queue-title">下载队列 <span id="queue-count" class="count-tag">0</span></h2>
           </div>
           <button id="queue-clear" class="text-button" type="button" disabled>清除已结束</button>
         </div>
         <p id="library-status" class="library-status" role="status" aria-live="polite"></p>
+        <label class="queue-concurrency">
+          <span>同时下载</span>
+          <select id="queue-concurrency" aria-label="同时下载数量">
+            <option value="1">1 个 · 顺序下载</option>
+            <option value="2">2 个</option>
+            <option value="3" selected>3 个</option>
+            <option value="4">4 个</option>
+          </select>
+        </label>
         <div class="queue-toolbar">
           <p id="queue-summary" class="queue-summary" aria-live="polite">
-            暂无任务 · 按添加顺序下载
+            暂无任务 · 最多同时下载 3 项
           </p>
           <div class="queue-toolbar-actions">
             <button id="queue-restore" class="secondary-button" type="button" hidden>

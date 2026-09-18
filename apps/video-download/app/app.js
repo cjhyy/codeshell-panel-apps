@@ -148,7 +148,13 @@ const SUBTITLE_LANGUAGE_PRESETS = {
 };
 const TAB_NAMES = ["download", "search", "task", "history"];
 
+// currentJob is the task selected in the detail pane, not the only running task.
 let currentJob = null;
+let startingDownload = null;
+let maxConcurrent = 3;
+let highlightedHistoryId = null;
+const runningDownloads = () => downloadQueue.filter((job) => job.running);
+const hasRunningDownloads = () => runningDownloads().length > 0;
 let downloadQueue = [];
 let lastDownloadDirectory = null;
 let queuePaused = false;
@@ -190,7 +196,6 @@ let cookieAccountsError = "";
 let cookieRenderedAccountsUrl = "";
 const cookieSelections = new Map();
 const ignoredProbeProcessIds = new Set();
-const outputBuffers = { stdout: "", stderr: "" };
 let libraryReady = false;
 let libraryScope = "";
 let libraryWrite = Promise.resolve();
@@ -199,7 +204,7 @@ let searchScopeReadyResolve;
 const searchScopeReady = new Promise((resolve) => {
   searchScopeReadyResolve = resolve;
 });
-let completionPending = false;
+let completionPending = 0;
 let auxiliaryBusy = false;
 let auxiliaryGroups = 0;
 let playlistSelectionEmpty = false;
@@ -218,7 +223,7 @@ const auxiliary = createLibraryProcess(panel, {
       directSetupRunning ||
       setupSubmissionPending ||
       setupTaskId ||
-      (currentJob?.running && !currentJob.id)
+      Boolean(startingDownload)
     ) {
       throw new Error("请等待当前操作完成后再检查或搜索。");
     }
@@ -438,10 +443,15 @@ function updateTabIndicators() {
   );
 
   const taskState = elements.taskStateIcon.dataset.state;
-  if (currentJob?.running) {
-    const progress = Number.isFinite(currentJob.percent)
-      ? `${Math.round(currentJob.percent)}%`
-      : "进行中";
+  if (hasRunningDownloads()) {
+    const active = runningDownloads();
+    const visible = currentJob?.running ? currentJob : active[0];
+    const progress =
+      active.length > 1
+        ? `${active.length} 项`
+        : Number.isFinite(visible.percent)
+          ? `${Math.round(visible.percent)}%`
+          : "进行中";
     setTabIndicator(elements.taskTabIndicator, progress);
   } else if (lastFailure || taskState === "failed") {
     setTabIndicator(elements.taskTabIndicator, "!", "danger");
@@ -511,7 +521,7 @@ function renderVersionInfo() {
   elements.refreshVersions.disabled =
     versionRefreshPending ||
     dependencyRefreshPending ||
-    Boolean(currentJob?.running || inspectionJob?.running || queueSubmissionPending);
+    Boolean(hasRunningDownloads() || inspectionJob?.running || queueSubmissionPending);
   elements.refreshVersions.textContent = dependencyRefreshPending
     ? "检测中…"
     : versionRefreshPending
@@ -578,7 +588,7 @@ function saveLibrary() {
   let snapshot;
   try {
     snapshot = serializeLibrary(
-      { queue: downloadQueue, history, queuePaused, directoryPreference },
+      { queue: downloadQueue, history, queuePaused, directoryPreference, maxConcurrent },
       libraryScope,
     );
   } catch (error) {
@@ -612,6 +622,7 @@ async function loadLibrary() {
       history = saved.history;
       queuePaused = saved.queuePaused;
       directoryPreference = saved.directoryPreference;
+      maxConcurrent = saved.maxConcurrent;
     } else history = loadHistory().map(storedRecord).filter(Boolean);
     if (
       directoryPreference?.path &&
@@ -633,6 +644,7 @@ async function loadLibrary() {
           : { ...directoryPreference, handle: null },
       );
     }
+    document.querySelector("#queue-concurrency").value = String(maxConcurrent);
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
       ["restored", "interrupted"].includes(item.status),
@@ -1868,7 +1880,7 @@ function renderSetupCard() {
               ? "下载环境可以重新检查"
               : "下载环境已就绪";
   const processBusy = Boolean(
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
     queueSubmissionPending ||
@@ -1933,7 +1945,7 @@ function updateActionAvailability() {
   const processBusy = Boolean(
     auxiliaryBusy ||
     completionPending ||
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     dependencyProbeJob?.running,
   );
@@ -1968,9 +1980,9 @@ function updateActionAvailability() {
               ? "请选择保存目录。"
               : !validUrl
                 ? "先粘贴链接，或使用 AI 找视频。"
-                : currentJob?.running
-                  ? "可以继续添加，当前下载完成后会自动开始。"
-                  : `${linkCount} 条链接 · ${queuePaused ? "队列已暂停，加入后等待继续" : "加入后按顺序下载"}`;
+                : hasRunningDownloads()
+                  ? `正在下载 ${runningDownloads().length} 项，可继续添加；最多同时 ${maxConcurrent} 项。`
+                  : `${linkCount} 条链接 · ${queuePaused ? "队列已暂停，加入后等待继续" : `最多同时下载 ${maxConcurrent} 项`}`;
   elements.inspectButton.disabled =
     !ready ||
     !validUrl ||
@@ -1988,7 +2000,7 @@ function updateActionAvailability() {
           ? "获取前 10 条视频信息"
           : "获取全部视频信息"
       : "获取视频信息";
-  elements.inspectButton.title = currentJob?.running
+  elements.inspectButton.title = hasRunningDownloads()
     ? "当前下载结束后可获取信息；也可直接加入队列。"
     : elements.inspectButton.disabled
       ? document.querySelector("#download-readiness").textContent
@@ -2103,43 +2115,45 @@ function updateTask({ state, title, percent, speed, eta, status }) {
   updateQueueProgress();
 }
 
-function appendLog(line) {
-  if (!currentJob) return;
+function appendLog(line, job = currentJob) {
+  if (!job) return;
   const clean = String(line).replace(/\r/g, "").trimEnd();
   if (!clean) return;
-  currentJob.log.push(clean);
-  currentJob.log = currentJob.log.slice(-80);
-  elements.taskLog.textContent = currentJob.log.join("\n");
-  elements.taskLog.scrollTop = elements.taskLog.scrollHeight;
+  job.log.push(clean);
+  job.log = job.log.slice(-80);
+  if (currentJob === job) {
+    elements.taskLog.textContent = job.log.join("\n");
+    elements.taskLog.scrollTop = elements.taskLog.scrollHeight;
+  }
 }
 
-function parseOutputLine(line, stream = "stdout") {
-  if (!currentJob) return;
+function parseOutputLine(line, stream = "stdout", job = currentJob) {
+  if (!job) return;
   const clean = line.trim();
   if (!clean) return;
   if (stream === "stderr") {
-    currentJob.stderrTail.push(clean);
-    currentJob.stderrTail = currentJob.stderrTail.slice(-50);
+    job.stderrTail.push(clean);
+    job.stderrTail = job.stderrTail.slice(-50);
   }
   if (clean.startsWith("progress:")) {
     const [percentText = "", speed = "", eta = ""] = clean.slice(9).split("|");
     const percent = Number.parseFloat(percentText.replace("%", "").trim());
-    currentJob.percent = Number.isFinite(percent) ? percent : currentJob.percent;
-    updateTask({
+    job.percent = Number.isFinite(percent) ? percent : job.percent;
+    updateDownloadTask(job, {
       state: "running",
-      title: currentJob.title,
-      percent: currentJob.percent,
+      title: job.title,
+      percent: job.percent,
       speed: speed.trim() && speed.trim() !== "NA" ? speed.trim() : "—",
       eta: eta.trim() && eta.trim() !== "NA" ? eta.trim() : "—",
-      status: currentJob.percent >= 100 ? "正在整理文件" : "下载中",
+      status: job.percent >= 100 ? "正在整理文件" : "下载中",
     });
     return;
   }
   if (clean.startsWith("meta:")) {
-    currentJob.title = clean.slice(5).trim() || currentJob.title;
-    elements.taskTitle.textContent = currentJob.title;
-    updateQueueProgress();
-    appendLog(clean);
+    job.title = clean.slice(5).trim() || job.title;
+    if (currentJob === job) elements.taskTitle.textContent = job.title;
+    updateQueueProgress(job);
+    appendLog(clean, job);
     return;
   }
   if (clean.startsWith("files:")) {
@@ -2153,49 +2167,48 @@ function parseOutputLine(line, stream = "stdout") {
           );
       for (const path of paths) {
         if (typeof path !== "string" || !path || path.length > 4096) {
-          currentJob.filesComplete = false;
+          job.filesComplete = false;
           continue;
         }
-        if (!currentJob.files.some((file) => file.path === path)) {
-          if (currentJob.files.length < 200) currentJob.files.push({ path, status: "unavailable" });
-          else currentJob.filesComplete = false;
+        if (!job.files.some((file) => file.path === path)) {
+          if (job.files.length < 200) job.files.push({ path, status: "unavailable" });
+          else job.filesComplete = false;
         }
       }
     } catch {
-      currentJob.filesComplete = false;
+      job.filesComplete = false;
     }
     return;
   }
   if (clean.startsWith("file:")) {
-    currentJob.file = clean.slice(5).trim();
-    if (!currentJob.files.some((file) => file.path === currentJob.file)) {
-      if (currentJob.files.length < 200)
-        currentJob.files.push({ path: currentJob.file, status: "unavailable" });
-      else currentJob.filesComplete = false;
+    job.file = clean.slice(5).trim();
+    if (!job.files.some((file) => file.path === job.file)) {
+      if (job.files.length < 200) job.files.push({ path: job.file, status: "unavailable" });
+      else job.filesComplete = false;
     }
-    appendLog(clean);
+    appendLog(clean, job);
     return;
   }
   const ordinaryProgress = /\[download\]\s+([\d.]+)%.*?at\s+([^\s]+).*?ETA\s+([^\s]+)/i.exec(clean);
   if (ordinaryProgress) {
-    currentJob.percent = Number.parseFloat(ordinaryProgress[1]);
-    updateTask({
+    job.percent = Number.parseFloat(ordinaryProgress[1]);
+    updateDownloadTask(job, {
       state: "running",
-      title: currentJob.title,
-      percent: currentJob.percent,
+      title: job.title,
+      percent: job.percent,
       speed: ordinaryProgress[2],
       eta: ordinaryProgress[3],
       status: "下载中",
     });
   }
-  appendLog(clean);
+  appendLog(clean, job);
 }
 
-function consumeOutput(stream, text) {
-  outputBuffers[stream] += text;
-  const parts = outputBuffers[stream].split(/\r?\n/);
-  outputBuffers[stream] = parts.pop() || "";
-  parts.forEach((line) => parseOutputLine(line, stream));
+function consumeOutput(stream, text, job = currentJob) {
+  job.outputBuffers[stream] += text;
+  const parts = job.outputBuffers[stream].split(/\r?\n/);
+  job.outputBuffers[stream] = parts.pop() || "";
+  parts.forEach((line) => parseOutputLine(line, stream, job));
 }
 
 function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
@@ -2424,7 +2437,7 @@ async function inspectVideo({ retryFailed = false } = {}) {
     return;
   }
   if (
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
     auxiliaryBusy ||
@@ -2615,16 +2628,74 @@ function queueStatusText(item) {
   );
 }
 
-function updateQueueProgress() {
-  if (!currentJob) return;
-  const row = [...elements.queueList.children].find(
-    (item) => item.dataset.queueId === currentJob.queueId,
+function downloadJobForPayload(payload) {
+  if (typeof payload?.processId !== "string") return null;
+  const existing = runningDownloads().find((job) => job.id === payload.processId);
+  if (existing) return existing;
+  // Launches are serialized so an early event has only one possible new owner.
+  // Already-running processes above always retain their own buffers and state.
+  if (startingDownload?.running && !startingDownload.id) {
+    startingDownload.id = payload.processId;
+    return startingDownload;
+  }
+  return null;
+}
+
+function updateDownloadTask(job, display) {
+  job.display = display;
+  if (currentJob === job) updateTask(display);
+  else {
+    updateQueueProgress(job);
+    updateTabIndicators();
+  }
+}
+
+function selectDownloadTask(job) {
+  currentJob = job;
+  lastDownloadDirectory = job.directory;
+  updateTask(
+    job.display
+      ? { ...job.display, title: job.title }
+      : {
+          state: job.running ? "running" : "idle",
+          title: job.title,
+          percent: job.percent,
+          status: queueStatusText(job),
+        },
   );
+  elements.taskLog.textContent = job.log?.join("\n") || "任务尚未启动。";
+  setControlsBusy(false);
+  activateTab("task");
+}
+
+function showDownloadHistory(job) {
+  highlightedHistoryId = job.queueId;
+  document.querySelector("#history-search").value = "";
+  document.querySelector("#history-filter").value = "all";
+  activateTab("history");
+  renderHistory();
+  const row = [...elements.historyList.children].find(
+    (item) => item.dataset.historyId === job.queueId,
+  );
+  document.querySelector("#history-jump-status").textContent = row
+    ? `已定位：${job.title}`
+    : "这项下载的记录已被清除，已下载的文件不受影响。";
+  if (row) {
+    row.tabIndex = -1;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "center" });
+  }
+}
+
+function updateQueueProgress(job = currentJob) {
+  if (!job) return;
+  const row = [...elements.queueList.children].find((item) => item.dataset.queueId === job.queueId);
   if (!row) return;
-  row.querySelector(".queue-status").textContent = queueStatusText(currentJob);
-  row.querySelector(".queue-copy strong").textContent = currentJob.title;
+  row.querySelector(".queue-status").textContent = queueStatusText(job);
+  row.querySelector(".queue-copy strong").textContent = job.title;
+  row.querySelector(".queue-open").setAttribute("aria-label", `查看任务进度：${job.title}`);
   const bar = row.querySelector(".queue-progress span");
-  if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(currentJob.percent) || 0))}%`;
+  if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(job.percent) || 0))}%`;
 }
 
 function renderQueue() {
@@ -2634,13 +2705,14 @@ function renderQueue() {
   const settled = downloadQueue.filter(
     (item) => !["queued", "running", "restored", "interrupted"].includes(item.status),
   ).length;
-  const activeCount = waiting + (currentJob?.running ? 1 : 0);
+  const runningCount = runningDownloads().length;
+  const activeCount = waiting + runningCount;
   document.querySelector("#queue-jump-count").textContent = String(activeCount);
   document.querySelector("#queue-jump").dataset.active = String(activeCount > 0);
   document.querySelector("#queue-count").textContent = String(downloadQueue.length);
   elements.queueSummary.textContent = downloadQueue.length
-    ? `${currentJob?.running ? "1 项下载中 · " : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
-    : "暂无任务 · 按添加顺序下载";
+    ? `${runningCount ? `${runningCount} 项下载中 · ` : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
+    : `暂无任务 · 最多同时下载 ${maxConcurrent} 项`;
   elements.queuePause.textContent = queuePaused ? "继续队列" : "暂停队列";
   elements.queuePause.setAttribute("aria-pressed", String(queuePaused));
   elements.queueClear.disabled = !settled;
@@ -2655,7 +2727,8 @@ function renderQueue() {
     const title = document.createElement("strong");
     title.textContent = "队列准备好了";
     const help = document.createElement("span");
-    help.textContent = "粘贴链接或从 AI 搜索结果中添加视频。任务依次执行，下载中也能继续添加。";
+    help.textContent =
+      "粘贴链接或从 AI 搜索结果中添加视频。可同时下载多个视频，下载中也能继续添加。";
     empty.append(title, help);
     elements.queueList.append(empty);
     return;
@@ -2665,8 +2738,13 @@ function renderQueue() {
     row.className = "queue-item";
     row.dataset.queueId = item.queueId;
     row.dataset.state = item.status;
-    const copy = document.createElement("div");
-    copy.className = "queue-copy";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "queue-copy queue-open";
+    const finished = ["completed", "failed", "cancelled"].includes(item.status);
+    copy.dataset.queueAction = "open";
+    copy.dataset.queueId = item.queueId;
+    copy.setAttribute("aria-label", `${finished ? "查看下载记录" : "查看任务进度"}：${item.title}`);
     const title = document.createElement("strong");
     title.textContent = item.title;
     const meta = document.createElement("small");
@@ -2713,7 +2791,7 @@ function renderQueue() {
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
       action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
-        item.retryPending,
+        item.retryPending || item.finishing,
       );
     }
     row.append(copy, actions);
@@ -2745,7 +2823,8 @@ async function runNextDownload() {
     auxiliaryBusy ||
     queueSubmissionPending ||
     queuePaused ||
-    currentJob?.running ||
+    startingDownload ||
+    runningDownloads().length >= maxConcurrent ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
     dependencyRefreshPending ||
@@ -2757,7 +2836,15 @@ async function runNextDownload() {
     return;
   const job = downloadQueue.find((item) => item.status === "queued");
   if (!job) return;
-  currentJob = job;
+  startingDownload = job;
+  const launchToken = Symbol("download launch");
+  job.launchToken = launchToken;
+  let releaseLaunch;
+  job.launchFinished = new Promise((resolve) => {
+    releaseLaunch = resolve;
+  });
+  job.releaseLaunch = releaseLaunch;
+  if (!currentJob?.running) currentJob = job;
   lastDownloadDirectory = job.directory;
   Object.assign(job, {
     id: null,
@@ -2768,17 +2855,16 @@ async function runNextDownload() {
     file: "",
     error: "",
     log: [],
+    outputBuffers: { stdout: "", stderr: "" },
     stderrTail: [],
     files: [],
     filesComplete: true,
     startedAt: Date.now(),
   });
-  outputBuffers.stdout = "";
-  outputBuffers.stderr = "";
-  elements.taskLog.textContent = "正在启动 yt-dlp…";
+  if (currentJob === job) elements.taskLog.textContent = "正在启动 yt-dlp…";
   renderQueue();
   setControlsBusy(false);
-  updateTask({
+  updateDownloadTask(job, {
     state: "running",
     title: job.title,
     percent: Number.NaN,
@@ -2787,8 +2873,11 @@ async function runNextDownload() {
     status: "正在连接",
   });
   if (previewMode) {
-    job.id = "preview";
-    appendLog("Browser preview: no local process was started.");
+    job.id = `preview-${job.queueId}`;
+    appendLog("Browser preview: no local process was started.", job);
+    startingDownload = null;
+    releaseLaunch();
+    void runNextDownload();
     return;
   }
   try {
@@ -2800,19 +2889,28 @@ async function runNextDownload() {
       args: job.args,
     });
     // Fast processes can exit before spawn resolves. Never attach their ID to the next item.
-    if (currentJob !== job || !job.running) return;
+    if (!job.running || job.launchToken !== launchToken) return;
     job.id ||= result.processId;
-    appendLog(`Started ${result.executable}`);
-    if (job.cancelRequested) await cancelCurrentJob();
+    appendLog(`Started ${result.executable}`, job);
+    if (job.cancelRequested) await cancelCurrentJob(job);
   } catch (error) {
-    if (currentJob === job && job.running) {
-      finishJob(false, error instanceof Error ? error.message : String(error));
+    if (job.running && job.launchToken === launchToken) {
+      void finishJob(false, error instanceof Error ? error.message : String(error), null, job);
     }
+  } finally {
+    if (startingDownload === job && job.launchToken === launchToken) startingDownload = null;
+    releaseLaunch();
+    void runNextDownload();
   }
 }
 
 async function retryQueuedDownload(item) {
-  if (item.retryPending || queueSubmissionPending || !["failed", "cancelled"].includes(item.status))
+  if (
+    item.finishing ||
+    item.retryPending ||
+    queueSubmissionPending ||
+    !["failed", "cancelled"].includes(item.status)
+  )
     return;
   item.retryPending = true;
   queueSubmissionPending = true;
@@ -2839,20 +2937,20 @@ async function retryQueuedDownload(item) {
   }
 }
 
-async function finishJob(succeeded, error = "", exitCode = null) {
-  if (!currentJob) return;
-  const job = currentJob;
+async function finishJob(succeeded, error = "", exitCode = null, job = currentJob) {
+  if (!job?.running || job.finishing) return;
+  job.finishing = true;
   const cancelled = job.cancelRequested;
   const state = succeeded ? "completed" : cancelled ? "cancelled" : "failed";
   const status = succeeded ? "已完成" : cancelled ? "已取消" : "下载失败";
-  if (outputBuffers.stdout) parseOutputLine(outputBuffers.stdout, "stdout");
-  if (outputBuffers.stderr) parseOutputLine(outputBuffers.stderr, "stderr");
-  outputBuffers.stdout = "";
-  outputBuffers.stderr = "";
-  if (error) appendLog(error);
-  showError(succeeded || cancelled ? "" : error);
+  if (job.outputBuffers.stdout) parseOutputLine(job.outputBuffers.stdout, "stdout", job);
+  if (job.outputBuffers.stderr) parseOutputLine(job.outputBuffers.stderr, "stderr", job);
+  job.outputBuffers.stdout = "";
+  job.outputBuffers.stderr = "";
+  if (error) appendLog(error, job);
+  if (currentJob === job) showError(succeeded || cancelled ? "" : error);
   if (succeeded || cancelled) {
-    clearFailure();
+    if (currentJob === job) clearFailure();
   } else {
     recordFailure({
       operation: "下载",
@@ -2861,9 +2959,10 @@ async function finishJob(succeeded, error = "", exitCode = null) {
       stderr: job.stderrTail.join("\n"),
       exitCode,
       configuration: job.configuration,
+      reveal: currentJob === job,
     });
   }
-  updateTask({
+  updateDownloadTask(job, {
     state,
     title: job.title,
     percent: succeeded ? 100 : job.percent,
@@ -2871,22 +2970,23 @@ async function finishJob(succeeded, error = "", exitCode = null) {
     eta: "—",
     status,
   });
-  completionPending = true;
+  completionPending++;
 
   job.running = false;
   job.status = state;
   job.error = cancelled || succeeded ? "" : error || "下载失败";
   job.percent = succeeded ? 100 : job.percent;
   rememberIgnoredProbeProcess(job.id);
-  currentJob = null;
   job.finishedAt = Date.now();
   if (job.stderrTail.some((line) => /ERROR:/i.test(line))) job.filesComplete = false;
   // Persist the finished task before optional checks; a close during a check loses no queue work.
+  history = history.filter((entry) => entry.queueId !== job.queueId);
   history.unshift(storedRecord(job));
   history = history.slice(0, MAX_HISTORY);
   const record = history[0];
   try {
     await saveLibrary();
+    if (startingDownload) await startingDownload.launchFinished;
     if (succeeded && Number(context.apiVersion) >= 14) {
       await checkFiles(record);
       job.files = record.files;
@@ -2895,7 +2995,8 @@ async function finishJob(succeeded, error = "", exitCode = null) {
   } catch (error) {
     reportLibraryError(error);
   } finally {
-    completionPending = false;
+    completionPending--;
+    job.finishing = false;
     renderHistory();
     setControlsBusy(false);
     renderQueue();
@@ -2903,15 +3004,16 @@ async function finishJob(succeeded, error = "", exitCode = null) {
   }
 }
 
-async function cancelCurrentJob() {
-  if (!currentJob?.running) return;
-  const job = currentJob;
+async function cancelCurrentJob(job = currentJob) {
+  if (!job?.running) return;
   job.cancelRequested = true;
-  elements.cancelButton.disabled = true;
-  elements.taskStatus.textContent = "正在取消";
+  if (currentJob === job) {
+    elements.cancelButton.disabled = true;
+    elements.taskStatus.textContent = "正在取消";
+  }
   renderQueue();
   if (previewMode) {
-    finishJob(false);
+    void finishJob(false, "", null, job);
     return;
   }
   // spawn may still be awaiting Host confirmation; cancel as soon as its ID arrives.
@@ -2919,11 +3021,13 @@ async function cancelCurrentJob() {
   try {
     await panel.call("process.cancel", { processId: job.id });
   } catch (error) {
-    if (currentJob !== job) return;
+    if (!job.running) return;
     job.cancelRequested = false;
-    elements.cancelButton.disabled = false;
-    elements.taskStatus.textContent = "取消失败，下载仍在继续";
-    appendLog(error instanceof Error ? error.message : String(error));
+    if (currentJob === job) {
+      elements.cancelButton.disabled = false;
+      elements.taskStatus.textContent = "取消失败，下载仍在继续";
+    }
+    appendLog(error instanceof Error ? error.message : String(error), job);
     renderQueue();
   }
 }
@@ -2955,6 +3059,7 @@ function renderHistory() {
     const row = document.createElement("article");
     row.className = "history-item";
     row.dataset.historyId = item.queueId;
+    row.classList.toggle("history-highlight", item.queueId === highlightedHistoryId);
     const copy = document.createElement("div");
     copy.className = "history-copy";
     const title = document.createElement("strong");
@@ -3374,6 +3479,8 @@ function videoContextForAgent() {
       error: item.error || null,
     })),
     queuePaused,
+    maxConcurrent,
+    runningCount: runningDownloads().length,
     download: currentJob?.running
       ? {
           status: currentJob.cancelRequested ? "cancelling" : "running",
@@ -3463,7 +3570,7 @@ function setVideoUrlForAgent(value) {
 
 async function inspectVideoForAgent(args = {}) {
   if (
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     queueSubmissionPending ||
     auxiliaryBusy ||
@@ -3519,11 +3626,15 @@ async function startDownloadForAgent() {
   };
 }
 
-async function cancelDownloadForAgent() {
-  if (!currentJob?.running) throw new Error("当前没有正在运行的下载任务");
-  if (!currentJob.id) throw new Error("下载任务仍在启动，请稍后重试");
-  await cancelCurrentJob();
-  return { cancelRequested: true, title: currentJob?.title || null };
+async function cancelDownloadForAgent({ queueId } = {}) {
+  const job = queueId
+    ? runningDownloads().find((item) => item.queueId === queueId)
+    : currentJob?.running
+      ? currentJob
+      : runningDownloads()[0];
+  if (!job) throw new Error("当前没有对应的运行中下载任务");
+  await cancelCurrentJob(job);
+  return { cancelRequested: job.cancelRequested, queueId: job.queueId, title: job.title };
 }
 
 function pushSetupActivity(message, status = "running", kind = "tool", toolName = "") {
@@ -4086,7 +4197,7 @@ async function requestDirectSetup() {
   if (
     setupTaskId ||
     setupSubmissionPending ||
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     auxiliaryBusy ||
     completionPending ||
@@ -4156,7 +4267,7 @@ async function requestAiSetup() {
   }
   if (
     setupSubmissionPending ||
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     auxiliaryBusy ||
     completionPending ||
@@ -4452,7 +4563,7 @@ async function refreshVersionInfo() {
     return { installed: null, latest: null };
   }
   if (
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
     auxiliaryBusy ||
@@ -4544,7 +4655,7 @@ async function refreshRuntimeDependencies() {
     return { ready: true, ytDlp: true, ffmpeg: true, versions, preview: true };
   }
   if (
-    currentJob?.running ||
+    hasRunningDownloads() ||
     inspectionJob?.running ||
     queueSubmissionPending ||
     auxiliaryBusy ||
@@ -4658,7 +4769,7 @@ function registerAgentTools() {
   });
   panel.registerTool("apply_video_download_config", async (args = {}) => applyConfiguration(args));
   panel.registerTool("start_video_download", async () => startDownloadForAgent());
-  panel.registerTool("cancel_video_download", async () => cancelDownloadForAgent());
+  panel.registerTool("cancel_video_download", async (args) => cancelDownloadForAgent(args));
   panel.registerTool("find_videos", async (args = {}) => {
     activateTab("search");
     return videoSearch.startFromChat(args);
@@ -4867,7 +4978,7 @@ elements.taskProviderSelects.forEach((select) => {
 elements.taskModelSelects.forEach((select) => {
   select.addEventListener("change", () => chooseTaskModel(select.value));
 });
-elements.cancelButton.addEventListener("click", cancelCurrentJob);
+elements.cancelButton.addEventListener("click", () => void cancelCurrentJob());
 elements.queuePause.addEventListener("click", () => {
   queuePaused = !queuePaused;
   renderQueue();
@@ -4881,12 +4992,17 @@ elements.queueClear.addEventListener("click", () => {
   void saveLibrary().catch(reportLibraryError);
 });
 elements.queueList.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-queue-action]");
+  const button = event.target.closest("[data-queue-action]") || event.target.closest(".queue-item");
   if (!button) return;
   const item = downloadQueue.find((entry) => entry.queueId === button.dataset.queueId);
   if (!item) return;
-  if (button.dataset.queueAction === "details") activateTab("task");
-  if (button.dataset.queueAction === "cancel" && item === currentJob) void cancelCurrentJob();
+  if (!button.dataset.queueAction || button.dataset.queueAction === "open") {
+    if (["completed", "failed", "cancelled"].includes(item.status)) showDownloadHistory(item);
+    else selectDownloadTask(item);
+  }
+  if (button.dataset.queueAction === "details") selectDownloadTask(item);
+  if (button.dataset.queueAction === "history") showDownloadHistory(item);
+  if (button.dataset.queueAction === "cancel") void cancelCurrentJob(item);
   if (
     button.dataset.queueAction === "remove" &&
     ["queued", "restored", "interrupted"].includes(item.status)
@@ -4897,6 +5013,26 @@ elements.queueList.addEventListener("click", (event) => {
   }
   if (button.dataset.queueAction === "retry" && ["failed", "cancelled"].includes(item.status)) {
     void retryQueuedDownload(item);
+  }
+});
+document.querySelector("#queue-concurrency").addEventListener("change", async (event) => {
+  const control = event.target;
+  const previous = maxConcurrent;
+  const value = Number(control.value);
+  if (!Number.isInteger(value) || value < 1 || value > 4 || !libraryReady) return;
+  maxConcurrent = value;
+  control.disabled = true;
+  try {
+    await saveLibrary();
+  } catch (error) {
+    maxConcurrent = previous;
+    reportLibraryError(error);
+  } finally {
+    control.disabled = false;
+    control.value = String(maxConcurrent);
+    renderQueue();
+    updateActionAvailability();
+    void runNextDownload();
   }
 });
 elements.openDirectory.addEventListener("click", async () => {
@@ -5032,7 +5168,12 @@ if (panel) {
   panel.on("process.output", (payload) => {
     if (
       auxiliary.ignores(payload) &&
-      ![currentJob?.id, inspectionJob?.id, dependencyProbeJob?.id, directSetupProcessJob?.id]
+      ![
+        ...runningDownloads().map((job) => job.id),
+        inspectionJob?.id,
+        dependencyProbeJob?.id,
+        directSetupProcessJob?.id,
+      ]
         .filter(Boolean)
         .includes(payload?.processId)
     )
@@ -5077,22 +5218,25 @@ if (panel) {
         return;
       }
     }
-    if (!currentJob?.running || typeof payload?.processId !== "string") return;
-    if (currentJob.id && payload.processId !== currentJob.id) return;
-    currentJob.id ||= payload.processId;
+    const job = downloadJobForPayload(payload);
+    if (!job) return;
     const stream = payload.stream === "stderr" ? "stderr" : "stdout";
-    if (typeof payload.text === "string") consumeOutput(stream, payload.text);
+    if (typeof payload.text === "string") consumeOutput(stream, payload.text, job);
   });
   panel.on("process.exit", (payload) => {
     if (
       auxiliary.ignores(payload) &&
-      ![currentJob?.id, inspectionJob?.id, dependencyProbeJob?.id, directSetupProcessJob?.id]
+      ![
+        ...runningDownloads().map((job) => job.id),
+        inspectionJob?.id,
+        dependencyProbeJob?.id,
+        directSetupProcessJob?.id,
+      ]
         .filter(Boolean)
         .includes(payload?.processId)
     )
       return;
     if (typeof payload?.processId === "string" && ignoredProbeProcessIds.has(payload.processId)) {
-      ignoredProbeProcessIds.delete(payload.processId);
       return;
     }
     if (directSetupProcessJob?.running && typeof payload?.processId === "string") {
@@ -5136,20 +5280,23 @@ if (panel) {
         return;
       }
     }
-    if (!currentJob?.running || typeof payload?.processId !== "string") return;
-    if (currentJob.id && payload.processId !== currentJob.id) return;
-    currentJob.id ||= payload.processId;
+    const job = downloadJobForPayload(payload);
+    if (!job) return;
     // yt-dlp may emit its final filename without a trailing newline.
-    if (outputBuffers.stdout) parseOutputLine(outputBuffers.stdout, "stdout");
-    if (outputBuffers.stderr) parseOutputLine(outputBuffers.stderr, "stderr");
-    outputBuffers.stdout = "";
-    outputBuffers.stderr = "";
-    const cancelled = currentJob.cancelRequested;
-    const succeeded = payload.code === 0 && !cancelled && Boolean(currentJob.file);
+    // An observed exit establishes ownership even if the spawn receipt is late.
+    // Release that launch so a delayed receipt cannot stall the remaining queue.
+    if (startingDownload === job) startingDownload = null;
+    job.releaseLaunch?.();
+    if (job.outputBuffers.stdout) parseOutputLine(job.outputBuffers.stdout, "stdout", job);
+    if (job.outputBuffers.stderr) parseOutputLine(job.outputBuffers.stderr, "stderr", job);
+    job.outputBuffers.stdout = "";
+    job.outputBuffers.stderr = "";
+    const cancelled = job.cancelRequested;
+    const succeeded = payload.code === 0 && !cancelled && Boolean(job.file);
     const detail = cancelled
       ? ""
-      : friendlyYtDlpError(currentJob.stderrTail.join("\n"), "下载", payload.code);
-    finishJob(succeeded, succeeded ? "" : detail, payload.code);
+      : friendlyYtDlpError(job.stderrTail.join("\n"), "下载", payload.code);
+    void finishJob(succeeded, succeeded ? "" : detail, payload.code, job);
   });
 }
 

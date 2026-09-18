@@ -128,7 +128,8 @@ const store = new Map(),
   processes = new Map();
 let sequence = 0,
   delivery = Promise.resolve(),
-  actualDownloads = 0;
+  actualDownloads = 0,
+  peakConcurrentDownloads = 0;
 const paths = { "exe:yt-dlp": ytdlp, "exe:ffmpeg": ffmpeg, "exe:node": process.execPath };
 const directories = { project: downloads, chosen: alternate };
 const bookmarks = {
@@ -212,8 +213,15 @@ await page.exposeFunction("__hostCall", async (method, args = {}) => {
       args.executableHandle === "exe:yt-dlp" &&
       !argv.includes("--version") &&
       !argv.includes("--skip-download")
-    )
+    ) {
       actualDownloads++;
+      record.isDownload = true;
+      peakConcurrentDownloads = Math.max(
+        peakConcurrentDownloads,
+        [...processes.values()].filter((item) => item.isDownload && item.status === "running")
+          .length,
+      );
+    }
     const child = spawn(paths[args.executableHandle], argv, {
       cwd: directories[args.directoryHandle],
       env,
@@ -329,7 +337,13 @@ try {
     assert.ok(metadata.streams.some((stream) => stream.codec_type === "video"));
     assert.ok(metadata.streams.some((stream) => stream.codec_type === "audio"));
   }
-  passed("two separate queued downloads produce real MP4 files");
+  assert.ok(peakConcurrentDownloads >= 2, "Both real yt-dlp downloads must overlap");
+  passed("concurrent downloads produce two independent playable MP4 files");
+  await page.locator(".queue-open").first().click();
+  assert.equal(await page.locator(".history-highlight").count(), 1);
+  assert.match(await page.locator("#history-jump-status").textContent(), /已定位/);
+  passed("completed queue item opens and highlights its real download record");
+  await page.locator('[data-tab="download"]').click();
   await writeFile(
     join(artifacts, "download-checkpoint.json"),
     JSON.stringify(
@@ -416,6 +430,7 @@ try {
         version,
         checks,
         actualDownloads,
+        peakConcurrentDownloads,
         downloads,
         videoFiles,
         limitations: [

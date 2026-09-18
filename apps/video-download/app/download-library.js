@@ -187,17 +187,25 @@ export function storedRecord(item) {
   };
 }
 
-export function serializeLibrary({ queue, history, queuePaused, directoryPreference }, scope) {
+const concurrencyLimit = (value) =>
+  Number.isInteger(value) && value >= 1 && value <= 4 ? value : 3;
+
+export function serializeLibrary(
+  { queue, history, queuePaused, directoryPreference, maxConcurrent },
+  scope,
+) {
   const result = {
     version: LIBRARY_VERSION,
     scope: text(scope),
     queuePaused: Boolean(queuePaused),
+    maxConcurrent: concurrencyLimit(maxConcurrent),
     directoryPreference: directoryPreference?.path
       ? {
           path: text(directoryPreference.path),
           name: text(directoryPreference.name, 160),
           kind: directoryPreference.kind === "project" ? "project" : "chosen",
-          ...(typeof directoryPreference.bookmark === "string" && /^[a-f0-9-]{36}$/i.test(directoryPreference.bookmark)
+          ...(typeof directoryPreference.bookmark === "string" &&
+          /^[a-f0-9-]{36}$/i.test(directoryPreference.bookmark)
             ? { bookmark: directoryPreference.bookmark }
             : {}),
         }
@@ -240,6 +248,7 @@ export function restoreLibrary(snapshot, scope) {
   }
   return {
     queue,
+    maxConcurrent: concurrencyLimit(snapshot.maxConcurrent),
     history: (Array.isArray(snapshot.history) ? snapshot.history : [])
       .slice(0, MAX_HISTORY)
       .map(storedRecord)
@@ -250,7 +259,8 @@ export function restoreLibrary(snapshot, scope) {
             path: text(snapshot.directoryPreference.path),
             name: text(snapshot.directoryPreference.name, 160),
             kind: snapshot.directoryPreference.kind === "project" ? "project" : "chosen",
-            ...(typeof snapshot.directoryPreference.bookmark === "string" && /^[a-f0-9-]{36}$/i.test(snapshot.directoryPreference.bookmark)
+            ...(typeof snapshot.directoryPreference.bookmark === "string" &&
+            /^[a-f0-9-]{36}$/i.test(snapshot.directoryPreference.bookmark)
               ? { bookmark: snapshot.directoryPreference.bookmark }
               : {}),
           }

@@ -50,7 +50,7 @@ after(async () => {
 
 // The actual page and event handlers run unchanged. Only the authorized Host bridge
 // is replaced: no yt-dlp process, remote request, credential, or real directory is used.
-async function openPanel(t, width = 1280, projectDirectoryError = "") {
+async function openPanel(t, width = 1280, projectDirectoryError = "", concurrency = 1) {
   const context = await browser.newContext({ viewport: { width, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
@@ -191,6 +191,8 @@ async function openPanel(t, width = 1280, projectDirectoryError = "") {
       !document.querySelector("#refresh-versions").disabled
     );
   }, projectDirectoryError);
+  if (concurrency !== null)
+    await page.locator("#queue-concurrency").selectOption(String(concurrency));
   return page;
 }
 
@@ -653,3 +655,275 @@ for (const width of [340, 620, 1280]) {
     await page.screenshot({ path: resolve(artifacts, `queue-${width}.png`), fullPage: true });
   });
 }
+
+test("default concurrency starts three downloads and refills an out-of-order completion", async (t) => {
+  const page = await openPanel(t, 1280, "", null);
+  assert.equal(await page.locator("#queue-concurrency").inputValue(), "3");
+  await page
+    .locator("#url-input")
+    .fill([firstUrl, secondUrl, thirdUrl, "https://youtu.be/fourth"].join("\n"));
+  await page.locator("#download-button").click();
+  const processes = await waitForDownloads(page, 3);
+  const state = await readState(page);
+  assert.equal(state.runningCount, 3);
+  assert.deepEqual(
+    state.queue.map((item) => item.status),
+    ["running", "running", "running", "queued"],
+  );
+  await completeDownload(page, processes[1].processId, { title: "第二个先完成" });
+  await waitForDownloads(page, 4);
+  assert.deepEqual(
+    (await readState(page)).queue.map((item) => item.status),
+    ["running", "completed", "running", "running"],
+  );
+  await page.screenshot({ path: resolve(artifacts, "concurrent-downloads.png"), fullPage: true });
+});
+
+test("interleaved download chunks retain each task's title, progress, log and files", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const [a, b] = await waitForDownloads(page, 2);
+  await page.evaluate(
+    ([a, b]) => {
+      const output = (id, text) =>
+        window.__emit("process.output", { processId: id, stream: "stdout", text });
+      output(a, "meta:Alpha\nprogress:2");
+      output(b, "meta:Beta\nprogress:7");
+      output(a, "5%|1MiB/s|00:12\nalpha-only\n");
+      output(b, "5%|2MiB/s|00:04\nbeta-only\n");
+    },
+    [a.processId, b.processId],
+  );
+  const state = await readState(page);
+  assert.deepEqual(
+    state.queue.map((item) => [item.title, item.percent]),
+    [
+      ["Alpha", 25],
+      ["Beta", 75],
+    ],
+  );
+  await action(page, second.id, "open").click();
+  assert.match(await page.locator("#task-log").textContent(), /beta-only/);
+  assert.doesNotMatch(await page.locator("#task-log").textContent(), /alpha-only/);
+  assert.equal(await page.locator("#task-title").textContent(), "Beta");
+  await action(page, first.id, "open").click();
+  assert.match(await page.locator("#task-log").textContent(), /alpha-only/);
+  assert.doesNotMatch(await page.locator("#task-log").textContent(), /beta-only/);
+  await completeDownload(page, b.processId, { title: "Beta" });
+  await completeDownload(page, a.processId, { title: "Alpha" });
+  await waitForStatus(page, first.id, "completed");
+  await waitForStatus(page, second.id, "completed");
+  const history = await page.evaluate(
+    () =>
+      JSON.parse(
+        localStorage.getItem(
+          Object.keys(localStorage).find((key) => key.startsWith("video-download.library.v2:")),
+        ),
+      ).history,
+  );
+  assert.deepEqual(history.map((item) => [item.title, item.files[0].path]).sort(), [
+    ["Alpha", `/fixture/${a.processId}.mp4`],
+    ["Beta", `/fixture/${b.processId}.mp4`],
+  ]);
+});
+
+test("cancelling a non-selected concurrent task leaves the others running and permits retry", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const [a, b] = await waitForDownloads(page, 2);
+  await action(page, first.id, "open").click();
+  await action(page, second.id, "cancel").click();
+  await waitForStatus(page, second.id, "cancelled");
+  await waitForStatus(page, first.id, "running");
+  const cancelled = await page.evaluate(() =>
+    window.__calls
+      .filter((call) => call.method === "process.cancel")
+      .map((call) => call.args.processId),
+  );
+  assert.deepEqual(cancelled, [b.processId]);
+  await action(page, second.id, "retry").click();
+  const all = await waitForDownloads(page, 3);
+  await completeDownload(page, all[2].processId);
+  await waitForStatus(page, second.id, "completed");
+  await waitForStatus(page, first.id, "running");
+  await completeDownload(page, a.processId);
+  await waitForStatus(page, first.id, "completed");
+  const history = await page.evaluate(
+    () =>
+      JSON.parse(
+        localStorage.getItem(
+          Object.keys(localStorage).find((key) => key.startsWith("video-download.library.v2:")),
+        ),
+      ).history,
+  );
+  assert.equal(history.filter((item) => item.queueId === second.id).length, 1);
+});
+
+test("changing concurrency respects active downloads and remembers the limit on reopen", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  await page
+    .locator("#url-input")
+    .fill([firstUrl, secondUrl, thirdUrl, "https://youtu.be/fourth"].join("\n"));
+  await page.locator("#download-button").click();
+  const [a, b] = await waitForDownloads(page, 2);
+  await page.locator("#queue-concurrency").selectOption("1");
+  await completeDownload(page, a.processId);
+  await page.waitForFunction(
+    async () => (await window.__panelTools.get_video_download_context()).runningCount === 1,
+  );
+  assert.equal((await downloads(page)).length, 2);
+  await page.locator("#queue-concurrency").selectOption("4");
+  await waitForDownloads(page, 4);
+  assert.equal((await readState(page)).runningCount, 3);
+  await page.reload();
+  await page.waitForFunction(
+    () =>
+      window.__panelTools?.get_video_download_context &&
+      document.querySelector("#queue-concurrency").value === "4",
+  );
+  assert.equal((await readState(page)).maxConcurrent, 4);
+  assert.equal((await readState(page)).runningCount, 0);
+  assert.equal(
+    (await downloads(page)).length,
+    0,
+    "Reopening must not auto-resume interrupted work",
+  );
+});
+
+test("a completed queue entry clears history filters, highlights its record and supports keyboard navigation", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const [a, b] = await waitForDownloads(page, 2);
+  await completeDownload(page, b.processId, { title: "Record Beta" });
+  await waitForStatus(page, second.id, "completed");
+  await completeDownload(page, a.processId, { title: "Record Alpha" });
+  await waitForStatus(page, first.id, "completed");
+  await page.locator('[data-tab="history"]').click();
+  await page.locator("#history-search").fill("no such title");
+  await page.locator("#history-filter").selectOption("missing");
+  await action(page, second.id, "open").click();
+  const target = page.locator(`.history-item[data-history-id="${second.id}"]`);
+  assert.equal(await target.isVisible(), true);
+  assert.match(await target.getAttribute("class"), /history-highlight/);
+  assert.equal(await page.locator("#history-search").inputValue(), "");
+  assert.equal(await page.locator("#history-filter").inputValue(), "all");
+  assert.equal(await target.evaluate((element) => element === document.activeElement), true);
+  await action(page, first.id, "open").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator(".history-highlight").getAttribute("data-history-id"), first.id);
+  await page.screenshot({ path: resolve(artifacts, "queue-history-jump.png"), fullPage: true });
+  await page.locator(`[data-history-id="${first.id}"][data-history-action="delete"]`).click();
+  await action(page, first.id, "open").click();
+  assert.match(await page.locator("#history-jump-status").textContent(), /记录已被清除/);
+});
+
+test("the agent can cancel a specified task while another task is selected", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  await waitForDownloads(page, 2);
+  await action(page, first.id, "open").click();
+  const result = await page.evaluate(
+    (queueId) => window.__panelTools.cancel_video_download({ queueId }),
+    second.id,
+  );
+  assert.equal(result.cancelRequested, true);
+  assert.equal(result.queueId, second.id);
+  await waitForStatus(page, second.id, "cancelled");
+  await waitForStatus(page, first.id, "running");
+});
+
+test("pausing a concurrent queue allows in-flight work to finish without filling freed slots", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  await page.locator("#url-input").fill([firstUrl, secondUrl, thirdUrl].join("\n"));
+  await page.locator("#download-button").click();
+  const [a, b] = await waitForDownloads(page, 2);
+  await page.locator("#queue-pause").click();
+  await completeDownload(page, b.processId);
+  await completeDownload(page, a.processId);
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 2,
+  );
+  assert.equal((await downloads(page)).length, 2);
+  assert.equal((await readState(page)).runningCount, 0);
+  await page.locator("#queue-pause").click();
+  await waitForDownloads(page, 3);
+  assert.equal((await readState(page)).runningCount, 1);
+});
+
+test("an early concurrent exit and late receipt never steal an already running process", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  const first = await addDownload(page, firstUrl);
+  const [a] = await waitForDownloads(page, 1);
+  await page.evaluate(() => {
+    window.__holdNextDownload = true;
+  });
+  const second = await addDownload(page, secondUrl);
+  const [, b] = await waitForDownloads(page, 2);
+  const third = await addDownload(page, thirdUrl);
+  await page.evaluate(
+    (processId) =>
+      window.__emit("process.output", {
+        processId,
+        stream: "stdout",
+        text: "meta:Still Alpha\nprogress:35%|1MiB/s|00:05\n",
+      }),
+    a.processId,
+  );
+  await completeDownload(page, b.processId, { title: "Early Beta" });
+  const [, , c] = await waitForDownloads(page, 3);
+  await page.evaluate((processId) => {
+    window.__heldSpawns[processId]();
+    window.__emit("process.output", { processId, stream: "stderr", text: "ERROR: obsolete\n" });
+    window.__emit("process.exit", { processId, code: 1 });
+  }, b.processId);
+  const state = await readState(page);
+  assert.deepEqual(
+    state.queue.map((item) => item.status),
+    ["running", "completed", "running"],
+  );
+  assert.equal(state.queue[0].title, "Still Alpha");
+  assert.equal(state.queue[0].percent, 35);
+  await completeDownload(page, c.processId);
+  await completeDownload(page, a.processId);
+  await waitForStatus(page, first.id, "completed");
+  await waitForStatus(page, third.id, "completed");
+  await waitForStatus(page, second.id, "completed");
+});
+
+test("retrying an early failure ignores that attempt's delayed spawn receipt", async (t) => {
+  const page = await openPanel(t, 1280, "", 2);
+  await page.evaluate(() => {
+    window.__holdNextDownload = true;
+  });
+  const item = await addDownload(page, firstUrl);
+  const [old] = await waitForDownloads(page, 1);
+  await completeDownload(page, old.processId, { code: 1, error: "ERROR: first attempt failed" });
+  await waitForStatus(page, item.id, "failed");
+  await page.evaluate(() => {
+    window.__holdNextDownload = true;
+  });
+  await action(page, item.id, "retry").click();
+  const [, retry] = await waitForDownloads(page, 2);
+  await page.evaluate((id) => window.__heldSpawns[id](), old.processId);
+  await action(page, item.id, "cancel").click();
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "process.cancel").length,
+    ),
+    0,
+  );
+  await page.evaluate((id) => window.__heldSpawns[id](), retry.processId);
+  await waitForStatus(page, item.id, "cancelled");
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.__calls
+        .filter((call) => call.method === "process.cancel")
+        .map((call) => call.args.processId),
+    ),
+    [retry.processId],
+  );
+});
