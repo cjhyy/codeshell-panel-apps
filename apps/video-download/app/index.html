@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.20.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.21.0</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -585,32 +585,34 @@
       >
         <section class="history-section" aria-labelledby="history-title">
           <div class="section-heading compact">
-            <div>
-              <span class="step-label">本地资料库</span>
+            <div class="history-heading-copy">
               <h2 id="history-title">下载记录</h2>
-              <p class="section-description">检查文件、打开视频，或按原设置重新下载。</p>
+              <span id="history-count" class="history-count">0 条记录</span>
             </div>
-            <button
-              id="clear-history"
-              class="text-button"
-              type="button"
-              title="只清除记录，不删除本地文件"
-            >
-              清空记录
-            </button>
+            <div class="history-heading-actions">
+              <button id="history-check" class="text-button" type="button">检查文件</button>
+              <button
+                id="clear-history"
+                class="text-button"
+                type="button"
+                title="只清除记录，不删除本地文件"
+              >
+                清空记录
+              </button>
+            </div>
           </div>
           <div class="history-tools">
             <label class="history-search-field">
-              <span>搜索记录</span>
+              <span class="history-visually-hidden">搜索记录</span>
               <input
                 id="history-search"
                 type="search"
                 maxlength="300"
-                placeholder="标题、网址或文件名"
+                placeholder="搜索标题或文件名…"
               />
             </label>
             <label class="history-filter-field">
-              <span>下载状态</span>
+              <span class="history-visually-hidden">下载状态</span>
               <select id="history-filter">
                 <option value="all">全部状态</option>
                 <option value="completed">已完成</option>
@@ -619,7 +621,6 @@
                 <option value="missing">文件已缺失</option>
               </select>
             </label>
-            <button id="history-check" class="secondary-button" type="button">检查本地文件</button>
           </div>
           <p id="history-jump-status" class="history-jump-status" role="status"></p>
           <div id="history-list" class="history-list">

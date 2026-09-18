@@ -989,7 +989,7 @@ test("historical media and subtitles have separate file actions and missing file
     ),
   );
   assert.match(await page.locator("#history-list").innerText(), /缺失|已删除|不存在/);
-  await page.locator(".history-files summary").click();
+  assert.equal(await page.locator(".history-files").evaluate((node) => node.open), true);
   await openSecond.click();
   await page.waitForFunction(() =>
     document.querySelector("#history-list").textContent.includes("暂时无法访问"),
@@ -1328,6 +1328,150 @@ test("concurrent exits keep independent native inventories and persist both comp
   await page.locator('[data-tab="history"]').click();
   assert.equal(await page.locator(".history-item").count(), 2);
 });
+
+async function seedHistoryList(page) {
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.waitForFunction(() => !document.querySelector("#download-button").disabled);
+  await page.evaluate(() => {
+    const key = "fixture.storage.video-download.library.v2";
+    const snapshot = JSON.parse(localStorage.getItem(key));
+    const base = snapshot.history[0];
+    const rows = [
+      [
+        "Blender 与 AI：从想法到三维模型的完整工作流",
+        "1080",
+        ["Blender-AI.mp4", "Blender-AI.zh.srt"],
+        "completed",
+      ],
+      ["用 AI 辅助剪辑，让素材整理变得更简单", "2160", ["AI-editing.mp4"], "completed"],
+      ["创作者访谈：灵感、工具和日常创作", "audio", ["creator-interview.mp3"], "completed"],
+      [
+        "材质与灯光练习 · 把参考变成自己的作品",
+        "best",
+        ["materials.webm", "materials.en.srt"],
+        "completed",
+      ],
+      ["本地文件已移走的示例记录", "720", ["moved-video.mp4"], "completed"],
+      ["视频下载失败后，仍可按原设置重试", "best", [], "failed"],
+    ];
+    snapshot.history = rows.map(([title, format, names, status], index) => ({
+      ...base,
+      queueId: `history-demo-${index}`,
+      title,
+      status,
+      url: `https://www.youtube.com/watch?v=history-demo-${index}`,
+      configuration: { ...base.configuration, format },
+      finishedAt: Date.now() - index * 1000 * 60 * 75,
+      error: status === "failed" ? "网络连接中断，请稍后重试。" : "",
+      files: names.map((name, fileIndex) => ({
+        path: `/fixture/project/${name}`,
+        status: index === 4 ? "missing" : "present",
+        bytes: fileIndex ? 12804 : 86350240 + index * 20000000,
+        modifiedAt: 1000,
+      })),
+    }));
+    snapshot.queue = [];
+    window.__setFiles(
+      Object.fromEntries(
+        snapshot.history.flatMap((item) => item.files.map((file) => [file.path, file])),
+      ),
+    );
+    localStorage.setItem(key, JSON.stringify(snapshot));
+  });
+  await page.reload();
+  await ready(page);
+  await page.locator('[data-tab="history"]').click();
+}
+
+for (const [width, colorScheme] of [
+  [340, "light"],
+  [620, "light"],
+  [1280, "light"],
+  [1280, "dark"],
+]) {
+  test(`compact history keeps file details and actions accessible at ${width}px in ${colorScheme}`, async (t) => {
+    const page = await openPanel(t, { width, colorScheme });
+    await seedHistoryList(page);
+    const artifacts = resolve(root, "artifacts/video-download/history");
+    await mkdir(artifacts, { recursive: true });
+    assert.equal(await page.locator("#history-count").textContent(), "6 条记录 · 7 个文件");
+    assert.equal(await page.locator(".history-files[open]").count(), 0);
+    assert.equal(await page.locator('[data-history-action="delete"]:visible').count(), 0);
+    const dimensions = await page.evaluate(() => ({
+      width: innerWidth,
+      page: document.documentElement.scrollWidth,
+      heights: [...document.querySelectorAll(".history-item")].map(
+        (row) => row.getBoundingClientRect().height,
+      ),
+    }));
+    assert.ok(dimensions.page <= width, JSON.stringify(dimensions));
+    assert.ok(
+      dimensions.heights.every((height) => height <= 112),
+      JSON.stringify(dimensions),
+    );
+    await page.screenshot({
+      path: resolve(artifacts, `history-${width}-${colorScheme}.png`),
+      fullPage: true,
+    });
+    const first = page.locator('.history-item[data-history-id="history-demo-0"]');
+    await first.locator(".history-row-heading").click();
+    assert.equal(await first.locator(".history-file").count(), 2);
+    assert.equal(await first.locator(".history-file-name").first().textContent(), "Blender-AI.mp4");
+    assert.match(
+      await first.locator(".history-detail-body").innerText(),
+      /保存到 \/fixture\/project/,
+    );
+    const menu = first.locator(".history-menu");
+    await menu.locator("summary").focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await menu.evaluate((node) => node.open), true);
+    await page.keyboard.press("Escape");
+    assert.equal(await menu.evaluate((node) => node.open), false);
+    assert.equal(
+      await menu.locator("summary").evaluate((node) => node === document.activeElement),
+      true,
+    );
+    await menu.locator("summary").click();
+    await first.locator('[data-history-action="check"]').click();
+    await page.waitForFunction(
+      () =>
+        !document.querySelector(
+          '.history-item[data-history-id="history-demo-0"] [data-history-action="check"]',
+        ).disabled,
+    );
+    assert.equal(await first.locator(".history-files").evaluate((node) => node.open), true);
+    await menu.locator("summary").click();
+    await page.locator("#history-search").click();
+    assert.equal(await menu.evaluate((node) => node.open), false);
+    await page.screenshot({
+      path: resolve(artifacts, `history-expanded-${width}-${colorScheme}.png`),
+      fullPage: true,
+    });
+    if (width === 1280 && colorScheme === "light") {
+      await first.locator('[data-history-shortcut="open"]').click();
+      await page.waitForFunction(() =>
+        window.__fileActions.some((action) => action.action === "open"),
+      );
+      await first.locator('[data-history-shortcut="reveal"]').click();
+      await page.waitForFunction(() =>
+        window.__fileActions.some((action) => action.action === "reveal"),
+      );
+      assert.deepEqual(
+        await page.evaluate(() => window.__fileActions.map((action) => action.files[0].path)),
+        ["/fixture/project/Blender-AI.mp4", "/fixture/project/Blender-AI.mp4"],
+      );
+      await menu.locator("summary").click();
+      await first.locator('[data-history-action="delete"]').click();
+      await page.waitForFunction(() => document.querySelectorAll(".history-item").length === 5);
+      assert.equal(
+        await page.evaluate(() => window.__fileMap["/fixture/project/Blender-AI.mp4"].status),
+        "present",
+      );
+    }
+  });
+}
 
 test("paused tasks survive reload, block duplicates and resume without a second queue record", async (t) => {
   const page = await openPanel(t, { concurrency: 2 });

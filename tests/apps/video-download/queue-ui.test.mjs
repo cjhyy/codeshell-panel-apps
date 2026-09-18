@@ -807,6 +807,9 @@ test("a completed queue entry clears history filters, highlights its record and 
   await page.keyboard.press("Enter");
   assert.equal(await page.locator(".history-highlight").getAttribute("data-history-id"), first.id);
   await page.screenshot({ path: resolve(artifacts, "queue-history-jump.png"), fullPage: true });
+  await page
+    .locator(`.history-item[data-history-id="${first.id}"] .history-menu > summary`)
+    .click();
   await page.locator(`[data-history-id="${first.id}"][data-history-action="delete"]`).click();
   await action(page, first.id, "open").click();
   assert.match(await page.locator("#history-jump-status").textContent(), /记录已被清除/);

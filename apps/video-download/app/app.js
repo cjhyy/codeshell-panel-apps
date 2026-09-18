@@ -3343,7 +3343,76 @@ async function requestDownloadStop(job, intent) {
   }
 }
 
+function historyFileName(path, directory = "") {
+  const normalized = String(path || "").replaceAll("\\", "/");
+  const base = String(directory || "")
+    .replaceAll("\\", "/")
+    .replace(/\/$/, "");
+  return base && normalized.startsWith(base + "/")
+    ? normalized.slice(base.length + 1)
+    : normalized.split("/").at(-1) || "未命名文件";
+}
+
+function historyFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function historyTimeLabel(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return "";
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const day = date.toLocaleDateString("zh-CN");
+  const prefix =
+    day === now.toLocaleDateString("zh-CN")
+      ? "今天"
+      : day === yesterday.toLocaleDateString("zh-CN")
+        ? "昨天"
+        : date.toLocaleDateString("zh-CN", {
+            ...(date.getFullYear() !== now.getFullYear() ? { year: "numeric" } : {}),
+            month: "numeric",
+            day: "numeric",
+          });
+  return `${prefix} ${date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+}
+
+function historyIcon(name) {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "1.7");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  const path = document.createElementNS(icon.namespaceURI, "path");
+  path.setAttribute(
+    "d",
+    {
+      play: "M8 5l11 7-11 7z",
+      folder: "M3 7V5h7l2 3h9v12H3V7z",
+      more: "M5 12h.01M12 12h.01M19 12h.01",
+      chevron: "M9 6l6 6-6 6",
+      retry: "M20 7v5h-5M20 12a8 8 0 1 0-2 5",
+    }[name],
+  );
+  if (name === "more") path.setAttribute("stroke-width", "3.5");
+  icon.append(path);
+  return icon;
+}
+
 function renderHistory() {
+  const expanded = new Set(
+    [...elements.historyList.querySelectorAll(".history-files[open]")].map(
+      (node) => node.closest("[data-history-id]").dataset.historyId,
+    ),
+  );
   elements.historyList.replaceChildren();
   updateTabIndicators();
   const query = document.querySelector("#history-search").value.trim().toLowerCase();
@@ -3357,12 +3426,15 @@ function renderHistory() {
       (filter === "all" ||
         (filter === "missing" ? fileInventoryState(item) === "missing" : item.status === filter)),
   );
+  const fileCount = entries.reduce((total, item) => total + (item.files?.length || 0), 0);
+  document.querySelector("#history-count").textContent =
+    `${entries.length}${entries.length !== history.length ? ` / ${history.length}` : ""} 条记录${fileCount ? ` · ${fileCount} 个文件` : ""}`;
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty-history";
     empty.textContent = history.length
-      ? "没有符合条件的记录，试试其他关键词或状态。"
-      : "还没有下载记录。任务结束后会保存在这里，可检查文件、播放或重新下载。";
+      ? "没有找到相关记录，试试其他关键词或状态。"
+      : "还没有下载记录，完成后会显示在这里。";
     elements.historyList.append(empty);
     return;
   }
@@ -3371,90 +3443,186 @@ function renderHistory() {
     row.className = "history-item";
     row.dataset.historyId = item.queueId;
     row.classList.toggle("history-highlight", item.queueId === highlightedHistoryId);
-    const copy = document.createElement("div");
+    const files = item.files || [];
+    const inventory = fileInventoryState(item);
+    const mediaIndex = files.findIndex((file) =>
+      /\.(mp4|mkv|webm|mov|m4v|avi|mp3|m4a|aac|wav|ogg|opus|flac)$/i.test(file.path),
+    );
+    const primaryIndex = mediaIndex >= 0 ? mediaIndex : 0;
+    const extension = files[primaryIndex]?.path.split(".").at(-1)?.toUpperCase();
+    const details = document.createElement("details");
+    details.className = "history-files";
+    details.open = expanded.has(item.queueId);
+    const heading = document.createElement("summary");
+    heading.className = "history-row-heading";
+    const marker = document.createElement("span");
+    marker.className = "history-file-type";
+    marker.textContent = extension && /^[A-Z0-9]{1,5}$/.test(extension) ? extension : "视频";
+    marker.setAttribute("aria-hidden", "true");
+    const copy = document.createElement("span");
     copy.className = "history-copy";
     const title = document.createElement("strong");
     title.textContent = item.title || "未命名视频";
-    const detail = document.createElement("small");
-    const inventory = fileInventoryState(item);
-    const inventoryLabel =
+    title.title = title.textContent;
+    const meta = document.createElement("span");
+    meta.className = "history-meta";
+    const status = document.createElement("span");
+    status.className = "history-status";
+    status.dataset.state = item.status === "completed" ? inventory : item.status;
+    status.textContent =
+      item.status === "completed" && inventory === "missing"
+        ? "文件缺失或变化"
+        : queueStatusText(item);
+    const format = item.configuration?.format;
+    const quality =
+      format === "best"
+        ? "最高画质"
+        : format === "audio"
+          ? "MP3"
+          : /^\d+$/.test(format)
+            ? `${format}p`
+            : "原设置";
+    const information = document.createElement("span");
+    information.textContent = `${quality} · ${files.length} 个文件`;
+    const time = document.createElement("time");
+    time.className = "history-time";
+    time.textContent = historyTimeLabel(item.finishedAt);
+    if (item.finishedAt && Number.isFinite(new Date(item.finishedAt).getTime())) {
+      time.dateTime = new Date(item.finishedAt).toISOString();
+      time.title = new Date(item.finishedAt).toLocaleString("zh-CN");
+    }
+    meta.append(status, information, time);
+    copy.append(title, meta);
+    const chevron = historyIcon("chevron");
+    chevron.classList.add("history-chevron");
+    heading.append(marker, copy, chevron);
+    details.append(heading);
+    const body = document.createElement("div");
+    body.className = "history-detail-body";
+    const destination = document.createElement("p");
+    destination.className = "history-destination";
+    destination.textContent = `保存到 ${item.directory?.path || "原目录"}`;
+    destination.title = item.directory?.path || "";
+    const inventoryNote = document.createElement("p");
+    inventoryNote.className = "history-inventory-note";
+    inventoryNote.textContent =
       inventory === "present"
         ? "上次检查文件存在"
         : inventory === "missing"
           ? "文件已删除或变化"
           : "文件待检查";
-    detail.textContent = `${queueStatusText(item)} · ${item.configuration?.format === "best" ? "最高画质" : item.configuration?.format || "原设置"} · ${item.files?.length || 0} 个文件 · ${inventoryLabel}`;
-    const destination = document.createElement("small");
-    destination.textContent = item.directory?.path || item.url;
-    const time = document.createElement("time");
-    time.className = "history-time";
-    time.textContent = item.finishedAt ? new Date(item.finishedAt).toLocaleString() : "";
-    copy.append(title, detail, destination, time);
-    const actions = document.createElement("div");
-    actions.className = "history-actions";
-    const button = (action, label, index) => {
+    if (!item.filesComplete) inventoryNote.textContent += " · 文件清单不完整";
+    body.append(destination, inventoryNote);
+    if (item.checkError || item.error) {
+      const error = document.createElement("p");
+      error.className = "history-error";
+      error.textContent = item.checkError || item.error;
+      body.append(error);
+    }
+    const button = (action, label, index, shortcut = false) => {
       const node = document.createElement("button");
       node.type = "button";
       node.className = "text-button";
       node.textContent = label;
-      node.dataset.historyAction = action;
+      node.title = label;
+      node.dataset[shortcut ? "historyShortcut" : "historyAction"] = action;
       node.dataset.historyId = item.queueId;
+      node.setAttribute(
+        "aria-label",
+        `${label}：${index === undefined ? item.title : historyFileName(files[index]?.path)}`,
+      );
       if (index !== undefined) node.dataset.fileIndex = String(index);
       return node;
     };
-    actions.append(
+    files.forEach((file, index) => {
+      const line = document.createElement("div");
+      line.className = "history-file";
+      const name = document.createElement("span");
+      name.className = "history-file-name";
+      name.textContent = historyFileName(file.path, item.directory?.path);
+      name.title = file.path;
+      const state = document.createElement("small");
+      state.textContent = [
+        historyFileSize(file.bytes),
+        {
+          present: "存在",
+          missing: "已删除",
+          empty: "空文件",
+          changed: "已变化",
+          unavailable: "待检查",
+        }[file.status] || "待检查",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const controls = document.createElement("div");
+      controls.className = "history-actions";
+      controls.append(button("open", "打开", index), button("reveal", "定位", index));
+      line.append(name, state, controls);
+      body.append(line);
+    });
+    if (!files.length) {
+      const empty = document.createElement("p");
+      empty.className = "history-inventory-note";
+      empty.textContent = "这次任务没有生成可用文件。";
+      body.append(empty);
+    }
+    details.append(body);
+    const actions = document.createElement("div");
+    actions.className = "history-quick-actions";
+    if (["failed", "cancelled"].includes(item.status) || inventory === "missing") {
+      const retry = button("retry", "重新下载", undefined, true);
+      retry.classList.add("history-primary-action");
+      retry.prepend(historyIcon("retry"));
+      actions.append(retry);
+    } else if (mediaIndex >= 0) {
+      const play = button("open", "播放", mediaIndex, true);
+      play.classList.add("history-primary-action");
+      play.prepend(historyIcon("play"));
+      actions.append(play);
+    }
+    if (files.length) {
+      const reveal = button("reveal", "定位文件", primaryIndex, true);
+      reveal.title = "定位文件";
+      reveal.classList.add("history-icon-button");
+      reveal.replaceChildren(historyIcon("folder"));
+      actions.append(reveal);
+    }
+    const menu = document.createElement("details");
+    menu.className = "history-menu";
+    const menuTrigger = document.createElement("summary");
+    menuTrigger.className = "history-icon-button";
+    menuTrigger.setAttribute("aria-label", `更多操作：${item.title || "未命名视频"}`);
+    menuTrigger.title = "更多操作";
+    menuTrigger.append(historyIcon("more"));
+    const menuBody = document.createElement("div");
+    menuBody.className = "history-menu-body";
+    menuBody.append(
       button("check", "检查文件"),
       button("retry", "按原设置重下"),
       button("delete", "删除记录"),
     );
-    copy.append(actions);
-    if (item.checkError) {
-      const error = document.createElement("small");
-      error.textContent = item.checkError;
-      copy.append(error);
-    }
-    if (item.files?.length) {
-      const details = document.createElement("details");
-      details.className = "history-files";
-      const summary = document.createElement("summary");
-      summary.textContent = `查看 ${item.files.length} 个文件${item.filesComplete ? "" : "（清单不完整）"}`;
-      details.append(summary);
-      item.files.forEach((file, index) => {
-        const line = document.createElement("div");
-        line.className = "history-file";
-        const name = document.createElement("span");
-        name.textContent = file.path;
-        name.title = file.path;
-        const state = document.createElement("small");
-        state.textContent =
-          {
-            present: "存在",
-            missing: "已删除",
-            empty: "空文件",
-            changed: "已变化",
-            unavailable: "待检查",
-          }[file.status] || "待检查";
-        const controls = document.createElement("div");
-        controls.className = "history-actions";
-        controls.append(button("open", "播放", index), button("reveal", "定位文件", index));
-        line.append(name, state, controls);
-        details.append(line);
-      });
-      copy.append(details);
-    }
-    row.append(copy);
+    menu.append(menuTrigger, menuBody);
+    menu.addEventListener("toggle", () => {
+      if (menu.open)
+        for (const other of elements.historyList.querySelectorAll(".history-menu[open]"))
+          if (other !== menu) other.open = false;
+    });
+    actions.append(menu);
+    row.append(details, actions);
     elements.historyList.append(row);
   }
 }
 
 async function handleHistoryAction(event) {
-  const button = event.target.closest("[data-history-action]");
+  const button = event.target.closest("[data-history-action], [data-history-shortcut]");
   if (!button || auxiliaryBusy || queueSubmissionPending) return;
   const item = history.find((entry) => entry.queueId === button.dataset.historyId);
   if (!item) return;
   button.disabled = true;
   try {
-    const action = button.dataset.historyAction;
+    const action = button.dataset.historyAction || button.dataset.historyShortcut;
+    const menu = button.closest(".history-menu");
+    if (menu) menu.open = false;
     if (action === "delete") {
       const previousHistory = history;
       history = history.filter((entry) => entry !== item);
@@ -3487,6 +3655,10 @@ async function handleHistoryAction(event) {
   } catch (error) {
     item.checkError = error.message;
     renderHistory();
+    const row = [...elements.historyList.children].find(
+      (row) => row.dataset.historyId === item.queueId,
+    );
+    if (row) row.querySelector(".history-files").open = true;
   } finally {
     button.disabled = false;
   }
@@ -5406,6 +5578,19 @@ document.addEventListener("keydown", (event) => {
 
 queueRestore.addEventListener("click", () => void restoreQueue());
 elements.historyList.addEventListener("click", handleHistoryAction);
+document.addEventListener("click", (event) => {
+  for (const menu of elements.historyList.querySelectorAll(".history-menu[open]"))
+    if (!menu.contains(event.target)) menu.open = false;
+});
+elements.historyList.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const menu = event.target.closest(".history-menu[open]");
+  if (menu) {
+    menu.open = false;
+    menu.querySelector("summary").focus();
+    event.preventDefault();
+  }
+});
 document.querySelector("#history-search").addEventListener("input", renderHistory);
 document.querySelector("#history-filter").addEventListener("change", renderHistory);
 document.querySelector("#history-check").addEventListener("click", async (event) => {
