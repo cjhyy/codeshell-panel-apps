@@ -182,13 +182,16 @@ let setupRequestError = "";
 let setupTaskResult = "";
 let setupTaskActivity = [];
 let analysisTaskId = "";
-let analysisFailureAt = "";
+let analysisSubmissionPending = false;
+let analysisFailure = null;
 let lastFailure = null;
 let history = [];
 let dependencyProbeJob = null;
 let versionRefreshPending = false;
 let versionRefreshError = "";
 let taskModelCatalog = { defaultModel: "", models: [] };
+let taskModelsLoading = false;
+let taskModelsError = "";
 let selectedTaskModelId = "";
 let cookieAccounts = [];
 let cookieAccountsUrl = "";
@@ -298,6 +301,7 @@ function chooseTaskModel(id) {
     next?.id || taskModelCatalog.defaultModel || taskModelCatalog.models[0]?.id || "";
   saveTaskModel(selectedTaskModelId);
   renderTaskModelPickers();
+  updateActionAvailability();
 }
 
 function chooseTaskProvider(providerId) {
@@ -367,6 +371,10 @@ function renderTaskModelPickers() {
 }
 
 async function loadTaskModels() {
+  if (taskModelsLoading) return;
+  taskModelsLoading = true;
+  taskModelsError = "";
+  updateActionAvailability();
   if (previewMode) {
     taskModelCatalog = {
       defaultModel: "preview-openai",
@@ -390,8 +398,9 @@ async function loadTaskModels() {
   } else {
     try {
       taskModelCatalog = normalizedTaskModels(await panel.call("agent.task.models"));
-    } catch {
+    } catch (error) {
       taskModelCatalog = { defaultModel: "", models: [] };
+      taskModelsError = sanitizeDiagnosticText(error?.message || String(error), 300);
     }
   }
   const stored = storedTaskModel();
@@ -399,7 +408,9 @@ async function loadTaskModels() {
     ? stored
     : taskModelCatalog.defaultModel || taskModelCatalog.models[0]?.id || "";
   selectedTaskModelId = initial;
+  taskModelsLoading = false;
   renderTaskModelPickers();
+  updateActionAvailability();
 }
 
 function taskModelStartFields() {
@@ -1846,8 +1857,6 @@ function sanitizeDiagnosticText(value, limit = 8_000) {
 
 function clearFailure() {
   lastFailure = null;
-  analysisTaskId = "";
-  analysisFailureAt = "";
   elements.errorAnalysis.hidden = true;
   elements.errorAnalysisResult.hidden = true;
   elements.errorAnalysisResult.textContent = "";
@@ -2037,13 +2046,6 @@ function updateActionAvailability() {
   const validUrl = Boolean(normalizedUrl());
   const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
   const multipleUrls = linkCount > 1;
-  const processBusy = Boolean(
-    auxiliaryBusy ||
-    completionPending ||
-    hasRunningDownloads() ||
-    inspectionJob?.running ||
-    dependencyProbeJob?.running,
-  );
   const setupActive = Boolean(setupTaskId) || directSetupRunning || setupSubmissionPending;
   elements.downloadButton.disabled =
     !ready ||
@@ -2105,32 +2107,49 @@ function updateActionAvailability() {
     !inspectionFailures.size || Boolean(inspectionJob?.running);
   document.querySelector("#retry-inspect").disabled = elements.inspectButton.disabled;
   elements.openDirectory.disabled = !runtime.directory?.handle;
-  const analysisPending = Boolean(analysisTaskId);
+  // Error analysis is a tool-free AI request; native downloads and file checks
+  // do not own its controls or its task identity.
+  const analysisPending = analysisSubmissionPending || Boolean(analysisTaskId);
   const canAnalyze =
-    Boolean(lastFailure) &&
-    !processBusy &&
-    !analysisPending &&
-    !setupActive &&
-    taskModelCatalog.models.length > 0;
+    Boolean(lastFailure && selectedTaskModel()) && !analysisPending && !taskModelsLoading;
   elements.analyzeErrorButton.disabled = !canAnalyze;
-  elements.analyzeErrorLabel.textContent = analysisPending
-    ? "AI Task 分析中…"
-    : lastFailure?.analysisSubmitted
-      ? "再次让 AI 分析"
-      : "让 AI 分析错误";
+  elements.analyzeErrorLabel.textContent = analysisSubmissionPending
+    ? "正在启动分析…"
+    : analysisPending
+      ? "AI 分析中…"
+      : lastFailure?.analysisSubmitted
+        ? "再次让 AI 分析"
+        : "让 AI 分析错误";
+  const refreshModels = document.querySelector("#refresh-analysis-models");
+  refreshModels.hidden = Boolean(selectedTaskModel()) && !taskModelsError;
+  refreshModels.disabled = taskModelsLoading || analysisPending;
+  refreshModels.textContent = taskModelsLoading ? "正在读取模型…" : "刷新模型";
   if (!lastFailure) {
     elements.errorAnalysis.hidden = true;
   } else if (analysisPending) {
-    elements.errorAnalysisHelp.textContent = "独立 AI Task 正在分析脱敏后的错误和日志。";
+    elements.errorAnalysisHelp.textContent =
+      analysisFailure !== lastFailure
+        ? "正在分析上一条错误，完成后可分析这条错误。"
+        : analysisSubmissionPending
+          ? "正在启动错误分析，其他下载可继续进行。"
+          : "正在分析这次错误，其他下载可继续进行。";
+  } else if (taskModelsLoading) {
+    elements.errorAnalysisHelp.textContent = "正在读取可用的 AI Provider 和模型…";
+  } else if (!selectedTaskModel()) {
+    elements.errorAnalysisHelp.textContent = taskModelsError
+      ? `模型列表读取失败：${taskModelsError}。可点击“刷新模型”重试。`
+      : "没有可用的 AI 模型。请在 CodeShell 设置中添加 Provider 和文本模型，然后点击“刷新模型”。";
   } else if (lastFailure.analysisError) {
     elements.errorAnalysisHelp.textContent = `分析失败：${lastFailure.analysisError}`;
   } else if (lastFailure.analysisSubmitted) {
     elements.errorAnalysisHelp.textContent =
       "分析已完成；不会写入当前对话，也不会修改设置或重新下载。";
   } else {
-    elements.errorAnalysisHelp.textContent =
-      "只把这次脱敏错误交给独立 Task，并在面板内返回处理建议。";
+    elements.errorAnalysisHelp.textContent = "分析这次错误并给出处理建议，不影响正在进行的下载。";
   }
+  elements.analyzeErrorButton.title = canAnalyze
+    ? "分析这次错误，不影响下载"
+    : elements.errorAnalysisHelp.textContent;
   renderSetupCard();
   renderVersionInfo();
   updateQueueControls();
@@ -4819,11 +4838,17 @@ async function requestAiSetup() {
 }
 
 async function requestAiErrorAnalysis() {
-  if (!lastFailure) return;
-  if (analysisTaskId) {
+  if (
+    !lastFailure ||
+    analysisTaskId ||
+    analysisSubmissionPending ||
+    taskModelsLoading ||
+    !selectedTaskModel()
+  ) {
     updateActionAvailability();
     return;
   }
+  const sourceFailure = lastFailure;
   const failure = structuredClone(lastFailure);
   const diagnosticPayload = JSON.stringify(
     {
@@ -4851,7 +4876,8 @@ async function requestAiErrorAnalysis() {
   lastFailure.analysisError = "";
   elements.errorAnalysisResult.hidden = true;
   elements.errorAnalysisResult.textContent = "";
-  analysisFailureAt = failure.occurredAt;
+  analysisFailure = sourceFailure;
+  analysisSubmissionPending = true;
   updateActionAvailability();
   try {
     const task = await panel.call("agent.task.start", {
@@ -4863,19 +4889,21 @@ async function requestAiErrorAnalysis() {
       maxTurns: 3,
       maxContextTokens: 8192,
     });
-    const latest =
-      typeof task?.id === "string" ? await panel.call("agent.task.get", { id: task.id }) : task;
+    if (typeof task?.id !== "string") throw new Error("AI 分析未返回任务，请重试。");
+    analysisTaskId = task.id;
+    const latest = await panel.call("agent.task.get", { id: task.id });
     await handleAgentTaskChanged(latest);
   } catch (error) {
-    if (lastFailure?.occurredAt === failure.occurredAt) {
+    if (lastFailure === sourceFailure) {
       lastFailure.analysisError = sanitizeDiagnosticText(
         error instanceof Error ? error.message : String(error),
         500,
       );
     }
     analysisTaskId = "";
-    analysisFailureAt = "";
+    analysisFailure = null;
   } finally {
+    analysisSubmissionPending = false;
     updateActionAvailability();
   }
 }
@@ -4937,16 +4965,14 @@ async function handleAgentTaskChanged(task) {
     return;
   }
   if (task.key !== "error-analysis") return;
-  if (analysisTaskId && task.id !== analysisTaskId) return;
+  if (!analysisTaskId || task.id !== analysisTaskId) return;
   if (taskIsActive(task)) {
     analysisTaskId = task.id;
     updateActionAvailability();
     return;
   }
   if (analysisTaskId === task.id) analysisTaskId = "";
-  const stillCurrentFailure = Boolean(
-    lastFailure && (!analysisFailureAt || lastFailure.occurredAt === analysisFailureAt),
-  );
+  const stillCurrentFailure = lastFailure && lastFailure === analysisFailure;
   if (stillCurrentFailure) {
     const taskFailure = agentTaskFailure(task, "AI Task 分析失败");
     if (task.status === "completed" && !taskFailure) {
@@ -4959,7 +4985,7 @@ async function handleAgentTaskChanged(task) {
       lastFailure.analysisError = task.status === "cancelled" ? "分析已取消" : taskFailure;
     }
   }
-  analysisFailureAt = "";
+  analysisFailure = null;
   updateActionAvailability();
 }
 
@@ -5460,6 +5486,9 @@ elements.refreshVersions.addEventListener("click", () => {
 elements.setupUpdateButton.addEventListener("click", requestDirectSetup);
 elements.setupAiButton.addEventListener("click", requestAiSetup);
 elements.analyzeErrorButton.addEventListener("click", requestAiErrorAnalysis);
+document
+  .querySelector("#refresh-analysis-models")
+  .addEventListener("click", () => void loadTaskModels());
 elements.taskProviderSelects.forEach((select) => {
   select.addEventListener("change", () => chooseTaskProvider(select.value));
 });

@@ -21,7 +21,7 @@
           <img src="./assets/electron-video-dog.png" alt="" />
         </div>
         <div class="brand-copy">
-          <h1>Mimi Download <span class="app-version">0.21.0</span></h1>
+          <h1>Mimi Download <span class="app-version">0.21.1</span></h1>
           <p>找到想看的，保存到本地。</p>
         </div>
         <div class="topbar-actions">
@@ -568,9 +568,18 @@
             </label>
             <small data-task-model-help>选择只用于这类面板 Task。</small>
           </div>
-          <button id="analyze-error-button" class="error-analysis-button" type="button" disabled>
+          <button
+            id="analyze-error-button"
+            class="error-analysis-button"
+            type="button"
+            aria-describedby="error-analysis-help"
+            disabled
+          >
             <span aria-hidden="true">✦</span>
             <span id="analyze-error-label">让 AI 分析错误</span>
+          </button>
+          <button id="refresh-analysis-models" class="text-button" type="button" hidden>
+            刷新模型
           </button>
         </section>
       </div>

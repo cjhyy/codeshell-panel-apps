@@ -50,7 +50,7 @@ after(async () => {
 
 // The actual page and event handlers run unchanged. Only the authorized Host bridge
 // is replaced: no yt-dlp process, remote request, credential, or real directory is used.
-async function openPanel(t, width = 1280, projectDirectoryError = "", concurrency = 1) {
+async function openPanel(t, width = 1280, projectDirectoryError = "", concurrency = 1, ai = {}) {
   const context = await browser.newContext({ viewport: { width, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
@@ -77,12 +77,17 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
     assert.deepEqual(errors, [], "The download panel must not throw or request remote resources");
   });
   await page.addInitScript(
-    ({ projectDirectoryError }) => {
+    ({ projectDirectoryError, ai }) => {
       const handlers = {};
       let nextProcess = 0;
       window.__panelTools = {};
       window.__calls = [];
       window.__downloads = [];
+      window.__taskModels = ai.models || { models: [], defaultModel: "" };
+      window.__taskModelsError = ai.error || "";
+      window.__agentTasks = {};
+      window.__holdAnalysisStart = false;
+      window.__analysisStartError = "";
       window.__heldSpawns = {};
       window.__holdNextDownload = false;
       window.__cookieAccounts = [];
@@ -110,8 +115,26 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
-          if (method === "agent.task.models") return { models: [], defaultModel: "" };
+          if (method === "agent.task.models") {
+            if (window.__taskModelsError) throw new Error(window.__taskModelsError);
+            return structuredClone(window.__taskModels);
+          }
           if (method === "agent.task.list") return [];
+          if (method === "agent.task.start") {
+            if (window.__analysisStartError) throw new Error(window.__analysisStartError);
+            const task = {
+              id: `analysis-${Object.keys(window.__agentTasks).length + 1}`,
+              key: args.key,
+              status: "running",
+            };
+            window.__agentTasks[task.id] = task;
+            if (window.__holdAnalysisStart)
+              return new Promise((resolve) => {
+                window.__releaseAnalysisStart = () => resolve(structuredClone(task));
+              });
+            return structuredClone(task);
+          }
+          if (method === "agent.task.get") return structuredClone(window.__agentTasks[args.id]);
           if (method === "filesystem.getKnownDirectory") {
             if (args.name !== "project")
               throw new Error(`Unexpected known directory: ${args.name}`);
@@ -181,7 +204,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
       };
     },
-    { projectDirectoryError },
+    { projectDirectoryError, ai },
   );
   await page.goto(baseUrl);
   await page.waitForFunction((projectDirectoryError) => {
@@ -1323,3 +1346,158 @@ test("continue all never restarts completed or cancelled downloads", async (t) =
     ["completed", "cancelled", "running"],
   );
 });
+
+const analysisModels = {
+  defaultModel: "custom/model",
+  models: [
+    {
+      id: "custom/model",
+      providerId: "custom",
+      provider: "外部 Provider",
+      model: "model",
+      label: "分析模型",
+    },
+  ],
+};
+const analysisStarts = (page) =>
+  page.evaluate(() => window.__calls.filter((call) => call.method === "agent.task.start"));
+async function finishAnalysis(page, id, text) {
+  await page.evaluate(
+    ({ id, text }) => {
+      const task = {
+        id,
+        key: "error-analysis",
+        status: "completed",
+        result: { reason: "completed", text },
+      };
+      window.__agentTasks[id] = task;
+      window.__emit("agent.task.changed", task);
+    },
+    { id, text },
+  );
+}
+
+test("AI error analysis remains available while another video downloads and uses the chosen Provider", async (t) => {
+  const page = await openPanel(t, 1280, "", 2, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const processes = await waitForDownloads(page, 2);
+  await completeDownload(page, processes[1].processId, {
+    code: 1,
+    error: "ERROR: HTTP 403 token=fixture-secret",
+  });
+  await waitForStatus(page, second.id, "failed");
+  await page.locator('[data-tab="task"]').click();
+  assert.equal(await page.locator("#analyze-error-button").isEnabled(), true);
+  await page.locator("#analyze-error-button").click();
+  await page.waitForFunction(
+    () => document.querySelector("#analyze-error-label").textContent === "AI 分析中…",
+  );
+  const [request] = await analysisStarts(page);
+  assert.equal(request.args.model, "custom/model");
+  assert.deepEqual(request.args.toolNames, []);
+  assert.match(request.args.prompt, /HTTP 403/);
+  assert.doesNotMatch(request.args.prompt, /fixture-secret/);
+  await finishAnalysis(page, "analysis-1", "请重新登录并保存账号后重试。");
+  await page.waitForFunction(() => !document.querySelector("#error-analysis-result").hidden);
+  assert.equal(
+    await page.locator("#error-analysis-result").textContent(),
+    "请重新登录并保存账号后重试。",
+  );
+  assert.equal(await page.locator("#analyze-error-button").isEnabled(), true);
+  assert.equal((await readState(page)).queue.find((job) => job.id === first.id).status, "running");
+  assert.equal((await downloads(page)).length, 2);
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "process.cancel").length,
+    ),
+    0,
+  );
+});
+
+test("AI analysis blocks duplicate starts and ignores replies belonging to an earlier error", async (t) => {
+  const page = await openPanel(t, 1280, "", 2, { models: analysisModels });
+  const first = await addDownload(page, firstUrl);
+  const second = await addDownload(page, secondUrl);
+  const processes = await waitForDownloads(page, 2);
+  await completeDownload(page, processes[1].processId, { code: 1 });
+  await waitForStatus(page, second.id, "failed");
+  await page.locator('[data-tab="task"]').click();
+  await page.evaluate(() => {
+    window.__holdAnalysisStart = true;
+  });
+  await page.locator("#analyze-error-button").click();
+  assert.equal(await page.locator("#analyze-error-label").textContent(), "正在启动分析…");
+  await page.locator("#analyze-error-button").dispatchEvent("click");
+  assert.equal((await analysisStarts(page)).length, 1);
+  // Editing the form clears its error, but must retain ownership of the AI request.
+  await downloadForm(page);
+  await page.locator("#url-input").fill(thirdUrl);
+  await completeDownload(page, processes[0].processId, {
+    code: 1,
+    error: "ERROR: new network failure",
+  });
+  await waitForStatus(page, first.id, "failed");
+  await page.locator('[data-tab="task"]').click();
+  assert.equal(await page.locator("#analyze-error-button").isEnabled(), false);
+  assert.match(await page.locator("#error-analysis-help").textContent(), /上一条错误/);
+  await page.evaluate(() => {
+    window.__holdAnalysisStart = false;
+    window.__releaseAnalysisStart();
+  });
+  await page.waitForFunction(() => window.__calls.some((call) => call.method === "agent.task.get"));
+  await finishAnalysis(page, "analysis-1", "旧错误的建议");
+  await page.waitForFunction(() => !document.querySelector("#analyze-error-button").disabled);
+  assert.equal(await page.locator("#error-analysis-result").isVisible(), false);
+  await page.locator("#analyze-error-button").click();
+  await page.waitForFunction(
+    () => window.__calls.filter((call) => call.method === "agent.task.get").length === 2,
+  );
+  await finishAnalysis(page, "analysis-1", "重复到达的旧建议");
+  assert.equal(await page.locator("#error-analysis-result").isVisible(), false);
+  await finishAnalysis(page, "analysis-2", "新错误的建议");
+  await page.waitForFunction(
+    () => document.querySelector("#error-analysis-result").textContent === "新错误的建议",
+  );
+});
+
+for (const error of ["", "Fixture model connection unavailable"]) {
+  test(`AI analysis explains ${error ? "unavailable" : "missing"} models and recovers without reopening`, async (t) => {
+    const page = await openPanel(t, 1280, "", 1, { error });
+    const job = await addDownload(page, firstUrl);
+    const [process] = await waitForDownloads(page, 1);
+    await completeDownload(page, process.processId, { code: 1 });
+    await waitForStatus(page, job.id, "failed");
+    assert.equal(await page.locator("#analyze-error-button").isEnabled(), false);
+    assert.match(
+      await page.locator("#error-analysis-help").textContent(),
+      error ? /模型列表读取失败.*刷新模型/ : /没有可用的 AI 模型.*刷新模型/,
+    );
+    await page.evaluate((models) => {
+      window.__taskModels = models;
+      window.__taskModelsError = "";
+    }, analysisModels);
+    await page.locator("#refresh-analysis-models").click();
+    await page.waitForFunction(() => !document.querySelector("#analyze-error-button").disabled);
+    assert.equal(await page.locator("#refresh-analysis-models").isVisible(), false);
+    await page.evaluate(() => {
+      window.__analysisStartError = "Fixture Provider unavailable";
+    });
+    await page.locator("#analyze-error-button").click();
+    await page.waitForFunction(() =>
+      document.querySelector("#error-analysis-help").textContent.includes("分析失败"),
+    );
+    assert.equal(await page.locator("#analyze-error-button").isEnabled(), true);
+    await page.evaluate(() => {
+      window.__analysisStartError = "";
+    });
+    await page.locator("#analyze-error-button").click();
+    await page.waitForFunction(
+      () => document.querySelector("#analyze-error-label").textContent === "AI 分析中…",
+    );
+    await finishAnalysis(page, "analysis-1", "连接已恢复");
+    await page.waitForFunction(
+      () => document.querySelector("#error-analysis-result").textContent === "连接已恢复",
+    );
+  });
+}
