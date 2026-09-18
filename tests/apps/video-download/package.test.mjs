@@ -9,7 +9,7 @@ test("published Host accepts the complete download panel and verifies its native
     path: fileURLToPath(new URL("../../../apps/video-download", import.meta.url)),
   });
   assert.equal(preview.id, "video-download");
-  assert.equal(preview.version, "0.16.5");
+  assert.equal(preview.version, "0.17.0");
   assert.equal(preview.nativeEntries["download-library"].entry, "app/tools/library.mjs");
   for (const permission of ["process", "storage", "agent.task", "external.open"])
     assert.ok(preview.permissions.includes(permission));

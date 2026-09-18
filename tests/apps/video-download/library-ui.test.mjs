@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -49,8 +49,8 @@ after(async () => {
 // Real page/module/event behavior with a synthetic API 14 Host. Host storage is
 // backed by this isolated browser context's localStorage so reload tests model
 // a new Panel lifetime without touching accounts, real files or remote services.
-async function openPanel(t) {
-  const context = await browser.newContext({ viewport: { width: 1100, height: 1000 } });
+async function openPanel(t, { width = 1100, colorScheme = "light" } = {}) {
+  const context = await browser.newContext({ viewport: { width, height: 1000 }, colorScheme });
   const page = await context.newPage();
   page.setDefaultTimeout(6000);
   const errors = [];
@@ -87,10 +87,18 @@ async function openPanel(t) {
     window.__inspectionPayload = null;
     window.__inspectionPayloadByUrl = {};
     window.__inspectionFailureByUrl = {};
+    window.__holdInspection = false;
+    window.__holdInspectionSpawn = false;
+    window.__rejectInspectionCancel = false;
     window.__nativeRequests = [];
     window.__fileMap = JSON.parse(localStorage.getItem("fixture.files") || "{}");
     window.__searchPayload = { entries: [] };
-    window.__nextDirectory = { handle: "directory-other", name: "Other", path: "/fixture/other", bookmark: "a0123456-1234-4567-8901-123456789abc" };
+    window.__nextDirectory = {
+      handle: "directory-other",
+      name: "Other",
+      path: "/fixture/other",
+      bookmark: "a0123456-1234-4567-8901-123456789abc",
+    };
     window.__restoreDirectoryUnavailable = localStorage.getItem("fixture.legacyHost") === "true";
     window.__setFiles = (files) => {
       Object.assign(window.__fileMap, files);
@@ -165,7 +173,8 @@ async function openPanel(t) {
         if (method === "filesystem.pickDirectory") return structuredClone(window.__nextDirectory);
         if (method === "filesystem.restoreDirectory") {
           if (window.__restoreDirectoryUnavailable) throw new Error("unknown Panel App method");
-          if (args.bookmark !== window.__nextDirectory.bookmark) throw new Error("invalid bookmark");
+          if (args.bookmark !== window.__nextDirectory.bookmark)
+            throw new Error("invalid bookmark");
           return structuredClone(window.__nextDirectory);
         }
         if (method === "filesystem.openDirectory") return { opened: true };
@@ -226,6 +235,14 @@ async function openPanel(t) {
             setTimeout(() => finish(processId, JSON.stringify(window.__searchPayload) + "\n"), 0);
           } else if (argv.includes("--dump-single-json") || argv.includes("--dump-json")) {
             const sourceUrl = argv.at(-1);
+            if (window.__holdInspection) {
+              window.__heldInspection = { processId, url: sourceUrl };
+              if (window.__holdInspectionSpawn)
+                return new Promise((resolve) => {
+                  window.__releaseInspectionSpawn = () => resolve({ processId });
+                });
+              return { processId };
+            }
             const payload = Object.hasOwn(window.__inspectionPayloadByUrl, sourceUrl)
               ? window.__inspectionPayloadByUrl[sourceUrl]
               : window.__inspectionPayload;
@@ -313,6 +330,7 @@ async function openPanel(t) {
           };
         }
         if (method === "process.cancel") {
+          if (window.__rejectInspectionCancel) throw new Error("暂时无法取消");
           setTimeout(() => finish(args.processId, "", null), 0);
           return { cancelled: true };
         }
@@ -355,7 +373,7 @@ async function completeDownload(page, processId, files = [`/fixture/project/${pr
       window.__emit("process.output", {
         processId,
         stream: "stdout",
-        text: `meta:Fixture video\nprogress:100.0%|2MiB/s|00:00\n${files.map((path) => `file:${path}\n`).join("")}`,
+        text: `meta:Fixture video\nprogress:100.0%|2MiB/s|00:00\n${files.map((path) => `file:${path}\nfiles:[]\n`).join("")}`,
       });
       window.__emit("process.exit", { processId, code: 0 });
     },
@@ -369,7 +387,9 @@ async function completeDownload(page, processId, files = [`/fixture/project/${pr
 test("batch paste deduplicates video aliases and adds each unique link once", async (t) => {
   const page = await openPanel(t);
   await downloadForm(page);
-  await page.locator("#url-input").fill(`${firstUrl}\nhttps://youtu.be/library-first?si=duplicate\n${secondUrl}`);
+  await page
+    .locator("#url-input")
+    .fill(`${firstUrl}\nhttps://youtu.be/library-first?si=duplicate\n${secondUrl}`);
   assert.match(await page.locator("#batch-status").textContent(), /已合并 1 条重复链接/);
   assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
   await page.locator("#download-button").click();
@@ -387,61 +407,180 @@ test("one failed link does not hide another batch link's verified information", 
   }, secondUrl);
   await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
   await page.locator("#inspect-button").click();
-  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 1/2 条"));
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status")?.textContent?.includes("已获取 1/2 条"),
+  );
   assert.equal(await page.locator("#download-list-items article").count(), 2);
-  assert.match(await page.locator("#download-list-items article").first().textContent(), /Fixture video/);
-  assert.match(await page.locator("#download-list-items article").last().textContent(), /Second video unavailable.*获取失败/);
+  assert.match(
+    await page.locator("#download-list-items article").first().textContent(),
+    /Fixture video/,
+  );
+  assert.match(
+    await page.locator("#download-list-items article").last().textContent(),
+    /Second video unavailable.*获取失败/,
+  );
   assert.equal(await page.locator("#download-button").isEnabled(), true);
   await page.locator("#download-button").click();
-  await page.waitForFunction(async () => (await window.__panelTools.get_video_download_context()).queue.length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 2);
   assert.equal((await readState(page)).queue.length, 2);
 });
 
 test("failed batch inspections identify every attempted link", async (t) => {
   const page = await openPanel(t);
-  await page.evaluate(({ firstUrl, secondUrl }) => {
-    window.__inspectionFailureByUrl[firstUrl] = "First video unavailable";
-    window.__inspectionFailureByUrl[secondUrl] = "Second video unavailable";
-  }, { firstUrl, secondUrl });
+  await page.evaluate(
+    ({ firstUrl, secondUrl }) => {
+      window.__inspectionFailureByUrl[firstUrl] = "First video unavailable";
+      window.__inspectionFailureByUrl[secondUrl] = "Second video unavailable";
+    },
+    { firstUrl, secondUrl },
+  );
   await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
   await page.locator("#inspect-button").click();
-  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 0/2 条；2 条失败"));
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status")?.textContent?.includes("已获取 0/2 条；2 条失败"),
+  );
   const rows = page.locator("#download-list-items article");
   assert.equal(await rows.count(), 2);
   assert.match(await rows.first().textContent(), /First video unavailable.*获取失败/);
   assert.match(await rows.last().textContent(), /Second video unavailable.*获取失败/);
+  assert.equal(
+    await page.locator("#page-download").isVisible(),
+    true,
+    "Inspection failures must stay beside the links",
+  );
+});
+
+test("retrying failed metadata preserves successful links and only rechecks failures", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate((url) => {
+    window.__inspectionFailureByUrl[url] = "connection reset by peer";
+  }, secondUrl);
+  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("已获取 1/2 条"),
+  );
+  assert.match(
+    await page.locator("#download-list-items article").last().textContent(),
+    /视频来源连接中断或超时/,
+  );
+  assert.equal(await page.locator("#download-list-actions").isVisible(), false);
+  await page.evaluate((url) => {
+    delete window.__inspectionFailureByUrl[url];
+  }, secondUrl);
+  await page.locator("#retry-inspect").click();
+  await page.waitForFunction(
+    () => document.querySelector("#inspect-status").textContent === "已获取 2/2 条视频信息。",
+  );
+  assert.equal(await page.locator("#retry-inspect").isVisible(), false);
+  const calls = await page.evaluate(() =>
+    window.__calls
+      .filter(
+        (call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+      )
+      .map((call) => call.args.args.at(-1)),
+  );
+  assert.deepEqual(calls, [firstUrl, secondUrl, secondUrl]);
+});
+
+for (const pendingSpawn of [false, true]) {
+  test(`metadata cancellation stops the batch, including pending spawn: ${pendingSpawn}`, async (t) => {
+    const page = await openPanel(t);
+    await page.evaluate((pending) => {
+      window.__holdInspection = true;
+      window.__holdInspectionSpawn = pending;
+    }, pendingSpawn);
+    await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() => window.__heldInspection);
+    await page.locator("#cancel-inspect").click();
+    if (pendingSpawn) {
+      assert.equal(await page.locator("#url-input").isDisabled(), true);
+      await page.evaluate(() => window.__releaseInspectionSpawn());
+    }
+    await page.waitForFunction(() =>
+      document.querySelector("#inspect-status").textContent.includes("已取消获取"),
+    );
+    assert.equal(await page.locator("#url-input").isEnabled(), true);
+    assert.equal(await page.locator("#cancel-inspect").isVisible(), false);
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.__calls.filter(
+            (call) =>
+              call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+          ).length,
+      ),
+      1,
+    );
+    assert.equal((await downloads(page)).length, 0);
+  });
+}
+
+test("rejected metadata cancellation keeps the query active and allows retry", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    window.__holdInspection = true;
+    window.__rejectInspectionCancel = true;
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => window.__heldInspection);
+  await page.locator("#cancel-inspect").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("取消未成功"),
+  );
+  assert.equal(await page.locator("#url-input").isDisabled(), true);
+  await page.evaluate(() => {
+    window.__rejectInspectionCancel = false;
+  });
+  await page.locator("#cancel-inspect").click();
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status").textContent.includes("已取消获取"),
+  );
+  assert.equal(await page.locator("#download-button").isEnabled(), true);
 });
 
 test("mixed-site batch inspection works when no Cookie account is selected", async (t) => {
   const page = await openPanel(t);
   await page.locator("#url-input").fill(`${firstUrl}\n${otherSiteUrl}`);
   await page.locator("#inspect-button").click();
-  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"));
-  const inspections = await page.evaluate(() =>
-    window.__calls.filter((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"),
   );
-  assert.deepEqual(inspections.map((entry) => entry.args.args.at(-1)), [firstUrl, otherSiteUrl]);
+  const inspections = await page.evaluate(() =>
+    window.__calls.filter(
+      (call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+    ),
+  );
+  assert.deepEqual(
+    inspections.map((entry) => entry.args.args.at(-1)),
+    [firstUrl, otherSiteUrl],
+  );
   assert.equal(await page.locator("#download-list-items article").count(), 2);
 });
 
 test("batch links inspect each video and preserve distinct titles when queued", async (t) => {
   const page = await openPanel(t);
-  await page.evaluate(({ firstUrl, secondUrl }) => {
-    window.__inspectionPayloadByUrl[firstUrl] = {
-      id: "first",
-      title: "First video",
-      webpage_url: firstUrl,
-      duration: 90,
-      formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
-    };
-    window.__inspectionPayloadByUrl[secondUrl] = {
-      id: "second",
-      title: "Second video",
-      webpage_url: secondUrl,
-      duration: 120,
-      formats: [{ height: 2160, vcodec: "avc1", acodec: "none" }],
-    };
-  }, { firstUrl, secondUrl });
+  await page.evaluate(
+    ({ firstUrl, secondUrl }) => {
+      window.__inspectionPayloadByUrl[firstUrl] = {
+        id: "first",
+        title: "First video",
+        webpage_url: firstUrl,
+        duration: 90,
+        formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
+      };
+      window.__inspectionPayloadByUrl[secondUrl] = {
+        id: "second",
+        title: "Second video",
+        webpage_url: secondUrl,
+        duration: 120,
+        formats: [{ height: 2160, vcodec: "avc1", acodec: "none" }],
+      };
+    },
+    { firstUrl, secondUrl },
+  );
   await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
   assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
   assert.equal(await page.locator("#download-list-items article").count(), 2);
@@ -449,23 +588,39 @@ test("batch links inspect each video and preserve distinct titles when queued", 
   assert.equal(await page.locator("#inspect-button").textContent(), "获取全部视频信息");
   assert.match(await page.locator("#inspect-status").textContent(), /逐条核对/);
   await page.locator("#inspect-button").click();
-  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"));
-  const inspections = await page.evaluate(() =>
-    window.__calls.filter((call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json")),
+  await page.waitForFunction(() =>
+    document.querySelector("#inspect-status")?.textContent?.includes("已获取 2/2 条"),
   );
-  assert.deepEqual(inspections.map((entry) => entry.args.args.at(-1)), [firstUrl, secondUrl]);
+  const inspections = await page.evaluate(() =>
+    window.__calls.filter(
+      (call) => call.method === "process.spawn" && call.args.args?.includes("--dump-single-json"),
+    ),
+  );
+  assert.deepEqual(
+    inspections.map((entry) => entry.args.args.at(-1)),
+    [firstUrl, secondUrl],
+  );
   assert.match(await page.locator("#inspect-status").textContent(), /已获取 2\/2 条/);
   assert.match(await page.locator("#download-list-count").textContent(), /2 条链接/);
   assert.equal(await page.locator("#download-list-items article").count(), 2);
-  assert.deepEqual(await page.locator("#download-list-items article strong").allTextContents(), ["First video", "Second video"]);
+  assert.deepEqual(await page.locator("#download-list-items article strong").allTextContents(), [
+    "First video",
+    "Second video",
+  ]);
   assert.match(await page.locator("#quality-help").textContent(), /分别使用实际可用的画质/);
   assert.equal(await page.locator('#quality-select option[value="2160"]').count(), 1);
   assert.equal((await readState(page)).queue.length, 0);
   await page.locator("#download-button").click();
-  await page.waitForFunction(async () => (await window.__panelTools.get_video_download_context()).queue.length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 2);
   const queue = (await readState(page)).queue;
-  assert.deepEqual(queue.map((item) => item.url), [firstUrl, secondUrl]);
-  assert.deepEqual(queue.map((item) => item.title), ["First video", "Second video"]);
+  assert.deepEqual(
+    queue.map((item) => item.url),
+    [firstUrl, secondUrl],
+  );
+  assert.deepEqual(
+    queue.map((item) => item.title),
+    ["First video", "Second video"],
+  );
 });
 
 test("reloading restores pending work paused and only an explicit restore action can start it", async (t) => {
@@ -546,12 +701,26 @@ test("the same video can be downloaded to a different selected output directory"
 test("selected download directory restores a fresh grant without another picker after reload", async (t) => {
   const page = await openPanel(t);
   await page.locator("#choose-directory").click();
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2") || "null")?.directoryPreference?.path === "/fixture/other");
+  await page.waitForFunction(
+    () =>
+      JSON.parse(localStorage.getItem("fixture.storage.video-download.library.v2") || "null")
+        ?.directoryPreference?.path === "/fixture/other",
+  );
   await page.reload();
   await page.locator("#restore-directory").waitFor({ state: "hidden" });
   assert.equal(await page.locator("#destination-path").textContent(), "/fixture/other");
-  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "filesystem.pickDirectory").length), 0);
-  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "filesystem.restoreDirectory").length), 1);
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "filesystem.pickDirectory").length,
+    ),
+    0,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "filesystem.restoreDirectory").length,
+    ),
+    1,
+  );
 });
 
 test("older Hosts still offer manual re-selection for remembered directories", async (t) => {
@@ -760,11 +929,16 @@ test("repeated checks keep replaced files changed and re-downloads use a distinc
   );
 });
 
-test("yt-dlp moved-file inventory retains subtitle sidecars alongside the primary video", async (t) => {
+test("yt-dlp final subtitle paths are retained alongside the primary video", async (t) => {
   const page = await openPanel(t);
   await addDownload(page);
   await page.waitForFunction(() => window.__downloads.length === 1);
   const processId = (await downloads(page))[0].processId;
+  assert.ok(
+    (await downloads(page))[0].args.includes(
+      "after_move:files:%(requested_subtitles.:.filepath|[])j",
+    ),
+  );
   await page.evaluate((processId) => {
     const media = "/fixture/project/video.mp4";
     const subtitle = "/fixture/project/video.zh.srt";
@@ -772,7 +946,7 @@ test("yt-dlp moved-file inventory retains subtitle sidecars alongside the primar
     window.__emit("process.output", {
       processId,
       stream: "stdout",
-      text: `file:${media}\nfiles:${JSON.stringify({ [media]: media, [subtitle]: "" })}\n`,
+      text: `file:${media}\nfiles:${JSON.stringify([subtitle])}\n`,
     });
     window.__emit("process.exit", { processId, code: 0 });
   }, processId);
@@ -797,3 +971,91 @@ test("the download keyboard shortcut cannot enqueue an old link from the AI sear
   assert.equal((await readState(page)).queue.length, 0);
   assert.equal((await downloads(page)).length, 0);
 });
+
+for (const [width, colorScheme] of [
+  [340, "light"],
+  [620, "light"],
+  [1280, "light"],
+  [1280, "dark"],
+]) {
+  test(`polished workspace supports the full navigation at ${width}px in ${colorScheme}`, async (t) => {
+    const page = await openPanel(t, { width, colorScheme });
+    const artifacts = resolve(root, "artifacts/video-download/interface");
+    await mkdir(artifacts, { recursive: true });
+    assert.equal(await page.locator("#environment-details").evaluate((node) => node.open), false);
+    await page.evaluate(
+      ({ firstUrl, secondUrl }) => {
+        for (const [url, title, duration] of [
+          [firstUrl, "Blender 入门：从基础形状到第一个模型", 1080],
+          [secondUrl, "用 AI 辅助剪辑：完整工作流演示", 720],
+        ])
+          window.__inspectionPayloadByUrl[url] = {
+            id: url,
+            title,
+            webpage_url: url,
+            duration,
+            uploader: "演示频道",
+            upload_date: "20260918",
+            formats: [{ height: 1080, vcodec: "avc1", acodec: "none" }],
+          };
+      },
+      { firstUrl, secondUrl },
+    );
+    await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() =>
+      document.querySelector("#inspect-status").textContent.includes("已获取 2/2 条"),
+    );
+    assert.equal(await page.locator("#download-list-actions").isVisible(), false);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() => window.__downloads.length === 1);
+    const [process] = await downloads(page);
+    await page.evaluate(
+      (id) =>
+        window.__emit("process.output", {
+          processId: id,
+          stream: "stdout",
+          text: "meta:Blender 入门：从基础形状到第一个模型\nprogress:47.1%|3.2MiB/s|00:30\n",
+        }),
+      process.processId,
+    );
+    await page.waitForFunction(() => {
+      const track = document.querySelector(".queue-progress");
+      const fill = track?.querySelector("span");
+      return (
+        track &&
+        fill &&
+        Math.abs(fill.getBoundingClientRect().width / track.getBoundingClientRect().width - 0.471) <
+          0.02
+      );
+    });
+    for (const tab of ["download", "task", "search", "history"]) {
+      await page.locator(`[data-tab="${tab}"]`).click();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      assert.equal(await page.locator("#queue-list").isVisible(), true);
+      assert.equal(await page.locator(".tab-page:not([hidden])").count(), 1);
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+      assert.equal(overflow, false, `${tab} overflows`);
+      await page.screenshot({
+        path: resolve(artifacts, `${tab}-${width}-${colorScheme}.png`),
+        fullPage: true,
+        animations: "disabled",
+      });
+    }
+    await page.locator("#queue-jump").click();
+    assert.equal(
+      await page.locator("#queue-section").evaluate((node) => document.activeElement === node),
+      true,
+    );
+    const queueBounds = await page.locator("#queue-section").boundingBox();
+    assert.ok(queueBounds.y >= 0 && queueBounds.y + Math.min(queueBounds.height, 100) <= 1000);
+    await page.locator('[data-tab="task"]').click();
+    await page.locator("#task-add-download").click();
+    assert.equal(
+      await page.locator("#url-input").evaluate((node) => document.activeElement === node),
+      true,
+    );
+    await page.locator("#open-video-search").click();
+    assert.equal(await page.locator("#page-search").isVisible(), true);
+  });
+}

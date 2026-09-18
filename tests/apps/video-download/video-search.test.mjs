@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { before, after, test } from "node:test";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -114,29 +114,64 @@ test("candidate metadata comes from platform records and ranking only maps exist
 });
 
 test("saved searches remain project-scoped and discard invented or unsafe video URLs", () => {
-  const snapshot = writeSearchArchive([{
-    id: "search-one", query: "Blender basics", platforms: ["youtube"], modelId: "custom-model",
-    createdAt: Date.now(), status: "ready", summary: "Two choices",
-    candidates: [candidates[0], { title: "Invented", url: "https://evil.example/video" }],
-  }], "custom-model", "/project/a", normalizeVideoSearchCandidates);
+  const snapshot = writeSearchArchive(
+    [
+      {
+        id: "search-one",
+        query: "Blender basics",
+        platforms: ["youtube"],
+        modelId: "custom-model",
+        createdAt: Date.now(),
+        status: "ready",
+        summary: "Two choices",
+        candidates: [candidates[0], { title: "Invented", url: "https://evil.example/video" }],
+      },
+    ],
+    "custom-model",
+    "/project/a",
+    normalizeVideoSearchCandidates,
+  );
   assert.equal(snapshot.records[0].candidates.length, 1);
   assert.equal(snapshot.records[0].candidates[0].url, videoUrl);
   assert.equal(snapshot.records[0].candidates[0].evidence, "historical");
-  assert.equal(readSearchArchive(snapshot, "/project/b", normalizeVideoSearchCandidates).records.length, 0);
-  assert.equal(readSearchArchive(snapshot, "/project/a", normalizeVideoSearchCandidates).modelId, "custom-model");
+  assert.equal(
+    readSearchArchive(snapshot, "/project/b", normalizeVideoSearchCandidates).records.length,
+    0,
+  );
+  assert.equal(
+    readSearchArchive(snapshot, "/project/a", normalizeVideoSearchCandidates).modelId,
+    "custom-model",
+  );
 });
 
 test("indexed results stay visibly unverified after ranking and archive reload", () => {
-  const [candidate] = normalizeVideoSearchCandidates([{ ...candidates[1], evidence: "search-index" }]);
+  const [candidate] = normalizeVideoSearchCandidates([
+    { ...candidates[1], evidence: "search-index" },
+  ]);
   assert.equal(candidate.evidence, "search-index");
-  const ranked = rankVideoSearchCandidates(JSON.stringify({ selected: [{ id: candidate.id }] }), [candidate]);
+  const ranked = rankVideoSearchCandidates(JSON.stringify({ selected: [{ id: candidate.id }] }), [
+    candidate,
+  ]);
   assert.equal(ranked.candidates[0].evidence, "search-index");
-  const archive = writeSearchArchive([{
-    id: "index-one", query: "Blender AI", platforms: ["bilibili"],
-    candidates: ranked.candidates,
-  }], "model", "/project/a", normalizeVideoSearchCandidates);
+  const archive = writeSearchArchive(
+    [
+      {
+        id: "index-one",
+        query: "Blender AI",
+        platforms: ["bilibili"],
+        candidates: ranked.candidates,
+      },
+    ],
+    "model",
+    "/project/a",
+    normalizeVideoSearchCandidates,
+  );
   assert.equal(archive.records[0].candidates[0].evidence, "historical-index");
-  assert.equal(readSearchArchive(archive, "/project/a", normalizeVideoSearchCandidates).records[0].candidates[0].evidence, "historical-index");
+  assert.equal(
+    readSearchArchive(archive, "/project/a", normalizeVideoSearchCandidates).records[0]
+      .candidates[0].evidence,
+    "historical-index",
+  );
 });
 
 let browser;
@@ -150,7 +185,7 @@ before(async () => {
     if (request.url === "/") {
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       response.end(
-        '<!doctype html><html lang="zh-CN"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/video-search.css"><link rel="stylesheet" href="/panel-select.css"><body><main id="search"></main><script src="/panel-select.js"></script></body></html>',
+        '<!doctype html><html lang="zh-CN"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/video-search.css"><link rel="stylesheet" href="/panel-select.css"><link rel="stylesheet" href="/workspace.css"><body><main id="search"></main><script src="/panel-select.js"></script></body></html>',
       );
       return;
     }
@@ -222,7 +257,9 @@ async function openSearch(t, options = {}) {
           if (method === "agent.task.models")
             return {
               defaultModel: "model-a",
-              models: options.models || [{ id: "model-a", label: "可用模型", provider: "已配置连接" }],
+              models: options.models || [
+                { id: "model-a", label: "可用模型", provider: "已配置连接" },
+              ],
             };
           if (method === "agent.task.list") return [];
           if (method === "agent.task.start") {
@@ -261,8 +298,12 @@ async function openSearch(t, options = {}) {
         panel: window.panelMock,
         container: document.querySelector("#search"),
         archiveStorage: {
-          async load() { return { scope: "/fixture/project", value: window.archiveSnapshot }; },
-          async save(snapshot) { window.archiveSnapshot = structuredClone(snapshot); },
+          async load() {
+            return { scope: "/fixture/project", value: window.archiveSnapshot };
+          },
+          async save(snapshot) {
+            window.archiveSnapshot = structuredClone(snapshot);
+          },
         },
         async searchCandidates(request) {
           window.lookupCalls.push({
@@ -276,11 +317,13 @@ async function openSearch(t, options = {}) {
               window.releaseLookup = resolve;
             });
           return {
-            candidates: candidates.filter((candidate) =>
-              request.platforms.includes(candidate.platform),
-            ).map((candidate) => options.indexed && candidate.platform === "bilibili"
-              ? { ...candidate, evidence: "search-index" }
-              : candidate),
+            candidates: candidates
+              .filter((candidate) => request.platforms.includes(candidate.platform))
+              .map((candidate) =>
+                options.indexed && candidate.platform === "bilibili"
+                  ? { ...candidate, evidence: "search-index" }
+                  : candidate,
+              ),
             warnings: [],
           };
         },
@@ -344,10 +387,16 @@ test("indexed links are labeled unverified in the live search and history", asyn
   const page = await openSearch(t, { indexed: true });
   await page.locator("[data-search-start]").click();
   await page.waitForFunction(() => window.search.getState().status === "ready");
-  assert.match(await page.locator(".video-search-result").first().textContent(), /公开搜索索引.*页面可访问性待确认/);
+  assert.match(
+    await page.locator(".video-search-result").first().textContent(),
+    /公开搜索索引.*页面可访问性待确认/,
+  );
   await page.waitForFunction(() => window.archiveSnapshot?.records?.length);
   const archive = await page.evaluate(() => window.archiveSnapshot);
-  assert.equal(archive.records[0].candidates.find((item) => item.platform === "bilibili").evidence, "historical-index");
+  assert.equal(
+    archive.records[0].candidates.find((item) => item.platform === "bilibili").evidence,
+    "historical-index",
+  );
 });
 
 test("failed platform searches do not display model memory as results", async (t) => {
@@ -480,14 +529,24 @@ test("remount reattaches pending planning without creating a duplicate AI task",
 });
 
 test("custom Provider search saves results, supports deletion, and can be searched again", async (t) => {
-  const page = await openSearch(t, { models: [
-    { id: "model-a", label: "Default model", provider: "Built-in", providerId: "built-in" },
-    { id: "model-b", label: "External model", provider: "External", providerId: "external" },
-  ] });
+  const page = await openSearch(t, {
+    models: [
+      { id: "model-a", label: "Default model", provider: "Built-in", providerId: "built-in" },
+      { id: "model-b", label: "External model", provider: "External", providerId: "external" },
+    ],
+  });
   await page.locator("[data-search-provider]").selectOption("external");
   await page.locator("[data-search-start]").click();
-  await page.waitForFunction(() => window.search.getState().status === "ready" && window.archiveSnapshot?.records.length === 1);
-  assert.equal((await page.evaluate(() => window.calls.find((call) => call.method === "agent.task.start").args.model)), "model-b");
+  await page.waitForFunction(
+    () =>
+      window.search.getState().status === "ready" && window.archiveSnapshot?.records.length === 1,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.calls.find((call) => call.method === "agent.task.start").args.model,
+    ),
+    "model-b",
+  );
   assert.equal(await page.locator(".video-search-library-item").count(), 1);
   await page.locator('[data-library-action="view"]').click();
   assert.match(await page.locator("[data-search-status]").textContent(), /保存的结果/);
@@ -502,19 +561,60 @@ test("custom Provider search saves results, supports deletion, and can be search
   assert.equal(await page.locator(".video-search-library-item").count(), 1);
   assert.equal(await page.locator("[data-search-model]").inputValue(), "model-b");
   await page.locator('[data-library-action="redo"]').click();
-  await page.waitForFunction(() => window.search.getState().status === "ready" && window.archiveSnapshot.records.length === 2);
+  await page.waitForFunction(
+    () =>
+      window.search.getState().status === "ready" && window.archiveSnapshot.records.length === 2,
+  );
   await page.locator('[data-library-action="delete"]').first().click();
   await page.waitForFunction(() => window.archiveSnapshot.records.length === 1);
   await page.locator("[data-search-clear-history]").click();
   await page.waitForFunction(() => window.archiveSnapshot.records.length === 0);
-  const fromChat = await page.evaluate(() => window.search.startFromChat({
-    query: "Blender animation tutorials", platform: "youtube", providerId: "external",
-  }));
+  const fromChat = await page.evaluate(() =>
+    window.search.startFromChat({
+      query: "Blender animation tutorials",
+      platform: "youtube",
+      providerId: "external",
+    }),
+  );
   assert.equal(fromChat.status, "started");
-  await page.waitForFunction(() => window.search.getState().status === "ready" && window.archiveSnapshot.records.length === 1);
+  await page.waitForFunction(
+    () =>
+      window.search.getState().status === "ready" && window.archiveSnapshot.records.length === 1,
+  );
   const found = await page.evaluate(() => window.search.history());
   assert.equal(found[0].query, "Blender animation tutorials");
   assert.equal(found[0].candidates.length, 1);
-  assert.deepEqual(await page.evaluate((id) => window.search.deleteRecord(id), found[0].id), { deleted: true });
+  assert.deepEqual(await page.evaluate((id) => window.search.deleteRecord(id), found[0].id), {
+    deleted: true,
+  });
   assert.equal(await page.locator(".video-search-library-item").count(), 0);
+});
+
+test("search examples, stages, history filtering and new queries keep saved results intact", async (t) => {
+  const page = await openSearch(t, { width: 620 });
+  await page.locator("[data-search-example]").first().click();
+  assert.match(await page.locator("[data-search-query]").inputValue(), /Blender/);
+  assert.equal(await page.evaluate(() => window.lookupCalls.length), 0);
+  await page.locator("[data-search-query]").press("Control+Enter");
+  await page.waitForFunction(() => window.archiveSnapshot?.records.length === 1);
+  assert.equal(await page.locator('.search-stages li[data-state="done"]').count(), 3);
+  await page.locator("[data-search-library-query]").fill("没有这个主题");
+  assert.equal(await page.locator(".video-search-library-item").count(), 0);
+  await page.locator("[data-search-library-query]").fill("Blender");
+  assert.equal(await page.locator(".video-search-library-item").count(), 1);
+  const artifacts = resolve(appDirectory, "../../../artifacts/video-download/interface");
+  await mkdir(artifacts, { recursive: true });
+  await page.screenshot({
+    path: resolve(artifacts, "search-results-620-light.png"),
+    fullPage: true,
+    animations: "disabled",
+  });
+  await page.locator("[data-search-new]").click();
+  assert.equal(await page.locator("[data-search-query]").inputValue(), "");
+  assert.equal(await page.locator(".video-search-result").count(), 0);
+  assert.equal(await page.locator(".video-search-library-item").count(), 1);
+  assert.equal(await page.locator("[data-search-stages]").isVisible(), false);
+  await page.locator('[data-library-action="view"]').click();
+  assert.equal(await page.locator(".video-search-result").count(), 2);
+  assert.equal(await page.locator("[data-search-plan]").isVisible(), false);
 });

@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.16.5 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.17.0 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -23,8 +23,10 @@ not inherit the current conversation, project instructions, memory, or
 unrelated Skills. Model credentials remain in CodeShell and are never exposed
 to the panel. Neither setup path inspects a video or starts a download.
 
-The Download tab always shows the installed yt-dlp version beside the latest
-stable tag from the official GitHub Releases API. Both checks are deterministic
+The Download tab keeps dependency and version details in a compact disclosure,
+with a prominent latest-version / update-needed tag. Expanding it shows the
+installed yt-dlp version beside the latest stable tag from the official GitHub
+Releases API. Both checks are deterministic
 local-process operations and never start an AI Task. The passive version badge
 uses an available `curl` executable with a fixed API URL; a timeout, missing
 `curl`, or an unavailable GitHub response leaves only the latest-version field
@@ -41,7 +43,7 @@ user-facing error classification. Playlist ranges remain optional. Subtitle
 controls provide human/automatic source choices, language presets, and an
 independent embed switch, so users can keep a separate SRT instead of embedding
 it. The default flow is still paste, inspect, and download. Inspection
-also renders the actual download list: a single link shows one item, while a
+also renders the actual download list: a single link shows its metadata, while a
 playlist marks every visible entry as `will download` or `skipped` as its range
 changes.
 
@@ -61,7 +63,9 @@ Paste up to 100 links at once (including ordinary share text). Canonical video
 aliases are deduplicated within the batch and queue. The form lists every recognized
 link, and the information button checks each video (up to 10 at a time) so titles
 can be verified before adding the batch. Failed checks stay marked beside their
-links. Selected quality is resolved independently
+links and can be retried without discarding successful results. A running query
+can be cancelled; the controls are released only after the process exits.
+Selected quality is resolved independently
 against each video's available formats when its queued task runs.
 After inspecting a playlist,
 checkboxes and select-all/none controls edit the exact episode range. Each queued
@@ -92,16 +96,19 @@ Retry keeps the task's original options and account, and asks the Host to
 authorize a fresh Cookie file for that saved account. It does not reuse stale
 login data or switch silently to the account selected for the next task.
 
-The layout uses the available panel width with left-aligned navigation and
-readable controls. Wide panels keep the queue beside the form; narrow panels
-stack the queue below the active tab. The primary link form comes before the
-environment and version controls.
+The layout uses the available panel width with left-aligned navigation, warm
+neutral surfaces, and matching light/dark themes. Wide panels keep the queue
+beside the form and separate links from download settings; narrow panels stack
+the queue below the active tab and provide a header shortcut to it. The primary
+link form comes before the collapsed environment and version controls.
 
 The interface is split into four compact tabs: **Download** contains setup and
-download options, **Task** contains live progress, logs, and error analysis, and
-**History** contains download records, and **AI Find Videos** discovers real platform results. Task failures automatically open the
-Task tab, while small badges keep dependency, progress, and history state visible
-without making the page long.
+download options, **AI Find Videos** discovers real platform results, **Task**
+contains live progress, logs, and error analysis, and **History** contains download
+records. Download failures open the Task tab; information-query failures stay
+beside their links. Small badges keep dependency, progress, and history state
+visible without making the page long. Search offers example prompts, visible
+stages, a searchable archive, and a fresh-query action that retains saved results.
 
 There is no AI configuration step in the normal download flow. If inspection or
 a download fails, the panel reveals an **Analyze error with AI** action. It

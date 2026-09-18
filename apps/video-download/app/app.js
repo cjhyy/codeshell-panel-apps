@@ -196,7 +196,9 @@ let libraryScope = "";
 let libraryWrite = Promise.resolve();
 let directoryPreference = null;
 let searchScopeReadyResolve;
-const searchScopeReady = new Promise((resolve) => { searchScopeReadyResolve = resolve; });
+const searchScopeReady = new Promise((resolve) => {
+  searchScopeReadyResolve = resolve;
+});
 let completionPending = false;
 let auxiliaryBusy = false;
 let auxiliaryGroups = 0;
@@ -458,7 +460,15 @@ function updateTabIndicators() {
 
 function setRuntimeBadge(state, label) {
   elements.runtimeBadge.dataset.state = state;
-  elements.runtimeBadge.querySelector("span").textContent = label;
+  elements.runtimeBadge.querySelector("span").textContent =
+    {
+      Checking: "检查中",
+      "Local ready": "已就绪",
+      "Setup needed": "待初始化",
+      Unavailable: "不可用",
+      Limited: "部分可用",
+      Preview: "界面预览",
+    }[label] || label;
 }
 
 function setDependency(dot, label, available, detail) {
@@ -469,6 +479,28 @@ function setDependency(dot, label, available, detail) {
 function renderVersionInfo() {
   const installed = runtime.ytDlp?.version || "";
   const latest = runtime.latestYtDlpVersion || "";
+  const environment = document.querySelector("#environment-status");
+  const comparison = compareYtDlpVersions(installed, latest);
+  environment.dataset.state =
+    !dependenciesChecked || versionRefreshPending
+      ? "checking"
+      : !runtime.ytDlp?.handle
+        ? "error"
+        : !runtime.ffmpeg?.handle || comparison === -1
+          ? "update"
+          : "current";
+  environment.textContent =
+    !dependenciesChecked || versionRefreshPending
+      ? "正在检查"
+      : !runtime.ytDlp?.handle
+        ? "需要安装"
+        : !runtime.ffmpeg?.handle
+          ? "缺少转换工具"
+          : comparison === -1
+            ? "有更新"
+            : comparison === 0
+              ? "✓ 最新稳定版"
+              : "✓ 可以下载";
   elements.installedYtDlpVersion.textContent = !runtime.ytDlp?.handle
     ? dependenciesChecked
       ? "未安装"
@@ -496,7 +528,6 @@ function renderVersionInfo() {
     elements.versionComparison.textContent = "未找到 yt-dlp，请先完成初始化。";
     return;
   }
-  const comparison = compareYtDlpVersions(installed, latest);
   if (comparison === 0) {
     elements.versionComparison.dataset.state = "current";
     elements.versionComparison.textContent = "已是 GitHub 官方最新稳定版。";
@@ -582,18 +613,25 @@ async function loadLibrary() {
       queuePaused = saved.queuePaused;
       directoryPreference = saved.directoryPreference;
     } else history = loadHistory().map(storedRecord).filter(Boolean);
-    if (directoryPreference?.path && directoryIdentity(directoryPreference) !== directoryIdentity(runtime.directory)) {
+    if (
+      directoryPreference?.path &&
+      directoryIdentity(directoryPreference) !== directoryIdentity(runtime.directory)
+    ) {
       let restored = null;
       if (directoryPreference.bookmark && !previewMode) {
         try {
-          restored = await panel.call("filesystem.restoreDirectory", { bookmark: directoryPreference.bookmark });
+          restored = await panel.call("filesystem.restoreDirectory", {
+            bookmark: directoryPreference.bookmark,
+          });
         } catch {
           // Older Hosts and changed directories still offer explicit re-selection.
         }
       }
-      setDestination(restored?.handle && directoryIdentity(restored) === directoryIdentity(directoryPreference)
-        ? { ...restored, kind: "chosen" }
-        : { ...directoryPreference, handle: null });
+      setDestination(
+        restored?.handle && directoryIdentity(restored) === directoryIdentity(directoryPreference)
+          ? { ...restored, kind: "chosen" }
+          : { ...directoryPreference, handle: null },
+      );
     }
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
@@ -956,7 +994,8 @@ function cookieExpiryText(account) {
   if (!expiry) return "";
   if (expiry.nextExpiryAt) {
     const date = new Date(expiry.nextExpiryAt);
-    if (Number.isFinite(date.getTime())) return `最近持久 Cookie 到期 ${date.toLocaleString("zh-CN")}`;
+    if (Number.isFinite(date.getTime()))
+      return `最近持久 Cookie 到期 ${date.toLocaleString("zh-CN")}`;
   }
   if (expiry.persistentCount > 0) return "持久 Cookie 已过期";
   if (expiry.sessionCount > 0) return "会话 Cookie 无固定到期时间";
@@ -1455,8 +1494,16 @@ function renderDownloadList() {
       title.title = url;
       const detail = document.createElement("small");
       const failure = inspectionFailures.get(url);
+      row.dataset.state = preview ? "verified" : failure ? "failed" : "pending";
       detail.textContent = preview
-        ? `时长 ${formatDuration(preview.duration)} · 已获取信息`
+        ? [
+            preview.uploader,
+            `时长 ${formatDuration(preview.duration)}`,
+            preview.maxHeight ? `${preview.maxHeight}p` : "",
+            "已获取信息",
+          ]
+            .filter(Boolean)
+            .join(" · ")
         : failure || "标题和时长将在下载时获取";
       copy.append(title, detail);
       const status = document.createElement("span");
@@ -1467,11 +1514,12 @@ function renderDownloadList() {
     }
     elements.downloadListItems.append(fragment);
     elements.downloadListCount.textContent = `${batchUrls.length} 条链接`;
-    elements.downloadListNote.textContent = "这里显示已识别的链接及已获取的信息；加入下载队列会逐条创建任务。";
+    elements.downloadListNote.textContent =
+      "这里显示已识别的链接及已获取的信息；加入下载队列会逐条创建任务。";
     elements.downloadList.hidden = false;
     return;
   }
-  if (!inspectedVideo) {
+  if (!inspectedVideo || !inspectedVideo.isPlaylist) {
     elements.downloadList.hidden = true;
     elements.downloadListCount.textContent = "0 项";
     elements.downloadListNote.textContent = "";
@@ -1596,7 +1644,8 @@ function renderInspectedVideo(video) {
       ? `${video.formatCount} 个`
       : "未知";
   elements.videoDate.textContent = formatUploadDate(video.uploadDate);
-  elements.videoInfo.hidden = false;
+  elements.videoInfo.hidden =
+    parseVideoLinks(elements.urlInput.value).urls.length > 1 && !video.isPlaylist;
   renderQualityOptions(video);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "ready";
@@ -1721,6 +1770,7 @@ function recordFailure({
   stderr = "",
   exitCode = null,
   configuration = currentConfiguration(),
+  reveal = true,
 }) {
   lastFailure = {
     operation,
@@ -1736,7 +1786,8 @@ function recordFailure({
   elements.errorAnalysis.hidden = false;
   elements.errorAnalysisResult.hidden = true;
   elements.errorAnalysisResult.textContent = "";
-  activateTab("task");
+  document.querySelector("#error-summary").textContent = lastFailure.message;
+  if (reveal) activateTab("task");
   updateTabIndicators();
   updateActionAvailability();
 }
@@ -1795,6 +1846,11 @@ function renderSetupCard() {
     setupTaskActivity.length,
   );
   elements.setupCard.hidden = !showSetupCard;
+  const environment = document.querySelector("#environment-details");
+  if (showSetupCard && !environment.dataset.setupRevealed) {
+    environment.open = true;
+    environment.dataset.setupRevealed = "true";
+  }
   updateTabIndicators();
   if (!showSetupCard) return;
 
@@ -1893,7 +1949,28 @@ function updateActionAvailability() {
     versionRefreshPending ||
     queueSubmissionPending ||
     setupActive;
-  elements.downloadLabel.textContent = queueSubmissionPending ? "正在加入…" : "加入下载队列";
+  elements.downloadLabel.textContent = queueSubmissionPending
+    ? "正在加入…"
+    : multipleUrls
+      ? `加入队列 · ${linkCount} 条`
+      : "加入下载队列";
+  document.querySelector("#download-readiness").textContent = queueSubmissionPending
+    ? "正在保存任务与下载设置…"
+    : inspectionJob?.running
+      ? "正在核对视频信息，请稍候。"
+      : setupActive
+        ? "下载环境准备中…"
+        : !dependenciesChecked || dependencyRefreshPending || versionRefreshPending
+          ? "正在检查下载环境，完成后即可操作。"
+          : !runtime.ytDlp?.handle
+            ? "请先展开下方「下载环境」完成安装。"
+            : !runtime.directory?.handle
+              ? "请选择保存目录。"
+              : !validUrl
+                ? "先粘贴链接，或使用 AI 找视频。"
+                : currentJob?.running
+                  ? "可以继续添加，当前下载完成后会自动开始。"
+                  : `${linkCount} 条链接 · ${queuePaused ? "队列已暂停，加入后等待继续" : "加入后按顺序下载"}`;
   elements.inspectButton.disabled =
     !ready ||
     !validUrl ||
@@ -1911,6 +1988,16 @@ function updateActionAvailability() {
           ? "获取前 10 条视频信息"
           : "获取全部视频信息"
       : "获取视频信息";
+  elements.inspectButton.title = currentJob?.running
+    ? "当前下载结束后可获取信息；也可直接加入队列。"
+    : elements.inspectButton.disabled
+      ? document.querySelector("#download-readiness").textContent
+      : "";
+  document.querySelector("#cancel-inspect").hidden = !inspectionJob?.running;
+  document.querySelector("#cancel-inspect").disabled = Boolean(inspectionJob?.cancelRequested);
+  document.querySelector("#retry-inspect").hidden =
+    !inspectionFailures.size || Boolean(inspectionJob?.running);
+  document.querySelector("#retry-inspect").disabled = elements.inspectButton.disabled;
   elements.openDirectory.disabled = !runtime.directory?.handle;
   const analysisPending = Boolean(analysisTaskId);
   const canAnalyze =
@@ -1991,7 +2078,13 @@ function updateTask({ state, title, percent, speed, eta, status }) {
   elements.taskStateIcon.textContent =
     state === "completed" ? "✓" : state === "failed" ? "!" : state === "cancelled" ? "—" : "↓";
   elements.taskTitle.textContent = title;
-  elements.taskKicker.textContent = state === "running" ? "DOWNLOADING" : "CURRENT TASK";
+  elements.taskKicker.textContent = state === "running" ? "正在下载" : "当前任务";
+  document.querySelector("#task-guidance").hidden = state !== "idle";
+  const progress = elements.progressBar.parentElement;
+  if (Number.isFinite(percent))
+    progress.setAttribute("aria-valuenow", String(Math.min(100, Math.max(0, percent))));
+  else progress.removeAttribute("aria-valuenow");
+  progress.setAttribute("aria-valuetext", status || state);
   elements.taskPercent.textContent = Number.isFinite(percent) ? `${Math.round(percent)}%` : "—";
   elements.taskSpeed.textContent = speed || "—";
   elements.taskEta.textContent = eta || "—";
@@ -2052,10 +2145,13 @@ function parseOutputLine(line, stream = "stdout") {
   if (clean.startsWith("files:")) {
     try {
       const files = JSON.parse(clean.slice(6));
-      if (!files || typeof files !== "object" || Array.isArray(files))
-        throw new Error("invalid inventory");
-      for (const [source, destination] of Object.entries(files)) {
-        const path = typeof destination === "string" && destination ? destination : source;
+      if (!files || typeof files !== "object") throw new Error("invalid inventory");
+      const paths = Array.isArray(files)
+        ? files
+        : Object.entries(files).map(([source, destination]) =>
+            typeof destination === "string" && destination ? destination : source,
+          );
+      for (const path of paths) {
         if (typeof path !== "string" || !path || path.length > 4096) {
           currentJob.filesComplete = false;
           continue;
@@ -2147,9 +2243,13 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     lower.includes("timed out") ||
     lower.includes("temporary failure in name resolution") ||
     lower.includes("unable to download webpage") ||
-    lower.includes("network is unreachable")
+    lower.includes("network is unreachable") ||
+    lower.includes("connection reset") ||
+    lower.includes("connectionreseterror") ||
+    lower.includes("connection aborted") ||
+    lower.includes("remote end closed")
   ) {
-    return "网络连接不稳定，已自动重试仍未成功。请检查网络后再试。";
+    return "视频来源连接中断或超时。请检查网络或代理连接后重试。";
   }
   const lines = cleaned
     .split(/\r?\n/)
@@ -2187,24 +2287,25 @@ function finishInspection(succeeded, error = "", exitCode = null) {
   if (job.id) job.completedIds.add(job.id);
   const url = job.urls[job.index];
   let detail = error || (succeeded ? "" : friendlyYtDlpError(job.stderr, "获取视频信息", exitCode));
-  if (succeeded) {
+  if (succeeded && !job.cancelRequested) {
     try {
       const raw = JSON.parse(job.stdout.trim());
       const video = normalizeInspectedVideo(raw, url);
       inspectedBatch.set(url, video);
-      if (job.index === 0) renderInspectedVideo(video);
+      inspectionFailures.delete(url);
+      if (url === normalizedUrl()) renderInspectedVideo(video);
       else renderDownloadList();
     } catch (parseError) {
       detail = parseError instanceof Error ? parseError.message : "无法解析视频信息";
     }
   }
-  if (detail) {
+  if (detail && !job.cancelRequested) {
     job.failures.push({ url, detail, stderr: job.stderr, exitCode });
     inspectionFailures.set(url, detail);
     renderDownloadList();
   }
   job.index += 1;
-  if (job.index < job.urls.length) {
+  if (!job.cancelRequested && job.index < job.urls.length) {
     job.id = null;
     job.stdout = "";
     job.stderr = "";
@@ -2219,16 +2320,21 @@ function finishInspection(succeeded, error = "", exitCode = null) {
   setControlsBusy(false, "inspect");
   const total = parseVideoLinks(elements.urlInput.value).urls.length;
   const count = inspectedBatch.size;
-  const result = job.failures.length
-    ? {
-        status: count ? "partial" : "failed",
-        inspected: inspectedVideoForAgent(),
-        error: job.failures[0].detail,
-        count,
-        total,
-      }
-    : { status: "ready", inspected: inspectedVideoForAgent(), count, total };
-  if (job.failures.length) {
+  const result = job.cancelRequested
+    ? { status: "cancelled", inspected: inspectedVideoForAgent(), count, total }
+    : job.failures.length
+      ? {
+          status: count ? "partial" : "failed",
+          inspected: inspectedVideoForAgent(),
+          error: job.failures[0].detail,
+          count,
+          total,
+        }
+      : { status: "ready", inspected: inspectedVideoForAgent(), count, total };
+  if (job.cancelRequested) {
+    elements.inspectStatus.dataset.state = "idle";
+    elements.inspectStatus.textContent = `已取消获取，保留 ${count} 条已核对的信息。`;
+  } else if (job.failures.length) {
     elements.inspectStatus.dataset.state = "error";
     elements.inspectStatus.textContent = count
       ? `已获取 ${count}/${total} 条；${job.failures.length} 条失败。${job.failures[0].detail}`
@@ -2242,6 +2348,7 @@ function finishInspection(succeeded, error = "", exitCode = null) {
         message: job.failures[0].detail,
         stderr: job.failures[0].stderr,
         exitCode: job.failures[0].exitCode,
+        reveal: false,
       });
     }
   } else {
@@ -2249,7 +2356,7 @@ function finishInspection(succeeded, error = "", exitCode = null) {
     elements.inspectStatus.dataset.state = "ready";
     elements.inspectStatus.textContent =
       total > 1
-        ? `已获取 ${count}/${total} 条视频信息${total > job.urls.length ? `；其余 ${total - job.urls.length} 条未预览` : ""}。`
+        ? `已获取 ${count}/${total} 条视频信息${total > count ? `；其余 ${total - count} 条未预览` : ""}。`
         : "信息已获取；链接变化后需要重新获取";
   }
   renderDownloadList();
@@ -2264,6 +2371,7 @@ async function spawnInspection(job) {
   try {
     const fileArgumentHandles = await cookieFileArguments(url);
     if (inspectionJob !== job || job.index !== index) return;
+    if (job.cancelRequested) return finishInspection(false);
     const result = await panel.call("process.spawn", {
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
@@ -2277,13 +2385,34 @@ async function spawnInspection(job) {
       job.timedOut = true;
       void panel.call("process.cancel", { processId: result.processId });
     }, 60_000);
+    if (job.cancelRequested) await cancelInspection();
   } catch (spawnError) {
     if (inspectionJob === job && job.index === index)
-      finishInspection(false, spawnError instanceof Error ? spawnError.message : String(spawnError));
+      finishInspection(
+        false,
+        spawnError instanceof Error ? spawnError.message : String(spawnError),
+      );
   }
 }
 
-async function inspectVideo() {
+async function cancelInspection() {
+  const job = inspectionJob;
+  if (!job?.running) return;
+  job.cancelRequested = true;
+  elements.inspectStatus.textContent = "正在取消获取…";
+  updateActionAvailability();
+  if (!job.id) return;
+  try {
+    await panel.call("process.cancel", { processId: job.id });
+  } catch (error) {
+    if (inspectionJob !== job) return;
+    job.cancelRequested = false;
+    elements.inspectStatus.textContent = `取消未成功，查询仍在进行：${error.message || String(error)}`;
+    updateActionAvailability();
+  }
+}
+
+async function inspectVideo({ retryFailed = false } = {}) {
   showError("");
   const url = normalizedUrl();
   if (!url) {
@@ -2306,20 +2435,23 @@ async function inspectVideo() {
     return;
   }
   clearFailure();
-  inspectedVideo = null;
-  inspectedBatch = new Map();
-  inspectionFailures = new Map();
+  const failedUrls = new Set(inspectionFailures.keys());
+  if (!retryFailed) {
+    inspectedVideo = null;
+    inspectedBatch = new Map();
+    inspectionFailures = new Map();
+  }
   const allUrls = parseVideoLinks(elements.urlInput.value).urls;
-  const urls = elements.playlist.checked
+  let urls = elements.playlist.checked
     ? [url]
     : allUrls.slice(0, 10).map((value) => sanitizeMediaUrl(new URL(value), false));
-  elements.videoInfo.hidden = true;
+  if (retryFailed) urls = urls.filter((value) => failedUrls.has(value));
+  if (!urls.length) return;
+  elements.videoInfo.hidden = !inspectedVideo || (allUrls.length > 1 && !inspectedVideo.isPlaylist);
   renderDownloadList();
   elements.inspectStatus.dataset.state = "loading";
   elements.inspectStatus.textContent =
-    urls.length > 1
-      ? `正在获取第 1/${urls.length} 条视频信息…`
-      : "正在通过本地 yt-dlp 获取信息…";
+    urls.length > 1 ? `正在获取第 1/${urls.length} 条视频信息…` : "正在通过本地 yt-dlp 获取信息…";
   inspectionJob = {
     id: null,
     url,
@@ -2331,6 +2463,7 @@ async function inspectVideo() {
     stderr: "",
     running: true,
     timedOut: false,
+    cancelRequested: false,
     timeout: null,
     waiters: [],
   };
@@ -2396,7 +2529,9 @@ function buildArguments(url, configuration = currentConfiguration(), copySuffix 
     "--print",
     "after_move:file:%(filepath)s",
     "--print",
-    "after_move:files:%(__files_to_move)j",
+    // yt-dlp removes __files_to_move before after_move runs. Read the retained
+    // subtitle paths instead; the primary output is reported by filepath above.
+    "after_move:files:%(requested_subtitles.:.filepath|[])j",
     "--trim-filenames",
     "180",
     "--no-overwrites",
@@ -2488,6 +2623,8 @@ function updateQueueProgress() {
   if (!row) return;
   row.querySelector(".queue-status").textContent = queueStatusText(currentJob);
   row.querySelector(".queue-copy strong").textContent = currentJob.title;
+  const bar = row.querySelector(".queue-progress span");
+  if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(currentJob.percent) || 0))}%`;
 }
 
 function renderQueue() {
@@ -2497,6 +2634,10 @@ function renderQueue() {
   const settled = downloadQueue.filter(
     (item) => !["queued", "running", "restored", "interrupted"].includes(item.status),
   ).length;
+  const activeCount = waiting + (currentJob?.running ? 1 : 0);
+  document.querySelector("#queue-jump-count").textContent = String(activeCount);
+  document.querySelector("#queue-jump").dataset.active = String(activeCount > 0);
+  document.querySelector("#queue-count").textContent = String(downloadQueue.length);
   elements.queueSummary.textContent = downloadQueue.length
     ? `${currentJob?.running ? "1 项下载中 · " : ""}${waiting} 项等待 · ${settled} 项已结束${queuePaused ? " · 队列已暂停，当前下载会继续" : ""}`
     : "暂无任务 · 按添加顺序下载";
@@ -2511,7 +2652,11 @@ function renderQueue() {
   if (!downloadQueue.length) {
     const empty = document.createElement("p");
     empty.className = "queue-empty";
-    empty.textContent = "添加视频链接后，任务会在这里依次下载。下载期间可继续添加。";
+    const title = document.createElement("strong");
+    title.textContent = "队列准备好了";
+    const help = document.createElement("span");
+    help.textContent = "粘贴链接或从 AI 搜索结果中添加视频。任务依次执行，下载中也能继续添加。";
+    empty.append(title, help);
     elements.queueList.append(empty);
     return;
   }
@@ -2533,6 +2678,15 @@ function renderQueue() {
     status.className = "queue-status";
     status.textContent = queueStatusText(item);
     copy.append(title, meta, status);
+    if (item.status === "running") {
+      const progress = document.createElement("div");
+      progress.className = "queue-progress";
+      progress.setAttribute("aria-hidden", "true");
+      const bar = document.createElement("span");
+      bar.style.width = `${Math.min(100, Math.max(0, Number(item.percent) || 0))}%`;
+      progress.append(bar);
+      copy.append(progress);
+    }
     if (item.error) {
       const error = document.createElement("small");
       error.className = "queue-error";
@@ -2791,7 +2945,9 @@ function renderHistory() {
   if (!entries.length) {
     const empty = document.createElement("p");
     empty.className = "empty-history";
-    empty.textContent = history.length ? "没有符合条件的记录" : "完成的任务会留在这里";
+    empty.textContent = history.length
+      ? "没有符合条件的记录，试试其他关键词或状态。"
+      : "还没有下载记录。任务结束后会保存在这里，可检查文件、播放或重新下载。";
     elements.historyList.append(empty);
     return;
   }
@@ -2830,7 +2986,11 @@ function renderHistory() {
       if (index !== undefined) node.dataset.fileIndex = String(index);
       return node;
     };
-    actions.append(button("check", "检查文件"), button("retry", "按原设置重下"), button("delete", "删除记录"));
+    actions.append(
+      button("check", "检查文件"),
+      button("retry", "按原设置重下"),
+      button("delete", "删除记录"),
+    );
     copy.append(actions);
     if (item.checkError) {
       const error = document.createElement("small");
@@ -2956,9 +3116,19 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
       executableHandle: runtime.ytDlp.handle,
       directoryHandle: runtime.directory.handle,
       args: [
-        "--ignore-config", "--no-cache-dir", "--skip-download", "--flat-playlist",
-        "--dump-single-json", "--socket-timeout", "10", "--retries", "0",
-        "--extractor-retries", "0", "--", `${prefix}${count}:${String(query).slice(0, 300)}`,
+        "--ignore-config",
+        "--no-cache-dir",
+        "--skip-download",
+        "--flat-playlist",
+        "--dump-single-json",
+        "--socket-timeout",
+        "10",
+        "--retries",
+        "0",
+        "--extractor-retries",
+        "0",
+        "--",
+        `${prefix}${count}:${String(query).slice(0, 300)}`,
       ],
       signal,
       timeout: 25_000,
@@ -2982,9 +3152,19 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
             executableHandle: runtime.ytDlp.handle,
             directoryHandle: runtime.directory.handle,
             args: [
-              "--ignore-config", "--no-cache-dir", "--skip-download", "--no-playlist",
-              "--dump-single-json", "--socket-timeout", "8", "--retries", "0",
-              "--extractor-retries", "0", "--", url,
+              "--ignore-config",
+              "--no-cache-dir",
+              "--skip-download",
+              "--no-playlist",
+              "--dump-single-json",
+              "--socket-timeout",
+              "8",
+              "--retries",
+              "0",
+              "--extractor-retries",
+              "0",
+              "--",
+              url,
             ],
             signal,
             timeout: 12_000,
@@ -2998,13 +3178,13 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
       }
       return metadata.title
         ? {
-          title: metadata.title,
-          url,
-          platform,
-          author: metadata.uploader || metadata.channel || "",
-          duration: metadata.duration,
-          evidence: "platform-search",
-        }
+            title: metadata.title,
+            url,
+            platform,
+            author: metadata.uploader || metadata.channel || "",
+            duration: metadata.duration,
+            evidence: "platform-search",
+          }
         : null;
     }
     const found = [];
@@ -3015,7 +3195,13 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
     return found;
   }
   async function alternativeSearch(platform) {
-    const result = await auxiliary.search(runtime.directory, platform, String(query).slice(0, 300), count, signal);
+    const result = await auxiliary.search(
+      runtime.directory,
+      platform,
+      String(query).slice(0, 300),
+      count,
+      signal,
+    );
     if (result.candidates.length && result.source === "search-index")
       warnings.push(
         `${platform === "youtube" ? "YouTube" : "B站"}直连暂不可用；以下链接来自公开搜索索引，页面是否仍可访问请打开原始页面确认。`,
@@ -3026,7 +3212,8 @@ async function searchPlatformCandidates({ query, platforms, limit = 8, signal })
     if (signal?.aborted) throw new Error("已取消");
     if (!["youtube", "bilibili"].includes(platform)) continue;
     const errors = [];
-    const attempts = platform === "youtube" ? [alternativeSearch, localSearch] : [localSearch, alternativeSearch];
+    const attempts =
+      platform === "youtube" ? [alternativeSearch, localSearch] : [localSearch, alternativeSearch];
     let found = [];
     for (const attempt of attempts) {
       if (signal?.aborted) throw new Error("已取消");
@@ -3052,7 +3239,12 @@ async function chooseDirectory() {
     const result = await panel.call("filesystem.pickDirectory");
     if (!result.cancelled) {
       setDestination({ ...result, kind: "chosen" });
-      directoryPreference = { path: result.path, name: result.name, kind: "chosen", bookmark: result.bookmark };
+      directoryPreference = {
+        path: result.path,
+        name: result.name,
+        kind: "chosen",
+        bookmark: result.bookmark,
+      };
       await saveLibrary();
     }
   } catch (error) {
@@ -3072,7 +3264,12 @@ async function restorePreferredDirectory() {
       throw new Error("请选择上次使用的目录；若想改用新目录，请点击“更改”。");
     }
     setDestination({ ...result, kind: "chosen" });
-    directoryPreference = { path: result.path, name: result.name, kind: "chosen", bookmark: result.bookmark };
+    directoryPreference = {
+      path: result.path,
+      name: result.name,
+      kind: "chosen",
+      bookmark: result.bookmark,
+    };
     await saveLibrary();
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
@@ -3186,7 +3383,11 @@ function videoContextForAgent() {
         }
       : { status: "idle" },
     destination: runtime.directory
-      ? { name: runtime.directory.name, path: runtime.directory.path, ...(!runtime.directory.handle ? { reauthorizationRequired: true } : {}) }
+      ? {
+          name: runtime.directory.name,
+          path: runtime.directory.path,
+          ...(!runtime.directory.handle ? { reauthorizationRequired: true } : {}),
+        }
       : null,
     initialization: {
       needed: shouldOfferSetup({
@@ -4469,13 +4670,22 @@ function registerAgentTools() {
       status: state.status,
       query: state.query,
       message: state.message,
-      candidates: state.candidates.slice(0, 8).map(({ title, url, platform, author, duration, reason }) => ({
-        title, url, platform, author, duration, reason,
-      })),
+      candidates: state.candidates
+        .slice(0, 8)
+        .map(({ title, url, platform, author, duration, reason }) => ({
+          title,
+          url,
+          platform,
+          author,
+          duration,
+          reason,
+        })),
     };
   });
   panel.registerTool("list_video_search_history", async () => videoSearch.history());
-  panel.registerTool("delete_video_search_record", async (args = {}) => videoSearch.deleteRecord(args.id));
+  panel.registerTool("delete_video_search_record", async (args = {}) =>
+    videoSearch.deleteRecord(args.id),
+  );
 }
 
 async function initializeRuntime() {
@@ -4583,6 +4793,23 @@ elements.clearUrl.addEventListener("click", () => {
   updateActionAvailability();
 });
 elements.inspectButton.addEventListener("click", inspectVideo);
+document.querySelector("#cancel-inspect").addEventListener("click", () => void cancelInspection());
+document
+  .querySelector("#retry-inspect")
+  .addEventListener("click", () => void inspectVideo({ retryFailed: true }));
+document.querySelector("#open-video-search").addEventListener("click", () => {
+  activateTab("search", { focus: true });
+  document.querySelector("[data-search-query]")?.focus();
+});
+document.querySelector("#task-add-download").addEventListener("click", () => {
+  activateTab("download", { focus: true });
+  elements.urlInput.focus();
+});
+document.querySelector("#queue-jump").addEventListener("click", () => {
+  const queue = document.querySelector("#queue-section");
+  queue.scrollIntoView({ block: "start", behavior: "auto" });
+  queue.focus({ preventScroll: true });
+});
 elements.cookieRefresh.addEventListener("click", () => void refreshCookieAccounts());
 elements.cookieLogin.addEventListener("click", () => void loginAndSaveCookie());
 elements.cookieSelect.addEventListener("change", () => {
@@ -4752,16 +4979,25 @@ const videoSearch = mountVideoSearch({
     async load() {
       await searchScopeReady;
       const scope = libraryScope || context.cwd || runtime.directory?.path || "preview";
-      const value = !previewMode && Number(context.apiVersion) >= 14
-        ? await panel.call("storage.get", { key: "video-download.search-archive.v1" })
-        : JSON.parse(localStorage.getItem(`video-download.search-archive.v1:${scope}`) || "null");
+      const value =
+        !previewMode && Number(context.apiVersion) >= 14
+          ? await panel.call("storage.get", { key: "video-download.search-archive.v1" })
+          : JSON.parse(localStorage.getItem(`video-download.search-archive.v1:${scope}`) || "null");
       return { scope, value };
     },
     async save(snapshot) {
-      if (!libraryReady || snapshot.scope !== libraryScope) throw new Error("项目已变化，请重新打开面板。");
+      if (!libraryReady || snapshot.scope !== libraryScope)
+        throw new Error("项目已变化，请重新打开面板。");
       if (!previewMode && Number(context.apiVersion) >= 14)
-        await panel.call("storage.set", { key: "video-download.search-archive.v1", value: snapshot });
-      else localStorage.setItem(`video-download.search-archive.v1:${snapshot.scope}`, JSON.stringify(snapshot));
+        await panel.call("storage.set", {
+          key: "video-download.search-archive.v1",
+          value: snapshot,
+        });
+      else
+        localStorage.setItem(
+          `video-download.search-archive.v1:${snapshot.scope}`,
+          JSON.stringify(snapshot),
+        );
     },
   },
   onQueue: async (candidates) => {
