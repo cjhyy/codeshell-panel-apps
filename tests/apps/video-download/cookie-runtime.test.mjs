@@ -262,6 +262,7 @@ test("login save explicitly selects the account and handles site changes while i
     call: (method) => (method.endsWith(".loginAndSave") ? login.promise : { accounts: [saved] }),
   });
   const operation = app.run("loginAndSaveCookie()");
+  assert.equal(app.calls[0].params.providerLabel, "YouTube");
   assert.equal(app.elements.cookieLogin.disabled, true);
   login.resolve({ ok: true, credential: saved });
   await operation;
@@ -277,6 +278,22 @@ test("login save explicitly selects the account and handles site changes while i
   await changedOperation;
   assert.equal(changed.elements.cookieSelect.value, "");
   assert.doesNotMatch(changed.elements.cookieHelp.textContent, /已保存并选择/);
+});
+
+test("cookie choices show the saved jar's next expiry without treating it as login validity", async () => {
+  const account = {
+    ...saved,
+    cookieExpiry: {
+      nextExpiryAt: "2030-01-01T00:00:00.000Z",
+      persistentCount: 1,
+      sessionCount: 1,
+      expiredCount: 0,
+    },
+  };
+  const app = mount({ call: () => ({ accounts: [account] }) });
+  await app.run("refreshCookieAccounts()");
+  assert.match(app.elements.cookieSelect.options[1].textContent, /最近持久 Cookie 到期/);
+  assert.equal(app.elements.cookieSelect.options[1].value, saved.id);
 });
 
 test("clearing a failed or pending URL clears its cookie error and invalidates the old request", async () => {

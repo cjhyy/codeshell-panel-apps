@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.16.1 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.16.2 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact

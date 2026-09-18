@@ -939,8 +939,20 @@ function cookieSite(urlValue) {
     .slice(0, 72);
   return {
     id: id && /^[a-z]/.test(id) ? id : `site-${id || "login"}`,
-    label: host,
+    label: base === "youtube.com" ? "YouTube" : base === "bilibili.com" ? "Bilibili" : host,
   };
+}
+
+function cookieExpiryText(account) {
+  const expiry = account.cookieExpiry;
+  if (!expiry) return "";
+  if (expiry.nextExpiryAt) {
+    const date = new Date(expiry.nextExpiryAt);
+    if (Number.isFinite(date.getTime())) return `最近持久 Cookie 到期 ${date.toLocaleString("zh-CN")}`;
+  }
+  if (expiry.persistentCount > 0) return "持久 Cookie 已过期";
+  if (expiry.sessionCount > 0) return "会话 Cookie 无固定到期时间";
+  return "";
 }
 
 function cookieErrorMessage(error) {
@@ -992,8 +1004,8 @@ function renderCookieAccounts(message = "", preferredId = null) {
   for (const account of accounts) {
     const option = document.createElement("option");
     option.value = account.id;
-    option.textContent =
-      account.health === "corrupted" ? `${account.label}（需要重新登录）` : account.label;
+    const expiry = cookieExpiryText(account);
+    option.textContent = `${account.label}${expiry ? `（${expiry}）` : ""}${account.health === "corrupted" ? "（需要重新登录）" : ""}`;
     option.disabled = account.health === "corrupted";
     elements.cookieSelect.append(option);
   }
