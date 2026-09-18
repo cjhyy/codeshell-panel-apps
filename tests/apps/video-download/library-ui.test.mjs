@@ -390,11 +390,26 @@ test("one failed link does not hide another batch link's verified information", 
   await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 1/2 条"));
   assert.equal(await page.locator("#download-list-items article").count(), 2);
   assert.match(await page.locator("#download-list-items article").first().textContent(), /Fixture video/);
-  assert.match(await page.locator("#download-list-items article").last().textContent(), /待获取/);
+  assert.match(await page.locator("#download-list-items article").last().textContent(), /Second video unavailable.*获取失败/);
   assert.equal(await page.locator("#download-button").isEnabled(), true);
   await page.locator("#download-button").click();
   await page.waitForFunction(async () => (await window.__panelTools.get_video_download_context()).queue.length === 2);
   assert.equal((await readState(page)).queue.length, 2);
+});
+
+test("failed batch inspections identify every attempted link", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(({ firstUrl, secondUrl }) => {
+    window.__inspectionFailureByUrl[firstUrl] = "First video unavailable";
+    window.__inspectionFailureByUrl[secondUrl] = "Second video unavailable";
+  }, { firstUrl, secondUrl });
+  await page.locator("#url-input").fill(`${firstUrl}\n${secondUrl}`);
+  await page.locator("#inspect-button").click();
+  await page.waitForFunction(() => document.querySelector("#inspect-status")?.textContent?.includes("已获取 0/2 条；2 条失败"));
+  const rows = page.locator("#download-list-items article");
+  assert.equal(await rows.count(), 2);
+  assert.match(await rows.first().textContent(), /First video unavailable.*获取失败/);
+  assert.match(await rows.last().textContent(), /Second video unavailable.*获取失败/);
 });
 
 test("mixed-site batch inspection works when no Cookie account is selected", async (t) => {

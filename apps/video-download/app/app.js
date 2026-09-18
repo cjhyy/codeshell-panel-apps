@@ -156,6 +156,7 @@ let queueSubmissionPending = false;
 let inspectionJob = null;
 let inspectedVideo = null;
 let inspectedBatch = new Map();
+let inspectionFailures = new Map();
 let context = { apiVersion: 0 };
 let dependenciesChecked = false;
 let dependencyRefreshPending = false;
@@ -1453,13 +1454,14 @@ function renderDownloadList() {
       title.textContent = preview?.title || url;
       title.title = url;
       const detail = document.createElement("small");
+      const failure = inspectionFailures.get(url);
       detail.textContent = preview
         ? `时长 ${formatDuration(preview.duration)} · 已获取信息`
-        : "标题和时长将在下载时获取";
+        : failure || "标题和时长将在下载时获取";
       copy.append(title, detail);
       const status = document.createElement("span");
       status.className = "download-list-status";
-      status.textContent = preview ? "已获取" : "待获取";
+      status.textContent = preview ? "已获取" : failure ? "获取失败" : "待获取";
       row.append(number, copy, status);
       fragment.append(row);
     }
@@ -1562,6 +1564,7 @@ function renderDownloadList() {
 function clearInspectedVideo(message = "粘贴链接后先读取标题、时长和可用清晰度") {
   inspectedVideo = null;
   inspectedBatch = new Map();
+  inspectionFailures = new Map();
   playlistSelectionEmpty = false;
   elements.videoInfo.hidden = true;
   renderQualityOptions(null);
@@ -2195,7 +2198,11 @@ function finishInspection(succeeded, error = "", exitCode = null) {
       detail = parseError instanceof Error ? parseError.message : "无法解析视频信息";
     }
   }
-  if (detail) job.failures.push({ url, detail, stderr: job.stderr, exitCode });
+  if (detail) {
+    job.failures.push({ url, detail, stderr: job.stderr, exitCode });
+    inspectionFailures.set(url, detail);
+    renderDownloadList();
+  }
   job.index += 1;
   if (job.index < job.urls.length) {
     job.id = null;
@@ -2225,7 +2232,9 @@ function finishInspection(succeeded, error = "", exitCode = null) {
     elements.inspectStatus.dataset.state = "error";
     elements.inspectStatus.textContent = count
       ? `已获取 ${count}/${total} 条；${job.failures.length} 条失败。${job.failures[0].detail}`
-      : job.failures[0].detail;
+      : total > 1
+        ? `已获取 0/${total} 条；${job.failures.length} 条失败。${job.failures[0].detail}`
+        : job.failures[0].detail;
     if (!count) {
       recordFailure({
         operation: "获取视频信息",
@@ -2299,6 +2308,7 @@ async function inspectVideo() {
   clearFailure();
   inspectedVideo = null;
   inspectedBatch = new Map();
+  inspectionFailures = new Map();
   const allUrls = parseVideoLinks(elements.urlInput.value).urls;
   const urls = elements.playlist.checked
     ? [url]

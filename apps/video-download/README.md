@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.16.4 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.16.5 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -60,7 +60,8 @@ not start and the queue pauses.
 Paste up to 100 links at once (including ordinary share text). Canonical video
 aliases are deduplicated within the batch and queue. The form lists every recognized
 link, and the information button checks each video (up to 10 at a time) so titles
-can be verified before adding the batch. Selected quality is resolved independently
+can be verified before adding the batch. Failed checks stay marked beside their
+links. Selected quality is resolved independently
 against each video's available formats when its queued task runs.
 After inspecting a playlist,
 checkboxes and select-all/none controls edit the exact episode range. Each queued
