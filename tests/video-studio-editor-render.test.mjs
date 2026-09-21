@@ -37,41 +37,37 @@ before(async () => {
   });
   api = await import(pathToFileURL(native));
   videoPath = join(temporary, "red-blue.webm");
+  // Encode exact RGB primaries losslessly. A lavfi YUV color source plus a
+  // BT.601/709 conversion introduces platform-dependent fixture quantization.
+  const rgb = Buffer.alloc(64 * 64 * 3 * 60);
+  for (let frame = 0; frame < 60; frame++) {
+    for (let pixel = 0; pixel < 64 * 64; pixel++) {
+      rgb[(frame * 64 * 64 + pixel) * 3 + (frame < 30 ? 0 : 2)] = 255;
+    }
+  }
   const encoded = spawnSync(
     "ffmpeg",
     [
-      "-v",
-      "error",
-      "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      "color=red:s=64x64:r=30:d=1",
-      "-f",
-      "lavfi",
-      "-i",
-      "color=blue:s=64x64:r=30:d=1",
-      "-filter_complex",
-      // Convert the matrix explicitly; do not depend on scale/pixel-format negotiation.
-      "[0:v][1:v]concat=n=2:v=1:a=0,colorspace=iall=bt601-6-625:all=bt709:fast=1:format=yuv420p[v]",
-      "-map",
-      "[v]",
-      "-c:v",
-      "libvpx-vp9",
-      "-lossless",
-      "1",
-      "-colorspace",
-      "bt709",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "bt709",
-      "-an",
-      videoPath,
+      "-v", "error", "-y",
+      "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "64x64",
+      "-framerate", "30", "-i", "pipe:0",
+      "-vf", "format=gbrp", "-pix_fmt", "gbrp",
+      "-c:v", "libvpx-vp9", "-lossless", "1",
+      "-colorspace", "rgb", "-color_primaries", "bt709",
+      "-color_trc", "iec61966-2-1", "-color_range", "pc",
+      "-an", videoPath,
     ],
-    { encoding: "utf8" },
+    { input: rgb, encoding: "utf8" },
   );
   assert.equal(encoded.status, 0, encoded.stderr);
+  for (const [time, expected] of [[0, [255, 0, 0, 255]], [1.5, [0, 0, 255, 255]]]) {
+    const decoded = spawnSync("ffmpeg", [
+      "-v", "error", "-ss", String(time), "-i", videoPath,
+      "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1",
+    ]);
+    assert.equal(decoded.status, 0, decoded.stderr.toString());
+    near(pixel(decoded.stdout, 32, 32), expected, 1);
+  }
 });
 after(async () => {
   if (temporary) await rm(temporary, { recursive: true, force: true });
