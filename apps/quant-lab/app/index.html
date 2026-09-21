@@ -1168,7 +1168,7 @@
           <header class="module-heading">
             <span class="eyebrow">PORTFOLIO</span>
             <h1 id="module-holdings-title" tabindex="-1">持仓</h1>
-            <p>记录真实交易，查看持仓、盈亏、集中度和数据是否需要更新。</p>
+            <p>查看每日收益、收益走势和持仓明细。</p>
           </header>
           <p id="portfolio-status" class="portfolio-status" role="status" aria-live="polite">
             正在读取交易记录…
@@ -1202,6 +1202,11 @@
               </details>
             </section>
 
+            <aside id="portfolio-data-notice" class="portfolio-data-notice" aria-label="数据提醒" hidden>
+              <p id="portfolio-data-notice-text" role="status"></p>
+              <button id="portfolio-data-notice-details" class="ghost-button" type="button">查看问题</button>
+            </aside>
+
             <section id="portfolio-performance" class="portfolio-card portfolio-performance" aria-labelledby="portfolio-performance-title">
               <header class="portfolio-card-head">
                 <div><h2 id="portfolio-performance-title">收益走势</h2><span data-performance-date>等待持仓记录</span></div>
@@ -1232,34 +1237,6 @@
               <p id="portfolio-history-status" role="status"></p>
             </section>
 
-            <section
-              id="portfolio-analysis"
-              class="portfolio-card portfolio-analysis"
-              aria-labelledby="portfolio-analysis-title"
-              tabindex="-1"
-            >
-              <header class="portfolio-card-head">
-                <div>
-                  <span class="eyebrow">RULE-BASED CHECKS</span>
-                  <h2 id="portfolio-analysis-title">持仓分析</h2>
-                </div>
-                <span>规则计算 · Agent 仅解释证据</span>
-              </header>
-              <p
-                id="portfolio-analysis-status"
-                class="portfolio-analysis-status"
-                role="status"
-                aria-live="polite"
-              >正在计算规则…</p>
-              <div id="portfolio-analysis-list" class="portfolio-analysis-list"></div>
-              <footer class="portfolio-analysis-footer">
-                <p>所有结果和判断标准均由本地规则计算；数据不足时会明确说明，不会用零代替。</p>
-                <button id="portfolio-analysis-agent" class="ghost-button" type="button">
-                  让 Agent 解释结构化证据
-                </button>
-                <span id="portfolio-analysis-agent-state" role="status" aria-live="polite"></span>
-              </footer>
-            </section>
 
             <section class="portfolio-card" aria-labelledby="portfolio-holdings-title">
               <header class="portfolio-card-head">
@@ -1310,6 +1287,30 @@
               </header>
               <div id="portfolio-transactions-list" class="portfolio-transactions-list"></div>
             </section>
+
+            <details
+              id="portfolio-analysis"
+              class="portfolio-card portfolio-analysis"
+              aria-labelledby="portfolio-analysis-title"
+              tabindex="-1"
+            >
+              <summary id="portfolio-analysis-title">数据检查详情</summary>
+              <p
+                id="portfolio-analysis-status"
+                class="portfolio-analysis-status"
+                role="status"
+                aria-live="polite"
+              >正在检查数据…</p>
+              <div id="portfolio-analysis-list" class="portfolio-analysis-list"></div>
+              <footer class="portfolio-analysis-footer">
+                <p>所有结果和判断标准均由本地规则计算；数据不足时会明确说明，不会用零代替。</p>
+                <button id="portfolio-analysis-agent" class="ghost-button" type="button">
+                  解释检查结果
+                </button>
+                <span id="portfolio-analysis-agent-state" role="status" aria-live="polite"></span>
+              </footer>
+            </details>
+
           </div>
         </section>
 

@@ -503,6 +503,10 @@ const elements = {
   portfolioBaseState: document.querySelector("#portfolio-base-state"),
   portfolioSummaryNote: document.querySelector("#portfolio-summary-note"),
   portfolioFxSource: document.querySelector("#portfolio-fx-source"),
+  portfolioDataNotice: document.querySelector("#portfolio-data-notice"),
+  portfolioDataNoticeText: document.querySelector("#portfolio-data-notice-text"),
+  portfolioDataNoticeDetails: document.querySelector("#portfolio-data-notice-details"),
+  portfolioAnalysis: document.querySelector("#portfolio-analysis"),
   portfolioAnalysisStatus: document.querySelector("#portfolio-analysis-status"),
   portfolioAnalysisList: document.querySelector("#portfolio-analysis-list"),
   portfolioAnalysisAgent: document.querySelector("#portfolio-analysis-agent"),
@@ -1848,6 +1852,7 @@ function renderToday() {
       const target = document.querySelector(summary.id === "watch"
         ? (watchlist.length ? "#watch-check" : "#watch-symbol")
         : summary.id === "data" ? "#portfolio-analysis" : "#module-holdings-title");
+      if (target?.id === "portfolio-analysis") target.open = true;
       target?.focus();
       target?.scrollIntoView({ block: "center", behavior: "smooth" });
     });
@@ -2542,6 +2547,10 @@ holdingsController = createHoldingsController({
     baseState: elements.portfolioBaseState,
     summaryNote: elements.portfolioSummaryNote,
     fxSource: elements.portfolioFxSource,
+    dataNotice: elements.portfolioDataNotice,
+    dataNoticeText: elements.portfolioDataNoticeText,
+    dataNoticeDetails: elements.portfolioDataNoticeDetails,
+    analysisDetails: elements.portfolioAnalysis,
     analysisStatus: elements.portfolioAnalysisStatus,
     analysisList: elements.portfolioAnalysisList,
     analysisAgent: elements.portfolioAnalysisAgent,
@@ -5595,7 +5604,7 @@ for (const button of document.querySelectorAll("[data-module-link]")) {
     if (todayFocus === "portfolio-entry") {
       queueMicrotask(() => holdingsController.openEntry());
     } else if (todayFocus === "portfolio-analysis") {
-      queueMicrotask(() => document.querySelector("#portfolio-analysis")?.focus());
+      queueMicrotask(() => holdingsController.openDataDetails());
     } else if (todayFocus === "watch-trigger") {
       queueMicrotask(() =>
         (document.querySelector('.watch-item[data-state="hit"]') ??

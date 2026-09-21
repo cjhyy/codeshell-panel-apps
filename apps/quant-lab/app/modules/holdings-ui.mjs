@@ -849,7 +849,28 @@ export function createHoldingsController({
     parent.append(listNode);
   }
 
+  function openDataDetails() {
+    if (!elements.analysisDetails) return;
+    elements.analysisDetails.open = true;
+    elements.analysisDetails.focus();
+    elements.analysisDetails.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
   function renderAnalysis() {
+    const messages = {
+      "stale-quotes": "部分持仓报价未更新，盈亏可能有延迟",
+      "ledger-fingerprint-mismatch": "持仓与交易记录不一致，请重新读取",
+      "missing-raw-data": "历史行情不完整，部分收益暂无法计算",
+      "suspected-missing-corporate-action": "价格变动异常，请核对分红、送股或拆股记录",
+      "fx-source-divergence": "汇率数据存在差异，请核对外币估值",
+    };
+    const issues = ruleResults.filter((rule) => messages[rule.id] &&
+      (rule.status === "warning" || (rule.status === "unavailable" &&
+        ["stale-quotes", "missing-raw-data"].includes(rule.id))));
+    if (elements.dataNotice) {
+      elements.dataNotice.hidden = issues.length === 0;
+      elements.dataNoticeText.textContent = issues.map((rule) => messages[rule.id]).join("；") + (issues.length ? "。" : "");
+    }
     elements.analysisList.replaceChildren();
     for (const rule of ruleResults) {
       const card = document.createElement("article");
@@ -936,7 +957,7 @@ export function createHoldingsController({
     }
     const unavailable = ruleResults.filter((rule) => rule.status === "unavailable").length;
     const warnings = ruleResults.filter((rule) => rule.status === "warning").length;
-    elements.analysisStatus.textContent = `${ruleResults.length} 条规则 · ${warnings} 条触发 · ${unavailable} 条无法判断；其余静态项继续展示。`;
+    elements.analysisStatus.textContent = `${ruleResults.length} 项检查 · ${warnings} 项提醒 · ${unavailable} 项待补数据`;
   }
 
   async function submitRuleEvidence() {
@@ -986,6 +1007,13 @@ export function createHoldingsController({
     const positions = displayed
       ? displayed.positionsByAccount.filter((position) => Number(position.quantity) > 0)
       : [];
+    // Same-currency base values make weights comparable across A shares and US stocks.
+    // With incomplete valuation, show no percentage rather than renormalizing a subset.
+    const positionValues = new Map(positions.map((position) => [position,
+      position.costBasisBase != null && position.unrealizedPnlBase != null
+        ? Number(position.costBasisBase) + Number(position.unrealizedPnlBase) : null]));
+    const completeValues = [...positionValues.values()].every((value) => value != null && Number.isFinite(value));
+    const securitiesValue = completeValues ? [...positionValues.values()].reduce((total, value) => total + value, 0) : null;
     const pnlOrder = new Map(
       (ruleResults.find((rule) => rule.id === "pnl-contributors")?.actual?.items ?? [])
         .map((item, index) => [item.symbol, index]),
@@ -1025,7 +1053,7 @@ export function createHoldingsController({
         ? `人民币估值暂不可用 · ${reasonLabel(position.baseUnavailable.reason)}`
         : "人民币估值可用";
       baseState.title = position.baseUnavailable?.reason ?? "base-complete";
-      head.append(baseState);
+      if (position.baseUnavailable) head.append(baseState);
       row.append(head);
 
       const metrics = document.createElement("div");
@@ -1037,6 +1065,10 @@ export function createHoldingsController({
         if (tone) output.dataset.tone = tone;
         metrics.append(wrapper);
       };
+      const positionValue = positionValues.get(position);
+      metric("持仓市值 · 人民币", positionValue == null ? "—" : `${money(positionValue)} CNY`);
+      metric("占持仓市值", securitiesValue > 0 && positionValue != null
+        ? `${(positionValue / securitiesValue * 100).toFixed(2)}%` : "—");
       metric("数量", position.quantity);
       metric(
         "移动均价 · 本币",
@@ -1601,6 +1633,8 @@ export function createHoldingsController({
   }
 
   function reset() {
+    if (elements.analysisDetails) elements.analysisDetails.open = false;
+    if (elements.dataNotice) elements.dataNotice.hidden = true;
     historyGeneration++;
     historyRequest.cancel();
     historyBusy = false;
@@ -1634,6 +1668,7 @@ export function createHoldingsController({
     onPortfolioState({ hasPositions: false });
   }
 
+  elements.dataNoticeDetails?.addEventListener("click", openDataDetails);
   elements.historySync?.addEventListener("click", () => void syncHistory());
   elements.create.addEventListener("click", showCreateForm);
   elements.form.addEventListener("submit", (event) => void save(event));
@@ -1645,6 +1680,7 @@ export function createHoldingsController({
   return {
     load,
     reset,
+    openDataDetails,
     setActive(value) {
       quotesActive = value;
       quoteController.setActive(value);

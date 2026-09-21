@@ -93,7 +93,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.46.0");
+assert.equal(manifest.version, "0.46.1");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
 assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
@@ -3634,10 +3634,17 @@ assert.match(await page.locator("#portfolio-fx-source").textContent(), /无需�
 assert.match(await page.locator("#portfolio-status").textContent(), /交易已保存并刷新持仓/u);
 assert.doesNotMatch(await page.locator("#portfolio-status").textContent(), /请勿重复提交/u);
 
-// Round 10: all 13 pure P0-P3 rules render on the first screen. P0 remains
-// first, while available P1/P2 facts coexist with unavailable dependencies.
+// Diagnostics remain available on demand, below the portfolio, without crowding the main view.
 const analysisCard = page.locator("#portfolio-analysis");
 assert.equal(await analysisCard.isVisible(), true);
+assert.equal(await analysisCard.getAttribute("open"), null);
+assert.equal(await page.locator("#portfolio-analysis-agent").isVisible(), false);
+assert.equal(await page.locator("#portfolio-performance").evaluate((node) => node.nextElementSibling.querySelector("h2")?.textContent), "持仓明细");
+assert.match(await page.locator(".portfolio-position").first().textContent(), /占持仓市值100.00%/u);
+assert.equal(await page.locator("#portfolio-data-notice").isVisible(), true);
+await page.locator("#portfolio-data-notice-details").click();
+assert.equal(await analysisCard.evaluate(node => node.open), true);
+assert.equal(await analysisCard.evaluate(node => node === document.activeElement), true);
 assert.equal(await page.locator(".portfolio-analysis-rule").count(), 13);
 assert.equal(
   await page.locator(".portfolio-analysis-rule").first().getAttribute("data-priority"),
@@ -3820,6 +3827,8 @@ assert.match(await page.locator("#portfolio-status").textContent(), /缺少汇�
 assert.match(await page.locator("#portfolio-status").textContent(), /请勿重复提交/u);
 assert.doesNotMatch(await page.locator("#portfolio-status").textContent(), /快照暂未更新/u);
 assert.equal(await page.evaluate(() => window.__files.has("portfolio/holdings.json")), true);
+const incompleteWeights = await page.locator(".portfolio-position-metrics > div").filter({ hasText: "占持仓市值" }).locator("b").allTextContents();
+assert(incompleteWeights.length > 0 && incompleteWeights.every(value => value === "—"), "incomplete FX must not renormalize only the priced positions");
 assert.equal(
   await page.evaluate(() => JSON.parse(window.__files.get("portfolio/holdings.json").content).availability.base.reason),
   "missing-fx",
@@ -3833,8 +3842,7 @@ await page.evaluate((entries) => {
 }, fxRecoveryFiles);
 await page.click("#portfolio-refresh");
 await page.waitForFunction(() =>
-  document.querySelector('.portfolio-position[data-symbol="AAPL"] .portfolio-base-badge')
-    ?.textContent.includes("人民币估值可用"),
+  /人民币成本[\d,.]+ CNY/u.test(document.querySelector('.portfolio-position[data-symbol="AAPL"]')?.textContent ?? ""),
 );
 assert.match(await usdPosition.textContent(), /人民币成本\d[\d,.]* CNY/u);
 assert.doesNotMatch(await usdPosition.textContent(), /人民币估值暂不可用 · 缺少汇率/u);
@@ -4098,6 +4106,8 @@ for (const moduleId of moduleOrder) {
   assert.deepEqual(audit.tinyButtons, [], `${moduleId} has undersized controls at 320px`);
 }
 await page.click('[data-module-tab="holdings"]');
+assert.equal(await page.locator("#portfolio-analysis-agent").isVisible(), false, "project changes reset diagnostics to collapsed");
+await page.locator("#portfolio-analysis > summary").click();
 assert.equal(await page.locator("#portfolio-analysis-agent").isVisible(), true);
 await page.locator("#portfolio-analysis-agent").focus();
 assert.equal(
@@ -5106,6 +5116,10 @@ const failingSeed = [
     await scenarioPage.waitForFunction((expected) => document.querySelector("#portfolio-pnl-base")?.textContent === expected, pnl);
     assert.equal(await scenarioPage.locator("#portfolio-total-base").textContent(), pnl);
     assert.match(await scenarioPage.locator('.portfolio-position[data-symbol="SH600036"]').textContent(), new RegExp(`${price} CNY`));
+    const metrics = scenarioPage.locator('.portfolio-position[data-symbol="SH600036"] .portfolio-position-metrics > div');
+    assert.equal(await metrics.filter({ hasText: "占持仓市值" }).locator("b").textContent(), "100.00%");
+    assert.equal(await metrics.filter({ hasText: "持仓市值 · 人民币" }).locator("b").textContent(), `${(Number(price) * 100).toLocaleString("en-US", { minimumFractionDigits: 2 })} CNY`);
+    assert.equal(await scenarioPage.locator("#portfolio-data-notice").isVisible(), false, "fresh complete data clears the compact reminder");
   }
   assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "workspace.writeText").length), writesBeforeQuotes,
     "quote refresh must never write transactions or holdings cache");
