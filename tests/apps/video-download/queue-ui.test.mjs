@@ -179,16 +179,26 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
           if (method === "process.spawn") {
             const processId = `process-${++nextProcess}`;
             const result = { processId, executable: args.executableHandle };
-            const isVersion = args.args.includes("--version");
+            const isVersion = args.args.includes("--version") || args.args.includes("-version");
             const isRelease = args.executableHandle === "executable-curl";
             if (isVersion || isRelease) {
               setTimeout(() => {
                 window.__emit("process.output", {
                   processId,
                   stream: "stdout",
-                  text: isVersion ? "2026.09.17\n" : '{"tag_name":"2026.09.17"}\n',
+                  text:
+                    window.__brokenExecutable === args.executableHandle
+                      ? "invalid tool output\n"
+                      : isVersion
+                        ? args.args.includes("-version")
+                          ? "ffmpeg version 8.1.1\n"
+                          : "2026.09.17\n"
+                        : '{"tag_name":"2026.09.17"}\n',
                 });
-                window.__emit("process.exit", { processId, code: 0 });
+                window.__emit("process.exit", {
+                  processId,
+                  code: window.__brokenExecutable === args.executableHandle ? 1 : 0,
+                });
               }, 0);
             } else {
               window.__downloads.push({ ...structuredClone(args), processId });
@@ -224,7 +234,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
     return (
       window.__panelTools?.get_video_download_context &&
       (projectDirectoryError
-        ? document.querySelector("#runtime-badge").dataset.state === "ready"
+        ? document.querySelector("#runtime-badge span").textContent === "请选择保存目录"
         : document.querySelector("#installed-ytdlp-version").textContent === "2026.09.17") &&
       !document.querySelector("#refresh-versions").disabled
     );
@@ -1751,4 +1761,56 @@ test("successful retry replaces failure and history navigation highlights expire
   assert.equal(await page.locator(".history-highlight").count(), 0);
   assert.equal(await page.locator("#history-jump-status").textContent(), "");
   await page.screenshot({ path: resolve(artifacts, "history-locate-cleared.png"), fullPage: true });
+});
+
+for (const name of ["yt-dlp", "ffmpeg"]) {
+  test(`a broken ${name} is not ready and rechecking after repair restores readiness`, async (t) => {
+    const page = await openPanel(t);
+    if (name === "ffmpeg") await page.locator("#quality-select").selectOption("audio");
+    await page.evaluate((name) => {
+      window.__brokenExecutable = `executable-${name}`;
+    }, name);
+    const failed = await page.evaluate(() =>
+      window.__panelTools.refresh_video_download_dependencies(),
+    );
+    assert.equal(failed.ready, false);
+    assert.equal(name === "yt-dlp" ? failed.ytDlp : failed.ffmpeg, false);
+    assert.notEqual(await page.locator("#runtime-badge").getAttribute("data-state"), "ready");
+    assert.match(await page.locator("#version-comparison").textContent(), /无法正常运行/);
+    await page.locator("#url-input").fill(firstUrl);
+    if (name === "yt-dlp") {
+      assert.equal(await page.locator("#download-button").isDisabled(), true);
+      assert.equal(await page.locator("#inspect-button").isDisabled(), true);
+    } else {
+      assert.equal(await page.locator("#quality-select").inputValue(), "best");
+      assert.equal(
+        await page
+          .locator('#quality-select option[value="audio"]')
+          .evaluate((option) => option.disabled),
+        true,
+      );
+    }
+    await page.evaluate(() => {
+      window.__brokenExecutable = "";
+    });
+    const repaired = await page.evaluate(() =>
+      window.__panelTools.refresh_video_download_dependencies(),
+    );
+    assert.equal(repaired.ready, true);
+    assert.equal(await page.locator("#runtime-badge").getAttribute("data-state"), "ready");
+    assert.equal(await page.locator("#download-button").isDisabled(), false);
+  });
+}
+
+test("an unavailable release server does not mark working local tools broken", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    window.__brokenExecutable = "executable-curl";
+  });
+  const result = await page.evaluate(() =>
+    window.__panelTools.refresh_video_download_dependencies(),
+  );
+  assert.equal(result.ready, true);
+  assert.match(result.versions.error, /GitHub/);
+  assert.equal(await page.locator("#runtime-badge").getAttribute("data-state"), "ready");
 });

@@ -10,6 +10,7 @@ import {
   MAX_HISTORY,
   configurationKey,
 } from "./download-library.js";
+import { createProjectStorage } from "./project-storage.js";
 import { createLibraryProcess } from "./library-process.js";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
@@ -456,8 +457,8 @@ function setTabIndicator(element, label = "", state = "") {
 function updateTabIndicators() {
   const setupNeeded = shouldOfferSetup({
     dependenciesChecked,
-    hasYtDlp: Boolean(runtime.ytDlp?.handle),
-    hasFfmpeg: Boolean(runtime.ffmpeg?.handle),
+    hasYtDlp: dependencyReady(runtime.ytDlp),
+    hasFfmpeg: dependencyReady(runtime.ffmpeg),
     installedYtDlpVersion: runtime.ytDlp?.version,
     latestYtDlpVersion: runtime.latestYtDlpVersion,
   });
@@ -498,6 +499,7 @@ function setRuntimeBadge(state, label) {
   elements.runtimeBadge.querySelector("span").textContent =
     {
       Checking: "检查中",
+      "Choose folder": "请选择保存目录",
       "Local ready": "已就绪",
       "Setup needed": "待初始化",
       Unavailable: "不可用",
@@ -519,26 +521,32 @@ function renderVersionInfo() {
   environment.dataset.state =
     !dependenciesChecked || versionRefreshPending
       ? "checking"
-      : !runtime.ytDlp?.handle
+      : !dependencyReady(runtime.ytDlp)
         ? "error"
-        : !runtime.ffmpeg?.handle || comparison === -1
+        : !dependencyReady(runtime.ffmpeg) || comparison === -1
           ? "update"
           : "current";
   environment.textContent =
     !dependenciesChecked || versionRefreshPending
       ? "正在检查"
-      : !runtime.ytDlp?.handle
-        ? "需要安装"
-        : !runtime.ffmpeg?.handle
-          ? "缺少转换工具"
+      : !dependencyReady(runtime.ytDlp)
+        ? runtime.ytDlp?.error
+          ? "下载器检查失败"
+          : "需要安装"
+        : !dependencyReady(runtime.ffmpeg)
+          ? runtime.ffmpeg?.error
+            ? "转换工具检查失败"
+            : "缺少转换工具"
           : comparison === -1
             ? "有更新"
             : comparison === 0
               ? "✓ 最新稳定版"
               : "✓ 可以下载";
-  elements.installedYtDlpVersion.textContent = !runtime.ytDlp?.handle
+  elements.installedYtDlpVersion.textContent = !dependencyReady(runtime.ytDlp)
     ? dependenciesChecked
-      ? "未安装"
+      ? runtime.ytDlp?.error
+        ? "检查失败"
+        : "未安装"
       : "检查中…"
     : installed || (versionRefreshPending ? "检查中…" : "暂不可用");
   elements.latestYtDlpVersion.textContent =
@@ -558,9 +566,15 @@ function renderVersionInfo() {
     elements.versionComparison.textContent = "正在读取 yt-dlp 与 GitHub Release…";
     return;
   }
-  if (!runtime.ytDlp?.handle) {
+  if (!dependencyReady(runtime.ytDlp)) {
     elements.versionComparison.dataset.state = "error";
-    elements.versionComparison.textContent = "未找到 yt-dlp，请先完成初始化。";
+    elements.versionComparison.textContent =
+      runtime.ytDlp?.error || "未找到 yt-dlp，请先完成初始化。";
+    return;
+  }
+  if (runtime.ffmpeg?.error) {
+    elements.versionComparison.dataset.state = "error";
+    elements.versionComparison.textContent = runtime.ffmpeg.error;
     return;
   }
   if (comparison === 0) {
@@ -776,8 +790,8 @@ function renderDuplicates() {
 }
 
 async function prepareItem(item, allowPick = false) {
-  if (!runtime.ytDlp?.handle) throw new Error("请先安装下载器。");
-  if (item.configuration.format === "audio" && !runtime.ffmpeg?.handle)
+  if (!dependencyReady(runtime.ytDlp)) throw new Error("请先安装下载器。");
+  if (item.configuration.format === "audio" && !dependencyReady(runtime.ffmpeg))
     throw new Error("仅音频模式需要 ffmpeg。");
   item.directory = await directoryFor(item, allowPick);
   item.executable = { ...runtime.ytDlp };
@@ -813,7 +827,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
     versionRefreshPending
   )
     throw new Error("请等待当前操作完成后再添加任务。");
-  if (!runtime.ytDlp?.handle || !runtime.directory?.handle)
+  if (!dependencyReady(runtime.ytDlp) || !runtime.directory?.handle)
     throw new Error("下载器或保存目录还没有准备好。");
   if (candidates.length + downloadQueue.length > 100)
     throw new Error("队列最多保留 100 项，请先清除已结束任务。");
@@ -1341,7 +1355,7 @@ async function cookieFileArguments(url) {
   const account = cookieAccounts.find((item) => item.id === credentialId);
   if (!account || account.health === "corrupted")
     throw new Error("这个 Cookie 已失效，请重新登录并保存。");
-  if (!runtime.ytDlp?.handle) throw new Error("yt-dlp 还没有准备好。");
+  if (!dependencyReady(runtime.ytDlp)) throw new Error("yt-dlp 还没有准备好。");
   if (previewMode) return ["preview-cookie"];
   const host = new URL(targetUrl).hostname;
   const executableHandle = runtime.ytDlp.handle;
@@ -1475,12 +1489,14 @@ function renderQualityOptions(video = inspectedVideo) {
     const option = document.createElement("option");
     option.value = choice.value;
     option.textContent = choice.label;
-    if (choice.value === "audio" && !runtime.ffmpeg?.handle) option.disabled = true;
+    if (choice.value === "audio" && !dependencyReady(runtime.ffmpeg)) option.disabled = true;
     elements.qualitySelect.append(option);
   }
-  elements.qualitySelect.value = choices.some((choice) => choice.value === previous)
-    ? previous
-    : "best";
+  elements.qualitySelect.value =
+    choices.some((choice) => choice.value === previous) &&
+    (previous !== "audio" || dependencyReady(runtime.ffmpeg))
+      ? previous
+      : "best";
   elements.qualityHelp.textContent = batchMode
     ? "批量链接会分别使用实际可用的画质；每条视频可单独核对。"
     : video
@@ -1494,10 +1510,10 @@ function updateConditionalOptions() {
   elements.playlistOptions.hidden = !elements.playlist.checked;
   elements.subtitleOptions.hidden = !elements.subtitles.checked;
   elements.subtitleCustomRow.hidden = elements.subtitleLanguagePreset.value !== "custom";
-  const canEmbed = Boolean(runtime.ffmpeg?.handle) && selectedFormat() !== "audio";
+  const canEmbed = dependencyReady(runtime.ffmpeg) && selectedFormat() !== "audio";
   elements.subtitleEmbed.disabled =
     !canEmbed || Boolean(inspectionJob?.running || queueSubmissionPending);
-  elements.subtitleHelp.textContent = !runtime.ffmpeg?.handle
+  elements.subtitleHelp.textContent = !dependencyReady(runtime.ffmpeg)
     ? "当前没有 ffmpeg，将保留网站提供的独立字幕文件。"
     : elements.subtitleEmbed.checked
       ? "字幕会转换为 SRT 并嵌入视频；也会保留下载流程所需的字幕文件。"
@@ -1795,7 +1811,7 @@ function currentConfiguration() {
     subtitleMode: selectedSubtitleMode(),
     subtitleLanguages,
     subtitleLanguagePreset: elements.subtitleLanguagePreset.value,
-    embedSubtitles: elements.subtitleEmbed.checked && Boolean(runtime.ffmpeg?.handle),
+    embedSubtitles: elements.subtitleEmbed.checked && dependencyReady(runtime.ffmpeg),
     cookieAccount: elements.cookieSelect.value
       ? cookieAccounts.find((account) => account.id === elements.cookieSelect.value)?.label ||
         "已选择账号"
@@ -1963,8 +1979,8 @@ function renderSetupProgress() {
 }
 
 function renderSetupCard() {
-  const missingYtDlp = !runtime.ytDlp?.handle;
-  const missingFfmpeg = !runtime.ffmpeg?.handle;
+  const missingYtDlp = !dependencyReady(runtime.ytDlp);
+  const missingFfmpeg = !dependencyReady(runtime.ffmpeg);
   const updateAvailable =
     compareYtDlpVersions(runtime.ytDlp?.version, runtime.latestYtDlpVersion) === -1;
   const setupNeeded = shouldOfferSetup({
@@ -2079,7 +2095,7 @@ function inspectionIsBusy() {
 }
 
 function updateActionAvailability() {
-  const ready = Boolean(runtime.ytDlp?.handle && runtime.directory?.handle);
+  const ready = dependencyReady(runtime.ytDlp) && Boolean(runtime.directory?.handle);
   const validUrl = Boolean(normalizedUrl());
   const linkCount = parseVideoLinks(elements.urlInput.value).urls.length;
   const multipleUrls = linkCount > 1;
@@ -2114,8 +2130,8 @@ function updateActionAvailability() {
         ? "下载环境准备中…"
         : !dependenciesChecked || dependencyRefreshPending || versionRefreshPending
           ? "正在检查下载环境，完成后即可操作。"
-          : !runtime.ytDlp?.handle
-            ? "请先展开下方「下载环境」完成安装。"
+          : !dependencyReady(runtime.ytDlp)
+            ? "请展开下方「下载环境」安装或复检下载器。"
             : !runtime.directory?.handle
               ? "请选择保存目录。"
               : !validUrl
@@ -2243,7 +2259,8 @@ function setControlsBusy(busy, operation = "download") {
   elements.subtitleMode.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguagePreset.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguages.disabled = busy || selectedFormat() === "audio";
-  elements.subtitleEmbed.disabled = busy || selectedFormat() === "audio" || !runtime.ffmpeg?.handle;
+  elements.subtitleEmbed.disabled =
+    busy || selectedFormat() === "audio" || !dependencyReady(runtime.ffmpeg);
   elements.inspectButton.textContent =
     busy && operation === "inspect" ? "正在获取…" : "获取视频信息";
   elements.cancelButton.hidden = !currentJob?.running;
@@ -2650,7 +2667,7 @@ async function inspectVideo({ retryFailed = false } = {}) {
     showError("请输入完整的 http 或 https 视频链接。");
     return;
   }
-  if (!runtime.ytDlp?.handle || !runtime.directory?.handle) {
+  if (!dependencyReady(runtime.ytDlp) || !runtime.directory?.handle) {
     showError("下载器或保存目录还没有准备好。");
     return;
   }
@@ -2769,7 +2786,7 @@ function buildArguments(url, configuration = currentConfiguration(), copySuffix 
   } else if (/^\d{3,4}$/.test(format)) {
     args.push("--format");
     const height = format;
-    if (runtime.ffmpeg?.handle) {
+    if (dependencyReady(runtime.ffmpeg)) {
       args.push(
         `bestvideo*[height<=${height}]+bestaudio/best[height<=${height}]`,
         "--merge-output-format",
@@ -2780,7 +2797,7 @@ function buildArguments(url, configuration = currentConfiguration(), copySuffix 
     }
   } else {
     args.push("--format");
-    if (runtime.ffmpeg?.handle) {
+    if (dependencyReady(runtime.ffmpeg)) {
       args.push("bestvideo*+bestaudio/best", "--merge-output-format", "mp4");
     } else {
       args.push("best[ext=mp4]/best");
@@ -2805,7 +2822,7 @@ function buildArguments(url, configuration = currentConfiguration(), copySuffix 
       "--sub-langs",
       normalizedSubtitleLanguages(configuration.subtitleLanguages),
     );
-    if (runtime.ffmpeg?.handle) {
+    if (dependencyReady(runtime.ffmpeg)) {
       args.push("--convert-subs", "srt");
       if (configuration.embedSubtitles) args.push("--embed-subs");
     }
@@ -3824,7 +3841,7 @@ async function searchCandidates(options) {
 async function searchPlatformCandidates({ query, platforms, limit = 8, signal }) {
   if (previewMode) throw new Error("请在 CodeShell 中使用平台实时搜索。");
   if (Number(context.apiVersion) < 14) throw new Error("AI 找视频需要更新 CodeShell。");
-  if (!runtime.ytDlp?.handle || !runtime.directory?.handle)
+  if (!dependencyReady(runtime.ytDlp) || !runtime.directory?.handle)
     throw new Error("请先在下载页安装 yt-dlp 并选择保存目录。");
   const candidates = [],
     warnings = [];
@@ -3965,6 +3982,7 @@ async function chooseDirectory() {
         bookmark: result.bookmark,
       };
       await saveLibrary();
+      if (!runtime.ytDlp?.verified || !runtime.ffmpeg?.verified) await refreshRuntimeDependencies();
     }
   } catch (error) {
     showError(error instanceof Error ? error.message : String(error));
@@ -4005,7 +4023,7 @@ function applyConfiguration(input) {
   if (!format || typeof input.playlist !== "boolean" || typeof input.subtitles !== "boolean") {
     throw new Error("下载配置格式不正确");
   }
-  if (format === "audio" && !runtime.ffmpeg?.handle) {
+  if (format === "audio" && !dependencyReady(runtime.ffmpeg)) {
     throw new Error("当前没有 ffmpeg，无法应用仅音频配置");
   }
   const inspectionModeChanged = elements.playlist.checked !== input.playlist;
@@ -4119,8 +4137,8 @@ function videoContextForAgent() {
     initialization: {
       needed: shouldOfferSetup({
         dependenciesChecked,
-        hasYtDlp: Boolean(runtime.ytDlp?.handle),
-        hasFfmpeg: Boolean(runtime.ffmpeg?.handle),
+        hasYtDlp: dependencyReady(runtime.ytDlp),
+        hasFfmpeg: dependencyReady(runtime.ffmpeg),
         installedYtDlpVersion: runtime.ytDlp?.version,
         latestYtDlpVersion: runtime.latestYtDlpVersion,
       }),
@@ -4141,15 +4159,15 @@ function videoContextForAgent() {
         }
       : null,
     capabilities: {
-      ytDlp: Boolean(runtime.ytDlp?.handle),
+      ytDlp: dependencyReady(runtime.ytDlp),
       ytDlpVersion: {
         installed: runtime.ytDlp?.version || null,
         latest: runtime.latestYtDlpVersion,
         updateAvailable:
           compareYtDlpVersions(runtime.ytDlp?.version, runtime.latestYtDlpVersion) === -1,
       },
-      ffmpeg: Boolean(runtime.ffmpeg?.handle),
-      audioAvailable: Boolean(runtime.ffmpeg?.handle),
+      ffmpeg: dependencyReady(runtime.ffmpeg),
+      audioAvailable: dependencyReady(runtime.ffmpeg),
       formats: [
         "best",
         "2160",
@@ -4158,7 +4176,7 @@ function videoContextForAgent() {
         "720",
         "480",
         "360",
-        ...(runtime.ffmpeg?.handle ? ["audio"] : []),
+        ...(dependencyReady(runtime.ffmpeg) ? ["audio"] : []),
       ],
       cookies: Number(context.apiVersion) >= 10,
       selectedCookieAccount: elements.cookieSelect.value
@@ -4786,7 +4804,7 @@ async function installGitHubFfmpeg(platform, arch, directory) {
 }
 
 async function ensureFfmpeg(platform, arch, directory) {
-  if (runtime.ffmpeg?.handle) {
+  if (dependencyReady(runtime.ffmpeg)) {
     pushSetupActivity("ffmpeg 已就绪，保留当前可用版本", "completed", "plan");
     return;
   }
@@ -4897,7 +4915,10 @@ async function requestAiSetup() {
     updateActionAvailability();
     return;
   }
-  const missing = [!runtime.ytDlp?.handle ? "yt-dlp" : "", !runtime.ffmpeg?.handle ? "ffmpeg" : ""]
+  const missing = [
+    !dependencyReady(runtime.ytDlp) ? "yt-dlp" : "",
+    !dependencyReady(runtime.ffmpeg) ? "ffmpeg" : "",
+  ]
     .filter(Boolean)
     .join("、");
   const prompt = [
@@ -5240,6 +5261,61 @@ function runDependencyProbe(executableHandle, args, timeoutMs = VERSION_PROBE_TI
   });
 }
 
+function dependencyReady(dependency) {
+  return Boolean(dependency?.handle) && dependency.verified !== false;
+}
+
+function renderDependencyHealth() {
+  const ytReady = dependencyReady(runtime.ytDlp);
+  const ffReady = dependencyReady(runtime.ffmpeg);
+  setDependency(
+    elements.ytdlpDot,
+    elements.ytdlpStatus,
+    ytReady,
+    runtime.ytDlp?.error ? "检查失败" : runtime.ytDlp?.version || (ytReady ? "Ready" : "Missing"),
+  );
+  setDependency(
+    elements.ffmpegDot,
+    elements.ffmpegStatus,
+    ffReady,
+    runtime.ffmpeg?.error ? "检查失败" : runtime.ffmpeg?.version || (ffReady ? "Ready" : "Limited"),
+  );
+  setRuntimeBadge(
+    !ytReady ? "error" : ffReady ? "ready" : "loading",
+    !ytReady ? "Setup needed" : ffReady ? "Local ready" : "Limited",
+  );
+  renderQualityOptions(inspectedVideo);
+}
+
+async function probeLocalDependencies() {
+  const errors = [];
+  for (const [name, dependency, args] of [
+    ["yt-dlp", runtime.ytDlp, ["--ignore-config", "--version"]],
+    ["ffmpeg", runtime.ffmpeg, ["-version"]],
+  ]) {
+    if (!dependency?.handle) continue;
+    try {
+      const result = await runDependencyProbe(dependency.handle, args);
+      const version =
+        name === "yt-dlp"
+          ? parseYtDlpVersionOutput(result.stdout)
+          : /^ffmpeg version\s+(\S+)/m.exec(result.stdout)?.[1];
+      if (result.timedOut) throw new Error(`${name} 运行检查超时，请复检依赖`);
+      if (result.code !== 0 || !version) throw new Error(`${name} 无法正常运行，请修复后复检`);
+      dependency.version = version;
+      dependency.verified = true;
+      dependency.error = "";
+    } catch (error) {
+      dependency.version = null;
+      dependency.verified = false;
+      dependency.error = error instanceof Error ? error.message : String(error);
+      errors.push(dependency.error);
+    }
+  }
+  renderDependencyHealth();
+  return errors;
+}
+
 async function refreshVersionInfo() {
   if (previewMode) {
     runtime.ytDlp = { ...(runtime.ytDlp || {}), version: "2026.07.04" };
@@ -5253,6 +5329,8 @@ async function refreshVersionInfo() {
     runtime.latestYtDlpVersion = null;
     versionRefreshError = "";
     versionRefreshPending = false;
+    renderDependencyHealth();
+    if (!runtime.directory?.handle) setRuntimeBadge("loading", "Choose folder");
     renderVersionInfo();
     return { installed: null, latest: null };
   }
@@ -5276,6 +5354,7 @@ async function refreshVersionInfo() {
   updateActionAvailability();
   const errors = [];
   try {
+    errors.push(...(await probeLocalDependencies()));
     try {
       const curl = await panel.call("process.find", { name: "curl" });
       if (!curl.available) throw new Error("没有找到 curl，无法查询 GitHub 最新版");
@@ -5305,31 +5384,10 @@ async function refreshVersionInfo() {
       errors.push(error instanceof Error ? error.message : String(error));
     }
     renderVersionInfo();
-
-    try {
-      const installedResult = await runDependencyProbe(runtime.ytDlp.handle, [
-        "--ignore-config",
-        "--version",
-      ]);
-      const installed = parseYtDlpVersionOutput(installedResult.stdout);
-      if (installedResult.timedOut) throw new Error("读取本机版本超时");
-      if (installedResult.code !== 0 || !installed) throw new Error("无法识别本机版本");
-      runtime.ytDlp.version = installed;
-    } catch (error) {
-      runtime.ytDlp.version = null;
-      errors.push(error instanceof Error ? error.message : String(error));
-    }
   } finally {
     versionRefreshPending = false;
     versionRefreshError = errors.join("；");
-    if (runtime.ytDlp?.handle) {
-      setDependency(
-        elements.ytdlpDot,
-        elements.ytdlpStatus,
-        true,
-        runtime.ytDlp.version || "Ready",
-      );
-    }
+    renderDependencyHealth();
     updateActionAvailability();
     void runNextDownload();
   }
@@ -5349,6 +5407,9 @@ async function refreshRuntimeDependencies() {
     return { ready: true, ytDlp: true, ffmpeg: true, versions, preview: true };
   }
   if (
+    dependencyRefreshPending ||
+    versionRefreshPending ||
+    dependencyProbeJob?.running ||
     hasRunningDownloads() ||
     inspectionJob?.running ||
     queueSubmissionPending ||
@@ -5357,19 +5418,19 @@ async function refreshRuntimeDependencies() {
   ) {
     return {
       ready: false,
-      ytDlp: Boolean(runtime.ytDlp?.handle),
-      ffmpeg: Boolean(runtime.ffmpeg?.handle),
+      ytDlp: dependencyReady(runtime.ytDlp),
+      ffmpeg: dependencyReady(runtime.ffmpeg),
       error: "当前有任务正在执行，完成后再复检依赖。",
     };
   }
 
   dependencyRefreshPending = true;
   setRuntimeBadge("loading", "Checking");
-  setDependency(elements.ytdlpDot, elements.ytdlpStatus, Boolean(runtime.ytDlp?.handle), "检测中…");
+  setDependency(elements.ytdlpDot, elements.ytdlpStatus, dependencyReady(runtime.ytDlp), "检测中…");
   setDependency(
     elements.ffmpegDot,
     elements.ffmpegStatus,
-    Boolean(runtime.ffmpeg?.handle),
+    dependencyReady(runtime.ffmpeg),
     "检测中…",
   );
   updateActionAvailability();
@@ -5387,36 +5448,19 @@ async function refreshRuntimeDependencies() {
     if (!runtime.ffmpeg && selectedFormat() === "audio") {
       elements.qualitySelect.value = "best";
     }
-    setDependency(
-      elements.ytdlpDot,
-      elements.ytdlpStatus,
-      Boolean(runtime.ytDlp),
-      runtime.ytDlp ? "Ready" : "Missing",
-    );
-    setDependency(
-      elements.ffmpegDot,
-      elements.ffmpegStatus,
-      Boolean(runtime.ffmpeg),
-      runtime.ffmpeg ? "Ready" : "Limited",
-    );
-    setControlsBusy(false);
     if (!runtime.ytDlp) {
       dependencyErrorActive = true;
       setRuntimeBadge("error", "Setup needed");
       showError("没有找到 yt-dlp；可以使用上方的一键安装。");
-    } else {
-      setRuntimeBadge(
-        runtime.ffmpeg ? "ready" : "loading",
-        runtime.ffmpeg ? "Local ready" : "Limited",
-      );
-      if (dependencyErrorActive) showError("");
+    } else if (dependencyErrorActive) {
+      showError("");
       dependencyErrorActive = false;
     }
     const versions = await refreshVersionInfo();
     return {
-      ready: Boolean(runtime.ytDlp && runtime.ffmpeg),
-      ytDlp: Boolean(runtime.ytDlp),
-      ffmpeg: Boolean(runtime.ffmpeg),
+      ready: runtime.ytDlp?.verified === true && runtime.ffmpeg?.verified === true,
+      ytDlp: dependencyReady(runtime.ytDlp),
+      ffmpeg: dependencyReady(runtime.ffmpeg),
       versions,
       restartMayBeRequired: false,
     };
@@ -5435,8 +5479,8 @@ async function refreshRuntimeDependencies() {
     renderVersionInfo();
     return {
       ready: false,
-      ytDlp: Boolean(runtime.ytDlp?.handle),
-      ffmpeg: Boolean(runtime.ffmpeg?.handle),
+      ytDlp: dependencyReady(runtime.ytDlp),
+      ffmpeg: dependencyReady(runtime.ffmpeg),
       error: message,
     };
   } finally {
@@ -5857,6 +5901,13 @@ const videoSearch = mountVideoSearch({
   panel,
   container: document.querySelector("#video-search-root"),
   searchCandidates,
+  pendingStorage: createProjectStorage({
+    panel,
+    key: "video-download.search-pending.v2",
+    ready: searchScopeReady,
+    getContext: () => context,
+    getScope: () => libraryScope,
+  }),
   archiveStorage: {
     async load() {
       await searchScopeReady;

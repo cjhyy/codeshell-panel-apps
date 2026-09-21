@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.22.3 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.22.4 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -290,3 +290,24 @@ Batch inspection visits every input link in both single-video and playlist modes
 (up to ten previews per request). Mixed videos/playlists keep independent results
 and failed-link retries; playlist rows show their video counts. Larger batches
 explicitly show the preview limit and retain every link for downloading.
+
+
+## 0.22.4 reliability update
+
+Dependency refresh runs both `yt-dlp --ignore-config --version` and `ffmpeg -version`.
+A found executable that fails to run is shown as failed, and its download/audio
+controls remain unavailable until a successful recheck. Failure to contact the
+GitHub release API does not invalidate working local tools.
+
+AI search recovery uses project-scoped Host storage when advertised, including
+Web frames where localStorage is unavailable. Writes and clearing are ordered;
+storage failures remain visible. Reopening reconnects to the same planning task,
+including a task completed while the page was closed, without another planning
+request. Actual platform evidence is fetched again. Later interrupted stages keep
+the query and model for manual retry; they do not silently spend another AI call.
+
+Downloads still use Guest-owned processes: closing the panel interrupts them,
+and saved queues can be resumed on reopening. Background-task migration requires
+supported handoffs for chosen directories and selected Cookie accounts; the
+current task envelope does not provide those handoffs. Server-side Cookie login
+and authorized download remain dependent on Host support.

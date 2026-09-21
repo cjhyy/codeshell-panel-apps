@@ -87,7 +87,10 @@ function mount({ url = "https://www.youtube.com/watch?v=example", apiVersion = 1
       timers.delete(id);
     },
   });
-  vm.runInContext(`${cookieState}\n${cookieSource}`, sandbox);
+  vm.runInContext(
+    `${source.slice(source.indexOf("function dependencyReady("), source.indexOf("function renderDependencyHealth("))}\n${cookieState}\n${cookieSource}`,
+    sandbox,
+  );
   return {
     elements,
     calls,

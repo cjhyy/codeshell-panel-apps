@@ -206,6 +206,7 @@ export function mountVideoSearch({
   onPreview,
   onError,
   archiveStorage,
+  pendingStorage,
 }) {
   if (!container) throw new Error("AI 查询缺少挂载容器");
   container.innerHTML = `
@@ -219,6 +220,7 @@ export function mountVideoSearch({
       <div class="video-search-actions"><button type="button" class="secondary-button" data-search-start disabled>AI 找视频</button><button type="button" class="text-button" data-search-cancel hidden>取消查询</button><button type="button" class="text-button" data-search-model-refresh>刷新模型</button><button type="button" class="text-button" data-search-new>重新找视频</button></div>
       <ol class="search-stages" data-search-stages aria-label="查询进度" hidden><li data-stage="planning">理解需求</li><li data-stage="searching">检索平台</li><li data-stage="ranking">筛选结果</li></ol>
       <p class="video-search-status" data-search-status role="status" aria-live="polite">正在准备查询…</p>
+      <p data-search-recovery-status role="status" hidden></p>
       <details class="video-search-plan" data-search-plan hidden></details>
       <div class="video-search-results-toolbar" data-search-toolbar hidden><label><input type="checkbox" data-search-select-all /> 全选当前结果 <span class="search-result-count" data-search-result-total></span></label><button type="button" class="secondary-button" data-search-queue disabled>加入队列 <span data-search-count>0</span></button></div>
       <div class="video-search-results" data-search-results></div>
@@ -247,9 +249,11 @@ export function mountVideoSearch({
       "results",
       "clear-history",
       "library-status",
+      "recovery-status",
       "library-list",
     ].map((name) => [name, el(name)]),
   );
+  let pendingWrite = Promise.resolve();
   let destroyed = false;
   let generation = 0;
   let controller = null;
@@ -483,31 +487,40 @@ export function mountVideoSearch({
     for (const button of elements.results.querySelectorAll('[data-action="queue"]'))
       button.disabled = queuePending || typeof onQueue !== "function";
   }
-  function persist(stage = state.phase) {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          taskId: state.taskId,
-          key: pendingStage?.key,
-          stage,
-          query: state.query,
-          platforms: state.platforms,
-          plan: state.plan,
-          candidates: state.candidates,
-          model: state.model || elements.model.value,
-        }),
-      );
-    } catch {
-      /* Recovery is optional; it never creates candidate evidence. */
+  function recoveryError(error) {
+    elements["recovery-status"].hidden = false;
+    elements["recovery-status"].textContent =
+      `查询恢复状态未能保存，关闭后可能需要重新查询：${cleanText(error.message || String(error))}`;
+  }
+  function writePending(snapshot) {
+    if (pendingStorage) {
+      // Keep clear/save ordered even when a slow Host write outlives the AI stage.
+      pendingWrite = pendingWrite.catch(() => {}).then(() => pendingStorage.save(snapshot));
+      void pendingWrite.then(() => {
+        elements["recovery-status"].hidden = true;
+      }, recoveryError);
+      return pendingWrite;
     }
+    try {
+      if (snapshot) localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      recoveryError(error);
+    }
+    return Promise.resolve();
+  }
+  function persist(stage = state.phase) {
+    return writePending({
+      taskId: state.taskId,
+      key: pendingStage?.key,
+      stage,
+      query: state.query,
+      platforms: [...state.platforms],
+      model: state.model || elements.model.value,
+    });
   }
   function clearPendingStorage() {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch {
-      /* Optional. */
-    }
+    return writePending(null);
   }
   function renderPlan() {
     elements.plan.hidden = !state.plan;
@@ -674,6 +687,8 @@ export function mountVideoSearch({
         timeout: null,
       };
       pendingStage = stage;
+      // Persist the request key before start returns so a lost receipt can reconnect.
+      persist();
       const poll = async () => {
         if (destroyed || pendingStage !== stage || !stage.id) return;
         try {
@@ -1037,7 +1052,24 @@ export function mountVideoSearch({
       }
     }
     renderArchive();
-    const saved = loadPending();
+    let saved = null;
+    try {
+      saved = pendingStorage ? await pendingStorage.load() : loadPending();
+    } catch (error) {
+      recoveryError(error);
+    }
+    const recoverable =
+      saved &&
+      typeof saved.query === "string" &&
+      Array.isArray(saved.platforms) &&
+      saved.platforms.length &&
+      saved.platforms.every((platform) => PLATFORMS.has(platform));
+    if (recoverable) {
+      elements.query.value = cleanText(saved.query, 1200);
+      elements.scope.value = saved.platforms.length === 2 ? "both" : saved.platforms[0];
+      if (models.some((model) => model.id === saved.model)) renderProviders(saved.model);
+      report("已恢复上次查询条件；可继续查询以获取最新平台来源。", "idle");
+    }
     if (panel && !destroyed) {
       try {
         const raw = await panel.call("agent.task.list");
@@ -1049,17 +1081,18 @@ export function mountVideoSearch({
             task.key.startsWith("video-search-") &&
             ACTIVE_TASK_STATES.has(task.status),
         );
-        if (
-          active &&
-          saved?.taskId === active.id &&
-          saved.stage === "planning" &&
-          typeof saved.query === "string" &&
-          Array.isArray(saved.platforms) &&
-          saved.platforms.length &&
-          saved.platforms.every((platform) => PLATFORMS.has(platform))
-        ) {
+        const previous =
+          saved &&
+          tasks.find(
+            (task) =>
+              (saved.taskId ? task.id === saved.taskId : task.key === saved.key) &&
+              typeof task.key === "string" &&
+              task.key.startsWith("video-search-planning-") &&
+              (ACTIVE_TASK_STATES.has(task.status) || task.status === "completed"),
+          );
+        if (previous && saved.stage === "planning" && recoverable) {
           state.query = cleanText(saved.query, 1200);
-          state.model = saved.model || active.model || elements.model.value;
+          state.model = saved.model || previous.model || elements.model.value;
           state.platforms = [...new Set(saved.platforms)];
           state.plan = null;
           elements.query.value = state.query;
@@ -1068,7 +1101,7 @@ export function mountVideoSearch({
           initializationPending = false;
           controller = new AbortController();
           generation += 1;
-          void runSearch(generation, active);
+          void runSearch(generation, previous);
           return;
         }
         if (active) {

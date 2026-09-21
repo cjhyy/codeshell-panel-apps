@@ -33,6 +33,7 @@ export const suites = [
           "library-native",
           "package",
           "library-process",
+          "project-storage",
           "queue-ui",
           "library-ui",
           "search-source",

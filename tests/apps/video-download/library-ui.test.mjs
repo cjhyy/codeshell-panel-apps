@@ -223,12 +223,20 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
                 };
               });
             }
-          } else if (argv.includes("--version") || args.executableHandle === "executable-curl") {
+          } else if (
+            argv.includes("--version") ||
+            argv.includes("-version") ||
+            args.executableHandle === "executable-curl"
+          ) {
             setTimeout(
               () =>
                 finish(
                   processId,
-                  argv.includes("--version") ? "2026.09.17\n" : '{"tag_name":"2026.09.17"}\n',
+                  argv.includes("-version")
+                    ? "ffmpeg version 8.1.1\n"
+                    : argv.includes("--version")
+                      ? "2026.09.17\n"
+                      : '{"tag_name":"2026.09.17"}\n',
                 ),
               0,
             );

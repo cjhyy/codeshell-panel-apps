@@ -337,6 +337,31 @@ async function openSearch(t, options = {}) {
           window.previewed.push(candidate);
         },
       };
+      if (options.hostPending) {
+        window.pendingSnapshot = null;
+        window.pendingWrites = [];
+        window.mountOptions.pendingStorage = {
+          async load() {
+            return structuredClone(window.pendingSnapshot);
+          },
+          async save(snapshot) {
+            if (window.failPending) throw new Error("storage unavailable");
+            if (window.holdPending) {
+              await new Promise((resolve) => {
+                window.releasePending = resolve;
+              });
+              window.holdPending = false;
+            }
+            window.pendingSnapshot = structuredClone(snapshot);
+            window.pendingWrites.push(structuredClone(snapshot));
+          },
+        };
+        Object.defineProperty(window, "localStorage", {
+          get() {
+            throw new Error("SecurityError");
+          },
+        });
+      }
       window.search = mountVideoSearch(window.mountOptions);
       await window.search.ready;
     },
@@ -617,4 +642,66 @@ test("search examples, stages, history filtering and new queries keep saved resu
   await page.locator('[data-library-action="view"]').click();
   assert.equal(await page.locator(".video-search-result").count(), 2);
   assert.equal(await page.locator("[data-search-plan]").isVisible(), false);
+});
+
+for (const completed of [false, true]) {
+  test(`Host storage recovers ${completed ? "completed" : "running"} planning without localStorage or a duplicate request`, async (t) => {
+    const page = await openSearch(t, { hold: "planning", hostPending: true });
+    await page.locator("[data-search-start]").click();
+    await page.waitForFunction(() => Boolean(window.pendingSnapshot?.taskId));
+    await page.evaluate(async (completed) => {
+      const task = { ...window.lastTask, ...(completed ? { status: "completed" } : {}) };
+      window.search.destroy();
+      const original = window.panelMock.call;
+      window.panelMock.call = (method, args) =>
+        method === "agent.task.list" ? [task] : original(method, args);
+      const { mountVideoSearch } = await import("/video-search.js");
+      window.search = mountVideoSearch(window.mountOptions);
+      await window.search.ready;
+      if (!completed)
+        window.search.handleTaskChanged({
+          ...task,
+          status: "completed",
+          updatedAt: Date.now() + 1,
+        });
+    }, completed);
+    await page.waitForFunction(
+      () => window.search.getState().status === "ready" && window.pendingSnapshot === null,
+    );
+    const starts = await page.evaluate(() =>
+      window.calls.filter(({ method }) => method === "agent.task.start"),
+    );
+    assert.equal(starts.filter(({ args }) => args.key.includes("planning")).length, 1);
+    assert.equal(starts.length, 2);
+    assert.equal((await page.evaluate(() => window.lookupCalls)).length, 2);
+  });
+}
+
+test("a delayed recovery write cannot resurrect a completed search", async (t) => {
+  const page = await openSearch(t, { hostPending: true });
+  await page.evaluate(() => {
+    window.holdPending = true;
+  });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  await page.evaluate(() => window.releasePending());
+  await page.waitForFunction(
+    () => window.pendingWrites.length > 1 && window.pendingWrites.at(-1) === null,
+  );
+  assert.equal(await page.evaluate(() => window.pendingSnapshot), null);
+});
+
+test("failed recovery storage is visible and does not discard current search results", async (t) => {
+  const page = await openSearch(t, { hostPending: true });
+  await page.evaluate(() => {
+    window.failPending = true;
+  });
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => window.search.getState().status === "ready");
+  assert.equal(await page.locator("[data-search-recovery-status]").isVisible(), true);
+  assert.match(
+    await page.locator("[data-search-recovery-status]").textContent(),
+    /storage unavailable/,
+  );
+  assert.equal(await page.locator(".video-search-result").count(), 2);
 });
