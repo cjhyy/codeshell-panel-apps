@@ -1,5 +1,14 @@
 # Contributing
 
+## Branch and integration workflow
+
+Follow [CODESHELL.md](CODESHELL.md#branch-names-and-task-isolation) for task
+branches, worktree isolation, integration, and cleanup. Create the branch before
+editing: `codex/<panel-id>/<topic>` for a Panel change or
+`codex/panel-shared/<topic>` for shared infrastructure. Each concurrent task uses
+its own worktree. Validate and commit on the task branch, then merge into `main`;
+do not make development commits directly on `main`.
+
 ## Add a Panel App
 
 1. Copy `templates/starter` into `apps/<app-id>`.
