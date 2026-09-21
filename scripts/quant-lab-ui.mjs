@@ -93,12 +93,10 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.44.6");
+assert.equal(manifest.version, "0.45.1");
 assert.equal(manifest.schemaVersion, 2);
-assert.deepEqual(manifest.agent, {
-  tools: [],
-  skills: ["agent/skills/investment-research/SKILL.md"],
-});
+assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
+assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
 assert.equal(manifest.title.default, "投资工作台");
 assert.equal(manifest.title["zh-CN"], "投资工作台");
 assert(manifest.permissions.includes("external.open"), "M4 external links require the real Host permission");
@@ -1446,7 +1444,7 @@ function collectErrors(target) {
 async function servePanel(target) {
   await target.route("**/*", async (route) => {
     const url = new URL(route.request().url());
-    if (url.hostname !== "quant-lab.test") return route.continue();
+    if (url.hostname !== "quant-lab.localhost") return route.continue();
     const relative = url.pathname === "/" ? "/index.html" : url.pathname;
     try {
       const body = await readFile(join(panelDir, relative));
@@ -1560,7 +1558,9 @@ async function installHostStub(
           handler(structuredClone(window.__panelContext));
         }
       };
+      window.__portfolioTools = new Map();
       window.codeshellPanel = {
+        registerTool(name, handler) { window.__portfolioTools.set(name, handler); },
         getContext() {
           return Promise.resolve(structuredClone(window.__panelContext));
         },
@@ -1911,7 +1911,7 @@ collectErrors(page);
 await servePanel(page);
 await installHostStub(page, seededStorage, { workspaceFiles: rawFiles });
 
-await page.goto("http://quant-lab.test/index.html");
+await page.goto("http://quant-lab.localhost/index.html");
 await page.waitForSelector("#run-backtest", { state: "attached" });
 assert.match(
   await page.locator("#selection-cockpit-history").textContent(),
@@ -2804,7 +2804,7 @@ assert.match(stockDiagnosisCall.params.prompt, /只研究这个标的/u);
 assert.match(stockDiagnosisCall.params.prompt, /正文保留六项/u);
 assert.match(stockDiagnosisCall.params.prompt, /K 线趋势、成交量、最近支撑\/压力、缺口、斐波那契、ATR 与 Keltner/u);
 assert.match(stockDiagnosisCall.params.prompt, /已披露实际值、业绩预告和分析师预期必须分开/u);
-assert(stockDiagnosisCall.params.prompt.length < 2_400);
+assert(stockDiagnosisCall.params.prompt.length < 2_400, `简明报告任务提示过长：${stockDiagnosisCall.params.prompt.length}`);
 assert.deepEqual(stockDiagnosisCall.params.toolNames, ["WebSearch", "WebFetch"]);
 assert.equal(stockDiagnosisCall.params.skill, "quant-lab:investment-research");
 assert.equal(stockDiagnosisCall.params.maxTurns, 6);
@@ -3105,7 +3105,7 @@ await page.evaluate(
       kind: "stock",
       title: "Apple：官方披露与公开讨论分层核验",
       subject: "AAPL Apple Inc.",
-      marketDate: "2026-08-26",
+      marketDate: "2026-08-21",
       asOf: "2026-08-26T15:00:00+08:00",
       generatedAt: "2026-08-26T21:31:00+08:00",
       status: "mixed",
@@ -4453,9 +4453,99 @@ async function openScenario(storageSeed, options) {
   collectErrors(scenarioPage);
   await servePanel(scenarioPage);
   await installHostStub(scenarioPage, storageSeed, options);
-  await scenarioPage.goto("http://quant-lab.test/index.html");
+  await scenarioPage.goto("http://quant-lab.localhost/index.html");
   await scenarioPage.waitForSelector("#run-backtest", { state: "attached" });
   return { scenarioContext, scenarioPage };
+}
+
+// The unified provider form persists routing and sends it to the actual selection launcher.
+{
+  const { scenarioContext, scenarioPage } = await openScenario([], {});
+  await scenarioPage.waitForFunction(() => !document.querySelector("#sources-save")?.disabled);
+  await scenarioPage.click("#data-sources-open");
+  assert.equal(await scenarioPage.locator("#data-sources-dialog").evaluate((el) => el.open), true);
+  await scenarioPage.selectOption("#sources-industry", "standard-json");
+  await scenarioPage.fill("#sources-label", "我的行业库");
+  await scenarioPage.fill("#sources-endpoint", "https://example.com/industries.json?token=secret");
+  await scenarioPage.click("#sources-save");
+  assert.match(await scenarioPage.locator("#sources-state").textContent(), /密钥不能写入地址/u);
+  await scenarioPage.selectOption("#sources-industry", "eastmoney");
+  await scenarioPage.click("#sources-save");
+  await scenarioPage.waitForFunction(() => [...window.__storage.values()].some((v) => v?.industry === "eastmoney"));
+  await scenarioPage.waitForFunction(() => window.__hostCalls.some((call) => call.method === "process.spawn" && call.params.args.some((arg) => typeof arg === "string" && arg.includes('%22industry%22%3A%22eastmoney%22'))));
+  await scenarioPage.reload();
+  await scenarioPage.waitForFunction(() => document.querySelector("#sources-industry")?.value === "eastmoney");
+  await scenarioPage.click("#data-sources-open");
+  await scenarioPage.click("#sources-history");
+  assert.equal(await scenarioPage.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
+  await scenarioContext.close();
+}
+// Tools run against the real controller, then verify the rendered positions.
+{
+  const { scenarioContext, scenarioPage } = await openScenario([], {});
+  await scenarioPage.waitForFunction(() => window.__portfolioTools?.has("import_portfolio_snapshot"));
+  const result = await scenarioPage.evaluate(async () => {
+    const context = await window.__portfolioTools.get("get_portfolio_context")();
+    const input = { mode: "preview", expectedFingerprint: context.fingerprint,
+      account: { id: "screenshot-account", name: "截图账户", broker: "未知" }, valuationDate: "2026-08-26",
+      source: { reference: "截图样本.jpg", marketDate: null },
+      positions: [{ symbol: "SH603298", name: "持仓导入样本", quantity: "190", costBasis: "5627.81", marketValue: "4468.80" }] };
+    const preview = await window.__portfolioTools.get("import_portfolio_snapshot")(input);
+    const before = window.__files.has("portfolio/transactions.json");
+    const commit = await window.__portfolioTools.get("import_portfolio_snapshot")({ ...input, mode: "commit" });
+    const retry = await window.__portfolioTools.get("import_portfolio_snapshot")({ ...input, mode: "commit" });
+    return { preview: preview.status, before, committed: commit.committed, panelVerified: commit.panelVerified, retry: retry.status };
+  });
+  assert.deepEqual(result, { preview: "preview", before: false, committed: true, panelVerified: true, retry: "already-imported" });
+  await scenarioPage.click('[data-module-tab="holdings"]');
+  assert.match(await scenarioPage.locator("#portfolio-holdings-list").textContent(), /持仓导入样本/u);
+  assert.match(await scenarioPage.locator("#portfolio-holdings-list").textContent(), /截图行情日期未知/u);
+  await scenarioPage.waitForFunction(() => [...window.__storage.values()].some((value) =>
+    value?.stocks?.some((stock) => stock.symbol === "SH603298" && stock.source === "portfolio")));
+  await scenarioPage.click('[data-module-tab="watch"]');
+  assert.match(await scenarioPage.locator("#selection-watch-list").textContent(), /持仓自动关注.*持仓导入样本/us);
+  const entries = await scenarioPage.evaluate(() => [...window.__storage.values()]
+    .flatMap((value) => value?.stocks ?? []).filter((stock) => stock.symbol === "SH603298"));
+  assert.equal(entries.length, 1, "Repeated imports must not duplicate automatic follows");
+  await scenarioPage.waitForFunction(() => window.__hostCalls.some((call) =>
+    call.method === "process.spawn" && call.params.args.some((arg) => String(arg).includes("build-a-share-selection.mjs")) &&
+    call.params.args.some((arg) => String(arg).includes("SH603298"))));
+  const automaticFollows = await scenarioPage.evaluate(() => window.__hostCalls.filter((call) =>
+    call.method === "process.spawn" && call.params.args.some((arg) => String(arg).includes("build-a-share-selection.mjs")) &&
+    call.params.args.some((arg) => String(arg).includes("SH603298"))));
+  assert(automaticFollows.every((call) => call.params.args.includes("continue-local")),
+    "Automatic holdings updates must preserve source retry budgets");
+  await scenarioPage.reload();
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-list")?.textContent.includes("持仓导入样本"));
+  await scenarioContext.close();
+}
+// Preserve precise provider failures instead of a generic "data issue".
+{
+  const selection = JSON.parse(selectionSnapshotFixture);
+  selection.sourceStatus.industries = false;
+  selection.sourceErrors = [{ source: "industries", errorCode: "SOURCE_HTTP_456", message: "HTTP 456" }];
+  const { scenarioContext, scenarioPage } = await openScenario([], { selectionSnapshot: JSON.stringify(selection) });
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-sources")?.textContent.includes("SOURCE_HTTP_456"));
+  assert.match(await scenarioPage.locator("#selection-sources").textContent(), /行业目录.*访问受限/u);
+  await scenarioContext.close();
+}
+// Extreme anomalies must survive startup/cache parsing; malformed optional rows
+// are disclosed while the breadth, indices and remaining anomalies stay visible.
+{
+  const snapshot = JSON.parse(liveSnapshotFixture);
+  snapshot.anomalyBoard.items[0].metrics.gap = -48.07;
+  const { scenarioContext, scenarioPage } = await openScenario([], { liveSnapshot: JSON.stringify(snapshot) });
+  await scenarioPage.waitForFunction(() => ["ready", "warning"].includes(document.querySelector("#live-market-board")?.dataset.state));
+  assert.doesNotMatch(await scenarioPage.locator("#live-market-board").textContent(), /行情刷新失败|高开幅度无效/u);
+  await scenarioContext.close();
+}
+{
+  const snapshot = JSON.parse(liveSnapshotFixture);
+  snapshot.anomalyBoard.items[0].metrics.gap = null;
+  const { scenarioContext, scenarioPage } = await openScenario([], { liveSnapshot: JSON.stringify(snapshot) });
+  await scenarioPage.waitForFunction(() => document.querySelector("#live-market-board")?.dataset.state === "warning");
+  assert.match(await scenarioPage.locator("#live-market-status").textContent(), /异动条目已隔离/u);
+  await scenarioContext.close();
 }
 
 // During market hours the same workspace becomes an observation surface. It

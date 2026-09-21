@@ -1,3 +1,5 @@
+import { createDataSourcesController } from "./modules/data-sources-ui.mjs";
+import { registerPortfolioTools } from "./portfolio-import.mjs";
 /* Quant Lab Panel App runtime. */
 /* global document, localStorage, window */
 
@@ -616,6 +618,7 @@ let marketNetworkProbeGeneration = 0;
 let configurationStorageValue = {};
 let hasPortfolioPositions = false;
 let holdingsController = null;
+let dataSourcesController = null;
 let historyDataController = null;
 let liveMarketController = null;
 let liveMarketSnapshot = null;
@@ -945,7 +948,7 @@ function renderDataCapabilityMatrix() {
       detail: "选股、因子、策略校准共用",
       state: history?.snapshotGapDates?.length || history?.snapshotBackfillDeferred > 0 ? "partial" : history?.ready > 0 ? "ready" : "waiting",
       source: historySource,
-      freshness: history?.confirmedThrough ? `确认至 ${history.confirmedThrough} · ${history.ready}/${history.total} 只` : "尚未初始化",
+      freshness: history?.confirmedThrough ? `确认至 ${history.confirmedThrough} · ${history.ready}/${history.total} 只` : historyLibraryState.recoveryFailed ? "状态读取失败，已有文件保留" : "尚未初始化",
     },
     {
       name: "复权因子",
@@ -1083,7 +1086,7 @@ function renderSelectionCockpit() {
       ? historyCoverage.through
         ? `${historyCoverage.through.slice(5).replace("-", "/")} ${historyCoverage.current ? "已核对" : "待补齐"}`
         : historyCoverage.coverage
-      : historyLibraryState.checking ? "检查中" : "未初始化",
+      : historyLibraryState.checking ? "检查中" : historyLibraryState.recoveryFailed ? "状态读取失败" : "未初始化",
     historyUpdating
       ? `${historyCoverage.through ? `已核对至 ${historyCoverage.through} · ` : ""}${historyCoverage.coverage}`
       : historyReady
@@ -1136,11 +1139,11 @@ function renderSelectionCockpit() {
       ? "正在初始化历史库…"
       : historyLibraryState.checking
         ? "正在检查历史库…"
-        : "去初始化历史库";
+        : historyLibraryState.recoveryFailed ? "检查历史库状态" : "去初始化历史库";
     primary.disabled = historyLibraryState.initializing || historyLibraryState.checking;
     elements.selectionCockpitSummary.textContent = historyLibraryState.initializing
       ? "正在准备历史数据；完成后可直接执行今日选股。"
-      : "第一步先准备历史数据，再执行市场更新、选股和跟踪。";
+      : historyLibraryState.recoveryFailed ? "历史库状态读取失败，已有数据已保留。请到数据准备重新读取状态。" : "第一步先准备历史数据，再执行市场更新、选股和跟踪。";
     quickSelection.dataset.mode = "prepare";
     quickSelection.disabled = historyLibraryState.initializing || historyLibraryState.checking;
     quickSelection.querySelector("b").textContent = historyLibraryState.initializing
@@ -1590,8 +1593,8 @@ function renderStockDiagnosis(insights = marketInsightsController?.insights ?? [
   if (!insight) {
     elements.stockDetailDiagnosisTitle.textContent = pending
       ? `正在生成 ${stock.name} 研究报告`
-      : `${stock.name}研究报告尚未写回`;
-    elements.stockDetailDiagnosisMeta.textContent = pending ? "联网核验中" : "可以重新生成";
+      : `${stock.name}研究报告未能载入`;
+    elements.stockDetailDiagnosisMeta.textContent = pending ? "联网核验中" : "请查看下方具体原因";
     elements.stockDetailDiagnosisState.textContent = pending
       ? "Agent 正在核验公司背景、主营业务、最近一期业绩、估值、行业位置、公告与风险。研究转入后台后也会继续等待，完成后直接回显。"
       : stockDiagnosisUi.message || "没有读取到结构化报告；可以点击“重新生成简明报告”再次发起。";
@@ -2099,6 +2102,7 @@ liveMarketController = createLiveMarketController({
 
 aShareSelectionController = createAShareSelectionController({
   hostCall,
+  dataSources: () => dataSourcesController?.config ?? null,
   onHostEvent: typeof window.codeshellPanel?.on === "function"
     ? (event, listener) => window.codeshellPanel.on(event, listener)
     : null,
@@ -2112,6 +2116,7 @@ aShareSelectionController = createAShareSelectionController({
   onStockDirectory: updateAShareStockDirectory,
   onUpdate(next) {
     aShareSelectionSnapshot = next;
+    dataSourcesController?.update(next);
     selectionSignalLabController?.render();
     renderSelectionCockpit();
     renderStrategyCatalog();
@@ -2528,6 +2533,17 @@ holdingsController = createHoldingsController({
   },
   onPortfolioState({ hasPositions }) {
     hasPortfolioPositions = hasPositions;
+    if (hasPositions && context.trusted === true) {
+      const epoch = workspaceEpoch;
+      const { ledger, holdings } = holdingsController.noteContext();
+      void aShareSelectionController.syncPortfolio(ledger, holdings).then(({ skipped }) => {
+        if (epoch === workspaceEpoch && skipped.length) {
+          notify(`关注列表已达 20 只上限，${skipped.length} 只持仓暂未加入，请整理关注列表后重新读取持仓`, "error");
+        }
+      }).catch(() => {
+        if (epoch === workspaceEpoch) notify("持仓已读取，但自动关注保存失败；请重新读取持仓重试", "error");
+      });
+    }
   },
   onViewState(viewState) {
     portfolioTodayState = viewState;
@@ -3758,6 +3774,8 @@ async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
   // even when those other project files take longer to read.
   // The history library itself is Panel-local rather than conversation-local,
   // so reconcile it before rendering the rest of the dashboard in a new chat.
+  await dataSourcesController.load();
+  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   await historyDataController.load();
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   await aShareSelectionController.load();
@@ -5628,4 +5646,26 @@ async function initialize() {
   );
 }
 
-void initialize();
+dataSourcesController = createDataSourcesController({
+  hostCall, currentEpoch: () => workspaceEpoch,
+  storageKey: () => scopedStorageKey("dataSources", context.cwd ?? "preview"),
+  async onApply() {
+    const epoch = workspaceEpoch;
+    aShareSelectionController.reset();
+    await aShareSelectionController.load();
+    if (epoch !== workspaceEpoch) return;
+    aShareSelectionController.setActive(true, { backgroundWatch: true });
+    return aShareSelectionController.refresh();
+  },
+  onHistory() { activateModule("research"); document.querySelector(".history-data-center")?.scrollIntoView({ block: "start" }); },
+});
+const portfolioToolsReady = initialize();
+
+registerPortfolioTools({
+  registerTool: window.codeshellPanel?.registerTool,
+  hostCall,
+  ready: portfolioToolsReady,
+  currentEpoch: () => workspaceEpoch,
+  refresh: (epoch) => holdingsController.load(epoch),
+  displayedPositions: () => holdingsController.noteContext().holdings?.positionsByAccount ?? [],
+});

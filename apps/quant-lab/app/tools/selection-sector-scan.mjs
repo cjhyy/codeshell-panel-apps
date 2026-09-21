@@ -37,10 +37,10 @@ function eligible(quote) {
     Number.isFinite(quote.turnover) && quote.turnover >= 0.2 && quote.turnover <= 20;
 }
 
-async function safeDirectory(root, marketDate, provisional) {
+async function safeDirectory(root, marketDate, provisional, namespace = null) {
   const base = await realpath(resolve(root));
   let directory = base;
-  for (const segment of ["selection-sector-scan", "v1", marketDate, provisional ? "intraday" : "close"]) {
+  for (const segment of ["selection-sector-scan", "v1", marketDate, provisional ? "intraday" : "close", ...(namespace ? [namespace] : [])]) {
     directory = resolve(directory, segment);
     if (!directory.startsWith(`${base}${sep}`)) throw fail("SELECTION_CACHE_PATH_INVALID", "scan cache escaped its data root");
     await mkdir(directory, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
@@ -166,7 +166,7 @@ function checkedMemberResult(value, industry) {
 
 export async function collectSelectionSectors({
   industries, quotes, marketDate, asOf, provisional = false, root = process.cwd(),
-  persistent = true, continueScan = false, watchSymbols = [],
+  persistent = true, continueScan = false, watchSymbols = [], cacheNamespace = null,
   fetchMembers = fetchAllQuotesForNode, readCached = readUsableHistory,
   loadHistory = async (symbol, date) => ({ bars: await fetchHistory(symbol, date), origin: "network" }),
   historyRequestVersion = 1,
@@ -177,6 +177,7 @@ export async function collectSelectionSectors({
   }
   if (![1, 2].includes(historyRequestVersion)) throw fail("HISTORY_REQUEST_VERSION_INVALID", "unsupported selection history request version");
   if (!Array.isArray(industries) || industries.length > LIMITS.sectors) throw fail("SECTOR_DIRECTORY_TOO_LARGE", "the complete industry directory exceeds the supported bound");
+  if (cacheNamespace != null && !/^(sina|eastmoney|json-[0-9a-f]{16})$/.test(cacheNamespace)) throw fail("SELECTION_CACHE_PATH_INVALID", "invalid provider namespace");
   const directory = [...industries].sort((a, b) => String(a?.id).localeCompare(String(b?.id)));
   const uniqueNodes = new Set();
   for (const industry of directory) {
@@ -198,7 +199,8 @@ export async function collectSelectionSectors({
   const shouldStart = () => now() < deadline;
   const sourceErrors = [];
   const batch = { version: 1, memberRequests: 0, memberCompleted: 0, historyRequests: 0, historyAdded: 0, historyRejected: 0 };
-  const cacheDirectory = persistent ? await safeDirectory(root, marketDate, provisional) : null;
+  const cacheDirectory = persistent ? await safeDirectory(root, marketDate, provisional, cacheNamespace) : null;
+  const legacyDirectory = persistent && cacheNamespace === "sina" ? await safeDirectory(root, marketDate, provisional) : null;
   const release = persistent ? await acquireLock(cacheDirectory) : async () => undefined;
   const context = { version: 1, marketDate, provisional };
   const pathFor = (kind, identity) => {
@@ -240,9 +242,25 @@ export async function collectSelectionSectors({
     const shouldStartMembers = () => shouldStart() && memberSourceReady();
     const members = new Map();
     for (const industry of directory) {
-      const saved = await readCache("members", industry.id);
+      let saved = await readCache("members", industry.id);
+      // The pre-provider cache used Sina exclusively. Reuse only verified,
+      // complete identities from the same session when upgrading its namespace.
+      if (legacyDirectory && !saved?.complete) {
+        try {
+          const legacy = await readJson(resolve(legacyDirectory, `members-${industry.id}.json`));
+          if (legacy?.version === 1 && legacy.marketDate === marketDate && legacy.provisional === provisional &&
+              legacy.node === industry.id && (industry.count === 0 || legacy.expectedCount === industry.count) && legacy.complete && !legacy.failed) {
+            checkedMemberResult(legacy, industry);
+            saved = legacy;
+            await writeCache("members", industry.id, legacy);
+          }
+        } catch (error) {
+          if (error.code && !["SELECTION_CACHE_FILE_INVALID", "SECTOR_MEMBERS_INVALID", "QUOTE_NODE_MEMBERS_MISSING"].includes(error.code)) throw error;
+          sourceErrors.push(sourceError("scan-cache", error, industry.id));
+        }
+      }
       let state = { symbols: [], complete: false, failed: false, reason: null, nextPage: 1 };
-      if (saved?.node === industry.id && saved.expectedCount === industry.count) {
+      if (saved?.node === industry.id && (industry.count === 0 || saved.expectedCount === industry.count)) {
         try { state = { ...checkedMemberResult(saved, industry), failed: Boolean(saved.failed),
           ...(saved.failed ? { retry: restoreSourceRetry(saved, now()), message: saved.message } : {}) }; }
         catch (error) { sourceErrors.push(sourceError("scan-cache", error, industry.id)); }
@@ -412,8 +430,9 @@ export async function collectSelectionSectors({
       const historyAvailable = quotesForSector.filter((quote) => histories.has(quote.symbol)).length;
       const historyFailed = quotesForSector.filter((quote) => !histories.has(quote.symbol) && terminalHistoryFailure(quote.symbol)).length;
       const historyPending = quotesForSector.length - historyAvailable - historyFailed;
+      const metadataMissing = industry.changePercent === null || industry.amount === null;
       const state = !memberState.complete ? (sourceStopped() || (memberState.failed && !sourceRetryPending(memberState.retry)) ? "failed" : "pending") :
-        historyPending || historyFailed ? "partial" : "complete";
+        historyPending || historyFailed || metadataMissing ? "partial" : "complete";
       const absent = missingQuotes.get(industry.id) ?? 0;
       let reason = !memberState.complete && sourceStopped()
         ? "行业成员来源连续限流，自动重试已达上限，请稍后手动重试"
@@ -430,6 +449,7 @@ export async function collectSelectionSectors({
         const coverageReason = `本轮有 ${absent} 只成员缺少可用的 A 股行情，未纳入评估`;
         reason = reason ? `${reason}；${coverageReason}` : coverageReason;
       }
+      if (metadataMissing && memberState.complete) reason = [reason, "行业实时指标暂缺，保留成分分析，等待来源恢复后参与排名"].filter(Boolean).join("；");
       sectorScan.set(industry.id, { state, memberCount: state !== "pending" ? memberState.symbols.length : 0,
         eligibleCount: quotesForSector.length, historyAvailable, historyPending, historyFailed, reason,
         ...(absent ? { missingQuoteCount: absent } : {}) });

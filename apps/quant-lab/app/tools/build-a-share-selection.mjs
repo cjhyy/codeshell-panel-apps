@@ -4,6 +4,9 @@
 // bounded output. The UI only renders the validated result.
 
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { parseDataSourceConfig } from "../data-source-config.mjs";
+import { resolveIndustryProvider } from "./industry-providers.mjs";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -104,6 +107,7 @@ function parseArgs(argv) {
     else if (argument === "--read-local") options.readLocal = true;
     else if (argument === "--continue-scan") options.continueScan = true;
     else if (argument === "--cache-scope") options.cacheScope = argv[++index] ?? "";
+    else if (argument === "--data-sources") options.dataSources = parseDataSourceConfig(JSON.parse(decodeURIComponent(argv[++index] ?? "")));
     else if (argument === "--watch") options.watch = parseWatchArgument(argv[++index] ?? "");
     else if (argument === "--help") options.help = true;
     else throw new SelectionFetchError("ARGUMENT_UNKNOWN", `unknown argument: ${argument}`);
@@ -213,13 +217,16 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
   const clock = chinaClock(now);
   const provisional = clock.date === marketTimestamp.marketDate && clock.minutes < 15 * 60 + 10;
   const previousClose = clock.date !== marketTimestamp.marketDate;
-  const [quoteData, directory] = await Promise.all([
+  const [quoteData, legacyDirectory] = await Promise.all([
     selectionQuoteSnapshot({ root, persistent, marketDate: marketTimestamp.marketDate, provisional, now,
       fetchQuotes: dependencies.fetchAllQuotes ?? fetchAllQuotes }),
-    selectionIndustryDirectory({ root, persistent, marketDate: marketTimestamp.marketDate, provisional, now,
+    options.dataSources ? Promise.resolve(null) : selectionIndustryDirectory({ root, persistent, marketDate: marketTimestamp.marketDate, provisional, now,
       continueScan: options.continueScan === true, seedSnapshots: options.reviewSnapshots ?? [],
       fetchIndustries: dependencies.fetchIndustries ?? fetchIndustries }),
   ]);
+  const directory = legacyDirectory ?? await resolveIndustryProvider({ root, persistent,
+    marketDate: marketTimestamp.marketDate, provisional, now, config: options.dataSources,
+    quotes: quoteData.quotes, continueScan: options.continueScan === true, seedSnapshots: options.reviewSnapshots ?? [] });
   if (quoteData.cached) marketTimestamp = { ...marketTimestamp, asOf: quoteData.asOf };
   else await quoteData.save(marketTimestamp.asOf);
   const quotes = quoteData.quotes;
@@ -253,12 +260,14 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
     ).slice(0, 20),
   ]);
   const scan = await (dependencies.collectSelectionSectors ?? collectSelectionSectors)({
+    cacheNamespace: directory.industryProvider?.id ?? null,
     industries: allIndustries, quotes, marketDate: marketTimestamp.marketDate,
     asOf: marketTimestamp.asOf, provisional, root, persistent,
     continueScan: options.continueScan === true,
     historyRequestVersion: 2,
     watchSymbols,
     loadHistory: dependencies.loadHistory ?? loadSelectionHistory,
+    ...(directory.fetchMembers ? { fetchMembers: directory.fetchMembers } : {}),
     ...(dependencies.fetchMembers ? { fetchMembers: dependencies.fetchMembers } : {}),
     ...(dependencies.readCached ? { readCached: dependencies.readCached } : {}),
     timeBudgetMs: Math.max(0, Math.min(60_000, 110_000 - (Date.now() - startedAt))),
@@ -356,6 +365,7 @@ export async function buildSelectionSnapshot(options = {}, nowInput = new Date()
   const predictionReview = reviewPredictionLedger(options.reviewSnapshots, histories, marketTimestamp.marketDate);
   const snapshot = buildAShareSelectionSnapshot({
     ...baseInput,
+    industryProvider: directory.industryProvider,
     generatedAt: new Date().toISOString(),
     announcements,
     scanProgress,
@@ -386,8 +396,12 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
       "  --continue-scan  resume pending work and due retries while preserving source cooldowns and attempt budgets",
       "  --cache-scope    global or a 16-character lowercase hex workspace scope",
       "  --watch <value>  URI-encoded {sectors,stocks} watch pool",
+      "  --data-sources <value> URI-encoded data source configuration",
     ].join("\n") + "\n");
     return { ok: true, help: true };
+  }
+  if (options.dataSources) {
+    options.cacheScope = createHash('sha256').update(`${options.cacheScope}:${JSON.stringify(options.dataSources)}`).digest('hex').slice(0, 16);
   }
   if (!options.stdout) throw new SelectionFetchError("STDOUT_REQUIRED", "--stdout is required");
   if (options.readLocal) {

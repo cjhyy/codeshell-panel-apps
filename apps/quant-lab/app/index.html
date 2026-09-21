@@ -85,6 +85,7 @@
           >笔记</button>
         </nav>
         <div class="topbar-actions">
+          <button id="data-sources-open" type="button">数据源</button>
           <button id="quick-stock-selection" class="quick-stock-selection" type="button">
             <span>✦</span>
             <b>帮我选股票</b>
@@ -2332,5 +2333,28 @@
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <datalist id="a-share-stock-options"></datalist>
     <script type="module" src="./app.js"></script>
+    <dialog id="data-sources-dialog" aria-labelledby="sources-title">
+      <div class="dialog-card sources-dialog-card">
+        <header><div><span class="eyebrow">DATA SOURCES</span><h2 id="sources-title">数据源管理</h2></div><button id="sources-close" type="button" aria-label="关闭数据源">关闭</button></header>
+        <p>按数据用途接入。这里显示实际支持的能力，行情时点和来源故障单独保留。</p>
+        <form id="sources-form">
+          <label for="sources-industry">行业分类与成分</label>
+          <select id="sources-industry"><option value="auto">自动 · 新浪 → 东方财富</option><option value="sina">新浪行业</option><option value="eastmoney">东方财富二级行业</option><option value="standard-json">标准 JSON 接口</option></select>
+          <p>备用源使用自己的行业分类，不与原来源强行合并；股票关注不受切换影响。</p>
+          <div id="sources-custom" hidden>
+            <label for="sources-label">来源名称</label><input id="sources-label" maxlength="40" placeholder="例如：我的行业分类" />
+            <label for="sources-endpoint">公开 HTTPS JSON 地址</label><input id="sources-endpoint" type="url" maxlength="1500" placeholder="https://example.com/industries.json" />
+            <small>首次支持行业分类与成分，数据必须符合下方格式且不超过 7 天。密钥请勿填写在地址中。</small>
+            <details><summary>标准数据格式示例</summary><pre id="sources-example"></pre></details>
+          </div>
+          <button id="sources-save" type="submit">保存并应用</button>
+        </form>
+        <p id="sources-state" role="status"></p>
+        <h3>当前连接与数据状态</h3><pre id="sources-health">尚未取得连接结果</pre>
+        <h3>已接入能力</h3><div id="sources-catalog" class="sources-catalog"></div>
+        <button id="sources-history" type="button">配置历史日线与凭证</button>
+        <p>实时行情沿用新浪、腾讯、东方财富回退；历史库保持所选复权口径。自定义来源需按对应能力实现标准适配器。</p>
+      </div>
+    </dialog>
   </body>
 </html>

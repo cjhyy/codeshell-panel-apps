@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { liveQuoteNumber } from "../live-quote-contract.mjs";
 // Deterministic A-share market pulse. The Agent only launches this frozen tool;
 // market breadth, index regimes, sector strength and news associations are all
 // calculated here and written as one strict market-overview report.
@@ -562,7 +563,8 @@ export function buildIntradayAnomalies(quotesInput, asOf, phase = "intraday") {
   const quotes = (Array.isArray(quotesInput) ? quotesInput : []).filter((quote) =>
     /^(?:SH|SZ)\d{6}$/u.test(quote?.symbol) && quote?.name && !/(?:ST|退)/iu.test(quote.name) &&
     [quote.price, quote.open, quote.high, quote.low, quote.previousClose, quote.changePercent, quote.amount, quote.turnover]
-      .every(Number.isFinite) && quote.price > 0 && quote.previousClose > 0 && quote.amount >= 100_000_000,
+      .every(Number.isFinite) && quote.price > 0 && quote.previousClose > 0 && quote.open > 0 && quote.low > 0 &&
+    quote.high >= Math.max(quote.open, quote.price, quote.low) && quote.low <= Math.min(quote.open, quote.price) && quote.amount >= 100_000_000,
   );
   const marketMedian = medianNumber(quotes.map((quote) => quote.changePercent)) ?? 0;
   const session = anomalySession(asOf, phase);
@@ -589,7 +591,7 @@ export function buildIntradayAnomalies(quotesInput, asOf, phase = "intraday") {
     ].filter(Boolean).sort((left, right) => right.severity - left.severity);
     const primary = rules[0];
     if (!primary) continue;
-    candidates.push({
+    const candidate = {
       symbol: quote.symbol,
       name: quote.name,
       board: quote.board,
@@ -611,7 +613,15 @@ export function buildIntradayAnomalies(quotesInput, asOf, phase = "intraday") {
         amplitude: Math.round(amplitude * 100) / 100,
         relativeToMedian: Math.round(relativeToMedian * 100) / 100,
       },
-    });
+    };
+    try {
+      liveQuoteNumber(candidate.changePercent, "changePercent");
+      liveQuoteNumber(candidate.severity, "severity");
+      for (const [field, value] of Object.entries(candidate.metrics)) liveQuoteNumber(value, field);
+      candidates.push(candidate);
+    } catch {
+      // Invalid optional anomalies cannot invalidate the all-market snapshot.
+    }
   }
   const items = candidates.sort((left, right) =>
     right.severity - left.severity || right.amount - left.amount || left.symbol.localeCompare(right.symbol),
@@ -701,7 +711,12 @@ export async function runCli(argv = process.argv.slice(2), nowInput = new Date()
       limit: 60,
     }).catch(() => [])
     : [];
-  const [marketTimestamp, quotes] = await Promise.all([fetchMarketTimestamp(), fetchAllQuotes()]);
+  const [marketTimestamp, quotes] = await Promise.all([fetchMarketTimestamp(), fetchAllQuotes({
+    root: persistPanelData || options.persistPanelData ? defaultPanelDataRoot() : process.cwd(),
+    // Re-enumerate periodically so cached identities do not permanently omit
+    // new listings; other refreshes reuse the known universe for batch quotes.
+    preferLocalUniverse: now.getUTCMinutes() % 30 >= 3,
+  })]);
   const [indexQuoteResult, industryResult, historyResult, newsResult, dragonTigerResult] = await Promise.allSettled([
     fetchIndexQuotes(),
     fetchIndustries(),

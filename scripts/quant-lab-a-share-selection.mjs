@@ -708,3 +708,35 @@ try {
 }
 
 console.log("\u2713 Quant Lab A-share theme selection, stock timing, announcements/news and watch contract");
+
+// Portfolio synchronization preserves manual priorities, ignores closed/non-A-share
+// positions, and deduplicates instruments held in multiple accounts.
+{
+  const ledger = { instruments: [
+    { id: "a", symbol: "SH600519", name: "茅台", market: "cn" },
+    { id: "b", symbol: "SZ300750", name: "宁德时代", market: "cn" },
+    { id: "c", symbol: "SH603298", name: "杭叉集团", market: "cn" },
+    { id: "d", symbol: "AAPL", name: "Apple", market: "us" },
+  ] };
+  const holdings = { positionsByAccount: [
+    { instrumentId: "a", quantity: "10" }, { instrumentId: "b", quantity: "20" },
+    { instrumentId: "b", quantity: "30" }, { instrumentId: "c", quantity: "0" },
+    { instrumentId: "d", quantity: "2" },
+  ] };
+  const initial = { stocks: [{ symbol: "SH600519", name: "自选名称", priority: "focus" }] };
+  const merged = selectionUi.mergePortfolioWatch(initial, ledger, holdings);
+  assert.equal(merged.added, 1);
+  assert.equal(merged.value.stocks[0].name, "自选名称");
+  assert.equal(merged.value.stocks[0].priority, "focus");
+  assert.equal(merged.value.stocks[1].source, "portfolio");
+  assert.equal(selectionUi.mergePortfolioWatch(merged.value, ledger, holdings).added, 0);
+  assert.equal(selectionUi.mergePortfolioWatch(merged.value, ledger, { positionsByAccount: [] }).value.stocks.length, 2);
+  const full = { stocks: Array.from({ length: 20 }, (_, index) => ({ symbol: `SH${600000 + index}`, name: "原有关注" })) };
+  const limited = selectionUi.mergePortfolioWatch(full, ledger, holdings);
+  assert.equal(limited.value.stocks.length, 20);
+  assert.deepEqual(limited.skipped, ["SH600519", "SZ300750"]);
+}
+
+assert.match(selectionUi.selectionProcessError('{"errorCode":"SOURCE_HTTP_456","message":"HTTP 456"}'), /频率限制/u);
+assert.match(selectionUi.selectionProcessError("", { code: null, signal: "SIGTERM" }), /中断.*SIGTERM/u);
+assert.match(selectionUi.selectionProcessError("", { code: 1 }), /退出码 1/u);

@@ -1955,3 +1955,68 @@ console.log("✓ Quant Lab strict ledger replay, decimal, XIRR, HHI and attribut
 console.log("✓ Quant Lab market availability and raw-data boundary");
 console.log("✓ Quant Lab create-only and conflict-safe portfolio storage");
 console.log("✓ Quant Lab Round 9 missing-data degradation, valuation and cache-drift contract");
+
+// Screenshot import is atomic, source-backed, repeat-safe, and does not invent buys/cash.
+const importer = await import(pathToFileURL(join(repositoryRoot, "apps/quant-lab/app/portfolio-import.mjs")).href);
+const importHost = makeWorkspaceHost();
+const importInput = { mode: "preview", expectedFingerprint: null,
+  account: { id: "credit-snapshot", name: "信用账户", broker: "未知" }, valuationDate: "2026-09-21",
+  source: { reference: "test-fixtures/user-screenshot.jpg", marketDate: null },
+  positions: [
+    { symbol: "SH603298", name: "测试甲", quantity: "190", costBasis: "5627.81", marketValue: "4468.80" },
+    { symbol: "SH600839", name: "测试乙", quantity: "350", costBasis: "4880.39", marketValue: "2345.00" },
+    { symbol: "SZ301175", name: "测试丙", quantity: "613", costBasis: "5672.09", marketValue: "3463.45" },
+  ] };
+const preview = await importer.importPortfolioSnapshot(importHost.hostCall, importInput);
+assert.equal(preview.committed, false);
+assert.equal(preview.snapshot.positionsByAccount.length, 3);
+assert.equal(importHost.files.size, 0);
+const committed = await importer.importPortfolioSnapshot(importHost.hostCall, { ...importInput, mode: "commit" });
+assert.equal(committed.committed, true);
+const importedLedger = portfolio.parseTransactions(importHost.files.get("portfolio/transactions.json").content).ledger;
+assert.equal(importedLedger.transactions.length, 3);
+assert(importedLedger.transactions.every((row) => row.type === "position-in" && row.source.marketDate === null));
+assert.equal(committed.snapshot.positionsByAccount.find((row) => row.instrumentId === "stock-SH603298").quantity, "190");
+const writes = importHost.calls.filter((row) => row.method === "workspace.writeText").length;
+assert.equal(writes, 2, "all positions commit together followed by the disposable cache");
+const replayed = await importer.importPortfolioSnapshot(importHost.hostCall, { ...importInput, mode: "commit" });
+assert.equal(replayed.status, "already-imported");
+assert.equal(importHost.calls.filter((row) => row.method === "workspace.writeText").length, writes);
+const importedContext = await importer.readPortfolioContext(importHost.hostCall);
+assert.equal(importedContext.positions.length, 3);
+assert.equal(importedContext.imports[0].reference, importInput.source.reference);
+await assert.rejects(() => importer.importPortfolioSnapshot(importHost.hostCall, { ...importInput,
+  source: { ...importInput.source, reference: "different-source.jpg" }, expectedFingerprint: importedContext.fingerprint }), /已有流水/u);
+const invalidImportHost = makeWorkspaceHost();
+await assert.rejects(() => importer.importPortfolioSnapshot(invalidImportHost.hostCall, { ...importInput,
+  mode: "commit", positions: [...importInput.positions, importInput.positions[0]] }), /重复/u);
+assert.equal(invalidImportHost.files.size, 0);
+await assert.rejects(() => importer.importPortfolioSnapshot(invalidImportHost.hostCall, { ...importInput,
+  mode: "commit", valuationDate: "2026-02-30" }), /建账日期/u);
+const epochImportHost = makeWorkspaceHost();
+await assert.rejects(() => importer.importPortfolioSnapshot(epochImportHost.hostCall, { ...importInput, mode: "commit" }, {
+  expectedEpoch: 1, currentEpoch: () => 2,
+}), /epoch/u);
+assert.equal(epochImportHost.files.size, 0);
+const importRaceHost = makeWorkspaceHost({ mutateAfterList: true });
+await assert.rejects(() => importer.importPortfolioSnapshot(importRaceHost.hostCall, { ...importInput, mode: "commit" }), /changed/u);
+assert.equal(importRaceHost.files.get("portfolio/transactions.json").content, "external content");
+const degradedImportHost = makeWorkspaceHost();
+const degradedImport = await importer.importPortfolioSnapshot(async (method, args) => {
+  if (method === "workspace.writeText" && args.path === "portfolio/holdings.json") throw new Error("cache unavailable");
+  return degradedImportHost.hostCall(method, args);
+}, { ...importInput, mode: "commit" });
+assert.equal(degradedImport.committed, true);
+assert.equal(degradedImport.cacheStale, true);
+const handlers = new Map();
+const toolHost = makeWorkspaceHost();
+let display = [];
+importer.registerPortfolioTools({ registerTool: (name, handler) => handlers.set(name, handler), hostCall: toolHost.hostCall,
+  ready: Promise.resolve(), currentEpoch: () => 1,
+  refresh: async () => { display = (await importer.readPortfolioContext(toolHost.hostCall)).positions; },
+  displayedPositions: () => display,
+});
+const toolResult = await handlers.get("import_portfolio_snapshot")({ ...importInput, mode: "commit" });
+assert.equal(toolResult.panelVerified, true);
+assert.equal((await handlers.get("get_portfolio_context")()).positions.length, 3);
+console.log("✓ Quant Lab screenshot import preview, atomic commit, duplicate/revision/epoch protection and panel verification");

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "quant-lab",
-  "version": "0.44.6",
+  "version": "0.45.1",
   "title": {
     "default": "投资工作台",
     "en": "Investment Desk",
@@ -27,9 +27,157 @@
     "process"
   ],
   "agent": {
-    "tools": [],
+    "tools": [
+      {
+        "name": "get_portfolio_context",
+        "description": "Read the current workspace portfolio ledger fingerprint, accounts, positions and opening-import sources before adding holdings. Does not read brokerage accounts.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        },
+        "readOnly": true
+      },
+      {
+        "name": "import_portfolio_snapshot",
+        "description": "Preview or atomically import confirmed Shanghai/Shenzhen stock holdings into an empty account as opening positions. Preserves source/date, refuses duplicate account imports and changed ledgers, refreshes and verifies the panel after commit. No orders or brokerage operations.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "preview",
+                "commit"
+              ]
+            },
+            "expectedFingerprint": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Exact fingerprint from get_portfolio_context; null only when no ledger exists."
+            },
+            "account": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "broker": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "broker"
+              ],
+              "additionalProperties": false
+            },
+            "valuationDate": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10,
+              "description": "Opening ledger date YYYY-MM-DD. Use source date when known; otherwise an explicitly chosen recording date, never an invented trade date."
+            },
+            "source": {
+              "type": "object",
+              "properties": {
+                "reference": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "marketDate": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Actual date shown by source, or null if unknown."
+                }
+              },
+              "required": [
+                "reference",
+                "marketDate"
+              ],
+              "additionalProperties": false
+            },
+            "positions": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "symbol": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 8,
+                    "pattern": "^[A-Z]{2}[0-9]{6}$"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80
+                  },
+                  "quantity": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16,
+                    "description": "Actual share quantity as a decimal string."
+                  },
+                  "costBasis": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16,
+                    "description": "Total position cost in CNY, not cost per share."
+                  },
+                  "marketValue": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16,
+                    "description": "Source snapshot position value in CNY, not current quote."
+                  }
+                },
+                "required": [
+                  "symbol",
+                  "name",
+                  "quantity",
+                  "costBasis",
+                  "marketValue"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "mode",
+            "expectedFingerprint",
+            "account",
+            "valuationDate",
+            "source",
+            "positions"
+          ],
+          "additionalProperties": false
+        },
+        "readOnly": false
+      }
+    ],
     "skills": [
-      "agent/skills/investment-research/SKILL.md"
+      "agent/skills/investment-research/SKILL.md",
+      "agent/skills/portfolio-management/SKILL.md"
     ]
   }
 }

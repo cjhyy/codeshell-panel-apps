@@ -161,12 +161,13 @@ export async function appendTransaction(
     currentEpoch,
     derivedAt,
     derivationInputs = {},
+    expectedFingerprint,
   } = {},
 ) {
   const epochToken = { expected: expectedEpoch, current: currentEpoch };
   checkEpoch(epochToken);
-  if (!draft || typeof draft !== "object" || !draft.transaction) {
-    throw new Error("draft.transaction is required");
+  if (!draft || typeof draft !== "object" || (!draft.transaction && !draft.transactions?.length)) {
+    throw new Error("draft.transaction or draft.transactions is required");
   }
   const existingTransactions = await readWorkspaceJson(hostCall, TRANSACTIONS_PATH, epochToken);
   let existingHoldings = null;
@@ -202,32 +203,36 @@ export async function appendTransaction(
     }
     ledger = parseTransactions(`${JSON.stringify(draft.initialLedger)}\n`).ledger;
   }
+  const currentFingerprint = existingTransactions.exists ? parseTransactions(existingTransactions.content).fingerprint : null;
+  if (expectedFingerprint !== undefined && expectedFingerprint !== currentFingerprint) {
+    throw new PortfolioStoreConflictError("账本已变化，请重新读取后再导入", draft);
+  }
   const nextLedger = structuredClone(ledger);
-  if (draft.account) {
+  for (const account of [...(draft.accounts ?? []), ...(draft.account ? [draft.account] : [])]) {
     const existingAccount = nextLedger.accounts.find(
-      (account) => account.id === draft.account.id,
+      (candidate) => candidate.id === account.id,
     );
     if (existingAccount) {
-      if (JSON.stringify(existingAccount) !== JSON.stringify(draft.account)) {
-        throw new Error(`account ${draft.account.id} conflicts with the ledger`);
+      if (JSON.stringify(existingAccount) !== JSON.stringify(account)) {
+        throw new Error(`account ${account.id} conflicts with the ledger`);
       }
     } else {
-      nextLedger.accounts.push(structuredClone(draft.account));
+      nextLedger.accounts.push(structuredClone(account));
     }
   }
-  if (draft.instrument) {
+  for (const instrument of [...(draft.instruments ?? []), ...(draft.instrument ? [draft.instrument] : [])]) {
     const existingInstrument = nextLedger.instruments.find(
-      (instrument) => instrument.id === draft.instrument.id,
+      (candidate) => candidate.id === instrument.id,
     );
     if (existingInstrument) {
-      if (JSON.stringify(existingInstrument) !== JSON.stringify(draft.instrument)) {
-        throw new Error(`instrument ${draft.instrument.id} conflicts with the ledger`);
+      if (JSON.stringify(existingInstrument) !== JSON.stringify(instrument)) {
+        throw new Error(`instrument ${instrument.id} conflicts with the ledger`);
       }
     } else {
-      nextLedger.instruments.push(structuredClone(draft.instrument));
+      nextLedger.instruments.push(structuredClone(instrument));
     }
   }
-  nextLedger.transactions.push(structuredClone(draft.transaction));
+  nextLedger.transactions.push(...structuredClone(draft.transactions ?? [draft.transaction]));
   const nextSource = `${JSON.stringify(nextLedger, null, 2)}\n`;
   const parsedNext = parseTransactions(nextSource);
   // Replay and snapshot derivation happen before the authoritative write. A bad

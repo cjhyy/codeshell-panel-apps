@@ -1,3 +1,4 @@
+import { liveQuoteNumber } from "../live-quote-contract.mjs";
 import { parseMarketInsight } from "./market-insights-ui.mjs";
 import { chinaMarketClock, displayedAShareSessionPhase } from "./a-share-session.mjs";
 
@@ -32,7 +33,7 @@ const NODE_LAUNCHER = [
   'const module = await import(pathToFileURL(tool).href);',
   'const mode = process.argv.at(-1) || "refresh-volatile";',
   'const args = mode === "read-local" ? ["--stdout", "--read-local", "--persist-panel-data"] : mode === "refresh-local" ? ["--stdout", "--persist-panel-data"] : ["--stdout"];',
-  'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "MARKET_PULSE_ERROR", message: error instanceof Error ? error.message : "market pulse failed" }) + "\\n"); process.exitCode = 1; }',
+  'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "MARKET_PULSE_ERROR", message: error instanceof Error ? error.message : "market pulse failed", sourceFailures: error?.sourceFailures }) + "\\n"); process.exitCode = 1; }',
 ].join("\n");
 
 const LIVE_RUNTIME_SPECS = Object.freeze([
@@ -121,7 +122,7 @@ function parseIndexes(value, marketDate) {
       symbol,
       name,
       price: finiteNumber(item?.price, 1, 1_000_000, `${name}点位`),
-      changePercent: finiteNumber(item?.changePercent, -30, 30, `${name}涨跌幅`),
+      changePercent: liveQuoteNumber(item?.changePercent, "changePercent", `${name}涨跌幅`),
       amount: finiteNumber(item?.amount, 0, 1e17, `${name}成交额`),
       asOf,
     });
@@ -142,7 +143,7 @@ function parseSectors(value) {
       id,
       name,
       direction,
-      changePercent: finiteNumber(item?.changePercent, -30, 30, `${name}涨跌幅`),
+      changePercent: liveQuoteNumber(item?.changePercent, "changePercent", `${name}涨跌幅`),
       amount: finiteNumber(item?.amount, 0, 1e17, `${name}成交额`),
       leaderSymbol: /^(?:SH|SZ)\d{6}$/u.test(item?.leaderSymbol) ? item.leaderSymbol : "",
       leaderName: cleanText(item?.leaderName, 40),
@@ -157,42 +158,47 @@ function parseSourceStatus(value) {
   return Object.freeze(Object.fromEntries(SOURCE_STATUS_KEYS.map((key) => [key, value?.[key] === true])));
 }
 
-function parseLiveQuoteRows(value, { details = false } = {}) {
+function parseLiveQuoteRows(value, { details = false, warnings = [] } = {}) {
   if (!Array.isArray(value) || value.length > 8) throw new Error("股票排行结构无效");
   const seen = new Set();
-  return Object.freeze(value.map((item) => {
-    const symbol = cleanText(item?.symbol, 16);
-    const name = cleanText(item?.name, 40);
-    if (!/^(?:SH|SZ)\d{6}$/u.test(symbol) || !name || seen.has(symbol)) throw new Error("股票排行标的无效或重复");
-    seen.add(symbol);
-    const board = ["main", "star", "chinext"].includes(item?.board) ? item.board : null;
-    if (!board) throw new Error("股票排行板块无效");
-    return Object.freeze({
-      symbol,
-      name,
-      board,
-      price: finiteNumber(item?.price, 0.01, 1_000_000, `${name}价格`),
-      changePercent: finiteNumber(item?.changePercent, -30, 30, `${name}涨跌幅`),
-      amount: finiteNumber(item?.amount, 0, 1e17, `${name}成交额`),
-      turnover: finiteNumber(item?.turnover, 0, 1_000, `${name}换手率`),
-      ...(details ? {
-        reason: cleanText(item?.reason, 200),
-        risk: cleanText(item?.risk, 200),
-      } : {}),
-    });
+  return Object.freeze(value.flatMap((item) => {
+    try {
+      const symbol = cleanText(item?.symbol, 16);
+      const name = cleanText(item?.name, 40);
+      if (!/^(?:SH|SZ)\d{6}$/u.test(symbol) || !name || seen.has(symbol)) throw new Error("股票排行标的无效或重复");
+      seen.add(symbol);
+      const board = ["main", "star", "chinext"].includes(item?.board) ? item.board : null;
+      if (!board) throw new Error("股票排行板块无效");
+      return Object.freeze({
+        symbol,
+        name,
+        board,
+        price: finiteNumber(item?.price, 0.01, 1_000_000, `${name}价格`),
+        changePercent: liveQuoteNumber(item?.changePercent, "changePercent", `${name}涨跌幅`),
+        amount: finiteNumber(item?.amount, 0, 1e17, `${name}成交额`),
+        turnover: finiteNumber(item?.turnover, 0, 1_000, `${name}换手率`),
+        ...(details ? {
+          reason: cleanText(item?.reason, 200),
+          risk: cleanText(item?.risk, 200),
+        } : {}),
+      });
+    } catch (error) {
+      warnings.push(`排行条目已隔离：${cleanText(error.message, 100)}`);
+      return [];
+    }
   }));
 }
 
-function parseRankings(value) {
+function parseRankings(value, warnings) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("行情排行结构无效");
   return Object.freeze({
-    gainers: parseLiveQuoteRows(value.gainers),
-    losers: parseLiveQuoteRows(value.losers),
-    active: parseLiveQuoteRows(value.active),
+    gainers: parseLiveQuoteRows(value.gainers, { warnings }),
+    losers: parseLiveQuoteRows(value.losers, { warnings }),
+    active: parseLiveQuoteRows(value.active, { warnings }),
   });
 }
 
-function parseAnomalyBoard(value) {
+function parseAnomalyBoard(value, warnings = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return Object.freeze({ version: 1, sessionId: "unavailable", sessionLabel: "等待快照", marketMedian: null, items: Object.freeze([]), counts: Object.freeze({}), methodology: "暂无异动分型" });
   }
@@ -202,48 +208,55 @@ function parseAnomalyBoard(value) {
     throw new Error("异动分型结构无效");
   }
   const seen = new Set();
-  const items = value.items.map((item) => {
-    const symbol = cleanText(item?.symbol, 16);
-    const name = cleanText(item?.name, 40);
-    if (!/^(?:SH|SZ)\d{6}$/u.test(symbol) || !name || seen.has(symbol) || !types.includes(item?.type) || !["up", "down"].includes(item?.direction)) {
-      throw new Error("异动分型条目无效或重复");
+  const items = value.items.flatMap((item) => {
+    try {
+      const symbol = cleanText(item?.symbol, 16);
+      const name = cleanText(item?.name, 40);
+      if (!/^(?:SH|SZ)\d{6}$/u.test(symbol) || !name || seen.has(symbol) || !types.includes(item?.type) || !["up", "down"].includes(item?.direction)) {
+        throw new Error("异动分型条目无效或重复");
+      }
+      seen.add(symbol);
+      return Object.freeze({
+        symbol,
+        name,
+        board: ["main", "star", "chinext"].includes(item?.board) ? item.board : "main",
+        price: finiteNumber(item?.price, 0.01, 1_000_000, `${name}异动价格`),
+        changePercent: liveQuoteNumber(item?.changePercent, "changePercent", `${name}异动涨跌幅`),
+        amount: finiteNumber(item?.amount, 0, 1e17, `${name}异动成交额`),
+        turnover: finiteNumber(item?.turnover, 0, 1_000, `${name}异动换手率`),
+        sessionId: sessionIds.includes(item?.sessionId) ? item.sessionId : value.sessionId,
+        sessionLabel: cleanText(item?.sessionLabel, 30),
+        type: item.type,
+        typeLabel: cleanText(item?.typeLabel, 30),
+        direction: item.direction,
+        severity: liveQuoteNumber(item?.severity, "severity", `${name}异动强度`),
+        reason: cleanText(item?.reason, 240),
+        risk: cleanText(item?.risk, 240),
+        metrics: Object.freeze({
+          gap: liveQuoteNumber(item?.metrics?.gap, "gap", `${name}高开幅度`),
+          fromOpen: liveQuoteNumber(item?.metrics?.fromOpen, "fromOpen", `${name}开盘后变化`),
+          amplitude: liveQuoteNumber(item?.metrics?.amplitude, "amplitude", `${name}振幅`),
+          relativeToMedian: liveQuoteNumber(item?.metrics?.relativeToMedian, "relativeToMedian", `${name}相对偏离`),
+        }),
+      });
+    } catch (error) {
+      warnings.push(`异动条目已隔离：${cleanText(error.message, 100)}`);
+      return [];
     }
-    seen.add(symbol);
-    return Object.freeze({
-      symbol,
-      name,
-      board: ["main", "star", "chinext"].includes(item?.board) ? item.board : "main",
-      price: finiteNumber(item?.price, 0.01, 1_000_000, `${name}异动价格`),
-      changePercent: finiteNumber(item?.changePercent, -30, 30, `${name}异动涨跌幅`),
-      amount: finiteNumber(item?.amount, 0, 1e17, `${name}异动成交额`),
-      turnover: finiteNumber(item?.turnover, 0, 1_000, `${name}异动换手率`),
-      sessionId: sessionIds.includes(item?.sessionId) ? item.sessionId : value.sessionId,
-      sessionLabel: cleanText(item?.sessionLabel, 30),
-      type: item.type,
-      typeLabel: cleanText(item?.typeLabel, 30),
-      direction: item.direction,
-      severity: finiteNumber(item?.severity, 0, 100, `${name}异动强度`),
-      reason: cleanText(item?.reason, 240),
-      risk: cleanText(item?.risk, 240),
-      metrics: Object.freeze({
-        gap: finiteNumber(item?.metrics?.gap, -30, 30, `${name}高开幅度`),
-        fromOpen: finiteNumber(item?.metrics?.fromOpen, -60, 60, `${name}开盘后变化`),
-        amplitude: finiteNumber(item?.metrics?.amplitude, 0, 100, `${name}振幅`),
-        relativeToMedian: finiteNumber(item?.metrics?.relativeToMedian, -60, 60, `${name}相对偏离`),
-      }),
-    });
   });
   const counts = {};
   for (const type of types) {
     const expected = items.filter((item) => item.type === type).length;
-    if (value.counts?.[type] != null && integer(value.counts[type], 0, 10, `${type}异动数`) !== expected) throw new Error("异动分类数量冲突");
+    if (items.length === value.items.length && value.counts?.[type] != null && value.counts[type] !== expected) {
+      warnings.push("异动分类数量不一致，已按有效条目重算");
+    }
     if (expected) counts[type] = expected;
   }
   return Object.freeze({
     version: 1,
     sessionId: value.sessionId,
     sessionLabel: cleanText(value.sessionLabel, 30),
-    marketMedian: finiteNumber(value.marketMedian, -30, 30, "异动市场中位数"),
+    marketMedian: liveQuoteNumber(value.marketMedian, "changePercent", "异动市场中位数"),
     items: Object.freeze(items),
     counts: Object.freeze(counts),
     methodology: cleanText(value.methodology, 400),
@@ -363,6 +376,14 @@ export function parseLiveMarketSnapshot(text) {
   if ((phase === "intraday") !== provisional || (phase === "previous-close") !== previousClose || (provisional && previousClose)) {
     throw new Error("实时行情交易阶段冲突");
   }
+  const warnings = [];
+  let anomalyBoard;
+  try {
+    anomalyBoard = parseAnomalyBoard(value.anomalyBoard, warnings);
+  } catch (error) {
+    warnings.push(`异动分型暂不可用：${cleanText(error.message, 100)}`);
+    anomalyBoard = parseAnomalyBoard(null);
+  }
   return Object.freeze({
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     kind: SNAPSHOT_KIND,
@@ -373,12 +394,14 @@ export function parseLiveMarketSnapshot(text) {
     breadth: parseBreadth(value.breadth),
     indexes: parseIndexes(value.indexes, report.marketDate),
     sectors: parseSectors(value.sectors),
-    rankings: parseRankings(value.rankings),
-    attention: parseLiveQuoteRows(value.attention, { details: true }),
-    anomalyBoard: parseAnomalyBoard(value.anomalyBoard),
+    rankings: parseRankings(value.rankings, warnings),
+    attention: parseLiveQuoteRows(value.attention, { details: true, warnings }),
+    anomalyBoard,
     dragonTiger: parseDragonTiger(value.dragonTiger, report.marketDate),
     headlines: parseHeadlines(value.headlines, report.generatedAt),
     sourceStatus: parseSourceStatus(value.sourceStatus),
+    validationWarnings: Object.freeze(warnings),
+    sourceErrors: Object.freeze(Object.fromEntries(SOURCE_STATUS_KEYS.filter((key) => value.sourceErrors?.[key]).map((key) => [key, friendlyMarketFailure(value.sourceErrors[key].message, value.sourceErrors[key].errorCode)]))),
     elapsedMs: integer(value.elapsedMs, 0, 120_000, "实时行情耗时"),
     report,
   });
@@ -417,7 +440,7 @@ function friendlyMarketFailure(messageInput, errorCode = "") {
     .replace(/\]\s*\{?$/u, "")
     .trim();
   const signal = `${errorCode} ${message}`;
-  if (/429|rate.?limit|too many requests|请求频率|限流/iu.test(signal)) {
+  if (/429|456|403|rate.?limit|too many requests|请求频率|限流/iu.test(signal)) {
     return "公开行情数据源触发频率限制，请稍后再试";
   }
   if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|UND_ERR|network|socket|TLS/iu.test(signal)) {
@@ -517,6 +540,7 @@ export function createLiveMarketController({
   let activeProcessId = null;
   let generation = 0;
   let selectedRanking = "gainers";
+  let retryDelayMs = 0;
   let selectedIndexSymbol = null;
   let selectedSectorId = null;
   const processRecords = new Map();
@@ -575,7 +599,7 @@ export function createLiveMarketController({
     const instant = now();
     const clock = chinaMarketClock(instant);
     const displayPhase = displayedAShareSessionPhase(snapshot, instant);
-    const delay = clock.open || displayPhase === "settling" ? OPEN_REFRESH_MS : CLOSED_REFRESH_MS;
+    const delay = Math.max(retryDelayMs, clock.open || displayPhase === "settling" ? OPEN_REFRESH_MS : CLOSED_REFRESH_MS);
     refreshDelayMs = delay;
     nextRefreshAt = now().getTime() + delay;
     timer = window.setTimeout(() => void load(), delay);
@@ -589,7 +613,7 @@ export function createLiveMarketController({
     const availableSources = snapshot
       ? SOURCE_STATUS_KEYS.filter((key) => snapshot.sourceStatus[key]).length
       : 0;
-    const degraded = snapshot && availableSources < SOURCE_STATUS_KEYS.length;
+    const degraded = snapshot && (availableSources < SOURCE_STATUS_KEYS.length || snapshot.validationWarnings.length > 0);
     const state = loading
       ? snapshot ? "refreshing" : "connecting"
       : !snapshot
@@ -609,7 +633,7 @@ export function createLiveMarketController({
       elements.connection.textContent = "正在采集并校验";
       elements.countdown.textContent = "旧快照继续显示";
     } else if (state === "error") {
-      elements.connection.textContent = "行情连接失败";
+      elements.connection.textContent = "行情刷新失败";
       elements.countdown.textContent = "可手动重试";
     } else if (state === "waiting") {
       elements.connection.textContent = "等待行情连接";
@@ -1251,9 +1275,10 @@ export function createLiveMarketController({
       if (futureMs > 60 * 60 * 1_000) throw new Error("行情时点晚于当前时间，已拒绝显示");
       lastDelta = snapshotDelta(snapshot, next);
       snapshot = next;
+      retryDelayMs = Object.values(next.sourceErrors).some((message) => /频率限制/u.test(message)) ? CLOSED_REFRESH_MS : 0;
       lastRefreshFailed = false;
       const localPersistence = (await ensureRuntime()).persistent;
-      const degraded = Object.values(next.sourceStatus).some((available) => !available);
+      const degraded = Object.values(next.sourceStatus).some((available) => !available) || next.validationWarnings.length > 0;
       const nextDisplayPhase = displayedAShareSessionPhase(next, now());
       elements.status.dataset.tone = degraded ? "warning" : "active";
       elements.status.textContent = [
@@ -1267,7 +1292,7 @@ export function createLiveMarketController({
               : nextDisplayPhase === "previous-close"
                 ? `当前显示 ${next.marketDate} 最近收盘，可能处于休市时段。`
                 : "当前为当日收盘快照。",
-        degraded ? "部分辅助数据源本次不可用，页面已保留降级说明。" : "新浪、腾讯与东方财富公开源已完成交叉取数。",
+        degraded ? `部分数据已降级：${[...new Set([...Object.values(next.sourceErrors), ...next.validationWarnings])].join("；") || "辅助数据源本次不可用"}。` : "公开行情采集与数据校验已完成。",
         localPersistence
           ? `快照已保存到 CodeShell 本地数据目录，并同步留存 ${next.breadth.total.toLocaleString("zh-CN")} 只股票的当日行情。`
           : "当前 CodeShell 版本仅保留本次会话快照。",
@@ -1278,6 +1303,7 @@ export function createLiveMarketController({
       if (loadGeneration !== generation) return snapshot;
       const message = friendlyMarketFailure(error instanceof Error ? error.message : "公开行情刷新失败");
       lastRefreshFailed = true;
+      retryDelayMs = /频率限制/u.test(message) ? CLOSED_REFRESH_MS : Math.min(CLOSED_REFRESH_MS, Math.max(OPEN_REFRESH_MS, retryDelayMs * 2));
       elements.status.dataset.tone = snapshot ? "warning" : "error";
       elements.status.textContent = snapshot
         ? `本次刷新失败：${message}。已保留上一次通过校验的行情。`

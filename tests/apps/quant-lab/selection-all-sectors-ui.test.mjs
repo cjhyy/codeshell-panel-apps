@@ -413,8 +413,8 @@ test("watch additions during a running batch are refreshed after that batch rath
     timers.delete(queued[0]); queued[1].callback();
     for (let index = 0; index < 14; index += 1) await Promise.resolve();
     const last = calls.filter((call) => call.method === "process.spawn").at(-1);
-    assert(last.args.args.includes("refresh-local"));
-    assert.match(decodeURIComponent(last.args.args.at(-1)), /SH600000/u);
+    assert(last.args.args.includes("continue-local"), "watch changes must preserve existing retry budgets");
+    assert.match(decodeURIComponent(last.args.args.at(-2)), /SH600000/u);
   }, { holdContinuation: true });
 });
 

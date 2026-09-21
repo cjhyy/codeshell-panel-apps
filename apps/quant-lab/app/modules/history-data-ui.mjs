@@ -1139,6 +1139,7 @@ export function createHistoryDataController(options) {
     onHistorySummary(historySummary, {
       initializing: historyInitializing,
       checking: historyStatusChecking,
+      recoveryFailed: historyStatusRecoveryFailed,
       tone: historyMessageTone,
     });
     syncHistoryBackgroundPollTimer();

@@ -14,7 +14,7 @@ export async function runPackageContract({ root, manifest, html, packagePath }) 
 
     assert.equal(manifest.schemaVersion, 2, `${packagePath}: investment research requires schemaVersion 2`);
     assert.equal(manifest.id, "quant-lab", `${packagePath}: installed app id must stay stable`);
-    assert.equal(manifest.version, "0.44.6", `${packagePath}: investment desk version mismatch`);
+    assert.equal(manifest.version, "0.45.1", `${packagePath}: investment desk version mismatch`);
     assert.deepEqual(
       manifest.title,
       { default: "投资工作台", en: "Investment Desk", "zh-CN": "投资工作台" },
@@ -38,14 +38,8 @@ export async function runPackageContract({ root, manifest, html, packagePath }) 
       ],
       `${packagePath}: M4 permissions must include only the implemented Host surface`,
     );
-    assert.deepEqual(
-      manifest.agent,
-      {
-        tools: [],
-        skills: ["agent/skills/investment-research/SKILL.md"],
-      },
-      `${packagePath}: investment research Skill must be the only bundled Agent contribution`,
-    );
+    assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
+    assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
     assert.deepEqual(
       [...html.matchAll(/data-module-tab="([a-z]+)"/g)].map((match) => match[1]),
       moduleOrder,

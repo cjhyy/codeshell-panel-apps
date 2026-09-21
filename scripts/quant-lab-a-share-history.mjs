@@ -14,6 +14,7 @@ import {
   readHistoryManifest,
   readHistorySeries,
   readUsableHistory,
+  recoverHistoryManifestFromSeries,
   releaseHistoryRunState,
   sanitizeHistoryBars,
   writeHistoryManifest,
@@ -443,6 +444,14 @@ try {
   assert.equal(recoveredStatus.marketDate, "2026-08-31");
   const recoveredManifest = await readHistoryManifest(recoveryTemporary);
   assert.equal(recoveredManifest.records.length, 2);
+  assert.equal(recoveredStatus.rawFactorReady + recoveredStatus.legacyVendorAdjusted, recoveredStatus.cached);
+  // Repair manifests already written by an older recovery, even with no new files.
+  const staleCounters = { ...recoveredManifest, rawFactorReady: 0, legacyVendorAdjusted: 0 };
+  const repaired = await recoverHistoryManifestFromSeries(staleCounters, recoveryTemporary);
+  assert.equal(repaired.rawFactorReady + repaired.legacyVendorAdjusted, repaired.cached);
+  assert.doesNotThrow(() => parseHistoryLibrarySummary(compactHistoryBridgeSummary(repaired)));
+  const unchanged = await recoverHistoryManifestFromSeries(repaired, recoveryTemporary);
+  assert.equal(unchanged, repaired, "Already consistent manifests need no rewrite");
   assert.deepEqual(recoveredManifest.excludedSymbols, ["SH600002"]);
   assert.deepEqual(recoveredManifest.recentSnapshotCoverage, [
     { date: "2026-08-31", count: 20, phase: "close" },

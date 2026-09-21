@@ -422,8 +422,27 @@ export function parseTransactions(sourceText) {
     }
     const allowed = new Set([...COMMON_TRANSACTION_FIELDS, ...typeFields]);
     if (type === "reorganization") allowed.add("toInstrumentId");
+    if (type === "position-in") allowed.add("source");
     unknownFields(transaction, allowed, path, issues);
     required(transaction, ["id", "type", ...typeFields], path, issues);
+    if (transaction.source !== undefined) {
+      const source = transaction.source;
+      const sourcePath = `${path}.source`;
+      if (!plainObject(source)) {
+        issues.push({ path: sourcePath, code: "invalid-source", message: "holding source must be an object" });
+      } else {
+        const fields = new Set(["kind", "reference", "marketDate", "importId"]);
+        unknownFields(source, fields, sourcePath, issues);
+        required(source, [...fields], sourcePath, issues);
+        if (source.kind !== "holding-snapshot" || typeof source.reference !== "string" ||
+            !source.reference.trim() || source.reference.length > 500 ||
+            !/^[a-f0-9]{64}$/u.test(source.importId ?? "") ||
+            (source.marketDate !== null && !validDate(source.marketDate))) {
+          issues.push({ path: sourcePath, code: "invalid-source", message: "holding source identity/date is invalid" });
+        }
+      }
+    }
+
     if (typeof transaction.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(transaction.id)) {
       issues.push({ path: `${path}.id`, code: "invalid-id", message: "invalid transaction id" });
     } else if (globalIds.has(transaction.id)) {

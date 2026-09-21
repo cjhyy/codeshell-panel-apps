@@ -523,6 +523,35 @@ const liveSnapshotValue = {
 };
 const parsedLive = liveMarket.parseLiveMarketSnapshot(JSON.stringify(liveSnapshotValue));
 assert.equal(parsedLive.breadth.total, 160);
+
+// A single extreme but valid listing must not poison either live or cached data.
+const extremeQuote = { ...anomalyQuotes[0], symbol: "SH601091", name: "C波动样本",
+  previousClose: 57.77, open: 30, low: 29.5, high: 56.82, price: 47.91, changePercent: -17.07 };
+const extremeBoard = cli.buildIntradayAnomalies([extremeQuote, ...anomalyQuotes], liveSnapshotValue.asOf, "intraday");
+const extremeLive = liveMarket.parseLiveMarketSnapshot(JSON.stringify({ ...liveSnapshotValue, anomalyBoard: extremeBoard }));
+assert(extremeLive.anomalyBoard.items.some((item) => item.symbol === extremeQuote.symbol && item.metrics.gap < -30));
+assert.equal(extremeLive.validationWarnings.length, 0);
+const invalidBoard = structuredClone(extremeBoard);
+invalidBoard.items[0].metrics.gap = null;
+const isolated = liveMarket.parseLiveMarketSnapshot(JSON.stringify({ ...liveSnapshotValue, anomalyBoard: invalidBoard }));
+assert.equal(isolated.breadth.total, parsedLive.breadth.total);
+assert.equal(isolated.anomalyBoard.items.length, extremeBoard.items.length - 1);
+assert(isolated.validationWarnings.some((warning) => warning.includes("已隔离")));
+assert.equal(Object.values(isolated.anomalyBoard.counts).reduce((sum, count) => sum + count, 0), isolated.anomalyBoard.items.length);
+const invalidStructure = liveMarket.parseLiveMarketSnapshot(JSON.stringify({ ...liveSnapshotValue, anomalyBoard: { version: 99 } }));
+assert.equal(invalidStructure.anomalyBoard.items.length, 0);
+assert(invalidStructure.validationWarnings.some((warning) => warning.includes("暂不可用")));
+const exceptionalRankings = structuredClone(liveSnapshotValue.rankings);
+exceptionalRankings.gainers[0].changePercent = 175;
+exceptionalRankings.gainers[1].changePercent = null;
+const ranks = liveMarket.parseLiveMarketSnapshot(JSON.stringify({ ...liveSnapshotValue, rankings: exceptionalRankings }));
+assert.equal(ranks.rankings.gainers[0].changePercent, 175);
+assert.equal(ranks.rankings.gainers.length, exceptionalRankings.gainers.length - 1);
+assert.equal(ranks.indexes.length, 4);
+assert(ranks.validationWarnings.some((warning) => warning.includes("排行条目已隔离")));
+assert.equal(cli.buildIntradayAnomalies([{ ...extremeQuote, open: 0 }, { ...extremeQuote, low: 0 }], liveSnapshotValue.asOf, "intraday").items.length, 0);
+assert.match(liveMarket.liveMarketErrorMessage('{"errorCode":"SOURCE_HTTP","message":"HTTP 456 from vip.stock.finance.sina.com.cn"}'), /频率限制/u);
+
 assert.equal(parsedLive.indexes.length, 4);
 assert.equal(parsedLive.sectors.length, 5);
 assert.equal(parsedLive.rankings.gainers.length, 8);

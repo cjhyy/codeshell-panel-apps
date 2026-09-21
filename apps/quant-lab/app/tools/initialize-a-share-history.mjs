@@ -314,7 +314,6 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
   if (options.status) {
     let manifest = await readHistoryManifest(root);
     if (!manifest) throw new HistoryInitializationError("HISTORY_LIBRARY_MISSING", "history library is not initialized");
-    manifest = await recoverHistoryManifestFromSeries(manifest, root, now);
     let activeRun = await readActiveHistoryRunState(root);
     if (!activeRun) {
       const localLock = await acquireHistoryRunState({
@@ -324,6 +323,9 @@ export async function runCli(argv = process.argv.slice(2), dependencies = {}) {
       }, root);
       if (localLock.acquired) {
         try {
+          // Re-read under the existing library lock before repairing persisted counters.
+          manifest = await readHistoryManifest(root) ?? manifest;
+          manifest = await recoverHistoryManifestFromSeries(manifest, root, now);
           manifest = await reconcileAShareHistorySnapshots({ root, manifest, now });
         } finally {
           await releaseHistoryRunState(localLock.state, root);

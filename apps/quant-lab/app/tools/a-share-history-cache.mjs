@@ -748,8 +748,15 @@ export async function recoverHistoryManifestFromSeries(manifest, root = process.
     recordsBySymbol.set(match[1], manifestRecordFor(series, await seriesBytes(match[1], root)));
     recovered += 1;
   }
-  if (recovered === 0) return manifest;
   const records = [...recordsBySymbol.values()].sort((left, right) => left.symbol.localeCompare(right.symbol));
+  const rawFactorReady = records.filter((record) => record.priceModel === "raw-factor").length;
+  const legacyVendorAdjusted = records.length - rawFactorReady;
+  const priceModel = legacyVendorAdjusted === 0 ? "raw-factor"
+    : rawFactorReady === 0 ? "legacy-vendor-qfq" : "mixed-migration";
+  const countsMatch = manifest.cached === records.length &&
+    manifest.rawFactorReady === rawFactorReady && manifest.legacyVendorAdjusted === legacyVendorAdjusted &&
+    manifest.priceModel === priceModel;
+  if (recovered === 0 && countsMatch) return manifest;
   const marketDate = [manifest.marketDate, ...records.map((record) => record.to)]
     .filter(validDate)
     .sort()
@@ -772,6 +779,10 @@ export async function recoverHistoryManifestFromSeries(manifest, root = process.
     remaining: Math.max(0, manifest.total - ready),
     paused: legacyInterrupted || manifest.paused === true,
     cached: records.length,
+    rawFactorReady,
+    legacyVendorAdjusted,
+    priceModel,
+    basisContract: rawFactorReady > 0 ? A_SHARE_RESEARCH_PRICE_CONTRACT : manifest.basisContract,
     failed: legacyInterrupted ? 0 : manifest.failed,
     bars: records.reduce((sum, record) => sum + Number(record.bars ?? 0), 0),
     storageBytes: records.reduce((sum, record) => sum + Number(record.bytes ?? 0), 0),

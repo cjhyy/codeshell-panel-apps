@@ -1020,6 +1020,13 @@ export function createHoldingsController({
       const record = appendText(row, "button", `记录笔记 · ${noteLinkCount(noteLink)}`, "ghost-button record-note-button");
       record.type = "button";
       record.addEventListener("click", () => onRecordNote(noteLink));
+      const opening = ledger.transactions.find((item) => item.accountId === position.accountId &&
+        item.instrumentId === position.instrumentId && item.source?.kind === "holding-snapshot");
+      if (opening) {
+        appendText(row, "p", opening.source.marketDate
+          ? `期初持仓 · 来源日期 ${opening.source.marketDate} · ${opening.source.reference}`
+          : `期初持仓 · 建账日 ${opening.valuationDate} · 截图行情日期未知 · ${opening.source.reference}`, "portfolio-source");
+      }
       elements.holdingsList.append(row);
     }
     return positions.length;

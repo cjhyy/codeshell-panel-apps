@@ -185,6 +185,19 @@ try {
   const localUniverse = await cliModule.readLocalQuoteUniverse(universeDirectory);
   assert.equal(localUniverse.length, 4_000);
   assert.equal(localUniverse[0], "SH600000");
+  const calls = [];
+  const preferred = await cliModule.fetchAllQuotes({ root: universeDirectory, preferLocalUniverse: true,
+    fetchTencentQuotes: async () => { calls.push("tencent"); return tencentBatch; },
+    fetchSinaQuotes: async () => { calls.push("sina"); return []; },
+  });
+  assert.equal(preferred, tencentBatch);
+  assert.deepEqual(calls, ["tencent"], "a known local universe avoids repeated bulk Sina requests");
+  const recovered = await cliModule.fetchAllQuotes({ root: universeDirectory, preferLocalUniverse: true,
+    fetchTencentQuotes: async () => { throw new Error("transient failure"); },
+    fetchSinaQuotes: async () => tencentBatch,
+  });
+  assert.equal(recovered, tencentBatch);
+
 } finally {
   await rm(universeDirectory, { recursive: true, force: true });
 }
@@ -376,3 +389,14 @@ assert.match(provisionalReport.title, /盘中初筛/u);
 assert(provisionalReport.risks.some((risk) => /收盘后必须重新扫描/u.test(risk)));
 
 console.log("✓ Quant Lab deterministic A-share universe, evidence gates, ranking and report contract");
+
+for (const status of [403, 429, 456]) {
+  let calls = 0;
+  await assert.rejects(() => cliModule.withRetry(async () => { calls++; throw Object.assign(new Error(`HTTP ${status}`), { status }); }), new RegExp(String(status)));
+  assert.equal(calls, 1, "source restrictions must not be immediately hammered again");
+}
+await assert.rejects(() => cliModule.fetchAllQuotes({
+  fetchSinaQuotes: async () => { throw Object.assign(new Error("HTTP 456"), { status: 456, code: "SOURCE_HTTP" }); },
+  fetchTencentQuotes: async () => { throw Object.assign(new Error("missing universe"), { code: "QUOTE_UNIVERSE_MISSING" }); },
+  fetchEastmoneyQuotes: async () => { throw new Error("socket closed"); },
+}), (error) => error.sourceFailures[0].status === 456 && error.sourceFailures[1].source === "tencent" && /频率限制/u.test(error.message));

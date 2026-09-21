@@ -44,12 +44,12 @@ assert.equal(stockTask.runMode, "isolated-task");
 assert.match(stockTask.prompt, /只研究这个标的/u);
 assert.match(stockTask.prompt, /公司与主营、最新一期业绩、估值与行业位置、技术位置、近期公告或催化、核心风险与反方/u);
 assert.match(stockTask.prompt, /已披露实际值、业绩预告和分析师预期必须分开/u);
-assert.match(stockTask.prompt, /不要读取或推测用户持仓、成本、关注列表、市场首页、选股结果、笔记或合成回测/u);
+assert.match(stockTask.prompt, /不要读取或推测用户持仓、成本、关注、项目文件或合成回测/u);
 assert.match(stockTask.prompt, /技术位置必须写为不可用/u);
 assert.match(stockTask.prompt, /支撑\/压力、缺口、斐波那契、ATR 与 Keltner/u);
 assert.doesNotMatch(stockTask.prompt, /市场所在时区/u);
 assert.doesNotMatch(stockTask.prompt, /data\/market-insights/u);
-assert.match(stockTask.prompt, /面板会在校验后自行保存/u);
+assert.match(stockTask.prompt, /面板校验后保存/u);
 assert(stockTask.prompt.length < 2_400, `精简个股报告提示仍过长：${stockTask.prompt.length}`);
 assert.throws(() => buildMarketInsightTask("stock", "", fixedNow), /输入股票/u);
 assert.throws(() => buildMarketInsightTask("unknown", "", fixedNow), /未知/u);
@@ -339,3 +339,16 @@ assert.throws(
 );
 
 console.log("✓ Quant Lab persistent market insight prompt and report contract");
+
+// Research may cite the last completed session across weekends and holidays.
+const mondayPath = 'data/market-insights/20260921T054452556Z-stock-SH600839-deep.json';
+const weekendReport = { ...report, kind: 'stock', subject: 'SH600839 四川长虹', marketDate: '2026-09-18', asOf: '2026-09-21T13:42:54+08:00', generatedAt: '2026-09-21T13:44:52.556+08:00' };
+const normalizedWeekend = normalizeMarketInsightTaskResult(JSON.stringify(weekendReport), mondayPath);
+assert.equal(parseMarketInsight(normalizedWeekend, mondayPath).marketDate, '2026-09-18');
+assert.equal(JSON.parse(normalizedWeekend).asOf, weekendReport.asOf, 'retain original information cutoff without relabeling old data');
+assert.doesNotThrow(() => parseMarketInsight(JSON.stringify({ ...weekendReport, marketDate: '2026-09-11' }), mondayPath));
+assert.throws(() => parseMarketInsight(JSON.stringify({ ...weekendReport, marketDate: '2026-09-01' }), mondayPath), /参考交易日/u);
+assert.throws(() => parseMarketInsight(JSON.stringify({ ...weekendReport, marketDate: '2026-09-23' }), mondayPath), /参考交易日/u);
+assert.throws(() => parseMarketInsight(JSON.stringify({ ...weekendReport, asOf: '2026-09-22T13:42:54+08:00' }), mondayPath), /信息截止时间晚于/u);
+assert.throws(() => parseMarketInsight(JSON.stringify({ ...weekendReport, generatedAt: '2026-09-24T13:44:52+08:00' }), mondayPath), /超过 48 小时/u);
+console.log('✓ Company report weekend/holiday reference dates and future-date guards');

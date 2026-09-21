@@ -1292,13 +1292,14 @@ export function buildAShareSelectionSnapshot(input) {
       return [result];
     });
     analyzedBySector.set(industry.id, analyzed);
-    const metrics = sectorMetrics(industry, analyzed);
+    const scan = sectorScanState(sectorScanMap.get(industry.id), members, analyzed, hasSectorScan);
+    const metrics = sectorMetrics({ ...industry, count: industry.count > 0 ? industry.count : scan.memberCount }, analyzed);
     const stage = sectorStage(metrics, industry);
     const catalysts = (sectorNews.get(industry.id)?.matches ?? []).slice(0, 3).map((item) => newsEvent(item));
     rawSectors.push({
       id: industry.id,
       name: industry.name,
-      scan: sectorScanState(sectorScanMap.get(industry.id), members, analyzed, hasSectorScan),
+      scan,
       watched: watchedSectorIds.has(industry.id),
       stage: stage.stage,
       stageLabel: stage.label,
@@ -1564,10 +1565,14 @@ export function buildAShareSelectionSnapshot(input) {
       noCandidateSectors: sectors.filter((item) => item.candidates.length === 0).length,
     },
     sourceStatus,
+    ...(input.industryProvider ? { industryProvider: input.industryProvider } : {}),
     sourceErrors: Array.isArray(input.sourceErrors) ? input.sourceErrors.slice(0, 20) : [],
     elapsedMs: Number.isFinite(input.elapsedMs) ? Math.max(0, Math.round(input.elapsedMs)) : 0,
     sources: [
-      { label: "新浪财经 · 沪深 A 股与行业成分", url: "https://vip.stock.finance.sina.com.cn/mkt/", asOf },
+      ...(input.industryProvider ? [
+        { label: "行情快照 · 沪深 A 股", url: "https://gu.qq.com/", asOf },
+        ...(input.industryProvider.id.startsWith("json-") ? [] : [{ label: `${input.industryProvider.label} · 行业分类与成分`, url: input.industryProvider.url, asOf }]),
+      ] : [{ label: "新浪财经 · 沪深 A 股与行业成分", url: "https://vip.stock.finance.sina.com.cn/mkt/", asOf }]),
       { label: "腾讯证券 · 个股前复权日线", url: "https://gu.qq.com/", asOf: marketDate },
       ...(sourceStatus.news ? [{ label: "东方财富 · 7×24 财经快讯", url: "https://finance.eastmoney.com/", asOf: generatedAt }] : []),
       ...(sourceStatus.announcements ? [{ label: "东方财富 · 上市公司公告", url: "https://data.eastmoney.com/notices/", asOf: generatedAt }] : []),

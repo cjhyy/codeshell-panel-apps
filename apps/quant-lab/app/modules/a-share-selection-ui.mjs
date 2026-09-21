@@ -27,8 +27,9 @@ const NODE_LAUNCHER = [
   'if (!home) throw new Error("user-home-unavailable");',
   'const tool = join(home, ".code-shell", "panel-apps", "quant-lab", "app", "tools", "build-a-share-selection.mjs");',
   'const module = await import(pathToFileURL(tool).href);',
-  'const [mode = "refresh-volatile", scope = "global", encodedWatch = "%7B%7D"] = process.argv.slice(-3);',
+  'const [mode = "refresh-volatile", scope = "global", encodedWatch = "%7B%7D", dataSources = ""] = process.argv.slice(-4);',
   'const args = mode === "read-local" ? ["--stdout", "--read-local", "--cache-scope", scope] : ["refresh-local", "continue-local"].includes(mode) ? ["--stdout", "--persist-local", "--cache-scope", scope, "--watch", encodedWatch] : ["--stdout", "--watch", encodedWatch];',
+  'if (dataSources) args.push("--data-sources", dataSources);',
   'if (["continue-local", "continue-volatile"].includes(mode)) args.push("--continue-scan");',
   'try { await module.runCli(args); } catch (error) { process.stderr.write(JSON.stringify({ ok: false, errorCode: error?.code ?? error?.cause?.code ?? "SELECTION_ERROR", message: error instanceof Error ? error.message : "selection snapshot failed" }) + "\\n"); process.exitCode = 1; }',
 ].join("\n");
@@ -39,15 +40,15 @@ const RUNTIME_SPECS = Object.freeze([
   Object.freeze({ name: "bun", label: "Bun" }),
 ]);
 
-export function selectionRuntimeArgs(name, encodedWatch, cacheScope = "global", mode = "refresh-volatile") {
+export function selectionRuntimeArgs(name, encodedWatch, cacheScope = "global", mode = "refresh-volatile", dataSources = "") {
   if (!/^(?:global|[0-9a-f]{16})$/u.test(cacheScope)) throw new Error("选股本地缓存范围无效");
   if (!new Set(["refresh-volatile", "refresh-local", "continue-volatile", "continue-local", "read-local"]).has(mode)) {
     throw new Error("选股本地模式不受支持");
   }
   if (name === "node" || name === "nodejs") {
-    return Object.freeze(["--input-type=module", "--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch]);
+    return Object.freeze(["--input-type=module", "--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch, dataSources]);
   }
-  if (name === "bun") return Object.freeze(["--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch]);
+  if (name === "bun") return Object.freeze(["--eval", NODE_LAUNCHER, mode, cacheScope, encodedWatch, dataSources]);
   throw new Error("选股运行时不受支持");
 }
 
@@ -1381,6 +1382,12 @@ export function parseAShareSelectionSnapshot(text) {
       noCandidateSectors: integer(value.exclusions.noCandidateSectors, 0, SELECTION_SCAN_LIMITS.sectors, "无候选板块"),
     }) : Object.freeze({}),
     sourceStatus,
+    industryProvider: value.industryProvider ? Object.freeze({ id: cleanText(value.industryProvider.id, 40), label: cleanText(value.industryProvider.label, 60), fallback: value.industryProvider.fallback === true }) : null,
+    sourceErrors: Object.freeze((Array.isArray(value.sourceErrors) ? value.sourceErrors : [])
+      .slice(0, 100).map((error) => Object.freeze({
+        source: cleanText(error?.source, 80), errorCode: cleanText(error?.errorCode, 100),
+        message: cleanText(error?.message, 300),
+      })).filter((error) => error.source || error.message)),
     sources: Object.freeze(sources),
     disclaimer: cleanText(value.disclaimer, 300),
     elapsedMs: integer(value.elapsedMs, 0, 180_000, "选股耗时"),
@@ -1412,6 +1419,7 @@ export function parseSelectionWatchStorage(value) {
     stocks.push({
       symbol,
       name: cleanText(item?.name, 40),
+      ...(item?.source === "portfolio" ? { source: "portfolio" } : {}),
       ...(item?.priority === "focus" ? { priority: "focus" } : {}),
     });
     if (stocks.length >= 20) break;
@@ -1425,6 +1433,27 @@ export function parseSelectionWatchStorage(value) {
     stocks: Object.freeze(stocks),
     selectedSectorId,
   });
+}
+
+// Merge actual positive holdings; never remove or replace a user's existing watch.
+export function mergePortfolioWatch(value, ledger, holdings) {
+  const current = parseSelectionWatchStorage(value);
+  const held = new Set((holdings?.positionsByAccount ?? [])
+    .filter((position) => Number(position.quantity) > 0)
+    .map((position) => position.instrumentId));
+  const stocks = [...current.stocks];
+  const seen = new Set(stocks.map((stock) => stock.symbol));
+  const skipped = [];
+  for (const instrument of ledger?.instruments ?? []) {
+    if (!held.has(instrument.id) || instrument.market !== "cn") continue;
+    const symbol = canonicalStock(instrument.symbol);
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    if (stocks.length >= 20) { skipped.push(symbol); continue; }
+    stocks.push({ symbol, name: instrument.name, source: "portfolio" });
+  }
+  return { value: parseSelectionWatchStorage({ ...current, stocks }),
+    added: stocks.length - current.stocks.length, skipped };
 }
 
 function element(tag, className, text) {
@@ -1583,14 +1612,14 @@ function formatClock(value, withDate = false) {
   }).format(new Date(value));
 }
 
-function errorMessage(stderr) {
+export function selectionProcessError(stderr, exit = {}) {
   const lines = String(stderr).trim().split(/\r?\n/u).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     try {
       const parsed = JSON.parse(lines[index]);
       const message = cleanText(parsed?.message, 300);
       const signal = `${cleanText(parsed?.errorCode, 80)} ${message}`;
-      if (/429|rate.?limit|too many requests|请求频率|限流/iu.test(signal)) return "选股数据源触发频率限制，请稍后再试";
+      if (/403|429|456|rate.?limit|too many requests|请求频率|限流/iu.test(signal)) return "选股数据源触发频率限制，请稍后再试";
       if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|UND_ERR|network|socket|TLS/iu.test(signal)) return "选股数据源暂时连接失败，请稍后重试";
       if (/timeout|ETIMEDOUT|超时/iu.test(signal)) return "选股数据源响应超时，请稍后重试";
       if (message) return message;
@@ -1602,7 +1631,9 @@ function errorMessage(stderr) {
   if (/fetch failed|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|UND_ERR|network|socket|TLS/iu.test(fallback)) {
     return "选股数据源暂时连接失败，请稍后重试";
   }
-  return fallback || "今日选股刷新失败";
+  if (fallback) return fallback;
+  if (exit.signal) return `选股任务已中断（${cleanText(exit.signal, 30)}），请重新打开面板后重试`;
+  return `选股程序异常退出（退出码 ${Number.isInteger(exit.code) ? exit.code : "未知"}），未收到具体错误，请重试`;
 }
 
 function eventRow(event) {
@@ -1622,6 +1653,7 @@ export function createAShareSelectionController({
   hostCall,
   onHostEvent,
   storageKey,
+  dataSources = () => null,
   currentEpoch,
   now = () => new Date(),
   notify = () => undefined,
@@ -1701,7 +1733,7 @@ export function createAShareSelectionController({
     clearTimer();
     if (!canMaintain() || document.visibilityState === "hidden" || loading || scanPaused || !restored) return;
     if (watchRefreshPending) {
-      timer = window.setTimeout(() => { timer = null; void refresh({ manual: true }).catch(() => undefined); }, 0);
+      timer = window.setTimeout(() => { timer = null; void refresh({ watchChanged: true }).catch(() => undefined); }, 0);
       return;
     }
     if (active && runtime?.persistent && snapshot?.scanProgress?.hasMore) {
@@ -1813,7 +1845,7 @@ export function createAShareSelectionController({
     const started = await hostCall("process.spawn", {
       executableHandle: handles.executableHandle,
       directoryHandle: handles.directoryHandle,
-      args: selectionRuntimeArgs(handles.name, encodedWatch(), cacheScope(), runtimeMode),
+      args: selectionRuntimeArgs(handles.name, encodedWatch(), cacheScope(), runtimeMode, dataSources() ? encodeURIComponent(JSON.stringify(dataSources())) : ""),
     });
     if (typeof started?.processId !== "string") throw new Error("选股程序未能启动");
     const processId = started.processId;
@@ -1830,7 +1862,7 @@ export function createAShareSelectionController({
       if (activeProcessId === processId) activeProcessId = null;
       finalizeProcess(processId);
     }
-    if (record.exit?.code !== 0) throw new Error(errorMessage(record.stderr));
+    if (record.exit?.code !== 0) throw new Error(selectionProcessError(record.stderr, record.exit));
     return parseAShareSelectionSnapshot(record.stdout);
   }
 
@@ -3291,7 +3323,7 @@ export function createAShareSelectionController({
       item.dataset.priority = priority;
       const header = element("header", "");
       const identity = element("div", "");
-      identity.append(element("span", "", priority === "focus" ? "重点个股" : "关注个股"), element("b", "", live?.name || stock.name || stock.symbol), element("small", "", stock.symbol));
+      identity.append(element("span", "", stock.source === "portfolio" ? "持仓自动关注" : priority === "focus" ? "重点个股" : "关注个股"), element("b", "", live?.name || stock.name || stock.symbol), element("small", "", stock.symbol));
       header.append(
         identity,
         element("strong", `selection-signal is-${state}`, displayedSignal(state, live?.stateLabel || watchStatus(state))),
@@ -3356,6 +3388,18 @@ export function createAShareSelectionController({
 
   function renderSources() {
     elements.sources.replaceChildren();
+    if (snapshot?.industryProvider) elements.sources.append(element("p", "selection-source-warning", `行业分类：${snapshot.industryProvider.label}${snapshot.industryProvider.fallback ? "（备用源已启用）" : ""}；不同来源的行业与成分独立保存。`));
+    const failures = snapshot?.sourceErrors ?? [];
+    const names = { industries: "行业目录", "industry-members": "行业成分", histories: "历史行情", announcements: "公司公告", news: "新闻" };
+    const seenFailures = new Set();
+    for (const failure of failures) {
+      const key = `${failure.source}:${failure.errorCode}`;
+      if (seenFailures.has(key)) continue;
+      seenFailures.add(key);
+      const restricted = /403|429|456|RATE.?LIMIT/iu.test(failure.errorCode);
+      elements.sources.append(element("p", "selection-source-warning",
+        `${names[failure.source] ?? failure.source}：${restricted ? "数据源访问受限，等待冷却后重试" : failure.message || "暂不可用"}（${failure.errorCode || "未提供错误码"}）`));
+    }
     for (const source of snapshot?.sources ?? []) {
       const button = element("button", "", source.label.split(" · ").at(-1));
       button.type = "button";
@@ -3420,7 +3464,12 @@ export function createAShareSelectionController({
     else if (automaticRetryAt() > now().getTime()) activity = `${continuationErrorReason ? `上批执行失败：${continuationErrorReason}；` : "数据源冷却中，"}将于 ${formatClock(new Date(automaticRetryAt()).toISOString(), true)} 自动重试；等待期间不发起续批请求。`;
     else if (!active || document.visibilityState === "hidden") activity = "自动续批已停止；回到本页后接续剩余项。";
     else activity = `下批 ${formatClock(new Date(nextBatchAt ?? now().getTime() + CONTINUATION_DELAY_MS).toISOString(), true)} 开始（5 秒间隔）；可随时暂停。`;
-    return `${counts}。${last}${reasonText}${activity}`;
+    const industryRefusal = snapshot.sourceErrors?.find((error) =>
+      /^industries(?::|$)|^industry-members$/.test(error.source) && /403|429|456|THROTTL/iu.test(error.errorCode));
+    const sharedWait = industryRefusal
+      ? `行业数据源统一受限（${industryRefusal.errorCode}），${progress.pendingSectors + progress.failedSectors} 个行业受影响；本批实际请求 ${batch?.memberRequests ?? 0} 个行业，并非逐个反复重试。`
+      : "";
+    return `${sharedWait}${counts}。${last}${reasonText}${activity}`;
   }
 
   function selectionExportCsv() {
@@ -3562,11 +3611,11 @@ export function createAShareSelectionController({
     notify(message);
     if (refreshSnapshot) {
       watchRefreshPending = true;
-      if (!loading) void refresh({ manual: true }).catch(() => undefined);
+      if (!loading) void refresh({ watchChanged: true }).catch(() => undefined);
     } else schedule();
   }
 
-  async function refresh({ manual = false, continuation = false } = {}) {
+  async function refresh({ manual = false, continuation = false, watchChanged = false } = {}) {
     if (loading) return snapshot;
     if (continuation && (!active || document.visibilityState === "hidden" || scanPaused || !runtime?.persistent || !snapshot?.scanProgress?.hasMore)) return snapshot;
     if (manual) {
@@ -3574,8 +3623,8 @@ export function createAShareSelectionController({
       automaticPauseReason = "";
       noProgressBatches = 0;
     }
-    if (!manual && (scanPaused || !canMaintain() || document.visibilityState === "hidden")) return snapshot;
-    if (!manual && snapshot?.scanProgress?.hasMore && automaticRetryAt() > now().getTime()) {
+    if (!manual && !watchChanged && (scanPaused || !canMaintain() || document.visibilityState === "hidden")) return snapshot;
+    if (!manual && !watchChanged && snapshot?.scanProgress?.hasMore && automaticRetryAt() > now().getTime()) {
       schedule();
       renderScanCoverage();
       return snapshot;
@@ -3902,12 +3951,15 @@ export function createAShareSelectionController({
 
   return {
     async load() {
+      const loadGeneration = generation, loadEpoch = currentEpoch();
       const saved = await hostCall("storage.get", { key: storageKey() }).catch(() => null);
+      if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
       watch = parseSelectionWatchStorage(saved);
       selectedSectorId = watch.selectedSectorId;
       render();
       onUpdate(snapshot);
       const cached = await fetchSnapshot("read-local").catch(() => null);
+      if (loadGeneration !== generation || loadEpoch !== currentEpoch()) return watch;
       if (cached) {
         snapshot = cached;
         onStockDirectory(cached.stockDirectory);
@@ -3957,13 +4009,32 @@ export function createAShareSelectionController({
       elements.status.dataset.tone = "active";
       elements.status.textContent = `正在读取 ${directoryName} 的成分历史、趋势位置和公告风险…`;
       renderWatch();
-      await refresh({ manual: true }).catch(() => undefined);
+      await refresh({ watchChanged: true }).catch(() => undefined);
       if (!snapshot?.sectors.some((item) => item.id === id)) return false;
       revealFunnel();
       rememberSelectedSector(id);
       renderSectors();
       renderCandidates();
       return true;
+    },
+    async syncPortfolio(ledger, holdings) {
+      const merged = mergePortfolioWatch(watch, ledger, holdings);
+      if (!merged.added) return merged;
+      const previous = watch;
+      const operationGeneration = generation;
+      watch = merged.value;
+      try {
+        await saveWatch();
+      } catch (error) {
+        if (generation === operationGeneration && watch === merged.value) watch = previous;
+        throw error;
+      }
+      if (generation !== operationGeneration) return merged;
+      render();
+      onUpdate(snapshot);
+      watchRefreshPending = true;
+      schedule();
+      return merged;
     },
     async followStock(symbolInput, nameInput = "") {
       const symbol = canonicalStock(symbolInput);

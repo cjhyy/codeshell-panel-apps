@@ -582,3 +582,29 @@ test("latest-history migration preserves other failures and reads valid formal c
   assert.equal(saved.status, "complete"); assert.equal(saved.historyRequestVersion, 2);
   checkedCounts(result);
 });
+
+test("Sina provider upgrade reuses verified legacy members without sharing them with other providers", async (t) => {
+  const root = await dataRoot(t);
+  const settings = defaults({ root, persistent: true, industries: [industry(0, 1)], quotes: [quote(symbol(0))],
+    fetchMembers: async () => ({ symbols: [symbol(0)], complete: true }),
+  });
+  await collectSelectionSectors(settings);
+  let requests = 0;
+  const fetchMembers = async () => { requests += 1; return { symbols: [symbol(0)], complete: true }; };
+  const migrated = await collectSelectionSectors({ ...settings, industries: [industry(0, 0)], cacheNamespace: "sina", fetchMembers });
+  assert.equal(requests, 0);
+  assert.equal(migrated.scanProgress.completedSectors, 1);
+  await collectSelectionSectors({ ...settings, cacheNamespace: "eastmoney", fetchMembers });
+  assert.equal(requests, 1, "an independent taxonomy cannot inherit Sina member evidence");
+});
+
+test("cached members remain visible while missing industry metrics prevent complete ranking", async () => {
+  const result = await collectSelectionSectors(defaults({
+    industries: [{ ...industry(0, 0), changePercent: null, amount: null }], quotes: [quote(symbol(0))],
+    fetchMembers: async () => ({ symbols: [symbol(0)], complete: true }),
+  }));
+  assert.equal(result.sectorScan.get(industry(0).id).state, "partial");
+  assert.equal(result.sectorScan.get(industry(0).id).memberCount, 1);
+  assert.equal(result.scanProgress.completedSectors, 0);
+  assert.equal(result.scanProgress.pendingSectors, 1);
+});

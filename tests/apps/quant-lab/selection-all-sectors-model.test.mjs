@@ -360,3 +360,12 @@ test("missing industry data is distinct from a weak-market block with visible ob
   assert.match(missing.selectionSummary.reason, /行业数据源获取失败/u);
   assert.match(missing.selectionSummary.reason, /同时当前市场.*额度为 0/u);
 });
+
+test("provider without a directory member total uses verified scan identities", () => {
+  const input = fixture();
+  input.industries[0].count = 0;
+  const snapshot = buildAShareSelectionSnapshot(input);
+  const row = snapshot.sectors.find((sector) => sector.id === input.industries[0].id);
+  assert.equal(row.metrics.constituentCount, 4);
+  assert.equal(row.metrics.memberCoverage, 1);
+});

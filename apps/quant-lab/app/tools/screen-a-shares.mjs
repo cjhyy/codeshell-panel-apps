@@ -146,13 +146,16 @@ async function fetchJson(url, expectedOrigin, headers = {}) {
   }
 }
 
-async function withRetry(operation, attempts = 2) {
+export async function withRetry(operation, attempts = 2) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       return await operation();
     } catch (error) {
       lastError = error;
+      // Access/rate restrictions need a cooldown or a different source, not an
+      // immediate repeat of every request in an eight-page batch.
+      if ([403, 429, 456].includes(Number(error?.status))) throw error;
       if (attempt + 1 < attempts) {
         const throttled = [429, 501, 503].includes(Number(error?.status));
         await new Promise((resolveDelay) => setTimeout(
@@ -508,23 +511,30 @@ async function fetchAllEastmoneyQuotes() {
 }
 
 export async function fetchAllQuotes(options = {}) {
+  let localUniverse = options.universe;
+  if (options.preferLocalUniverse && !localUniverse) {
+    localUniverse = await readLocalQuoteUniverse(options.root ?? process.cwd()).catch(() => null);
+  }
+  const tencent = ["tencent", options.fetchTencentQuotes ?? (() => fetchAllTencentQuotes({ ...options, universe: localUniverse }))];
+  const sina = ["sina", options.fetchSinaQuotes ?? fetchAllSinaQuotes];
   const sources = [
-    options.fetchSinaQuotes ?? fetchAllSinaQuotes,
-    options.fetchTencentQuotes ?? (() => fetchAllTencentQuotes(options)),
-    options.fetchEastmoneyQuotes ?? fetchAllEastmoneyQuotes,
+    ...(options.preferLocalUniverse && localUniverse ? [tencent, sina] : [sina, tencent]),
+    ["eastmoney", options.fetchEastmoneyQuotes ?? fetchAllEastmoneyQuotes],
   ];
   const failures = [];
-  for (const source of sources) {
+  for (const [source, fetchSource] of sources) {
     try {
-      return await source();
+      return await fetchSource();
     } catch (error) {
-      failures.push(error);
+      failures.push({ source, code: error?.code ?? error?.cause?.code ?? "QUOTE_SOURCE_ERROR",
+        status: error?.status ?? null, message: String(error?.message ?? "source failed").slice(0, 240) });
     }
   }
+  const restricted = failures.some((failure) => [403, 429, 456].includes(failure.status));
   throw new ScreenFetchError(
     "QUOTE_SOURCES_UNAVAILABLE",
-    "全市场行情源暂时不可用；已拒绝使用不完整数据，请稍后重试",
-    { failures: failures.map((error) => error?.code ?? error?.cause?.code ?? "QUOTE_SOURCE_ERROR") },
+    `全市场行情源暂时不可用；已拒绝使用不完整数据，${restricted ? "数据源触发频率限制，请稍后再试" : "请稍后重试"}`,
+    { failures: failures.map((failure) => failure.code), sourceFailures: failures },
   );
 }
 
