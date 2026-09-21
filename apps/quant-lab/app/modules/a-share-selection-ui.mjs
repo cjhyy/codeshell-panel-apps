@@ -1322,7 +1322,7 @@ export function parseAShareSelectionSnapshot(text) {
     return Object.freeze({ id, name });
   }) : [];
   if (watchSectors.length > 12) throw new Error("关注板块过多");
-  if (!Array.isArray(value.watch?.stocks) || value.watch.stocks.length > 20) throw new Error("关注个股列表无效");
+  if (!Array.isArray(value.watch?.stocks) || value.watch.stocks.length > SELECTION_SCAN_LIMITS.watchedStocks) throw new Error("关注个股列表无效");
   const sourceStatusKeys = ["quotes", "industries", "histories", "announcements", "news"];
   const sourceStatus = Object.freeze(Object.fromEntries(sourceStatusKeys.map((key) => [key, value.sourceStatus?.[key] === true])));
   const sources = Array.isArray(value.sources) ? value.sources.slice(0, 8).map((item) => ({
@@ -1422,7 +1422,7 @@ export function parseSelectionWatchStorage(value) {
       ...(item?.source === "portfolio" ? { source: "portfolio" } : {}),
       ...(item?.priority === "focus" ? { priority: "focus" } : {}),
     });
-    if (stocks.length >= 20) break;
+    if (stocks.length >= SELECTION_SCAN_LIMITS.watchedStocks) break;
   }
   const selectedSectorId = /^new_[A-Za-z0-9]+$/u.test(cleanText(source.selectedSectorId, 50))
     ? cleanText(source.selectedSectorId, 50)
@@ -1449,7 +1449,7 @@ export function mergePortfolioWatch(value, ledger, holdings) {
     const symbol = canonicalStock(instrument.symbol);
     if (!symbol || seen.has(symbol)) continue;
     seen.add(symbol);
-    if (stocks.length >= 20) { skipped.push(symbol); continue; }
+    if (stocks.length >= SELECTION_SCAN_LIMITS.watchedStocks) { skipped.push(symbol); continue; }
     stocks.push({ symbol, name: instrument.name, source: "portfolio" });
   }
   return { value: parseSelectionWatchStorage({ ...current, stocks }),
@@ -1777,7 +1777,20 @@ export function createAShareSelectionController({
 
   function encodedWatch() {
     const priorityFirst = (items) => [...items].sort((a, b) => Number(b.priority === "focus") - Number(a.priority === "focus"));
-    return encodeURIComponent(JSON.stringify({ sectors: priorityFirst(watch.sectors), stocks: priorityFirst(watch.stocks) }));
+    // Stock names are presentation metadata already held in Panel storage and
+    // available from the quote universe. Keep the process argument compact so
+    // a full watchlist remains below platform command-line limits.
+    const stocks = priorityFirst(watch.stocks).map(({ symbol, priority }) => ({
+      symbol,
+      ...(priority === "focus" ? { priority } : {}),
+    }));
+    return encodeURIComponent(JSON.stringify({ sectors: priorityFirst(watch.sectors), stocks }));
+  }
+
+  function watchStockCapacityReached() {
+    if (watch.stocks.length < SELECTION_SCAN_LIMITS.watchedStocks) return false;
+    notify(`最多可长期关注 ${SELECTION_SCAN_LIMITS.watchedStocks} 支股票；可先移除不再关注的股票。`, "error");
+    return true;
   }
 
   function cacheScope() {
@@ -3860,6 +3873,7 @@ export function createAShareSelectionController({
     if (!resolved.ok) return notify(aShareResolutionMessage(resolved), "error");
     const { symbol, name } = resolved;
     if (watch.stocks.some((item) => item.symbol === symbol)) return notify("该个股已在长期关注中", "error");
+    if (watchStockCapacityReached()) return;
     elements.watchStock.value = "";
     void updateWatch({ ...watch, stocks: [...watch.stocks, { symbol, name }] }, `已长期关注 ${name || symbol}`);
   });
@@ -3881,6 +3895,7 @@ export function createAShareSelectionController({
       const symbol = canonicalStock(follow.dataset.selectionFollowStock);
       const name = cleanText(follow.dataset.selectionStockName, 40);
       if (!symbol || watch.stocks.some((item) => item.symbol === symbol)) return;
+      if (watchStockCapacityReached()) return;
       void updateWatch({ ...watch, stocks: [...watch.stocks, { symbol, name }] }, `已长期关注 ${name || symbol}`);
       return;
     }
@@ -4048,6 +4063,7 @@ export function createAShareSelectionController({
         notify(`${name || symbol} 已在长期关注中`);
         return false;
       }
+      if (watchStockCapacityReached()) return false;
       await updateWatch({ ...watch, stocks: [...watch.stocks, { symbol, name }] }, `已长期关注 ${name || symbol}`);
       return true;
     },

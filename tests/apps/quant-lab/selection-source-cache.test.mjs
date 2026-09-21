@@ -35,6 +35,13 @@ test("a throttled directory preserves all known identities and resumes after coo
   assert.equal(requests, 2, "completed closing directory is reused across batches");
 });
 
+test("watch arguments preserve up to one hundred stocks", () => {
+  const stocks = Array.from({ length: 105 }, (_, index) => ({ symbol: `SH${600000 + index}` }));
+  const parsed = parseWatchArgument(encodeURIComponent(JSON.stringify({ stocks })));
+  assert.equal(parsed.stocks.length, 100);
+  assert.equal(parsed.stocks.at(-1).symbol, "SH600099");
+});
+
 test("an empty first directory is retryable and prior-day metrics are never revived", async () => {
   const store = memoryStore();
   const options = { ...store, persistent: true, marketDate: "2026-09-11", provisional: false,

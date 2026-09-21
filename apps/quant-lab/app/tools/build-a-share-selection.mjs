@@ -18,6 +18,7 @@ import { enrichSelectionSnapshot } from "./selection-research-evidence.mjs";
 import { collectSelectionSectors } from "./selection-sector-scan.mjs";
 import { collectSelectionAnnouncements } from "./selection-announcement-scan.mjs";
 import { selectionIndustryDirectory, selectionQuoteSnapshot } from "./selection-source-cache.mjs";
+import { SELECTION_SCAN_LIMITS } from "../selection-scan-contract.mjs";
 import { fetchIndustries, fetchMarketNews } from "./build-market-pulse.mjs";
 import { readUsableHistory } from "./a-share-history-cache.mjs";
 import { LOCAL_SNAPSHOT_MAX_BYTES, readLocalSnapshot, readLocalSnapshotHistory, writeLocalSnapshot } from "./local-snapshot-store.mjs";
@@ -86,7 +87,7 @@ function parseWatchArgument(value) {
     if (!/^(?:SH|SZ)\d{6}$/u.test(symbol) || stockSymbols.has(symbol)) continue;
     stockSymbols.add(symbol);
     stocks.push({ symbol, name, ...(item?.priority === "focus" ? { priority: "focus" } : {}) });
-    if (stocks.length >= 20) break;
+    if (stocks.length >= SELECTION_SCAN_LIMITS.watchedStocks) break;
   }
   return { sectors, stocks };
 }

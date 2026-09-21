@@ -165,7 +165,7 @@ class MockElement {
   click() { this.listeners.get("click")?.({ target: this }); }
 }
 
-async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt } = {}) {
+async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt, storageInput = null } = {}) {
   const originals = { window: globalThis.window, document: globalThis.document };
   const timers = new Map();
   let nextTimer = 0;
@@ -178,6 +178,7 @@ async function withController(run, { persistent = true, holdContinuation = false
   const events = new Map();
   const calls = [];
   const updates = [];
+  const notifications = [];
   const held = [];
   let spawned = 0;
   let currentNow = initialNow;
@@ -189,6 +190,7 @@ async function withController(run, { persistent = true, holdContinuation = false
       if (!persistent && args.name === "app-data") throw new Error("unsupported");
       return { handle: "data" };
     }
+    if (method === "storage.get") return storageInput;
     if (method === "storage.set") return {};
     if (method === "process.cancel") { events.get("process.exit")?.({ processId: args.processId, code: 1 }); return {}; }
     if (method === "process.spawn") {
@@ -206,7 +208,7 @@ async function withController(run, { persistent = true, holdContinuation = false
   };
   let controller;
   try {
-    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, onUpdate(value) { updates.push(value); }, storageKey: () => "selection.global", currentEpoch: () => 0, now: () => new Date(currentNow), elements });
+    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, notify(message, tone) { notifications.push({ message, tone }); }, onUpdate(value) { updates.push(value); }, storageKey: () => "selection.global", currentEpoch: () => 0, now: () => new Date(currentNow), elements });
     await controller.start();
     const tickContinuation = async () => {
       const entry = [...timers].find(([, timer]) => timer.delay === 5_000);
@@ -214,13 +216,27 @@ async function withController(run, { persistent = true, holdContinuation = false
       timers.delete(entry[0]); entry[1].callback();
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     };
-    await run({ controller, elements, timers, calls, updates, document, tickContinuation, setNow(value) { currentNow = value; }, finishHeld() { held.shift()?.(); } });
+    await run({ controller, elements, timers, calls, updates, notifications, document, tickContinuation, setNow(value) { currentNow = value; }, finishHeld() { held.shift()?.(); } });
   } finally {
     controller?.dispose();
     globalThis.window = originals.window;
     globalThis.document = originals.document;
   }
 }
+
+test("a full one-hundred-stock watchlist rejects additions explicitly", async () => {
+  const storageInput = { stocks: Array.from({ length: 100 }, (_, index) => ({
+    symbol: `SH${600000 + index}`,
+    name: `关注${index}`,
+  })) };
+  await withController(async ({ controller, notifications }) => {
+    await controller.load();
+    assert.equal(controller.watch.stocks.length, 100);
+    assert.equal(await controller.followStock("SH600100", "新增关注"), false);
+    assert.equal(controller.watch.stocks.length, 100);
+    assert.deepEqual(notifications.at(-1), { message: "最多可长期关注 100 支股票；可先移除不再关注的股票。", tone: "error" });
+  }, { storageInput });
+});
 
 test("actual controller displays non-priority pending rows and preserves selection through batches", async () => {
   await withController(async ({ controller, elements, tickContinuation }) => {

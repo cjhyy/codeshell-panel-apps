@@ -6,6 +6,7 @@ export const SELECTION_SCAN_LIMITS = Object.freeze({
   stocks: 6_500,
   membersPerSector: 2_000,
   watchedSectors: 12,
+  watchedStocks: 100,
   sectorBatchSize: 8,
   historyNetworkBatchSize: 24,
   announcementBatchSize: 20,

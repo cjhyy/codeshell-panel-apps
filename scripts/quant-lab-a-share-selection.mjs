@@ -18,6 +18,7 @@ const selectionTool = await import(pathToFileURL(join(panelDir, "tools", "build-
 const localSnapshots = await import(pathToFileURL(join(panelDir, "tools", "local-snapshot-store.mjs")).href);
 
 assert.equal(strategyLab.A_SHARE_STRATEGY_SPECS.length, 25);
+assert.equal(selection.A_SHARE_SELECTION_LIMITS.watchStocks, 100);
 assert.equal(strategyLab.A_SHARE_STRATEGY_LIBRARY_RELEASE.version, "2026.08-v1");
 assert.equal(strategyLab.A_SHARE_STRATEGY_SPECS.every((item) => item.ruleVersion === "1.0.0" && item.ruleSummary.length > 20), true);
 assert.equal(strategyLab.assessStrategyEvidence({ stocks: 4, t5: { evaluated: 30 }, t20: { evaluated: 20 } }).state, "accumulating");
@@ -518,6 +519,11 @@ assert.deepEqual(selectionUi.parseSelectionWatchStorage({
   selectedSectorId: "new_energy",
 });
 assert.equal(selectionUi.parseSelectionWatchStorage({ selectedSectorId: "../../bad" }).selectedSectorId, null);
+const oversizedWatch = { stocks: Array.from({ length: 105 }, (_, index) => ({
+  symbol: `SH${600000 + index}`,
+  name: `关注${index}`,
+})) };
+assert.equal(selectionUi.parseSelectionWatchStorage(oversizedWatch).stocks.length, 100);
 
 const encodedWatch = encodeURIComponent(JSON.stringify({
   sectors: [{ id: "new_energy", name: "电力设备" }],
@@ -731,9 +737,9 @@ console.log("\u2713 Quant Lab A-share theme selection, stock timing, announcemen
   assert.equal(merged.value.stocks[1].source, "portfolio");
   assert.equal(selectionUi.mergePortfolioWatch(merged.value, ledger, holdings).added, 0);
   assert.equal(selectionUi.mergePortfolioWatch(merged.value, ledger, { positionsByAccount: [] }).value.stocks.length, 2);
-  const full = { stocks: Array.from({ length: 20 }, (_, index) => ({ symbol: `SH${600000 + index}`, name: "原有关注" })) };
+  const full = { stocks: Array.from({ length: 100 }, (_, index) => ({ symbol: `SH${600000 + index}`, name: "原有关注" })) };
   const limited = selectionUi.mergePortfolioWatch(full, ledger, holdings);
-  assert.equal(limited.value.stocks.length, 20);
+  assert.equal(limited.value.stocks.length, 100);
   assert.deepEqual(limited.skipped, ["SH600519", "SZ300750"]);
 }
 
