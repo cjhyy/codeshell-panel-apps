@@ -1808,23 +1808,43 @@ function renderToday() {
 
   elements.todaySummaryList.replaceChildren();
   for (const summary of todayViewModel.summaries.slice(0, 3)) {
-    const row = document.createElement("p");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = "today-summary-item";
+    row.dataset.summaryId = summary.id;
     const label = document.createElement("b");
     label.textContent = summary.label;
     const detail = document.createElement("span");
     const emptyCopy = {
-      portfolio: "尚未录入 · 不影响行情诊断",
-      watch: "尚未检查 · 可先添加关注",
-      data: "持仓数据待建立 · 行情功能可用",
+      portfolio: portfolioTodayState.ledgerExists ? "缺少行情或汇率 · 暂无法估值" : "尚未录入持仓",
+      watch: watchlist.length ? `${watchlist.length} 项提醒 · 暂无有效检查结果` : "尚未添加价格与技术提醒",
+      data: "录入持仓后可检查数据",
     };
     detail.textContent = summary.value == null
       ? (emptyCopy[summary.id] ?? "暂无可用数据")
-      : typeof summary.value === "string"
-        ? summary.value
-        : JSON.stringify(summary.value);
-    if (summary.reason) detail.title = summary.reason;
-    row.append(label, detail);
+      : summary.id === "portfolio"
+        ? `${Number(summary.value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} CNY`
+        : String(summary.value);
+    const action = document.createElement("span");
+    action.className = "today-summary-action";
+    action.textContent = summary.id === "watch"
+      ? (watchlist.length ? "查看提醒 →" : "添加提醒 →")
+      : !portfolioTodayState.ledgerExists
+        ? "添加持仓 →"
+        : summary.id === "portfolio" ? "查看持仓 →" : "查看详情 →";
+    row.addEventListener("click", () => {
+      activateModule(summary.id === "watch" ? "watch" : "holdings", { focusTarget: "none" });
+      if (summary.id !== "watch" && !portfolioTodayState.ledgerExists) {
+        holdingsController.openEntry();
+        return;
+      }
+      const target = document.querySelector(summary.id === "watch"
+        ? (watchlist.length ? "#watch-check" : "#watch-symbol")
+        : summary.id === "data" ? "#portfolio-analysis" : "#module-holdings-title");
+      target?.focus();
+      target?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    row.append(label, detail, action);
     elements.todaySummaryList.append(row);
   }
 }

@@ -3760,7 +3760,8 @@ export function createAShareSelectionController({
   const onVisibilityChange = () => {
     if (document.visibilityState === "hidden") {
       clearTimer();
-      if (scanContinuing) pauseScan({ userInitiated: false });
+      // Keep the bounded in-flight batch alive so its validated snapshot can
+      // be saved. Visibility only controls whether another batch is scheduled.
     } else if (canMaintain() && !loading && restored) {
       if (!scanPaused && freshnessNeedsRefresh()) void refresh();
       else schedule();
@@ -4064,7 +4065,6 @@ export function createAShareSelectionController({
       backgroundWatchActive = Boolean(backgroundWatch);
       if (!active) {
         clearTimer();
-        if (scanContinuing) pauseScan({ userInitiated: false });
       }
       if (!canMaintain() || document.visibilityState === "hidden" || !restored) clearTimer();
       else if (!loading && !scanPaused && freshnessNeedsRefresh()) void refresh();

@@ -5014,13 +5014,24 @@ const failingSeed = [
   assert.match(freshEvidence, /是否过期 否/u);
   // The blocked P0 stays explicit in the data summary rather than disappearing.
   assert.match(
-    await scenarioPage.locator(".today-summary-item").filter({ hasText: "最近变化" }).textContent(),
+    await scenarioPage.locator(".today-summary-item").filter({ hasText: "数据状态" }).textContent(),
     /关键数据/u,
   );
   assert.match(
     await scenarioPage.locator(".today-summary-item").filter({ hasText: "关注" }).textContent(),
     /1 触发 · 1 已检查/u,
   );
+  const portfolioSummary = scenarioPage.locator('button[data-summary-id="portfolio"]');
+  assert.match(await portfolioSummary.textContent(), /200\.00 CNY/u);
+  await portfolioSummary.click();
+  assert.equal(await scenarioPage.locator('[data-module="holdings"]').isVisible(), true);
+  await scenarioPage.click('[data-module-tab="today"]');
+  await scenarioPage.locator('button[data-summary-id="data"]').focus();
+  await scenarioPage.keyboard.press("Enter");
+  assert.equal(await scenarioPage.locator("#portfolio-analysis").evaluate((node) => node === document.activeElement), true);
+  await scenarioPage.click('[data-module-tab="today"]');
+  await scenarioPage.locator('button[data-summary-id="watch"]').click();
+  assert.equal(await scenarioPage.locator("#watch-check").evaluate((node) => node === document.activeElement), true);
   await scenarioPage.click('[data-module-tab="watch"]');
   await scenarioPage.waitForSelector('[data-module="watch"]', { state: "visible" });
   await scenarioPage.locator('.watch-item[data-state="hit"]').focus();
@@ -5127,13 +5138,13 @@ const dualMarketWatchSeed = [
   });
   assert.match(
     await scenarioPage.locator('.today-summary-item').filter({ hasText: "关注" }).textContent(),
-    /尚未检查/u,
+    /暂无有效检查结果/u,
     "an existing automation is not evidence that anything triggered today",
   );
   assert.equal(
-    await scenarioPage.locator('.today-summary-item').filter({ hasText: "关注" }).locator("span").getAttribute("title"),
-    "no-persisted-watch-evaluation",
-    "the exact machine reason remains available without dominating the visual copy",
+    await scenarioPage.locator('.today-summary-item').filter({ hasText: "关注" }).locator(".today-summary-action").textContent(),
+    "查看提醒 →",
+    "an unchecked watchlist offers a clear action to inspect its reminders",
   );
   await scenarioPage.click('[data-module-tab="watch"]');
   await scenarioPage.click("#watch-schedule");

@@ -605,3 +605,35 @@ test("limit ladders retain full sealed counts beyond display limits and reject d
     assert.throws(() => parseAShareSelectionSnapshot(JSON.stringify(value)), /梯队.*冲突|股票重复/u);
   }
 });
+
+test("leaving the selection page lets its running batch finish before suspending continuation", async () => {
+  await withController(async ({ controller, calls, timers, elements, tickContinuation, finishHeld }) => {
+    await tickContinuation();
+    const started = calls.filter((call) => call.method === "process.spawn").length;
+    controller.setActive(false);
+    assert(!calls.some((call) => call.method === "process.cancel"), "navigation must not cancel an in-flight batch");
+    finishHeld();
+    for (let index = 0; index < 30; index += 1) await Promise.resolve();
+    assert.doesNotMatch(elements.status.textContent, /任务已中断|本次刷新失败|扫描已暂停/u);
+    assert.match(elements.status.textContent, /上批/u, "the finished batch must remain visible in progress");
+    assert.equal(calls.filter((call) => call.method === "process.spawn").length, started);
+    assert.equal(timers.size, 0, "background page must not schedule another full-market batch");
+    controller.setActive(true);
+    assert([...timers.values()].some((timer) => timer.delay === 5_000), "returning resumes saved progress");
+  }, { holdContinuation: true });
+});
+
+test("hiding the window preserves a running batch and resumes scheduling when visible", async () => {
+  await withController(async ({ calls, timers, document, tickContinuation, finishHeld }) => {
+    await tickContinuation();
+    document.visibilityState = "hidden";
+    document.listeners.get("visibilitychange")();
+    assert(!calls.some((call) => call.method === "process.cancel"));
+    finishHeld();
+    for (let index = 0; index < 30; index += 1) await Promise.resolve();
+    assert.equal(timers.size, 0);
+    document.visibilityState = "visible";
+    document.listeners.get("visibilitychange")();
+    assert([...timers.values()].some((timer) => timer.delay === 5_000));
+  }, { holdContinuation: true });
+});

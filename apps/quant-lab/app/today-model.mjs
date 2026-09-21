@@ -373,7 +373,7 @@ export function buildTodayModel(input) {
     },
     {
       id: "data",
-      label: "最近变化",
+      label: "数据状态",
       state: p0Blockers.length > 0 ? "attention" : (dataStatus.status ?? "available"),
       value:
         dataStatus.message ??

@@ -5446,11 +5446,28 @@ summary:focus-visible,
 
 .today-summary-item {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
   gap: 12px;
   margin: 0;
+  border: 0;
   border-bottom: 1px solid var(--line);
+  border-radius: 0;
   padding: 14px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.today-summary-item:hover {
+  background: var(--surface-2);
+}
+
+.today-summary-item:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
 }
 
 .today-summary-item:last-child {
@@ -5465,6 +5482,23 @@ summary:focus-visible,
   overflow-wrap: anywhere;
   color: var(--faint);
   line-height: 1.5;
+}
+
+.today-summary-item .today-summary-action {
+  color: var(--green);
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  .today-summary-item {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 6px 10px;
+  }
+
+  .today-summary-action {
+    grid-column: 2;
+  }
 }
 
 .stage-empty {
