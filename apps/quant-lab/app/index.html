@@ -1189,12 +1189,15 @@
               </div>
               <dl>
                 <div><dt>总资产 · 人民币</dt><dd id="portfolio-total-base">待计算</dd></div>
-                <div><dt>原币种记录</dt><dd id="portfolio-local-state">可用</dd></div>
-                <div><dt>跨币种估值</dt><dd id="portfolio-base-state">待汇率</dd></div>
+                <div><dt>持仓盈亏 · 人民币</dt><dd id="portfolio-pnl-base">待计算</dd></div>
+                <div><dt>持仓收益率</dt><dd id="portfolio-return">—</dd></div>
+
               </dl>
+              <p id="portfolio-quote-status" role="status">等待持仓行情…</p>
               <p id="portfolio-summary-note">补齐最新价格和汇率后显示人民币总资产。</p>
               <details class="portfolio-data-details">
                 <summary>查看估值数据来源</summary>
+                <p>原币种记录：<span id="portfolio-local-state">可用</span> · 跨币种估值：<span id="portfolio-base-state">待汇率</span></p>
                 <p id="portfolio-fx-source" class="portfolio-fx-source">当前没有美元资产，不需要汇率。</p>
               </details>
             </section>

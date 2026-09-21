@@ -493,6 +493,9 @@ const elements = {
   portfolioWorkspace: document.querySelector("#portfolio-workspace"),
   portfolioCreate: document.querySelector("#portfolio-create"),
   portfolioTotalBase: document.querySelector("#portfolio-total-base"),
+  portfolioPnlBase: document.querySelector("#portfolio-pnl-base"),
+  portfolioReturn: document.querySelector("#portfolio-return"),
+  portfolioQuoteStatus: document.querySelector("#portfolio-quote-status"),
   portfolioLocalState: document.querySelector("#portfolio-local-state"),
   portfolioBaseState: document.querySelector("#portfolio-base-state"),
   portfolioSummaryNote: document.querySelector("#portfolio-summary-note"),
@@ -1253,6 +1256,7 @@ function activateModule(moduleId, { focusTarget = "tab", persist = true } = {}) 
   for (const [candidate, panel] of modulePanels) {
     panel.hidden = candidate !== nextModule;
   }
+  holdingsController?.setActive(["holdings", "today"].includes(nextModule) && context.visible !== false);
   liveMarketController?.setActive(nextModule === "today" && context.visible !== false);
   aShareSelectionController?.setActive(["today", "watch"].includes(nextModule) && context.visible !== false, { backgroundWatch: context.visible !== false });
   if (nextModule !== "today" && context.visible !== false && marketProbeDue()) {
@@ -2514,6 +2518,8 @@ historyDataController = createHistoryDataController({
 
 holdingsController = createHoldingsController({
   hostCall,
+  onHostEvent: typeof window.codeshellPanel?.on === "function"
+    ? (event, listener) => window.codeshellPanel.on(event, listener) : null,
   currentEpoch: () => workspaceEpoch,
   now: currentInstant,
   resolveAShare: requireAShareStock,
@@ -2523,6 +2529,9 @@ holdingsController = createHoldingsController({
     workspace: elements.portfolioWorkspace,
     create: elements.portfolioCreate,
     totalBase: elements.portfolioTotalBase,
+    pnlBase: elements.portfolioPnlBase,
+    returnPercent: elements.portfolioReturn,
+    quoteStatus: elements.portfolioQuoteStatus,
     localState: elements.portfolioLocalState,
     baseState: elements.portfolioBaseState,
     summaryNote: elements.portfolioSummaryNote,
@@ -4305,6 +4314,7 @@ function updateContext(next) {
   }
   context = nextContext;
   contextInitialized = true;
+  holdingsController?.setActive(["holdings", "today"].includes(activeModule) && context.visible !== false);
   liveMarketController?.setActive(activeModule === "today" && context.visible !== false);
   aShareSelectionController?.setActive(["today", "watch"].includes(activeModule) && context.visible !== false, { backgroundWatch: context.visible !== false });
   const isVisible = context.visible !== false;

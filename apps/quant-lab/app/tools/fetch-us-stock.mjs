@@ -93,6 +93,17 @@ async function resolveQuery(query) {
   return resolveYahooStockSuggestion(payload, query);
 }
 
+export async function fetchYahooHoldingQuote(symbol) {
+  const url = yahooChartUrl(symbol);
+  url.searchParams.set("range", "1d");
+  const payload = await fetchJson(url);
+  const meta = payload?.chart?.result?.[0]?.meta;
+  if (meta?.symbol !== symbol || meta?.currency !== "USD" ||
+      !Number.isFinite(meta.regularMarketPrice) || meta.regularMarketPrice <= 0 ||
+      !Number.isFinite(meta.regularMarketTime)) throw new Error("美股报价字段不完整");
+  return { symbol, price: meta.regularMarketPrice, asOf: new Date(meta.regularMarketTime * 1000).toISOString() };
+}
+
 export async function buildUsStockSnapshot(query, nowInput = new Date()) {
   const identity = await resolveQuery(query);
   const payload = await fetchJson(yahooChartUrl(identity.symbol));

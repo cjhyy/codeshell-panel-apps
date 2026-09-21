@@ -1214,6 +1214,18 @@ export function deriveHoldings(ledger, options = {}) {
 
 // Display-ready P&L facts for the pure rule engine. All component addition is
 // kept in the financial engine; UI adapters only attach source provenance.
+export function holdingsUnrealizedSummary(holdings) {
+  const positions = (holdings?.positionsByAccount ?? []).filter((item) => Number(item.quantity) > 0);
+  if (!positions.length) return { pnlBase: "0.00", costBase: "0.00", returnPercent: null };
+  if (positions.some((item) => item.unrealizedPnlBase == null || item.costBasisBase == null)) {
+    return { pnlBase: null, costBase: null, returnPercent: null };
+  }
+  const pnl = positions.reduce((sum, item) => add(sum, parseDecimal(item.unrealizedPnlBase, "pnl")), ZERO);
+  const cost = positions.reduce((sum, item) => add(sum, parseDecimal(item.costBasisBase, "cost")), ZERO);
+  return { pnlBase: moneyString(pnl), costBase: moneyString(cost),
+    returnPercent: compare(cost, ZERO) > 0 ? decimalNumber(pnl) / decimalNumber(cost) * 100 : null };
+}
+
 export function portfolioPnlContributors(ledger, holdings, sourceStatusByInstrument = {}) {
   const instruments = new Map(ledger.instruments.map((instrument) => [instrument.id, instrument]));
   return holdings.positionsByAccount

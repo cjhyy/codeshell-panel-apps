@@ -1,3 +1,4 @@
+import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "./holding-quotes.mjs";
 import {
   deriveHoldingsSnapshot,
   appendTransaction,
@@ -8,6 +9,7 @@ import {
   parseHoldings,
   parseTransactions,
   portfolioPnlContributors,
+  holdingsUnrealizedSummary,
 } from "../portfolio.mjs";
 import { evaluatePortfolioRules } from "../portfolio-rules.mjs";
 import {
@@ -274,6 +276,7 @@ async function loadMarketInputs(hostCall, ledger, now) {
   const endingDate = todayShanghai(now);
   const dates = ledgerDates(ledger, endingDate);
   const endingPrices = {};
+  const endingPriceTimes = {};
   const sourceStatusByInstrument = {};
   for (const instrument of ledger.instruments) {
     const raw = rawByInstrument.get(instrument.id);
@@ -292,6 +295,7 @@ async function loadMarketInputs(hostCall, ledger, now) {
     );
     if (selected) {
       endingPrices[instrument.id] = String(selected.observation.close);
+      endingPriceTimes[instrument.id] = selected.availableAt;
       if (selected.ageCalendarDays > 10) {
         sourceStatusByInstrument[instrument.id] = {
           status: "unavailable",
@@ -345,6 +349,7 @@ async function loadMarketInputs(hostCall, ledger, now) {
       fx: analysisFx,
     },
     sourceStatusByInstrument,
+    endingPriceTimes,
     rawByInstrument,
     fx,
     endingDate,
@@ -583,6 +588,7 @@ function positionByKey(snapshot, accountId, instrumentId) {
 
 export function createHoldingsController({
   hostCall,
+  onHostEvent,
   elements,
   currentEpoch,
   now = () => new Date(),
@@ -608,6 +614,41 @@ export function createHoldingsController({
   let transactionCounter = 0;
   let analysisMemoKey = null;
   let analysisMemoValue = null;
+  let liveSnapshot = null;
+  let liveQuotes = new Map();
+  let quoteState = {};
+  let quotesActive = false;
+  const heldSymbols = () => {
+    const held = new Set((snapshot?.positionsByAccount ?? [])
+      .filter((position) => Number(position.quantity) > 0).map((position) => position.instrumentId));
+    return (ledger?.instruments ?? []).filter((instrument) => held.has(instrument.id))
+      .map(({ symbol, market }) => ({ symbol, market }));
+  };
+  const quoteController = createHoldingQuoteController({
+    request: createHoldingQuoteRequest({ hostCall, onHostEvent }),
+    symbols: heldSymbols,
+    now,
+    onUpdate(quotes, state) {
+      if (!ledger || !snapshot || !market) return;
+      quoteState = state;
+      const endingPrices = { ...market.derivationInputs.endingPrices };
+      liveQuotes = new Map();
+      for (const instrument of ledger.instruments) {
+        const quote = quotes.get(instrument.symbol);
+        const rawTime = Date.parse(market.endingPriceTimes[instrument.id]);
+        if (!quote || (Number.isFinite(rawTime) && Date.parse(quote.asOf) < rawTime)) continue;
+        endingPrices[instrument.id] = quote.price;
+        liveQuotes.set(instrument.symbol, quote);
+      }
+      liveSnapshot = deriveHoldingsSnapshot(JSON.stringify(ledger),
+        { ...market.derivationInputs, endingPrices }, now().toISOString());
+      computeRules();
+      renderSummary();
+      renderHoldings();
+      renderAnalysis();
+      publishViewState();
+    },
+  });
 
   const epochToken = (expected) => ({ expected, current: currentEpoch });
   const showStatus = (message, tone = "idle") => {
@@ -691,6 +732,17 @@ export function createHoldingsController({
     });
   }
 
+  function quoteRuleContext() {
+    const items = heldSymbols().map((item) => {
+      const quote = liveQuotes.get(item.symbol);
+      return { symbol: item.symbol, source: quote?.source ?? "unavailable", availableAt: quote?.asOf ?? null,
+        stale: !!quote && (quoteState.failed || now().getTime() - Date.parse(quote.asOf) >
+          (holdingQuoteDelay([item], now()) === 15_000 ? 90_000 : 4 * 86_400_000)) };
+    });
+    return { status: items.every((item) => item.availableAt) ? "available" : "unavailable",
+      reason: "quote-data-unavailable", items };
+  }
+
   function computeRules() {
     // A snapshot input fingerprint identifies the complete ledger/raw/FX data
     // epoch. The portfolio engine runs at most once for that epoch; holdings,
@@ -732,18 +784,7 @@ export function createHoldingsController({
     ruleResults = evaluatePortfolioRules(analysis, {
       asOf: now().toISOString(),
       inputFingerprint: snapshot.inputsFingerprint,
-      // With no current positions there is no quote dependency to satisfy:
-      // an empty inventory is a complete check, not a missing-data blocker.
-      // Once a position exists, keep the conservative unavailable state until
-      // the dedicated quote feed is present rather than substituting raw bars.
-      quotes:
-        Array.isArray(snapshot?.positionsByAccount) && snapshot.positionsByAccount.length === 0
-          ? { status: "available", items: [] }
-          : {
-              status: "unavailable",
-              reason: "quote-data-unavailable",
-              items: [],
-            },
+      quotes: quoteRuleContext(),
       ledger: ledgerFingerprintState,
       raw: { status: "available", items: rawItems },
       fxVerification: { status: "not-available" },
@@ -924,8 +965,9 @@ export function createHoldingsController({
 
   function renderHoldings() {
     elements.holdingsList.replaceChildren();
-    const positions = snapshot
-      ? snapshot.positionsByAccount.filter((position) => Number(position.quantity) > 0)
+    const displayed = liveSnapshot ?? snapshot;
+    const positions = displayed
+      ? displayed.positionsByAccount.filter((position) => Number(position.quantity) > 0)
       : [];
     const pnlOrder = new Map(
       (ruleResults.find((rule) => rule.id === "pnl-contributors")?.actual?.items ?? [])
@@ -947,7 +989,9 @@ export function createHoldingsController({
     for (const position of positions) {
       const instrument = ledger.instruments.find((item) => item.id === position.instrumentId);
       const raw = market.rawByInstrument.get(position.instrumentId);
-      const latest = raw?.status === "available" ? raw.bars.at(-1) : null;
+      const latest = raw?.status === "available"
+        ? raw.bars.find((bar) => bar.availableAt === market.endingPriceTimes[instrument.id]) : null;
+      const quote = liveQuotes.get(instrument.symbol);
       const row = document.createElement("article");
       row.className = "portfolio-position";
       row.dataset.symbol = instrument.symbol;
@@ -981,7 +1025,8 @@ export function createHoldingsController({
         "移动均价 · 本币",
         `${money(Number(position.avgCostLocal))} ${instrument.currency}`,
       );
-      metric("现价 · 本币", latest ? `${round(latest.close)} ${instrument.currency}` : "待补行情");
+      metric("现价 · 本币", quote ? `${quote.price} ${instrument.currency}`
+        : latest ? `${round(latest.close)} ${instrument.currency}` : "待补行情");
       const pnl = position.unrealizedPnlLocal;
       metric(
         "未实现盈亏 · 本币",
@@ -994,7 +1039,13 @@ export function createHoldingsController({
           ? "暂不可用 · 缺少汇率"
           : `${money(Number(position.costBasisBase))} CNY`,
       );
+      metric("持仓收益率", pnl == null || Number(position.costBasisLocal) <= 0 ? "—"
+        : `${(Number(pnl) / Number(position.costBasisLocal) * 100).toFixed(2)}%`);
       row.append(metrics);
+      const quoteTime = quote?.asOf ?? latest?.availableAt;
+      appendText(row, "p", quoteTime
+        ? `${quote ? quote.source : "历史行情"} · 行情时间 ${new Date(quoteTime).toLocaleString("zh-CN", { hour12: false })}${quoteState.failed ? " · 本次未完全更新" : ""}`
+        : "等待行情", "portfolio-quote-time");
 
       const source = sourceStatus(raw);
       const provenance = document.createElement("p");
@@ -1063,7 +1114,22 @@ export function createHoldingsController({
   function renderSummary() {
     // The total is engine-derived (portfolio.mjs valuation at the eligible
     // ending FX/price); this module only formats it.
-    const valuation = snapshot?.valuation ?? null;
+    const displayed = liveSnapshot ?? snapshot;
+    const valuation = displayed?.valuation ?? null;
+    const pnl = holdingsUnrealizedSummary(displayed);
+    if (elements.pnlBase) {
+      elements.pnlBase.textContent = pnl.pnlBase == null ? "待补行情或汇率" : `${money(Number(pnl.pnlBase))} CNY`;
+      elements.pnlBase.dataset.tone = pnl.pnlBase == null ? "" : Number(pnl.pnlBase) < 0 ? "negative" : Number(pnl.pnlBase) > 0 ? "positive" : "";
+      elements.returnPercent.textContent = pnl.returnPercent == null ? "—" : `${pnl.returnPercent.toFixed(2)}%`;
+    }
+    if (elements.quoteStatus) {
+      const times = [...liveQuotes.values()].map((quote) => Date.parse(quote.asOf));
+      elements.quoteStatus.textContent = [
+        quotesActive ? "持仓行情自动更新 · 交易时段约每 15 秒，休市约每 5 分钟" : "自动刷新已暂停",
+        times.length ? `报价时间 ${new Date(Math.min(...times)).toLocaleString("zh-CN", { hour12: false })}` : "当前使用本地历史价格，等待最新报价",
+        quoteState.message,
+      ].filter(Boolean).join(" · ");
+    }
     const total = valuation?.totalBase ?? null;
     elements.totalBase.textContent =
       total == null
@@ -1080,6 +1146,7 @@ export function createHoldingsController({
     elements.summaryNote.textContent =
       total == null
         ? `总资产暂未显示：至少一个现价或汇率不可用；原币种交易记录仍可查看和录入。`
+        : liveQuotes.size > 0 ? "总资产随最新报价估算；汇率沿用已核验记录。持仓盈亏不含已卖出收益。"
         : `总资产按 ${valuation.endingDate} 可获得的未复权行情与汇率计算；不同市场的收盘时点可能不一致。`;
     const fxSource = sourceStatus(market?.fx);
     elements.fxSource.textContent =
@@ -1125,14 +1192,20 @@ export function createHoldingsController({
         : "保存第一笔交易后，会在当前项目建立交易记录。",
     );
     onPortfolioState({ hasPositions: positionCount > 0 });
+    publishViewState(positionCount);
+  }
+
+  function publishViewState(positionCount = (snapshot?.positionsByAccount ?? []).filter((item) => Number(item.quantity) > 0).length) {
     const lastCheckpoint = analysis?.series?.at(-1) ?? null;
     onViewState({
       ledgerExists,
       hasPositions: positionCount > 0,
       summary: {
-        totalBase: snapshot?.valuation?.totalBase ?? null,
-        source: "portfolio-analysis",
-        availableAt: lastCheckpoint?.availableAt ?? market?.endingDate ?? null,
+        totalBase: (liveSnapshot ?? snapshot)?.valuation?.totalBase ?? null,
+        source: liveQuotes.size ? "holding-quotes" : "portfolio-analysis",
+        availableAt: liveQuotes.size
+          ? new Date(Math.min(...[...liveQuotes.values()].map((quote) => Date.parse(quote.asOf)))).toISOString()
+          : lastCheckpoint?.availableAt ?? market?.endingDate ?? null,
         stale: ruleResults.some((rule) => rule.id === "stale-quotes" && rule.status === "warning"),
         provisional: lastCheckpoint?.provisional === true,
       },
@@ -1163,6 +1236,7 @@ export function createHoldingsController({
     );
     computeRules();
     render();
+    if (quotesActive) void quoteController.refresh();
   }
 
   async function inspectHoldingsFingerprint(expectedEpoch, currentFingerprint) {
@@ -1344,6 +1418,10 @@ export function createHoldingsController({
         derivationInputs: nextMarket.derivationInputs,
       });
       if (currentEpoch() !== expectedEpoch) return;
+      quoteController.reset();
+      liveSnapshot = null;
+      liveQuotes = new Map();
+      quoteState = {};
       ledgerExists = result.committed === true;
       ledger = result.ledger;
       snapshot = result.snapshot;
@@ -1361,6 +1439,7 @@ export function createHoldingsController({
           };
       computeRules();
       render();
+      if (quotesActive) void quoteController.refresh();
       // committed and cacheStale are reported separately: the authoritative
       // ledger write is done either way, so the user must never resubmit.
       const baseReason = result.snapshot?.availability?.base?.reason;
@@ -1400,6 +1479,10 @@ export function createHoldingsController({
   }
 
   function reset() {
+    quoteController.reset();
+    liveSnapshot = null;
+    liveQuotes = new Map();
+    quoteState = {};
     ledger = null;
     snapshot = null;
     market = null;
@@ -1432,6 +1515,11 @@ export function createHoldingsController({
   return {
     load,
     reset,
+    setActive(value) {
+      quotesActive = value;
+      quoteController.setActive(value);
+      if (snapshot) renderSummary();
+    },
     subscriptionSymbols() {
       if (!ledger || !snapshot) return [];
       const held = new Set(

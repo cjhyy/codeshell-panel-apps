@@ -15942,3 +15942,8 @@ button.stock-financial-history-row:focus-visible {
 .sources-catalog h3 { margin: 0 0 8px; }
 
 #data-sources-open { min-height: 44px; padding: 8px 14px; border: 1px solid var(--border, #dfe4ec); border-radius: 10px; background: var(--surface, #fff); color: inherit; cursor: pointer; }
+
+/* Mark-to-market portfolio values keep the same gain/loss colors as positions. */
+.portfolio-summary dd[data-tone="positive"] { color: var(--green); }
+.portfolio-summary dd[data-tone="negative"] { color: var(--red); }
+.portfolio-quote-time { color: var(--faint); font-size: 12px; line-height: 1.5; }

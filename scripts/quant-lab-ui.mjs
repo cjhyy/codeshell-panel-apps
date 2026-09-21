@@ -93,7 +93,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.45.2");
+assert.equal(manifest.version, "0.45.3");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
 assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
@@ -1642,7 +1642,9 @@ async function installHostStub(
               launcher.includes("build-market-pulse.mjs") &&
               !params.args.includes("read-local"),
             );
-            const output = launcher.includes("fetch-market-data.mjs")
+            const output = launcher.includes("fetch-holding-quotes.mjs")
+              ? JSON.stringify(window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] })
+              : launcher.includes("fetch-market-data.mjs")
               ? historySyncOutput()
               : launcher.includes("initialize-a-share-history.mjs")
               ? window.__historyLibrarySummary
@@ -5039,6 +5041,24 @@ const failingSeed = [
     await scenarioPage.locator('.watch-item[data-state="hit"]').evaluate((node) => node === document.activeElement),
     true,
   );
+
+  // The same recorded 100 shares at cost 10 revalue without editing the ledger.
+  const writesBeforeQuotes = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "workspace.writeText").length);
+  for (const [price, pnl] of [["13", "300.00 CNY"], ["9", "-100.00 CNY"]]) {
+    await scenarioPage.evaluate((price) => {
+      window.__holdingQuotes = { kind: "holding-quotes", quotes: [
+        { symbol: "SH600036", market: "cn", price, asOf: "2026-08-26T07:10:00.000Z" },
+      ], errors: [] };
+    }, price);
+    await scenarioPage.click('[data-module-tab="watch"]');
+    await scenarioPage.click('[data-module-tab="holdings"]');
+    await scenarioPage.waitForFunction((expected) => document.querySelector("#portfolio-pnl-base")?.textContent === expected, pnl);
+    assert.equal(await scenarioPage.locator("#portfolio-total-base").textContent(), pnl);
+    assert.match(await scenarioPage.locator('.portfolio-position[data-symbol="SH600036"]').textContent(), new RegExp(`${price} CNY`));
+  }
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "workspace.writeText").length), writesBeforeQuotes,
+    "quote refresh must never write transactions or holdings cache");
+  await scenarioPage.click('[data-module-tab="watch"]');
 
   // Performance: one engine replay for the initial epoch; a watch-only refresh
   // rebuilds rule envelopes without replaying; a ledger change is a new epoch.
