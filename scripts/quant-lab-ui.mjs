@@ -93,7 +93,7 @@ const seededStorage = [
 ];
 
 assert.equal(manifest.id, "quant-lab");
-assert.equal(manifest.version, "0.45.3");
+assert.equal(manifest.version, "0.46.0");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
 assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
@@ -1643,7 +1643,9 @@ async function installHostStub(
               !params.args.includes("read-local"),
             );
             const output = launcher.includes("fetch-holding-quotes.mjs")
-              ? JSON.stringify(window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] })
+              ? JSON.stringify(JSON.parse(params.args.at(-1))?.mode === "history"
+                ? window.__holdingHistory ?? { kind: "holding-history", results: [] }
+                : window.__holdingQuotes ?? { kind: "holding-quotes", quotes: [], errors: [] })
               : launcher.includes("fetch-market-data.mjs")
               ? historySyncOutput()
               : launcher.includes("initialize-a-share-history.mjs")
@@ -3453,6 +3455,8 @@ assert.deepEqual(await page.locator("#history-source option").allTextContents(),
   "Yahoo Chart · 免配置",
 ]);
 assert.deepEqual(await page.locator("#history-adjust option").allTextContents(), ["股息/拆股复权 adj", "不复权 none"]);
+// Finish the preceding smooth scroll before opening a menu that closes on scroll.
+await page.locator("#history-source").evaluate((element) => element.scrollIntoView({ behavior: "instant", block: "center" }));
 await page.click("#history-source");
 assert.deepEqual(
   await page.locator(".panel-select-menu .panel-select-label").allTextContents(),
@@ -4458,6 +4462,53 @@ async function openScenario(storageSeed, options) {
   await scenarioPage.goto("http://quant-lab.localhost/index.html");
   await scenarioPage.waitForSelector("#run-backtest", { state: "attached" });
   return { scenarioContext, scenarioPage };
+}
+
+// A funded account exposes actual daily returns, interactive history and safe raw-data refresh.
+{
+  const ledger = {
+    format: "codeshell.portfolio-transactions", version: 1, baseCurrency: "CNY",
+    accounts: [{ id: "main", name: "main", broker: "manual", currencies: ["CNY"] }],
+    instruments: [{ id: "cn-stock", type: "stock", market: "cn", currency: "CNY", symbol: "SH600036", name: "招商银行", aliases: [] }],
+    transactions: [
+      { id: "fund", type: "cash-in", accountId: "main", currency: "CNY", amount: "1000.00", valuationDate: "2026-08-24", timing: "begin", createdAt: "2026-08-24T08:00:00+08:00" },
+      { id: "buy", type: "buy", accountId: "main", instrumentId: "cn-stock", tradeDate: "2026-08-24", quantity: "100", price: "10.00", commission: "0.00", tax: "0.00", otherFees: "0.00", createdAt: "2026-08-24T09:30:00+08:00" },
+    ],
+  };
+  const source = JSON.stringify(ledger);
+  const history = (lastClose) => rawFixture("SH600036", "cn", "招商银行", [10, 11, lastClose].map((close, index) => ({
+    marketDate: `2026-08-${24 + index}`, availableAt: `2026-08-${24 + index}T07:00:00.000Z`,
+    open: close, high: close, low: close, close, volume: 100000,
+  })), "2026-08-26T09:00:00.000Z");
+  const { scenarioContext, scenarioPage } = await openScenario([], { workspaceFiles: {
+    ...history(12), "portfolio/transactions.json": source,
+  } });
+  await scenarioPage.click('[data-module-tab="holdings"]');
+  await scenarioPage.waitForFunction(() => document.querySelector("[data-performance-daily]")?.textContent === "+100.00");
+  assert.equal(await scenarioPage.locator("[data-performance-return]").textContent(), "+20.00%");
+  assert.equal(await scenarioPage.locator("#portfolio-performance tbody tr").count(), 3);
+  await scenarioPage.locator(".performance-point").first().focus();
+  assert.match(await scenarioPage.locator(".portfolio-performance-cursor").textContent(), /2026-08-24/u);
+  await scenarioPage.click('[data-performance-range="all"]');
+  assert.equal(await scenarioPage.locator('[data-performance-range="all"]').getAttribute("aria-pressed"), "true");
+  const newer = history(13);
+  await scenarioPage.evaluate((history) => {
+    window.__holdingHistory = { kind: "holding-history", results: [{ symbol: "SH600036", status: "synced",
+      csv: history["data/market-raw/SH600036.csv"], metadata: JSON.parse(history["data/market-raw/SH600036.meta.json"]) }] };
+  }, newer);
+  await scenarioPage.click("#portfolio-history-sync");
+  await scenarioPage.waitForFunction(() => document.querySelector("#portfolio-history-status")?.textContent.includes("历史行情已补齐"));
+  assert.equal(await scenarioPage.locator("[data-performance-daily]").textContent(), "+200.00");
+  assert.equal(await scenarioPage.locator("[data-performance-return]").textContent(), "+30.00%");
+  const historyWrites = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "workspace.writeText").map(call => call.params.path));
+  assert(historyWrites.includes("data/market-raw/SH600036.csv"));
+  assert(!historyWrites.some(path => path.startsWith("portfolio/")), "history sync cannot rewrite portfolio records");
+  if (process.env.QUANT_LAB_PERFORMANCE_SCREENSHOT) {
+    await scenarioPage.locator("#portfolio-performance").screenshot({ path: process.env.QUANT_LAB_PERFORMANCE_SCREENSHOT });
+    await scenarioPage.setViewportSize({ width: 390, height: 844 });
+    await scenarioPage.locator("#portfolio-performance").screenshot({ path: process.env.QUANT_LAB_PERFORMANCE_SCREENSHOT.replace(".png", "-mobile.png") });
+  }
+  await scenarioContext.close();
 }
 
 // The unified provider form persists routing and sends it to the actual selection launcher.

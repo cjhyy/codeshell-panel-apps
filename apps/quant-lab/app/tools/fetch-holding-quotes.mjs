@@ -1,5 +1,6 @@
 // Read-only quotes for the actual portfolio; never writes the transaction ledger.
 import { fetchTencentStockQuote } from "./fetch-a-share-stock.mjs";
+import { syncPortfolioData } from "./fetch-portfolio-data.mjs";
 import { fetchYahooHoldingQuote } from "./fetch-us-stock.mjs";
 
 export async function fetchHoldingQuotes(items, {
@@ -38,6 +39,13 @@ export async function fetchHoldingQuotes(items, {
 }
 
 export async function runCli(argv = process.argv.slice(2)) {
-  const items = JSON.parse(argv[0] ?? "[]");
-  process.stdout.write(`${JSON.stringify(await fetchHoldingQuotes(items))}\n`);
+  const input = JSON.parse(argv[0] ?? "[]");
+  if (input?.mode === "history") {
+    if (!Array.isArray(input.symbols) || input.symbols.length !== 1) throw new Error("每次补齐一个标的的历史行情");
+    const results = await syncPortfolioData({ symbols: input.symbols, from: input.from, to: input.to,
+      dryRun: true, includeData: true });
+    process.stdout.write(`${JSON.stringify({ kind: "holding-history", results })}\n`);
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(await fetchHoldingQuotes(input))}\n`);
 }

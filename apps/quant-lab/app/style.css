@@ -15947,3 +15947,34 @@ button.stock-financial-history-row:focus-visible {
 .portfolio-summary dd[data-tone="positive"] { color: var(--green); }
 .portfolio-summary dd[data-tone="negative"] { color: var(--red); }
 .portfolio-quote-time { color: var(--faint); font-size: 12px; line-height: 1.5; }
+
+/* Daily returns stay beside holdings, with accounting details kept secondary. */
+.portfolio-performance { min-width: 0; }
+.performance-ranges { display: flex; gap: 6px; flex-wrap: wrap; }
+.performance-ranges button { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+.performance-ranges [aria-pressed="true"] { background: var(--green-soft); border-color: var(--green); }
+.performance-headlines { display: flex; gap: 40px; margin: 20px 0 6px; }
+.performance-headlines div { display: grid; gap: 7px; }
+.performance-headlines span, .performance-footer, .portfolio-performance-status, .portfolio-performance-cursor, #portfolio-history-status { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.performance-headlines strong { font-size: 24px; font-variant-numeric: tabular-nums; }
+.portfolio-performance [data-tone="positive"] { color: var(--green); }
+.portfolio-performance [data-tone="negative"] { color: var(--red); }
+.portfolio-performance-chart svg { display: block; width: 100%; height: auto; min-height: 160px; }
+.performance-grid { stroke: var(--line); }
+.performance-axis { fill: var(--muted); font-size: 11px; }
+.performance-line { stroke: var(--green); stroke-width: 2.5; stroke-linejoin: round; }
+.performance-point { fill: var(--green); stroke: var(--surface); stroke-width: 1.5; cursor: pointer; }
+.performance-point:focus { stroke: var(--text); stroke-width: 3; outline: none; }
+.portfolio-performance-empty { padding: 45px 16px; text-align: center; color: var(--muted); }
+.portfolio-daily-details > summary { min-height: 32px; padding: 7px 0; cursor: pointer; }
+.performance-table-scroll { max-height: 280px; overflow: auto; margin-top: 10px; }
+.performance-table-scroll table { border-collapse: collapse; width: 100%; min-width: 540px; font-size: 12px; }
+.performance-table-scroll th, .performance-table-scroll td { padding: 9px 12px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.performance-table-scroll th:first-child, .performance-table-scroll td:first-child { text-align: left; }
+.performance-table-scroll th { position: sticky; top: 0; background: var(--surface); }
+.performance-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; }
+@media (max-width: 600px) {
+  .portfolio-performance .portfolio-card-head, .performance-footer { align-items: flex-start; flex-direction: column; }
+  .performance-headlines { gap: 24px; }
+  .performance-headlines strong { font-size: 20px; }
+}

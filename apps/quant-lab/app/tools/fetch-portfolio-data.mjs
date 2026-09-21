@@ -749,6 +749,7 @@ async function syncOne(identity, options, context) {
     bars: bars.length,
     fingerprint: meta.fingerprint,
     dryRun: options.dryRun,
+    ...(options.includeData ? { csv, metadata: meta } : {}),
   };
 }
 
@@ -761,6 +762,7 @@ export async function syncPortfolioData({
   purpose = "portfolio-valuation",
   outDir,
   dryRun = false,
+  includeData = false,
   fetchImpl = globalThis.fetch,
   now = () => new Date(),
   sleep = (milliseconds) => new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds)),
@@ -799,7 +801,7 @@ export async function syncPortfolioData({
     results.push(
       await syncOne(
         identity,
-        { rootDir: resolve(rootDir), from, to, dryRun: Boolean(dryRun) },
+        { rootDir: resolve(rootDir), from, to, dryRun: Boolean(dryRun), includeData },
         context,
       ),
     );

@@ -12,7 +12,7 @@ const LAUNCHER = [
 
 // Follow the existing Quant Lab read-only quote runtime, with listeners scoped
 // to this request, a hard output bound, cancellation and late-result rejection.
-export function createHoldingQuoteRequest({ hostCall, onHostEvent }) {
+export function createHoldingQuoteRequest({ hostCall, onHostEvent, maxOutputChars = 128_000 }) {
   let cancel = () => {};
   return {
     cancel: () => cancel(),
@@ -39,7 +39,7 @@ export function createHoldingQuoteRequest({ hostCall, onHostEvent }) {
         if (stopped) return;
         if (!processId) {
           earlyBytes += typeof payload?.text === "string" ? payload.text.length : 0;
-          if (earlyBytes > 128_000 || early.length >= 128) { stop("持仓行情输出过大"); return; }
+          if (earlyBytes > maxOutputChars || early.length >= 128) { stop("持仓行情输出过大"); return; }
           early.push([kind, payload]);
           return;
         }
@@ -47,7 +47,7 @@ export function createHoldingQuoteRequest({ hostCall, onHostEvent }) {
         if (kind === "output") {
           if (payload.stream === "stdout") stdout += payload.text ?? "";
           if (payload.stream === "stderr") stderr += payload.text ?? "";
-          if (stdout.length + stderr.length > 128_000) stop("持仓行情输出过大");
+          if (stdout.length + stderr.length > maxOutputChars) stop("持仓行情输出过大");
         } else finish(payload.code === 0 ? null : new Error(stderr.trim().slice(0, 200) || "持仓行情读取失败"));
       };
       const offOutput = onHostEvent("process.output", (value) => receive("output", value));

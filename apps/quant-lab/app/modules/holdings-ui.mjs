@@ -1,3 +1,4 @@
+import { createPortfolioPerformanceView } from "./portfolio-performance-ui.mjs";
 import { createHoldingQuoteController, createHoldingQuoteRequest, holdingQuoteDelay } from "./holding-quotes.mjs";
 import {
   deriveHoldingsSnapshot,
@@ -10,6 +11,7 @@ import {
   parseTransactions,
   portfolioPnlContributors,
   holdingsUnrealizedSummary,
+  portfolioPerformanceSeries,
 } from "../portfolio.mjs";
 import { evaluatePortfolioRules } from "../portfolio-rules.mjs";
 import {
@@ -618,6 +620,12 @@ export function createHoldingsController({
   let liveQuotes = new Map();
   let quoteState = {};
   let quotesActive = false;
+  let historyBusy = false;
+  let historyGeneration = 0;
+  let historyAttempt = null;
+  let rolloverInFlight = false;
+  const performanceView = createPortfolioPerformanceView(elements.performance);
+  const historyRequest = createHoldingQuoteRequest({ hostCall, onHostEvent, maxOutputChars: 2_000_000 });
   const heldSymbols = () => {
     const held = new Set((snapshot?.positionsByAccount ?? [])
       .filter((position) => Number(position.quantity) > 0).map((position) => position.instrumentId));
@@ -630,13 +638,21 @@ export function createHoldingsController({
     now,
     onUpdate(quotes, state) {
       if (!ledger || !snapshot || !market) return;
+      if (market.endingDate !== todayShanghai(now)) {
+        if (!rolloverInFlight) {
+          rolloverInFlight = true;
+          void rebuildView(currentEpoch()).catch((error) => showStatus(error.message, "error"))
+            .finally(() => { rolloverInFlight = false; });
+        }
+        return;
+      }
       quoteState = state;
       const endingPrices = { ...market.derivationInputs.endingPrices };
       liveQuotes = new Map();
       for (const instrument of ledger.instruments) {
         const quote = quotes.get(instrument.symbol);
         const rawTime = Date.parse(market.endingPriceTimes[instrument.id]);
-        if (!quote || (Number.isFinite(rawTime) && Date.parse(quote.asOf) < rawTime)) continue;
+        if (!quote || (Number.isFinite(rawTime) && rawTime <= now().getTime() && Date.parse(quote.asOf) < rawTime)) continue;
         endingPrices[instrument.id] = quote.price;
         liveQuotes.set(instrument.symbol, quote);
       }
@@ -646,6 +662,7 @@ export function createHoldingsController({
       renderSummary();
       renderHoldings();
       renderAnalysis();
+      renderPerformance();
       publishViewState();
     },
   });
@@ -1111,6 +1128,106 @@ export function createHoldingsController({
     }
   }
 
+  function renderPerformance() {
+    if (!analysis) { performanceView.reset(); return; }
+    const dates = ledgerDates(ledger, todayShanghai(now));
+    const openingSnapshot = ledger.transactions.some((item) => item.type === "position-in" && item.valuationDate === dates[0]);
+    const allQuoted = heldSymbols().every((item) => liveQuotes.has(item.symbol));
+    performanceView.render(portfolioPerformanceSeries(analysis.series, {
+      openingSnapshot,
+      live: liveSnapshot ? { date: todayShanghai(now), value: liveSnapshot.valuation?.totalBase,
+        complete: allQuoted && !quoteState.failed && liveSnapshot.valuation?.totalBase != null } : null,
+    }));
+  }
+
+  function needsHistory() {
+    if (!market || !analysis) return false;
+    if (analysis.series.some((row) => ["missing-raw-data", "missing-fx", "price-age-exceeded", "fx-age-exceeded"].includes(row.unavailable?.code))) return true;
+    return [...market.rawByInstrument.values(), ...(ledgerUsesUsd(ledger) ? [market.fx] : [])]
+      .some((raw) => raw?.status === "available" && raw.meta.syncedAt.slice(0, 10) < todayShanghai(now));
+  }
+
+  async function syncHistory({ automatic = false } = {}) {
+    if (historyBusy || !ledger || !ledger.transactions.length) return;
+    const expectedEpoch = currentEpoch();
+    const generation = historyGeneration;
+    const fingerprint = snapshot?.transactionsFingerprint;
+    const to = todayShanghai(now);
+    const attempt = `${expectedEpoch}:${fingerprint}:${to}`;
+    if (automatic && historyAttempt === attempt) return;
+    historyAttempt = attempt;
+    historyBusy = true;
+    if (elements.historySync) elements.historySync.disabled = true;
+    const current = () => generation === historyGeneration && expectedEpoch === currentEpoch() && fingerprint === snapshot?.transactionsFingerprint;
+    const items = [...ledger.instruments.map(({ symbol, market }) => ({ symbol, market })),
+      ...(ledgerUsesUsd(ledger) ? [{ symbol: "USDCNY", market: "fx" }] : [])];
+    const from = addDays(ledgerDates(ledger, to)[0] ?? to, -10);
+    let completed = 0;
+    const failures = [];
+    try {
+      for (const [index, item] of items.entries()) {
+        if (!current()) return;
+        if (elements.historyStatus) elements.historyStatus.textContent = `补齐历史行情 ${index + 1}/${items.length} · ${item.symbol}`;
+        try {
+          const listing = await listRawDirectory(hostCall).catch(() => ({ entries: [] }));
+          if (listing.truncated) throw new Error("历史文件列表不完整");
+          const csvPath = `${RAW_DIRECTORY}/${item.symbol}.csv`;
+          const metaPath = `${RAW_DIRECTORY}/${item.symbol}.meta.json`;
+          const read = async (path) => listing.entries.some((entry) => entry.path === path || `${RAW_DIRECTORY}/${entry.name}` === path)
+            ? await hostCall("workspace.readText", { path }) : null;
+          const oldCsv = await read(csvPath);
+          const oldMeta = await read(metaPath);
+          if (!!oldCsv !== !!oldMeta) throw new Error("已有行情文件不完整，请先核对");
+          const old = oldCsv ? validateRawPair(item.symbol, item.market, oldCsv.content, oldMeta.content) : null;
+          const output = await historyRequest.fetch({ mode: "history", symbols: [item.symbol], from, to });
+          if (!current()) return;
+          const result = output?.kind === "holding-history" ? output.results?.[0] : null;
+          if (result?.status !== "synced" || result.symbol !== item.symbol) throw new Error(result?.error?.message ?? "未取得历史行情");
+          const incoming = validateRawPair(item.symbol, item.market, result.csv, JSON.stringify(result.metadata));
+          const merged = new Map((old?.bars ?? []).map((bar) => [bar.date, bar]));
+          for (const bar of incoming.bars) merged.set(bar.date, bar);
+          const bars = [...merged.values()].sort((a, b) => a.date.localeCompare(b.date));
+          const csv = "marketDate,availableAt,open,high,low,close,volume\n" + bars.map((bar) =>
+            [bar.date, bar.availableAt, bar.open, bar.high, bar.low, bar.close, bar.volume].join(",")).join("\n") + "\n";
+          const meta = JSON.stringify({ ...incoming.meta, bars: bars.length, from: bars[0].date, to: bars.at(-1).date,
+            fingerprint: fingerprintBars(bars) }, null, 2) + "\n";
+          validateRawPair(item.symbol, item.market, csv, meta);
+          const write = async (path, content, existing) => {
+            if (!current()) throw new Error("持仓已切换，请重新读取");
+            return await hostCall("workspace.writeText", { path, content, expectedModifiedAt: existing?.modifiedAt ?? null,
+              ...(existing?.revision ? { expectedRevision: existing.revision } : {}) });
+          };
+          const writtenCsv = await write(csvPath, csv, oldCsv);
+          try {
+            await write(metaPath, meta, oldMeta);
+          } catch (error) {
+            if (oldCsv && current()) await write(csvPath, oldCsv.content, writtenCsv);
+            throw error;
+          }
+          if (!current()) return;
+          const verifiedCsv = await hostCall("workspace.readText", { path: csvPath });
+          const verifiedMeta = await hostCall("workspace.readText", { path: metaPath });
+          validateRawPair(item.symbol, item.market, verifiedCsv.content, verifiedMeta.content);
+          completed++;
+        } catch (error) {
+          if (!current()) return;
+          failures.push(`${item.symbol}：${error.message}`);
+        }
+      }
+      if (current()) {
+        if (completed) await rebuildView(expectedEpoch);
+        if (elements.historyStatus) elements.historyStatus.textContent = failures.length
+          ? `已补齐 ${completed}/${items.length} 个标的；${failures.join("；")}`
+          : `历史行情已补齐，共 ${completed} 个标的。`;
+      }
+    } finally {
+      if (generation === historyGeneration && expectedEpoch === currentEpoch()) {
+        historyBusy = false;
+        if (elements.historySync) elements.historySync.disabled = false;
+      }
+    }
+  }
+
   function renderSummary() {
     // The total is engine-derived (portfolio.mjs valuation at the eligible
     // ending FX/price); this module only formats it.
@@ -1183,6 +1300,7 @@ export function createHoldingsController({
     elements.empty.hidden = true;
     elements.workspace.hidden = false;
     renderSummary();
+    renderPerformance();
     renderAnalysis();
     const positionCount = renderHoldings();
     renderTransactions();
@@ -1227,6 +1345,7 @@ export function createHoldingsController({
   }
 
   async function rebuildView(expectedEpoch) {
+    liveSnapshot = null;
     market = await loadMarketInputs(hostCall, ledger, now);
     if (currentEpoch() !== expectedEpoch) return;
     snapshot = deriveHoldingsSnapshot(
@@ -1237,6 +1356,9 @@ export function createHoldingsController({
     computeRules();
     render();
     if (quotesActive) void quoteController.refresh();
+    if (elements.performance && quotesActive && needsHistory()) {
+      void syncHistory({ automatic: true });
+    }
   }
 
   async function inspectHoldingsFingerprint(expectedEpoch, currentFingerprint) {
@@ -1479,6 +1601,13 @@ export function createHoldingsController({
   }
 
   function reset() {
+    historyGeneration++;
+    historyRequest.cancel();
+    historyBusy = false;
+    historyAttempt = null;
+    if (elements.historySync) elements.historySync.disabled = false;
+    if (elements.historyStatus) elements.historyStatus.textContent = "";
+    performanceView.reset();
     quoteController.reset();
     liveSnapshot = null;
     liveQuotes = new Map();
@@ -1505,6 +1634,7 @@ export function createHoldingsController({
     onPortfolioState({ hasPositions: false });
   }
 
+  elements.historySync?.addEventListener("click", () => void syncHistory());
   elements.create.addEventListener("click", showCreateForm);
   elements.form.addEventListener("submit", (event) => void save(event));
   elements.market.addEventListener("change", syncCurrency);
@@ -1518,7 +1648,10 @@ export function createHoldingsController({
     setActive(value) {
       quotesActive = value;
       quoteController.setActive(value);
-      if (snapshot) renderSummary();
+      if (snapshot) { renderSummary(); if (value) renderPerformance(); }
+      if (value && elements.performance && needsHistory()) {
+        void syncHistory({ automatic: true });
+      }
     },
     subscriptionSymbols() {
       if (!ledger || !snapshot) return [];

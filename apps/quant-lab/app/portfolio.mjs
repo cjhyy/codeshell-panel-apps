@@ -1694,6 +1694,55 @@ export function timeWeightedReturn(series) {
   };
 }
 
+// Daily net profit excludes external cash/position flows. A missing valuation
+// breaks the return chain; recovery cannot silently join across that gap.
+export function portfolioPerformanceSeries(series, { openingSnapshot = false, live = null } = {}) {
+  let previous = ZERO;
+  let previousValid = true;
+  let cumulative = 1;
+  let cumulativeValid = true;
+  return (series ?? []).map((original, index) => {
+    let entry = original;
+    const recoverable = !entry.unavailable || ["missing-raw-data", "price-age-exceeded"].includes(entry.unavailable.code);
+    if (live?.complete && live.date === entry.date && live.value != null && recoverable) {
+      entry = { ...entry, value: live.value, provisional: true, unavailable: undefined };
+    }
+    const valid = !entry.unavailable && entry.value != null && entry.beginFlow != null && entry.endFlow != null;
+    const value = valid ? parseDecimal(entry.value, "performance.value", { maxScale: 2 }) : null;
+    const baseline = index === 0 && openingSnapshot;
+    let dailyPnl = null;
+    let dailyReturn = null;
+    let reason = entry.unavailable?.code ?? null;
+    if (valid && baseline) {
+      // Imported holdings establish the first observable value, not a fictional
+      // previous-day portfolio. Earlier embedded unrealized P&L is not daily P&L.
+      cumulative = 1;
+    } else if (valid && previousValid) {
+      const begin = parseDecimal(entry.beginFlow, "performance.beginFlow", { maxScale: 2 });
+      const end = parseDecimal(entry.endFlow, "performance.endFlow", { maxScale: 2 });
+      dailyPnl = moneyString(subtract(subtract(subtract(value, previous), begin), end));
+      const denominator = add(previous, begin);
+      const numerator = subtract(value, end);
+      if (compare(denominator, ZERO) > 0 && compare(numerator, ZERO) >= 0) {
+        dailyReturn = decimalNumber(numerator) / decimalNumber(denominator) - 1;
+        cumulative *= 1 + dailyReturn;
+      } else {
+        reason = "non-positive-equity";
+        cumulativeValid = false;
+      }
+    } else {
+      reason ??= previousValid ? "missing-valuation" : "missing-previous-valuation";
+      cumulativeValid = false;
+    }
+    previousValid = valid;
+    if (valid) previous = value;
+    return { date: entry.date, value: valid ? entry.value : null, dailyPnl, dailyReturn,
+      cumulativeReturn: valid && cumulativeValid ? cumulative - 1 : null,
+      baseline, provisional: entry.provisional === true, reason,
+      live: live?.complete === true && live.date === entry.date && recoverable };
+  });
+}
+
 function aggregateCashFlows(cashFlows) {
   const grouped = new Map();
   for (const [index, flow] of cashFlows.entries()) {

@@ -1202,6 +1202,36 @@
               </details>
             </section>
 
+            <section id="portfolio-performance" class="portfolio-card portfolio-performance" aria-labelledby="portfolio-performance-title">
+              <header class="portfolio-card-head">
+                <div><h2 id="portfolio-performance-title">收益走势</h2><span data-performance-date>等待持仓记录</span></div>
+                <div class="performance-ranges" role="group" aria-label="收益走势时间范围">
+                  <button type="button" data-performance-range="30" aria-pressed="true">近 1 月</button>
+                  <button type="button" data-performance-range="90" aria-pressed="false">近 3 月</button>
+                  <button type="button" data-performance-range="all" aria-pressed="false">全部</button>
+                </div>
+              </header>
+              <div class="performance-headlines">
+                <div><span>当日收益 · 元</span><strong data-performance-daily>—</strong></div>
+                <div><span>累计收益率 · 建账以来</span><strong data-performance-return>—</strong></div>
+              </div>
+              <div class="portfolio-performance-chart"></div>
+              <p class="portfolio-performance-cursor" aria-live="polite"></p>
+              <p class="portfolio-performance-status"></p>
+              <details class="portfolio-daily-details" open>
+                <summary>每日收益明细</summary>
+                <div class="performance-table-scroll"><table>
+                  <thead><tr><th>日期</th><th>收益 · 元</th><th>日收益率</th><th>累计收益率</th><th>状态</th></tr></thead>
+                  <tbody></tbody>
+                </table></div>
+              </details>
+              <footer class="performance-footer">
+                <span>按北京时间日终估值；收益率按资金进出调整后逐日复合。</span>
+                <button id="portfolio-history-sync" class="ghost-button" type="button">补齐历史行情</button>
+              </footer>
+              <p id="portfolio-history-status" role="status"></p>
+            </section>
+
             <section
               id="portfolio-analysis"
               class="portfolio-card portfolio-analysis"
