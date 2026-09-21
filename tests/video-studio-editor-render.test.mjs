@@ -52,7 +52,8 @@ before(async () => {
       "-i",
       "color=blue:s=64x64:r=30:d=1",
       "-filter_complex",
-      "[0:v][1:v]concat=n=2:v=1:a=0,scale=in_color_matrix=bt601:out_color_matrix=bt709[v]",
+      // Convert the matrix explicitly; do not depend on scale/pixel-format negotiation.
+      "[0:v][1:v]concat=n=2:v=1:a=0,colorspace=iall=bt601-6-625:all=bt709:fast=1:format=yuv420p[v]",
       "-map",
       "[v]",
       "-c:v",

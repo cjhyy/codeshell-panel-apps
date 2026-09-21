@@ -14,7 +14,7 @@ export async function runPackageContract({ root, manifest, html, packagePath }) 
 
     assert.equal(manifest.schemaVersion, 2, `${packagePath}: investment research requires schemaVersion 2`);
     assert.equal(manifest.id, "quant-lab", `${packagePath}: installed app id must stay stable`);
-    assert.equal(manifest.version, "0.45.1", `${packagePath}: investment desk version mismatch`);
+    assert.equal(manifest.version, "0.45.2", `${packagePath}: investment desk version mismatch`);
     assert.deepEqual(
       manifest.title,
       { default: "投资工作台", en: "Investment Desk", "zh-CN": "投资工作台" },

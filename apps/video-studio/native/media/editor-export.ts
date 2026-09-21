@@ -121,7 +121,9 @@ export async function exportEditorSequence(
         "-map",
         "1:a:0",
         "-vf",
-        "scale=out_color_matrix=bt709:out_range=limited",
+        // Lock conversion before the output size/pixel-format stage. Older FFmpeg
+        // can otherwise negotiate RGB here and insert a later default BT.601 conversion.
+        `scale=out_color_matrix=bt709:out_range=limited,format=${profile.videoCodec === "prores" ? "yuv422p10le" : "yuv420p"},setparams=colorspace=bt709:range=limited`,
         "-af",
         `apad,atrim=end_sample=${Math.ceil(durationSeconds * 48000)}`,
         ...exportEncodingArguments(profile),
