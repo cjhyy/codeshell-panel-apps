@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-download",
-  "version": "0.22.4",
+  "version": "0.22.5",
   "title": {
     "default": "Mimi Download",
     "en": "Mimi Download",

@@ -219,6 +219,10 @@ let searchScopeReadyResolve;
 const searchScopeReady = new Promise((resolve) => {
   searchScopeReadyResolve = resolve;
 });
+let resolveSearchExecutables;
+const searchExecutablesReady = new Promise((resolve) => {
+  resolveSearchExecutables = resolve;
+});
 let completionPending = 0;
 let auxiliaryBusy = false;
 let auxiliaryGroups = 0;
@@ -232,11 +236,13 @@ const libraryStatus = document.querySelector("#library-status");
 const batchStatus = document.querySelector("#batch-status");
 const duplicateReview = document.querySelector("#duplicate-review");
 const queueRestore = document.querySelector("#queue-restore");
+// API 14 probes consume their own retained receipts, independently of file/search work.
+const dependencyProcesses = createLibraryProcess(panel);
 const auxiliary = createLibraryProcess(panel, {
   beforeStart() {
     if (
       inspectionJob?.running ||
-      dependencyProbeJob?.running ||
+      (Number(context.apiVersion) < 14 && dependencyProbeJob?.running) ||
       directSetupRunning ||
       setupSubmissionPending ||
       setupTaskId ||
@@ -3825,6 +3831,9 @@ function compactIndices(indices) {
 }
 
 async function searchCandidates(options) {
+  // Planning can run immediately; only the native lookup needs executable handles.
+  await searchExecutablesReady;
+  if (options.signal?.aborted) throw new Error("已取消");
   auxiliaryGroups++;
   auxiliaryBusy = true;
   updateActionAvailability();
@@ -5214,6 +5223,25 @@ function runDependencyProbe(executableHandle, args, timeoutMs = VERSION_PROBE_TI
   if (!runtime.directory?.handle) return Promise.reject(new Error("下载目录尚未准备好"));
   if (dependencyProbeJob?.running) return Promise.reject(new Error("已有版本查询正在执行"));
 
+  if (Number(context.apiVersion) >= 14) {
+    const job = { running: true, receipts: true };
+    dependencyProbeJob = job;
+    updateActionAvailability();
+    return dependencyProcesses
+      .run({
+        executableHandle,
+        directoryHandle: runtime.directory.handle,
+        args,
+        timeout: timeoutMs,
+      })
+      .then((result) => ({ ...result, timedOut: false }))
+      .finally(() => {
+        job.running = false;
+        if (dependencyProbeJob === job) dependencyProbeJob = null;
+        updateActionAvailability();
+      });
+  }
+
   return new Promise((resolve, reject) => {
     const job = {
       id: "",
@@ -5338,7 +5366,7 @@ async function refreshVersionInfo() {
     hasRunningDownloads() ||
     inspectionJob?.running ||
     dependencyProbeJob?.running ||
-    auxiliaryBusy ||
+    (Number(context.apiVersion) < 14 && auxiliaryBusy) ||
     completionPending ||
     queueSubmissionPending
   ) {
@@ -5413,7 +5441,7 @@ async function refreshRuntimeDependencies() {
     hasRunningDownloads() ||
     inspectionJob?.running ||
     queueSubmissionPending ||
-    auxiliaryBusy ||
+    (Number(context.apiVersion) < 14 && auxiliaryBusy) ||
     completionPending
   ) {
     return {
@@ -5441,6 +5469,7 @@ async function refreshRuntimeDependencies() {
     ]);
     runtime.ytDlp = ytDlp.available ? ytDlp : null;
     runtime.ffmpeg = ffmpeg.available ? ffmpeg : null;
+    resolveSearchExecutables();
     invalidateCookieAuthorization();
     renderQualityOptions(inspectedVideo);
     dependenciesChecked = true;
@@ -5965,7 +5994,7 @@ if (panel) {
   });
   panel.on("process.output", (payload) => {
     if (
-      auxiliary.ignores(payload) &&
+      (auxiliary.ignores(payload) || dependencyProcesses.ignores(payload)) &&
       ![
         ...runningDownloads().map((job) => job.id),
         inspectionJob?.id,
@@ -5991,7 +6020,11 @@ if (panel) {
         return;
       }
     }
-    if (dependencyProbeJob?.running && typeof payload?.processId === "string") {
+    if (
+      dependencyProbeJob?.running &&
+      !dependencyProbeJob.receipts &&
+      typeof payload?.processId === "string"
+    ) {
       if (!dependencyProbeJob.id || payload.processId === dependencyProbeJob.id) {
         dependencyProbeJob.id ||= payload.processId;
         const stream = payload.stream === "stderr" ? "stderr" : "stdout";
@@ -6023,7 +6056,7 @@ if (panel) {
   });
   panel.on("process.exit", (payload) => {
     if (
-      auxiliary.ignores(payload) &&
+      (auxiliary.ignores(payload) || dependencyProcesses.ignores(payload)) &&
       ![
         ...runningDownloads().map((job) => job.id),
         inspectionJob?.id,
@@ -6048,7 +6081,11 @@ if (panel) {
         return;
       }
     }
-    if (dependencyProbeJob?.running && typeof payload?.processId === "string") {
+    if (
+      dependencyProbeJob?.running &&
+      !dependencyProbeJob.receipts &&
+      typeof payload?.processId === "string"
+    ) {
       if (!dependencyProbeJob.id || payload.processId === dependencyProbeJob.id) {
         dependencyProbeJob.id ||= payload.processId;
         finishDependencyProbe(dependencyProbeJob, {
@@ -6102,4 +6139,4 @@ if (panel) {
 registerAgentTools();
 activateTab(storedTab(), { persist: false });
 updateConditionalOptions();
-initializeRuntime();
+initializeRuntime().finally(resolveSearchExecutables);

@@ -165,7 +165,15 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
           localStorage.setItem(`fixture.storage.${args.key}`, JSON.stringify(args.value));
           return true;
         }
-        if (method === "agent.task.models") return { models: [], defaultModel: "" };
+        if (method === "agent.task.models") return localStorage.getItem("fixture.ai")
+          ? { models: [{ id: "fixture", label: "Fixture", provider: "Fixture" }], defaultModel: "fixture" }
+          : { models: [], defaultModel: "" };
+        if (method === "agent.task.start") return {
+          id: args.key, key: args.key, status: "completed", updatedAt: Date.now(),
+          result: { text: JSON.stringify(args.key.includes("planning")
+            ? { queries: [{ platform: "youtube", query: "fixture" }], criteria: [], summary: "fixture" }
+            : { selected: [{ id: "v1", reason: "fixture" }], summary: "fixture" }) },
+        };
         if (method === "agent.task.list") return [];
         if (method === "filesystem.getKnownDirectory") {
           if (args.name !== "project") throw new Error(`Unexpected known directory: ${args.name}`);
@@ -228,6 +236,10 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
             argv.includes("-version") ||
             args.executableHandle === "executable-curl"
           ) {
+            if (localStorage.getItem("fixture.holdProbe") === "true" && argv.includes("--version")) {
+              window.__releaseProbe = () => finish(processId, "2026.09.17\n");
+              return { processId };
+            }
             setTimeout(
               () =>
                 finish(
@@ -1123,6 +1135,47 @@ test("play and reveal still work during a background file check", async (t) => {
   });
   await page.waitForFunction(() => !document.querySelector("#history-check").disabled);
   assert.equal(await page.locator(".history-error").count(), 0);
+});
+
+test("a newly opened panel can play and reveal files while environment detection is running", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.evaluate(() => localStorage.setItem("fixture.holdProbe", "true"));
+  await page.reload();
+  await page.waitForFunction(() => Boolean(window.__releaseProbe));
+  await page.locator('[data-tab="history"]').click();
+  for (const action of ["play", "reveal"]) {
+    await page.locator(`[data-history-shortcut="${action}"]`).click();
+    await page.waitForFunction((action) => window.__fileActions.some((item) => item.action === action), action);
+  }
+  assert.equal(await page.locator(".history-error").count(), 0);
+  await page.evaluate(() => window.__releaseProbe());
+  await ready(page);
+  assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "2026.09.17");
+});
+
+test("AI planning and platform search finish while startup environment detection is still running", async (t) => {
+  const page = await openPanel(t);
+  await page.evaluate(() => {
+    localStorage.setItem("fixture.holdProbe", "true");
+    localStorage.setItem("fixture.ai", "true");
+  });
+  await page.reload();
+  await page.waitForFunction(() => Boolean(window.__releaseProbe));
+  await page.evaluate(() => {
+    window.__searchPayload = { entries: [{ id: "dQw4w9WgXcQ", title: "Fixture video", duration: 120 }] };
+  });
+  await page.locator('[data-tab="search"]').click();
+  await page.locator("[data-search-query]").fill("fixture video");
+  await page.locator("[data-search-scope]").selectOption("youtube");
+  await page.locator("[data-search-start]").click();
+  await page.waitForFunction(() => document.querySelectorAll(".video-search-result").length === 1);
+  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "agent.task.start").length), 2);
+  await page.evaluate(() => window.__releaseProbe());
+  await ready(page);
+  assert.equal(await page.locator("#installed-ytdlp-version").textContent(), "2026.09.17");
 });
 
 test("failed playback names the opening problem and a successful retry clears it", async (t) => {
