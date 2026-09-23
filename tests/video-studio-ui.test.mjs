@@ -4,6 +4,7 @@ import {
   readSavedLegacyProject,
   legacyProjectFromDocument,
   pristineLegacyDemoProject,
+  waitForProjectSwitch,
 } from "./helpers/video-studio-editor-fixture.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
@@ -420,10 +421,11 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await page.reload();
   await enterLegacyProduction(page);
   await page.locator("#revision").waitFor();
-  assert.equal((await readProject(page)).revision, revision);
+  const reopened = await readProject(page);
+  assert.equal(reopened.revision, revision);
 
   await page.getByRole("button", { name: "新建工程", exact: true }).click();
-  await saved(page);
+  await waitForProjectSwitch(page, reopened.id, readProject);
   assert.equal((await readProject(page)).clips.length, 0);
   await page.getByRole("button", { name: "最近工程 / 打开工程", exact: true }).click();
   await page.locator(".recent-project").filter({ hasText: "从想法，到成片。" }).click();
