@@ -315,3 +315,37 @@ test("a lost queue update reply reads actual settings without replaying the chan
   assert.equal(observed.maxConcurrent, 1);
   assert.equal(f.calls.filter((call) => call.method === "tasks.queue.set").length, 1);
 });
+
+test("account references persist and a retry reuses the immutable authenticated job after a lost reply", async () => {
+  const f = fixture();
+  const item = f.add();
+  Object.assign(item, {
+    cookieCredentialId: "saved-account",
+    cookieCredentialRevision: "a".repeat(64),
+    cookieCredentialUrl: "https://example.com/",
+  });
+  f.loseReply();
+  await f.controller.pump();
+  assert.equal(f.jobs.size, 1);
+  const job = f.jobs.get(item.nativeTaskId);
+  assert.equal(job.input.request.useSavedLogin, true);
+  assert.deepEqual(job.input.cookieArgument, {
+    argumentName: "--cookies-file",
+    credentialId: "saved-account",
+    revision: "a".repeat(64),
+    url: "https://example.com/",
+  });
+  assert.equal(f.saved().queue[0].cookieCredentialRevision, "a".repeat(64));
+  const restored = restoreLibrary(f.saved(), "/project").queue[0];
+  assert.equal(restored.cookieCredentialId, "saved-account");
+  assert.equal(restored.cookieCredentialRevision, "a".repeat(64));
+  assert.equal(restored.cookieCredentialUrl, "https://example.com/");
+  job.status = "failed";
+  job.sequence++;
+  await f.controller.refresh();
+  item.cookieCredentialId = "different-form-selection";
+  await f.controller.resume(item);
+  assert.equal(f.jobs.size, 1);
+  assert.equal(job.input.cookieArgument.credentialId, "saved-account");
+  assert.equal(f.calls.filter((call) => call.method === "tasks.start").length, 1);
+});

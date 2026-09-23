@@ -36,8 +36,9 @@ wget or Windows PowerShell as HTTPS fallbacks.
 After initialization, paste a supported video URL, inspect its title, duration,
 source, and available quality, then choose an actual resolution and download
 without creating an Agent turn. Saved CodeShell Cookie accounts matching the
-target website appear in a selector; users can also open the Host-owned login
-window and save a new account. Downloads use
+target website appear in a selector. Where the Host advertises login capture,
+users can open its login window and save a new account; remote pages use accounts
+already saved on the executing Host. Downloads use
 resume support, fragment retries, exponential backoff, bounded filenames, and
 user-facing error classification. Playlist ranges remain optional. Subtitle
 controls provide human/automatic source choices, language presets, and an
@@ -60,7 +61,7 @@ Downloads run through a visible queue with **three concurrent tasks by default**
 The queue selector supports one to four tasks and remembers the setting per project.
 Increasing the limit fills available slots; lowering it leaves in-flight tasks alone. Adding a task captures its
 quality, playlist/subtitle options, output directory, and explicitly authorized
-Cookie handle. The form stays editable during downloads, so another URL can be
+account reference. The form stays editable during downloads, so another URL can be
 added without changing earlier tasks. Video information can also be inspected during
 active downloads, from the form or Chat, including batch inspection and retries.
 Cancelling inspection leaves ongoing downloads alone. Download progress and
@@ -73,8 +74,9 @@ download processes and holds pending work; it no longer just stops scheduling.
 Completed and cancelled tasks are not restarted by the bulk control. Failed or
 cancelled tasks can be retried individually. One
 failure does not stop the other downloads. Each task owns its process identity, progress, logs and output inventory. The queue and up to 300 history records persist per project in Host storage.
-Closing the panel stops active processes; reopening restores pending and interrupted
-items without starting them. Paused tasks remain paused, keep their last progress,
+On legacy Hosts, closing the panel stops active processes; reopening restores
+pending and interrupted items without starting them. Hosts with the background
+queue capabilities described below keep admitted downloads running after closure. Paused tasks remain paused, keep their last progress,
 and still participate in duplicate detection. **Continue all** or a task’s
 **Continue** button reacquires directory and saved-account grants before continuing.
 Continuing one task leaves the other paused tasks untouched.
@@ -85,8 +87,9 @@ Byte or fragment continuation depends on the source; if it cannot resume, yt-dlp
 may restart the transfer. Pausing creates no completed or failed history record.
 A failed pause is visibly reported while the task stays running, so it can be retried.
 
-No executable handle, directory grant, Cookie file handle,
-Cookie value or process argument list is persisted. If storage fails, new work does
+No executable handle, temporary directory grant, Cookie file handle,
+Cookie value or process argument list is persisted. Background records retain
+opaque directory bookmarks, task IDs, and the selected account ID/site/version. If storage fails, new work does
 not start and the queue pauses.
 
 Click a completed, failed or cancelled queue item to open and highlight its download
@@ -139,8 +142,11 @@ more. Older Hosts that do not offer the `project` known directory show a prompt
 to choose a directory instead of silently using the system Downloads folder.
 
 Retry keeps the task's original options and account, and asks the Host to
-authorize a fresh Cookie file for that saved account. It does not reuse stale
-login data or switch silently to the account selected for the next task.
+authorize a fresh Cookie file for that saved account. Background tasks retain
+the original authorization version: a changed or unavailable account cannot be
+silently substituted. **Retry with selected account** creates a new task using
+the explicitly selected account and keeps the old record. Ordinary Retry never
+uses the account selected for the next download.
 
 The layout uses the available panel width with left-aligned navigation, warm
 neutral surfaces, and matching light/dark themes. Wide panels keep the queue
@@ -291,7 +297,6 @@ Batch inspection visits every input link in both single-video and playlist modes
 and failed-link retries; playlist rows show their video counts. Larger batches
 explicitly show the preview limit and retain every link for downloading.
 
-
 ## 0.22.4 reliability update
 
 Dependency refresh runs both `yt-dlp --ignore-config --version` and `ffmpeg -version`.
@@ -306,10 +311,10 @@ including a task completed while the page was closed, without another planning
 request. Actual platform evidence is fetched again. Later interrupted stages keep
 the query and model for manual retry; they do not silently spend another AI call.
 
-Downloads still use Guest-owned processes: closing the panel interrupts them,
+In the 0.22.4 release, downloads used Guest-owned processes: closing the panel interrupted them,
 and saved queues can be resumed on reopening. Background-task migration requires
 supported handoffs for chosen directories and selected Cookie accounts; the
-current task envelope does not provide those handoffs. Server-side Cookie login
+release task envelope did not provide those handoffs. Server-side Cookie login
 and authorized download remain dependent on Host support.
 
 ## 0.22.5 environment concurrency fix
@@ -345,11 +350,11 @@ lost replies query the stored value once; uncertain results are not replayed.
 Existing project JSON and legacy Host get/set behavior remain compatible.
 
 This requires a Host build exposing those two methods (not yet a published
-minimum version). It does not turn page-owned download processes into durable
-background tasks; that migration and full mobile/cloud workflow acceptance
-remain separate work.
+minimum version). Storage alone does not create durable tasks; the background integration below
+requires additional Host capabilities. Full mobile/cloud workflow acceptance
+remains separate work.
 
-### Reviewed download task entry (integration in progress)
+### Background queue and selected accounts (development build)
 
 The package declares `download-runtime` and the `resources` permission for
 Host-owned downloads. Its task input is:
@@ -361,7 +366,10 @@ Host-owned downloads. Its task input is:
   requestKey: "stable-queue-item-id",
   input: {
     request: { action: "download", url, configuration },
-    directoryArguments: [{ argumentName: "--job-dir", directory: "job" }]
+    directoryArguments: [
+      { argumentName: "--job-dir", directory: "job" },
+      { argumentName: "--output-dir", directory: "bookmark", bookmark }
+    ]
   }
 }
 ```
@@ -373,8 +381,35 @@ A cancelled/interrupted job requires an explicit retry; it does not automaticall
 restart network work. Browser-supplied executable paths, shell commands, raw
 options, output paths, and cookie paths are rejected.
 
-This entry is not yet wired into the existing queue UI. Shared desktop/remote
-coordination, selected output-directory delivery, sealed account authorization,
-and existing queue/history recovery must be integrated before claiming the
-user-facing workflow complete. Existing process-based downloads remain in use
-until that migration is complete.
+The queue uses this entry when the Host advertises `tasks.find`, directory
+bookmarks, and persistent queue controls. It saves a request key before admission,
+queries an uncertain submission instead of repeating it, and reattaches to stable
+task IDs after reopening. Desktop and paired Web can use the same Host queue.
+Legacy Hosts retain the page-owned process path. Unsubmitted records still need
+an explicit start; Host restart interruption requires an explicit retry.
+
+When `tasks.cookieCredentials` and `credentials.cookies.listForTask` are also
+advertised, account downloads set `request.useSavedLogin: true` and add:
+
+```js
+cookieArgument: {
+  argumentName: "--cookies-file",
+  credentialId,
+  url: loginSite,
+  revision: selectedAccountRevision
+}
+```
+
+The Host confirms the account at submission and retry, then passes a private file
+as a sealed command argument outside browser JSON. The native entry requires that
+file exactly when the request declares an account, validates it before launching
+yt-dlp, and never publishes it as an artifact. Cleanup belongs to the Host.
+Missing or changed accounts remain errors; they never become anonymous downloads.
+Normal retry preserves the original account version; changing accounts creates a
+new task after stopping the old one.
+
+Web login capture and account-authenticated metadata inspection are not complete.
+Without `credentials.cookies.authorizeProcess`, selecting an account and requesting
+metadata shows an explicit limitation; directly submitting the background download
+still uses the saved account. These gaps, real provider login, physical phones, and
+cloud end-to-end acceptance remain required work before declaring workflow parity.

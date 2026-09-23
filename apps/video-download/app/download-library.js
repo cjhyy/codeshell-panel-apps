@@ -181,6 +181,13 @@ export function storedRecord(item) {
       : {}),
     ...(item.nativePaused === true ? { nativePaused: true } : {}),
     cookieCredentialId: text(item.cookieCredentialId, 200),
+    ...(typeof item.cookieCredentialRevision === "string" &&
+    /^[a-f0-9]{64}$/.test(item.cookieCredentialRevision)
+      ? { cookieCredentialRevision: item.cookieCredentialRevision }
+      : {}),
+    ...(typeof item.cookieCredentialUrl === "string" && /^https:\/\//.test(item.cookieCredentialUrl)
+      ? { cookieCredentialUrl: text(item.cookieCredentialUrl, 2048) }
+      : {}),
     status: text(
       [
         "pending",

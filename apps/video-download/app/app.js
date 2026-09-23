@@ -838,8 +838,22 @@ async function prepareItem(item, allowPick = false) {
     throw new Error("仅音频模式需要 ffmpeg。");
   item.directory = await directoryFor(item, allowPick);
   if (durableDownloads) {
-    if (item.cookieCredentialId)
-      throw new Error("后台下载尚未接入账号授权，请先选择“不使用 Cookie”。");
+    if (item.cookieCredentialId) {
+      if (!supportsTaskCookies()) throw new Error("当前 Host 尚未提供后台账号授权，请更新后重试。");
+      const url = cookieRequestUrl(item.url);
+      if (!url) throw new Error("账号下载需要 HTTPS 视频网址。");
+      const result = await panel.call("credentials.cookies.listForTask", { url });
+      const account = result?.accounts?.find((entry) => entry.id === item.cookieCredentialId);
+      if (!account || !/^[a-f0-9]{64}$/.test(account.revision || ""))
+        throw new Error("原账号已不可用，请重新选择账号后添加下载。");
+      if (
+        (item.cookieCredentialRevision && item.cookieCredentialRevision !== account.revision) ||
+        (item.cookieCredentialUrl && item.cookieCredentialUrl !== url)
+      )
+        throw new Error("原账号授权已变化，请重新选择账号后添加下载。");
+      item.cookieCredentialRevision = account.revision;
+      item.cookieCredentialUrl = url;
+    }
     if (!item.directory.bookmark) throw new Error("请重新选择保存目录以授权后台下载。");
     return item;
   }
@@ -924,6 +938,14 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         configuration: isSnapshot ? { ...candidate.configuration } : { ...configuration },
         directory: isSnapshot ? { ...candidate.directory } : { ...runtime.directory },
         cookieCredentialId: isSnapshot ? candidate.cookieCredentialId || "" : credentialId,
+        cookieCredentialRevision: isSnapshot
+          ? candidate.cookieCredentialRevision || ""
+          : cookieAccounts.find((account) => account.id === credentialId)?.revision || "",
+        cookieCredentialUrl: isSnapshot
+          ? candidate.cookieCredentialUrl || ""
+          : credentialId
+            ? cookieRequestUrl(url)
+            : "",
         status: start && candidate?.status !== "pending" ? "queued" : "pending",
         addedAt: Date.now(),
         files: [],
@@ -1259,6 +1281,19 @@ function rememberCookieSelection() {
   }
 }
 
+function supportsTaskCookies() {
+  return (
+    context.capabilities?.tasks?.cookieCredentials === true &&
+    context.availableMethods?.includes("credentials.cookies.listForTask")
+  );
+}
+
+function supportsCookieMethod(method) {
+  return Array.isArray(context.availableMethods)
+    ? context.availableMethods.includes(method)
+    : Number(context.apiVersion) >= 10;
+}
+
 function cookieControlsUnavailable() {
   return (
     queueSubmissionPending ||
@@ -1266,13 +1301,15 @@ function cookieControlsUnavailable() {
     cookieLoading ||
     cookieLoginPending ||
     !cookieRequestUrl(normalizedUrl()) ||
-    Number(context.apiVersion) < 10
+    (!supportsTaskCookies() && !supportsCookieMethod("credentials.cookies.list"))
   );
 }
 
 function renderCookieAccounts(message = "", preferredId = null) {
   const url = cookieRequestUrl(normalizedUrl());
-  const selected = preferredId ?? (cookieAccountsUrl === url ? elements.cookieSelect.value : "");
+  const selected =
+    preferredId ??
+    (cookieAccountsUrl === url ? elements.cookieSelect.value : cookieSelections.get(url) || "");
   elements.cookieSelect.replaceChildren();
   const none = document.createElement("option");
   none.value = "";
@@ -1288,13 +1325,21 @@ function renderCookieAccounts(message = "", preferredId = null) {
     option.disabled = account.health === "corrupted";
     elements.cookieSelect.append(option);
   }
-  if (accounts.some((account) => account.id === selected && account.health !== "corrupted")) {
+  if (selected) {
+    if (!accounts.some((account) => account.id === selected)) {
+      const missing = document.createElement("option");
+      missing.value = selected;
+      missing.textContent = "原账号不可用，请重新选择";
+      missing.disabled = true;
+      elements.cookieSelect.append(missing);
+    }
     elements.cookieSelect.value = selected;
   }
   const unavailable = cookieControlsUnavailable();
   elements.cookieSelect.disabled = unavailable;
   elements.cookieRefresh.disabled = unavailable;
-  elements.cookieLogin.disabled = unavailable;
+  elements.cookieLogin.disabled =
+    unavailable || !supportsCookieMethod("credentials.cookies.loginAndSave");
   const validUrl = Boolean(normalizedUrl());
   elements.cookieHelp.textContent =
     message ||
@@ -1311,9 +1356,11 @@ function renderCookieAccounts(message = "", preferredId = null) {
               ? "正在读取与该网站匹配的已保存账号…"
               : accounts.length
                 ? elements.cookieSelect.value
-                  ? `已选择 ${accounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；首次使用时会确认授权。`
+                  ? `已选择 ${accounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；${supportsTaskCookies() ? "提交和重试时会确认授权" : "首次使用时会确认授权"}。`
                   : `找到 ${accounts.length} 个匹配账号，请在上方选择要使用的账号。`
-                : "未找到该网站的已保存账号。可点击“登录并保存”；不会自动读取系统浏览器的 Cookie。");
+                : supportsCookieMethod("credentials.cookies.loginAndSave")
+                  ? "未找到该网站的已保存账号。可点击“登录并保存”；不会自动读取系统浏览器的 Cookie。"
+                  : "未找到该网站的已保存账号。请先在执行项目的 Host 中保存账号，再刷新；不会读取手机浏览器的登录状态。");
 }
 
 async function refreshCookieAccounts(options = {}) {
@@ -1326,7 +1373,7 @@ async function refreshCookieAccounts(options = {}) {
     typeof options.selectId === "string" ? options.selectId : cookieSelections.get(url) || "";
   invalidateCookieAuthorization();
   cookieAccountsError = "";
-  if (!url || Number(context.apiVersion) < 10) {
+  if (!url || (!supportsTaskCookies() && !supportsCookieMethod("credentials.cookies.list"))) {
     cookieAccounts = [];
     cookieAccountsUrl = "";
     cookieLoading = false;
@@ -1342,7 +1389,10 @@ async function refreshCookieAccounts(options = {}) {
             { id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname },
           ],
         }
-      : await panel.call("credentials.cookies.list", { url });
+      : await panel.call(
+          supportsTaskCookies() ? "credentials.cookies.listForTask" : "credentials.cookies.list",
+          { url },
+        );
     if (requestId !== cookieRequestId || cookieRequestUrl(normalizedUrl()) !== url) return [];
     if (!Array.isArray(result?.accounts))
       throw new Error("CodeShell 没有返回有效的账号列表，请刷新重试。");
@@ -1408,9 +1458,11 @@ async function loginAndSaveCookie() {
     showError("请先粘贴 HTTPS 视频链接，再登录并保存 Cookie。");
     return;
   }
-  if (Number(context.apiVersion) < 10 || previewMode) {
+  if (!supportsCookieMethod("credentials.cookies.loginAndSave") || previewMode) {
     renderCookieAccounts(
-      previewMode ? "预览模式不会打开登录窗口。" : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+      previewMode
+        ? "预览模式不会打开登录窗口。"
+        : "当前入口不支持登录采集，请在执行项目的 Host 中保存账号。",
     );
     return;
   }
@@ -1461,6 +1513,10 @@ async function cookieFileArguments(url) {
   const account = cookieAccounts.find((item) => item.id === credentialId);
   if (!account || account.health === "corrupted")
     throw new Error("这个 Cookie 已失效，请重新登录并保存。");
+  if (!supportsCookieMethod("credentials.cookies.authorizeProcess"))
+    throw new Error(
+      "当前入口尚不支持带账号读取视频信息；可以直接加入后台下载队列，或在桌面读取信息。",
+    );
   if (!dependencyReady(runtime.ytDlp)) throw new Error("yt-dlp 还没有准备好。");
   if (previewMode) return ["preview-cookie"];
   const host = new URL(targetUrl).hostname;
@@ -2362,7 +2418,8 @@ function setControlsBusy(busy, operation = "download") {
   const cookieUnavailable = busy || cookieControlsUnavailable();
   elements.cookieSelect.disabled = cookieUnavailable;
   elements.cookieRefresh.disabled = cookieUnavailable;
-  elements.cookieLogin.disabled = cookieUnavailable;
+  elements.cookieLogin.disabled =
+    cookieUnavailable || !supportsCookieMethod("credentials.cookies.loginAndSave");
   elements.subtitles.disabled = busy || selectedFormat() === "audio";
   elements.subtitleMode.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguagePreset.disabled = busy || selectedFormat() === "audio";
@@ -3298,6 +3355,14 @@ function renderQueue() {
         item.retryPending || item.finishing,
       );
     }
+    if (
+      durableDownloads &&
+      supportsTaskCookies() &&
+      ["failed", "cancelled", "paused", "interrupted"].includes(item.status)
+    )
+      action("retry-account", "用所选账号重试").disabled = Boolean(
+        item.retryPending || queueSubmissionPending,
+      );
     row.append(copy, actions);
     elements.queueList.append(row);
   }
@@ -3421,7 +3486,55 @@ async function runNextDownload() {
   }
 }
 
+async function retryWithSelectedAccount(item) {
+  if (
+    !durableDownloads ||
+    item.retryPending ||
+    queueSubmissionPending ||
+    !["failed", "cancelled", "paused", "interrupted"].includes(item.status)
+  )
+    return;
+  const url = cookieRequestUrl(item.url);
+  const account = cookieAccounts.find((entry) => entry.id === elements.cookieSelect.value);
+  if (
+    !url ||
+    cookieRequestUrl(normalizedUrl()) !== url ||
+    cookieAccountsUrl !== url ||
+    cookieLoading ||
+    !account ||
+    !/^[a-f0-9]{64}$/.test(account.revision || "")
+  ) {
+    showError("请先在上方输入此任务的网站链接，刷新并选择要使用的账号。");
+    return;
+  }
+  const replacement = {
+    url: item.url,
+    title: item.title,
+    configuration: { ...item.configuration, cookieAccount: account.label },
+    directory: { ...item.directory },
+    cookieCredentialId: account.id,
+    cookieCredentialRevision: account.revision,
+    cookieCredentialUrl: url,
+    copySuffix: item.copySuffix,
+  };
+  item.retryPending = true;
+  renderQueue();
+  try {
+    await prepareItem(replacement);
+    // Resolve any earlier submission and stop that exact job before admitting a new one.
+    // The original immutable task remains in history with its original account.
+    await durableDownloads.stop(item, false);
+    await enqueueCandidates([replacement]);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    item.retryPending = false;
+    renderQueue();
+  }
+}
+
 async function retryQueuedDownload(item) {
+  if (item.retryPending) return;
   if (durableDownloads) {
     try {
       await durableDownloads.resume(item);
@@ -4313,7 +4426,7 @@ function videoContextForAgent() {
       cookieNote:
         Number(context.apiVersion) >= 10
           ? "Cookie 由 Host 以不透明临时文件授权给 yt-dlp，内容和路径不会暴露给面板。"
-          : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+          : "当前入口不支持登录采集，请在执行项目的 Host 中保存账号。",
     },
   };
 }
@@ -5983,6 +6096,7 @@ function handleDownloadAction(event) {
     if (["completed", "failed", "cancelled"].includes(item.status)) showDownloadHistory(item);
     else selectDownloadTask(item);
   }
+  if (action === "retry-account") void retryWithSelectedAccount(item);
   if (action === "details") selectDownloadTask(item);
   if (action === "history") showDownloadHistory(item);
   if (action === "cancel") void cancelCurrentJob(item);

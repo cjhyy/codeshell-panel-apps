@@ -40,7 +40,12 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function mount({ url = "https://www.youtube.com/watch?v=example", apiVersion = 10, call } = {}) {
+function mount({
+  url = "https://www.youtube.com/watch?v=example",
+  apiVersion = 10,
+  taskCookies = false,
+  call,
+} = {}) {
   const calls = [];
   const timers = new Map();
   const elements = {
@@ -60,7 +65,15 @@ function mount({ url = "https://www.youtube.com/watch?v=example", apiVersion = 1
     Error,
     Map,
     elements,
-    context: { apiVersion },
+    context: {
+      apiVersion,
+      ...(taskCookies
+        ? {
+            availableMethods: ["credentials.cookies.listForTask"],
+            capabilities: { tasks: { cookieCredentials: true } },
+          }
+        : {}),
+    },
     previewMode: false,
     queueSubmissionPending: false,
     inspectionJob: null,
@@ -333,4 +346,31 @@ test("finishing an account refresh cannot unlock selection during enqueue author
   app.sandbox.inspectionJob = { running: true };
   app.run("renderCookieAccounts()");
   assert.equal(app.elements.cookieLogin.disabled, true);
+});
+
+test("background account discovery uses the advertised Host interface and never invokes desktop login capture", async () => {
+  const account = { ...saved, revision: "a".repeat(64) };
+  const app = mount({ taskCookies: true, call: () => ({ accounts: [account] }) });
+  await app.run("refreshCookieAccounts()");
+  assert.equal(app.calls[0].method, "credentials.cookies.listForTask");
+  assert.equal(app.elements.cookieSelect.disabled, false);
+  assert.equal(app.elements.cookieLogin.disabled, true);
+  app.choose(account.id);
+  await assert.rejects(app.run("cookieFileArguments(currentUrl)"), /尚不支持带账号读取视频信息/);
+  await app.run("loginAndSaveCookie()");
+  assert.equal(app.calls.length, 1);
+});
+
+test("a removed selected account stays visibly selected and cannot silently become anonymous", async () => {
+  let accounts = [saved];
+  const app = mount({ call: () => ({ accounts }) });
+  await app.run("refreshCookieAccounts()");
+  app.choose(saved.id);
+  accounts = [];
+  await app.run("refreshCookieAccounts()");
+  assert.equal(app.elements.cookieSelect.value, saved.id);
+  assert.equal(app.elements.cookieSelect.options.at(-1).disabled, true);
+  await assert.rejects(app.run("cookieFileArguments(currentUrl)"), /已失效/);
+  app.choose("");
+  assert.equal((await app.run("cookieFileArguments(currentUrl)")).length, 0);
 });

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve } from "node:path";
+import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const MAX_REQUEST_BYTES = 32 * 1024;
@@ -34,7 +34,16 @@ export function parseDownloadRequest(value) {
   if (
     !object(value) ||
     Object.keys(value).some(
-      (key) => !["action", "url", "configuration", "copySuffix", "jobId", "scopeKey"].includes(key),
+      (key) =>
+        ![
+          "action",
+          "url",
+          "configuration",
+          "copySuffix",
+          "jobId",
+          "scopeKey",
+          "useSavedLogin",
+        ].includes(key),
     ) ||
     value.action !== "download"
   )
@@ -53,6 +62,9 @@ export function parseDownloadRequest(value) {
   }
   if (!["https:", "http:"].includes(url.protocol) || !url.hostname || url.username || url.password)
     fail("下载任务只接受不含账号密码的 HTTP 或 HTTPS 视频网址。");
+  if (value.useSavedLogin !== undefined && typeof value.useSavedLogin !== "boolean")
+    fail("账号使用设置无效。");
+  if (value.useSavedLogin && url.protocol !== "https:") fail("账号下载需要 HTTPS 视频网址。");
   if (
     value.copySuffix !== undefined &&
     (typeof value.copySuffix !== "string" || !/^(?:[a-f0-9]{8})?$/.test(value.copySuffix))
@@ -109,6 +121,7 @@ export function parseDownloadRequest(value) {
     action: "download",
     url: url.href,
     copySuffix: value.copySuffix || "",
+    useSavedLogin: value.useSavedLogin === true,
     configuration: {
       format,
       playlist: config.playlist === true,
@@ -122,8 +135,8 @@ export function parseDownloadRequest(value) {
   };
 }
 
-export function downloadArguments(request, ffmpegAvailable) {
-  const { url, configuration: c, copySuffix } = parseDownloadRequest(request);
+export function downloadArguments(request, ffmpegAvailable, cookiesFile) {
+  const { url, configuration: c, copySuffix, useSavedLogin } = parseDownloadRequest(request);
   const variant = createHash("sha256").update(JSON.stringify(c)).digest("hex").slice(0, 8);
   if (c.format === "audio" && !ffmpegAvailable)
     fail("音频下载需要先安装 FFmpeg。", "DEPENDENCY_MISSING", true);
@@ -177,7 +190,43 @@ export function downloadArguments(request, ffmpegAvailable) {
   }
   // No raw argv, executable, configuration file, output path or postprocessor
   // command comes from browser JSON. The reviewed tool owns all options.
+  if (useSavedLogin !== Boolean(cookiesFile))
+    fail("账号授权文件与任务设置不匹配。", "COOKIE_UNAVAILABLE");
+  if (cookiesFile) {
+    if (
+      typeof cookiesFile !== "string" ||
+      !isAbsolute(cookiesFile) ||
+      /[\u0000-\u001f]/u.test(cookiesFile)
+    )
+      fail("账号授权文件无效。", "COOKIE_UNAVAILABLE");
+    args.push("--cookies", cookiesFile);
+  }
   return [...args, "--", url];
+}
+
+async function validateCookieFile(path, jobDir) {
+  try {
+    if (
+      typeof path !== "string" ||
+      !isAbsolute(path) ||
+      /[\u0000-\u001f]/u.test(path) ||
+      resolve(path).startsWith(jobDir + sep)
+    )
+      throw new Error();
+    const info = await lstat(path);
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1 ||
+      info.size < 1 ||
+      info.size > 4 * 1024 * 1024 ||
+      (process.platform !== "win32" && (info.mode & 0o077) !== 0) ||
+      (await realpath(path)) !== path
+    )
+      throw new Error();
+  } catch {
+    fail("账号授权文件不可用，请重新授权。", "COOKIE_UNAVAILABLE");
+  }
 }
 
 async function realDirectory(path) {
@@ -277,7 +326,7 @@ export async function publishDownloadArtifacts(jobDir, outputDir, artifacts, sig
   const digest = async (handle, bytes) => {
     const hash = createHash("sha256"),
       buffer = Buffer.allocUnsafe(1024 * 1024);
-    for (let offset = 0; offset < bytes;) {
+    for (let offset = 0; offset < bytes; ) {
       await verify();
       const part = await handle.read(buffer, 0, Math.min(buffer.length, bytes - offset), offset);
       if (!part.bytesRead) fail("输出文件在校验时变化。", "OUTPUT_CHANGED");
@@ -360,7 +409,7 @@ export async function publishDownloadArtifacts(jobDir, outputDir, artifacts, sig
         temporaryIdentity = await destination.stat();
         const hash = createHash("sha256"),
           buffer = Buffer.allocUnsafe(1024 * 1024);
-        for (let offset = 0; offset < artifact.bytes;) {
+        for (let offset = 0; offset < artifact.bytes; ) {
           await verify();
           const part = await source.read(
             buffer,
@@ -462,6 +511,7 @@ export async function runDownload(
   {
     jobDir,
     outputDir,
+    cookiesFile,
     signal = new AbortController().signal,
     progress = () => {},
     spawnProcess = spawn,
@@ -471,6 +521,9 @@ export async function runDownload(
   if (typeof jobDir !== "string" || !isAbsolute(jobDir)) fail("缺少 Host 任务目录。");
   jobDir = resolve(jobDir);
   await realDirectory(jobDir);
+  if (request.useSavedLogin !== Boolean(cookiesFile))
+    fail("账号授权文件与任务设置不匹配。", "COOKIE_UNAVAILABLE");
+  if (cookiesFile) await validateCookieFile(cookiesFile, jobDir);
   signal.throwIfAborted();
   const directory = join(jobDir, "media");
   await mkdir(directory, { mode: 0o700 }).catch((error) => {
@@ -479,7 +532,8 @@ export async function runDownload(
   await realDirectory(directory);
   const ffmpeg = await probeFfmpeg(spawnProcess, signal);
   signal.throwIfAborted();
-  const args = downloadArguments(request, ffmpeg);
+  if (cookiesFile) await validateCookieFile(cookiesFile, jobDir);
+  const args = downloadArguments(request, ffmpeg, cookiesFile);
   progress({ stage: "download", message: "正在下载到项目任务目录。", fraction: 0 });
   await new Promise((resolveDownload, reject) => {
     const child = spawnProcess("yt-dlp", args, {
@@ -573,11 +627,11 @@ export async function runDownload(
 
 async function main() {
   const args = process.argv.slice(2);
-  if (![2, 4].includes(args.length)) fail("下载入口需要 Host 提供任务目录。");
+  if (![2, 4, 6].includes(args.length)) fail("下载入口需要 Host 提供任务目录。");
   const directories = new Map();
   for (let index = 0; index < args.length; index += 2) {
     if (
-      !["--job-dir", "--output-dir"].includes(args[index]) ||
+      !["--job-dir", "--output-dir", "--cookies-file"].includes(args[index]) ||
       directories.has(args[index]) ||
       !isAbsolute(args[index + 1] || "")
     )
@@ -607,6 +661,7 @@ async function main() {
     const result = await runDownload(raw, {
       jobDir: directories.get("--job-dir"),
       outputDir: directories.get("--output-dir"),
+      cookiesFile: directories.get("--cookies-file"),
       signal: controller.signal,
       progress: (value) =>
         process.stdout.write(JSON.stringify({ type: "progress", progress: value }) + "\n"),

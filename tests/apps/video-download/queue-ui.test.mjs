@@ -130,9 +130,17 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
           ...(ai.durable
             ? {
                 cwd: "/fixture/project",
-                availableMethods: ["tasks.find"],
+                availableMethods: [
+                  "tasks.find",
+                  ...(ai.taskCookies ? ["credentials.cookies.listForTask"] : []),
+                ],
                 capabilities: {
-                  tasks: { directoryBookmarks: true, queueControl: true, maxConcurrent: 2 },
+                  tasks: {
+                    directoryBookmarks: true,
+                    queueControl: true,
+                    maxConcurrent: 2,
+                    cookieCredentials: ai.taskCookies === true,
+                  },
                 },
               }
             : {}),
@@ -259,7 +267,10 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
           }
           if (method === "filesystem.pickDirectory") return structuredClone(window.__nextDirectory);
           if (method === "filesystem.openDirectory") return { opened: true };
-          if (method === "credentials.cookies.list") {
+          if (
+            method === "credentials.cookies.list" ||
+            method === "credentials.cookies.listForTask"
+          ) {
             return { accounts: structuredClone(window.__cookieAccounts) };
           }
           if (method === "credentials.cookies.authorizeProcess") {
@@ -2104,4 +2115,116 @@ test("durable UI pause-all then resume-one leaves the other download stopped", a
     ).length,
     1,
   );
+});
+
+for (const width of [390, 1440]) {
+  test(`background account downloads retain the original grant on retry and explicitly replace it at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, { durable: true, taskCookies: true });
+    await page.evaluate(() => {
+      window.__cookieAccounts = [
+        { id: "original", label: "Original account", revision: "a".repeat(64) },
+        { id: "replacement", label: "Replacement account", revision: "b".repeat(64) },
+      ];
+    });
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("original");
+    assert.equal(await page.locator("#cookie-login").isDisabled(), true);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 1);
+    const original = Object.values(await page.evaluate(() => window.__nativeJobs))[0];
+    assert.equal(original.input.cookieArgument.credentialId, "original");
+    assert.equal(original.input.cookieArgument.revision, "a".repeat(64));
+    assert.equal(original.input.request.useSavedLogin, true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.sequence++;
+      localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+    });
+    await page.reload();
+    await page.waitForSelector('.queue-item[data-state="failed"]');
+    const row = page.locator('.queue-item[data-state="failed"]').first();
+    await page.locator("#url-input").fill(firstUrl);
+    await page.evaluate(() => {
+      window.__cookieAccounts = [
+        { id: "replacement", label: "Replacement account", revision: "b".repeat(64) },
+      ];
+    });
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("replacement");
+    await row.locator('[data-queue-action="retry"]').click();
+    await page.waitForFunction(() => window.__calls.some((call) => call.method === "tasks.retry"));
+    assert.equal(
+      Object.values(await page.evaluate(() => window.__nativeJobs))[0].input.cookieArgument
+        .credentialId,
+      "original",
+    );
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.sequence++;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForSelector('.queue-item[data-state="failed"]');
+    await page.locator('[data-queue-action="retry-account"]').first().click();
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2, null, {
+      timeout: 15000,
+    });
+    const jobs = Object.values(await page.evaluate(() => window.__nativeJobs));
+    assert.equal(
+      jobs.find((job) => job.id !== original.id).input.cookieArgument.credentialId,
+      "replacement",
+    );
+    assert.equal(
+      jobs.find((job) => job.id === original.id).input.cookieArgument.credentialId,
+      "original",
+    );
+    assert.equal((await downloads(page)).length, 0);
+  });
+}
+
+test("denied background account submission never falls back to an anonymous or page process", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, taskCookies: true });
+  await page.evaluate(() => {
+    window.__cookieAccounts = [{ id: "private", label: "Private", revision: "a".repeat(64) }];
+    const call = window.codeshellPanel.call.bind(window.codeshellPanel);
+    window.codeshellPanel.call = async (method, args) => {
+      if (method === "tasks.start") {
+        window.__calls.push({ method, args });
+        throw new Error("已取消账号授权");
+      }
+      return call(method, args);
+    };
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("private");
+  await page.locator("#download-button").click();
+  await page.waitForSelector('.queue-item[data-state="failed"]');
+  const starts = await page.evaluate(() =>
+    window.__calls.filter((call) => call.method === "tasks.start"),
+  );
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].args.input.cookieArgument.credentialId, "private");
+  assert.equal(Object.keys(await page.evaluate(() => window.__nativeJobs)).length, 0);
+  assert.equal((await downloads(page)).length, 0);
+});
+
+test("an account changed after selection cannot be silently substituted at background admission", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, taskCookies: true });
+  await page.evaluate(() => {
+    window.__cookieAccounts = [{ id: "saved", label: "Saved account", revision: "a".repeat(64) }];
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("saved");
+  await page.evaluate(() => {
+    window.__cookieAccounts[0].revision = "b".repeat(64);
+  });
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => document.body.textContent.includes("原账号授权已变化"));
+  assert.equal(Object.keys(await page.evaluate(() => window.__nativeJobs)).length, 0);
+  assert.equal((await downloads(page)).length, 0);
+  assert.equal(await page.locator("#cookie-select").inputValue(), "saved");
 });

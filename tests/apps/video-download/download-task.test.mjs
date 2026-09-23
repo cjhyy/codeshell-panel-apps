@@ -289,3 +289,73 @@ test("download worker publishes through its Host directory and copy variants hav
     0,
   );
 });
+
+test("background authenticated downloads consume only the Host private file and keep it out of artifacts", async (t) => {
+  const root = await fixture(t);
+  const custody = await fixture(t);
+  const cookiesFile = join(custody, "cookies.txt");
+  await writeFile(
+    cookiesFile,
+    "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tsession\tprivate-cookie\n",
+    { mode: 0o600 },
+  );
+  const child = fakeSpawn(async (process, options) => {
+    await writeFile(join(options.cwd, "video.mp4"), "video output");
+    process.emit("close", 0);
+  });
+  const result = await runDownload(
+    { ...request, useSavedLogin: true },
+    { jobDir: root, cookiesFile, spawnProcess: child.spawn },
+  );
+  const args = child.calls.find((call) => call.name === "yt-dlp").args;
+  assert.equal(args[args.indexOf("--cookies") + 1], cookiesFile);
+  assert.ok(args.indexOf("--cookies") < args.indexOf("--"));
+  assert.ok(!JSON.stringify(result).includes("private-cookie"));
+  assert.ok(!JSON.stringify(result).includes(cookiesFile));
+  assert.equal(result.artifacts.length, 1);
+  assert.match(await readFile(cookiesFile, "utf8"), /private-cookie/); // Host owns cleanup.
+});
+
+for (const kind of ["missing", "anonymous", "inside-task", "symlink", "hardlink", "public-mode"]) {
+  test(`background Cookie input rejects ${kind} before launching a program`, async (t) => {
+    if (kind === "public-mode" && process.platform === "win32") return t.skip("POSIX modes");
+    const root = await fixture(t),
+      custody = await fixture(t);
+    let cookiesFile = join(kind === "inside-task" ? root : custody, "cookies.txt");
+    await writeFile(cookiesFile, "private-cookie", {
+      mode: kind === "public-mode" ? 0o644 : 0o600,
+    });
+    if (["symlink", "hardlink"].includes(kind)) {
+      const alias = join(custody, "alias.txt");
+      await (kind === "symlink" ? symlink : link)(cookiesFile, alias);
+      cookiesFile = alias;
+    }
+    if (kind === "missing") cookiesFile = undefined;
+    let spawned = false;
+    await assert.rejects(
+      runDownload(
+        { ...request, useSavedLogin: kind !== "anonymous" },
+        {
+          jobDir: root,
+          cookiesFile,
+          spawnProcess() {
+            spawned = true;
+            throw new Error("must not launch");
+          },
+        },
+      ),
+      (error) => error.code === "COOKIE_UNAVAILABLE" && !error.message.includes(custody),
+    );
+    assert.equal(spawned, false);
+  });
+}
+
+test("browser JSON cannot supply a cookie file and account downloads require HTTPS", () => {
+  for (const value of [
+    { ...request, cookiesFile: "/private/cookie" },
+    { ...request, useSavedLogin: "true" },
+    { ...request, useSavedLogin: true, url: "http://example.com/video" },
+  ])
+    assert.throws(() => parseDownloadRequest(value));
+  assert.throws(() => downloadArguments({ ...request, useSavedLogin: true }, true), /不匹配/);
+});

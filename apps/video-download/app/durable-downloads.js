@@ -98,8 +98,12 @@ export function createDurableDownloads({
   }
   function request(item) {
     if (!item.directory?.bookmark) throw new Error("请重新选择保存目录，授予后台下载权限。");
-    if (item.cookieCredentialId)
-      throw new Error("此后台下载尚未接入账号授权，请先选择“不使用 Cookie”或稍后重试。");
+    if (
+      item.cookieCredentialId &&
+      (!/^[a-f0-9]{64}$/.test(item.cookieCredentialRevision || "") ||
+        !/^https:\/\//.test(item.cookieCredentialUrl || ""))
+    )
+      throw new Error("缺少原账号授权版本，请重新选择账号后创建下载。");
     const { cookieAccount: _cookie, ...configuration } = cleanConfiguration(item.configuration);
     return {
       entry: "download-runtime",
@@ -110,6 +114,7 @@ export function createDurableDownloads({
           action: "download",
           url: item.url,
           configuration,
+          ...(item.cookieCredentialId ? { useSavedLogin: true } : {}),
           ...(item.copySuffix ? { copySuffix: item.copySuffix } : {}),
         },
         directoryArguments: [
@@ -120,6 +125,16 @@ export function createDurableDownloads({
             bookmark: item.directory.bookmark,
           },
         ],
+        ...(item.cookieCredentialId
+          ? {
+              cookieArgument: {
+                argumentName: "--cookies-file",
+                credentialId: item.cookieCredentialId,
+                revision: item.cookieCredentialRevision,
+                url: item.cookieCredentialUrl,
+              },
+            }
+          : {}),
       },
     };
   }
