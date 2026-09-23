@@ -2177,9 +2177,12 @@ test("fine timeline editing moves and trims audio as single undo steps and Escap
     await undoAndRedo(beforeOut, trimmedOut);
 
     // Keep a video selected and place the playhead away from the audio start before cancelling.
-    await page
-      .locator(`[data-clip="${prepared.clips[0].id}"]`)
-      .evaluate((element) => element.click());
+    // Find and click in one page task so a background render cannot detach the clip in between.
+    await page.locator(`[data-clip="${prepared.clips[0].id}"]`).waitFor({ state: "attached" });
+    await page.evaluate(
+      (id) => document.querySelector(`[data-clip="${CSS.escape(id)}"]`).click(),
+      prepared.clips[0].id,
+    );
     await page.keyboard.press("Shift+ArrowRight");
     await page.waitForFunction(
       () => window.__panelTools.read_video_project().playheadFrame === 150,

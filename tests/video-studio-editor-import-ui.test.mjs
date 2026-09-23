@@ -169,10 +169,13 @@ test("late import results cannot enter a different document, and disposal remove
 });
 test("a clean import notice clears itself while partial failures stay until closed", async (t) => {
   const page = await fixture(t);
+  // Controllable timers: the 3 s auto-hide is fast-forwarded instead of waited for.
+  await page.clock.install();
   await choose(page);
   await page.evaluate(() => fixture.finish());
   await page.waitForFunction(() => fixture.read().assets.some((a) => a.id === "new-source"));
-  await page.locator(".editor-import-status").waitFor({ state: "hidden", timeout: 4500 });
+  await page.clock.runFor(3000);
+  await page.locator(".editor-import-status").waitFor({ state: "hidden" });
 
   await page.evaluate(() => {
     fixture.uploads = 0;
@@ -182,7 +185,7 @@ test("a clean import notice clears itself while partial failures stay until clos
   await page.waitForFunction(() =>
     document.querySelector(".editor-import-status p").textContent.includes("已导入"),
   );
-  await page.waitForTimeout(3500);
+  await page.clock.runFor(3500);
   assert.equal(await page.locator(".editor-import-status").isVisible(), true);
   await page.getByRole("button", { name: "关闭导入提示" }).click();
   assert.equal(await page.locator(".editor-import-status").isVisible(), false);

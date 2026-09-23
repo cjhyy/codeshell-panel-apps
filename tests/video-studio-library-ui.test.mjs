@@ -398,7 +398,12 @@ async function backgroundChangesWhileDeleting(page, assetId) {
   const before = await canonical(page);
   // Exercise the real edit/commit callback while the modal is mounted, as a
   // background publication would; no production implementation is replaced.
-  await page.locator(`[data-add-asset="${assetId}"]`).evaluate((element) => element.click());
+  // Find and click in one page task so a background render cannot detach the button in between.
+  await page.locator(`[data-add-asset="${assetId}"]`).waitFor({ state: "attached" });
+  await page.evaluate(
+    (id) => document.querySelector(`[data-add-asset="${CSS.escape(id)}"]`).click(),
+    assetId,
+  );
   await page.waitForFunction(
     (count) =>
       window.__libraryTools.read_video_project({

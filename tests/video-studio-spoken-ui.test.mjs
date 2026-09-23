@@ -39,7 +39,7 @@ before(async () => {
  undo:()=>{window.editorHistory.undo();},canUndo:()=>window.editorHistory.canUndo,
  preview:async range=>{window.previewed.push(range);},polish:async text=>{window.polished.push(text);},enhance:async input=>{window.enhanced.push(input);}});
  window.spoken=ui;window.render=render;
- root.addEventListener('click',event=>{const button=event.target.closest('[data-action]');if(button)void ui.action(button.dataset.action).catch(error=>window.errors.push(error.message));});for(const event of ['input','change'])root.addEventListener(event,event=>ui.input(event.target));render();
+ window.running=0;root.addEventListener('click',event=>{const button=event.target.closest('[data-action]');if(button){window.running++;void ui.action(button.dataset.action).catch(error=>window.errors.push(error.message)).finally(()=>window.running--);}});for(const event of ['input','change'])root.addEventListener(event,event=>ui.input(event.target));render();
  `,
       resolveDir: repository,
       sourcefile: "spoken-test.js",
@@ -184,7 +184,8 @@ test("a failed save preserves selected candidates, stale async results never app
     window.render();
   });
   await p.waitForFunction(() => !document.querySelector(".spoken-progress"));
-  await p.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  // The old read has finished (and been dropped) before checking that nothing of it is shown.
+  await p.waitForFunction(() => window.running === 0);
   assert.equal(await p.locator(".spoken-candidate").count(), 0);
   assert.equal(await p.getByRole("alert").count(), 0, "The old project's failure is not shown");
   assert.doesNotMatch((await p.evaluate(() => window.errors)).join("\n"), /工程已变化/);
