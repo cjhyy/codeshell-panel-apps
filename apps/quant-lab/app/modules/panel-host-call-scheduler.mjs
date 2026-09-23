@@ -13,6 +13,7 @@ const INTERACTIVE_METHODS = new Set([
   "notifications.send",
   "process.cancel",
   "workspace.writeText",
+  "storage.compareAndSet",
 ]);
 
 export function panelHostCallPriority(method) {
@@ -39,6 +40,7 @@ export function normalizePanelHostCallError(error) {
 
 export function createPanelHostCallScheduler(options) {
   const invoke = options.invoke;
+  const currentScope = options.currentScope ?? (() => null);
   const now = options.now ?? (() => Date.now());
   const schedule = options.schedule ?? ((callback, delay) => window.setTimeout(callback, delay));
   const cancelSchedule = options.cancelSchedule ?? ((timer) => window.clearTimeout(timer));
@@ -83,11 +85,11 @@ export function createPanelHostCallScheduler(options) {
   function nextDelay(timestamp) {
     if (!queue.length) return null;
     const delays = [];
-    const readyInteractive = queue.some((item) =>
-      item.priority === "interactive" && item.notBefore <= timestamp,
+    const readyInteractive = queue.some(
+      (item) => item.priority === "interactive" && item.notBefore <= timestamp,
     );
-    const readyBackground = queue.some((item) =>
-      item.priority === "background" && item.notBefore <= timestamp,
+    const readyBackground = queue.some(
+      (item) => item.priority === "background" && item.notBefore <= timestamp,
     );
     for (const [ready, cap] of [
       [readyInteractive, maxCalls],
@@ -105,6 +107,10 @@ export function createPanelHostCallScheduler(options) {
   }
 
   function complete(item, value) {
+    if (item.scope !== currentScope()) {
+      fail(item, new Error("项目已切换，旧项目请求的结果未应用。"));
+      return;
+    }
     if (item.cacheKey) {
       cache.set(item.cacheKey, {
         value,
@@ -116,7 +122,11 @@ export function createPanelHostCallScheduler(options) {
   }
 
   function fail(item, error) {
-    if (RATE_LIMIT_PATTERN.test(error instanceof Error ? error.message : String(error ?? "")) && item.attempts < 1) {
+    if (
+      item.scope === currentScope() &&
+      RATE_LIMIT_PATTERN.test(error instanceof Error ? error.message : String(error ?? "")) &&
+      item.attempts < 1
+    ) {
       item.attempts += 1;
       item.notBefore = now() + windowMs + 25;
       queue.push(item);
@@ -130,7 +140,10 @@ export function createPanelHostCallScheduler(options) {
   function dispatch(item, timestamp) {
     callTimes.push(timestamp);
     Promise.resolve()
-      .then(() => invoke(item.method, item.params))
+      .then(() => {
+        if (item.scope !== currentScope()) throw new Error("项目已切换，已取消尚未发出的请求。");
+        return invoke(item.method, item.params);
+      })
       .then((value) => complete(item, value))
       .catch((error) => fail(item, error))
       .finally(pump);
@@ -162,7 +175,9 @@ export function createPanelHostCallScheduler(options) {
   }
 
   function call(method, params) {
-    const cacheKey = panelHostCallCacheKey(method, params);
+    const scope = currentScope();
+    const methodKey = panelHostCallCacheKey(method, params);
+    const cacheKey = methodKey ? JSON.stringify([scope, methodKey]) : "";
     const timestamp = now();
     prune(timestamp);
     const cached = cacheKey ? cache.get(cacheKey) : null;
@@ -178,6 +193,7 @@ export function createPanelHostCallScheduler(options) {
     const item = {
       method,
       params,
+      scope,
       priority: panelHostCallPriority(method),
       notBefore: timestamp,
       attempts: 0,

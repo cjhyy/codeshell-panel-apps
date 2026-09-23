@@ -1732,6 +1732,7 @@ function hostCall(method, params) {
   if (!window.codeshellPanel?.call) return mockHostCall(method, params);
   panelHostCallScheduler ??= createPanelHostCallScheduler({
     invoke: (nextMethod, nextParams) => window.codeshellPanel.call(nextMethod, nextParams),
+    currentScope: () => workspaceEpoch,
     ...(window.__quantLabTestHostCallLimits ?? {}),
   });
   return panelHostCallScheduler.call(method, params);
@@ -5693,6 +5694,7 @@ async function initialize() {
 
 dataSourcesController = createDataSourcesController({
   hostCall, currentEpoch: () => workspaceEpoch,
+  getContext: () => context,
   storageKey: () => scopedStorageKey("dataSources", context.cwd ?? "preview"),
   async onApply() {
     const epoch = workspaceEpoch;

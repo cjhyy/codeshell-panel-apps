@@ -15940,6 +15940,23 @@ button.stock-financial-history-row:focus-visible {
 .sources-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
 .sources-catalog article { border: 1px solid var(--border, #dfe4ec); border-radius: 12px; padding: 14px; }
 .sources-catalog h3 { margin: 0 0 8px; }
+.sources-dialog-card > :not(header) { margin-left: 14px; margin-right: 14px; min-width: 0; }
+.sources-dialog-card > :last-child { margin-bottom: 14px; }
+.sources-dialog-card button, .sources-dialog-card input {
+  min-height: 44px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.sources-dialog-card button { cursor: pointer; }
+.sources-dialog-card button:disabled { opacity: .55; cursor: default; }
+#sources-recovery:not([hidden]) { display: flex; flex-wrap: wrap; gap: 8px; }
+#sources-recovery button { flex: 1 1 220px; }
+#sources-storage-warning, #sources-state { overflow-wrap: anywhere; }
 
 #data-sources-open { min-height: 44px; padding: 8px 14px; border: 1px solid var(--border, #dfe4ec); border-radius: 10px; background: var(--surface, #fff); color: inherit; cursor: pointer; }
 
