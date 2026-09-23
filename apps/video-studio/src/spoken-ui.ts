@@ -1,5 +1,4 @@
 import type { TranscriptSegment } from "./production";
-import type { SpokenSource } from "./spoken-edit";
 import { sameIdentity, type SessionIdentity } from "./editor/session";
 import {
   findEditorSpokenCandidates,
@@ -7,6 +6,7 @@ import {
   planEditorSpokenEdit,
   type EditorSpokenCandidate,
   type EditorSpokenPlan,
+  type SpokenSource,
 } from "./editor/spoken-edits";
 import { TICKS_PER_SECOND, type Tick, type TimeRange } from "./editor/time";
 import type { EditorDocument } from "./editor/types";

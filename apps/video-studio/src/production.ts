@@ -239,7 +239,11 @@ interface JobBinding {
   attachAudio?: boolean;
   startFrame?: number;
   replaceTarget?: VoiceoverReplaceTarget;
-  /** Frame snapshot written by earlier versions; still restored and resolved by alias. */
+  /**
+   * Read-only compatibility: a frame snapshot written by earlier versions. New bindings never set
+   * it (they use replaceTarget); persisted ones are still validated, restored and resolved through
+   * the old clip ID alias so a pending voiceover can finish its replacement.
+   */
   replaceClip?: AudioClip;
   assetId?: string;
   consumed?: boolean;

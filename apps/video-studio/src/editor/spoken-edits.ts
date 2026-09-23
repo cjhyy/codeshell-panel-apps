@@ -1,5 +1,4 @@
 import type { TranscriptSegment } from "../production";
-import type { SpokenSource } from "../spoken-edit";
 import { splitClip, trimClip, type ClipIdFactory } from "./clip-edits";
 import { applyEditorOperations, type EditorClipPatch, type EditorOperation } from "./operations";
 import { sameIdentity, type SessionIdentity } from "./session";
@@ -15,6 +14,13 @@ import {
 import type { EditorClip, EditorDocument, EditorSequence, TimelineMarker } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
+/** One asset's real analysis, the input of spoken-content detection. */
+export interface SpokenSource {
+  assetId: string;
+  transcript?: readonly TranscriptSegment[];
+  /** Real detector intervals, in seconds relative to the original source. */
+  silence?: readonly { start: number; end: number }[];
+}
 export interface SpokenDetection {
   kind: "pause" | "filler" | "repetition";
   precision: "detector" | "word" | "segment";

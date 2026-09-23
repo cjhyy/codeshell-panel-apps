@@ -30,7 +30,7 @@ import {
   sequenceDuration,
   validateEditorDocument,
 } from "../apps/video-studio/src/editor/validation";
-import type { SpokenSource } from "../apps/video-studio/src/spoken-edit";
+import type { SpokenSource } from "../apps/video-studio/src/editor/spoken-edits";
 
 const T = 240000;
 const TALK = 10 * T + 1234; // Real media: not a whole number of 30 fps frames.

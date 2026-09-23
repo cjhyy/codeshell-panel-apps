@@ -32,7 +32,10 @@ export interface VoiceoverPublication {
   placement?: {
     startFrame: number;
     replaceTarget?: VoiceoverReplaceTarget;
-    /** Frame snapshot persisted by earlier versions; resolved through the old clip ID alias. */
+    /**
+     * Read-only compatibility for bindings persisted by earlier versions (new ones use
+     * replaceTarget); resolved through the old clip ID alias, never written.
+     */
     replaceClip?: AudioClip;
   };
 }
