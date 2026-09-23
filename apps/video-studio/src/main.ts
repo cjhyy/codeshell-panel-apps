@@ -1024,7 +1024,9 @@ async function fullTranscript(assetId: string) {
   return segments;
 }
 const spoken = createSpokenUI({
-  project: () => project,
+  document: () => editorSession?.read() ?? null,
+  sequenceId: () => editorSession?.read().activeSequenceId ?? "",
+  identity: () => editorSession?.getState().identity ?? null,
   fetchTranscript: fullTranscript,
   prepare: async (assetId) => {
     const currentId = project.id,
@@ -1060,37 +1062,33 @@ const spoken = createSpokenUI({
     return intervals;
   },
   apply: async (plan) => {
-    assertEditable();
-    if (plan.projectId !== project.id || plan.baseRevision !== project.revision)
-      throw new Error("工程已改变，请重新分析口播");
-    const next = reconcileNarrationEdit(
-        project,
-        applyOperations(project, plan.operations, plan.baseRevision),
-      ),
-      revision = project.revision;
+    // Editability, the session identity and the narration guard are checked synchronously
+    // before the durable write starts; aiApplying then holds other saves until it lands.
+    const saving = applyEditorDurable(plan.operations, plan.identity, plan.title);
     aiApplying = true;
     try {
-      await saveProject(next, plan.title);
+      await saving;
     } finally {
       aiApplying = false;
     }
-    if (project.id !== plan.projectId) throw new Error("保存期间工程已改变");
-    commit(next, true);
+    synchronizeLegacyView();
+    render();
   },
   undo: () => {
     void action("undo").catch(fail);
   },
   canUndo: () => canUndo(),
   preview: async (range) => {
-    await library.enableAudio();
-    await seek(range.timelineStartFrame);
-    await action("play");
-    const controller = playback;
+    if (!editorWorkspace) throw new Error("工程尚未准备好");
+    stop();
+    if (editorWorkspace.playing) await editorWorkspace.togglePlayback();
+    await editorWorkspace.seek(range.start);
+    const workspace = editorWorkspace;
+    await workspace.togglePlayback();
     const stopAtEnd = () => {
-      if (!controller || playback !== controller) return;
-      if (frame >= range.timelineEndFrame) {
-        stop();
-        draw();
+      if (workspace !== editorWorkspace || !workspace.playing) return;
+      if (workspace.currentTime() >= range.end) {
+        void workspace.togglePlayback().catch(fail);
         return;
       }
       requestAnimationFrame(stopAtEnd);

@@ -443,6 +443,9 @@ export class EditorWorkspace {
     output.textContent = "";
     output.hidden = true;
   }
+  get playing(): boolean {
+    return this.preview.playing;
+  }
   /** Current playhead of the shown sequence, in exact ticks. */
   currentTime(): Tick {
     return this.playhead;

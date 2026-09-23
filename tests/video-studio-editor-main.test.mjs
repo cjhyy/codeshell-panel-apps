@@ -89,6 +89,7 @@ async function openPage(t, options = {}) {
     ({ seed, options }) => {
       const records = JSON.parse(localStorage.getItem("editor-main-host") ?? "null") ?? {
         "video-studio-current": [{ revision: 1, updatedAt: 1, label: "原始 V1", data: seed }],
+        ...options.records,
       };
       const preferences = JSON.parse(localStorage.getItem("editor-main-preferences") ?? "{}");
       let failCurrent = false;
@@ -1340,6 +1341,119 @@ test("字幕 page edits real off-frame multitrack footage without the old view, 
   assert.equal(await page.locator(".editor-captions").count(), 1, "One shared caption panel");
   const toasts = await page.evaluate(() => window.__toasts.join("\n"));
   assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
+});
+
+test("口播 page cuts a pause from real off-frame multitrack media on the editor document", async (t) => {
+  const audio = await readFile(new URL("./fixtures/static-tone.wav", import.meta.url));
+  const voiceId = `asset-${createHash("sha256").update(audio).digest("hex")}`;
+  const talk = 10 * T + 1234;
+  const spokenSeed = {
+    ...realMediaSeed,
+    id: "spoken-real-media",
+    name: "实拍口播",
+    assets: [
+      ...realMediaSeed.assets,
+      { id: "voice", name: "实拍口播.wav", kind: "audio", duration: talk, resourceId: voiceId },
+    ],
+    sequences: [
+      {
+        ...realMediaSeed.sequences[0],
+        tracks: [...realMediaSeed.sequences[0].tracks, track("a1", "audio", "口播")],
+        clips: [
+          ...realMediaSeed.sequences[0].clips,
+          {
+            ...picture("voice-clip", "a1", 0, talk),
+            assetId: "voice",
+          },
+        ],
+      },
+    ],
+  };
+  const page = await openPage(t, {
+    seed: spokenSeed,
+    fullNativeAccess: true,
+    holdNativeStart: true,
+    mediaMetadata: {
+      [voiceId]: {
+        id: voiceId,
+        sha256: voiceId.slice(6),
+        bytes: audio.length,
+        mimeType: "audio/wav",
+        name: "实拍口播.wav",
+        createdAt: 1,
+      },
+    },
+    mediaResources: { [voiceId]: { mimeType: "audio/wav", bytes: audio } },
+    // Finished preparation: real detector silence, no transcript yet.
+    records: {
+      [`video-studio-prepared-${voiceId}`]: [
+        {
+          revision: 1,
+          updatedAt: 1,
+          label: "准备完成",
+          data: { assetId: voiceId, silence: { intervals: [{ start: 2, end: 4 }] } },
+        },
+      ],
+    },
+  });
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
+      document.querySelector("#toast"),
+      { childList: true, characterData: true, subtree: true },
+    );
+  });
+  // The media service has restored its job list once the production controller is ready.
+  await page.waitForFunction(() =>
+    window.__mainHost.calls.some((call) => call.method === "media.jobs.list"),
+  );
+  const before = await saved(page);
+  await page.locator('#studio .rail [data-tab="spoken"]').click();
+  const panel = page.locator("#studio .library-panel");
+  await panel.locator("#spoken-asset").waitFor({ state: "visible" });
+  assert.deepEqual(await panel.locator("#spoken-asset option").allTextContents(), ["实拍口播.wav"]);
+  await panel.getByRole("button", { name: "读取已有结果", exact: true }).click();
+  await panel.locator(".spoken-candidate").first().waitFor();
+  await panel.getByRole("button", { name: "勾选长停顿", exact: true }).click();
+  assert.match(await panel.locator("#spoken-selection").textContent(), /1 项.*1\.67 秒/);
+  await panel.getByRole("button", { name: "应用所选删减", exact: true }).click();
+  await page.waitForFunction(
+    (revision) => window.__mainHost.current().revision > revision,
+    before.revision,
+  );
+  const after = await waitSaved(page);
+  assert.equal(await panel.getByRole("alert").count(), 0);
+  const clips = after.sequences[0].clips,
+    removed = 2 * T - 80000;
+  const voice = clips
+    .filter((clip) => clip.trackId === "a1")
+    .sort((a, b) => a.start - b.start)
+    .map((clip) => [clip.start, clip.start + clip.duration, clip.timeMap.points[0].source]);
+  assert.deepEqual(voice, [
+    [0, 2 * T + 40000, 0],
+    [2 * T + 40000, talk - removed, 4 * T - 40000],
+  ]);
+  // The whole program loses the pause: the overlay is cut, later picture and text move up.
+  assert.equal(clips.find((clip) => clip.id === "camera-main").start, 1_234_567 - removed);
+  assert.equal(clips.find((clip) => clip.id === "existing-caption").start, 2_000_001 - removed);
+  assert.deepEqual(
+    clips
+      .filter((clip) => clip.trackId === "v2")
+      .sort((a, b) => a.start - b.start)
+      .map((clip) => [clip.start, clip.start + clip.duration]),
+    [
+      [0, 2 * T + 40000],
+      [2 * T + 40000, 2_400_011 - removed],
+    ],
+  );
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.match(toasts, /已删去 1\.67 秒/);
+  assert.doesNotMatch(toasts, /旧视图|失败|无效/);
+  await panel.getByRole("button", { name: "撤销上次编辑", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      window.__mainHost.current().sequences[0].clips.filter((c) => c.trackId === "a1").length === 1,
+  );
 });
 
 test("an asset change on the 字幕 page never rewrites the panel in place and keeps unsaved text", async (t) => {

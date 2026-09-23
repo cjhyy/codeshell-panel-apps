@@ -28,7 +28,7 @@
     "app/editor-workspace.css": "0168af9ad20e8258d03328883dea7d9f8a93ffe68a46b87227c2d60b887dcf5c",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "cb2ea2a6ee6ee6e580b836fff8a8d6592a7beb98bd0c4cb8c777a2d0875e3ef3",
+    "app/main.mjs": "9eacaf8fbcb8bfe82fb87568ce0f2787fa882f7bdd008ff2b3643f2788d30c7a",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "78f7aa060c02a6dbb0b560ad999cc26e8d962ae2397795d655367cc15f16f42e",
@@ -40,6 +40,6 @@
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "593dc35be5e81de596e18158f44994fe23225109bdd9c0bbe84d01d22d0c1176",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "b3ad5efe538e8e0bb302068a2fb762365c21c3d396e92b2f8a81d3d8eb349058"
+    "README.md": "767372137e13648e73d85c04fc6b2980e9cf4c6d5746b165fd6d6b10f1db2f6a"
   }
 }

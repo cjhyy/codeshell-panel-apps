@@ -11,7 +11,6 @@ import {
 } from "../apps/video-studio/src/model";
 import { narrationSnapshot, updateNarrationScript } from "../apps/video-studio/src/narration";
 import { roughCutOperations } from "../apps/video-studio/src/rough-cut";
-import { buildSpokenEditPlan } from "../apps/video-studio/src/spoken-edit";
 
 const MAX_FRAMES = 30 * 86400;
 const edit = (project: Project, operations: EditOperation[]) =>
@@ -314,7 +313,4 @@ test("rough-cut preflight and narration duration include gaps; placement changes
     { id: "cut", assetId: "video-a", inFrame: 0, outFrame: 30, name: "追加", enabled: true },
   ];
   assert.throws(() => roughCutOperations(nearLimit, ["cut"]), /时长上限/);
-  const snapshot = structuredClone(before);
-  assert.throws(() => buildSpokenEditPlan(before, [], []), /先开启主序列磁性/);
-  assert.deepEqual(before, snapshot);
 });
