@@ -994,22 +994,8 @@
   color: var(--accent, #b8edc8);
 }
 @media (max-width: 900px) {
-  .workspace.editor-mode {
-    grid-template-columns: 55px 220px minmax(250px, 1fr);
-    grid-template-rows: minmax(300px, 45vh) auto 280px minmax(240px, 420px);
-  }
   .workspace.editor-mode > .workspace-resizer {
     display: none;
-  }
-  .editor-workspace-embedded .ew-properties {
-    grid-column: 2 / -1;
-    grid-row: 4;
-    border-top: 1px solid var(--ew-border);
-    border-left: 0;
-  }
-  .workspace.editor-mode.editor-ai-mode > .inspector {
-    grid-column: 2 / -1;
-    grid-row: 4;
   }
 }
 
@@ -1161,27 +1147,20 @@
 .workspace.editor-mode .source-history {
   display: none;
 }
-@media (max-width: 900px) {
-  .workspace.editor-mode.editor-source-mode > .inspector {
-    display: grid;
-    grid-column: 2 / -1;
-    grid-row: 4;
-    min-height: 0;
-  }
-}
 
 .narrow-switch {
   display: none;
 }
-/* Narrow docked panels: preview and timeline share the first screen; the library and the
+/* Docked panels too narrow for three columns (the library, preview and inspector stop
+   fitting below ~900px): preview and timeline share the first screen, and the library and the
    inspector take turns with the preview through the switch instead of stacking the page. */
-@media (max-width: 640px) {
+@media (max-width: 900px) {
   #studio:has(> .workspace.editor-mode) {
     height: 100dvh;
     min-height: 480px;
   }
   .workspace.editor-mode {
-    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-columns: 55px minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto clamp(220px, 42dvh, 380px);
   }
   .workspace.editor-mode > .rail {
@@ -1228,11 +1207,19 @@
     border-left: 0;
     border-right: 0;
   }
-  .workspace.editor-mode.editor-source-mode > .inspector {
+  .workspace.editor-mode:is(.editor-source-mode, .editor-ai-mode) > .inspector {
     display: block;
+    overflow-y: auto;
+    padding: 14px 12px;
   }
   .workspace.editor-mode > .library-panel {
     padding: 12px;
+  }
+  /* A wide side panel lays large cards out in columns instead of one screen-wide card. */
+  .workspace.editor-mode > .library-panel .asset-list[data-view="large"] {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr));
+    gap: 10px;
   }
   .workspace.editor-mode .editor-workspace-embedded > .ew-tools {
     grid-column: 2;
@@ -1260,5 +1247,10 @@
   }
   .workspace.editor-mode .editor-workspace-embedded .ew-player [data-ew-fps] {
     display: none;
+  }
+}
+@media (max-width: 640px) {
+  .workspace.editor-mode {
+    grid-template-columns: 46px minmax(0, 1fr);
   }
 }

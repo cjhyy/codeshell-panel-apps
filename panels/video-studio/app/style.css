@@ -3045,6 +3045,46 @@ dialog .range-inputs {
 .folder-import .folder-status:empty {
   display: none;
 }
+/* The notes open from a small toggle (touch has no tooltips) as a popover over the list. */
+.folder-import > .folder-actions {
+  position: relative;
+}
+.folder-help {
+  flex: none;
+  align-self: center;
+}
+.folder-help > summary {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  list-style: none;
+  cursor: pointer;
+}
+.folder-help > summary::-webkit-details-marker {
+  display: none;
+}
+.folder-help > summary:hover,
+.folder-help[open] > summary {
+  color: var(--accent);
+  background: #b8edc81a;
+}
+.folder-help-body {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 2px 10px;
+  border: 1px solid #373b3f;
+  border-radius: 8px;
+  background: #1c1f22;
+  box-shadow: 0 8px 24px #0007;
+}
 
 /* The media library keeps secondary tools in compact rows so the first cards show without scrolling. */
 .workspace.editor-mode > .library-panel {
@@ -3064,6 +3104,19 @@ dialog .range-inputs {
   margin: 0 0 8px;
   padding: 0;
   border: 0;
+}
+.library-panel .folder-import > .folder-actions {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+.library-panel .folder-import > .folder-actions > [data-action="import-folder"] {
+  flex: none;
+}
+.library-panel .folder-import > .folder-actions > button {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .library-panel .folder-import > .folder-actions > button,
 .library-secondary > button {
@@ -3112,10 +3165,10 @@ dialog .range-inputs {
   gap: 6px 8px;
   margin: 8px 0 10px;
 }
-.media-library-toolbar > .media-select-all {
+.section-title > .media-select-all {
   margin-left: auto;
-  min-height: 26px;
-  padding: 3px 8px;
+  min-height: 22px;
+  padding: 2px 8px;
   font-size: 10px;
 }
 .media-selection-count {

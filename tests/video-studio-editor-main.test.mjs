@@ -1476,9 +1476,10 @@ test("a docked 1280×900 workspace shows five tracks, reachable add-track button
   assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 });
 });
 
-test("a narrow 600×900 panel keeps preview and timeline on the first screen and switches library and inspector", async (t) => {
-  const page = await openPage(t, { seed: denseSeed, viewport: { width: 600, height: 900 } });
-  const screen = { top: 0, left: 0, right: 600, bottom: 900 };
+for (const width of [600, 800])
+test(`a narrow ${width}×900 panel keeps preview and timeline on the first screen and switches library and inspector`, async (t) => {
+  const page = await openPage(t, { seed: denseSeed, viewport: { width, height: 900 } });
+  const screen = { top: 0, left: 0, right: width, bottom: 900 };
   const viewer = await rectOf(page, "#editor-workspace .ew-viewer");
   const timeline = await rectOf(page, "#editor-workspace [data-ew-timeline]");
   const status = await rectOf(page, "#studio .statusbar");
@@ -1510,6 +1511,14 @@ test("a narrow 600×900 panel keeps preview and timeline on the first screen and
   assert.equal(await page.locator("#studio .library-panel").isVisible(), true);
   assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), false);
   assert.ok(inside(await rectOf(page, "#studio .library-panel .asset-card"), screen));
+  // Folder import notes open from a visible toggle, not only a hover tooltip.
+  const help = page.locator("#studio .library-panel .folder-help");
+  assert.equal(await help.locator("p").first().isVisible(), false);
+  await help.locator("summary").click();
+  assert.equal(await help.locator("p").first().isVisible(), true);
+  assert.ok(inside(await rectOf(page, "#studio .library-panel .folder-help p"), screen));
+  await help.locator("summary").click();
+  assert.equal(await help.locator("p").first().isVisible(), false);
   await page.locator("#studio .narrow-switch").getByRole("button", { name: "画面", exact: true }).click();
   assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), true);
   assert.equal(await page.locator("#studio .library-panel").isVisible(), false);
@@ -1520,17 +1529,39 @@ test("a narrow 600×900 panel keeps preview and timeline on the first screen and
   assert.equal(await page.locator("#editor-workspace [data-ew-timeline]").isVisible(), true);
   await returnEditor(page);
 
-  for (const [width, height] of [
+  for (const [size, height] of [
     [360, 800],
-    [600, 900],
+    [900, 900],
+    [width, 900],
   ]) {
-    await page.setViewportSize({ width, height });
+    await page.setViewportSize({ width: size, height });
     await settle(page);
-    assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 }, `${width}px`);
+    assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 }, `${size}px`);
+    assert.equal(await page.locator("#studio .narrow-switch").isVisible(), true, `${size}px`);
     const narrowTimeline = await rectOf(page, "#editor-workspace [data-ew-timeline]");
-    assert.ok(narrowTimeline.top < height && narrowTimeline.bottom <= height + 0.5, `${width}px`);
-    assert.ok(!overlaps(await rectOf(page, "#studio .statusbar"), narrowTimeline), `${width}px`);
+    assert.ok(narrowTimeline.top < height && narrowTimeline.bottom <= height + 0.5, `${size}px`);
+    assert.ok(!overlaps(await rectOf(page, "#studio .statusbar"), narrowTimeline), `${size}px`);
+    assert.ok(inside(await rectOf(page, "#editor-workspace .ew-viewer"), { top: 0, left: 0, right: size, bottom: height }));
+    if (size === 360) {
+      const column = await rectOf(page, "#editor-workspace .et-track-heads");
+      assert.ok(
+        column.width <= narrowTimeline.width * 0.4,
+        `Track names take ${column.width}px of a ${narrowTimeline.width}px timeline`,
+      );
+      // Switches and order stay reachable in the slim track column.
+      for (const name of ["锁定画面", "隐藏画面", "静音画面", "上移画面"]) {
+        const control = await page.getByRole("button", { name, exact: true }).evaluate((element) => element.getBoundingClientRect().toJSON());
+        assert.ok(inside(control, column), `${name}: ${JSON.stringify(control)}`);
+      }
+    }
   }
+  // The full three-column workspace returns once it fits.
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await settle(page);
+  assert.equal(await page.locator("#studio .narrow-switch").isVisible(), false);
+  for (const selector of ["#studio .library-panel", "#editor-workspace .ew-viewer", "#editor-workspace .ew-properties"])
+    assert.equal(await page.locator(selector).isVisible(), true, selector);
+  assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 });
 });
 
 test("字幕 page edits real off-frame multitrack footage without the old view, and 语音字幕 shows the same rows", async (t) => {

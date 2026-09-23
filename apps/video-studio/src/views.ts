@@ -524,7 +524,15 @@ ${esc(aiPrompt)}</textarea
     );
     return html`<div class="section-title">
         <h2>项目素材</h2>
-        <span class="count-badge" title="${filteringMedia ? `显示 ${assets.length} 份，共 ${project.assets.length} 份` : `共 ${project.assets.length} 份`}"
+        ${project.assets.length
+          ? button(
+              "select-media",
+              search || preferences.filter !== "all" ? "全选当前结果" : "全选",
+              undefined,
+              "quiet media-select-all",
+              !assets.length,
+            )
+          : ""}<span class="count-badge" title="${filteringMedia ? `显示 ${assets.length} 份，共 ${project.assets.length} 份` : `共 ${project.assets.length} 份`}"
           >${filteringMedia ? `${assets.length}/${project.assets.length}` : project.assets.length}</span
         >
       </div>
@@ -606,15 +614,6 @@ ${esc(aiPrompt)}</textarea
               .join("")}
           </select></label
         >
-        ${project.assets.length
-          ? button(
-              "select-media",
-              search || preferences.filter !== "all" ? "全选当前结果" : "全选",
-              undefined,
-              "quiet media-select-all",
-              !assets.length,
-            )
-          : ""}
       </div>
       ${selectedAssets.length
         ? // Batch actions only take room while something is selected.

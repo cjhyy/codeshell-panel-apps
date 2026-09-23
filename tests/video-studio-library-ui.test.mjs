@@ -915,10 +915,10 @@ async function checkContextMenu(viewport, artifact) {
       0,
       "Right-clicking must not switch or start the source preview",
     );
-    // Narrow panels show the library in place of the preview; the menu must not swap it away.
+    // Narrow (≤900px) panels show the library in place of the preview; the menu must not swap it away.
     assert.equal(
       await page
-        .locator(viewport.width > 640 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .locator(viewport.width > 900 ? "[data-ew-canvas]" : "#studio .library-panel")
         .isVisible(),
       true,
       "Right-clicking must not switch or start the source preview",
@@ -938,7 +938,7 @@ async function checkContextMenu(viewport, artifact) {
     assert.equal(await popup.isVisible(), false);
     assert.equal(
       await page
-        .locator(viewport.width > 640 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .locator(viewport.width > 900 ? "[data-ew-canvas]" : "#studio .library-panel")
         .isVisible(),
       true,
     );
