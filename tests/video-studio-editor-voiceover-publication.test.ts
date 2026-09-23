@@ -3,7 +3,10 @@ import test from "node:test";
 import { createProject, validateProject } from "../apps/video-studio/src/model";
 import { ProductionController } from "../apps/video-studio/src/production";
 import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
-import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapter";
+import {
+  editorClipIdForLegacyAudio,
+  projectLegacyView,
+} from "../apps/video-studio/src/editor/legacy-adapter";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import {
   createTrack,
@@ -16,6 +19,7 @@ import {
   captureReplaceTarget,
   planPublishVoiceover,
   resolveReplaceTarget,
+  verifyReplaceTarget,
   type VoiceoverPublication,
 } from "../apps/video-studio/src/editor/voiceover-publication";
 import { resolveLegacyClipId } from "../apps/video-studio/src/editor/legacy-aliases";
@@ -594,4 +598,159 @@ test("capturing a target requires a sound clip on an audio track", () => {
   assert.throws(() => captureReplaceTarget(doc, seq.id, picture.id), /配音/);
   assert.throws(() => captureReplaceTarget(doc, seq.id, "missing"), /配音/);
   assert.throws(() => captureReplaceTarget(doc, "missing", clip.id), /配音/);
+});
+
+test("a video clip sharing the old ID never stands in for the selected voice", () => {
+  const { doc, seq, clip } = fixture(),
+    picture = seq.clips.find((c) => c.kind === "media" && c.assetId === "picture")!;
+  // The voice was renamed; its old audio ID now equals the picture clip's own ID.
+  clip.id = "voice-canon";
+  doc.production = {
+    ...(doc.production ?? {}),
+    legacyAliases: [
+      { sequenceId: seq.id, collection: "audioClips", legacyId: picture.id, clipId: "voice-canon" },
+    ],
+  };
+  const aliased = validateEditorDocument(doc),
+    view = projectLegacyView(aliased, seq.id);
+  assert.ok(view.clips.some((c) => c.collection === "clips" && c.legacyId === picture.id));
+  assert.equal(editorClipIdForLegacyAudio(view, picture.id), "voice-canon");
+  assert.equal(editorClipIdForLegacyAudio(view, "missing"), undefined);
+  assert.equal(resolveLegacyClipId(aliased, seq.id, "audioClips", picture.id), "voice-canon");
+});
+
+test("time maps compare point by point, independent of how the saved record ordered its fields", () => {
+  const { doc, seq, clip } = fixture(),
+    target = captureReplaceTarget(doc, seq.id, clip.id);
+  target.timeMap = {
+    points: target.timeMap.points.map(({ time, source }) => ({ source, time }) as any),
+  };
+  assert.equal(resolveReplaceTarget(doc, target, seq.id)?.id, clip.id);
+  target.timeMap.points[1]!.source += 1;
+  assert.equal(resolveReplaceTarget(doc, target, seq.id), undefined);
+});
+
+test("a locked voice track is refused when choosing and before generation", () => {
+  const { doc, seq, clip } = fixture(),
+    target = captureReplaceTarget(doc, seq.id, clip.id);
+  assert.equal(verifyReplaceTarget(doc, target), true);
+  assert.equal(verifyReplaceTarget(doc, { ...target, start: target.start + 1 }), false);
+  assert.equal(verifyReplaceTarget(doc, { ...target, sequenceId: "other" }), false);
+  seq.tracks.find((t) => t.id === clip.trackId)!.locked = true;
+  assert.throws(() => captureReplaceTarget(doc, seq.id, clip.id), /锁定/);
+  assert.throws(() => verifyReplaceTarget(doc, target), /锁定/);
+});
+
+/** The editor callback: plan against the current document and apply it as one edit. */
+function editorPublisher(start: EditorDocument) {
+  const state = { doc: start, notices: [] as string[] };
+  return {
+    state,
+    publishVoiceover: async (_: string, result: any, request: VoiceoverPublication) => {
+      const plan = planPublishVoiceover(state.doc, result, request, ids());
+      if (plan.operations.length)
+        state.doc = applyEditorOperations(state.doc, plan.operations, state.doc.revision);
+      state.notices.push(plan.notice);
+    },
+  };
+}
+test("a stored frame-snapshot job completes through the alias and replaces the renamed voice", async () => {
+  const { doc, seq, clip } = fixture(),
+    legacy = structuredClone(projectLegacyView(doc, seq.id).project.audioClips![0]!);
+  clip.id = "canonical-voice";
+  doc.production = {
+    ...(doc.production ?? {}),
+    legacyAliases: [
+      { sequenceId: seq.id, collection: "audioClips", legacyId: legacy.id, clipId: "canonical-voice" },
+    ],
+  };
+  const aliased = validateEditorDocument(doc),
+    before = structuredClone(aliased.sequences[0]!.clips.find((c) => c.id === "canonical-voice")),
+    editor = editorPublisher(aliased),
+    { bridge, state } = productionBridge([ttsJob("job-old")], {
+      schemaVersion: 1,
+      auto: null,
+      bindings: {
+        "job-old": {
+          jobId: "job-old",
+          projectId: aliased.id,
+          purpose: "tts",
+          attachAudio: true,
+          startFrame: legacy.startFrame,
+          voiceoverOrigin: { sequenceId: seq.id, revision: aliased.revision },
+          replaceClip: legacy,
+        },
+      },
+    });
+  const controller = new ProductionController(bridge, {
+    getProject: () => projectLegacyView(editor.state.doc, seq.id).project,
+    publishAssets: async () => assert.fail("must bypass legacy"),
+    publishVoiceover: editor.publishVoiceover,
+    changed() {},
+  });
+  try {
+    await controller.initialize();
+    await controller.refresh();
+  } finally {
+    controller.dispose();
+  }
+  const after = editor.state.doc;
+  assert.equal(after.revision, aliased.revision + 1);
+  assert.deepEqual(
+    after.sequences[0]!.clips.find((c) => c.id === "canonical-voice"),
+    { ...before, assetId: resultId },
+  );
+  assert.match(editor.state.notices.join("\n"), /已替换配音/);
+  assert.ok(Object.values(state.saved.bindings).every((b: any) => b.consumed));
+});
+
+test("two regenerations of the same voice give one replacement and keep the other in the library", async () => {
+  const { doc, seq, clip } = fixture(),
+    target = captureReplaceTarget(doc, seq.id, clip.id),
+    otherId = `asset-${"f".repeat(64)}`,
+    second = ttsJob("job-second");
+  second.createdAt = second.updatedAt = 2;
+  second.result = {
+    ...raw(),
+    asset: { ...raw().asset, id: otherId, sha256: "f".repeat(64), name: "另一版配音" },
+  };
+  const binding = (jobId: string) => ({
+      jobId,
+      projectId: doc.id,
+      purpose: "tts",
+      attachAudio: true,
+      startFrame: 30,
+      voiceoverOrigin: { sequenceId: seq.id, revision: doc.revision },
+      replaceTarget: target,
+    }),
+    editor = editorPublisher(doc),
+    { bridge } = productionBridge([ttsJob("job-first"), second], {
+      schemaVersion: 1,
+      auto: null,
+      bindings: { "job-first": binding("job-first"), "job-second": binding("job-second") },
+    });
+  const controller = new ProductionController(bridge, {
+    getProject: () => projectLegacyView(editor.state.doc, seq.id).project,
+    publishAssets: async () => assert.fail("must bypass legacy"),
+    publishVoiceover: editor.publishVoiceover,
+    changed() {},
+  });
+  try {
+    await controller.initialize();
+    await controller.refresh();
+  } finally {
+    controller.dispose();
+  }
+  const after = editor.state.doc,
+    replaced = after.sequences[0]!.clips.find((c) => c.id === clip.id) as MediaClip;
+  assert.equal(after.revision, doc.revision + 2, "one replacement, one library addition");
+  assert.ok([resultId, otherId].includes(replaced.assetId));
+  assert.equal(after.sequences[0]!.clips.length, doc.sequences[0]!.clips.length);
+  assert.deepEqual(
+    after.assets.filter((a) => [resultId, otherId].includes(a.resourceId!)).length,
+    2,
+    "both voices are kept",
+  );
+  assert.equal(editor.state.notices.filter((n) => /已替换配音/.test(n)).length, 1);
+  assert.equal(editor.state.notices.filter((n) => /未替换原配音.*素材库/.test(n)).length, 1);
 });

@@ -2,6 +2,7 @@ import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { resolveLegacyClipId } from "./legacy-aliases";
+import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./legacy-time";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorAsset, EditorDocument, JsonData, MediaClip } from "./types";
@@ -34,8 +35,6 @@ export interface VoiceoverPublication {
     replaceClip?: AudioClip;
   };
 }
-/** Old frame records describe 1/30 second. */
-const LEGACY_FRAME_TICKS = 8000;
 function audioClipOnTrack(
   doc: EditorDocument,
   sequenceId: string,
@@ -56,6 +55,7 @@ export function captureReplaceTarget(
 ): VoiceoverReplaceTarget {
   const clip = audioClipOnTrack(doc, sequenceId, clipId);
   if (!clip) throw new Error("请选择音轨上的配音片段");
+  assertTrackUnlocked(doc, sequenceId, clip);
   return {
     sequenceId,
     clipId: clip.id,
@@ -65,6 +65,14 @@ export function captureReplaceTarget(
     duration: clip.duration,
     timeMap: structuredClone(clip.timeMap),
   };
+}
+function assertTrackUnlocked(doc: EditorDocument, sequenceId: string, clip: MediaClip): void {
+  if (
+    doc.sequences
+      .find((s) => s.id === sequenceId)
+      ?.tracks.find((t) => t.id === clip.trackId)?.locked
+  )
+    throw new Error("配音所在轨道已锁定，请先解锁轨道再重新配音");
 }
 const isNativeTarget = (
   target: VoiceoverReplaceTarget | AudioClip,
@@ -102,7 +110,12 @@ export function resolveReplaceTarget(
       clip.assetId === target.assetId &&
       clip.start === target.start &&
       clip.duration === target.duration &&
-      JSON.stringify(clip.timeMap) === JSON.stringify(target.timeMap)
+      clip.timeMap.points.length === target.timeMap.points.length &&
+      clip.timeMap.points.every(
+        (point, index) =>
+          point.time === target.timeMap.points[index]!.time &&
+          point.source === target.timeMap.points[index]!.source,
+      )
       ? clip
       : undefined;
   const source = target.inFrame * LEGACY_FRAME_TICKS,
@@ -118,6 +131,17 @@ export function resolveReplaceTarget(
     points[1]!.source === source + duration
     ? clip
     : undefined;
+}
+/**
+ * Checked before synthesis is queued: the clip is still exactly where the user chose it in
+ * the active sequence. A locked track is reported instead of silently falling back later.
+ */
+export function verifyReplaceTarget(doc: EditorDocument, target: VoiceoverReplaceTarget): boolean {
+  if (target.sequenceId !== doc.activeSequenceId) return false;
+  const clip = resolveReplaceTarget(doc, target, target.sequenceId);
+  if (!clip) return false;
+  assertTrackUnlocked(doc, target.sequenceId, clip);
+  return true;
 }
 /** Native source duration stays in ticks; the old 30 fps view never determines asset length. */
 export function canonicalVoiceoverReceipt(raw: unknown): CanonicalVoiceoverResult {
@@ -205,7 +229,7 @@ export function planPublishVoiceover(
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/.test(context.jobId) ||
     !Number.isSafeInteger(context.placement.startFrame) ||
     context.placement.startFrame < 0 ||
-    context.placement.startFrame > 2592000
+    context.placement.startFrame > MAX_LEGACY_FRAME
   )
     throw new Error("配音任务的原始放置记录无效");
   const origin = context.origin,

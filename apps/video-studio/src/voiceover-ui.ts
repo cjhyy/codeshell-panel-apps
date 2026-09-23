@@ -2,6 +2,7 @@ import { escapeHtml as esc, html } from "./icons";
 import { button } from "./views";
 import type { Asset } from "./model";
 import type { VoiceoverReplaceTarget } from "./editor/voiceover-publication";
+import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./editor/legacy-time";
 import type { ProductionController, VoiceCatalog, VoiceModel, VoicePreparation } from "./production";
 
 type Voice = { id: string; name: string; language: string };
@@ -539,7 +540,7 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
     const placement = {
       // Replacement keeps the original clip's exact ticks; the frame is only a record.
       startFrame: replacement
-        ? Math.min(2592000, Math.floor(replacement.target.start / 8000))
+        ? Math.min(MAX_LEGACY_FRAME, Math.floor(replacement.target.start / LEGACY_FRAME_TICKS))
         : context.frame(),
       attach: true,
       ...(replacement ? { replaceTarget: structuredClone(replacement.target) } : {}),

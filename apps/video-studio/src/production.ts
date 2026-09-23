@@ -9,6 +9,7 @@ import {
   type VoiceoverPublication,
   type VoiceoverReplaceTarget,
 } from "./editor/voiceover-publication";
+import { MAX_LEGACY_FRAME } from "./editor/legacy-time";
 import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
 
 export type TranscriptionUnavailableReason =
@@ -612,7 +613,7 @@ function productionDocument(value: unknown): ProductionDocument {
       (raw.startFrame !== undefined &&
         (!Number.isSafeInteger(raw.startFrame) ||
           Number(raw.startFrame) < 0 ||
-          Number(raw.startFrame) > 2592000)) ||
+          Number(raw.startFrame) > MAX_LEGACY_FRAME)) ||
       (raw.assetId !== undefined &&
         (typeof raw.assetId !== "string" ||
           !/^(?:asset|external)-[a-f0-9]{64}$/.test(raw.assetId))) ||
@@ -1213,7 +1214,7 @@ export class ProductionController {
       placement &&
       (!Number.isSafeInteger(placement.startFrame) ||
         placement.startFrame < 0 ||
-        placement.startFrame > 2592000)
+        placement.startFrame > MAX_LEGACY_FRAME)
     )
       throw new Error("配音位置无效");
     const currentProject = this.callbacks.getProject();

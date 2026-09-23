@@ -89,6 +89,7 @@ import {
   projectLegacyView,
   applyLegacyProjectChange,
   LEGACY_FRAME_TICKS,
+  editorClipIdForLegacyAudio,
   type LegacyProjectView,
 } from "./editor/legacy-adapter";
 import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-storage";
@@ -131,7 +132,7 @@ import { enhancedEditorAsset } from "./editor/audio-enhancement";
 import {
   captureReplaceTarget,
   planPublishVoiceover,
-  resolveReplaceTarget,
+  verifyReplaceTarget,
 } from "./editor/voiceover-publication";
 import { uploadEditorResource } from "./editor/resource-upload";
 import { createEditorAgentTools } from "./editor/agent-tools";
@@ -490,14 +491,8 @@ const production = new ProductionController(panel, {
     const doc = editorSession.read();
     return { sequenceId: doc.activeSequenceId, revision: doc.revision };
   },
-  verifyReplaceTarget: (target) => {
-    if (!editorSession) return false;
-    const doc = editorSession.read();
-    return (
-      target.sequenceId === doc.activeSequenceId &&
-      Boolean(resolveReplaceTarget(doc, target, target.sequenceId))
-    );
-  },
+  verifyReplaceTarget: (target) =>
+    Boolean(editorSession && verifyReplaceTarget(editorSession.read(), target)),
   publishVoiceover: async (projectId, result, context) => {
     assertProductionPublicationEditable();
     if (!editorSession || editorSession.read().id !== projectId)
@@ -3582,9 +3577,7 @@ async function action(name: string, id?: string): Promise<void> {
           id ??
           (editorVisible
             ? selected
-            : legacyView?.clips.find(
-                (item) => item.collection !== "captions" && item.legacyId === selected,
-              )?.clipId);
+            : legacyView && editorClipIdForLegacyAudio(legacyView, selected));
       const target = captureReplaceTarget(doc, doc.activeSequenceId, clipId ?? "");
       let speech: Asset["speech"];
       try {

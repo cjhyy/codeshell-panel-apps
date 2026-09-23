@@ -13,6 +13,7 @@ import { captionTemplate, sameJson } from "./caption-presets";
 import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { legacyClipId, type LegacyCollection } from "./legacy-aliases";
+import { LEGACY_FRAME_TICKS } from "./legacy-time";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { freezeTimeMap } from "./time";
 import type {
@@ -27,7 +28,7 @@ import type {
 import { validateEditorDocument } from "./validation";
 
 /** Legacy frames describe 1/30 second regardless of the v2 sequence's frame rate. */
-export const LEGACY_FRAME_TICKS = 8000;
+export { LEGACY_FRAME_TICKS };
 type Collection = LegacyCollection;
 export interface LegacyViewOptions {
   primaryVideoTrackId?: string;
@@ -1067,4 +1068,12 @@ export function applyLegacyProjectChange(
   append(lateAssets);
   applyEditorOperations(document, operations, baseRevision);
   return structuredClone(operations);
+}
+/** The editor clip behind an old independent-audio row the user selected in the frame view. */
+export function editorClipIdForLegacyAudio(
+  view: Pick<LegacyProjectView, "clips">,
+  legacyId: string,
+): string | undefined {
+  return view.clips.find((item) => item.collection === "audioClips" && item.legacyId === legacyId)
+    ?.clipId;
 }

@@ -57,7 +57,14 @@ export function legacyClipId(
 
 /**
  * The canonical clip an old schema-1 ID refers to, read directly from the editor document
- * without building the 30 fps view. Ambiguous or unknown IDs resolve to nothing.
+ * without building the 30 fps view. Only clips that can belong to the collection are
+ * considered (sound clips on audio tracks for "audioClips", subtitles for "captions"), so a
+ * video clip sharing the ID cannot stand in for a voice. Ambiguous or unknown IDs resolve to
+ * nothing.
+ *
+ * The frame view gives a second clip with the same old ID a `-legacy-N` suffix, in an order
+ * that depends on the whole projection. Such suffixed IDs deliberately do not resolve here;
+ * callers treat that like a changed original and keep their result in the library.
  */
 export function resolveLegacyClipId(
   document: EditorDocument,
@@ -65,8 +72,15 @@ export function resolveLegacyClipId(
   collection: LegacyCollection,
   legacyId: string,
 ): string | undefined {
-  const matches = (
-    document.sequences.find((sequence) => sequence.id === sequenceId)?.clips ?? []
-  ).filter((clip) => legacyClipId(document, sequenceId, clip, collection) === legacyId);
+  const sequence = document.sequences.find((item) => item.id === sequenceId);
+  const eligible = (clip: EditorClip) =>
+    collection === "captions"
+      ? clip.kind === "text" && clip.role === "subtitle"
+      : clip.kind === "media" &&
+        (collection === "clips" ||
+          sequence!.tracks.find((track) => track.id === clip.trackId)?.kind === "audio");
+  const matches = (sequence?.clips ?? []).filter(
+    (clip) => eligible(clip) && legacyClipId(document, sequenceId, clip, collection) === legacyId,
+  );
   return matches.length === 1 ? matches[0]!.id : undefined;
 }
