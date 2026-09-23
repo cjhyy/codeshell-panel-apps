@@ -149,6 +149,18 @@ async function saved(page) {
     () => document.querySelector("#save-state")?.textContent === "已自动保存",
   );
 }
+/**
+ * 「新建工程」 archives the old project before it stores the new one, and the save label keeps
+ * reading 已自动保存 for the old project meanwhile. Wait for the new identity to be committed.
+ */
+async function newProjectCommitted(page, previousId) {
+  const deadline = Date.now() + 15000;
+  while ((await readProject(page))?.id === previousId) {
+    if (Date.now() > deadline) throw new Error("The new project was never committed");
+    await page.waitForTimeout(25);
+  }
+  await saved(page);
+}
 async function waitAssets(page, count) {
   await page.waitForFunction(
     (count) => document.querySelectorAll(".asset-card").length === count,
@@ -347,11 +359,14 @@ test("a folder picker opened for the old project cannot import into a newly crea
     await page.goto(`${url}/?legacyWorkspace=1`);
     await enterLegacyProduction(page);
     await page.locator('[data-action="import-folder"]').waitFor();
+    await saved(page);
+    const previous = await readProject(page);
+    assert.ok(previous?.id, "The old project is stored before the picker opens");
     const choosing = page.waitForEvent("filechooser");
     await page.locator('[data-action="import-folder"]').click();
     const chooser = await choosing;
     await page.getByRole("button", { name: "新建工程", exact: true }).click();
-    await saved(page);
+    await newProjectCommitted(page, previous.id);
     const project = await readProject(page);
     await chooser.setFiles(folder);
     await page.waitForFunction(() =>
