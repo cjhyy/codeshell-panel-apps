@@ -6,6 +6,21 @@ import {
 } from "../sdk/panel-runtime";
 
 let nextExportJobsId = 0;
+/** Remembered export titles; the newest are kept when the bound is reached. */
+const MAX_EXPORT_TITLES = 200;
+
+/** Where the panel keeps the titles people saw when they submitted each export. */
+export interface ExportTitleStore {
+  read(): Promise<unknown>;
+  write(titles: Record<string, string>): Promise<void>;
+}
+/** A readable name for an export found in Host history without a remembered title. */
+function historyTitle(request: { profile?: { name?: unknown } }): string {
+  const preset = request.profile?.name;
+  return typeof preset === "string" && preset.trim()
+    ? `视频导出 · ${preset.trim().slice(0, 200)}`
+    : "视频导出";
+}
 
 /** A view of Host-owned durable exports. Reloads discover the original jobs rather than submitting new work. */
 export class EditorExportJobs {
@@ -19,6 +34,10 @@ export class EditorExportJobs {
   private readonly observationErrors = new Set<string>();
   /** Exports whose completion was already reported through onFinished. */
   private readonly finished = new Set<string>();
+  /** Job id → the title shown when it was submitted (project name · preset). */
+  private titles = new Map<string, string>();
+  private titlesLoaded?: Promise<void>;
+  private titleWrite: Promise<void> = Promise.resolve();
   private offset = 0;
   private loading = false;
   private disposed = false;
@@ -28,6 +47,8 @@ export class EditorExportJobs {
     private readonly options: {
       /** Called once when an export this view saw running reaches a final state. */
       onFinished?(job: RuntimeJob): void;
+      /** Keeps submitted titles across reloads; history otherwise names only the preset. */
+      titles?: ExportTitleStore;
     } = {},
   ) {
     this.sdk = createPanelRuntime(bridge);
@@ -112,6 +133,31 @@ export class EditorExportJobs {
         : "";
     this.root.querySelector<HTMLElement>(".editor-export-jobs-empty")!.hidden = this.rows.size > 0;
   }
+  private loadTitles(): Promise<void> {
+    this.titlesLoaded ??= (async () => {
+      const saved = await this.options.titles?.read().catch(() => null);
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+      for (const [id, title] of Object.entries(saved))
+        if (typeof title === "string" && title && !this.titles.has(id))
+          this.titles.set(id, title.slice(0, 400));
+    })();
+    return this.titlesLoaded;
+  }
+  private rememberTitle(id: string, title: string): void {
+    const store = this.options.titles;
+    if (!store || this.titles.get(id) === title) return;
+    this.titleWrite = this.titleWrite
+      .then(() => this.loadTitles())
+      .then(async () => {
+        this.titles.delete(id);
+        this.titles.set(id, title);
+        while (this.titles.size > MAX_EXPORT_TITLES)
+          this.titles.delete(this.titles.keys().next().value!);
+        await store.write(Object.fromEntries(this.titles));
+      })
+      // A title is a convenience; losing one only falls back to the preset name.
+      .catch(() => {});
+  }
   async loadMore(): Promise<void> {
     if (this.loading || this.disposed) return;
     this.loading = true;
@@ -119,6 +165,7 @@ export class EditorExportJobs {
     more.disabled = true;
     try {
       await this.sdk.requireMethods(["tasks.list", "tasks.get"]);
+      await this.loadTitles();
       // Preparation may create many small jobs. Each click reads a bounded page, never skips unknown pages.
       const page = await this.sdk.call("tasks.list", { offset: this.offset, limit: 50 });
       if (!Array.isArray(page) || page.length > 50) throw new Error("导出任务列表返回无效数据");
@@ -128,7 +175,7 @@ export class EditorExportJobs {
         const job = taskValue(await this.sdk.call("tasks.get", { id: entry.id }));
         const request = (job.input as any)?.request;
         if (request?.action === "render")
-          this.track(job, `视频导出 · ${request.sequenceId ?? "序列"}`, false);
+          this.track(job, this.titles.get(job.id) ?? historyTitle(request), false);
       }
       this.offset += page.length;
       more.hidden = page.length < 50;
@@ -140,6 +187,8 @@ export class EditorExportJobs {
   }
   track(job: RuntimeJob, name: string, reveal = true): void {
     if (this.disposed) return;
+    // A submission names its project and preset; history rows reuse that title after a reload.
+    if (reveal) this.rememberTitle(job.id, name);
     if (!this.rows.has(job.id)) {
       const row = document.createElement("section");
       row.dataset.jobId = job.id;

@@ -5897,6 +5897,13 @@ async function boot(): Promise<void> {
         onFinished: () => {
           if (production.enabled) void production.refreshStatus({ fresh: true }).catch(fail);
         },
+        // Host task history only has the request; keep the project and preset names people saw.
+        titles: {
+          read: () => panel!.call("storage.get", { key: "video-studio-export-titles-v1" }),
+          write: async (titles) => {
+            await panel!.call("storage.set", { key: "video-studio-export-titles-v1", value: titles });
+          },
+        },
       });
       const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
       if (exportToolbar)

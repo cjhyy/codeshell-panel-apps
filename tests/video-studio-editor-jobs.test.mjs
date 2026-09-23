@@ -128,8 +128,15 @@ async function fixture(t, specifications = [], options = {}) {
         },
       };
       const finished = [];
+      let savedTitles = structuredClone(options.titles ?? null);
       panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)), {
         onFinished: (job) => finished.push({ id: job.id, status: job.status }),
+        titles: {
+          read: async () => structuredClone(savedTitles),
+          write: async (value) => {
+            savedTitles = structuredClone(value);
+          },
+        },
       });
       panel.mountTrigger(
         document.querySelector("#toolbar"),
@@ -139,7 +146,8 @@ async function fixture(t, specifications = [], options = {}) {
         calls,
         errors,
         finished,
-        track: (id) => panel.track(structuredClone(jobs.get(id)), id),
+        track: (id, name = id) => panel.track(structuredClone(jobs.get(id)), name),
+        savedTitles: () => structuredClone(savedTitles),
         load: () => panel.loadMore(),
         remount: () =>
           panel.mountTrigger(
@@ -708,4 +716,32 @@ test("an export first seen already finished also refreshes readiness, once", asy
   assert.deepEqual(await page.evaluate(() => fixture.finished), [
     { id: "fast", status: "succeeded" },
   ]);
+});
+
+test("export titles stay readable after a reload instead of showing the internal sequence id", async (t) => {
+  const exported = job("export-a", 10, "succeeded", {
+    input: {
+      request: { action: "render", sequenceId: "sequence-main", profile: { name: "自定义导出" } },
+    },
+  });
+  const other = job("export-b", 5, "succeeded", {
+    input: {
+      request: { action: "render", sequenceId: "sequence-main", profile: { name: "1080p 横屏" } },
+    },
+  });
+  const first = await fixture(t, [exported, other]);
+  await first.evaluate(() => fixture.track("export-a", "未命名项目 · 自定义导出"));
+  await first.waitForFunction(() => fixture.savedTitles()?.["export-a"]);
+  const titles = await first.evaluate(() => fixture.savedTitles());
+  // A reload discovers the same durable jobs from the Host task list.
+  const page = await fixture(t, [exported, other], { titles });
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.equal(
+    await row(page, "export-a").locator("strong").textContent(),
+    "未命名项目 · 自定义导出",
+  );
+  // Without a remembered title the preset still names it; the internal id never shows.
+  assert.equal(await row(page, "export-b").locator("strong").textContent(), "视频导出 · 1080p 横屏");
+  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
 });
