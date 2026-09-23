@@ -33,6 +33,11 @@ export interface RoughCutPlacement {
   clipIds: string[];
   /** Start of the first new clip. */
   start: Tick;
+  /**
+   * End of the placed picture run (or of the sound run without picture). Continuing from here as
+   * the next playhead keeps consecutive placements in order.
+   */
+  end: Tick;
 }
 
 const overlaps = (sequence: EditorSequence, trackId: string, start: Tick, duration: Tick) =>
@@ -169,6 +174,9 @@ export function planRoughCutPlacement(
     } catch {
       throw new Error("播放头位置无效，请重新定位后再加入");
     }
+    // The editor parks a playhead left at the program end on its last tick; that is the end.
+    const programEnd = sequenceDuration(sequence);
+    if (programEnd > 0 && playhead === programEnd - 1) playhead = programEnd;
   }
   const tooLong = () => new Error("加入粗剪片段后超出时长上限（24 小时）");
   const operations: EditorOperation[] = [];
@@ -203,7 +211,7 @@ export function planRoughCutPlacement(
       explicitTrack(sequence, options.videoTrackId, "video") ??
       (sequence.timelineMode === "magnetic"
         ? (sequence.tracks.find((item) => item.id === sequence.magneticTrackId) ??
-          sequence.tracks.find((item) => item.kind === "video"))
+          sequence.tracks.find((item) => item.kind === "video" && !item.locked))
         : sequence.tracks.find((item) => item.kind === "video" && !item.locked));
     if (target && target.kind === "video" && isMagneticTrack(sequence, target.id)) {
       if (target.locked) throw new Error("主画面轨道已锁定，请先解锁后再加入");
@@ -228,7 +236,8 @@ export function planRoughCutPlacement(
       step(place(video, target.id, start));
       snapped = start;
     } else {
-      const start = anchor === "end" ? (target ? trackEnd(sequence, target.id) : 0) : playhead;
+      // After the whole program, so a free picture never lands under an existing overlay.
+      const start = anchor === "end" ? sequenceDuration(sequence) : playhead;
       const chosen =
         target && !target.locked && !overlaps(sequence, target.id, start, length)
           ? { trackId: target.id, operations: [] as EditorOperation[] }
@@ -243,9 +252,14 @@ export function planRoughCutPlacement(
     const target =
       explicitTrack(sequenceNow, options.audioTrackId, "audio") ??
       sequenceNow.tracks.find((item) => item.kind === "audio" && !item.locked);
-    // Sound selected together with an inserted picture starts where that picture was inserted.
-    const start =
-      anchor === "end" ? (target ? trackEnd(sequenceNow, target.id) : 0) : (snapped ?? playhead);
+    // At the end, sound follows the last sound on any track; with an inserted picture it starts
+    // where that picture was inserted.
+    const soundEnd = sequenceNow.clips
+      .filter(
+        (clip) => sequenceNow.tracks.find((item) => item.id === clip.trackId)?.kind === "audio",
+      )
+      .reduce((end, clip) => Math.max(end, clip.start + clip.duration), 0);
+    const start = anchor === "end" ? soundEnd : (snapped ?? playhead);
     const chosen =
       target && !target.locked && !overlaps(sequenceNow, target.id, start, length)
         ? { trackId: target.id, operations: [] as EditorOperation[] }
@@ -256,12 +270,16 @@ export function planRoughCutPlacement(
   // Validate the exact transaction the caller will commit.
   applyEditorOperations(document, operations, document.revision);
   const clipIds = resolved.map((item) => ids.get(item.cut)!);
-  const first = operations.find(
-    (operation) => operation.type === "clip.add" && operation.clip.id === clipIds[0],
+  const added = new Map(
+    operations.flatMap((operation) =>
+      operation.type === "clip.add" ? [[operation.clip.id, operation.clip] as const] : [],
+    ),
   );
+  const run = (video.length ? video : audio).map((item) => added.get(ids.get(item.cut)!)!);
   return {
     operations,
     clipIds,
-    start: first?.type === "clip.add" ? first.clip.start : 0,
+    start: added.get(clipIds[0]!)!.start,
+    end: Math.max(...run.map((clip) => clip.start + clip.duration)),
   };
 }

@@ -1456,7 +1456,7 @@ test("口播 page cuts a pause from real off-frame multitrack media on the edito
   );
 });
 
-test("粗剪 加入成片 places real off-frame media at the playhead of a multitrack project with one undo", async (t) => {
+test("粗剪 加入成片 places real off-frame media at the playhead of a multitrack project in order, one undo each", async (t) => {
   const take = 10 * T + 1234,
     at = 90 * 8008; // A whole 29.97 fps frame, so the playhead is not snapped.
   const roughSeed = {
@@ -1485,10 +1485,9 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
   const before = await saved(page);
   await page.locator('#studio .rail [data-tab="roughcut"]').click();
   await page.locator("#roughcut-source").selectOption("take");
-  assert.equal(
-    await page.locator('[data-roughcut-field="append-anchor"]').first().inputValue(),
-    "playhead",
-  );
+  const anchor = page.locator('.roughcut-batch [data-roughcut-field="append-anchor"]');
+  assert.equal(await anchor.inputValue(), "end", "成片末尾 is the default");
+  await anchor.selectOption("playhead");
   await oldAction(page, "roughcut-append").click();
   await page.waitForFunction(
     (revision) => window.__mainHost.current().revision > revision,
@@ -1515,18 +1514,50 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
       before.sequences[0].clips.find((clip) => clip.id === id),
     );
   assert.deepEqual(placed.production.roughCuts, before.production.roughCuts);
-  // The composition returns with the new clip selected and the playhead at its start.
+  // The composition returns with the new clip selected and the playhead after the placed run.
+  const end = at + take - 30 * 8000;
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.equal(
     await page.locator(`[data-et-clip="${added[0].id}"]`).getAttribute("aria-selected"),
     "true",
   );
-  assert.equal(await page.locator("[data-ew-seek]").inputValue(), String(at));
+  assert.equal(await page.locator("[data-ew-seek]").inputValue(), String(end));
+
+  // A second 加入 continues after the first, even after marker saves in between.
+  await page.locator('#studio .rail [data-tab="roughcut"]').click();
+  await page.locator("#roughcut-source").selectOption("take");
+  assert.equal(await anchor.inputValue(), "playhead", "The last choice is remembered");
+  let revision = (await saved(page)).revision;
+  await page.locator('[data-roughcut-field="enabled"][data-cut-id="keep-tail"]').uncheck();
+  await page.waitForFunction((value) => window.__mainHost.current().revision > value, revision);
+  await page.locator("#roughcut-in").fill("00:00:01:00");
+  await page.locator("#roughcut-in").press("Tab");
+  await page.locator("#roughcut-out").fill("00:00:02:00");
+  await page.locator("#roughcut-out").press("Tab");
+  await page.locator('[data-roughcut-field="name"]').fill("第二段");
+  revision = (await saved(page)).revision;
+  await oldAction(page, "roughcut-save").click();
+  await page.waitForFunction((value) => window.__mainHost.current().revision > value, revision);
+  revision = (await waitSaved(page)).revision;
+  await oldAction(page, "roughcut-append").click();
+  await page.waitForFunction((value) => window.__mainHost.current().revision > value, revision);
+  const afterSecond = await waitSaved(page);
+  assert.equal(afterSecond.revision, revision + 1);
+  const twice = afterSecond.sequences[0];
+  const second = twice.clips.find(
+    (clip) => clip.assetId === "take" && clip.id !== added[0].id,
+  );
+  assert.equal(second.start, end, "The next placement follows the previous one");
+  assert.equal(second.duration, 30 * 8000);
+  for (const a of twice.clips)
+    for (const b of twice.clips)
+      if (a.id < b.id && a.trackId === b.trackId)
+        assert.ok(a.start + a.duration <= b.start || b.start + b.duration <= a.start);
   await returnEditor(page);
   await clickEditorAction(page, "undo");
   const undone = await waitSaved(page);
-  assert.deepEqual(undone.sequences, before.sequences, "One undo removes the placement");
-  assert.deepEqual(undone.production, before.production);
+  assert.deepEqual(undone.sequences, placed.sequences, "One undo removes one placement");
+  assert.equal(undone.production.roughCuts.length, 2, "Undo keeps the saved marks");
   const toasts = await page.evaluate(() => window.__toasts.join("\n"));
   assert.match(toasts, /已按列表顺序加入 1 个视频片段/);
   assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);

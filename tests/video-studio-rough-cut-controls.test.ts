@@ -716,25 +716,57 @@ test("current-source export and append honor enabled list order", async () => {
   );
 });
 
-test("加入位置 defaults to the playhead and can append at the end for both entry points", async () => {
-  const f = fixture();
-  f.input("in", "1");
-  f.input("out", "2");
-  await f.ui.action("roughcut-save");
-  const markup = f.ui.render();
-  assert.match(markup, /data-roughcut-field="append-anchor"[^>]*><option value="playhead" selected>播放头/);
-  await f.ui.action("roughcut-append");
-  assert.deepEqual(f.placements.at(-1)!.anchor, "playhead");
-  f.input("append-anchor", "end");
-  assert.match(f.ui.render(), /<option value="end" selected>成片末尾/);
-  await f.ui.action("roughcut-append");
-  assert.equal(f.placements.at(-1)!.anchor, "end");
-  f.ui.setQueue(["source-a"]);
-  await f.ui.action("roughcut-queue-append");
-  assert.deepEqual(f.placements.at(-1), { ids: [f.project().roughCuts![0]!.id], anchor: "end" });
-  f.input("append-anchor", "anywhere");
-  await f.ui.action("roughcut-append");
-  assert.equal(f.placements.at(-1)!.anchor, "end", "Unknown values are ignored");
+test("加入位置 defaults to the end, offers the playhead and remembers the last choice", async () => {
+  const stored = new Map<string, string>();
+  const storage = globalThis as { localStorage?: unknown };
+  const original = storage.localStorage;
+  storage.localStorage = {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => void stored.set(key, value),
+  };
+  try {
+    const f = fixture();
+    f.input("in", "1");
+    f.input("out", "2");
+    await f.ui.action("roughcut-save");
+    assert.match(f.ui.render(), /<option value="end" selected>成片末尾/);
+    await f.ui.action("roughcut-append");
+    assert.equal(f.placements.at(-1)!.anchor, "end", "The old append behavior is the default");
+    f.input("append-anchor", "playhead");
+    assert.match(f.ui.render(), /<option value="playhead" selected>播放头/);
+    await f.ui.action("roughcut-append");
+    assert.equal(f.placements.at(-1)!.anchor, "playhead");
+    f.ui.setQueue(["source-a"]);
+    await f.ui.action("roughcut-queue-append");
+    assert.deepEqual(f.placements.at(-1), {
+      ids: [f.project().roughCuts![0]!.id],
+      anchor: "playhead",
+    });
+    f.input("append-anchor", "anywhere");
+    await f.ui.action("roughcut-append");
+    assert.equal(f.placements.at(-1)!.anchor, "playhead", "Unknown values are ignored");
+
+    const reopened = fixture();
+    assert.match(
+      reopened.ui.render(),
+      /<option value="playhead" selected>播放头/,
+      "The last choice is remembered",
+    );
+    storage.localStorage = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    const blocked = fixture();
+    assert.match(blocked.ui.render(), /<option value="end" selected>成片末尾/);
+    blocked.input("append-anchor", "playhead");
+    assert.match(blocked.ui.render(), /<option value="playhead" selected>播放头/);
+  } finally {
+    storage.localStorage = original;
+  }
 });
 
 test("undo reloads a changed saved baseline even while a selection has an unapplied draft", async () => {
@@ -851,7 +883,7 @@ test("mixed picture and sound go to placement together; a rejected edit leaves m
   await f.ui.action("roughcut-queue-append");
   assert.deepEqual(f.placements.at(-1), {
     ids: before.roughCuts!.map((cut) => cut.id),
-    anchor: "playhead",
+    anchor: "end",
   });
   assert.deepEqual(f.project().roughCuts, before.roughCuts);
   f.undo();

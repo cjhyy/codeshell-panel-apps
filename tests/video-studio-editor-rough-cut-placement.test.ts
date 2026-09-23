@@ -255,9 +255,20 @@ test("mixed video and audio cuts land on separate cursors in list order", () => 
   assert.equal(clip(apply(doc, audioOnly.operations), audioOnly.clipIds[0]!).duration, 30 * T);
 });
 
-test("anchor end appends each kind after its target track", () => {
+test("anchor end appends picture after the whole sequence and sound after the last sound", () => {
   const doc = document({
-    clips: [media("picture", "v1", "broll", 0, 4 * T + 123), media("sound", "a1", "music", 0, T)],
+    tracks: [
+      createTrack("v1", "video"),
+      createTrack("v2", "video"),
+      createTrack("a1", "audio"),
+      createTrack("a2", "audio"),
+    ],
+    clips: [
+      media("picture", "v1", "broll", 0, 4 * T + 123),
+      media("overlay", "v2", "broll", 0, 6 * T),
+      media("sound", "a1", "music", 0, T),
+      media("music-bed", "a2", "music", 3 * T, T),
+    ],
   });
   const plan = planRoughCutPlacement(
     doc,
@@ -269,11 +280,14 @@ test("anchor end appends each kind after its target track", () => {
   assert.deepEqual(
     plan.clipIds.map((id) => [clip(after, id).trackId, clip(after, id).start]),
     [
-      ["v1", 4 * T + 123],
-      ["a1", T],
+      ["v1", 6 * T],
+      ["a1", 4 * T],
     ],
+    "Picture never lands mid-timeline under an overlay; sound follows every sound track",
   );
-  assert.equal(plan.start, 4 * T + 123);
+  assert.equal(plan.start, 6 * T);
+  assert.equal(plan.end, 7 * T, "The end is the end of the placed picture run");
+  assertNoOverlap(after);
 
   const magnetic = document({
     timelineMode: "magnetic",
@@ -338,7 +352,7 @@ test("placement adds distinct clips in list order and never touches markers or o
   const after = apply(doc, plan.operations);
   assert.deepEqual(
     plan.clipIds.map((id) => clip(after, id).start),
-    [0, T, 6 * T],
+    [6 * T, 7 * T, 6 * T],
     "Audio follows the latest endpoint even when stored clips are out of order",
   );
   assert.deepEqual(clip(after, "sound-late"), doc.sequences[0]!.clips[0]);
@@ -373,4 +387,120 @@ test("one thousand cuts are one transaction; the 24-hour limit is kept", () => {
       }),
     /时长上限/,
   );
+});
+
+test("consecutive placements from the returned end keep their order without overlap", () => {
+  const place = (doc: EditorDocument, at: number, id: string) => {
+    const plan = planRoughCutPlacement(doc, "main", [cut(id, "broll", 0, 30)], { at, idFactory });
+    return {
+      doc: applyEditorOperations(doc, plan.operations, doc.revision),
+      id: plan.clipIds[0]!,
+      end: plan.end,
+    };
+  };
+  for (const mode of ["magnetic", "free"] as const) {
+    let doc = document({
+      timelineMode: mode,
+      ...(mode === "magnetic" ? { magneticTrackId: "v1" } : {}),
+      clips: [media("existing", "v1", "broll", 2 * T, 2 * T)],
+    });
+    let at = mode === "magnetic" ? 0 : 5 * T;
+    const ids: string[] = [];
+    for (const name of ["A", "B", "C"]) {
+      const next = place(doc, at, name);
+      doc = next.doc;
+      at = next.end;
+      ids.push(next.id);
+    }
+    const sequence = doc.sequences[0]!;
+    const placed = ids.map((id) => clip(sequence, id));
+    assert.ok(
+      placed.every((item) => item.trackId === "v1"),
+      `${mode}: every placement stays on the main picture track`,
+    );
+    const first = mode === "magnetic" ? 0 : 5 * T;
+    assert.deepEqual(
+      placed.map((item) => item.start),
+      [first, first + T, first + 2 * T],
+      `${mode}: A, B, C stay in order`,
+    );
+    if (mode === "magnetic")
+      assert.equal(clip(sequence, "existing").start, 5 * T, "The later block moves once per insert");
+    assertNoOverlap(sequence);
+  }
+  // The editor keeps a playhead left at the program end on its last tick; that still means the end.
+  const ended = document({ clips: [media("done", "v1", "broll", 0, 2 * T)] });
+  const continued = planRoughCutPlacement(ended, "main", [cut("n", "broll", 0, 30)], {
+    at: 2 * T - 1,
+    idFactory,
+  });
+  const next = clip(apply(ended, continued.operations), continued.clipIds[0]!);
+  assert.deepEqual([next.trackId, next.start], ["v1", 2 * T]);
+  const audioOnly = planRoughCutPlacement(document({}), "main", [cut("a", "music", 0, 60)], {
+    at: T,
+    idFactory,
+  });
+  assert.equal(audioOnly.end, 3 * T, "Without picture the end is the end of the sound run");
+});
+
+test("magnetic sequences without a main track id skip locked picture tracks", () => {
+  const doc = document({
+    timelineMode: "magnetic",
+    tracks: [
+      { ...createTrack("v1", "video"), locked: true },
+      createTrack("v2", "video"),
+      createTrack("a1", "audio"),
+    ],
+    clips: [media("p1", "v2", "broll", 0, 2 * T), media("p2", "v2", "broll", 2 * T, T)],
+  });
+  const plan = planRoughCutPlacement(doc, "main", [cut("c", "broll", 0, 30)], {
+    at: 2 * T - 5,
+    idFactory,
+  });
+  const after = apply(doc, plan.operations);
+  const placed = clip(after, plan.clipIds[0]!);
+  assert.deepEqual([placed.trackId, placed.start], ["v2", 2 * T]);
+  assert.equal(clip(after, "p2").start, 3 * T, "The unlocked track still inserts magnetically");
+});
+
+test("a playhead inside a transition pair or group snaps to the outer edge of that block", () => {
+  const a = media("a", "v1", "broll", 0, 2 * T),
+    b = media("b", "v1", "broll", 1.5 * T, 2.5 * T, 3 * T);
+  const withTransition = document({
+    timelineMode: "magnetic",
+    magneticTrackId: "v1",
+    clips: [a, b, media("after", "v1", "broll", 4 * T, T)],
+    transitions: [
+      { id: "mix", fromClipId: "a", toClipId: "b", start: 1.5 * T, duration: 0.5 * T, kind: "dissolve" },
+    ],
+  });
+  const joined = planRoughCutPlacement(withTransition, "main", [cut("c", "broll", 0, 30)], {
+    at: 2.2 * T,
+    idFactory,
+  });
+  assert.equal(joined.start, 4 * T, "The transition pair is never split");
+  const afterJoined = apply(withTransition, joined.operations);
+  assert.equal(clip(afterJoined, "a").start, 0);
+  assert.equal(clip(afterJoined, "b").start, 1.5 * T);
+  assert.equal(clip(afterJoined, "after").start, 5 * T);
+  assert.deepEqual(afterJoined.transitions, withTransition.sequences[0]!.transitions);
+
+  const g1 = media("g1", "v1", "broll", 0, 2 * T),
+    g2 = media("g2", "v1", "broll", 2 * T, 2 * T);
+  g1.groupId = "pair";
+  g2.groupId = "pair";
+  const grouped = document({
+    timelineMode: "magnetic",
+    magneticTrackId: "v1",
+    clips: [g1, g2, media("tail", "v1", "broll", 4 * T, T)],
+  });
+  const snapped = planRoughCutPlacement(grouped, "main", [cut("c", "broll", 0, 30)], {
+    at: 2 * T + 1,
+    idFactory,
+  });
+  assert.equal(snapped.start, 4 * T, "The inner group boundary is not an insertion point");
+  const afterGrouped = apply(grouped, snapped.operations);
+  assert.equal(clip(afterGrouped, "g2").start, 2 * T);
+  assert.equal(clip(afterGrouped, "tail").start, 5 * T);
+  assertNoOverlap(afterGrouped);
 });

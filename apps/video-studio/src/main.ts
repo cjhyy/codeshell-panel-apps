@@ -2050,7 +2050,7 @@ function addMediaToTimeline(id: string, startFrame?: number): void {
   );
 }
 
-/** Rough-cut ranges land on the editor document as one undo entry; the first new clip is shown. */
+/** Rough-cut ranges land on the editor document as one undo entry; the new clips stay selected. */
 async function placeRoughCuts(cutIds: string[], anchor: RoughCutAnchor): Promise<void> {
   if (!editorSession || !editorWorkspace) throw new Error("工程尚未恢复，已阻止修改");
   const doc = editorSession.read(),
@@ -2084,11 +2084,12 @@ async function placeRoughCuts(cutIds: string[], anchor: RoughCutAnchor): Promise
   if (tab === "roughcut") tab = "media";
   if ([...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === plan.clipIds[0]))
     selected = plan.clipIds[0]!;
-  frame = Math.min(Math.floor(plan.start / LEGACY_FRAME_TICKS), Math.max(0, duration() - 1));
+  // The playhead continues after the placed run, so the next 加入 keeps the order.
+  frame = Math.min(Math.floor(plan.end / LEGACY_FRAME_TICKS), Math.max(0, duration() - 1));
   render();
   const workspace = editorWorkspace;
   workspace.selectClips(sequenceId, plan.clipIds);
-  await workspace.seek(plan.start);
+  await workspace.seek(plan.end);
   workspace.revealSelection();
 }
 

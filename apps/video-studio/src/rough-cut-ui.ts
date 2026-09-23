@@ -96,7 +96,23 @@ const button = (
   `<button type="button" data-action="roughcut-${action}"${options.id ? ` data-id="${esc(options.id)}"` : ""} class="${options.className ?? ""}"${options.disabled ? " disabled" : ""}${options.title ? ` title="${esc(options.title)}" aria-label="${esc(options.title)}"` : ""}>${glyph ? icon(glyph, 15) : ""}<span>${esc(text)}</span></button>`;
 
 const anchorSelect = (anchor: RoughCutAnchor) =>
-  `<label class="roughcut-anchor">加入位置<select data-roughcut-field="append-anchor" aria-label="加入位置"><option value="playhead"${anchor === "playhead" ? " selected" : ""}>播放头</option><option value="end"${anchor === "end" ? " selected" : ""}>成片末尾</option></select></label>`;
+  `<label class="roughcut-anchor">加入位置<select data-roughcut-field="append-anchor" aria-label="加入位置"><option value="end"${anchor === "end" ? " selected" : ""}>成片末尾</option><option value="playhead"${anchor === "playhead" ? " selected" : ""}>播放头</option></select></label>`;
+const ANCHOR_KEY = "video-studio.roughcut-anchor";
+/** The last 加入位置 is a per-browser convenience; blocked storage falls back to 成片末尾. */
+function storedAnchor(): RoughCutAnchor {
+  try {
+    return globalThis.localStorage?.getItem(ANCHOR_KEY) === "playhead" ? "playhead" : "end";
+  } catch {
+    return "end";
+  }
+}
+function rememberAnchor(anchor: RoughCutAnchor): void {
+  try {
+    globalThis.localStorage?.setItem(ANCHOR_KEY, anchor);
+  } catch {
+    // The choice still applies for this session.
+  }
+}
 
 export function createRoughCutUI(context: RoughCutContext) {
   const drafts = new Map<string, Draft>();
@@ -106,7 +122,7 @@ export function createRoughCutUI(context: RoughCutContext) {
   let bulkOpen = false;
   let aiOpen = false;
   let aiScope: "current" | "queue" = "current";
-  let appendAnchor: RoughCutAnchor = "playhead";
+  let appendAnchor: RoughCutAnchor = storedAnchor();
   let batchMode = "trim",
     batchHead = "0",
     batchTail = "0",
@@ -905,6 +921,7 @@ ${esc(aiGoal)}</textarea
       const next = target.value;
       if ((next === "playhead" || next === "end") && next !== appendAnchor) {
         appendAnchor = next;
+        rememberAnchor(next);
         // Both 加入 entry points share one choice.
         context.changed();
       }
