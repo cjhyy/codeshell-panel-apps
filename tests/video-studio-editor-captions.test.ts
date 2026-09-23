@@ -11,7 +11,16 @@ import {
   captionTranslationItems,
   planCaptionStyle,
   planCaptionText,
+  listCaptions,
+  planAddCaption,
+  planCaptionTiming,
+  planRemoveCaptions,
 } from "../apps/video-studio/src/editor/captions";
+import {
+  captionPresetStyle,
+  planCaptionPreset,
+} from "../apps/video-studio/src/editor/caption-presets";
+import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapter";
 import {
   createCaptionController,
   type CaptionControllerContext,
@@ -753,5 +762,198 @@ test("long sentences split only at authentic word boundaries while retaining ori
       })),
     ),
     words,
+  );
+});
+
+/** Real camera media: off-frame asset length and placement, which the old frame projection excludes. */
+function realMedia(): EditorDocument {
+  const doc = fixture(),
+    seq = doc.sequences[0]!;
+  doc.assets.push({
+    id: "camera",
+    name: "实拍素材",
+    kind: "video",
+    duration: 10_000_123,
+    width: 640,
+    height: 360,
+  });
+  seq.clips = [media("camera-clip", "v", 1_234_567, 10_000_123, "camera")];
+  return validateEditorDocument(doc);
+}
+test("caption planners edit a real off-frame media timeline with exact ticks and no old projection", () => {
+  const doc = realMedia(),
+    end = 1_234_567 + 10_000_123;
+  assert.equal(projectLegacyView(doc).timelineComplete, false);
+  const added = applyEditorOperations(
+    doc,
+    planAddCaption(doc, "main", {
+      start: 2_345_678,
+      text: "真实素材字幕",
+      idFactory: () => "manual-caption",
+    }),
+    doc.revision,
+  );
+  let caption = listCaptions(added, "main")[0]!;
+  assert.equal(caption.id, "manual-caption");
+  assert.equal(caption.trackId, "t");
+  assert.equal(caption.start, 2_345_678);
+  assert.equal(caption.duration, 3 * T, "Default duration is three seconds");
+  assert.equal(caption.role, "subtitle");
+  const tail = applyEditorOperations(
+    doc,
+    planAddCaption(doc, "main", { start: end - 1000, text: "尾声", idFactory: () => "tail" }),
+    doc.revision,
+  );
+  assert.equal(listCaptions(tail, "main")[0]!.duration, 1000, "Clamped to the sequence end");
+  assert.throws(
+    () => planAddCaption(doc, "main", { start: end, text: "越界" }),
+    /播放头|画面范围/,
+  );
+  assert.throws(() => planAddCaption(doc, "main", { start: 0, text: " " }), /字幕文字/);
+  const moved = applyEditorOperations(
+    added,
+    planCaptionTiming(added, "main", "manual-caption", { start: 2_400_001, end: 3_100_003 }),
+    added.revision,
+  );
+  caption = listCaptions(moved, "main")[0]!;
+  assert.equal(caption.start, 2_400_001);
+  assert.equal(caption.duration, 700_002);
+  const extended = applyEditorOperations(
+    moved,
+    planCaptionTiming(moved, "main", "manual-caption", { start: 2_400_001, end: 4_000_007 }),
+    moved.revision,
+  );
+  assert.equal(listCaptions(extended, "main")[0]!.duration, 1_600_006);
+  assert.deepEqual(
+    planCaptionTiming(extended, "main", "manual-caption", { start: 2_400_001, end: 4_000_007 }),
+    [],
+  );
+  const removed = applyEditorOperations(
+    extended,
+    planRemoveCaptions(extended, "main", ["manual-caption"]),
+    extended.revision,
+  );
+  assert.deepEqual(listCaptions(removed, "main"), []);
+  const srt = "1\n00:00:05,001 --> 00:00:06,999\n导入的字幕\n";
+  const imported = applyEditorOperations(
+    removed,
+    planSrtImport(removed, "main", srt).operations,
+    removed.revision,
+  );
+  assert.equal(listCaptions(imported, "main")[0]!.start, 1_200_240);
+  assert.equal(exportEditorSrt(imported, "main"), srt);
+  assert.equal(projectLegacyView(imported).timelineComplete, false);
+});
+
+test("multitrack captions list every subtitle track in time order and presets keep content and titles", () => {
+  const doc = fixture(),
+    seq = doc.sequences[0]!;
+  seq.tracks = [
+    createTrack("v", "video"),
+    createTrack("v2", "video"),
+    createTrack("a", "audio"),
+    createTrack("t", "text"),
+    createTrack("t2", "text"),
+  ];
+  const text = (id: string, trackId: string, start: number, role: "title" | "subtitle") => {
+    const clip = captions(
+      applyEditorOperations(
+        doc,
+        planAddCaption(doc, "main", { start, text: id, trackId, idFactory: () => id }),
+        doc.revision,
+      ),
+    ).find((item) => item.id === id)!;
+    clip.role = role;
+    return clip;
+  };
+  seq.clips = [
+    media("sound", "a"),
+    { ...media("picture", "v", 0, 6 * T, "video") },
+    { ...media("overlay", "v2", T, 2 * T, "video") },
+  ];
+  const worded = text("worded", "t", T, "subtitle");
+  worded.words = [{ text: "worded", start: 0, end: T }];
+  worded.style.animation = "word-highlight";
+  worded.translation = { original: "原文", language: "英语", mode: "bilingual" };
+  const faded = text("faded", "t2", 2 * T / 3, "subtitle");
+  faded.style.animation = "fade";
+  const last = text("last", "t2", 3 * T, "subtitle");
+  const title = text("title", "t", 0, "title");
+  seq.clips.push(worded, faded, last, title);
+  const multi = validateEditorDocument(doc);
+  assert.deepEqual(
+    listCaptions(multi, "main").map((clip) => clip.id),
+    ["faded", "worded", "last"],
+  );
+  const styled = applyEditorOperations(
+    multi,
+    planCaptionPreset(multi, "main", "bold"),
+    multi.revision,
+  );
+  const bold = captionPresetStyle(styled.sequences[0]!, "bold");
+  for (const clip of listCaptions(styled, "main")) {
+    const before = captions(multi).find((item) => item.id === clip.id)!;
+    assert.deepEqual(clip.style, { ...bold, animation: before.style.animation });
+    assert.deepEqual(clip.words, before.words);
+    assert.deepEqual(clip.translation, before.translation);
+    assert.equal(clip.text, before.text);
+  }
+  assert.deepEqual(
+    captions(styled).find((clip) => clip.id === "title"),
+    captions(multi).find((clip) => clip.id === "title"),
+  );
+  assert.equal(styled.production?.legacyCaptionStyle, "bold");
+  assert.equal(projectLegacyView(styled).project.captionStyle, "bold");
+  assert.deepEqual(planCaptionPreset(styled, "main", "bold"), []);
+});
+
+test("manual caption timing detaches source following, trims real words and respects locks", () => {
+  const doc = generated(),
+    original = captions(doc)[0]!;
+  assert.ok(original.sourceBinding);
+  assert.equal(original.start, T);
+  const shortened = applyEditorOperations(
+    doc,
+    planCaptionTiming(doc, "main", original.id, { start: T, end: 2 * T }),
+    doc.revision,
+  );
+  let caption = captions(shortened)[0]!;
+  assert.equal(caption.sourceBinding, undefined);
+  assert.equal(caption.duration, T);
+  assert.deepEqual(caption.words, [{ text: "你好", start: 0, end: T }]);
+  assert.equal(caption.text, "你好");
+  const moved = applyEditorOperations(
+    doc,
+    planCaptionTiming(doc, "main", original.id, { start: 1.5 * T, end: 3.5 * T }),
+    doc.revision,
+  );
+  caption = captions(moved)[0]!;
+  assert.equal(caption.start, 1.5 * T);
+  assert.equal(caption.duration, 2 * T);
+  assert.deepEqual(caption.words, original.words, "Clip-local words move with the caption");
+  const sourceMoved = applyEditorOperations(
+    moved,
+    [{ type: "clip.move", sequenceId: "main", clipIds: ["sound"], delta: T }],
+    moved.revision,
+  );
+  assert.equal(captions(sourceMoved)[0]!.start, 1.5 * T, "A manual time is never snapped back");
+  assert.throws(
+    () => planCaptionTiming(doc, "main", original.id, { start: 2 * T, end: 2 * T }),
+    /结束时间/,
+  );
+  const locked = applyEditorOperations(
+    doc,
+    [{ type: "track.update", sequenceId: "main", trackId: "t", patch: { locked: true } }],
+    doc.revision,
+  );
+  assert.throws(
+    () => planCaptionTiming(locked, "main", original.id, { start: 0, end: T }),
+    /锁定/,
+  );
+  assert.throws(() => planRemoveCaptions(locked, "main", [original.id]), /锁定/);
+  assert.throws(() => planCaptionPreset(locked, "main", "minimal"), /锁定/);
+  assert.throws(
+    () => planAddCaption(locked, "main", { start: 0, text: "新字幕", trackId: "t" }),
+    /锁定/,
   );
 });

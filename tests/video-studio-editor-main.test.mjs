@@ -721,7 +721,7 @@ test("main restores 0.5.16 multitrack without the optional old demo upgrade bloc
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.deepEqual(await saved(page), edited);
 });
-test("main migrates V1, preserves its exact backup, and retains v2 properties through old caption edits and reload", async (t) => {
+test("main migrates V1, preserves its exact backup, and retains v2 properties through 字幕 page edits and reload", async (t) => {
   const page = await openPage(t);
   await clickEditorAction(page, "rectangle");
   let doc = await waitSaved(page);
@@ -742,37 +742,60 @@ test("main migrates V1, preserves its exact backup, and retains v2 properties th
   const revision = doc.revision;
   await production(page);
   await page.locator('#studio [data-tab="transcript"]').click();
-  await oldAction(page, "add-caption").click();
-  await page.locator("#caption-text").fill("旧制作流程添加的新字幕");
-  await page.locator("#caption-start").fill("2");
-  await page.locator("#caption-end").fill("3");
-  assert.equal(
-    await page.locator("#caption-form").evaluate((form) => form.checkValidity()),
-    true,
-    "Whole seconds must pass the real form constraints",
-  );
-  await page.locator('#caption-form button[type="submit"]').click();
-  doc = await waitSaved(page);
-  assert.equal(doc.revision, revision + 1, "Legacy commit dispatches exactly once");
-  assert.deepEqual(shapeFrom(doc), shape);
-  assert.equal(
-    doc.sequences
+  const panel = page.locator("#studio .library-panel .editor-captions");
+  await panel.getByLabel("新字幕文字", { exact: true }).fill("字幕页添加的新字幕");
+  await panel.getByRole("button", { name: "在播放头添加字幕", exact: true }).click();
+  const added = (d) =>
+    d.sequences
       .flatMap((s) => s.clips)
-      .filter((c) => c.kind === "text" && c.text === "旧制作流程添加的新字幕").length,
-    1,
+      .filter((c) => c.kind === "text" && c.text === "字幕页添加的新字幕");
+  await page.waitForFunction(
+    () =>
+      window.__mainHost
+        .current()
+        .sequences.some((s) => s.clips.some((c) => c.text === "字幕页添加的新字幕")),
+  );
+  doc = await waitSaved(page);
+  assert.equal(doc.revision, revision + 1, "Adding a caption dispatches exactly once");
+  assert.deepEqual(shapeFrom(doc), shape);
+  assert.equal(added(doc).length, 1);
+  const row = panel.locator(`[data-caption-id="${added(doc)[0].id}"]`);
+  await row.getByLabel("开始（秒）").fill("2");
+  await row.getByLabel("结束（秒）").fill("3");
+  assert.deepEqual(
+    await row.locator("input[type=number]").evaluateAll((inputs) =>
+      inputs.map((input) => input.checkValidity()),
+    ),
+    [true, true],
+    "Whole seconds must pass the real input constraints",
+  );
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      window.__mainHost
+        .current()
+        .sequences.some((s) =>
+          s.clips.some((c) => c.text === "字幕页添加的新字幕" && c.start === 480000),
+        ),
+  );
+  doc = await waitSaved(page);
+  assert.equal(doc.revision, revision + 2, "The timing edit is its own single step");
+  assert.deepEqual(
+    [added(doc)[0].start, added(doc)[0].duration],
+    [480000, 240000],
   );
   await returnEditor(page);
   await clickEditorAction(page, "undo");
   doc = await waitSaved(page);
+  assert.equal(added(doc)[0].start, 0, "Undo restores the caption at the playhead");
+  await clickEditorAction(page, "undo");
+  doc = await waitSaved(page);
   assert.deepEqual(shapeFrom(doc), shape);
-  assert.equal(
-    doc.sequences
-      .flatMap((s) => s.clips)
-      .filter((c) => c.kind === "text" && c.text === "旧制作流程添加的新字幕").length,
-    0,
-  );
+  assert.equal(added(doc).length, 0);
+  await clickEditorAction(page, "redo");
   await clickEditorAction(page, "redo");
   doc = await waitSaved(page);
+  assert.equal(added(doc)[0].start, 480000);
   await page.reload();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.deepEqual(await saved(page), doc);
@@ -1058,8 +1081,14 @@ test("main subtitle workbench reviews SRT, retries failed durable save, and shar
   const page = await openPage(t),
     before = await saved(page);
   await clickEditorAction(page, "captions");
-  const dialog = page.getByRole("dialog", { name: "字幕工作台" });
+  const dialog = page.getByRole("region", { name: "字幕工作台" });
   await dialog.waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator('#studio .rail [data-tab="transcript"]').getAttribute("aria-pressed"),
+    "true",
+    "更多工具 → 语音字幕 opens the shared 字幕 page",
+  );
+  assert.equal(await page.locator("dialog.editor-captions").count(), 0);
   assert.equal(await dialog.getByRole("button", { name: "生成所选声音字幕" }).isDisabled(), true);
   assert.equal(await dialog.getByRole("button", { name: "预览翻译" }).isDisabled(), true);
   await dialog.locator("[data-caption-srt-input]").setInputFiles({
@@ -1084,7 +1113,7 @@ test("main subtitle workbench reviews SRT, retries failed durable save, and shar
     imported = changed.sequences[0].clips.find((clip) => clip.text === "新导入字幕");
   assert.equal(imported.start, 749520);
   assert.equal(imported.duration, 447360);
-  await dialog.getByRole("button", { name: "关闭字幕" }).click();
+  await returnEditor(page);
   await clickEditorAction(page, "undo");
   assert.equal(
     (await waitSaved(page)).sequences[0].clips.some((clip) => clip.text === "新导入字幕"),
@@ -1093,12 +1122,14 @@ test("main subtitle workbench reviews SRT, retries failed durable save, and shar
   await clickEditorAction(page, "redo");
   await waitSaved(page);
   await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
   await clickEditorAction(page, "captions");
-  assert.ok(
+  assert.deepEqual(
     await page
-      .getByRole("dialog", { name: "字幕工作台" })
+      .getByRole("region", { name: "字幕工作台" })
       .getByRole("textbox", { name: "字幕文字", exact: true })
-      .allTextContents(),
+      .evaluateAll((inputs) => inputs.map((input) => input.value)),
+    ["原始字幕", "新导入字幕"],
   );
   assert.equal(
     (await saved(page)).sequences[0].clips.find((clip) => clip.text === "新导入字幕").start,
@@ -1110,7 +1141,7 @@ test("main translation preview uses the Host model and applies bilingual subtitl
   const page = await openPage(t, { translation: true }),
     before = await saved(page);
   await clickEditorAction(page, "captions");
-  const dialog = page.getByRole("dialog", { name: "字幕工作台" });
+  const dialog = page.getByRole("region", { name: "字幕工作台" });
   await dialog.getByRole("button", { name: "预览翻译", exact: true }).click();
   await dialog.locator(".ec-candidate").filter({ hasText: "Translation: 原始字幕" }).waitFor();
   assert.deepEqual(await saved(page), before);
@@ -1125,12 +1156,190 @@ test("main translation preview uses the Host model and applies bilingual subtitl
     caption = result.sequences[0].clips.find((clip) => clip.kind === "text");
   assert.equal(caption.text, "原始字幕\nTranslation: 原始字幕");
   await page.screenshot({ path: "/tmp/video-studio-caption-workbench-main.png", fullPage: true });
-  await dialog.getByRole("button", { name: "关闭字幕" }).click();
   await clickEditorAction(page, "undo");
   assert.equal(
     (await waitSaved(page)).sequences[0].clips.find((clip) => clip.kind === "text").text,
     "原始字幕",
   );
+});
+
+const T = 240000;
+const visual = () => ({
+  transform: {
+    x: 0,
+    y: 0,
+    scaleX: 1,
+    scaleY: 1,
+    rotation: 0,
+    opacity: 1,
+    flipX: false,
+    flipY: false,
+    fit: "contain",
+    crop: { left: 0, top: 0, right: 0, bottom: 0 },
+  },
+  color: {
+    exposure: 0,
+    brightness: 0,
+    contrast: 1,
+    saturation: 1,
+    temperature: 0,
+    tint: 0,
+    hue: 0,
+    curves: [],
+    hsl: [],
+  },
+  blendMode: "normal",
+});
+const track = (id, kind, name) => ({
+  id,
+  kind,
+  name,
+  locked: false,
+  hidden: false,
+  muted: false,
+  volume: 1,
+  pan: 0,
+});
+const picture = (id, trackId, start, duration) => ({
+  id,
+  trackId,
+  start,
+  duration,
+  label: id,
+  kind: "media",
+  assetId: "camera",
+  ...visual(),
+  audio: { volume: 1, pan: 0, fadeIn: 0, fadeOut: 0, pitchSemitones: 0, preservePitch: true },
+  timeMap: {
+    points: [
+      { time: 0, source: 0 },
+      { time: duration, source: duration },
+    ],
+  },
+});
+/** Real footage: off-frame source length and placement plus a second picture track. */
+const realMediaSeed = {
+  schemaVersion: 2,
+  timebase: T,
+  id: "caption-real-media",
+  name: "实拍字幕",
+  revision: 3,
+  activeSequenceId: "main",
+  exportProfiles: [],
+  assets: [
+    { id: "camera", name: "实拍画面", kind: "demo", duration: 10_000_123, width: 640, height: 360 },
+  ],
+  sequences: [
+    {
+      id: "main",
+      name: "主时间线",
+      width: 640,
+      height: 360,
+      frameRate: { numerator: 30000, denominator: 1001 },
+      background: "#000000",
+      timelineMode: "free",
+      tracks: [
+        track("v1", "video", "画面"),
+        track("v2", "video", "画中画"),
+        track("t1", "text", "字幕"),
+      ],
+      clips: [
+        picture("camera-main", "v1", 1_234_567, 10_000_123),
+        picture("camera-overlay", "v2", 0, 2_400_011),
+        {
+          id: "existing-caption",
+          trackId: "t1",
+          start: 2_000_001,
+          duration: 500_003,
+          label: "字幕",
+          kind: "text",
+          role: "subtitle",
+          text: "实拍里的现有字幕",
+          style: {
+            layout: "box",
+            fontFamily: "system-ui",
+            fontSize: 48,
+            fontWeight: 600,
+            italic: false,
+            color: "#ffffff",
+            strokeColor: "#000000",
+            strokeWidth: 0,
+            background: "#00000000",
+            backgroundRadius: 0,
+            padding: 0,
+            align: "center",
+            lineHeight: 1.4,
+            letterSpacing: 0,
+            maxWidth: 0.85,
+            highlightColor: "#ffe46b",
+            shadow: { color: "#00000000", blur: 0, x: 0, y: 0 },
+            animation: "none",
+          },
+          words: [],
+          ...visual(),
+        },
+      ],
+      transitions: [],
+      markers: [],
+    },
+  ],
+};
+test("字幕 page edits real off-frame multitrack footage without the old view, and 语音字幕 shows the same rows", async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed });
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
+      document.querySelector("#toast"),
+      { childList: true, characterData: true, subtree: true },
+    );
+  });
+  await page.locator('#studio .rail [data-tab="transcript"]').click();
+  const panel = page.locator("#studio .library-panel #caption-panel-host > .editor-captions");
+  await panel.waitFor({ state: "visible" });
+  const texts = () =>
+    panel
+      .getByRole("textbox", { name: "字幕文字", exact: true })
+      .evaluateAll((inputs) => inputs.map((input) => input.value));
+  assert.deepEqual(await texts(), ["实拍里的现有字幕"]);
+  assert.match(await page.locator(".statusbar").innerText(), /1 条字幕/);
+  await panel.getByLabel("新字幕文字", { exact: true }).fill("播放头新字幕");
+  await panel.getByRole("button", { name: "在播放头添加字幕", exact: true }).click();
+  await page.waitForFunction(() =>
+    window.__mainHost.current().sequences[0].clips.some((clip) => clip.text === "播放头新字幕"),
+  );
+  await panel.locator("[data-caption-srt-input]").setInputFiles({
+    name: "实拍.srt",
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from("1\n00:00:07,001 --> 00:00:08,002\n导入的实拍字幕\n"),
+  });
+  await panel.locator(".ec-candidate").filter({ hasText: "导入的实拍字幕" }).waitFor();
+  await panel.getByRole("button", { name: "应用预览", exact: true }).click();
+  await panel.locator(".ec-status").filter({ hasText: "字幕已保存" }).waitFor();
+  const doc = await waitSaved(page),
+    clips = doc.sequences[0].clips;
+  assert.equal(clips.find((clip) => clip.id === "existing-caption").start, 2_000_001);
+  assert.equal(clips.find((clip) => clip.text === "导入的实拍字幕").start, 1_680_240);
+  assert.equal(clips.find((clip) => clip.id === "camera-main").start, 1_234_567);
+  assert.equal(clips.filter((clip) => clip.kind === "media").length, 2);
+  assert.deepEqual(await texts(), ["播放头新字幕", "导入的实拍字幕", "实拍里的现有字幕"]);
+  await panel.getByRole("button", { name: "全选字幕", exact: true }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await panel.getByRole("button", { name: "导出所选 SRT", exact: true }).click();
+  const download = await downloadPromise;
+  const srt = await readFile(await download.path(), "utf8");
+  assert.match(srt, /00:00:08,333 --> 00:00:10,417\n实拍里的现有字幕/);
+  assert.match(srt, /00:00:07,001 --> 00:00:08,002\n导入的实拍字幕/);
+  assert.match(await page.locator(".statusbar").innerText(), /3 条字幕/);
+  await returnEditor(page);
+  await clickEditorAction(page, "captions");
+  assert.equal(
+    await page.locator('#studio .rail [data-tab="transcript"]').getAttribute("aria-pressed"),
+    "true",
+  );
+  assert.deepEqual(await texts(), ["播放头新字幕", "导入的实拍字幕", "实拍里的现有字幕"]);
+  assert.equal(await page.locator(".editor-captions").count(), 1, "One shared caption panel");
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
 });
 
 test("main mounts sequence management into the shared project, copy and rename survive reload", async (t) => {

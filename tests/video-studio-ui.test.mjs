@@ -377,26 +377,32 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await saved(page);
 
   await page.locator('[data-tab="transcript"]').click();
+  const captionPanel = page.locator(".library-panel #caption-panel-host > .editor-captions");
   const originalCaptions = (await readProject(page)).captions.length;
-  await page.locator("#srt-input").setInputFiles({
+  assert.equal(await captionPanel.locator(".ec-row").count(), originalCaptions);
+  await captionPanel.locator("[data-caption-srt-input]").setInputFiles({
     name: "test.srt",
     mimeType: "text/plain",
     buffer: Buffer.from("1\n00:00:01,000 --> 00:00:02,000\n新增字幕 <script>alert(1)</script>\n"),
   });
-  await saved(page);
+  await captionPanel.getByRole("button", { name: "应用预览", exact: true }).click();
   await page.waitForFunction(
-    (n) => document.querySelectorAll(".transcript-item").length === n + 1,
+    (n) => document.querySelectorAll(".library-panel .ec-row").length === n + 1,
     originalCaptions,
   );
+  await saved(page);
   assert.equal(
     (await readProject(page)).captions.length,
     originalCaptions + 1,
     "SRT import appends unique captions",
   );
+  await captionPanel.getByRole("button", { name: "全选字幕", exact: true }).click();
   const srtDownload = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出 SRT", exact: true }).click();
+  await captionPanel.getByRole("button", { name: "导出所选 SRT", exact: true }).click();
   const srt = await srtDownload;
-  assert.match(await readFile(await srt.path(), "utf8"), /新增字幕/);
+  const srtText = await readFile(await srt.path(), "utf8");
+  assert.match(srtText, /00:00:01,000 --> 00:00:02,000\n新增字幕 <script>alert\(1\)<\/script>/);
+  assert.equal(srtText.match(/-->/g).length, originalCaptions + 1);
 
   const jsonDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载工程 JSON", exact: true }).click();

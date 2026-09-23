@@ -1355,28 +1355,6 @@ h3 {
   border-radius: 2px;
   background: #d3f6d7;
 }
-.caption-track {
-  position: relative;
-  height: 49px;
-  background: #181a20;
-}
-.timeline-caption {
-  position: absolute;
-  top: 10px;
-  height: 27px;
-  min-height: 27px;
-  display: block;
-  min-width: 1px;
-  overflow: hidden;
-  padding: 4px 7px;
-  background: #383647;
-  border-color: #5b5270;
-  border-radius: 4px;
-  color: #c8bfdc;
-  text-overflow: ellipsis;
-  font-size: 9px;
-  text-align: left;
-}
 .playhead {
   position: absolute;
   top: 0;
@@ -1449,41 +1427,6 @@ h3 {
   font-size: 10px;
   line-height: 1.9;
   margin: 10px 0 18px;
-}
-.transcript-list {
-  margin: 2px -4px 0;
-}
-.transcript-item {
-  position: relative;
-  border-bottom: 1px solid #2d3730;
-  padding: 12px 4px 6px;
-}
-.caption-seek {
-  width: 100%;
-  display: block;
-  background: none;
-  border: none;
-  text-align: left;
-  padding: 0;
-  white-space: normal;
-}
-.caption-seek:hover {
-  background: #273a2d;
-}
-.caption-seek time {
-  color: #7caa8b;
-  font-size: 10px;
-  font-family: ui-monospace, monospace;
-}
-.caption-seek p {
-  font-size: 12px;
-  line-height: 1.8;
-  margin-top: 8px;
-  color: #c0cec3;
-}
-.transcript-item .text-button {
-  margin-left: auto;
-  display: block;
 }
 .prompt-chips {
   display: flex;

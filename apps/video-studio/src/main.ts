@@ -1,15 +1,12 @@
 import {
   applyOperations,
   createProject,
-  exportSrt,
   formatTime,
-  parseSrt,
   timelineClips,
   timelineDuration,
   validateProject,
   type Project,
   type EditOperation,
-  type Caption,
   type Asset,
 } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
@@ -44,7 +41,6 @@ import {
 
 import {
   ProductionController,
-  captionSourceAssetIds,
   transcriptionSetupMessage,
   type MediaJob,
 } from "./production";
@@ -91,6 +87,7 @@ import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
 import {
   projectLegacyView,
   applyLegacyProjectChange,
+  LEGACY_FRAME_TICKS,
   type LegacyProjectView,
 } from "./editor/legacy-adapter";
 import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-storage";
@@ -115,6 +112,7 @@ import { EditorSyncUI } from "./editor/sync-ui";
 import { createCaptionController, type CaptionController } from "./editor/caption-controller";
 import { createCaptionServices } from "./editor/caption-services";
 import { EditorCaptionsUI } from "./editor/captions-ui";
+import { exportEditorSrt, listCaptions } from "./editor/captions";
 import { createAudioSeparationBridge } from "./editor/separation-bridge";
 import {
   createSeparationController,
@@ -288,6 +286,7 @@ let editorNativePreviewsActive = false;
 let editorPortableUI: EditorPortableUI | undefined;
 let editorSyncUI: EditorSyncUI | undefined;
 let editorCaptionsUI: EditorCaptionsUI | undefined;
+let captionPanelShown = false;
 let editorCaptions: CaptionController | undefined;
 let editorCaptionServices: ReturnType<typeof createCaptionServices> | undefined;
 let editorSeparationBridge: ReturnType<typeof createAudioSeparationBridge> | undefined;
@@ -592,10 +591,10 @@ const voiceover = createVoiceoverUI(production, {
   assets: () => project.assets,
   fps: () => project.fps,
   frame: () => frame,
+  // Every subtitle track of the shown sequence, including captions the old frame view omits.
   captionText: () =>
-    [...project.captions]
-      .sort((a, b) => a.startFrame - b.startFrame)
-      .map((caption) => caption.text)
+    (editorCaptionList() ?? [])
+      .map((caption) => caption.translation?.original ?? caption.text)
       .join("\n"),
   toast,
   assertEditable,
@@ -1158,7 +1157,7 @@ const spoken = createSpokenUI({
   toast,
 });
 
-const { sceneDialog, versionsDialog, captionsFromTranscript, handleJobAction } = createProductionUI(
+const { sceneDialog, versionsDialog, handleJobAction } = createProductionUI(
   production,
   {
     project: () => project,
@@ -1306,6 +1305,7 @@ function views() {
     playing: Boolean(playback),
     connected: Boolean(panel),
     persistentStorage: hasPersistentStorage(),
+    captionCount: editorCaptionList()?.length,
     editorClipCount: editorSession
       ?.read()
       .sequences.find((sequence) => sequence.id === editorSession!.read().activeSequenceId)?.clips
@@ -1804,6 +1804,7 @@ function render(): void {
       : [];
   const restoreAssetFocus = rememberMediaAssetFocus();
   renderStudioShell();
+  mountCaptionPanel();
   const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
   if (exportToolbar)
     editorExportJobs?.mountTrigger(
@@ -2841,75 +2842,6 @@ function quickPlan(): void {
   });
 }
 
-function captionDialog(id?: string): void {
-  const caption = project.captions.find((item) => item.id === id);
-  const dialog = $<HTMLDialogElement>("#caption-dialog");
-  const end = Math.min(duration(), frame + 90);
-  dialog.innerHTML = html`<form id="caption-form">
-    <div class="dialog-heading">
-      <h2>${caption ? "编辑字幕" : "添加字幕"}</h2>
-      ${tool("close-dialog", "关闭", "close")}
-    </div>
-    <label class="input-label" for="caption-text">字幕内容</label
-    ><textarea id="caption-text" rows="4" maxlength="1000" required>
-${esc(caption?.text || "")}</textarea
-    >
-    <div class="range-inputs">
-      <label
-        >开始（秒）<input
-          id="caption-start"
-          type="number"
-          min="0"
-          max="${seconds(duration())}"
-          step="any"
-          value="${seconds(caption?.startFrame ?? frame)}"
-          required /></label
-      ><label
-        >结束（秒）<input
-          id="caption-end"
-          type="number"
-          min="0"
-          max="${seconds(duration())}"
-          step="any"
-          value="${seconds(caption?.endFrame ?? end)}"
-          required
-      /></label>
-    </div>
-    <div class="dialog-actions">
-      ${caption ? button("delete-caption", "删除字幕", "trash", "danger") : ""}<button
-        type="submit"
-        class="primary"
-      >
-        保存字幕
-      </button>
-    </div>
-  </form>`;
-  $("#caption-form").addEventListener("submit", (event) => {
-    event.preventDefault();
-    try {
-      const value: Caption = {
-        id: caption?.id || crypto.randomUUID(),
-        text: $<HTMLTextAreaElement>("#caption-text").value,
-        startFrame: Math.round(Number($<HTMLInputElement>("#caption-start").value) * 30),
-        endFrame: Math.round(Number($<HTMLInputElement>("#caption-end").value) * 30),
-      };
-      edit([{ type: "caption", caption: value }]);
-    } catch (error) {
-      fail(error);
-    }
-  });
-  if (caption)
-    $('[data-action="delete-caption"]').addEventListener("click", (event) => {
-      event.stopPropagation();
-      try {
-        edit([{ type: "remove-caption", captionId: caption.id }]);
-      } catch (error) {
-        fail(error);
-      }
-    });
-  dialog.showModal();
-}
-
 async function exportDialog(): Promise<void> {
   await production.refreshStatus();
   const dialog = $<HTMLDialogElement>("#export-dialog");
@@ -2940,7 +2872,7 @@ async function exportDialog(): Promise<void> {
       <p role="status"></p>
     </div>
     <div class="dialog-actions">
-      ${button("save-srt", "字幕 SRT", "text", "", !project.captions.length)}${button(
+      ${button("save-srt", "字幕 SRT", "text", "", !editorCaptionList()?.length)}${button(
         "record",
         "开始导出",
         "upload",
@@ -3256,25 +3188,22 @@ async function action(name: string, id?: string): Promise<void> {
         project.name + ".video-project.json",
       );
       break;
-    case "import-srt":
-      if (!duration()) throw new Error("请先添加素材到时间轴");
-      $("#srt-input").click();
-      break;
-    case "save-srt":
+    case "save-srt": {
+      if (!editorSession) throw new Error("工程尚未恢复");
+      const doc = editorSession.read();
+      if (!listCaptions(doc, doc.activeSequenceId).length) throw new Error("当前序列还没有字幕");
       download(
-        new Blob([exportSrt(project)], { type: "text/plain;charset=utf-8" }),
-        project.name + ".srt",
+        new Blob([exportEditorSrt(doc, doc.activeSequenceId)], {
+          type: "application/x-subrip;charset=utf-8",
+        }),
+        doc.name + ".srt",
       );
       break;
+    }
     case "show-ai":
       stop();
       tab = "ai";
       render();
-      break;
-    case "add-caption":
-      if (!duration()) throw new Error("请先添加素材到时间轴");
-      stop();
-      captionDialog();
       break;
     case "quick-plan":
       quickPlan();
@@ -3669,20 +3598,8 @@ async function action(name: string, id?: string): Promise<void> {
       toast("场景正在制作，完成后自动加入素材库");
       break;
     }
-    case "transcribe": {
-      const ids = captionSourceAssetIds(project, production.preparations);
-      if (!ids.length) throw new Error("请先把已保存且有声音的素材加入画面或独立音轨，并开启音量");
-      await production.transcribe(ids);
-      tab = "jobs";
-      render();
-      toast("转写已开始，完成后在字幕页点击“从文稿生成字幕”");
-      break;
-    }
     case "recheck-transcription":
       await recheckTranscription();
-      break;
-    case "captions-from-transcript":
-      await captionsFromTranscript();
       break;
     case "versions":
       await versionsDialog();
@@ -3807,12 +3724,6 @@ studio.addEventListener("click", (event) => {
   const previewAsset = target.closest<HTMLElement>("[data-preview-asset]");
   if (previewAsset) {
     void selectSource(previewAsset.dataset.previewAsset!, "media").catch(fail);
-    return;
-  }
-  const caption = target.closest<HTMLElement>("[data-edit-caption]");
-  if (caption) {
-    stop();
-    captionDialog(caption.dataset.editCaption);
     return;
   }
   const seekTarget = target.closest<HTMLElement>("[data-seek]");
@@ -3940,8 +3851,6 @@ studio.addEventListener("change", (event) => {
       edit([
         { type: "video-move", clipId: selected, startFrame: Math.round(Number(target.value) * 30) },
       ]);
-    if (target.id === "caption-style")
-      edit([{ type: "settings", captionStyle: target.value as "classic" | "bold" | "minimal" }]);
     if (target.id === "aspect") {
       const [width, height] = target.value.split("x").map(Number);
       edit([{ type: "settings", width, height }]);
@@ -4149,31 +4058,6 @@ $("#project-input").addEventListener("change", async (event) => {
     input.value = "";
   }
 });
-$("#srt-input").addEventListener("change", async (event) => {
-  const input = event.target as HTMLInputElement;
-  const initialGeneration = generation,
-    initialRevision = project.revision;
-  try {
-    const file = input.files?.[0];
-    if (!file) return;
-    if (file.size > 1024 * 1024) throw new Error("字幕文件不能超过 1 MB");
-    const captions = parseSrt(await file.text()).map((caption) => ({
-      ...caption,
-      id: crypto.randomUUID(),
-    }));
-    if (initialGeneration !== generation || initialRevision !== project.revision)
-      throw new Error("读取字幕期间工程已变化，请重新导入");
-    edit(captions.map((caption) => ({ type: "caption", caption })));
-    tab = "transcript";
-    render();
-    toast(`已追加 ${captions.length} 条字幕`);
-  } catch (error) {
-    fail(error);
-  } finally {
-    input.value = "";
-  }
-});
-
 document.addEventListener("keydown", (event) => {
   if (mediaMenu.active || timelineMenu.active) return;
   const menuClip = (event.target as HTMLElement).closest<HTMLElement>(
@@ -4709,11 +4593,19 @@ function mountEditorCaptions(root: HTMLElement): void {
       : {}),
   });
   editorCaptions.setCapabilities({ canTranscribe: false, canTranslate: false });
+  // One shared inline workbench: the 字幕 page shows it, and 更多工具 → 语音字幕 switches to that page.
   editorCaptionsUI = new EditorCaptionsUI(root, {
     session: () => editorSession!,
     controller: editorCaptions,
+    presentation: "inline",
+    // The browser-only old workspace preview has its own frame playhead.
+    currentTime: () =>
+      editorVisible || !editorWorkspace
+        ? (editorWorkspace?.currentTime() ?? 0)
+        : frame * LEGACY_FRAME_TICKS,
     select: (sequenceId, ids) => editorWorkspace?.selectClips(sequenceId, ids),
-    seek: (time) => editorWorkspace?.seek(time),
+    seek: (time) =>
+      editorVisible ? editorWorkspace?.seek(time) : seek(Math.floor(time / LEGACY_FRAME_TICKS)),
     onError: fail,
     ...(editorCaptionServices
       ? {
@@ -4740,9 +4632,49 @@ async function recheckTranscription(): Promise<void> {
 }
 async function openEditorCaptions(sequenceId: string): Promise<void> {
   if (!editorCaptions || !editorCaptionsUI) throw new Error("字幕面板尚未恢复");
+  if (tab !== "transcript" || libraryView !== "feature") {
+    recording.assertSafeToLeave();
+    voiceover.stopPreview();
+    stop();
+    mediaPreview = false;
+    tab = "transcript";
+    libraryView = "feature";
+    render();
+  }
+  if (editorSession?.read().sequences.some((sequence) => sequence.id === sequenceId))
+    editorCaptionsUI.open(sequenceId);
   await production.refreshStatus();
   await syncEditorCaptionCapabilities();
-  editorCaptionsUI.open(sequenceId);
+}
+/** Every library render rebuilds `.library-panel`; move the one persistent caption section back in. */
+function mountCaptionPanel(): void {
+  if (!editorCaptionsUI || !editorSession) return;
+  const host = studio.querySelector<HTMLElement>("#caption-panel-host");
+  if (!host) {
+    if (captionPanelShown) editorCaptionsUI.close();
+    captionPanelShown = false;
+    return;
+  }
+  editorCaptionsUI.mount(host);
+  editorCaptionsUI.open(editorSession.read().activeSequenceId);
+  if (captionPanelShown) return;
+  captionPanelShown = true;
+  // Arriving on the page: check local transcription and translation like the tool entry does.
+  // A failed status probe is reported by the page switch itself; keep the last known readiness.
+  void production
+    .refreshStatus()
+    .catch(() => {})
+    .then(() => syncEditorCaptionCapabilities())
+    .catch(fail);
+}
+function editorCaptionList() {
+  if (!editorSession) return undefined;
+  const doc = editorSession.read();
+  try {
+    return listCaptions(doc, doc.activeSequenceId);
+  } catch {
+    return [];
+  }
 }
 async function syncEditorCaptionCapabilities(): Promise<void> {
   if (!editorCaptions) return;
@@ -5301,6 +5233,8 @@ async function boot(): Promise<void> {
             doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips.length ?? 0,
           );
         }
+        const captionCount = studio.querySelector("[data-studio-caption-count]");
+        if (captionCount) captionCount.textContent = String(editorCaptionList()?.length ?? 0);
         const exportButton = studio.querySelector<HTMLButtonElement>(
           '.topbar [data-action="export"]',
         );

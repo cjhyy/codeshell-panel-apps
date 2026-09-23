@@ -8,7 +8,7 @@ let browser, bundle, css;
 before(async () => {
   const result = await build({
     stdin: {
-      contents: `export {EditorCaptionsUI} from './apps/video-studio/src/editor/captions-ui';export {createCaptionController} from './apps/video-studio/src/editor/caption-controller';export {EditorSession} from './apps/video-studio/src/editor/session';export * from './apps/video-studio/src/editor/captions';export * from './apps/video-studio/src/editor/defaults';export {evaluateFrame} from './apps/video-studio/src/editor/evaluate';export {drawEvaluatedFrame} from './apps/video-studio/src/editor/compositor';`,
+      contents: `export {EditorCaptionsUI} from './apps/video-studio/src/editor/captions-ui';export {createCaptionController} from './apps/video-studio/src/editor/caption-controller';export {EditorSession} from './apps/video-studio/src/editor/session';export * from './apps/video-studio/src/editor/captions';export * from './apps/video-studio/src/editor/defaults';export {evaluateFrame} from './apps/video-studio/src/editor/evaluate';export {drawEvaluatedFrame} from './apps/video-studio/src/editor/compositor';export {applyEditorOperations} from './apps/video-studio/src/editor/operations';export {reconcileEditorProduction} from './apps/video-studio/src/editor/production-guard';`,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
     bundle: true,
@@ -56,6 +56,7 @@ async function fixture(t, options = {}) {
     globalThis.abortSignal = null;
     globalThis.selection = [];
     globalThis.sought = [];
+    globalThis.playhead = 0;
     const clip = (id, assetId, start) => ({
       id,
       assetId,
@@ -104,6 +105,44 @@ async function fixture(t, options = {}) {
         ],
       },
       revision = 1;
+    if (options.narration) {
+      const style = editor.defaultTextStyle();
+      stored.sequences[0].clips.push(
+        ...["draft-clip", "own-clip"].map((id, index) => ({
+          id,
+          trackId: "text",
+          start: index * 2 * T,
+          duration: T,
+          label: "字幕",
+          kind: "text",
+          role: "subtitle",
+          text: index ? "用户自己的字幕" : "文案估时字幕",
+          style,
+          words: [],
+          transform: editor.defaultTransform(),
+          color: editor.defaultColorAdjustment(),
+          blendMode: "normal",
+        })),
+      );
+      stored.production = {
+        script: "文案估时字幕",
+        narration: {
+          phase: "approved",
+          captionBasis: "draft",
+          draftCaptionIds: ["draft-narration-1"],
+          approvedScript: "文案估时字幕",
+          approvedFingerprint: "a".repeat(64),
+        },
+        legacyAliases: [
+          {
+            sequenceId: "main",
+            clipId: "draft-clip",
+            collection: "captions",
+            legacyId: "draft-narration-1",
+          },
+        ],
+      };
+    }
     globalThis.session = await editor.EditorSession.open(
       {
         read: async () => ({ data: stored, revision }),
@@ -130,7 +169,17 @@ async function fixture(t, options = {}) {
     ];
     globalThis.controller = editor.createCaptionController({
       session: () => session,
-      apply: (ops, identity, label) => session.dispatchDurable(ops, identity, label, "user"),
+      // The main panel's shared helper adds the production guard to every caption edit.
+      apply: (ops, identity, label) => {
+        const before = session.read(),
+          after = editor.applyEditorOperations(before, ops, before.revision);
+        return session.dispatchDurable(
+          [...ops, ...editor.reconcileEditorProduction(before, after)],
+          identity,
+          label,
+          "user",
+        );
+      },
       ...(options.disabled
         ? {}
         : {
@@ -160,6 +209,7 @@ async function fixture(t, options = {}) {
     globalThis.ui = new editor.EditorCaptionsUI(document.querySelector("#mount"), {
       session: () => session,
       controller,
+      ...(options.inline ? { presentation: "inline", currentTime: () => playhead } : {}),
       select: (sequenceId, ids) => (selection = ids),
       seek: (tick) => sought.push(tick),
       onError: (error) => errors.push(error.message),
@@ -181,6 +231,7 @@ async function fixture(t, options = {}) {
           : "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
       controller.setCapabilities({ canTranscribe: false, canTranslate: true });
     }
+    if (options.inline) ui.mount(document.querySelector("#mount"));
     ui.open();
     globalThis.captions = () =>
       session.read().sequences[0].clips.filter((clip) => clip.kind === "text");
@@ -399,4 +450,130 @@ test("explicit source unlink button preserves caption text and real words and ca
   assert.equal(await page.evaluate(() => captions()[0].words.length), 2);
   await page.evaluate(() => session.undo());
   await page.waitForFunction(() => !!captions()[0].sourceBinding);
+});
+
+test("inline panel adds at the playhead, edits timing and deletes, each as one undo step", async (t) => {
+  const page = await fixture(t, { inline: true });
+  assert.equal(await page.locator("dialog").count(), 0);
+  assert.equal(await page.locator("#mount > section.editor-captions.is-inline").isVisible(), true);
+  assert.equal(await page.getByRole("button", { name: "关闭字幕" }).count(), 0);
+  await page.evaluate(() => (playhead = 1_234_567));
+  await page.getByLabel("新字幕文字", { exact: true }).fill("播放头字幕");
+  await page.getByRole("button", { name: "在播放头添加字幕", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 1);
+  const added = await page.evaluate(() => captions()[0]);
+  // 29.97 fps frames are 8008 ticks; the playhead snaps to the nearest frame.
+  assert.equal(added.start, 154 * 8008);
+  assert.equal(added.duration, 3 * 240000);
+  assert.equal(added.text, "播放头字幕");
+  assert.equal(await page.getByLabel("新字幕文字", { exact: true }).inputValue(), "");
+  assert.equal(await page.evaluate(() => session.read().revision), 1);
+  const row = page.locator(`[data-caption-id="${added.id}"]`);
+  await row.getByLabel("开始（秒）").fill("2");
+  await row.getByLabel("结束（秒）").fill("4.5");
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].start === 60 * 8008);
+  assert.equal(await page.evaluate(() => captions()[0].duration), 135 * 8008 - 60 * 8008);
+  assert.equal(await page.evaluate(() => session.read().revision), 2);
+  await row.getByRole("button", { name: "删除", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 0);
+  assert.equal(await page.evaluate(() => session.read().revision), 3);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions()[0]?.start === 60 * 8008);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions()[0]?.start === 154 * 8008);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().length === 0);
+});
+
+test("inline timing keeps an unchanged off-frame start exactly and rejects an end before the start", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() =>
+    controller.add("main", { start: 1_234_567, duration: 480_001, text: "实拍时间" }),
+  );
+  const row = page.locator(`[data-caption-id="${id}"]`);
+  await row.waitFor();
+  assert.equal(await row.getByLabel("开始（秒）").inputValue(), "5.144");
+  await row.getByLabel("结束（秒）").fill("7");
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].duration !== 480_001);
+  const caption = await page.evaluate(() => captions()[0]);
+  assert.equal(caption.start, 1_234_567, "An untouched value is never re-snapped");
+  assert.equal(caption.start + caption.duration, 210 * 8008);
+  await row.getByLabel("结束（秒）").fill("1");
+  await row.getByRole("button", { name: "保存时间", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "结束时间必须晚于开始时间" }).waitFor();
+  assert.equal(await page.evaluate(() => captions()[0].start), 1_234_567);
+});
+
+test("inline panel moves into a rebuilt host without losing focus, typed text or a pending preview", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  await page.locator("[data-caption-srt-input]").setInputFiles({
+    name: "候选.srt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("1\n00:00:01,000 --> 00:00:02,000\n等待应用\n"),
+  });
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const draft = page.getByLabel("新字幕文字", { exact: true });
+  await draft.fill("正在输入");
+  await draft.evaluate((node) => node.setSelectionRange(2, 4));
+  await page.evaluate(() => {
+    const next = document.createElement("main");
+    next.id = "rebuilt";
+    document.querySelector("#mount").replaceWith(next);
+    ui.mount(next);
+  });
+  assert.equal(await page.locator("#rebuilt > .editor-captions").count(), 1);
+  assert.equal(await draft.inputValue(), "正在输入");
+  assert.deepEqual(
+    await draft.evaluate((node) => [
+      node === document.activeElement,
+      node.selectionStart,
+      node.selectionEnd,
+    ]),
+    [true, 2, 4],
+  );
+  assert.equal(await page.locator(".ec-preview").isVisible(), true);
+  await page.getByRole("button", { name: "应用预览" }).click();
+  await page.waitForFunction(() => captions().length === 1);
+});
+
+test("temporary narration captions carry a badge and edits explain that approval returns to review", async (t) => {
+  const page = await fixture(t, { inline: true, narration: true });
+  const draft = page.locator('[data-caption-id="draft-clip"]'),
+    own = page.locator('[data-caption-id="own-clip"]');
+  assert.equal(await draft.locator(".ec-badge").textContent(), "临时字幕");
+  assert.equal(await own.locator(".ec-badge").count(), 0);
+  assert.match(await page.locator(".ec-narration").innerText(), /文案估时的临时字幕/);
+  assert.match(await page.locator(".ec-narration").innerText(), /回到待确认/);
+  await draft.getByLabel("字幕文字", { exact: true }).fill("改过的临时字幕");
+  await draft.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => session.read().production.narration.phase === "review");
+  await page.getByRole("status").filter({ hasText: "口播草稿已回到待确认" }).waitFor();
+  await draft.getByRole("button", { name: "删除", exact: true }).click();
+  await page.waitForFunction(() => !captions().some((clip) => clip.id === "draft-clip"));
+  assert.deepEqual(
+    await page.evaluate(() => session.read().production.narration.draftCaptionIds),
+    ["draft-narration-1"],
+    "Deleting a temporary caption keeps its provenance for later alignment",
+  );
+});
+
+test("style preset select restyles every caption in one undo step and shows the shared choice", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => seed());
+  await page.evaluate(() => controller.add("main", { start: 6 * 240000, text: "第二条" }));
+  await page.waitForFunction(() => captions().length === 2);
+  const revision = await page.evaluate(() => session.read().revision);
+  await page.getByLabel("字幕样式", { exact: true }).selectOption("bold");
+  await page.waitForFunction(() => captions().every((clip) => clip.style.color === "#ffe46b"));
+  assert.equal(await page.evaluate(() => session.read().revision), revision + 1);
+  assert.equal(await page.evaluate(() => session.read().production.legacyCaptionStyle), "bold");
+  assert.equal(
+    await page.evaluate(() => captions().find((clip) => clip.words.length).words.length),
+    2,
+  );
+  assert.equal(await page.getByLabel("字幕样式", { exact: true }).inputValue(), "bold");
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().every((clip) => clip.style.color !== "#ffe46b"));
 });

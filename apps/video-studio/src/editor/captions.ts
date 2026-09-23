@@ -6,8 +6,10 @@ import {
   defaultTextStyle,
   defaultTransform,
 } from "./defaults";
+import { trimClip } from "./clip-edits";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import {
+  assertTick,
   sourceRangesToTimeline,
   sourceTimeAt,
   secondsToTicks,
@@ -15,7 +17,7 @@ import {
   type Tick,
   type TimeRange,
 } from "./time";
-import { MAX_EDITOR_TICK, validateEditorDocument } from "./validation";
+import { MAX_EDITOR_TICK, sequenceDuration, validateEditorDocument } from "./validation";
 import type { EditorDocument, EditorSequence, TextClip, TextStyle } from "./types";
 
 export interface CaptionTranscriptWord {
@@ -774,6 +776,100 @@ export function planDetachCaptions(
       clipId: clip.id,
       patch: { sourceBinding: null },
     }));
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+
+/** Every subtitle of the sequence on any text track, in playback order; titles are never listed. */
+export function listCaptions(value: EditorDocument, sequenceId: string): TextClip[] {
+  return sequence(value, sequenceId)
+    .clips.filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+}
+const DEFAULT_CAPTION_DURATION = 3 * TICKS_PER_SECOND;
+function unlockedCaption(seq: EditorSequence, clip: TextClip): void {
+  if (seq.tracks.find((track) => track.id === clip.trackId)?.locked)
+    throw new Error("字幕轨已锁定，请先解锁字幕轨");
+}
+/** A plain subtitle at an exact tick; it never extends the picture beyond the current sequence end. */
+export function planAddCaption(
+  value: EditorDocument,
+  sequenceId: string,
+  options: {
+    start: Tick;
+    duration?: Tick;
+    text: string;
+    trackId?: string;
+    idFactory?: () => string;
+  },
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    text = cleanText(options.text, "字幕文字"),
+    start = assertTick(options.start, "字幕开始时间"),
+    length = assertTick(options.duration ?? DEFAULT_CAPTION_DURATION, "字幕时长"),
+    end = Math.min(start + length, sequenceDuration(seq));
+  if (!length) throw new Error("字幕时长必须大于零");
+  if (end <= start) throw new Error("播放头不在画面范围内，请把播放头移到画面上再添加字幕");
+  if (seq.clips.length + 1 > MAX_CAPTIONS) throw new Error("字幕超过序列2000片段容量");
+  const track = captionTrack(seq, options),
+    clip = textClip((options.idFactory ?? uniqueId)(), track.id, start, end, text, seq);
+  const operations: EditorOperation[] = [
+    ...track.operations,
+    { type: "clip.add", sequenceId, clip },
+  ];
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+/**
+ * Manual timing ends automatic source following first, otherwise source reconciliation would
+ * restore the old range. Moving keeps clip-local words; shortening trims words past the new end.
+ */
+export function planCaptionTiming(
+  value: EditorDocument,
+  sequenceId: string,
+  clipId: string,
+  timing: { start: Tick; end: Tick },
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    [clip] = selectedCaptions(seq, [clipId]);
+  if (!clip) throw new Error("请选择有效的字幕片段");
+  const start = assertTick(timing.start, "字幕开始时间"),
+    end = assertTick(timing.end, "字幕结束时间");
+  if (end <= start) throw new Error("字幕结束时间必须晚于开始时间");
+  unlockedCaption(seq, clip);
+  if (start === clip.start && end === clip.start + clip.duration) return [];
+  const operations: EditorOperation[] = [];
+  if (clip.sourceBinding)
+    operations.push({ type: "clip.update", sequenceId, clipId, patch: { sourceBinding: null } });
+  if (start !== clip.start)
+    operations.push({ type: "clip.move", sequenceId, clipIds: [clipId], delta: start - clip.start });
+  const duration = end - start;
+  if (duration > clip.duration)
+    operations.push({ type: "clip.update", sequenceId, clipId, patch: { duration } });
+  else if (duration < clip.duration) {
+    const moved = operations.length
+      ? applyEditorOperations(doc, operations, doc.revision)
+      : doc;
+    operations.push(...trimClip(moved, sequenceId, clipId, 0, duration));
+  }
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+export function planRemoveCaptions(
+  value: EditorDocument,
+  sequenceId: string,
+  clipIds: string[],
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    clips = selectedCaptions(seq, clipIds);
+  if (!clips.length) throw new Error("请选择要删除的字幕");
+  for (const clip of clips) unlockedCaption(seq, clip);
+  const operations: EditorOperation[] = [
+    { type: "clip.remove", sequenceId, clipIds: clips.map((clip) => clip.id) },
+  ];
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }

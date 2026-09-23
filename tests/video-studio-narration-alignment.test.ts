@@ -219,3 +219,20 @@ test("foreign, missing, visual-only and synthesized recording assets cannot auth
   };
   assert.throws(() => buildNarrationAlignment(tts, realSegments), /合成配音/);
 });
+
+test("a draft caption already deleted in the caption panel does not block recorded alignment", () => {
+  const before = fixture(360);
+  before.captions = before.captions.filter((caption) => caption.id !== "draft-1");
+  assert.deepEqual(before.narration!.draftCaptionIds, ["draft-1"]);
+  const next = buildNarrationAlignment(validateProject(before), [realSegments[0]!]);
+  assert.deepEqual(next.captions.map((caption) => caption.id).sort(), [
+    "recorded-narration-1-1",
+    "title",
+    "unowned",
+  ]);
+  assert.equal(recordedCaptions(next).length, 1);
+  assert.deepEqual(
+    next.captions.filter((caption) => !caption.id.startsWith("recorded-narration-")),
+    before.captions,
+  );
+});

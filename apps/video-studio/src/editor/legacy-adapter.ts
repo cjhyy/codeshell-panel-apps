@@ -9,9 +9,9 @@ import {
   type Project,
 } from "../model";
 import { evaluateAnimatedNumber } from "./animation";
+import { captionTemplate } from "./caption-presets";
 import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
-import { migrateLegacyProject } from "./migration";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { freezeTimeMap } from "./time";
 import type {
@@ -145,6 +145,24 @@ function legacyAlias(
   }
   return clip.id;
 }
+/** Subtitle clips whose old caption ID is listed, e.g. the narration workflow's temporary captions. */
+export function captionClipIdsForLegacyIds(
+  document: EditorDocument,
+  sequenceId: string,
+  legacyIds: Iterable<string>,
+): Set<string> {
+  const wanted = new Set(legacyIds),
+    result = new Set<string>();
+  if (!wanted.size) return result;
+  for (const clip of document.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
+    if (
+      clip.kind === "text" &&
+      clip.role === "subtitle" &&
+      wanted.has(legacyAlias(document, sequenceId, clip, "captions"))
+    )
+      result.add(clip.id);
+  return result;
+}
 function baseProject(document: EditorDocument, sequence: EditorSequence): Project {
   return {
     schemaVersion: 1,
@@ -175,31 +193,6 @@ function assetFromLegacy(asset: Asset): EditorAsset {
       ? { metadata: structuredClone(metadata) as Record<string, JsonData> }
       : {}),
   };
-}
-const captionTemplates = new Map<string, TextClip>();
-function captionTemplate(project: Pick<Project, "width" | "height" | "captionStyle">): TextClip {
-  const key = `${project.width}:${project.height}:${project.captionStyle ?? "classic"}`;
-  const cached = captionTemplates.get(key);
-  if (cached) return structuredClone(cached);
-  const document = migrateLegacyProject({
-    schemaVersion: 1,
-    id: "legacy-caption-template",
-    name: "字幕",
-    revision: 0,
-    fps: 30,
-    width: project.width,
-    height: project.height,
-    captionStyle: project.captionStyle ?? "classic",
-    assets: [{ id: "template-source", name: "字幕画布", kind: "demo", durationFrames: 1 }],
-    clips: [
-      { id: "template-picture", assetId: "template-source", inFrame: 0, outFrame: 1, volume: 1 },
-    ],
-    captions: [{ id: "template-text", text: "字幕", startFrame: 0, endFrame: 1 }],
-  });
-  const result = document.sequences[0]!.clips.find((clip) => clip.kind === "text") as TextClip;
-  if (captionTemplates.size >= 24) captionTemplates.clear();
-  captionTemplates.set(key, result);
-  return structuredClone(result);
 }
 function legacyPreset(clip: TextClip, sequence: EditorSequence): CaptionStyle | undefined {
   return (["classic", "bold", "minimal"] as const).find((captionStyle) =>

@@ -5,8 +5,11 @@ import { applyEditorOperations } from "./operations";
 import {
   captionTranslationItems,
   compileCaptionSources,
+  planAddCaption,
   planCaptionStyle,
+  planCaptionTiming,
   planDetachCaptions,
+  planRemoveCaptions,
   planCaptionText,
   planCaptionTranslation,
   planSrtImport,
@@ -15,6 +18,7 @@ import {
   type CaptionPlan,
   type CaptionTranscriptSegment,
 } from "./captions";
+import { planCaptionPreset, type CaptionPreset } from "./caption-presets";
 
 export interface CaptionControllerContext {
   session(): EditorSession;
@@ -462,6 +466,42 @@ export function createCaptionController(context: CaptionControllerContext) {
         snapshot.identity,
         "修改字幕文字",
       );
+    },
+    /** Adds one plain subtitle and returns its clip ID. */
+    async add(
+      sequenceId: string,
+      options: { start: number; duration?: number; text: string; trackId?: string },
+    ): Promise<string> {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planAddCaption(snapshot.document, sequenceId, {
+        ...options,
+        ...(context.idFactory ? { idFactory: context.idFactory } : {}),
+      });
+      const added = operations.find((op) => op.type === "clip.add");
+      await context.apply(operations, snapshot.identity, "添加字幕");
+      return added?.type === "clip.add" ? added.clip.id : "";
+    },
+    async updateTiming(sequenceId: string, clipId: string, timing: { start: number; end: number }) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planCaptionTiming(snapshot.document, sequenceId, clipId, timing);
+      if (operations.length) await context.apply(operations, snapshot.identity, "调整字幕时间");
+    },
+    async remove(sequenceId: string, clipIds: string[]) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      await context.apply(
+        planRemoveCaptions(snapshot.document, sequenceId, clipIds),
+        snapshot.identity,
+        "删除字幕",
+      );
+    },
+    async applyPreset(sequenceId: string, preset: CaptionPreset) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planCaptionPreset(snapshot.document, sequenceId, preset);
+      if (operations.length) await context.apply(operations, snapshot.identity, "套用字幕样式");
     },
     async updateStyle(sequenceId: string, clipIds: string[], patch: Partial<TextStyle>) {
       const snapshot = read();

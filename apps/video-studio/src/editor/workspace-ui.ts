@@ -443,6 +443,10 @@ export class EditorWorkspace {
     output.textContent = "";
     output.hidden = true;
   }
+  /** Current playhead of the shown sequence, in exact ticks. */
+  currentTime(): Tick {
+    return this.playhead;
+  }
   async seek(time: Tick): Promise<void> {
     if (this.disposed) return;
     this.canvasEditor?.cancel();

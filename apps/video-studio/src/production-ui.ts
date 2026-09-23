@@ -1,13 +1,8 @@
 import { escapeHtml as esc, html } from "./icons";
 import { button, tool } from "./views";
 import { listProjectVersions, readProjectVersion, type ProjectVersion } from "./host";
-import {
-  captionSourceAssetIds,
-  transcriptCaptions,
-  mediaUrl,
-  type ProductionController,
-} from "./production";
-import { type Project, validateProject, type Caption } from "./model";
+import { mediaUrl, type ProductionController } from "./production";
+import { type Project, validateProject } from "./model";
 interface ProductionUIContext {
   project(): Project;
   commit(project: Project): void;
@@ -96,96 +91,6 @@ export function createProductionUI(production: ProductionController, context: Pr
     );
     dialog.showModal();
   }
-  async function captionsFromTranscript(): Promise<void> {
-    if (production.enabled === false)
-      throw new Error("当前无法读取真实转写，请在桌面视频工作台使用，或导入 SRT 字幕");
-    const original = context.project();
-    const sourceIds = captionSourceAssetIds(original, production.preparations);
-    if (!sourceIds.length)
-      throw new Error("请先把已保存且有声音的素材加入画面或独立音轨，并开启音量");
-    const captions: Caption[] = [];
-    let missing = 0;
-    for (const id of sourceIds) {
-      let offset = 0,
-        total = 1;
-      while (offset < total) {
-        let result;
-        try {
-          result = await production.transcript(id, offset, 100);
-        } catch (error) {
-          if (offset === 0 && /ENOENT|not found|文稿.*不存在|转写.*不存在/i.test(String(error))) {
-            missing++;
-            break;
-          }
-          throw error;
-        }
-        if (
-          !Number.isSafeInteger(result.total) ||
-          result.total < 0 ||
-          result.total > 100000 ||
-          result.offset !== offset ||
-          !Array.isArray(result.segments) ||
-          result.segments.length > 100 ||
-          offset + result.segments.length > result.total ||
-          (offset > 0 && result.total !== total) ||
-          (!result.segments.length && offset < result.total)
-        )
-          throw new Error("文稿分页不完整或已变化，请重新读取后生成字幕");
-        total = result.total;
-        if (!total) {
-          missing++;
-          break;
-        }
-        captions.push(...transcriptCaptions(original, id, result.segments));
-        offset += result.segments.length;
-      }
-    }
-    if (context.project() !== original) throw new Error("读取文稿期间工程已变化，请重新生成字幕");
-    const existingById = new Map(original.captions.map((caption) => [caption.id, caption]));
-    const existingIds = new Set(existingById.keys());
-    const updated = new Map<string, Caption>();
-    const captionKey = (caption: Caption) =>
-      JSON.stringify([caption.startFrame, caption.endFrame, caption.text]);
-    const exists = new Set(original.captions.map(captionKey));
-    const added = captions.filter((caption) => {
-      const key = captionKey(caption);
-      const existing = existingById.get(caption.id);
-      if (existing) {
-        if (existing.startFrame !== caption.startFrame || existing.endFrame !== caption.endFrame)
-          updated.set(caption.id, {
-            ...existing,
-            startFrame: caption.startFrame,
-            endFrame: caption.endFrame,
-          });
-        return false;
-      }
-      if (existingIds.has(caption.id) || exists.has(key)) return false;
-      existingIds.add(caption.id);
-      exists.add(key);
-      return true;
-    });
-    if (!added.length && !updated.size && captions.length) {
-      context.toast(
-        `当前剪辑的文稿字幕已存在，保留已校对的文字${missing ? `；${missing} 个素材尚无文稿` : ""}`,
-      );
-      return;
-    }
-    if (!added.length && !updated.size)
-      throw new Error("没有新的文稿字幕。请先完成语音转写，并确认素材已加入时间轴。");
-    context.commit(
-      validateProject({
-        ...original,
-        revision: original.revision + 1,
-        captions: [
-          ...original.captions.map((caption) => updated.get(caption.id) ?? caption),
-          ...added,
-        ],
-      }),
-    );
-    context.toast(
-      `已按当前剪辑生成 ${added.length} 条字幕${updated.size ? `，更新 ${updated.size} 条时间` : ""}${missing ? `；${missing} 个素材尚无文稿，未生成其字幕` : ""}`,
-    );
-  }
   async function handleJobAction(action: string, id: string, assetId?: string): Promise<void> {
     if (action === "cancel") await production.cancel(id);
     else if (action === "retry") await production.retry(id);
@@ -218,5 +123,5 @@ export function createProductionUI(production: ProductionController, context: Pr
     }
     context.render();
   }
-  return { sceneDialog, versionsDialog, captionsFromTranscript, handleJobAction };
+  return { sceneDialog, versionsDialog, handleJobAction };
 }

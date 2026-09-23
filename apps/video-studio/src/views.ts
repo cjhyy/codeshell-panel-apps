@@ -8,7 +8,6 @@ import {
   type Asset,
 } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
-import { renderCaptionControls } from "./caption-controls";
 import { renderWorkflowSummary } from "./workflow";
 import { renderNarrationPanel } from "./narration-ui";
 import type { Proposal, PanelTask } from "./host";
@@ -52,6 +51,8 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly editorClipCount?: number;
+  /** Subtitles on every text track of the shown sequence. */
+  readonly captionCount?: number;
   readonly voiceoverMarkup?: string;
   readonly folderMarkup?: string;
   readonly voicePreparationActive?: boolean;
@@ -275,7 +276,7 @@ export function createViews(state: ViewState) {
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
         ><span
           ><span data-studio-clip-count>${state.editorClipCount ?? project.clips.length}</span>
-          个片段 <span class="dot">·</span> ${project.captions.length} 条字幕
+          个片段 <span class="dot">·</span> <span data-studio-caption-count>${state.captionCount ?? project.captions.length}</span> 条字幕
           <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
         ><span
           >${tab === "roughcut"
@@ -286,7 +287,6 @@ export function createViews(state: ViewState) {
         >
       </footer>
       <dialog id="export-dialog"></dialog>
-      <dialog id="caption-dialog"></dialog>
       <dialog id="plan-dialog"></dialog>
       <dialog id="media-delete-dialog" aria-labelledby="media-delete-heading"></dialog>`;
   }
@@ -304,42 +304,8 @@ export function createViews(state: ViewState) {
           : (state.voiceoverMarkup ?? ""))
       );
     if (libraryTab === "jobs" && state.production) return renderProductionJobs(state.production);
-    if (libraryTab === "transcript")
-      return html`<div class="section-title">
-          <h2>文稿与字幕</h2>
-          ${tool("import-srt", "导入 SRT 字幕", "upload")}
-        </div>
-        <p class="section-description">点击句子定位画面。字幕随片段剪辑移动。</p>
-        ${project.narration?.captionBasis === "draft"
-          ? '<p class="narration-caption-basis is-draft">当前含文案估时的临时字幕。确认草稿、录完本人声音后，会按真实口播重排正式字幕。</p>'
-          : ""}
-        ${persistent
-          ? `<div class="library-actions">${button("transcribe", "语音转写", "spark", "", state.production?.status.runtimeChecked !== false && !state.production?.status.transcription.available)}${button("captions-from-transcript", "从文稿生成字幕", "text")}</div>`
-          : ""}
-        <div class="library-actions">
-          ${button("add-caption", "添加字幕", "plus")}${button(
-            "save-srt",
-            "导出 SRT",
-            "download",
-            "",
-            !project.captions.length,
-          )}
-        </div>
-        ${renderCaptionControls(project)}
-        <div class="transcript-list">
-          ${project.captions.length
-            ? project.captions
-                .map(
-                  (caption) =>
-                    `<article class="transcript-item" data-caption="${esc(caption.id)}"><button class="caption-seek" data-seek="${caption.startFrame}"><time>${formatTime(caption.startFrame).slice(3, 8)}</time><p>${esc(caption.text)}</p></button><button class="text-button" data-edit-caption="${esc(caption.id)}">编辑</button></article>`,
-                )
-                .join("")
-            : '<div class="empty-state">' +
-              icon("text", 32) +
-              "<h3>把声音变成看得见的故事</h3><p>导入带时间的 SRT 或手动添加字幕。在 CodeShell 中可先转写，再按当前剪辑生成字幕。</p>" +
-              button("import-srt", "导入 SRT", "upload") +
-              "</div>"}
-        </div>`;
+    // The caption workbench is one persistent section that main mounts into this host.
+    if (libraryTab === "transcript") return '<div id="caption-panel-host"></div>';
     if (libraryTab === "ai")
       return html`<div class="section-title">
           <h2>AI 自动制作</h2>
@@ -904,7 +870,6 @@ ${esc(aiPrompt)}</textarea
         <div class="track-labels">
           <div class="ruler-label">时间轴</div>
           <div>${icon("film", 17)}<span>画面 / 原声</span></div>
-          <div>${icon("text", 17)}<span>字幕</span></div>
           <div>${icon("volume", 17)}<span>音乐 / 配音</span></div>
         </div>
         <div class="timeline-scroll" id="timeline-scroll">
@@ -960,14 +925,6 @@ ${esc(aiPrompt)}</textarea
                 .join("")}${!clips.length
                 ? '<div class="timeline-empty">将素材拖到这里，或点击素材上的 ＋</div>'
                 : ""}
-            </div>
-            <div class="caption-track">
-              ${project.captions
-                .map(
-                  (caption) =>
-                    `<button class="timeline-caption" data-edit-caption="${esc(caption.id)}" title="${esc(caption.text)}" style="left:${(caption.startFrame / 30) * zoom}px;width:${((caption.endFrame - caption.startFrame) / 30) * zoom}px">${esc(caption.text)}</button>`,
-                )
-                .join("")}
             </div>
             <div class="audio-track">
               ${(project.audioClips ?? [])
