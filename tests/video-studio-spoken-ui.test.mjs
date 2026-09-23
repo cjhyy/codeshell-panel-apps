@@ -33,7 +33,7 @@ before(async () => {
  const wait=async()=>{if(window.delayRead)await new Promise(resolve=>window.readResolvers.push(resolve));if(window.failRead)throw Error('尚未转写');};
  const ui=createSpokenUI({document:()=>window.editorHistory.read(),sequenceId:()=>window.editorHistory.read().activeSequenceId,
  identity:()=>({documentId:window.editorHistory.read().id,generation:window.generation,revision:window.editorHistory.revision}),changed:render,toast:message=>window.toasts.push(message),
- prepare:async()=>{window.prepareCount++;window.editorHistory.apply([{type:'asset.update',assetId:'talk',patch:{metadata:{proxyId:'asset-'+'a'.repeat(64)}}}],window.editorHistory.revision,'准备素材');},
+ prepare:async()=>{window.prepareCount++;window.editorHistory.apply([{type:'asset.update',assetId:'talk',patch:{metadata:{proxyId:'asset-'+'a'.repeat(64)},...(window.prepareDuration?{duration:window.prepareDuration}:{})}}],window.editorHistory.revision,'准备素材');if(window.prepareEdit)window.editorHistory.apply([{type:'clip.update',sequenceId:'main',clipId:'a',patch:{label:'改名'}}],window.editorHistory.revision,'用户编辑');},
  fetchTranscript:async()=>{await wait();return window.transcript;},fetchSilence:async()=>{await wait();return [{start:2,end:4}];},
  apply:async plan=>{if(window.failApply)throw Error('保存失败，原片未改变');if(plan.identity.generation!==window.generation||plan.identity.documentId!==window.editorHistory.read().id)throw Error('工程已变化');window.editorHistory.apply(plan.operations,plan.identity.revision,plan.title);window.plans.push(plan);},
  undo:()=>{window.editorHistory.undo();},canUndo:()=>window.editorHistory.canUndo,
@@ -148,6 +148,24 @@ test("metadata-only preparation refreshes the revision, missing words stay hones
   await click(p, "让 AI 提供文稿建议");
   assert.match(await p.evaluate(() => window.polished[0]), /这个故事值得讲述/);
   assert.equal(await p.evaluate(() => window.editorHistory.revision), 2);
+  await p.close();
+});
+test("the panel's own preparation refining the source length does not discard the first analysis", async () => {
+  const p = await page();
+  // Preparation re-publishes the same source with its probed length (20 s + 1234 ticks → 20.01 s).
+  await p.evaluate(() => (window.prepareDuration = 20 * 240000 + 2400));
+  await click(p, "准备口播并分析");
+  await p.locator(".spoken-candidate").first().waitFor();
+  assert.deepEqual(await p.evaluate(() => window.errors), []);
+  assert.equal(await p.locator("[role=alert]").count(), 0);
+  await p.close();
+});
+test("a timeline edit during preparation still asks for a fresh analysis", async () => {
+  const p = await page();
+  await p.evaluate(() => (window.prepareEdit = true));
+  await click(p, "准备口播并分析");
+  await p.waitForFunction(() => window.errors.length === 1);
+  assert.match(await p.evaluate(() => window.errors[0]), /准备期间工程已变化/);
   await p.close();
 });
 test("a failed save preserves selected candidates, stale async results never apply to a new project, and read failures can retry", async () => {

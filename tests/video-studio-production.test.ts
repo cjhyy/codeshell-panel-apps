@@ -2163,3 +2163,83 @@ test("a request signal aborts when its automatic round ends, is replaced or is c
   await producer.cancel();
   assert.equal(next.aborted, true);
 });
+
+test("preparing a non-whole-frame source keeps its exact decoded length in the editor document", async () => {
+  const { preparedAsset } = await import("../apps/video-studio/src/production.ts");
+  const { projectLegacyView, applyLegacyProjectChange } = await import(
+    "../apps/video-studio/src/editor/legacy-adapter.ts"
+  );
+  const { publishProductionAssets } = await import("../apps/video-studio/src/voiceover.ts");
+  const { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } = await import(
+    "../apps/video-studio/src/editor/defaults.ts"
+  );
+  const { validateEditorDocument } = await import(
+    "../apps/video-studio/src/editor/validation.ts"
+  );
+  const exact = 2_469_605; // 10.29 s — not a whole 30 fps frame
+  const doc = validateEditorDocument({
+    schemaVersion: 2,
+    timebase: 240000,
+    id: "exact-length",
+    name: "精确长度",
+    revision: 3,
+    activeSequenceId: "main",
+    exportProfiles: [],
+    assets: [
+      { id: "talk", name: "口播.mp4", kind: "video", duration: exact, resourceId: mediaId, width: 1280, height: 720 },
+    ],
+    sequences: [
+      {
+        id: "main",
+        name: "主序列",
+        width: 1280,
+        height: 720,
+        frameRate: { numerator: 30, denominator: 1 },
+        background: "#000000",
+        timelineMode: "magnetic",
+        tracks: [createTrack("v1", "video", "主画面")],
+        clips: [
+          {
+            id: "a",
+            kind: "media",
+            label: "口播",
+            trackId: "v1",
+            start: 0,
+            duration: 8000 * 240,
+            assetId: "talk",
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 8000 * 240, source: 8000 * 240 }] },
+            audio: defaultAudioMix(),
+            transform: defaultTransform(),
+            color: defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        ],
+        transitions: [],
+        markers: [],
+      },
+    ],
+  });
+  const view = projectLegacyView(doc);
+  const asset = preparedAsset(
+    { id: mediaId, name: "口播.mp4", mimeType: "video/mp4", bytes: 10, createdAt: 1 },
+    {
+      assetId: mediaId,
+      inspection: {
+        kind: "video",
+        durationSeconds: exact / 240000,
+        video: { displayWidth: 1280, displayHeight: 720, width: 1280, height: 720 },
+      },
+      proxy: { asset: { id: `asset-${"b".repeat(64)}`, name: "p", mimeType: "video/mp4", bytes: 1, createdAt: 1 } },
+    },
+    view.project,
+  );
+  assert.equal(asset.durationFrames, view.project.assets[0]!.durationFrames);
+  const published = publishProductionAssets(view.project, [asset]).project!;
+  const operations = applyLegacyProjectChange(doc, view, view.project, published, doc.revision);
+  assert.ok(
+    operations.every(
+      (operation) => operation.type !== "asset.update" || operation.patch.duration === undefined,
+    ),
+    "preparation must not rewrite the probed duration",
+  );
+});

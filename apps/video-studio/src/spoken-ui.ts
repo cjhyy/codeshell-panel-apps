@@ -135,9 +135,13 @@ export function createSpokenUI(context: SpokenContext) {
     if (disposed || version !== generation || !sameIdentity(context.identity(), identity))
       throw new Error("工程已变化，已丢弃旧的口播分析；请重新读取");
   }
-  function editingState(doc: EditorDocument) {
-    // Preparing may publish proxy/thumbnail metadata. Accept only those revision
-    // changes; timeline edits and different source durations invalidate analysis.
+  /**
+   * `prepared`: the asset preparation just published. It may add proxy/thumbnail metadata and
+   * refine that asset's decoded length while keeping the same source file; the analysis is
+   * then built on the prepared document, so only the source identity counts for it. Timeline
+   * edits, other assets' lengths and a different source file still invalidate the analysis.
+   */
+  function editingState(doc: EditorDocument, prepared?: string) {
     const current = sequence(doc);
     return JSON.stringify({
       id: doc.id,
@@ -154,7 +158,7 @@ export function createSpokenUI(context: SpokenContext) {
       assets: doc.assets.map((asset) => ({
         id: asset.id,
         kind: asset.kind,
-        duration: asset.duration,
+        ...(asset.id === prepared ? {} : { duration: asset.duration }),
         resourceId: asset.resourceId,
       })),
     });
@@ -205,7 +209,7 @@ export function createSpokenUI(context: SpokenContext) {
           !prepared ||
           !preparedIdentity ||
           !sameIdentity(preparedIdentity, identity, false) ||
-          editingState(prepared) !== editingState(snapshot)
+          editingState(prepared, id) !== editingState(snapshot, id)
         )
           throw new Error("准备期间工程已变化，请重新读取口播分析");
         snapshot = prepared;

@@ -1864,6 +1864,7 @@ export function preparedAsset(
   const previous = project.assets.find((a) => a.mediaId === managed.id);
   const inspection = prepared.inspection;
   const video = inspection.video;
+  const probed = (inspection.durationSeconds ?? 5) * 30;
   return {
     ...previous,
     id: previous?.id ?? managed.id,
@@ -1877,7 +1878,16 @@ export function preparedAsset(
     durationFrames:
       inspection.kind === "image"
         ? (previous?.durationFrames ?? 150)
-        : Math.max(1, Math.round((inspection.durationSeconds ?? 5) * 30)),
+        : // The old view shows an exact editor length as its whole frames (rounded down).
+          // A probe of the same source keeps that count, so preparing never rewrites the
+          // editor's exact decoded length with a rounded-up 30 fps approximation.
+          previous &&
+            previous.kind !== "image" &&
+            inspection.durationSeconds !== null &&
+            probed >= previous.durationFrames &&
+            probed - previous.durationFrames < 1
+          ? previous.durationFrames
+          : Math.max(1, Math.round(probed)),
     ...(video
       ? { width: video.displayWidth || video.width, height: video.displayHeight || video.height }
       : {}),
