@@ -2,6 +2,7 @@ import { parseProposal } from "../host";
 import { compileEditorSteps } from "./agent-tools";
 import { legacyOperationLabel, translateLegacyOperations } from "./legacy-plan";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { mainPictureTrack } from "./placement";
 import type { SequenceIdFactory } from "./sequence-edits";
 import type { SessionIdentity } from "./session";
 import { snapToFrame, TICKS_PER_SECOND } from "./time";
@@ -284,21 +285,12 @@ export function reviewEditorProposal(
   };
 }
 
-/** The main picture track: the sequence's magnetic track, else its first picture track. */
-export function mainTrackId(sequence: EditorSequence): string | undefined {
-  if (
-    sequence.magneticTrackId &&
-    sequence.tracks.some((track) => track.id === sequence.magneticTrackId)
-  )
-    return sequence.magneticTrackId;
-  return sequence.tracks.find((track) => track.kind === "video")?.id;
-}
-
 /**
  * Local rule: keep the first 15 seconds (snapped to the sequence frame rate) of the main
- * track. The clip crossing the limit keeps its left part (rippling on a magnetic track)
- * and every later main-track clip is removed; captions bound to them follow. Other tracks
- * are not touched.
+ * picture track (the same track ＋ and rough cuts continue, see mainPictureTrack). The clip
+ * crossing the limit keeps its left part (rippling on a magnetic track) and every later
+ * main-track clip is removed; captions bound to them follow. Every other track is then cut
+ * at the same limit so the whole video ends there.
  */
 export function planFifteenSecondDraft(
   document: EditorDocument,
@@ -306,7 +298,7 @@ export function planFifteenSecondDraft(
   idFactory: SequenceIdFactory,
 ): { operations: EditorOperation[]; labels: string[] } {
   const sequence = sequenceOf(document, sequenceId),
-    trackId = mainTrackId(sequence);
+    trackId = mainPictureTrack(sequence)?.id;
   if (!trackId || !sequence.clips.some((clip) => clip.trackId === trackId))
     throw new Error("主画面轨还没有片段");
   const limit = snapToFrame(FIFTEEN_SECONDS, sequence.frameRate);

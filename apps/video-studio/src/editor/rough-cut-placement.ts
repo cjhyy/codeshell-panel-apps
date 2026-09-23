@@ -1,14 +1,10 @@
 import type { RoughCut } from "../model";
-import {
-  createTrack,
-  defaultAudioMix,
-  defaultColorAdjustment,
-  defaultTransform,
-} from "./defaults";
+import { defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { findFreeTrack, mainPictureTrack, overlaps, trackEnd } from "./placement";
 import { assertTick, constantTimeMap, type Tick } from "./time";
 import { isMagneticTrack, magneticBlocks } from "./timing-edits";
-import type { EditorDocument, EditorSequence, EditorTrack, MediaClip } from "./types";
+import type { EditorDocument, EditorSequence, MediaClip } from "./types";
 import { MAX_EDITOR_TICK, sequenceDuration, validateEditorDocument } from "./validation";
 
 /** Rough-cut markers keep 30 fps source frames; one frame is exactly 8000 ticks. */
@@ -38,113 +34,6 @@ export interface RoughCutPlacement {
    * the next playhead keeps consecutive placements in order.
    */
   end: Tick;
-}
-
-const overlaps = (sequence: EditorSequence, trackId: string, start: Tick, duration: Tick) =>
-  sequence.clips.some(
-    (clip) =>
-      clip.trackId === trackId &&
-      clip.start < start + duration &&
-      clip.start + clip.duration > start,
-  );
-const trackEnd = (sequence: EditorSequence, trackId: string) =>
-  sequence.clips
-    .filter((clip) => clip.trackId === trackId)
-    .reduce((end, clip) => Math.max(end, clip.start + clip.duration), 0);
-
-/** First unlocked track of this kind free over [start, start + duration), else a new track. */
-export function findFreeTrack(
-  sequence: EditorSequence,
-  kind: EditorTrack["kind"],
-  start: Tick,
-  duration: Tick,
-  idFactory: (kind: "track") => string,
-): { trackId: string; operations: EditorOperation[] } {
-  const track = sequence.tracks.find(
-    (item) => item.kind === kind && !item.locked && !overlaps(sequence, item.id, start, duration),
-  );
-  if (track) return { trackId: track.id, operations: [] };
-  const created = createTrack(idFactory("track"), kind);
-  return {
-    trackId: created.id,
-    operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
-  };
-}
-
-/** The main picture track: the magnetic track when set, else the first unlocked video track. */
-export function mainPictureTrack(sequence: EditorSequence): EditorTrack | undefined {
-  const firstFree = () => sequence.tracks.find((item) => item.kind === "video" && !item.locked);
-  return sequence.timelineMode === "magnetic"
-    ? (sequence.tracks.find((item) => item.id === sequence.magneticTrackId) ?? firstFree())
-    : firstFree();
-}
-
-/**
- * Default "add to timeline" spot without an explicit drop position: picture continues the main
- * picture track, sound continues the first unlocked audio track. A track is created only when no
- * usable track of that kind exists; a new main picture track goes below every other layer.
- */
-export function planAppendPlacement(
-  sequence: EditorSequence,
-  kind: "video" | "audio",
-  idFactory: (kind: "track") => string,
-): { trackId: string; start: Tick; operations: EditorOperation[] } {
-  const target =
-    kind === "video"
-      ? mainPictureTrack(sequence)
-      : sequence.tracks.find((item) => item.kind === "audio" && !item.locked);
-  if (target?.locked) throw new Error("主画面轨道已锁定，请先解锁后再加入");
-  if (target?.kind === kind)
-    return { trackId: target.id, start: trackEnd(sequence, target.id), operations: [] };
-  const created = createTrack(idFactory("track"), kind);
-  return {
-    trackId: created.id,
-    start: 0,
-    operations: [
-      {
-        type: "track.add",
-        sequenceId: sequence.id,
-        track: created,
-        ...(kind === "video" ? { index: 0 } : {}),
-      },
-    ],
-  };
-}
-
-const holdsRole = (sequence: EditorSequence, trackId: string, role: "title" | "subtitle") =>
-  sequence.clips.some((clip) => clip.trackId === trackId && clip.kind === "text" && clip.role === role);
-
-/**
- * A text track that is visible over every picture: an unlocked text track above all video tracks
- * that is free over [start, start + duration) and holds no subtitles, preferring one that already
- * holds titles; else a new text track on top.
- */
-export function planTextPlacement(
-  sequence: EditorSequence,
-  start: Tick,
-  duration: Tick,
-  idFactory: (kind: "track") => string,
-): { trackId: string; operations: EditorOperation[] } {
-  const topPicture = sequence.tracks.reduce(
-    (top, item, index) => (item.kind === "video" ? index : top),
-    -1,
-  );
-  const candidates = sequence.tracks.filter(
-    (item, index) =>
-      index > topPicture &&
-      item.kind === "text" &&
-      !item.locked &&
-      !holdsRole(sequence, item.id, "subtitle") &&
-      !overlaps(sequence, item.id, start, duration),
-  );
-  const track =
-    candidates.find((item) => holdsRole(sequence, item.id, "title")) ?? candidates[0];
-  if (track) return { trackId: track.id, operations: [] };
-  const created = createTrack(idFactory("track"), "text");
-  return {
-    trackId: created.id,
-    operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
-  };
 }
 
 interface Resolved {

@@ -215,6 +215,9 @@ export function projectLegacyView(
           item.sequenceId === sequenceId,
       )
     : undefined;
+  // The projection's primary tracks are a stable mapping into the old frame view, not the editing
+  // target of mainPictureTrack (placement.ts): a saved or explicit mapping wins, and locking or
+  // switching the timeline mode must not move old clips to another track in the projection.
   for (const [key, kind, preferred] of [
     ["primaryVideoTrackId", "video", "track-video-main"],
     ["primaryAudioTrackId", "audio", "track-audio-main"],

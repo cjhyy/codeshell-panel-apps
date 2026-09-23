@@ -2,7 +2,7 @@ import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { resolveLegacyClipId } from "./legacy-aliases";
-import { findFreeTrack } from "./rough-cut-placement";
+import { findFreeTrack } from "./placement";
 import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./legacy-time";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";

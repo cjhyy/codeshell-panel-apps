@@ -25,7 +25,7 @@ import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
 import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./types";
 import { MAX_EDITOR_TICK, sequenceDuration } from "./validation";
-import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./rough-cut-placement";
+import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./placement";
 import { EditorExportBatch } from "./export-batch";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";

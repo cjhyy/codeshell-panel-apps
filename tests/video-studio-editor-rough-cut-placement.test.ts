@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { planRoughCutPlacement } from "../apps/video-studio/src/editor/rough-cut-placement";
 import {
   findFreeTrack,
+  mainPictureTrack,
   planAppendPlacement,
-  planRoughCutPlacement,
   planTextPlacement,
-} from "../apps/video-studio/src/editor/rough-cut-placement";
+} from "../apps/video-studio/src/editor/placement";
+import { planFifteenSecondDraft } from "../apps/video-studio/src/editor/proposal";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import {
   createTrack,
@@ -553,6 +555,40 @@ test("default add appends picture to the end of the main track and sound to the 
   const lockedMain = structuredClone(magnetic);
   lockedMain.tracks[1]!.locked = true;
   assert.throws(() => planAppendPlacement(lockedMain, "video", idFactory), /锁定/);
+});
+
+test("the 15-second draft, its availability, ＋ and rough cuts share one main picture track", () => {
+  // A migrated multitrack project switched to free mode keeps its old magnetic track ID.
+  const doc = document({
+    timelineMode: "free",
+    magneticTrackId: "v2",
+    tracks: [
+      { ...createTrack("v0", "video"), locked: true },
+      createTrack("v1", "video"),
+      createTrack("v2", "video"),
+      createTrack("a1", "audio"),
+    ],
+    clips: [
+      media("locked", "v0", "broll", 0, 5 * T),
+      media("p1", "v1", "broll", 0, 20 * T),
+      media("overlay", "v2", "broll", 0, 20 * T),
+    ],
+  });
+  const sequence = doc.sequences[0]!;
+  assert.equal(mainPictureTrack(sequence)?.id, "v1");
+  assert.equal(planAppendPlacement(sequence, "video", idFactory).trackId, "v1");
+  // The draft keeps the main track's crossing clip and truncates the rest of the video.
+  const draft = planFifteenSecondDraft(doc, "main", idFactory);
+  assert.equal(draft.labels[0], "保留「p1」到 15.00 秒");
+  const after = apply(doc, draft.operations);
+  assert.equal(clip(after, "p1").duration, 15 * T);
+  assert.equal(clip(after, "overlay").duration, 15 * T);
+  const placed = planRoughCutPlacement(doc, "main", [cut("c1", "broll", 0, 30)], {
+    anchor: "end",
+    idFactory,
+  });
+  const added = placed.operations.find((operation) => operation.type === "clip.add");
+  assert.equal(added?.type === "clip.add" && added.clip.trackId, "v1");
 });
 
 test("default add creates a track only when no usable track of that kind exists", () => {

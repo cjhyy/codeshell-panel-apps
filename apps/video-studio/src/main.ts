@@ -98,6 +98,7 @@ import {
   legacyRestrictionReasons,
   userFacingMessage,
 } from "./editor/legacy-reasons";
+import { mainPictureTrack } from "./editor/placement";
 import { planRoughCutPlacement, type RoughCutAnchor } from "./editor/rough-cut-placement";
 import {
   createEditorTaskBridge,
@@ -166,7 +167,6 @@ import { planAddCaptions } from "./editor/captions";
 import { resolveLegacyClipId } from "./editor/legacy-aliases";
 import {
   createEditorProposal,
-  mainTrackId,
   parseEditorProposal,
   planFifteenSecondDraft,
   reviewEditorProposal,
@@ -2753,7 +2753,7 @@ function mainTrackClipCount(): number | undefined {
   if (!editorSession) return undefined;
   const doc = editorSession.read(),
     sequence = doc.sequences.find((item) => item.id === doc.activeSequenceId);
-  const trackId = sequence && mainTrackId(sequence);
+  const trackId = sequence && mainPictureTrack(sequence)?.id;
   return trackId ? sequence.clips.filter((clip) => clip.trackId === trackId).length : 0;
 }
 function showProposal(candidate: EditorProposal | null): void {
