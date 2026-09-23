@@ -79,7 +79,20 @@ export interface ViewState {
   readonly frameRateLabel?: string;
   /** What the frame-based inspector cannot do with the selected clip. */
   readonly inspectorIssue?: { readonly reason?: string; readonly volume?: string };
+  /** The one side panel shown beside the timeline in the narrow (≤640px) layout. */
+  readonly narrowPanel?: NarrowPanel;
 }
+export type NarrowPanel = "viewer" | "library" | "inspector";
+const railTabs = [
+  ["media", "素材", "folder"],
+  ["roughcut", "粗剪", "cut"],
+  ["recording", "录制", "film"],
+  ["spoken", "口播", "text"],
+  ["transcript", "字幕", "text"],
+  ["voiceover", "配音", "volume"],
+  ["ai", "AI 制作", "spark"],
+  ["jobs", "任务", "film"],
+] as const;
 
 /**
  * A disabled control may carry the plain reason as its tooltip, so people know what it needs.
@@ -143,6 +156,7 @@ export function createViews(state: ViewState) {
   const previewWidth = source?.width ?? project.width;
   const previewHeight = source?.height ?? project.height;
   const persistent = Boolean(state.production?.status.persistent);
+  const narrowPanel = state.narrowPanel ?? "viewer";
   const autoActive =
     state.production?.auto &&
     state.production.auto.projectId === project.id &&
@@ -193,21 +207,29 @@ export function createViews(state: ViewState) {
           )}
         </div>
       </header>
-      <main class="workspace ${source ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}">
+      <main
+        class="workspace ${source ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}"
+        data-narrow-panel="${narrowPanel}"
+      >
+        <div class="narrow-switch" role="group" aria-label="切换面板">
+          ${(
+            [
+              ["viewer", "画面"],
+              ["library", railTabs.find(([id]) => id === tab)?.[1] ?? "素材"],
+              ["inspector", "属性"],
+            ] as const
+          )
+            .map(
+              ([id, label]) =>
+                `<button type="button" data-narrow-panel="${id}" aria-pressed="${narrowPanel === id}">${label}</button>`,
+            )
+            .join("")}
+        </div>
         <nav class="rail" aria-label="工作台导航">
-          ${[
-            ["media", "素材", "folder"],
-            ["roughcut", "粗剪", "cut"],
-            ["recording", "录制", "film"],
-            ["spoken", "口播", "text"],
-            ["transcript", "字幕", "text"],
-            ["voiceover", "配音", "volume"],
-            ["ai", "AI 制作", "spark"],
-            ["jobs", "任务", "film"],
-          ]
+          ${railTabs
             .map(
               ([id, label, glyph]) =>
-                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph!, 22)}<span>${label}</span></button>`,
+                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph, 22)}<span>${label}</span></button>`,
             )
             .join("")}
           <div class="rail-bottom">
@@ -307,9 +329,9 @@ export function createViews(state: ViewState) {
         </section>
         <aside class="inspector">${renderInspector()}</aside>
         <section class="timeline-panel" aria-label="剪辑时间轴">${renderTimeline()}</section>
-        <div class="studio-resize-library workspace-resizer" data-resize-pane="library" role="separator" tabindex="0" aria-label="调整素材面板宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="500" aria-valuenow="260"></div>
-        <div class="studio-resize-inspector workspace-resizer" data-resize-pane="inspector" role="separator" tabindex="0" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="500" aria-valuenow="270"></div>
-        <div class="studio-resize-timeline workspace-resizer" data-resize-pane="timeline" role="separator" tabindex="0" aria-label="调整多轨时间线高度" aria-orientation="horizontal" aria-valuemin="200" aria-valuemax="720" aria-valuenow="308"></div>
+        <div class="studio-resize-library workspace-resizer" data-resize-pane="library" role="separator" tabindex="0" aria-label="调整素材面板宽度" title="拖动调整素材面板宽度 · 双击恢复默认 · 方向键微调" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="500" aria-valuenow="260"></div>
+        <div class="studio-resize-inspector workspace-resizer" data-resize-pane="inspector" role="separator" tabindex="0" aria-label="调整属性面板宽度" title="拖动调整属性面板宽度 · 双击恢复默认 · 方向键微调" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="500" aria-valuenow="270"></div>
+        <div class="studio-resize-timeline workspace-resizer" data-resize-pane="timeline" role="separator" tabindex="0" aria-label="调整多轨时间线高度" title="拖动调整时间线高度 · 双击恢复默认 · 方向键微调" aria-orientation="horizontal" aria-valuemin="200" aria-valuemax="720" aria-valuenow="340"></div>
       </main>
       <footer class="statusbar">
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
@@ -502,7 +524,9 @@ ${esc(aiPrompt)}</textarea
     );
     return html`<div class="section-title">
         <h2>项目素材</h2>
-        <span class="count-badge">${project.assets.length}</span>
+        <span class="count-badge" title="${filteringMedia ? `显示 ${assets.length} 份，共 ${project.assets.length} 份` : `共 ${project.assets.length} 份`}"
+          >${filteringMedia ? `${assets.length}/${project.assets.length}` : project.assets.length}</span
+        >
       </div>
       <div class="library-actions">
         ${button(
@@ -511,27 +535,27 @@ ${esc(aiPrompt)}</textarea
           "plus",
           "primary full",
           mediaImporting,
-        )}
+        )}${button("voiceover", "文字配音", "volume", "library-voiceover")}
       </div>
-      ${state.folderMarkup ?? ""} ${button("voiceover", "文字配音", "volume", "full")}
-      <label class="search-field"
-        >${icon("search", 15)}<input
-          id="asset-search"
-          value="${esc(search)}"
-          placeholder="搜索素材"
-          aria-label="搜索素材"
-      /></label>
+      ${state.folderMarkup ?? ""}
       ${persistent
-        ? button(
+        ? `<div class="library-secondary">${button(
             "make-scene",
             "生成章节 / 解释场景",
             "spark",
-            "quiet full",
+            "quiet",
             state.production?.status.runtimeChecked !== false &&
               !state.production?.status.hyperframes.available,
-          )
+          )}</div>`
         : ""}
-      <div class="media-library-toolbar">
+      <div class="library-find">
+        <label class="search-field"
+          >${icon("search", 15)}<input
+            id="asset-search"
+            value="${esc(search)}"
+            placeholder="搜索素材"
+            aria-label="搜索素材"
+        /></label>
         <div class="media-view-switch" role="group" aria-label="素材视图">
           ${(
             [
@@ -546,6 +570,8 @@ ${esc(aiPrompt)}</textarea
             )
             .join("")}
         </div>
+      </div>
+      <div class="media-library-toolbar">
         <label
           >类型<select data-media-filter aria-label="素材类型">
             ${(
@@ -580,16 +606,19 @@ ${esc(aiPrompt)}</textarea
               .join("")}
           </select></label
         >
+        ${project.assets.length
+          ? button(
+              "select-media",
+              search || preferences.filter !== "all" ? "全选当前结果" : "全选",
+              undefined,
+              "quiet media-select-all",
+              !assets.length,
+            )
+          : ""}
       </div>
-      <div class="library-label">
-        <span>点击预览 · 右键管理</span
-        ><span
-          >${assets.length}
-          份${selectedAssets.length ? ` · 已选 ${selectedAssets.length}` : ""}</span
-        >
-      </div>
-      ${project.assets.length
-        ? `<div class="media-selection-bar"><div>${button("select-media", search || preferences.filter !== "all" ? "全选当前结果" : "全选", undefined, "quiet", !assets.length)}${button("clear-media-selection", "清空选择", undefined, "quiet", !selectedAssets.length)}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "quiet", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger", !selectedAssets.length)}</div></div>`
+      ${selectedAssets.length
+        ? // Batch actions only take room while something is selected.
+          `<div class="media-selection-bar"><div><span class="media-selection-count">已选 ${selectedAssets.length}</span>${button("clear-media-selection", "清空选择", undefined, "quiet")}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "quiet", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger")}</div></div>`
         : ""}
       <div class="asset-list" data-view="${preferences.view}">
         ${assets
@@ -607,6 +636,7 @@ ${esc(aiPrompt)}</textarea
               data-asset="${esc(asset.id)}"
               data-preview-asset="${esc(asset.id)}"
               tabindex="0"
+              title="点击预览 · 右键管理"
               aria-label="素材 ${esc(asset.name)}"
             >
               <button

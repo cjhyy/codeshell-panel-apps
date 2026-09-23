@@ -70,7 +70,9 @@ after(async () => {
 });
 
 async function openPage(t, options = {}) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
+  const context = await browser.newContext({
+    viewport: options.viewport ?? { width: 1280, height: 960 },
+  });
   const page = await context.newPage(),
     errors = [];
   page.setDefaultTimeout(7000);
@@ -1359,6 +1361,178 @@ const realMediaSeed = {
     },
   ],
 };
+/** Five tracks with clips: two pictures, captions and two sound tracks, as a docked panel shows them. */
+const denseSeed = {
+  ...realMediaSeed,
+  id: "dense-layout",
+  name: "一个名字很长、在窄面板里也要保持可见的多轨工程",
+  assets: [
+    ...realMediaSeed.assets,
+    { id: "room", name: "现场声.wav", kind: "audio", duration: 10_000_123 },
+    { id: "music", name: "音乐.wav", kind: "audio", duration: 10_000_123 },
+  ],
+  sequences: [
+    {
+      ...realMediaSeed.sequences[0],
+      tracks: [
+        ...realMediaSeed.sequences[0].tracks,
+        track("a1", "audio", "现场声"),
+        track("a2", "audio", "音乐"),
+      ],
+      clips: [
+        ...realMediaSeed.sequences[0].clips,
+        { ...picture("room-clip", "a1", 0, 2_400_011), assetId: "room" },
+        { ...picture("music-clip", "a2", 0, 2_400_011), assetId: "music" },
+      ],
+    },
+  ],
+};
+const rectOf = (page, selector) =>
+  page.locator(selector).first().evaluate((element) => element.getBoundingClientRect().toJSON());
+const inside = (inner, outer, slack = 0.5) =>
+  inner.top >= outer.top - slack &&
+  inner.bottom <= outer.bottom + slack &&
+  inner.left >= outer.left - slack &&
+  inner.right <= outer.right + slack;
+const overlaps = (a, b) =>
+  a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+const pageOverflow = (page) =>
+  page.evaluate(() => ({
+    width: document.documentElement.scrollWidth - innerWidth,
+    height: document.documentElement.scrollHeight - innerHeight,
+  }));
+
+test("a docked 1280×900 workspace shows five tracks, reachable add-track buttons, the first media card and marked dividers", async (t) => {
+  const page = await openPage(t, { seed: denseSeed, viewport: { width: 1280, height: 900 } });
+  const viewport = { top: 0, left: 0, right: 1280, bottom: 900 };
+  const body = await rectOf(page, "#editor-workspace .et-body");
+  const heads = await page
+    .locator("#editor-workspace [data-track-head]")
+    .evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().toJSON()));
+  assert.equal(heads.length, 5);
+  assert.equal(
+    heads.filter((head) => inside(head, body) && inside(head, viewport)).length,
+    5,
+    `Every track row fits the default timeline: ${JSON.stringify({ body, heads })}`,
+  );
+  const add = page.getByRole("group", { name: "添加轨道", exact: true }).locator("button");
+  assert.deepEqual(await add.allTextContents(), ["新建画面轨", "新建声音轨", "新建文字轨"]);
+  for (const button of await add.all()) {
+    const box = await button.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return { ...rect.toJSON(), hit: element.contains(hit) };
+    });
+    assert.ok(inside(box, body) && inside(box, viewport) && box.hit, JSON.stringify(box));
+  }
+  // More tracks than fit still leave the add buttons in the sticky track corner.
+  for (let index = 0; index < 3; index++) {
+    await page.locator('[data-et-action="track-audio"]').click();
+    await waitSaved(page);
+  }
+  await page.locator("#editor-workspace .et-body").evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await settle(page);
+  const scrolled = await page
+    .locator('[data-et-action="track-text"]')
+    .evaluate((element) => element.getBoundingClientRect().toJSON());
+  assert.ok(inside(scrolled, await rectOf(page, "#editor-workspace .et-body")), JSON.stringify(scrolled));
+
+  const library = await rectOf(page, "#studio .library-panel");
+  const card = await rectOf(page, "#studio .library-panel .asset-card");
+  assert.ok(inside(card, library), `The first media card shows without scrolling: ${JSON.stringify({ card, library })}`);
+
+  for (const [pane, cursor] of [
+    ["library", "col-resize"],
+    ["inspector", "col-resize"],
+    ["timeline", "row-resize"],
+  ]) {
+    const divider = page.locator(`[data-resize-pane="${pane}"]`);
+    const look = await divider.evaluate((element) => {
+      const grip = getComputedStyle(element, "::before");
+      return {
+        cursor: getComputedStyle(element).cursor,
+        grip: grip.backgroundColor,
+        width: parseFloat(grip.width),
+        height: parseFloat(grip.height),
+        title: element.title,
+      };
+    });
+    assert.equal(look.cursor, cursor);
+    assert.notEqual(look.grip, "rgba(0, 0, 0, 0)", `${pane} divider shows a grip at rest`);
+    assert.ok(look.width >= 3 && look.height >= 3, JSON.stringify(look));
+    assert.match(look.title, /双击恢复默认/);
+    await divider.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    assert.equal(await divider.evaluate((element) => element.matches(":focus-visible")), true);
+    assert.notEqual(
+      await divider.evaluate((element) => getComputedStyle(element).outlineStyle),
+      "none",
+      `${pane} divider shows a keyboard focus ring`,
+    );
+  }
+  assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 });
+});
+
+test("a narrow 600×900 panel keeps preview and timeline on the first screen and switches library and inspector", async (t) => {
+  const page = await openPage(t, { seed: denseSeed, viewport: { width: 600, height: 900 } });
+  const screen = { top: 0, left: 0, right: 600, bottom: 900 };
+  const viewer = await rectOf(page, "#editor-workspace .ew-viewer");
+  const timeline = await rectOf(page, "#editor-workspace [data-ew-timeline]");
+  const status = await rectOf(page, "#studio .statusbar");
+  const player = await rectOf(page, "#editor-workspace .ew-player");
+  const tools = await rectOf(page, "#editor-workspace .ew-tools");
+  assert.ok(inside(viewer, screen) && viewer.height >= 200, JSON.stringify(viewer));
+  assert.ok(inside(timeline, screen) && timeline.height >= 220, JSON.stringify(timeline));
+  assert.ok(!overlaps(status, timeline), `Status bar covers the timeline: ${JSON.stringify({ status, timeline })}`);
+  assert.ok(!overlaps(player, timeline) && !overlaps(player, tools), JSON.stringify({ player, tools }));
+  const clipBox = await rectOf(page, '[data-et-clip="camera-main"]');
+  assert.ok(clipBox.top >= timeline.top && clipBox.bottom <= screen.bottom, JSON.stringify(clipBox));
+  const name = await rectOf(page, "#project-name");
+  assert.ok(inside(name, screen) && name.width >= 80, `Project name stays visible: ${JSON.stringify(name)}`);
+  assert.equal(await page.locator("#studio .library-panel").isVisible(), false);
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), false);
+  assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 });
+
+  await page.locator('[data-et-clip="camera-main"]').click();
+  const inspectorToggle = page.getByRole("button", { name: "属性", exact: true });
+  await inspectorToggle.click();
+  assert.equal(await inspectorToggle.getAttribute("aria-pressed"), "true");
+  const inspector = await rectOf(page, "#editor-workspace .ew-properties");
+  assert.ok(inside(inspector, screen) && inspector.height >= 200, JSON.stringify(inspector));
+  assert.ok(!overlaps(inspector, await rectOf(page, "#editor-workspace [data-ew-timeline]")));
+  const saved = await property(page, "水平位置（%）", 20);
+  assert.equal(saved.sequences[0].clips.find((clip) => clip.id === "camera-main").transform.x, 0.2);
+
+  await page.getByRole("button", { name: "素材", exact: true }).first().click();
+  assert.equal(await page.locator("#studio .library-panel").isVisible(), true);
+  assert.equal(await page.locator("#editor-workspace .ew-properties").isVisible(), false);
+  assert.ok(inside(await rectOf(page, "#studio .library-panel .asset-card"), screen));
+  await page.locator("#studio .narrow-switch").getByRole("button", { name: "画面", exact: true }).click();
+  assert.equal(await page.locator("#editor-workspace .ew-viewer").isVisible(), true);
+  assert.equal(await page.locator("#studio .library-panel").isVisible(), false);
+
+  // A rail page opens its controls in the side panel.
+  await page.locator('#studio .rail [data-tab="transcript"]').click();
+  assert.equal(await page.locator("#studio .library-panel").isVisible(), true);
+  assert.equal(await page.locator("#editor-workspace [data-ew-timeline]").isVisible(), true);
+  await returnEditor(page);
+
+  for (const [width, height] of [
+    [360, 800],
+    [600, 900],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await settle(page);
+    assert.deepEqual(await pageOverflow(page), { width: 0, height: 0 }, `${width}px`);
+    const narrowTimeline = await rectOf(page, "#editor-workspace [data-ew-timeline]");
+    assert.ok(narrowTimeline.top < height && narrowTimeline.bottom <= height + 0.5, `${width}px`);
+    assert.ok(!overlaps(await rectOf(page, "#studio .statusbar"), narrowTimeline), `${width}px`);
+  }
+});
+
 test("字幕 page edits real off-frame multitrack footage without the old view, and 语音字幕 shows the same rows", async (t) => {
   const page = await openPage(t, { seed: realMediaSeed });
   await page.evaluate(() => {

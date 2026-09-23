@@ -1977,8 +1977,17 @@ dialog .range-inputs {
   .topbar {
     height: 58px;
   }
+  /* Narrow panels keep the project name, truncated, instead of dropping it. */
   .project-breadcrumb {
+    gap: 0;
+  }
+  .project-breadcrumb > :not(input) {
     display: none;
+  }
+  .project-breadcrumb input {
+    width: 100%;
+    min-width: 0;
+    text-overflow: ellipsis;
   }
   .header-actions {
     margin-left: auto;
@@ -1999,6 +2008,11 @@ dialog .range-inputs {
   }
   .property-section {
     padding-top: 12px;
+  }
+}
+@media (max-width: 480px) {
+  .brand strong {
+    display: none;
   }
 }
 @media (max-width: 620px) {
@@ -3027,6 +3041,96 @@ dialog .range-inputs {
 .folder-import p {
   line-height: 1.6;
   margin: 8px 0;
+}
+.folder-import .folder-status:empty {
+  display: none;
+}
+
+/* The media library keeps secondary tools in compact rows so the first cards show without scrolling. */
+.workspace.editor-mode > .library-panel {
+  padding-top: 14px;
+}
+.library-panel .section-title {
+  margin-bottom: 10px;
+}
+.library-panel .library-actions {
+  margin-bottom: 8px;
+}
+.library-actions > .library-voiceover {
+  flex: none;
+  padding-inline: 10px;
+}
+.library-panel .folder-import {
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+}
+.library-panel .folder-import > .folder-actions > button,
+.library-secondary > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.library-panel .folder-connection {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.library-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.library-secondary > button {
+  flex-basis: 0;
+  white-space: nowrap;
+}
+.library-secondary > button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-find {
+  display: flex;
+  gap: 6px;
+}
+.library-find .search-field {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+}
+.library-find .media-view-switch {
+  flex: none;
+}
+.library-find .media-view-switch button {
+  min-height: 28px;
+  padding: 4px 7px;
+}
+.library-panel .media-library-toolbar {
+  align-items: center;
+  gap: 6px 8px;
+  margin: 8px 0 10px;
+}
+.media-library-toolbar > .media-select-all {
+  margin-left: auto;
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+.media-selection-count {
+  color: #929b9f;
+  font-size: 10px;
+}
+.library-panel .media-library-toolbar > label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.library-panel .media-library-toolbar select {
+  margin-top: 0;
+  padding: 4px 6px;
 }
 
 /* Direct timeline editing and navigation. */

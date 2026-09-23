@@ -929,7 +929,8 @@ test("vertical edge scrolling exposes more tracks and still moves the source in 
 
 test("time ruler and markers remain aligned, seekable and clear of lower-track gestures after two-axis scrolling", async (t) => {
   const page = await fixture(t, {
-    tracks: Array.from({ length: 12 }, (_, index) => `v${index + 1}`),
+    // Enough compact tracks that the 300px body scrolls well past 400px.
+    tracks: Array.from({ length: 16 }, (_, index) => `v${index + 1}`),
     clips: [
       { id: "a", trackId: "v5", start: 8, duration: 2 },
       { id: "far", trackId: "v1", start: 100, duration: 3 },

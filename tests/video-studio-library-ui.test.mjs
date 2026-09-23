@@ -911,7 +911,15 @@ async function checkContextMenu(viewport, artifact) {
       "A pointer-opened menu stays inside the viewport",
     );
     assert.equal(
-      await page.locator("[data-ew-canvas]").isVisible(),
+      await page.locator("#studio .workspace.editor-source-mode").count(),
+      0,
+      "Right-clicking must not switch or start the source preview",
+    );
+    // Narrow panels show the library in place of the preview; the menu must not swap it away.
+    assert.equal(
+      await page
+        .locator(viewport.width > 640 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .isVisible(),
       true,
       "Right-clicking must not switch or start the source preview",
     );
@@ -928,7 +936,13 @@ async function checkContextMenu(viewport, artifact) {
     await menu(page, asset.id);
     await page.locator(".section-title h2").first().click();
     assert.equal(await popup.isVisible(), false);
-    assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
+    assert.equal(
+      await page
+        .locator(viewport.width > 640 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .isVisible(),
+      true,
+    );
+    assert.equal(await page.locator("#studio .workspace.editor-source-mode").count(), 0);
     assert.deepEqual((await state(page)).project, before.project);
   } finally {
     await page.close();

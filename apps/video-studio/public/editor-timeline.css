@@ -193,7 +193,7 @@
   position: sticky;
   left: 0;
   z-index: 5;
-  flex: 0 0 160px;
+  flex: 0 0 176px;
   background: #202124;
   border-right: 1px solid var(--et-border);
 }
@@ -204,9 +204,9 @@
   background: #202124;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 58px;
-  padding: 0 12px;
+  gap: 6px;
+  height: 48px;
+  padding: 0 4px 0 10px;
   color: var(--et-muted);
   border-bottom: 1px solid var(--et-border);
   font-size: 11px;
@@ -216,10 +216,11 @@
   color: #696d75;
   font-variant-numeric: tabular-nums;
 }
+/* Two compact rows (name + switches, mix + order) keep five tracks in a default-height timeline. */
 .et-track-head {
-  height: 72px;
+  height: 48px;
   border-bottom: 1px solid var(--et-border);
-  padding: 4px 8px;
+  padding: 3px 6px;
   transition: background 120ms ease;
 }
 .et-track-head:hover,
@@ -229,7 +230,7 @@
 .et-track-title {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   height: 20px;
 }
 .et-track-kind {
@@ -265,9 +266,9 @@
 }
 .et-track-controls {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 3px;
-  margin-top: 2px;
+  gap: 1px;
 }
 .et-track-head button {
   display: inline-flex;
@@ -275,8 +276,8 @@
   justify-content: center;
   height: 20px;
   min-height: 20px;
-  min-width: 23px;
-  padding: 2px 4px;
+  min-width: 20px;
+  padding: 2px 3px;
   font: inherit;
   background: transparent;
   color: #858b94;
@@ -298,18 +299,37 @@
 }
 .et-add {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 8px 6px;
+  gap: 1px;
+  margin-left: auto;
 }
 .et-add button {
-  padding: 4px 5px;
-  font-size: 10px;
-  color: #91969e;
+  gap: 0;
+  min-width: 0;
+  height: 26px;
+  min-height: 26px;
+  padding: 3px 4px;
+  color: #a3a8b0;
+}
+.et-add button:hover:not(:disabled) {
+  color: var(--et-accent);
 }
 .et-add button svg {
   width: 13px;
   height: 13px;
+}
+.et-add button svg:first-child {
+  width: 10px;
+  height: 10px;
+  margin-right: -1px;
+}
+/* The name stays in the accessible text and tooltip; the corner only has room for glyphs. */
+.et-add-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 .et-scroll {
   align-self: flex-start;
@@ -330,7 +350,7 @@
   z-index: 6;
   transform: translateY(var(--et-scroll-y, 0px));
   background-color: #17181a;
-  height: 30px;
+  height: 26px;
   border-bottom: 1px solid #35363a;
   background-image: linear-gradient(to right, #42444a 1px, transparent 1px);
   background-size: var(--et-ruler-step, 16px) 4px;
@@ -342,7 +362,7 @@
 .et-ruler > span {
   position: absolute;
   top: 0;
-  padding-top: 5px;
+  padding-top: 4px;
   font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
   color: #90959f;
   white-space: nowrap;
@@ -358,7 +378,7 @@
 }
 .et-lane {
   position: relative;
-  height: 72px;
+  height: 48px;
   border-bottom: 1px solid #292b2f;
   background: #1a1b1e;
 }
@@ -373,8 +393,8 @@
 }
 .et-clip {
   position: absolute;
-  top: 7px;
-  height: 49px;
+  top: 4px;
+  height: 39px;
   background: #3c495c;
   border: 1px solid #637085;
   border-radius: 5px;
@@ -484,16 +504,16 @@
   position: relative;
   z-index: 6;
   transform: translateY(var(--et-scroll-y, 0px));
-  height: 28px;
+  height: 22px;
   border-bottom: 1px solid var(--et-border);
   background: #1d1e21;
 }
 .et-marker {
   position: absolute;
-  top: 3px;
+  top: 2px;
   z-index: 3;
-  min-height: 21px;
-  height: 21px;
+  min-height: 17px;
+  height: 17px;
   min-width: 12px;
   max-width: none;
   padding: 1px 3px;
@@ -529,20 +549,29 @@
 }
 .et-track-mix {
   display: flex;
-  gap: 5px;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
   margin-top: 3px;
   color: #747a83;
+}
+.et-track-mix button {
+  height: 18px;
+  min-height: 18px;
+  min-width: 18px;
+  padding: 0 1px;
 }
 .et-track-mix label {
   display: flex;
   align-items: center;
-  gap: 3px;
+  flex: 0 0 auto;
+  gap: 2px;
   font-size: 10px;
-  min-width: 0;
+  white-space: nowrap;
 }
 .et-track-mix input {
   box-sizing: border-box;
-  width: 42px;
+  width: 34px;
   min-width: 0;
   height: 16px;
   padding: 1px 2px;
@@ -553,6 +582,15 @@
   font: 10px/12px system-ui;
   font-variant-numeric: tabular-nums;
   box-shadow: none;
+}
+/* Spinner arrows would hide the value in the compact field; arrow keys still step it. */
+.et-track-mix input {
+  appearance: textfield;
+}
+.et-track-mix input::-webkit-inner-spin-button,
+.et-track-mix input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 .et-track-mix input:focus {
   outline: none;

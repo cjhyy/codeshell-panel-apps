@@ -11,7 +11,7 @@ import {
   type RoughCut,
 } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
-import { createViews, button, tool, seconds } from "./views";
+import { createViews, button, tool, seconds, type NarrowPanel } from "./views";
 import {
   fitTimelineScale,
   getTimelineTicks,
@@ -252,6 +252,8 @@ let frame = 0;
 let tab = "media";
 let renderedFeatureTab = "";
 let libraryView: "feature" | "assets" = "feature";
+/** Which side panel the narrow (≤640px) layout shows above the timeline; wider layouts show all. */
+let narrowPanel: NarrowPanel = "viewer";
 const showingMediaLibrary = () => tab === "media" || libraryView === "assets";
 let sourceAssetId = "";
 let sourceFrame = 0;
@@ -1334,6 +1336,15 @@ async function restoreManagedMedia(): Promise<void> {
     render();
 }
 
+/** View-only: swaps the narrow layout's side panel without rebuilding the shell. */
+function showNarrowPanel(panel: NarrowPanel): void {
+  narrowPanel = panel;
+  const workspaceElement = studio.querySelector<HTMLElement>(".workspace");
+  if (workspaceElement) workspaceElement.dataset.narrowPanel = panel;
+  for (const toggle of studio.querySelectorAll<HTMLElement>("button[data-narrow-panel]"))
+    toggle.setAttribute("aria-pressed", String(toggle.dataset.narrowPanel === panel));
+}
+
 function views() {
   return createViews({
     project,
@@ -1342,6 +1353,7 @@ function views() {
     tab,
     libraryTab: showingMediaLibrary() ? "media" : tab,
     unifiedWorkspace: !legacyWorkspacePreview,
+    narrowPanel,
     zoom,
     snapping,
     search,
@@ -1916,6 +1928,7 @@ function renderStudioShell(): void {
   next.innerHTML = markup;
   const nextWorkspace = next.querySelector<HTMLElement>(".workspace")!;
   workspace.className = nextWorkspace.className;
+  workspace.dataset.narrowPanel = nextWorkspace.dataset.narrowPanel;
   for (const child of [...nextWorkspace.children]) {
     const previous = [...workspace.children].find(
       (element) => element !== editorRoot && element.classList.contains(child.classList[0]!),
@@ -4052,6 +4065,11 @@ studio.addEventListener("click", (event) => {
     ).catch(fail);
     return;
   }
+  const narrowToggle = target.closest<HTMLElement>("button[data-narrow-panel]");
+  if (narrowToggle) {
+    showNarrowPanel(narrowToggle.dataset.narrowPanel as NarrowPanel);
+    return;
+  }
   if (buttonTarget) {
     // A focusable but unavailable action explains itself through its description instead.
     if (unavailable(buttonTarget)) return;
@@ -4060,6 +4078,7 @@ studio.addEventListener("click", (event) => {
   }
   const roughSource = target.closest<HTMLElement>("[data-rough-source]");
   if (roughSource) {
+    narrowPanel = "viewer";
     void selectSource(roughSource.dataset.roughSource!).catch(fail);
     return;
   }
@@ -4079,6 +4098,8 @@ studio.addEventListener("click", (event) => {
     mediaPreview = false;
     tab = nav.dataset.tab!;
     libraryView = "feature";
+    // A rail page's controls live in the side panel, so narrow layouts show it.
+    narrowPanel = "library";
     if (tab === "roughcut") roughcut.setMode("single");
     render();
     if (tab === "roughcut") $(".library-panel").scrollTop = 0;
@@ -4114,6 +4135,7 @@ studio.addEventListener("click", (event) => {
   if (target.closest("[data-select-media],.asset-select")) return;
   const previewAsset = target.closest<HTMLElement>("[data-preview-asset]");
   if (previewAsset) {
+    narrowPanel = "viewer";
     void selectSource(previewAsset.dataset.previewAsset!, "media").catch(fail);
     return;
   }

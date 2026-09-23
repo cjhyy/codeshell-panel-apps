@@ -683,7 +683,7 @@
 .workspace.editor-mode {
   position: relative;
   grid-template-columns: 66px var(--studio-library-width, 260px) minmax(320px, 1fr) var(--studio-inspector-width, 270px);
-  grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 308px);
+  grid-template-rows: minmax(260px, 1fr) auto var(--studio-timeline-height, 340px);
 }
 .workspace.editor-mode > .rail {
   grid-row: 1 / -1;
@@ -726,6 +726,42 @@
 .workspace.editor-mode > .workspace-resizer:is(:hover, :focus-visible)::after,
 .is-resizing-workspace .workspace-resizer::after {
   background: #bceacb;
+}
+/* A small grip marks each divider at rest; hover, focus and drag light it up. */
+.workspace.editor-mode > .workspace-resizer::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  width: 4px;
+  height: 28px;
+  margin: auto;
+  border-radius: 2px;
+  background: #4a5157;
+  box-shadow: 0 0 0 1px #17191c;
+  transition:
+    background 120ms ease,
+    height 120ms ease,
+    width 120ms ease;
+}
+.workspace.editor-mode > .studio-resize-timeline::before {
+  width: 28px;
+  height: 4px;
+}
+.workspace.editor-mode > .workspace-resizer:is(:hover, :focus-visible)::before,
+.is-resizing-workspace .workspace-resizer::before {
+  background: var(--accent, #b8edc8);
+}
+.workspace.editor-mode > :is(.studio-resize-library, .studio-resize-inspector):is(:hover, :focus-visible)::before {
+  height: 40px;
+}
+.workspace.editor-mode > .studio-resize-timeline:is(:hover, :focus-visible)::before {
+  width: 40px;
+}
+.workspace.editor-mode > .workspace-resizer:focus-visible {
+  outline: 2px solid var(--accent, #b8edc8);
+  outline-offset: -1px;
+  border-radius: 3px;
 }
 .workspace.editor-mode > .studio-resize-library,
 .workspace.editor-mode > .studio-resize-inspector {
@@ -785,6 +821,8 @@
   overflow: hidden;
 }
 .editor-workspace-embedded .ew-properties {
+  /* Contains its visually hidden legends so they never extend the page. */
+  position: relative;
   grid-column: 4;
   grid-row: 1;
   background: var(--ew-panel);
@@ -974,32 +1012,6 @@
     grid-row: 4;
   }
 }
-@media (max-width: 620px) {
-  .workspace.editor-mode {
-    grid-template-columns: 46px minmax(0, 1fr);
-    grid-template-rows: minmax(240px, 38vh) 300px auto 280px minmax(240px, 420px);
-  }
-  .workspace.editor-mode > .library-panel {
-    grid-row: 2;
-  }
-  .editor-workspace-embedded .ew-viewer {
-    grid-column: 2;
-  }
-  .editor-workspace-embedded > .ew-tools {
-    grid-row: 3;
-    padding-inline: 8px;
-  }
-  .editor-workspace-embedded > [data-ew-timeline] {
-    grid-row: 4;
-  }
-  .editor-workspace-embedded .ew-properties {
-    grid-row: 5;
-  }
-  .workspace.editor-mode.editor-ai-mode > .inspector {
-    grid-column: 2;
-    grid-row: 5;
-  }
-}
 
 .editor-workspace-embedded .ew-more {
   position: static;
@@ -1119,7 +1131,7 @@
     left: 65px;
   }
 }
-@media (max-width: 620px) {
+@media (max-width: 640px) {
   .editor-workspace-embedded > .ew-import-host {
     left: 56px;
     width: calc(100% - 66px);
@@ -1157,13 +1169,96 @@
     min-height: 0;
   }
 }
-@media (max-width: 620px) {
-  .workspace.editor-mode.editor-source-mode > .viewer-panel {
+
+.narrow-switch {
+  display: none;
+}
+/* Narrow docked panels: preview and timeline share the first screen; the library and the
+   inspector take turns with the preview through the switch instead of stacking the page. */
+@media (max-width: 640px) {
+  #studio:has(> .workspace.editor-mode) {
+    height: 100dvh;
+    min-height: 480px;
+  }
+  .workspace.editor-mode {
+    grid-template-columns: 46px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto clamp(220px, 42dvh, 380px);
+  }
+  .workspace.editor-mode > .rail {
+    grid-row: 1 / -1;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .workspace.editor-mode > .rail .rail-item {
+    min-height: 50px;
+    gap: 4px;
+  }
+  .workspace.editor-mode > .narrow-switch {
+    display: flex;
     grid-column: 2;
+    grid-row: 1;
+    gap: 2px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--line, #282b2e);
+    background: #191b1e;
+  }
+  .narrow-switch button {
+    flex: 1;
+    min-width: 0;
+    min-height: 28px;
+    padding: 3px 8px;
+    border-color: transparent;
+    background: transparent;
+    color: #9ba4a9;
+    font-size: 11px;
+  }
+  .narrow-switch button[aria-pressed="true"] {
+    background: #303b37;
+    border-color: #3f5048;
+    color: var(--accent, #b8edc8);
+  }
+  .workspace.editor-mode > .library-panel,
+  .workspace.editor-mode .editor-workspace-embedded :is(.ew-viewer, .ew-properties),
+  .workspace.editor-mode.editor-ai-mode > .inspector,
+  .workspace.editor-mode.editor-source-mode > :is(.viewer-panel, .inspector) {
+    grid-column: 2;
+    grid-row: 2;
+    min-height: 0;
+    border-top: 0;
+    border-left: 0;
+    border-right: 0;
   }
   .workspace.editor-mode.editor-source-mode > .inspector {
     display: block;
+  }
+  .workspace.editor-mode > .library-panel {
+    padding: 12px;
+  }
+  .workspace.editor-mode .editor-workspace-embedded > .ew-tools {
     grid-column: 2;
-    grid-row: 5;
+    grid-row: 3;
+    padding-inline: 8px;
+  }
+  .workspace.editor-mode .editor-workspace-embedded > [data-ew-timeline] {
+    grid-column: 2;
+    grid-row: 4;
+  }
+  .workspace.editor-mode[data-narrow-panel="viewer"] > :is(.library-panel, .inspector),
+  .workspace.editor-mode[data-narrow-panel="viewer"] .editor-workspace-embedded .ew-properties,
+  .workspace.editor-mode[data-narrow-panel="library"] > :is(.viewer-panel, .inspector),
+  .workspace.editor-mode[data-narrow-panel="library"] .editor-workspace-embedded :is(.ew-viewer, .ew-properties),
+  .workspace.editor-mode[data-narrow-panel="inspector"] > :is(.library-panel, .viewer-panel),
+  .workspace.editor-mode[data-narrow-panel="inspector"] .editor-workspace-embedded .ew-viewer {
+    display: none;
+  }
+  .workspace.editor-mode .editor-workspace-embedded .ew-canvas-wrap {
+    padding: 8px;
+  }
+  .workspace.editor-mode .editor-workspace-embedded .ew-player {
+    gap: 6px;
+    padding-inline: 8px;
+  }
+  .workspace.editor-mode .editor-workspace-embedded .ew-player [data-ew-fps] {
+    display: none;
   }
 }
