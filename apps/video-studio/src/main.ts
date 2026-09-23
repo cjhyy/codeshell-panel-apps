@@ -340,6 +340,7 @@ let editorCaptionsUI: EditorCaptionsUI | undefined;
 let captionPanelShown = false;
 let editorCaptions: CaptionController | undefined;
 let editorCaptionServices: ReturnType<typeof createCaptionServices> | undefined;
+let exportJobsRefreshTimer = 0;
 let editorSeparationBridge: ReturnType<typeof createAudioSeparationBridge> | undefined;
 let editorSeparation: SeparationController | undefined;
 let editorSeparationUI: EditorSeparationUI | undefined;
@@ -1407,6 +1408,7 @@ function views() {
       auto: production.auto,
       error: production.error,
       preparations: production.preparations,
+      exports: editorExportJobs?.summaries() ?? [],
     },
   });
 }
@@ -4051,6 +4053,9 @@ async function action(name: string, id?: string): Promise<void> {
     case "recheck-transcription":
       await recheckTranscription();
       break;
+    case "open-export-jobs":
+      editorExportJobs?.show(id);
+      break;
     case "versions":
       await versionsDialog();
       break;
@@ -5896,6 +5901,21 @@ async function boot(): Promise<void> {
         // The production controller re-renders the 任务 page when its status changes.
         onFinished: () => {
           if (production.enabled) void production.refreshStatus({ fresh: true }).catch(fail);
+        },
+        // The 任务 page lists exports too; refresh it when one appears or changes.
+        onChanged: () => {
+          window.clearTimeout(exportJobsRefreshTimer);
+          exportJobsRefreshTimer = window.setTimeout(() => {
+            if (
+              tab === "jobs" &&
+              !playback &&
+              !exporting &&
+              !projectSwitching &&
+              !document.querySelector("dialog[open]") &&
+              !document.activeElement?.matches("input,textarea,select")
+            )
+              render();
+          }, 120);
         },
         // Host task history only has the request; keep the project and preset names people saw.
         titles: {

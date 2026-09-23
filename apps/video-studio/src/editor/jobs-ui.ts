@@ -14,6 +14,16 @@ export interface ExportTitleStore {
   read(): Promise<unknown>;
   write(titles: Record<string, string>): Promise<void>;
 }
+/** One export as the 任务 page lists it. */
+export interface ExportJobSummary {
+  id: string;
+  title: string;
+  status: RuntimeJob["status"];
+  /** What the export record shows: progress text, failure reason or completion. */
+  message: string;
+  /** 0–1 while running when the Host reports it. */
+  fraction?: number;
+}
 /** A readable name for an export found in Host history without a remembered title. */
 function historyTitle(request: { profile?: { name?: unknown } }): string {
   const preset = request.profile?.name;
@@ -49,6 +59,8 @@ export class EditorExportJobs {
       onFinished?(job: RuntimeJob): void;
       /** Keeps submitted titles across reloads; history otherwise names only the preset. */
       titles?: ExportTitleStore;
+      /** Called after any export row appears or changes, e.g. to refresh the 任务 page. */
+      onChanged?(): void;
     } = {},
   ) {
     this.sdk = createPanelRuntime(bridge);
@@ -93,11 +105,35 @@ export class EditorExportJobs {
   mountTrigger(container: HTMLElement, before: ChildNode | null = null): void {
     if (!this.disposed) container.insertBefore(this.trigger, before);
   }
-  show(): void {
+  show(jobId?: string): void {
     if (this.disposed) return;
     this.root.hidden = false;
     this.trigger.setAttribute("aria-expanded", "true");
     this.root.querySelector<HTMLButtonElement>("[data-close]")!.focus();
+    if (jobId) this.rows.get(jobId)?.scrollIntoView({ block: "nearest" });
+  }
+  /** Every export this view knows, newest first, as shown in its rows. */
+  summaries(): ExportJobSummary[] {
+    return [...this.rows.values()]
+      .filter((row) => this.latest.has(row.dataset.jobId!))
+      .sort(
+        (a, b) =>
+          Number(b.dataset.createdAt) - Number(a.dataset.createdAt) ||
+          a.dataset.jobId!.localeCompare(b.dataset.jobId!),
+      )
+      .map((row) => {
+        const job = this.latest.get(row.dataset.jobId!)!,
+          bar = row.querySelector("progress")!;
+        return {
+          id: job.id,
+          title: row.querySelector("strong")!.textContent ?? "视频导出",
+          status: job.status,
+          message: row.querySelector("output")!.textContent ?? "",
+          ...(["queued", "running"].includes(job.status) && bar.hasAttribute("value")
+            ? { fraction: bar.value }
+            : {}),
+        };
+      });
   }
   hide(restoreFocus = true): void {
     const focusedInside = this.root.contains(document.activeElement);
@@ -289,6 +325,9 @@ export class EditorExportJobs {
     else bar.removeAttribute("value");
     bar.hidden =
       job.status === "failed" || job.status === "cancelled" || this.observationErrors.has(job.id);
+    queueMicrotask(() => {
+      if (!this.disposed) this.options.onChanged?.();
+    });
     const actions = row.querySelector("div")!;
     const focusedAction = actions.contains(document.activeElement)
       ? document.activeElement?.textContent

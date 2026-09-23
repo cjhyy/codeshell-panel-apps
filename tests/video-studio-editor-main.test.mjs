@@ -187,6 +187,15 @@ async function openPage(t, options = {}) {
         },
         call: async (method, args = {}) => {
           calls.push({ method, args: structuredClone(args) });
+          if (options.exportHistory && method === "tasks.list")
+            return options.exportHistory
+              .slice(args.offset, args.offset + args.limit)
+              .map(({ id, entry, status, createdAt }) => ({ id, entry, status, createdAt }));
+          if (options.exportHistory && method === "tasks.get") {
+            const found = options.exportHistory.find((job) => job.id === args.id);
+            if (!found) throw Error("任务已不存在");
+            return structuredClone(found);
+          }
           if (method === "tasks.list" && (options.nativeTasks || options.fullNativeAccess))
             return [];
           if (method === "tasks.start" && options.holdNativeStart)
@@ -492,6 +501,44 @@ test("export history stays in the topbar across page changes and never covers th
   await history.click();
   await page.getByRole("button", { name: "关闭导出任务", exact: true }).press("Delete");
   assert.deepEqual(await saved(page), before, "Task controls must not edit the timeline");
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+});
+
+test("the 任务 page lists video exports beside production tasks and opens their record", async (t) => {
+  const exportJob = (id, status, extra = {}) => ({
+    id,
+    status,
+    attempt: 1,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    entry: { name: "editor-runtime", sha256: "e".repeat(64) },
+    input: {
+      request: { action: "render", sequenceId: "sequence-main", profile: { name: "自定义导出" } },
+    },
+    ...extra,
+  });
+  const page = await openPage(t, {
+    nativeTasks: true,
+    exportHistory: [
+      exportJob("export-running", "running", { progress: { fraction: 0.4, message: "正在合成画面" } }),
+      exportJob("export-failed", "failed", { error: { message: "磁盘空间不足" } }),
+    ],
+  });
+  await production(page, "jobs");
+  const exports = page.locator("#studio .export-job-list");
+  await exports.locator("[data-export-job-id]").first().waitFor();
+  const running = exports.locator('[data-export-job-id="export-running"]');
+  assert.match(await running.textContent(), /视频导出 · 自定义导出/);
+  assert.match(await running.textContent(), /进行中/);
+  assert.equal(await running.locator("progress").getAttribute("value"), "40");
+  assert.match(
+    await exports.locator('[data-export-job-id="export-failed"]').textContent(),
+    /失败.*磁盘空间不足/s,
+  );
+  assert.doesNotMatch(await exports.textContent(), /sequence-main/);
+  await running.getByRole("button", { name: "在导出记录中查看" }).click();
+  const record = page.getByRole("dialog", { name: "导出任务", exact: true });
+  assert.equal(await record.isVisible(), true);
   await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
 });
 

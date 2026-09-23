@@ -2202,6 +2202,12 @@ dialog .range-inputs {
   flex-direction: column;
   gap: 12px;
 }
+.export-jobs-title {
+  margin: 20px 0 12px;
+}
+.export-job-list {
+  margin-bottom: 20px;
+}
 .job-card {
   padding: 14px;
   border: 1px solid var(--line);
