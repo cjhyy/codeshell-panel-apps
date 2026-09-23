@@ -96,7 +96,7 @@ assert.equal(manifest.id, "quant-lab");
 assert.equal(manifest.version, "0.46.1");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
-assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
+assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md", "agent/skills/project-runtime/SKILL.md"]);
 assert.equal(manifest.title.default, "投资工作台");
 assert.equal(manifest.title["zh-CN"], "投资工作台");
 assert(manifest.permissions.includes("external.open"), "M4 external links require the real Host permission");
@@ -4431,7 +4431,7 @@ for (const automation of automations) {
   assert.doesNotMatch(automation.prompt, /<panel>/u);
   assert.match(
     automation.prompt,
-    /\$HOME\/\.code-shell\/panel-apps\/quant-lab\/app\/tools\/fetch-market-data\.mjs/u,
+    /quant-lab:project-runtime[\s\S]*app\/tools\/fetch-market-data\.mjs/u,
   );
   assert.match(automation.prompt, /bundled-fetch-tool-not-found[\s\S]*unavailable[\s\S]*禁止.*估算/u);
   assert.match(automation.prompt, /evaluateWatchItem/u);

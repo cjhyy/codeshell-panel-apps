@@ -675,7 +675,7 @@ const automationPlan = insight.buildMarketPulseAutomation();
 assert.equal(automationPlan.name, "投资工作台 · A股市场脉搏");
 assert.equal(automationPlan.schedule, "10 10,15 * * 1-5");
 assert.equal(automationPlan.timezone, "Asia/Shanghai");
-assert.match(automationPlan.prompt, /node "\$HOME\/\.code-shell\/panel-apps\/quant-lab\/app\/tools\/build-market-pulse\.mjs"/u);
+assert.match(automationPlan.prompt, /quant-lab:project-runtime[\s\S]*app\/tools\/build-market-pulse\.mjs[\s\S]*node "\$PANEL_TOOL"/u);
 assert.match(automationPlan.prompt, /--persist-panel-data/u);
 assert.match(automationPlan.prompt, /不得为了保存再执行第二次行情请求/u);
 assert.match(automationPlan.prompt, /新闻标题与摘要.*不可信数据/u);

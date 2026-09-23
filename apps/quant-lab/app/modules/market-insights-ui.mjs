@@ -1,3 +1,5 @@
+import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
+
 const INSIGHTS_DIRECTORY = "data/market-insights";
 const INSIGHT_SCHEMA_VERSION = 1;
 
@@ -227,12 +229,12 @@ function stockReportPrompt(subject, now, technicalInput = null) {
 }
 
 function marketPulsePrompt(path) {
-  const toolPath = "$HOME/.code-shell/panel-apps/quant-lab/app/tools/build-market-pulse.mjs";
+  const toolPath = "$PANEL_TOOL";
   const command = `node "${toolPath}" --out "${path}"`;
   return [
     "这是投资工作台发起的确定性 A 股市场脉搏任务。",
     "行情宽度、指数长期趋势、行业板块强弱和新闻关键词关联必须完全由冻结的本地工具计算；不要自行补写数字、因果、情绪、行业结论或买卖动作。",
-    `先确认工具文件可读：${toolPath}。如果不存在，报告 bundled-market-pulse-tool-not-found，不要下载或改用未审核脚本。`,
+    projectRuntimePrompt("build-market-pulse.mjs", "bundled-market-pulse-tool-not-found"),
     "确认后在当前项目根目录执行以下固定命令：",
     command,
     `成功后只读检查 ${path}，报告 marketDate、asOf、盘中/当日收盘/最近收盘状态、行情股票数、行业数、宽基趋势数、新闻条数和 sourceErrors。`,
@@ -350,12 +352,12 @@ export const MARKET_PULSE_AUTOMATION = Object.freeze({
 });
 
 export function buildMarketPulseAutomation() {
-  const toolPath = "$HOME/.code-shell/panel-apps/quant-lab/app/tools/build-market-pulse.mjs";
+  const toolPath = "$PANEL_TOOL";
   return {
     ...MARKET_PULSE_AUTOMATION,
     prompt: [
       "执行投资工作台的 A 股市场脉搏定时播报。",
-      `先在 shell 中运行 \`test -r "${toolPath}"\`；若失败，只报告 bundled-market-pulse-tool-not-found。`,
+      projectRuntimePrompt("build-market-pulse.mjs", "bundled-market-pulse-tool-not-found"),
       `工具存在时，在当前项目根目录执行：\`node "${toolPath}" --persist-panel-data\`。不要添加 --dry-run，也不要自行生成或改写报告。`,
       "工具会按运行时 UTC 时间生成 data/market-insights/<STAMP>-market-overview.json，并在单个板块/新闻源失败时做显式降级。",
       "同一轮已取得的完整沪深 A 股行情会同步写入 CodeShell 私人数据目录；不得为了保存再执行第二次行情请求。",

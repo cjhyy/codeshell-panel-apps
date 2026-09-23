@@ -1,3 +1,5 @@
+import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
+
 const MARKET_ORDER = ["cn", "us"];
 // The pre-0.5 single task was always named `Quant Lab · 每日盯盘（N 个标的）`.
 // Only that exact shape is a migration candidate; a user task that merely
@@ -58,7 +60,7 @@ function publicRule(item) {
   };
 }
 
-const FETCH_TOOL = "$HOME/.code-shell/panel-apps/quant-lab/app/tools/fetch-market-data.mjs";
+const FETCH_TOOL = "$PANEL_TOOL";
 
 function promptForMarket(market, items) {
   const spec = MARKET_TASKS[market];
@@ -68,8 +70,8 @@ function promptForMarket(market, items) {
     "",
     "固定执行边界：",
     "1. 仅处理下面 JSON 中本市场的标的；不要读取或输出账户、数量、成本、笔记、凭证或 cookie。",
-    `2. CodeShell 安装器把本应用固定安装到用户目录；bundled fetch 工具的 POSIX 路径是 \`${FETCH_TOOL}\`。\`$HOME\` 只由 shell 展开，Host 不会替换任何路径模板，因此路径检查与执行都必须通过 shell 完成。`,
-    `3. 执行前先在 shell 中运行 \`test -r "${FETCH_TOOL}"\`；若失败，可读取 \`$HOME/.code-shell/panel-apps/installed.json\` 核对安装记录，但仍找不到时把本次全部标的记录为 \`bundled-fetch-tool-not-found\` / \`unavailable\`。禁止猜测其他路径、估算、补零或编造，也不得发送触发通知。`,
+    projectRuntimePrompt("fetch-market-data.mjs", "bundled-fetch-tool-not-found"),
+    "3. 在当前项目根目录运行，watch 引擎从同一个项目选定包的 app/engine.mjs 加载，不复制计算实现。",
     `4. 对每个 symbol 复用该工具：\`node "${FETCH_TOOL}" --symbol "$SYMBOL" --out-dir data/market\`，其中 SYMBOL 只取自下面 JSON。若 \`data/market/<SYMBOL>.meta.json\` 已存在，读取其 \`adjust\` 字段并原样以 \`--adjust <值>\` 传入；不存在则使用工具默认值。禁止使用 \`--force\`：工具因复权基准不一致拒绝时，把该标的记录为 \`adjust-basis-conflict\` / \`unavailable\`，不得改写用户的数据基准。`,
     "5. 数据同步后必须复用 watch 引擎的 `evaluateWatchItem`，并用 `rankWatchResults` 排序；禁止复制或改写触发公式。`signal-entry` 规则使用 JSON 中附带的 strategy 快照。",
     "6. 所有数值必须来自 CSV 或引擎结构化输出；禁止估算、补零或编造。窗口内运行时最新 bar 可能是未完成的盘中 bar，报告时把该结果标为 provisional。",
