@@ -439,7 +439,8 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await captionPanel.locator("[data-caption-srt-input]").setInputFiles({
     name: "test.srt",
     mimeType: "text/plain",
-    buffer: Buffer.from("1\n00:00:01,000 --> 00:00:02,000\n新增字幕 <script>alert(1)</script>\n"),
+    // Between the demo's first two captions: a cue over an existing one would be skipped.
+    buffer: Buffer.from("1\n00:00:05,500 --> 00:00:06,500\n新增字幕 <script>alert(1)</script>\n"),
   });
   await captionPanel.getByRole("button", { name: "应用预览", exact: true }).click();
   await page.waitForFunction(
@@ -457,7 +458,7 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await captionPanel.getByRole("button", { name: "导出所选 SRT", exact: true }).click();
   const srt = await srtDownload;
   const srtText = await readFile(await srt.path(), "utf8");
-  assert.match(srtText, /00:00:01,000 --> 00:00:02,000\n新增字幕 <script>alert\(1\)<\/script>/);
+  assert.match(srtText, /00:00:05,500 --> 00:00:06,500\n新增字幕 <script>alert\(1\)<\/script>/);
   assert.equal(srtText.match(/-->/g).length, originalCaptions + 1);
 
   const jsonDownload = page.waitForEvent("download");
