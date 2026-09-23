@@ -2464,6 +2464,7 @@ marketInsightsController = createMarketInsightsController({
 
 marketPulseAutomationController = createMarketPulseAutomationController({
   hostCall,
+  currentEpoch: () => workspaceEpoch,
   getContext: () => context,
   notify,
   elements: {
