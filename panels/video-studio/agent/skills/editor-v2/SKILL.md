@@ -73,6 +73,7 @@ timing.action 为 `{kind:"speed",rate,preservePitch?}`、`{kind:"reverse"}`、`{
 
 - `{kind:"import-srt",text,trackId?}` 导入完整 SRT 文本，使用毫秒时间而非四舍五入到固定帧率，同内容重复导入会去重。
 - `{kind:"from-transcripts",transcripts:[{assetId,segments}],trackId?,assetIds?,wordHighlight?}`。segments 使用真实转写工具结果 `{id?,start,end,text,words?:[{text,start,end,probability?}]}`；时间是原素材秒。先读取该素材实际转写分页，不能编造识别文本或词时间。规划器按真实声音来源、静音状态和 timeMap 映射至序列，并保存来源绑定。`assetIds` 可限制要生成的来源。
+- `{kind:"add",text,start,end,trackId?}` 在当前画面范围内按精确 Tick 添加一条普通字幕（无来源绑定），结束时间不会越过序列末尾；适合按文稿估时的草稿字幕或用户指定的说明字幕，不能冒充真实转写。
 - `{kind:"text",clipId,text}` 修改字幕或自由文字，清除已失效词时间和翻译标记，保留来源绑定。
 - `{kind:"style",clipIds,patch}` 批量修改提供的样式字段，其余逐条保留；逐字高亮需要已有真实词时间。
 - `{kind:"translate",clipIds,language,mode,translations:[{id,text}]}` 应用已生成并核对的译文，mode 是 `bilingual` 或 `translated`，结果 ID 必须与选中字幕完全对应。原文和原始词时间可恢复；译文不伪造逐词对齐。界面翻译请求产生候选，应用才保存；用户只要预览时先展示译文，不调用此动作。
@@ -96,7 +97,7 @@ timing.action 为 `{kind:"speed",rate,preservePitch?}`、`{kind:"reverse"}`、`{
 
 ## 自动制作授权
 
-自动制作进行中，工作台锁定通用编辑。只有本次自动制作任务可以在 `label/steps` 编辑和 `clipboard` 请求的 editor 内附 `grant:{projectId,requestToken}`，值取自 `read_video_project({})` 返回的 `project.id` 与 `requestToken`；不带 grant 或令牌过期、属于其他工程时拒绝，保持锁定。初始化阶段不能用 grant 编辑；先审稿再录音的草稿阶段，临时字幕仍用旧 `caption` 操作（ID 以 `draft-narration-` 开头）；本人录音阶段只接受不改变录音依赖的编辑（标题、画面变换、效果），改变文稿、字幕、声音、时间安排或画幅会被拒绝。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用；导出调用 `render_video_project` 的旧参数（`projectId/baseRevision/requestToken`），它导出完整新版当前序列，工作台据此跟踪完成。旧工程读取的 `legacyView.timelineComplete=false` 表示旧视图缺少片段，应改用带 grant 的 editor 分支；`editorIdentity` 与新版读取的 identity 相同。
+自动制作进行中，工作台锁定通用编辑。只有本次自动制作任务可以在 `label/steps` 编辑和 `clipboard` 请求的 editor 内附 `grant:{projectId,requestToken}`，值取自 `read_video_project({})` 返回的 `project.id` 与 `requestToken`；不带 grant 或令牌过期、属于其他工程时拒绝，保持锁定。初始化阶段不能用 grant 编辑；先审稿再录音的草稿阶段，`set_video_script` 会按文稿生成估时的临时字幕，带 grant 用 `captions` 的 `add` 步骤补充的字幕也记为临时字幕；本人录音阶段可以编排画面和本人录音，面板把这些编辑记为录音编排进度，改写文稿、改变画幅、替换录音素材或自行写 `production.narration` 会被拒绝，真实字幕在提交 `stage:"review"` 的 workflow 后由协调层按转写生成。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用；导出调用 `render_video_project` 的旧参数（`projectId/baseRevision/requestToken`），它导出完整新版当前序列，工作台据此跟踪完成。旧工程读取的 `legacyView.timelineComplete=false` 表示旧视图缺少片段，应改用带 grant 的 editor 分支；`editorIdentity` 与新版读取的 identity 相同。
 
 ## 本人录音与制作状态
 

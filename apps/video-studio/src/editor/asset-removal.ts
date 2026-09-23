@@ -1,3 +1,4 @@
+import { recordedNarrationClipIds } from "./narration-edits";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { validateTimeMap } from "./time";
 import type { EditorDocument, EditorSequence, JsonData, TextClip } from "./types";
@@ -70,6 +71,10 @@ export function planEditorAssetRemoval(
     typeof narration?.recordingAssetId === "string" && selected.has(narration.recordingAssetId);
   for (const sequence of document.sequences) {
     const targets = removing.get(sequence.id)!;
+    // The narration workflow's recorded captions cannot outlive their recording.
+    const recorded = usage.narrationRecording
+      ? recordedNarrationClipIds(document, sequence.id, String(narration!.recordingAssetId))
+      : new Set<string>();
     for (const clip of sequence.clips) {
       if (
         (clip.kind === "media" && selected.has(clip.assetId)) ||
@@ -84,9 +89,7 @@ export function planEditorAssetRemoval(
       if (
         clip.kind === "text" &&
         ((clip.sourceBinding?.provenance && selected.has(clip.sourceBinding.provenance.assetId)) ||
-          (usage.narrationRecording &&
-            clip.role === "subtitle" &&
-            clip.id.startsWith("recorded-narration-")))
+          recorded.has(clip.id))
       )
         targets.add(clip.id);
     }

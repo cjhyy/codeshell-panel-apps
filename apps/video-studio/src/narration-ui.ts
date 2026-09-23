@@ -5,6 +5,8 @@ interface NarrationPanelOptions {
   busy: boolean;
   persistent: boolean;
   scriptDraft?: string | null;
+  /** The editor sequence has picture to confirm (the 30 fps view may not show real footage). */
+  hasPicture?: boolean;
 }
 
 function action(name: string, label: string, disabled: boolean, primary = false): string {
@@ -16,6 +18,7 @@ export function syncNarrationDraftUI(
   project: Readonly<Project>,
   draft: string | null,
   busy = false,
+  hasPicture = project.clips.length > 0,
 ): void {
   const panel = document.querySelector<HTMLElement>(".narration-panel");
   if (!panel || !project.narration) return;
@@ -30,7 +33,7 @@ export function syncNarrationDraftUI(
     if (button) button.disabled = value;
   };
   disable("save-narration-script", busy || !changed || !text.trim());
-  disable("approve-draft", locked || !text.trim() || !project.clips.length);
+  disable("approve-draft", locked || !text.trim() || !hasPicture);
   disable("record-narration", locked);
   disable("bind-narration-recording", locked || !hasRecording);
   disable("align-narration", locked || panel.dataset.persistent !== "true");
@@ -54,6 +57,7 @@ export function renderNarrationPanel(
   const text = options.scriptDraft ?? project.script ?? "";
   const changed = text !== (project.script ?? "");
   const locked = options.busy || changed;
+  const hasPicture = options.hasPicture ?? project.clips.length > 0;
   const recordings = project.assets.filter(
     (asset) => (asset.kind === "audio" || asset.kind === "video") && !asset.speech,
   );
@@ -107,7 +111,7 @@ ${esc(text)}</textarea>
           ? action(
               "approve-draft",
               "确认草稿，去录口播",
-              locked || !text.trim() || !project.clips.length,
+              locked || !text.trim() || !hasPicture,
               true,
             )
           : ""

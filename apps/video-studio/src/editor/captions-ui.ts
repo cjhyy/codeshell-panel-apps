@@ -1,7 +1,7 @@
 import type { CaptionController, CaptionControllerState } from "./caption-controller";
 import { exportEditorSrt, listCaptions } from "./captions";
 import { CAPTION_PRESETS, currentCaptionPreset, type CaptionPreset } from "./caption-presets";
-import { captionClipIdsForLegacyIds } from "./legacy-adapter";
+import { narrationDraftClipIds } from "./narration-edits";
 import type { EditorSession } from "./session";
 import { secondsToTicks, snapToFrame, type Tick } from "./time";
 import type { EditorDocument, EditorSequence, TextClip } from "./types";
@@ -432,7 +432,7 @@ export class EditorCaptionsUI {
     this.narrationNote.hidden = !notes.length;
   }
   private draftIds(doc: EditorDocument): Set<string> {
-    return captionClipIdsForLegacyIds(doc, this.sequenceId, narration(doc).draftCaptionIds);
+    return narrationDraftClipIds(doc, this.sequenceId);
   }
   /** Keep what the user typed but has not saved, unless it now equals the saved value. */
   private draft(

@@ -44,6 +44,7 @@ import {
   type SequenceIdFactory,
 } from "./sequence-edits";
 import {
+  planAddCaptions,
   planCaptionStyle,
   planCaptionText,
   planCaptionTranslation,
@@ -684,8 +685,25 @@ function planCaptionsStep(
       "assetIds",
       "wordHighlight",
       "preset",
+      "start",
+      "end",
     ]);
   switch (action.kind) {
+    case "add":
+      object(action, ["kind", "text", "start", "end", "trackId"]);
+      return planAddCaptions(
+        document,
+        sequenceId,
+        [
+          {
+            text: action.text as string,
+            start: action.start as number,
+            end: action.end as number,
+            ...(action.trackId === undefined ? {} : { trackId: id(action.trackId) }),
+          },
+        ],
+        { idFactory: () => factory("clip") },
+      );
     case "import-srt":
       object(action, ["kind", "text", "trackId"]);
       return planSrtImport(document, sequenceId, action.text, {

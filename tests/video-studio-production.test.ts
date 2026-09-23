@@ -1116,7 +1116,9 @@ test("draft uses its owning skill and rejects proposal, voice and export shortcu
   assert.match(starts(f.host)[0]!.params.prompt, /不调用TTS或导出/);
   assert.ok(starts(f.host)[0]!.params.skills.includes("video-studio:editor-v2"));
   assert.match(starts(f.host)[0]!.params.prompt, /editor\.grant/);
-  assert.match(starts(f.host)[0]!.params.prompt, /临时字幕仍用旧 caption 操作[^。]*draft-narration-/);
+  assert.match(starts(f.host)[0]!.params.prompt, /captions 的 add 步骤补充临时字幕/);
+  assert.match(starts(f.host)[0]!.params.prompt, /set_video_script[^。]*自动生成估时的临时字幕/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /旧 caption 操作|draft-narration-/);
   assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /需要导出时统一调用/);
   assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /只接受不改变本人录音依赖/);
   for (const name of [
@@ -1173,7 +1175,9 @@ test("narration locks before digest validation so double starts prepare only the
   assert.equal(starts(f.host).length, 1);
   assert.equal(starts(f.host)[0]!.params.key, "narration-workflow-narration");
   const narrationPrompt = starts(f.host)[0]!.params.prompt;
-  assert.match(narrationPrompt, /editor 分支只接受不改变本人录音依赖的编辑（标题、画面变换、效果/);
+  assert.match(narrationPrompt, /editor 分支可以编排画面和本人录音/);
+  assert.match(narrationPrompt, /改写文稿、改变画幅或替换本人录音素材的编辑会被拒绝/);
+  assert.doesNotMatch(narrationPrompt, /录音编排与字幕对齐沿用旧 apply_video_edit/);
   assert.match(narrationPrompt, /需要导出时统一调用 render_video_project/);
   assert.doesNotMatch(narrationPrompt, /临时字幕仍用旧 caption 操作/);
   const preparation = f.host.calls.filter(({ method }) => method === "media.prepare");

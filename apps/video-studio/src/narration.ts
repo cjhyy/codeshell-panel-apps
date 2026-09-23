@@ -1,4 +1,4 @@
-import { timelineDuration, type Asset, type Project } from "./model";
+import { timelineDuration, type Project } from "./model";
 
 /** User approval is written by the panel, never by an Agent edit operation. */
 export interface NarrationState {
@@ -10,6 +10,9 @@ export interface NarrationState {
   /** Coordinator-owned work checkpoint; it never replaces the user's draft approval. */
   alignmentFingerprint?: string;
   recordingAssetId?: string;
+  /** "editor": the fingerprints hash the editor document's narration dependencies. Absent on
+   * approvals saved by older versions, which hashed the 30 fps compatibility view. */
+  fingerprintBasis?: "editor";
 }
 
 const approvedPhases = new Set<NarrationState["phase"]>(["approved", "recorded", "aligned"]);
@@ -18,6 +21,11 @@ const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 function identifier(value: unknown, label: string): string {
   if (typeof value !== "string" || !idPattern.test(value)) throw new Error(`${label}格式不正确`);
   return value;
+}
+
+/** Validated, normalized narration script text (the panel's editable copy). */
+export function normalizeNarrationScript(value: unknown): string {
+  return script(value).replace(/\r\n?/g, "\n").trim();
 }
 
 function script(value: unknown): string {
@@ -32,7 +40,10 @@ function script(value: unknown): string {
 }
 
 /** Strict portable data validation; removed temporary caption IDs remain useful provenance. */
-export function validateNarration(value: unknown, assets: readonly Asset[]): NarrationState {
+export function validateNarration(
+  value: unknown,
+  assets: readonly { id: string; kind: string }[],
+): NarrationState {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("口播制作状态必须是对象");
   const prototype = Object.getPrototypeOf(value);
@@ -47,6 +58,7 @@ export function validateNarration(value: unknown, assets: readonly Asset[]): Nar
     "approvedFingerprint",
     "alignmentFingerprint",
     "recordingAssetId",
+    "fingerprintBasis",
   ];
   for (const key of Reflect.ownKeys(data))
     if (typeof key !== "string" || !allowed.includes(key))
@@ -98,6 +110,10 @@ export function validateNarration(value: unknown, assets: readonly Asset[]): Nar
   }
   if (["recorded", "aligned"].includes(result.phase) && !result.recordingAssetId)
     throw new Error("此阶段需要已保存的本人录音素材");
+  if (Object.hasOwn(data, "fingerprintBasis")) {
+    if (data.fingerprintBasis !== "editor") throw new Error("口播确认指纹依据不受支持");
+    result.fingerprintBasis = "editor";
+  }
   return result;
 }
 
@@ -143,6 +159,8 @@ export async function hasNarrationApproval(project: Project): Promise<boolean> {
   const state = project.narration;
   if (
     !state ||
+    // Editor-basis fingerprints cannot be verified on the 30 fps view.
+    state.fingerprintBasis === "editor" ||
     !approvedPhases.has(state.phase) ||
     !state.approvedScript ||
     state.approvedScript !== project.script ||
@@ -169,8 +187,9 @@ export async function approveNarration(project: Project): Promise<Project> {
   const approvedScript = script(next.script);
   if (!next.clips.length) throw new Error("请先安排草稿画面，再确认口播");
   const approvedFingerprint = await narrationFingerprint(next);
+  const { fingerprintBasis: _basis, ...rest } = state;
   next.narration = {
-    ...state,
+    ...rest,
     phase: "approved",
     captionBasis: "draft",
     approvedScript,
@@ -245,7 +264,8 @@ function reflowDraftText(value: string, count: number): string[] {
   return result;
 }
 
-function draftTextSegments(value: string, duration: number): string[] {
+/** Estimated draft subtitle lines: sentences, reflowed into at most `duration` (≤ 1000) slots. */
+export function draftTextSegments(value: string, duration: number): string[] {
   const normalized = value.replace(/[^\S\n]+/g, " ").trim();
   const result: string[] = [];
   for (const sentence of normalized.split(/(?<=[。！？!?；;])|(?<=\.)[ \t]+|\n+/u)) {

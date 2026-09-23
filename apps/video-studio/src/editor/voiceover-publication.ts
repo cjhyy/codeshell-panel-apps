@@ -2,6 +2,7 @@ import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { resolveLegacyClipId } from "./legacy-aliases";
+import { findFreeTrack } from "./rough-cut-placement";
 import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./legacy-time";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
@@ -316,4 +317,69 @@ export function planPublishVoiceover(
       : "配音已加入原目标序列，完整素材与文稿已保存，可整体撤销。",
     true,
   );
+}
+
+/**
+ * A published audio result's placement at an old 30 fps frame, on the editor document: the
+ * real sequence length decides how much fits (the 30 fps view may show none of real footage).
+ * The job-specific clip ID makes a replayed completion a no-op, keeping later edits.
+ */
+export function planPublishedAudioPlacement(
+  value: EditorDocument,
+  sequenceId: string,
+  placement: { clipId: string; assetId: string; startFrame: number; volume: number },
+  idFactory: (kind: "track") => string = () => `track-${crypto.randomUUID()}`,
+): { operations: EditorOperation[]; notice?: string } {
+  const doc = validateEditorDocument(value),
+    sequence = doc.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) throw new Error("配音目标序列不存在");
+  const asset = doc.assets.find((item) => item.id === placement.assetId);
+  if (!asset || asset.kind !== "audio") throw new Error("配音素材无效");
+  const { startFrame, volume } = placement;
+  if (!Number.isSafeInteger(startFrame) || startFrame < 0 || startFrame > MAX_LEGACY_FRAME)
+    throw new Error("配音位置无效");
+  if (!Number.isFinite(volume) || volume < 0 || volume > 2) throw new Error("配音音量无效");
+  if (doc.sequences.some((item) => item.clips.some((clip) => clip.id === placement.clipId)))
+    return { operations: [] };
+  const start = startFrame * LEGACY_FRAME_TICKS,
+    available = Math.max(0, sequenceDuration(sequence) - start);
+  if (!available)
+    return {
+      operations: [],
+      notice: "完整配音已保存到素材库。请先添加或延长画面，再将配音加入时间轴。",
+    };
+  const duration = Math.min(asset.duration, available),
+    track = findFreeTrack(sequence, "audio", start, duration, idFactory);
+  const clip: MediaClip = {
+    id: placement.clipId,
+    kind: "media",
+    assetId: asset.id,
+    trackId: track.trackId,
+    label: asset.name,
+    start,
+    duration,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: duration, source: duration },
+      ],
+    },
+    audio: { ...defaultAudioMix(), volume },
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  };
+  const operations: EditorOperation[] = [
+    ...track.operations,
+    { type: "clip.add", sequenceId, clip },
+  ];
+  applyEditorOperations(doc, operations, doc.revision);
+  const seconds = (tick: number) => (tick / TICKS_PER_SECOND).toFixed(1);
+  return {
+    operations,
+    notice:
+      duration < asset.duration
+        ? `完整配音 ${seconds(asset.duration)} 秒已保留在素材库；画面只剩 ${seconds(available)} 秒，当前音轨到画面结尾。请延长画面并调整配音出点，避免漏掉句尾。`
+        : "配音已加入当前播放位置，完整文案和音频已保存",
+  };
 }

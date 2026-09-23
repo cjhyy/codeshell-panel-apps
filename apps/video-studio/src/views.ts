@@ -69,6 +69,7 @@ export interface ViewState {
   readonly recordingMarkup?: string;
   readonly spokenMarkup?: string;
   readonly narrationScriptDraft?: string | null;
+  readonly narrationHasPicture?: boolean;
   readonly production?: ProductionViewState;
 }
 
@@ -348,6 +349,9 @@ ${esc(aiPrompt)}</textarea
           busy: narrationBusy,
           persistent,
           scriptDraft: state.narrationScriptDraft,
+          ...(state.narrationHasPicture === undefined
+            ? {}
+            : { hasPicture: state.narrationHasPicture }),
         })}
         ${button(
           "initialize-video",

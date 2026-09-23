@@ -74,15 +74,6 @@ import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
 import { cachedMediaFile } from "./recording-cache";
 import { persistMediaFile } from "./media-file-storage";
-import {
-  approveNarration,
-  bindNarrationRecording,
-  hasNarrationApproval,
-  narrationFingerprint,
-  reconcileNarrationEdit,
-  updateNarrationScript,
-} from "./narration";
-import { buildNarrationAlignment } from "./narration-alignment";
 import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
 import { createExternalMediaAccess, isExternalMedia, isResourceId } from "./external-media";
@@ -121,6 +112,7 @@ import { createCaptionController, type CaptionController } from "./editor/captio
 import { createCaptionServices } from "./editor/caption-services";
 import { EditorCaptionsUI } from "./editor/captions-ui";
 import { exportEditorSrt, listCaptions } from "./editor/captions";
+import type { NarrationState } from "./narration";
 import { createAudioSeparationBridge } from "./editor/separation-bridge";
 import {
   createSeparationController,
@@ -136,12 +128,34 @@ import { EditorAudioEnhancementUI } from "./editor/audio-enhancement-ui";
 import { enhancedEditorAsset } from "./editor/audio-enhancement";
 import {
   captureReplaceTarget,
+  planPublishedAudioPlacement,
   planPublishVoiceover,
   verifyReplaceTarget,
 } from "./editor/voiceover-publication";
 import { uploadEditorResource } from "./editor/resource-upload";
 import { createEditorAgentTools, type EditorAgentAuthorization } from "./editor/agent-tools";
 import { reconcileEditorProduction } from "./editor/production-guard";
+import {
+  DRAFT_CAPTION_PREFIX,
+  draftNamedClipIds,
+  editorNarrationFingerprint,
+  hasEditorNarrationApproval,
+  hasNarrationPicture,
+  narrationApprovalIssue,
+  narrationDraftClipIds,
+  narrationStateOperation,
+  planApproveNarration,
+  planBindNarrationRecording,
+  planNarrationAlignment,
+  planNarrationPhase,
+  planNarrationScript,
+  readNarration,
+  reconcileDraftRunEdit,
+  reconcileNarrationRunEdit,
+  recordedNarrationClipIds,
+} from "./editor/narration-edits";
+import { planAddCaptions } from "./editor/captions";
+import { resolveLegacyClipId } from "./editor/legacy-aliases";
 import {
   createEditorProposal,
   mainTrackId,
@@ -551,19 +565,50 @@ const production = new ProductionController(panel, {
   publishAssets: async (projectId, assets, options) => {
     if (projectId !== project.id) throw new Error("素材任务属于另一个工程，已保留任务等待恢复");
     assertEditable();
-    const publication = publishProductionAssets(project, assets, options);
-    if (!publication.project) return;
-    const validated = reconcileNarrationEdit(project, publication.project);
+    if (!editorSession) throw new Error("工程尚未恢复，已阻止保存");
+    // Sources go through the old view (it accepts additions while incomplete); a placement is
+    // planned on the editor document, whose real sequence length the old view may not show.
+    const { audioPlacement, ...publicationOptions } = options ?? {};
+    const publication = publishProductionAssets(project, assets, publicationOptions);
+    const session = editorSession,
+      identity = session.getState().identity,
+      before = session.read();
+    let operations = publication.project
+      ? legacyCandidateOperations(publication.project).operations
+      : [];
+    let after = applyEditorOperations(before, operations, before.revision),
+      notice = publication.notice;
+    if (audioPlacement) {
+      const placed = planPublishedAudioPlacement(
+        after,
+        after.activeSequenceId,
+        audioPlacement,
+        proposalIdFactory,
+      );
+      operations = [...operations, ...placed.operations];
+      after = applyEditorOperations(before, operations, before.revision);
+      notice = placed.notice ?? notice;
+    }
+    if (!operations.length) {
+      if (notice) toast(notice);
+      return;
+    }
+    const guard = reconcileEditorProduction(before, after);
     const currentGeneration = generation;
     aiApplying = true;
     try {
-      await saveProject(validated, options?.label ?? "素材准备完成");
+      stop();
+      await session.dispatchDurable(
+        [...operations, ...guard],
+        identity,
+        options?.label ?? "素材准备完成",
+      );
       if (projectId !== project.id || currentGeneration !== generation)
         throw new Error("素材准备期间工程已变化");
     } finally {
       aiApplying = false;
     }
-    commit(validated, true);
+    synchronizeLegacyView();
     for (const asset of assets) {
       if (projectId !== project.id || currentGeneration !== generation)
         throw new Error("素材解码期间工程已切换");
@@ -574,7 +619,7 @@ const production = new ProductionController(panel, {
         throw new Error("素材解码期间工程已切换");
     }
     if (!playback && !document.querySelector("dialog[open]")) render();
-    if (publication.notice) toast(publication.notice);
+    if (notice) toast(notice);
   },
   changed: () => {
     if (!productionBooted) return;
@@ -595,6 +640,8 @@ const production = new ProductionController(panel, {
 });
 const automatic = new AutomaticProducer(panel, production, {
   getProject: () => project,
+  getDocument: () => editorSession?.read() ?? migrateLegacyProject(project),
+  hasApproval: hasEditorNarrationApproval,
   assertEditable: () => {
     assertEditable();
     if (roughCutAI.busy) throw new Error("请先完成或取消 AI 批量粗剪");
@@ -867,9 +914,7 @@ const roughcut = createRoughCutUI({
     assertEditable();
     const current = project;
     const currentGeneration = generation;
-    const next = validateProject(
-      reconcileNarrationEdit(current, applyOperations(current, operations, current.revision)),
-    );
+    const next = validateProject(applyOperations(current, operations, current.revision));
     aiApplying = true;
     try {
       // Keep the durable AI draft until the project containing its reviewed
@@ -1024,10 +1069,9 @@ const recording = createRecordingUI({
     } else if (intended) {
       narrationRecordingSaved = true;
       try {
-        await saveNarrationUpdate(
-          (current) => bindNarrationRecording(current, asset.id),
+        await saveNarration(
+          (current) => planBindNarrationRecording(current, asset.id),
           "绑定本人录音",
-          true,
         );
         toast("口播已保存，点击“用我的录音完成视频”重排画面和字幕");
       } catch (error) {
@@ -1301,6 +1345,7 @@ function views() {
     aiPrompt,
     aiMessage,
     narrationScriptDraft,
+    ...(editorSession ? { narrationHasPicture: narrationPicture() } : {}),
     workspace,
     voiceoverMarkup: voiceover.render(),
     folderMarkup: folderImport.render(),
@@ -1523,9 +1568,10 @@ function legacyCandidateKey(value: Project): string {
       : item,
   );
 }
-function prepareLegacyCandidate(next: Project, allowAlignment: boolean) {
+/** Editor operations for an old-view candidate, before the approval guard. */
+function legacyCandidateOperations(next: Project) {
   if (!editorSession || !legacyView) throw new Error("工程尚未恢复，已阻止修改");
-  const validated = validateProject(reconcileNarrationEdit(project, next, allowAlignment));
+  const validated = validateProject(next);
   if (
     next.id !== project.id ||
     (next.revision !== project.revision + 1 &&
@@ -1541,22 +1587,28 @@ function prepareLegacyCandidate(next: Project, allowAlignment: boolean) {
   );
   return { operations, scriptChanged: project.script !== validated.script };
 }
-function applyLegacyCandidate(next: Project, label: string, allowAlignment: boolean): void {
-  const { operations, scriptChanged } = prepareLegacyCandidate(next, allowAlignment);
+/** Old-view edits invalidate a confirmed narration exactly like editor edits do. */
+function prepareLegacyCandidate(next: Project) {
+  const { operations, scriptChanged } = legacyCandidateOperations(next);
+  const doc = editorSession!.read();
+  const guard = reconcileEditorProduction(
+    doc,
+    applyEditorOperations(doc, operations, doc.revision),
+  );
+  return { operations: [...operations, ...guard], scriptChanged };
+}
+function applyLegacyCandidate(next: Project, label: string): void {
+  const { operations, scriptChanged } = prepareLegacyCandidate(next);
   stop();
   editorSession!.dispatch(operations, editorSession!.getState().identity, label);
   if (scriptChanged) narrationScriptDraft = null;
   synchronizeLegacyView();
 }
-async function saveProject(
-  next: Project,
-  label = "自动保存",
-  allowAlignment = false,
-): Promise<void> {
+async function saveProject(next: Project, label = "自动保存"): Promise<void> {
   if (!editorSession) throw new Error("工程尚未恢复，已阻止保存");
   const key = legacyCandidateKey(next);
   if (key !== legacyCandidateKey(project)) {
-    const { operations, scriptChanged } = prepareLegacyCandidate(next, allowAlignment);
+    const { operations, scriptChanged } = prepareLegacyCandidate(next);
     stop();
     await editorSession.dispatchDurable(operations, editorSession.getState().identity, label);
     if (scriptChanged) narrationScriptDraft = null;
@@ -1566,12 +1618,12 @@ async function saveProject(
   }
   await editorSession.flush();
 }
-function commit(next: Project, alreadySaved = false, allowAlignment = false): void {
+function commit(next: Project, alreadySaved = false): void {
   assertEditable();
   const key = legacyCandidateKey(next);
   if (alreadySaved && savedCandidates.get(key) === editorSession?.read().id)
     savedCandidates.delete(key);
-  else applyLegacyCandidate(next, "编辑制作内容", allowAlignment);
+  else applyLegacyCandidate(next, "编辑制作内容");
   synchronizeLegacyView();
   render();
 }
@@ -2648,43 +2700,77 @@ function assertNarrationIdle(): void {
     throw new Error("请等待当前制作完成，或先取消任务");
   if (production.pendingJobs.length) throw new Error("请等待素材任务完成后继续");
 }
-async function saveNarrationUpdate(
-  transform: (current: Project) => Promise<Project>,
+/**
+ * The narration coordinator's own durable write. Its planners already decided the narration
+ * state (confirmation, recording choice, alignment checkpoint), so the generic approval guard,
+ * which would reset that state to review, is deliberately not applied. Only the panel's
+ * narration actions and the automatic narration runs call this.
+ */
+async function applyNarrationDurable(
+  operations: EditorOperation[],
+  identity: SessionIdentity,
   label: string,
-  allowAlignment = false,
+  options: { actor?: "user" | "agent"; signal?: AbortSignal } = {},
+): Promise<void> {
+  if (!editorSession) throw new Error("工程尚未恢复");
+  if (!operations.length) return;
+  stop();
+  await editorSession.dispatchDurable(
+    operations,
+    identity,
+    label,
+    options.actor ?? "user",
+    options.signal,
+  );
+  synchronizeLegacyView();
+}
+/** A panel narration action: plan on the current editor document, then one durable save. */
+async function saveNarration(
+  plan: (current: EditorDocument) => EditorOperation[] | Promise<EditorOperation[]>,
+  label: string,
 ): Promise<void> {
   assertEditable();
-  const id = project.id,
-    revision = project.revision,
-    currentGeneration = generation;
+  if (!editorSession) throw new Error("工程尚未恢复");
+  const session = editorSession,
+    identity = session.getState().identity;
   aiApplying = true;
-  let next: Project;
   try {
-    next = validateProject(await transform(structuredClone(project)));
-    if (project.id !== id || project.revision !== revision || generation !== currentGeneration)
+    await applyNarrationDurable(await plan(session.read()), identity, label);
+  } catch (error) {
+    if (error instanceof Error && /工程或版本已改变/.test(error.message))
       throw new Error("工程已变化，请重新确认当前草稿");
-    await saveProject(next, label, allowAlignment);
+    throw error;
   } finally {
     aiApplying = false;
   }
-  commit(next!, true, allowAlignment);
+  render();
+}
+const narrationTrackId = () => proposalIdFactory("track");
+/** The editor sequence has picture to confirm; the 30 fps view may not show real footage. */
+function narrationPicture(): boolean {
+  const doc = editorSession!.read();
+  return hasNarrationPicture(doc, doc.activeSequenceId);
 }
 async function saveNarrationScript(): Promise<void> {
   const text = narrationScriptDraft;
   if (text === null || text === (project.script ?? "")) return;
   if (!text.trim()) throw new Error("文案不能为空");
-  await saveNarrationUpdate(
-    async (current) => updateNarrationScript(current, text),
+  await saveNarration(
+    (current) => planNarrationScript(current, current.activeSequenceId, text, narrationTrackId),
     "编辑待录口播文案",
   );
   narrationScriptDraft = null;
 }
 async function openNarrationRecorder(): Promise<void> {
-  const current = project;
-  if (!(await hasNarrationApproval(current)) || project !== current)
-    throw new Error("草稿已改变，请重新确认文案与画面");
+  if (!editorSession) throw new Error("工程尚未恢复");
+  const session = editorSession,
+    revision = session.getState().identity.revision,
+    doc = session.read();
+  const issue = await narrationApprovalIssue(doc);
+  if (issue || editorSession !== session || session.getState().identity.revision !== revision)
+    throw new Error(issue ?? "草稿已改变，请重新确认文案与画面");
   recording.assertSafeToLeave();
-  recording.setScript(current.narration!.approvedScript!);
+  recording.setScript(readNarration(doc)!.approvedScript!);
   narrationRecordingProjectId = project.id;
   voiceReferenceRecording = undefined;
   stop();
@@ -3342,22 +3428,7 @@ async function action(name: string, id?: string): Promise<void> {
       if (!production.enabled) throw new Error("生成视频草稿需要 CodeShell 桌面工作台");
       if (!aiPrompt.trim() && !project.workflow?.brief) throw new Error("先写下你想表达的内容");
       await saveNarrationScript();
-      await saveNarrationUpdate(
-        async (current) =>
-          validateProject({
-            ...current,
-            revision: current.revision + 1,
-            narration: {
-              phase: "draft",
-              captionBasis: "draft",
-              draftCaptionIds: current.narration?.draftCaptionIds ?? [],
-              ...(current.narration?.recordingAssetId
-                ? { recordingAssetId: current.narration.recordingAssetId }
-                : {}),
-            },
-          }),
-        "开始口播草稿",
-      );
+      await saveNarration((current) => planNarrationPhase(current, "draft"), "开始口播草稿");
       await requestAI("draft");
       break;
     case "save-narration-script":
@@ -3368,7 +3439,7 @@ async function action(name: string, id?: string): Promise<void> {
     case "approve-draft":
       assertNarrationIdle();
       await saveNarrationScript();
-      await saveNarrationUpdate(approveNarration, "用户确认视频草稿");
+      await saveNarration(planApproveNarration, "用户确认视频草稿");
       await openNarrationRecorder();
       break;
     case "record-narration":
@@ -3380,11 +3451,7 @@ async function action(name: string, id?: string): Promise<void> {
       assertNarrationIdle();
       await saveNarrationScript();
       const id = $<HTMLSelectElement>("#narration-recording-asset").value;
-      await saveNarrationUpdate(
-        (current) => bindNarrationRecording(current, id),
-        "选择本人录音",
-        true,
-      );
+      await saveNarration((current) => planBindNarrationRecording(current, id), "选择本人录音");
       toast("已选用这份录音，可以继续完成视频");
       break;
     }
@@ -3964,6 +4031,7 @@ studio.addEventListener("input", (event) => {
       project,
       narrationScriptDraft,
       taskStarting || Boolean(automatic.requestToken) || production.pendingJobs.length > 0,
+      editorSession ? narrationPicture() : undefined,
     );
   }
   if (target.id === "asset-search") {
@@ -4498,21 +4566,41 @@ registerProductionTools(productionToolPanel, production, {
     if (baseRevision !== project.revision) throw new Error("工程已改变，请重新读取文稿");
     if (automatic.mode === "draft" && finish)
       throw new Error("草稿阶段必须先完成画面和临时字幕，不能提前结束文稿任务");
-    const next = reconcileNarrationEdit(
-      project,
-      validateProject({ ...project, script: text, revision: project.revision + 1 }),
-    );
-    const token = automatic.requestToken,
-      id = project.id;
+    if (!editorSession) throw new Error("工程尚未恢复");
+    const session = editorSession,
+      identity = session.getState().identity,
+      doc = session.read(),
+      token = automatic.requestToken,
+      id = project.id,
+      drafting = automatic.mode === "draft";
+    // In the draft run the script also rebuilds the estimated temporary subtitles; otherwise it
+    // is a plain annotation that, like any edit, returns a confirmed narration to review.
+    let operations: EditorOperation[];
+    if (drafting)
+      operations = planNarrationScript(doc, doc.activeSequenceId, text, narrationTrackId);
+    else {
+      operations = [
+        { type: "project.production", data: { ...structuredClone(doc.production ?? {}), script: text } },
+      ];
+      operations.push(
+        ...reconcileEditorProduction(doc, applyEditorOperations(doc, operations, doc.revision)),
+      );
+    }
     aiApplying = true;
     try {
-      await saveProject(next, "润色口播文稿");
+      const options = { actor: "agent" as const, signal: automatic.requestSignal(token) };
+      if (drafting) await applyNarrationDurable(operations, identity, "润色口播文稿", options);
+      else {
+        stop();
+        await session.dispatchDurable(operations, identity, "润色口播文稿", "agent", options.signal);
+        synchronizeLegacyView();
+      }
     } finally {
       aiApplying = false;
     }
     if (project.id !== id || automatic.requestToken !== token)
       throw new Error("润色期间请求已改变");
-    commit(next, true);
+    narrationScriptDraft = null;
     voiceover.setText(text);
     tab = automatic.mode === "draft" ? "ai" : "voiceover";
     render();
@@ -4522,12 +4610,18 @@ registerProductionTools(productionToolPanel, production, {
   },
   validateRender: async () => {
     if (automatic.mode !== "narration") return;
-    const current = project;
+    const session = editorSession,
+      revision = session?.getState().identity.revision,
+      doc = session?.read(),
+      state = doc && readNarration(doc);
     if (
-      current.narration?.phase !== "aligned" ||
-      current.narration.captionBasis !== "recording" ||
-      !(await hasNarrationApproval(current)) ||
-      project !== current
+      !session ||
+      !doc ||
+      state?.phase !== "aligned" ||
+      state.captionBasis !== "recording" ||
+      !(await hasEditorNarrationApproval(doc)) ||
+      editorSession !== session ||
+      session.getState().identity.revision !== revision
     )
       throw new Error("请先用已确认的本人录音完成画面与真实字幕对齐");
   },
@@ -4552,76 +4646,20 @@ registerProductionTools(productionToolPanel, production, {
       if (production.pendingJobs.length)
         throw new Error("素材任务仍在进行，请等待结果后再保存初始化制作单");
     }
-    const drafting = automatic.mode === "draft";
-    const aligning = automatic.mode === "narration";
-    const partial = Boolean(editorSession && legacyView && !legacyView.timelineComplete);
+    // The narration runs keep their own bookkeeping on the editor document.
+    if (automatic.mode === "draft" || automatic.mode === "narration")
+      return applyAutomaticNarration(candidate);
     // Old-format edits cannot see every clip of this sequence: translate them onto the
-    // editor document, as the inspector does. Draft and recorded-narration runs keep their
-    // own bookkeeping on the old view for now.
-    if (partial && !drafting && !aligning) return applyAutomaticTranslated(candidate);
-    const completing = candidate.operations.some(
-      (operation) => operation.type === "workflow" && operation.workflow?.stage === "review",
+    // editor document, as the inspector does.
+    if (editorSession && legacyView && !legacyView.timelineComplete)
+      return applyAutomaticTranslated(candidate);
+    const next = validateProject(
+      applyOperations(project, candidate.operations, candidate.baseRevision),
     );
-    let next: Project;
-    try {
-      next = applyOperations(project, candidate.operations, candidate.baseRevision);
-    } catch (error) {
-      throw partial ? partialViewError(error, automatic.mode) : error;
-    }
     const currentGeneration = generation,
       currentRevision = project.revision;
-    const original = project;
     aiApplying = true;
     try {
-      if (aligning && !(await hasNarrationApproval(original)))
-        throw new Error("已确认的草稿已改变，请重新确认后使用本人录音");
-      if ((drafting || aligning) && completing && production.pendingJobs.length)
-        throw new Error("素材任务仍在进行，完成后才能提交当前阶段");
-      if (drafting) {
-        if (completing)
-          next.captions = next.captions.filter(
-            (caption) => !caption.id.startsWith("recorded-narration-"),
-          );
-        const draftCaptionIds = next.captions
-          .filter((caption) => caption.id.startsWith("draft-narration-"))
-          .map((caption) => caption.id);
-        if (completing && (!next.script?.trim() || !next.clips.length || !draftCaptionIds.length))
-          throw new Error("请先保存完整文案、草稿画面和 draft-narration- 临时字幕，再提交审阅");
-        next = validateProject({
-          ...next,
-          narration: {
-            phase: completing ? "review" : "draft",
-            captionBasis: "draft",
-            draftCaptionIds,
-            ...(original.narration?.recordingAssetId
-              ? { recordingAssetId: original.narration.recordingAssetId }
-              : {}),
-          },
-        });
-      } else if (aligning) {
-        if (next.script !== original.narration!.approvedScript)
-          throw new Error("本人录音阶段不能改写已确认文案");
-        if (completing && next.workflow!.blockers.length) {
-          next.narration = {
-            phase: "review",
-            captionBasis: "draft",
-            draftCaptionIds: next.narration!.draftCaptionIds,
-            recordingAssetId: next.narration!.recordingAssetId,
-          };
-        } else {
-          if (completing) {
-            const segments = await fullTranscript(next.narration!.recordingAssetId!);
-            next = buildNarrationAlignment(next, segments);
-          }
-          next.narration = {
-            ...next.narration!,
-            phase: completing ? "aligned" : "recorded",
-            captionBasis: completing ? "recording" : "draft",
-            alignmentFingerprint: await narrationFingerprint(next),
-          };
-        }
-      } else next = reconcileNarrationEdit(original, next);
-      next = validateProject(next);
       if (
         currentGeneration !== generation ||
         currentRevision !== project.revision ||
@@ -4635,25 +4673,14 @@ registerProductionTools(productionToolPanel, production, {
         candidate.requestToken !== automatic.requestToken
       )
         throw new Error("工程或制作请求已变化，未应用旧修改");
-      await saveProject(next, `自动制作：${candidate.title}`, aligning).catch((error) => {
-        // Only the old view's own refusal is explained; storage and other failures stay as-is.
-        throw partial && oldViewRefusal(error) ? partialViewError(error, automatic.mode) : error;
-      });
+      await saveProject(next, `自动制作：${candidate.title}`);
     } finally {
       aiApplying = false;
     }
-    commit(next, true, aligning);
+    commit(next, true);
     proposal = null;
     aiMessage = `已应用：${candidate.title}。历史版本可恢复。`;
-    if (drafting && completing) {
-      await automatic.finishForReview(
-        "视频草稿已保存。请预览画面、修改文案，满意后点击“确认草稿，去录口播”。当前字幕按文案估时，录音后会重新对齐。",
-      );
-      render();
-    } else if (aligning && completing && project.narration?.phase === "review") {
-      await automatic.finishForReview("录音与草稿有待确认的差异，请查看制作单并重新确认文案。");
-      render();
-    } else if (initializing) {
+    if (initializing) {
       await automatic.finishForReview(
         project.workflow?.blockers.length
           ? "制作单已保存，待补内容已列明；补齐后可继续全流程制作。"
@@ -4664,16 +4691,179 @@ registerProductionTools(productionToolPanel, production, {
   },
 });
 const oldViewRefusal = (error: unknown) =>
-  error instanceof Error && /旧视图/.test(error.message);
+  error instanceof Error && /旧视图|旧流程/.test(error.message);
 function partialViewError(error: unknown, mode: AutoProduction["mode"]): Error {
   const reason = error instanceof Error ? error.message : String(error);
   const next =
     mode === "narration"
-      ? "本人录音阶段的 editor 分支（在 editor 内附 grant:{projectId,requestToken}）只接受不改变本人录音依赖的编辑，如标题、画面变换和效果；需要改变字幕、声音或时间安排时，请在制作单 blockers 写明，等待后续处理。"
+      ? "请加载 editor-v2，用 apply_video_edit 的 editor 分支（在 editor 内附 grant:{projectId,requestToken}）编排画面和本人录音；文稿、画幅和录音素材保持已确认的样子。"
       : mode === "draft"
-        ? "画面剪辑请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成；草稿临时字幕仍用旧 caption 操作，ID 以 draft-narration- 开头。"
+        ? "请加载 editor-v2，用 apply_video_edit 的 editor 分支（在 editor 内附 grant:{projectId,requestToken}）剪辑画面；临时字幕可用 captions 的 add 步骤补充。"
         : "请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成这次编辑。";
   return new Error(`旧格式修改看不到当前时间线的全部片段，未保存（${reason}）。${next}`);
+}
+/** Old-format operations of a narration run, one at a time on a running editor draft. A new
+ * temporary caption (ID starting with draft-narration-) keeps that exact ID. */
+function translateNarrationOperations(
+  document: EditorDocument,
+  sequenceId: string,
+  operations: readonly EditOperation[],
+  drafting: boolean,
+): EditorOperation[] {
+  let draft = document;
+  const result: EditorOperation[] = [];
+  for (const operation of operations) {
+    const caption = operation.type === "caption" ? operation.caption : undefined;
+    const temporary =
+      drafting &&
+      caption &&
+      typeof caption.id === "string" &&
+      caption.id.startsWith(DRAFT_CAPTION_PREFIX) &&
+      !resolveLegacyClipId(draft, sequenceId, "captions", caption.id) &&
+      !draft.sequences
+        .find((item) => item.id === sequenceId)
+        ?.clips.some((clip) => clip.id === caption.id);
+    const batch = temporary
+      ? planAddCaptions(
+          draft,
+          sequenceId,
+          [
+            {
+              id: caption.id,
+              start: caption.startFrame * LEGACY_FRAME_TICKS,
+              end: caption.endFrame * LEGACY_FRAME_TICKS,
+              text: caption.text,
+            },
+          ],
+          { idFactory: narrationTrackId },
+        )
+      : translateLegacyOperations(draft, sequenceId, [operation], proposalIdFactory);
+    if (batch.length) draft = applyEditorOperations(draft, batch, draft.revision);
+    result.push(...batch);
+  }
+  return result;
+}
+/**
+ * The draft and recorded-narration runs on the editor document: old-format operations are
+ * translated, the coordinator records the draft captions, review, recording checkpoints and
+ * the verified alignment, and everything is one durable save and one undo.
+ */
+async function applyAutomaticNarration(candidate: Proposal): Promise<Proposal> {
+  if (!editorSession) throw new Error("工程尚未恢复");
+  if (candidate.baseRevision !== project.revision)
+    throw new Error("工程版本已变化，请重新读取后编辑");
+  const session = editorSession,
+    identity = session.getState().identity,
+    before = session.read(),
+    sequenceId = before.activeSequenceId,
+    drafting = automatic.mode === "draft",
+    currentGeneration = generation,
+    partial = Boolean(legacyView && !legacyView.timelineComplete);
+  const completing = candidate.operations.some(
+    (operation) => operation.type === "workflow" && operation.workflow?.stage === "review",
+  );
+  let reviewAfterBlockers = false;
+  aiApplying = true;
+  try {
+    const state = readNarration(before);
+    if (!drafting && !(await hasEditorNarrationApproval(before)))
+      throw new Error("已确认的草稿已改变，请重新确认后使用本人录音");
+    if (completing && production.pendingJobs.length)
+      throw new Error("素材任务仍在进行，完成后才能提交当前阶段");
+    let operations: EditorOperation[];
+    try {
+      operations = translateNarrationOperations(
+        before,
+        sequenceId,
+        candidate.operations,
+        drafting,
+      );
+    } catch (error) {
+      throw partial && oldViewRefusal(error) ? partialViewError(error, automatic.mode) : error;
+    }
+    let after = applyEditorOperations(before, operations, before.revision);
+    const script = typeof after.production?.script === "string" ? after.production.script : "";
+    if (drafting) {
+      if (completing) {
+        const recorded = recordedNarrationClipIds(after, sequenceId);
+        if (recorded.size) {
+          operations.push({ type: "clip.remove", sequenceId, clipIds: [...recorded] });
+          after = applyEditorOperations(before, operations, before.revision);
+        }
+      }
+      const draftCaptionIds = [
+        ...new Set([
+          ...narrationDraftClipIds(after, sequenceId),
+          ...draftNamedClipIds(after, sequenceId),
+        ]),
+      ];
+      if (
+        completing &&
+        (!script.trim() || !hasNarrationPicture(after, sequenceId) || !draftCaptionIds.length)
+      )
+        throw new Error("请先保存完整文案、草稿画面和临时字幕，再提交审阅");
+      const recordingAssetId = state?.recordingAssetId;
+      operations.push(
+        narrationStateOperation(after, {
+          phase: completing ? "review" : "draft",
+          captionBasis: "draft",
+          draftCaptionIds,
+          ...(recordingAssetId ? { recordingAssetId } : {}),
+        }),
+      );
+    } else {
+      if (script !== state!.approvedScript) throw new Error("本人录音阶段不能改写已确认文案");
+      const workflow = after.production?.workflow as { blockers?: unknown[] } | undefined;
+      if (completing && workflow?.blockers?.length) {
+        reviewAfterBlockers = true;
+        operations.push(
+          narrationStateOperation(after, {
+            phase: "review",
+            captionBasis: "draft",
+            draftCaptionIds: state!.draftCaptionIds,
+            recordingAssetId: state!.recordingAssetId!,
+          }),
+        );
+      } else if (completing) {
+        // The same protections as granted editor edits; the alignment then records its own state.
+        await reconcileNarrationRunEdit(before, after);
+        const segments = await fullTranscript(state!.recordingAssetId!);
+        operations.push(...planNarrationAlignment(after, sequenceId, segments).operations);
+        after = applyEditorOperations(before, operations, before.revision);
+        const aligned: NarrationState = {
+          ...state!,
+          phase: "aligned",
+          captionBasis: "recording",
+          alignmentFingerprint: await editorNarrationFingerprint(after),
+          fingerprintBasis: "editor",
+        };
+        operations.push(narrationStateOperation(after, aligned));
+      } else operations.push(...(await reconcileNarrationRunEdit(before, after)));
+    }
+    if (
+      currentGeneration !== generation ||
+      session.getState().identity.revision !== identity.revision ||
+      candidate.requestToken !== automatic.requestToken
+    )
+      throw new Error("工程或制作请求已变化，未应用旧修改");
+    await applyNarrationDurable(operations, identity, `自动制作：${candidate.title}`, {
+      actor: "agent",
+      signal: automatic.requestSignal(candidate.requestToken),
+    });
+  } finally {
+    aiApplying = false;
+  }
+  proposal = null;
+  aiMessage = `已应用：${candidate.title}。历史版本可恢复。`;
+  if (drafting && completing) {
+    await automatic.finishForReview(
+      "视频草稿已保存。请预览画面、修改文案，满意后点击“确认草稿，去录口播”。当前字幕按文案估时，录音后会重新对齐。",
+    );
+  } else if (reviewAfterBlockers) {
+    await automatic.finishForReview("录音与草稿有待确认的差异，请查看制作单并重新确认文案。");
+  }
+  render();
+  return candidate;
 }
 /** Automatic old-format edits on a sequence the old view cannot fully show. One durable save,
  * one undo, the same approval reconciliation as the inspector's translated edits. */
@@ -5051,10 +5241,14 @@ function mountEditorAgentTools(): void {
     authorize: (request) => {
       assertEditorAgentAllowed(request);
       if (!request.after) return undefined;
-      const annotations = reconcileEditorProduction(request.before, request.after);
-      if (request.grant && annotations.length && automatic.mode === "narration")
-        throw new Error("这次编辑会让已确认的草稿与本人录音失效，自动制作不能这样修改");
-      return annotations;
+      // Granted edits of the narration runs: the recorded run checkpoints its recording work
+      // (refusing changes to the confirmed script, canvas or take); the draft run records the
+      // subtitles it adds as temporary captions.
+      if (request.grant && automatic.mode === "narration")
+        return reconcileNarrationRunEdit(request.before, request.after);
+      if (request.grant && automatic.mode === "draft")
+        return reconcileDraftRunEdit(request.before, request.after);
+      return reconcileEditorProduction(request.before, request.after);
     },
     assertStillAuthorized: assertEditorAgentAllowed,
     requestSignal: ({ grant }) => (grant ? automatic.requestSignal(grant.requestToken) : undefined),

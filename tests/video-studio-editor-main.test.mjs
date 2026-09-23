@@ -2277,8 +2277,58 @@ test("automatic initialization never opens editor edits, even with its own grant
   assert.deepEqual(await saved(page), before);
 });
 
-test("an automatic draft on real footage points old-format edits to the granted editor branch", async (t) => {
-  const autoSeed = { ...realMediaSeed, id: "auto-draft-media", name: "草稿实拍" };
+const narrationScript = "先看拍到的实拍画面。\n再说清楚想表达的事。\n最后留下完整的结尾。";
+const reviewSheet = {
+  stage: "review",
+  brief: "用实拍画面先做草稿，确认后由本人配音。",
+  outline: "先看画面，再讲想法，保留完整结尾。",
+  sources: [],
+  nextSteps: ["用户确认草稿后录音，再按真实转写完成字幕与画面"],
+  blockers: [],
+};
+async function legacyEdit(page, operations, title = "自动制作修改") {
+  return page.evaluate(
+    async ({ operations, title }) => {
+      const tools = window.__mainHost.tools;
+      const current = tools.read_video_project();
+      try {
+        return {
+          result: await tools.apply_video_edit({
+            projectId: current.project.id,
+            requestToken: current.requestToken,
+            baseRevision: current.project.revision,
+            title,
+            operations,
+          }),
+        };
+      } catch (error) {
+        return { error: error.message };
+      }
+    },
+    { operations, title },
+  );
+}
+async function watchToasts(page) {
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() =>
+      window.__toasts.push(document.querySelector("#toast").textContent),
+    ).observe(document.querySelector("#toast"), {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  });
+}
+const draftIds = (doc) => doc.production.narration.draftCaptionIds;
+
+test("an automatic draft on real footage saves the script, temporary captions and review on the editor document", async (t) => {
+  const autoSeed = {
+    ...realMediaSeed,
+    id: "auto-draft-media",
+    name: "草稿实拍",
+    production: { narration: { phase: "draft", captionBasis: "draft", draftCaptionIds: [] } },
+  };
   const page = await openPage(t, {
     seed: autoSeed,
     automatic: true,
@@ -2288,65 +2338,152 @@ test("an automatic draft on real footage points old-format edits to the granted 
     () => window.__mainHost.tools.read_video_project().requestToken === "request-draft",
   );
   const before = await saved(page);
-  const legacy = await page.evaluate(async () => {
+  const scripted = await page.evaluate(async (text) => {
     const tools = window.__mainHost.tools;
     const current = tools.read_video_project();
     try {
-      await tools.apply_video_edit({
-        projectId: current.project.id,
-        requestToken: current.requestToken,
-        baseRevision: current.project.revision,
-        title: "草稿去掉主画面",
-        operations: [{ type: "remove", clipId: "camera-main" }],
-      });
+      return {
+        result: await tools.set_video_script({
+          projectId: current.project.id,
+          requestToken: current.requestToken,
+          baseRevision: current.project.revision,
+          text,
+          finish: false,
+        }),
+      };
     } catch (error) {
-      return error.message;
+      return { error: error.message };
     }
-  });
-  assert.match(legacy, /editor 分支/);
-  assert.match(legacy, /grant/);
-  assert.deepEqual(await saved(page), before);
+  }, narrationScript);
+  assert.equal(scripted.error, undefined);
+  const drafted = await waitSaved(page);
+  assert.equal(drafted.revision, before.revision + 1, "Script and drafts are one save");
+  assert.equal(drafted.production.script, narrationScript);
+  assert.equal(drafted.production.narration.phase, "draft");
+  const clips = (doc) => doc.sequences[0].clips;
+  const drafts = clips(drafted).filter((clip) => draftIds(drafted).includes(clip.id));
+  assert.deepEqual(
+    drafts.map((clip) => clip.text),
+    narrationScript.split("\n"),
+  );
+  assert.ok(drafts.every((clip) => clip.id.startsWith("draft-narration-")));
+  const end = Math.max(...clips(before).map((clip) => clip.start + clip.duration));
+  assert.equal(Math.max(...drafts.map((clip) => clip.start + clip.duration)), end);
+  assert.deepEqual(
+    clips(drafted).filter((clip) => clip.kind !== "text" || clip.role !== "subtitle"),
+    clips(before).filter((clip) => clip.kind !== "text" || clip.role !== "subtitle"),
+    "The picture and titles stay exact",
+  );
+
+  // An old-format temporary caption with a new ID, and a granted editor subtitle, both join
+  // the drafts; old-format picture edits on real footage apply on the editor document.
+  const legacy = await legacyEdit(page, [
+    {
+      type: "caption",
+      caption: { id: "draft-narration-9", startFrame: 30, endFrame: 60, text: "补一句临时字幕" },
+    },
+    { type: "remove", clipId: "camera-main" },
+  ]);
+  assert.equal(legacy.error, undefined);
   const grant = { projectId: autoSeed.id, requestToken: "request-draft" };
   const granted = await editorEdit(page, {
-    label: "草稿去掉画中画",
-    steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }],
+    label: "草稿说明字幕",
+    steps: [
+      { kind: "captions", sequenceId: "main", action: { kind: "add", text: "编辑器加的字幕", start: 3 * T, end: 4 * T } },
+    ],
     grant,
   });
   assert.equal(granted.error, undefined);
-  const edited = await waitSaved(page);
-  assert.equal(edited.revision, before.revision + 1);
+  const extended = await waitSaved(page);
+  const added = granted.result.addedClipIds[0].clipId;
+  assert.ok(draftIds(extended).includes("draft-narration-9"), JSON.stringify(draftIds(extended)));
+  assert.ok(draftIds(extended).includes(added));
+  assert.equal(clips(extended).find((clip) => clip.id === "draft-narration-9").start, 30 * 8000);
+  assert.equal(clips(extended).some((clip) => clip.id === "camera-main"), false);
 
   // A storage failure is reported as itself, not as an old-view limitation.
   await page.evaluate(() => window.__mainHost.fail(true));
-  const failed = await page.evaluate(async () => {
-    const tools = window.__mainHost.tools;
-    const current = tools.read_video_project();
-    try {
-      await tools.apply_video_edit({
-        projectId: current.project.id,
-        requestToken: current.requestToken,
-        baseRevision: current.project.revision,
-        title: "草稿改名",
-        operations: [{ type: "settings", name: "草稿新名字" }],
-      });
-    } catch (error) {
-      return error.message;
-    }
-  });
-  assert.match(failed, /模拟磁盘保存失败/);
-  assert.doesNotMatch(failed, /editor 分支|旧格式/);
+  const failed = await legacyEdit(page, [{ type: "settings", name: "草稿新名字" }], "草稿改名");
+  assert.match(failed.error, /模拟磁盘保存失败/);
+  assert.doesNotMatch(failed.error, /editor 分支|旧格式|旧视图/);
   await page.evaluate(() => window.__mainHost.fail(false));
 
-  // The agent task ends at the host: the draft run closes and its grant no longer edits.
-  await page.evaluate(() =>
-    window.__mainHost.events["agent.task.changed"].forEach((handler) =>
-      handler({ id: "auto-task-draft", status: "completed" }),
-    ),
-  );
+  const completed = await legacyEdit(page, [{ type: "workflow", workflow: reviewSheet }], "提交草稿审阅");
+  assert.equal(completed.error, undefined);
+  const review = await waitSaved(page);
+  assert.equal(review.production.narration.phase, "review");
+  assert.equal(review.production.narration.captionBasis, "draft");
+  assert.equal(review.production.workflow.stage, "review");
   await page.waitForFunction(() => !window.__mainHost.tools.read_video_project().requestToken);
-  const afterEnd = await editorEdit(page, { label: "结束后", steps: renameStep("不应保存"), grant });
-  assert.match(afterEnd.error, /不属于当前自动制作请求/);
+  assert.equal(
+    await page.evaluate(
+      () => window.__mainHost.records()["video-studio-production"][0].data.auto.phase,
+    ),
+    "done",
+  );
+
+  // The temporary captions are visible on the 字幕 page, marked as such.
+  await page.locator('#studio .rail [data-tab="transcript"]').click();
+  const panel = page.locator("#studio .library-panel #caption-panel-host > .editor-captions");
+  await panel.waitFor({ state: "visible" });
+  for (const id of draftIds(review))
+    assert.equal(
+      await panel.locator(`[data-caption-id="${id}"] .ec-badge`).textContent(),
+      "临时字幕",
+      id,
+    );
+  assert.equal(
+    await panel.locator('[data-caption-id="existing-caption"] .ec-badge').count(),
+    0,
+  );
 });
+
+/** The editor narration planners, so a seed is confirmed exactly as the panel would. */
+async function editorNarrationModule() {
+  const out = await esbuild({
+    stdin: {
+      contents: [
+        'export * from "./apps/video-studio/src/editor/narration-edits.ts";',
+        'export { applyEditorOperations } from "./apps/video-studio/src/editor/operations.ts";',
+        'export { validateEditorDocument } from "./apps/video-studio/src/editor/validation.ts";',
+      ].join("\n"),
+      resolveDir: resolve("."),
+      loader: "ts",
+    },
+    bundle: true,
+    format: "esm",
+    platform: "neutral",
+    write: false,
+    logLevel: "silent",
+  });
+  return import(
+    `data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString("base64")}`
+  );
+}
+const takeId = `asset-${"f".repeat(64)}`;
+const takeLength = 6 * T + 777;
+const takeAsset = { id: "take", name: "本人录音.wav", kind: "audio", duration: takeLength, resourceId: takeId };
+const retakeAsset = { id: "retake", name: "重录口播.wav", kind: "audio", duration: 5 * T + 123 };
+function narrationSeed(id, extraClips = []) {
+  return {
+    ...realMediaSeed,
+    id,
+    name: "实拍本人口播",
+    assets: [...realMediaSeed.assets, takeAsset, retakeAsset],
+    sequences: [
+      {
+        ...realMediaSeed.sequences[0],
+        tracks: [...realMediaSeed.sequences[0].tracks, track("a1", "audio", "口播")],
+        clips: [...realMediaSeed.sequences[0].clips, ...extraClips],
+      },
+    ],
+    production: {
+      script: "旧的草稿文案。",
+      narration: { phase: "review", captionBasis: "draft", draftCaptionIds: [] },
+    },
+  };
+}
+const takeClip = (id, start) => ({ ...picture(id, "a1", start, takeLength), assetId: "take" });
 
 /** The real approval coordinator, so the seeded recording is approved as the panel would. */
 async function narrationModule() {
@@ -2433,4 +2570,171 @@ test("a recorded narration run accepts only granted edits that keep the recordin
   const after = await waitSaved(page);
   assert.equal(after.revision, before.revision + 1);
   assert.deepEqual(after.production.narration, before.production.narration);
+});
+
+test("a recorded narration run on real footage places the take with its grant, aligns real captions and may export", async (t) => {
+  const N = await editorNarrationModule();
+  const apply = (doc, operations) => N.applyEditorOperations(doc, operations, doc.revision);
+  let seedDoc = N.validateEditorDocument(narrationSeed("narration-real-run"));
+  seedDoc = apply(seedDoc, N.planNarrationScript(seedDoc, "main", narrationScript));
+  seedDoc = apply(seedDoc, await N.planApproveNarration(seedDoc));
+  seedDoc = apply(seedDoc, await N.planBindNarrationRecording(seedDoc, "take"));
+  const transcript = [
+    { start: 0.5, end: 2, text: "先看拍到的实拍画面。" },
+    { start: 2.5, end: 4, text: "再说清楚想表达的事。" },
+    { start: 4.5, end: 6, text: "最后留下完整的结尾。" },
+  ];
+  const page = await openPage(t, {
+    seed: seedDoc,
+    automatic: true,
+    records: {
+      ...automaticRun(seedDoc.id, "narration"),
+      // The take's finished preparation, with its real transcript, as the media service saved it.
+      [`video-studio-prepared-${takeId}`]: [
+        {
+          revision: 1,
+          updatedAt: 1,
+          label: "素材准备",
+          data: { assetId: takeId, transcription: { source: "asr", segments: transcript } },
+        },
+      ],
+    },
+  });
+  await page
+    .waitForFunction(
+      () => window.__mainHost.tools.read_video_project().requestToken === "request-narration",
+    )
+    .catch(async (error) => {
+      throw new Error(
+        `${error.message}\n${JSON.stringify(
+          await page.evaluate(() => window.__mainHost.records()["video-studio-production"][0].data.auto),
+        )}`,
+      );
+    });
+  const before = await saved(page);
+  assert.equal(before.production.narration.phase, "recorded");
+  const grant = { projectId: seedDoc.id, requestToken: "request-narration" };
+  const placed = await editorEdit(page, {
+    label: "放入本人录音",
+    steps: [
+      {
+        kind: "operations",
+        operations: [{ type: "clip.add", sequenceId: "main", clip: takeClip("take-clip", 1_234_567) }],
+      },
+    ],
+    grant,
+  });
+  assert.equal(placed.error, undefined);
+  const checkpoint = await waitSaved(page);
+  assert.equal(checkpoint.revision, before.revision + 1);
+  const state = checkpoint.production.narration;
+  assert.equal(state.phase, "recorded");
+  assert.equal(state.approvedFingerprint, before.production.narration.approvedFingerprint);
+  assert.match(state.alignmentFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(state.fingerprintBasis, "editor");
+
+  const completed = await legacyEdit(page, [{ type: "workflow", workflow: reviewSheet }], "提交真实对齐");
+  assert.equal(completed.error, undefined);
+  const aligned = await waitSaved(page);
+  assert.equal(aligned.production.narration.phase, "aligned");
+  assert.equal(aligned.production.narration.captionBasis, "recording");
+  const captions = aligned.sequences[0].clips.filter(
+    (clip) => clip.kind === "text" && clip.role === "subtitle",
+  );
+  const recorded = captions
+    .filter((clip) => clip.sourceBinding?.provenance?.assetId === "take")
+    .sort((a, b) => a.start - b.start);
+  assert.deepEqual(
+    recorded.map((clip) => [clip.start, clip.start + clip.duration, clip.text]),
+    transcript.map((segment) => [
+      1_234_567 + segment.start * T,
+      1_234_567 + segment.end * T,
+      segment.text,
+    ]),
+  );
+  assert.equal(
+    captions.some((clip) => before.production.narration.draftCaptionIds.includes(clip.id)),
+    false,
+    "Temporary captions are replaced",
+  );
+  assert.ok(captions.some((clip) => clip.id === "existing-caption"));
+  assert.equal(
+    aligned.sequences[0].clips.find((clip) => clip.id === "take-clip").duration,
+    takeLength,
+  );
+  const receipt = await page.evaluate(async () => {
+    const tools = window.__mainHost.tools;
+    const current = tools.read_video_project();
+    try {
+      return await tools.render_video_project({
+        projectId: current.project.id,
+        requestToken: current.requestToken,
+        baseRevision: current.project.revision,
+      });
+    } catch (error) {
+      return { error: error.message };
+    }
+  });
+  assert.equal(receipt.error, undefined);
+  assert.equal(receipt.accepted, true, "The aligned narration may be exported");
+});
+
+test("本人口播 panel actions save, confirm, choose and replace a take on real off-frame footage", async (t) => {
+  const page = await openPage(t, {
+    seed: narrationSeed("narration-real-panel", [takeClip("take-clip", 1_234_567)]),
+  });
+  await watchToasts(page);
+  await production(page, "ai");
+  await page.locator("#narration-script").fill(narrationScript);
+  await page.locator('[data-action="save-narration-script"]').click();
+  await page.waitForFunction(
+    (text) => window.__mainHost.current().production?.script === text,
+    narrationScript,
+  );
+  const drafted = await waitSaved(page);
+  assert.equal(drafted.production.narration.phase, "review");
+  const drafts = drafted.sequences[0].clips.filter((clip) =>
+    drafted.production.narration.draftCaptionIds.includes(clip.id),
+  );
+  assert.deepEqual(
+    drafts.map((clip) => clip.text),
+    narrationScript.split("\n"),
+  );
+
+  await page.locator('[data-action="approve-draft"]').click();
+  await page.locator("#recording-script").waitFor();
+  assert.equal(await page.locator("#recording-script").inputValue(), narrationScript);
+  const approved = await waitSaved(page);
+  assert.equal(approved.production.narration.phase, "approved");
+  assert.equal(approved.production.narration.fingerprintBasis, "editor");
+  assert.match(approved.production.narration.approvedFingerprint, /^[a-f0-9]{64}$/);
+
+  await production(page, "ai");
+  await page.locator("#narration-recording-asset").selectOption("take");
+  await page.locator('[data-action="bind-narration-recording"]').click();
+  await page.waitForFunction(
+    () => window.__mainHost.current().production?.narration?.recordingAssetId === "take",
+  );
+  const bound = await waitSaved(page);
+  assert.equal(bound.production.narration.phase, "recorded");
+
+  await page.locator("#narration-recording-asset").selectOption("retake");
+  await page.locator('[data-action="bind-narration-recording"]').click();
+  await page.waitForFunction(
+    () => window.__mainHost.current().production?.narration?.recordingAssetId === "retake",
+  );
+  const replaced = await waitSaved(page);
+  const state = replaced.production.narration;
+  assert.equal(state.phase, "recorded");
+  assert.equal(state.approvedFingerprint, approved.production.narration.approvedFingerprint);
+  assert.match(state.alignmentFingerprint, /^[a-f0-9]{64}$/);
+  assert.equal(
+    replaced.sequences[0].clips.some((clip) => clip.kind === "media" && clip.assetId === "take"),
+    false,
+    "The previous take no longer plays under the replacement",
+  );
+  assert.ok(replaced.assets.some((asset) => asset.id === "take"), "Both takes stay in the library");
+  assert.equal(replaced.sequences[0].clips.find((clip) => clip.id === "camera-main").start, 1_234_567);
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.doesNotMatch(toasts, /失败|无效|旧视图|重新确认/);
 });

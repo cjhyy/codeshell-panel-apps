@@ -18,6 +18,7 @@ import {
   canonicalVoiceoverReceipt,
   captureReplaceTarget,
   planPublishVoiceover,
+  planPublishedAudioPlacement,
   resolveReplaceTarget,
   verifyReplaceTarget,
   type VoiceoverPublication,
@@ -753,4 +754,69 @@ test("two regenerations of the same voice give one replacement and keep the othe
   );
   assert.equal(editor.state.notices.filter((n) => /已替换配音/.test(n)).length, 1);
   assert.equal(editor.state.notices.filter((n) => /未替换原配音.*素材库/.test(n)).length, 1);
+});
+
+test("published audio is placed on the editor document of real off-frame footage, once", () => {
+  const doc = validateEditorDocument({
+    schemaVersion: 2,
+    timebase: T,
+    id: "real-voice",
+    name: "实拍配音",
+    revision: 2,
+    activeSequenceId: "main",
+    exportProfiles: [],
+    assets: [
+      { id: "camera", name: "实拍", kind: "video", duration: 10_000_123, width: 640, height: 360 },
+      { id: "voice", name: "配音", kind: "audio", duration: 3 * T + 5 },
+    ],
+    sequences: [
+      {
+        id: "main",
+        name: "主时间线",
+        width: 640,
+        height: 360,
+        frameRate: { numerator: 30000, denominator: 1001 },
+        background: "#000000",
+        timelineMode: "free",
+        tracks: [createTrack("v1", "video"), createTrack("a1", "audio")],
+        clips: [
+          {
+            id: "camera-clip",
+            trackId: "v1",
+            start: 1_234_567,
+            duration: 10_000_123,
+            label: "实拍",
+            kind: "media",
+            assetId: "camera",
+            transform: defaultTransform(),
+            color: defaultColorAdjustment(),
+            blendMode: "normal",
+            audio: { volume: 1, pan: 0, fadeIn: 0, fadeOut: 0, pitchSemitones: 0, preservePitch: true },
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 10_000_123, source: 10_000_123 }] },
+          },
+        ],
+        transitions: [],
+        markers: [],
+      },
+    ],
+  });
+  // The 30 fps view shows none of this footage; the editor still has its real length.
+  assert.equal(projectLegacyView(doc).project.clips.length, 0);
+  const placement = { clipId: "voice-job-1", assetId: "voice", startFrame: 60, volume: 0.8 };
+  const plan = planPublishedAudioPlacement(doc, "main", placement, () => "track-new");
+  const next = applyEditorOperations(doc, plan.operations, doc.revision);
+  const clip = next.sequences[0]!.clips.find((item) => item.id === "voice-job-1") as MediaClip;
+  assert.equal(clip.start, 60 * 8000);
+  assert.equal(clip.duration, 3 * T + 5);
+  assert.equal(clip.trackId, "a1");
+  assert.equal(clip.audio.volume, 0.8);
+  assert.match(plan.notice!, /配音已加入/);
+  assert.deepEqual(planPublishedAudioPlacement(next, "main", placement).operations, []);
+  const late = planPublishedAudioPlacement(doc, "main", { ...placement, startFrame: 9000 });
+  assert.deepEqual(late.operations, []);
+  assert.match(late.notice!, /请先添加或延长画面/);
+  assert.throws(
+    () => planPublishedAudioPlacement(doc, "main", { ...placement, assetId: "camera" }),
+    /配音素材无效/,
+  );
 });

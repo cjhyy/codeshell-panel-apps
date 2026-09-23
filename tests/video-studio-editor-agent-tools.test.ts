@@ -1171,6 +1171,31 @@ test("agent captions use source seconds, preserve source bindings and original w
   assert.deepEqual(caption(), translated);
 });
 
+test("agent captions add a plain subtitle at exact ticks inside the picture, one undo", async (t) => {
+  const h = await harness(t);
+  const before = h.session.read();
+  const result = await h.edit([
+    { kind: "captions", sequenceId, action: { kind: "add", text: "新加的字幕", start: T / 2, end: T + 7 } },
+  ]);
+  assert.equal(result.addedClipCount, 1);
+  const clip = h.session
+    .read()
+    .sequences[0]!.clips.find((item) => item.id === result.addedClipIds[0]!.clipId) as TextClip;
+  assert.equal(clip.kind, "text");
+  assert.equal(clip.role, "subtitle");
+  assert.equal(clip.text, "新加的字幕");
+  assert.equal(clip.start, T / 2);
+  assert.equal(clip.duration, T / 2 + 7);
+  await assert.rejects(
+    h.edit([
+      { kind: "captions", sequenceId, action: { kind: "add", text: "画面之外", start: 3600 * T, end: 3601 * T } },
+    ]),
+    /画面/,
+  );
+  h.session.undo();
+  assert.deepEqual({ ...h.session.read(), revision: before.revision }, before);
+});
+
 test("sequence and caption AI schemas match supported planners and invalid or locked edits never write", async (t) => {
   const h = await harness(t),
     manifest = JSON.parse(await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8")),
@@ -1220,6 +1245,7 @@ test("sequence and caption AI schemas match supported planners and invalid or lo
         transcripts: [{ assetId: "voice", segments: [{ text: "真实识别", start: 0, end: 1 }] }],
       },
     },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "新字幕", start: 0, end: T } },
   ];
   for (const step of good) assert.equal(validate(step), null, JSON.stringify(step));
   const bad = [
@@ -1241,6 +1267,8 @@ test("sequence and caption AI schemas match supported planners and invalid or lo
         ],
       },
     },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "负数", start: -1, end: T } },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "多余", start: 0, end: T, id: "x" } },
   ];
   for (const step of bad) {
     assert.notEqual(validate(step), null);

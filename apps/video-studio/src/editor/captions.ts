@@ -49,6 +49,10 @@ export interface CaptionPlanOptions {
   assetIds?: string[];
   wordHighlight?: boolean;
   idFactory?: () => string;
+  /** Keep only these audible source instances, e.g. one recording on audio tracks. */
+  sourceFilter?: (source: CaptionSource) => boolean;
+  /** Deterministic IDs for a coordinator-owned caption set (segment and range are 0-based). */
+  captionId?: (source: CaptionSource, segmentIndex: number, rangeIndex: number) => string;
 }
 const MAX_RANGES = 100000,
   MAX_CAPTIONS = 2000;
@@ -414,7 +418,9 @@ export function planTranscriptCaptions(
     track = captionTrack(seq, options),
     look = captionLook(doc, seq);
   const sources = compileCaptionSources(doc, sequenceId).filter(
-    (source) => !options.assetIds || options.assetIds.includes(source.assetId),
+    (source) =>
+      (!options.assetIds || options.assetIds.includes(source.assetId)) &&
+      (!options.sourceFilter || options.sourceFilter(source)),
   );
   const result: CaptionPlan = { sequenceId, operations: [], added: 0, skipped: 0, notices: [] };
   const existing = new Map(seq.clips.map((clip) => [clip.id, clip])),
@@ -431,7 +437,7 @@ export function planTranscriptCaptions(
       );
   for (const source of sources) {
     const segments = validateCaptionTranscript(transcripts.get(source.assetId) ?? []);
-    for (const segment of segments.flatMap(readableSegments)) {
+    for (const [segmentIndex, segment] of segments.flatMap(readableSegments).entries()) {
       const from = secondsToTicks(segment.start),
         to = secondsToTicks(segment.end);
       if (to > source.lane.sourceDuration) throw new Error(`转写超出素材实际时长：${source.name}`);
@@ -471,7 +477,9 @@ export function planTranscriptCaptions(
           !result.notices.includes("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容")
         )
           result.notices.push("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容");
-        const id = `caption-asr-${hash(JSON.stringify([sequenceId, source.instanceId, source.assetId, from, to, rangeIndex]))}`;
+        const id = options.captionId
+          ? options.captionId(source, segmentIndex, rangeIndex)
+          : `caption-asr-${hash(JSON.stringify([sequenceId, source.instanceId, source.assetId, from, to, rangeIndex]))}`;
         if (generated.has(id)) {
           result.skipped++;
           continue;
@@ -835,6 +843,64 @@ export function planAddCaption(
     ...track.operations,
     { type: "clip.add", sequenceId, clip },
   ];
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+export interface CaptionDraft {
+  /** Exact clip ID to create; otherwise the ID factory names it. */
+  id?: string;
+  start: Tick;
+  end: Tick;
+  text: string;
+  trackId?: string;
+}
+/**
+ * Several plain subtitles in one transaction, each at exact ticks inside the current picture.
+ * Requested IDs are kept exactly (e.g. the narration workflow's temporary captions).
+ */
+export function planAddCaptions(
+  value: EditorDocument,
+  sequenceId: string,
+  items: readonly CaptionDraft[],
+  options: { trackId?: string; idFactory?: () => string } = {},
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    limit = sequenceDuration(seq),
+    look = captionLook(doc, seq);
+  if (!Array.isArray(items) || !items.length) throw new Error("请提供要添加的字幕");
+  if (seq.clips.length + items.length > MAX_CAPTIONS)
+    throw new Error("字幕超过序列2000片段容量，请先整理时间线片段");
+  const used = new Set(seq.clips.map((clip) => clip.id)),
+    operations: EditorOperation[] = [],
+    tracks = new Map<string, string>();
+  for (const item of items) {
+    const text = cleanText(item?.text, "字幕文字"),
+      start = assertTick(item.start, "字幕开始时间"),
+      requested = assertTick(item.end, "字幕结束时间");
+    if (requested <= start) throw new Error("字幕结束时间必须晚于开始时间");
+    if (start >= limit) throw new Error("字幕开始时间超出画面范围，请放在画面时长之内");
+    const id = item.id ?? (options.idFactory ?? uniqueId)();
+    if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id))
+      throw new Error("字幕 ID 格式不正确");
+    if (used.has(id)) throw new Error(`字幕 ID 已被时间线片段使用：${id}`);
+    used.add(id);
+    const key = item.trackId ?? options.trackId ?? "";
+    let trackId = tracks.get(key);
+    if (trackId === undefined) {
+      const track = captionTrack(seq, {
+        ...(key ? { trackId: key } : {}),
+        ...(options.idFactory ? { idFactory: options.idFactory } : {}),
+      });
+      operations.push(...track.operations);
+      tracks.set(key, (trackId = track.id));
+    }
+    operations.push({
+      type: "clip.add",
+      sequenceId,
+      clip: textClip(id, trackId, start, Math.min(requested, limit), text, look),
+    });
+  }
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
