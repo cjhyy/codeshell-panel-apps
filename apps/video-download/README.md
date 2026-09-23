@@ -430,3 +430,13 @@ that falls back to UUID v4 from `crypto.getRandomValues`. This preserves secure
 randomness without requiring a secure context just to add a download; it does not
 change transport encryption or account authorization. No time-based or
 `Math.random` identifier fallback is used.
+
+On Hosts advertising `resources.open`, history playback and file opening use the
+current browser's preview with a **Save to this device** link. They first check
+the original download through its authorized directory. Background downloads
+retain their immutable resource IDs; legacy records capture the verified file
+into the project resource library once and persist that ID for later visits.
+Browser **Open download directory** displays the Host's authenticated directory
+listing. These actions never ask the remote machine to launch its OS player.
+Hosts without this method keep the existing Desktop player/file-manager flow.
+Browser codec support varies; unsupported files remain available to download.

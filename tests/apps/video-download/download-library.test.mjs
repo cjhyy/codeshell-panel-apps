@@ -12,6 +12,7 @@ import {
   restoreLibrary,
   serializeLibrary,
   storedRecord,
+  resourceRelativeFile,
   videoUrl,
 } from "../../../apps/video-download/app/download-library.js";
 
@@ -260,5 +261,27 @@ test("concurrency preference round-trips and older or invalid preferences defaul
       3,
     );
     assert.equal(serializeLibrary({ queue: [], history: [], maxConcurrent }).maxConcurrent, 3);
+  }
+});
+
+
+test("history preserves immutable resource IDs and rejects malformed resource references", () => {
+  const assetId = `asset-${"a".repeat(64)}`;
+  const saved = storedRecord(item({ files: [{ path: "/downloads/one/video.mp4", assetId }] }));
+  assert.equal(saved.files[0].assetId, assetId);
+  for (const assetId of ["/etc/passwd", "asset-abc", `external-${"a".repeat(64)}`, "https://evil.invalid"]) {
+    assert.equal(storedRecord(item({ files: [{ path: "video.mp4", assetId }] })).files[0].assetId, undefined);
+  }
+});
+
+test("preview capture uses paths beneath the authorized download directory", () => {
+  for (const [directory, file, expected] of [
+    ["/downloads", "/downloads/nested/video.mp4", "nested/video.mp4"],
+    ["/downloads", "video.mp4", "video.mp4"],
+    ["/", "/video.mp4", "video.mp4"],
+    ["C:\\Downloads", "C:\\Downloads\\video.mp4", "video.mp4"],
+  ]) assert.equal(resourceRelativeFile({ path: directory }, { path: file }), expected);
+  for (const path of ["/other/video.mp4", "../video.mp4", "nested/../video.mp4", "C:/other/video.mp4", "x//y", "x:stream", "x/./y"]) {
+    assert.throws(() => resourceRelativeFile({ path: "/downloads" }, { path }));
   }
 });

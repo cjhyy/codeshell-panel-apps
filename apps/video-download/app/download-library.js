@@ -142,6 +142,29 @@ export function fileInventoryState(record) {
   return "unknown";
 }
 
+export function resourceFileFields(file) {
+  return typeof file?.assetId === "string" && /^asset-[a-f0-9]{64}$/.test(file.assetId)
+    ? { assetId: file.assetId }
+    : {};
+}
+
+// The Host resolves the directory grant and checks containment again. Never send
+// an absolute host path as a resource request or accept a traversal from history.
+export function resourceRelativeFile(directory, file) {
+  const base = String(directory?.path || "").replace(/\\/g, "/").replace(/(.)\/+$/, "$1");
+  const path = String(file?.path || "").replace(/\\/g, "/");
+  const prefix = base.endsWith("/") ? base : base + "/";
+  const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  if (
+    !base || !relative || /^(?:\/|[A-Za-z]:)/.test(relative) ||
+    relative.split("/").some((part) =>
+      !part || part === "." || part === ".." || /[:\u0000-\u001f\u007f]/.test(part),
+    )
+  )
+    throw new Error("文件不在原下载目录内，请检查记录后重试。");
+  return relative;
+}
+
 export function storedRecord(item) {
   if (!item || !videoUrl(item.url)) return null;
   const allFiles = Array.isArray(item.files) ? item.files : item.file ? [{ path: item.file }] : [];
@@ -150,6 +173,7 @@ export function storedRecord(item) {
     .filter((file) => file && text(file.path))
     .map((file) => ({
       path: text(file.path),
+      ...resourceFileFields(file),
       ...(Number.isSafeInteger(file.bytes) && file.bytes >= 0 ? { bytes: file.bytes } : {}),
       ...(Number.isFinite(file.modifiedAt) && file.modifiedAt >= 0
         ? { modifiedAt: Math.trunc(file.modifiedAt) }

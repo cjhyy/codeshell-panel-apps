@@ -144,11 +144,11 @@ test("reopening reconciles running and completed tasks and their verified files"
   const job = [...f.jobs.values()][0];
   job.status = "succeeded";
   job.sequence++;
-  job.result = { artifacts: [{ published: { path: "video.mp4" }, bytes: 123 }] };
+  job.result = { artifacts: [{ published: { path: "video.mp4" }, bytes: 123, assetId: `asset-${"a".repeat(64)}` }] };
   const reopened = createDurableDownloads(f.options);
   await reopened.refresh();
   assert.equal(f.records[0].status, "completed");
-  assert.deepEqual(f.records[0].files, [{ path: "video.mp4", bytes: 123, status: "present" }]);
+  assert.deepEqual(f.records[0].files, [{ path: "video.mp4", bytes: 123, status: "present", assetId: `asset-${"a".repeat(64)}` }]);
   assert.equal(f.calls.filter((call) => call.method === "tasks.start").length, 1);
 });
 

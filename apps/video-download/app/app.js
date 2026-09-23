@@ -7,6 +7,8 @@ import {
   directoryIdentity,
   fileInventoryState,
   storedRecord,
+  resourceFileFields,
+  resourceRelativeFile,
   serializeLibrary,
   restoreLibrary,
   MAX_HISTORY,
@@ -772,6 +774,7 @@ async function checkFiles(item, allowPick = false) {
       );
     item.files = checked.map((file, index) => ({
       ...file,
+      ...resourceFileFields(item.files[index]),
       ...(Number.isSafeInteger(item.files[index].bytes) ? { bytes: item.files[index].bytes } : {}),
       ...(Number.isSafeInteger(item.files[index].modifiedAt)
         ? { modifiedAt: item.files[index].modifiedAt }
@@ -3931,7 +3934,10 @@ function renderHistory() {
         .join(" · ");
       const controls = document.createElement("div");
       controls.className = "history-actions";
-      controls.append(button("open", "打开", index), button("reveal", "定位", index));
+      controls.append(
+        button("open", "打开", index),
+        button("reveal", browserResourcePreview() ? "下载目录" : "定位", index),
+      );
       line.append(name, state, controls);
       body.append(line);
     });
@@ -3951,14 +3957,17 @@ function renderHistory() {
       actions.append(retry);
     } else if (mediaIndex >= 0) {
       const play = button("play", "播放", mediaIndex, true);
-      play.title = "优先使用已安装的兼容播放器；详情中的“打开”使用系统默认应用";
+      play.title = browserResourcePreview()
+        ? "在当前浏览器预览，可保存到此设备"
+        : "优先使用已安装的兼容播放器；详情中的“打开”使用系统默认应用";
       play.classList.add("history-primary-action");
       play.prepend(historyIcon("play"));
       actions.append(play);
     }
     if (files.length) {
-      const reveal = button("reveal", "定位文件", primaryIndex, true);
-      reveal.title = "定位文件";
+      const reveal = button(
+        "reveal", browserResourcePreview() ? "打开下载目录" : "定位文件", primaryIndex, true,
+      );
       reveal.classList.add("history-icon-button");
       reveal.replaceChildren(historyIcon("folder"));
       actions.append(reveal);
@@ -3987,6 +3996,10 @@ function renderHistory() {
     row.append(details, actions);
     elements.historyList.append(row);
   }
+}
+
+function browserResourcePreview() {
+  return context.availableMethods?.includes("resources.open") === true;
 }
 
 async function handleHistoryAction(event) {
@@ -4035,7 +4048,8 @@ async function handleHistoryAction(event) {
       const file = item.files[Number(button.dataset.fileIndex)];
       if (!file) return;
       const directory = await directoryFor(item, true);
-      const [result] = await auxiliary.files(directory, action, [file]);
+      const browserPreview = browserResourcePreview();
+      const [result] = await auxiliary.files(directory, browserPreview ? "check" : action, [file]);
       if (result.error === "unable-to-open-file")
         throw new Error(
           action === "reveal"
@@ -4044,10 +4058,29 @@ async function handleHistoryAction(event) {
         );
       if (result.status !== "present")
         throw new Error("文件已删除、变化或暂时无法访问。可按原设置重新下载。");
-      item.files[Number(button.dataset.fileIndex)] = result;
+      const checked = { ...result, ...resourceFileFields(file) };
+      if (browserPreview) {
+        if (action === "reveal") {
+          await panel.call("filesystem.openDirectory", { handle: directory.handle });
+        } else {
+          if (!checked.assetId) {
+            const captured = await panel.call("resources.capture", {
+              directoryHandle: directory.handle,
+              path: resourceRelativeFile(directory, checked),
+              expectedBytes: checked.bytes,
+            });
+            Object.assign(checked, resourceFileFields({ assetId: captured?.asset?.id }));
+            if (!checked.assetId) throw new Error("文件未能准备好，请重试预览。");
+          }
+          await panel.call("resources.open", { assetId: checked.assetId });
+        }
+      }
+      item.files[Number(button.dataset.fileIndex)] = checked;
       item.checkError = "";
       await saveLibrary();
-      feedback.textContent = `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
+      feedback.textContent = browserPreview
+        ? `${action === "reveal" ? "已显示下载目录" : "已在当前浏览器打开文件预览"}：${item.title || "下载文件"}`
+        : `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
     }
   } catch (error) {
     item.checkError = error.message;

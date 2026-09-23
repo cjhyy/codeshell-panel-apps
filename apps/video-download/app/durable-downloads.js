@@ -1,4 +1,4 @@
-import { cleanConfiguration } from "./download-library.js";
+import { cleanConfiguration, resourceFileFields } from "./download-library.js";
 // The Host owns scheduling and execution. This adapter only reconciles project UI records.
 export function supportsDurableDownloads(context) {
   const methods = context?.availableMethods || [];
@@ -85,6 +85,7 @@ export function createDurableDownloads({
         .filter((artifact) => artifact.published?.path)
         .map((artifact) => ({
           path: artifact.published.path,
+          ...resourceFileFields(artifact),
           bytes: artifact.bytes,
           status: "present",
         }));
