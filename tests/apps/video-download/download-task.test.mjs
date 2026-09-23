@@ -3,7 +3,17 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtemp, mkdir, writeFile, rm, symlink, link, realpath } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+  rm,
+  symlink,
+  link,
+  realpath,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -11,6 +21,7 @@ import {
   downloadArguments,
   collectDownloadArtifacts,
   runDownload,
+  publishDownloadArtifacts,
 } from "../../../apps/video-download/app/tools/download.mjs";
 
 const request = {
@@ -185,4 +196,96 @@ test("cancellation waits for the subprocess exit and does not publish its output
   controller.abort(new Error("cancelled"));
   await assert.rejects(pending, /cancelled/);
   assert.equal(fake.calls.at(-1).child.killed, "SIGTERM");
+});
+
+test("publication copies verified files and an explicit retry reuses matching bytes", async (t) => {
+  const root = await fixture(t),
+    output = join(root, "selected");
+  await mkdir(output);
+  await writeFile(join(root, "media", "one.mp4"), "verified download");
+  const artifacts = await collectDownloadArtifacts(root);
+  const first = await publishDownloadArtifacts(root, output, artifacts);
+  assert.equal(await readFile(join(output, "one.mp4"), "utf8"), "verified download");
+  assert.deepEqual(first[0].published, { path: "one.mp4", reused: false });
+  const again = await publishDownloadArtifacts(root, output, artifacts);
+  assert.deepEqual(again[0].published, { path: "one.mp4", reused: true });
+  assert.ok(!JSON.stringify(again).includes(output));
+  assert.deepEqual(await readdir(output), ["one.mp4"]);
+});
+
+for (const collision of ["different-content", "symbolic-link", "directory"]) {
+  test(`publication refuses ${collision} at the destination without overwriting it`, async (t) => {
+    const root = await fixture(t),
+      output = join(root, "selected");
+    await mkdir(output);
+    await writeFile(join(root, "media", "one.mp4"), "verified download");
+    const artifacts = await collectDownloadArtifacts(root);
+    const target = join(output, "one.mp4");
+    if (collision === "different-content") await writeFile(target, "keep my file");
+    else if (collision === "symbolic-link") await symlink(join(root, "media", "one.mp4"), target);
+    else await mkdir(target);
+    await assert.rejects(
+      publishDownloadArtifacts(root, output, artifacts),
+      (error) => error.code === "OUTPUT_CONFLICT",
+    );
+    if (collision === "different-content")
+      assert.equal(await readFile(target, "utf8"), "keep my file");
+    assert.deepEqual(await readdir(output), ["one.mp4"]);
+  });
+}
+
+test("publication rejects source replacement, traversal and already-cancelled work", async (t) => {
+  const root = await fixture(t),
+    output = join(root, "selected");
+  await mkdir(output);
+  await writeFile(join(root, "media", "one.mp4"), "original");
+  const artifacts = await collectDownloadArtifacts(root);
+  await writeFile(join(root, "media", "one.mp4"), "replaced");
+  await assert.rejects(
+    publishDownloadArtifacts(root, output, artifacts),
+    (error) => error.code === "OUTPUT_CHANGED",
+  );
+  await assert.rejects(
+    publishDownloadArtifacts(root, output, [
+      { ...artifacts[0], name: "../escape", file: "media/../escape" },
+    ]),
+    (error) => error.code === "UNSAFE_OUTPUT",
+  );
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled"));
+  await assert.rejects(
+    publishDownloadArtifacts(root, output, artifacts, controller.signal),
+    /cancelled/,
+  );
+  assert.deepEqual(await readdir(output), []);
+});
+
+test("download worker publishes through its Host directory and copy variants have distinct stable names", async (t) => {
+  const root = await fixture(t),
+    output = join(root, "selected");
+  await mkdir(output);
+  const fake = fakeSpawn(async (child) => {
+    await writeFile(join(root, "media", "one.mp4"), "downloaded");
+    child.emit("close", 0);
+  });
+  const result = await runDownload(request, {
+    jobDir: root,
+    outputDir: output,
+    spawnProcess: fake.spawn,
+  });
+  assert.equal(result.artifacts[0].published.path, "one.mp4");
+  assert.equal(await readFile(join(output, "one.mp4"), "utf8"), "downloaded");
+  const template = (value) => {
+    const args = downloadArguments(value, true);
+    return args[args.indexOf("--output") + 1];
+  };
+  assert.equal(template(request), template(request));
+  assert.notEqual(template(request), template({ ...request, configuration: { format: "720" } }));
+  assert.match(template({ ...request, copySuffix: "aabbccdd" }), /_copy-aabbccdd/);
+  assert.throws(() => parseDownloadRequest({ ...request, copySuffix: "../escape" }));
+  assert.equal(
+    parseDownloadRequest({ ...request, configuration: { playlistEnd: null } }).configuration
+      .playlistEnd,
+    0,
+  );
 });

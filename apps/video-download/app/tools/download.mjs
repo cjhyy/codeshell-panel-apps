@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, realpath, rm } from "node:fs/promises";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -34,7 +34,7 @@ export function parseDownloadRequest(value) {
   if (
     !object(value) ||
     Object.keys(value).some(
-      (key) => !["action", "url", "configuration", "jobId", "scopeKey"].includes(key),
+      (key) => !["action", "url", "configuration", "copySuffix", "jobId", "scopeKey"].includes(key),
     ) ||
     value.action !== "download"
   )
@@ -53,6 +53,11 @@ export function parseDownloadRequest(value) {
   }
   if (!["https:", "http:"].includes(url.protocol) || !url.hostname || url.username || url.password)
     fail("下载任务只接受不含账号密码的 HTTP 或 HTTPS 视频网址。");
+  if (
+    value.copySuffix !== undefined &&
+    (typeof value.copySuffix !== "string" || !/^(?:[a-f0-9]{8})?$/.test(value.copySuffix))
+  )
+    fail("副本标识无效。");
   const config = value.configuration ?? {};
   if (
     !object(config) ||
@@ -84,7 +89,7 @@ export function parseDownloadRequest(value) {
   )
     fail("播放列表范围无效。");
   if (
-    config.playlistEnd !== undefined &&
+    config.playlistEnd != null &&
     (!Number.isSafeInteger(config.playlistEnd) ||
       config.playlistEnd < 0 ||
       config.playlistEnd > 500)
@@ -103,6 +108,7 @@ export function parseDownloadRequest(value) {
   return {
     action: "download",
     url: url.href,
+    copySuffix: value.copySuffix || "",
     configuration: {
       format,
       playlist: config.playlist === true,
@@ -117,7 +123,8 @@ export function parseDownloadRequest(value) {
 }
 
 export function downloadArguments(request, ffmpegAvailable) {
-  const { url, configuration: c } = parseDownloadRequest(request);
+  const { url, configuration: c, copySuffix } = parseDownloadRequest(request);
+  const variant = createHash("sha256").update(JSON.stringify(c)).digest("hex").slice(0, 8);
   if (c.format === "audio" && !ffmpegAvailable)
     fail("音频下载需要先安装 FFmpeg。", "DEPENDENCY_MISSING", true);
   const args = [
@@ -141,7 +148,7 @@ export function downloadArguments(request, ffmpegAvailable) {
     "--print",
     "before_dl:meta:%(title)s",
     "--output",
-    "%(title).100B_%(id).80B.%(ext)s",
+    `%(title).80B_%(id).60B_${c.format}-${variant}${copySuffix ? "_copy-" + copySuffix : ""}.%(ext)s`,
   ];
   if (c.format === "audio")
     args.push("--extract-audio", "--audio-format", "mp3", "--audio-quality", "0");
@@ -242,6 +249,197 @@ export async function collectDownloadArtifacts(jobDir, signal) {
   return artifacts;
 }
 
+/** Deliver verified task outputs to a Host-granted directory without overwriting files.
+ * Directory paths arrive only through trusted argv, never through browser JSON.
+ * Each file publishes atomically; a later failure leaves earlier verified files
+ * intact so an explicit retry can verify and reuse them. */
+export async function publishDownloadArtifacts(jobDir, outputDir, artifacts, signal) {
+  if (typeof outputDir !== "string" || !isAbsolute(outputDir)) fail("缺少已授权的保存目录。");
+  await realDirectory(outputDir);
+  const root = await open(
+    outputDir,
+    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+  );
+  const identity = await root.stat();
+  const ioRoot = process.platform === "linux" ? `/proc/self/fd/${root.fd}` : outputDir;
+  const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+  const verify = async () => {
+    signal?.throwIfAborted();
+    const current = await lstat(outputDir);
+    if (
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      !same(current, identity) ||
+      (await realpath(outputDir)) !== outputDir
+    )
+      fail("保存目录已变化，请重新选择。", "DIRECTORY_CHANGED");
+  };
+  const digest = async (handle, bytes) => {
+    const hash = createHash("sha256"),
+      buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (let offset = 0; offset < bytes;) {
+      await verify();
+      const part = await handle.read(buffer, 0, Math.min(buffer.length, bytes - offset), offset);
+      if (!part.bytesRead) fail("输出文件在校验时变化。", "OUTPUT_CHANGED");
+      offset += part.bytesRead;
+      hash.update(buffer.subarray(0, part.bytesRead));
+    }
+    return hash.digest("hex");
+  };
+  const existingMatches = async (path, artifact) => {
+    let handle;
+    try {
+      const named = await lstat(path);
+      if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1) return false;
+      handle = await open(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      );
+      const before = await handle.stat();
+      if (!same(before, named) || before.size !== artifact.bytes || before.nlink !== 1)
+        return false;
+      const sha256 = await digest(handle, artifact.bytes);
+      const after = await handle.stat(),
+        current = await lstat(path);
+      return (
+        same(before, current) &&
+        after.size === before.size &&
+        after.mtimeMs === before.mtimeMs &&
+        after.ctimeMs === before.ctimeMs &&
+        after.nlink === 1 &&
+        sha256 === artifact.sha256
+      );
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+  };
+  const published = [];
+  try {
+    await verify();
+    for (const artifact of artifacts) {
+      const name = artifact.name;
+      if (
+        typeof name !== "string" ||
+        !name ||
+        name.length > 240 ||
+        /[\\/\u0000-\u001f\u007f:]/.test(name) ||
+        /[. ]$/.test(name) ||
+        /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name) ||
+        artifact.file !== `media/${name}` ||
+        !/^[a-f0-9]{64}$/.test(artifact.sha256) ||
+        !Number.isSafeInteger(artifact.bytes) ||
+        artifact.bytes < 1 ||
+        artifact.bytes > MAX_FILE_BYTES
+      )
+        fail("保存文件清单无效。", "UNSAFE_OUTPUT");
+      const target = join(ioRoot, name);
+      await verify();
+      if (await existingMatches(target, artifact)) {
+        published.push({ ...artifact, published: { path: name, reused: true } });
+        continue;
+      }
+      const temporary = join(ioRoot, `.codeshell-download-${randomUUID()}.tmp`);
+      let source, destination, temporaryIdentity;
+      try {
+        source = await open(
+          join(jobDir, artifact.file),
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+        );
+        const before = await source.stat();
+        if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.bytes)
+          fail("下载源文件已变化。", "OUTPUT_CHANGED");
+        await verify();
+        destination = await open(
+          temporary,
+          constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+          0o600,
+        );
+        temporaryIdentity = await destination.stat();
+        const hash = createHash("sha256"),
+          buffer = Buffer.allocUnsafe(1024 * 1024);
+        for (let offset = 0; offset < artifact.bytes;) {
+          await verify();
+          const part = await source.read(
+            buffer,
+            0,
+            Math.min(buffer.length, artifact.bytes - offset),
+            offset,
+          );
+          if (!part.bytesRead) fail("下载源文件已截断。", "OUTPUT_CHANGED");
+          hash.update(buffer.subarray(0, part.bytesRead));
+          let written = 0;
+          while (written < part.bytesRead) {
+            const result = await destination.write(
+              buffer,
+              written,
+              part.bytesRead - written,
+              offset + written,
+            );
+            if (!result.bytesWritten) fail("无法继续保存文件。", "OUTPUT_FAILED", true);
+            written += result.bytesWritten;
+          }
+          offset += part.bytesRead;
+        }
+        const after = await source.stat();
+        if (
+          after.size !== before.size ||
+          after.mtimeMs !== before.mtimeMs ||
+          after.ctimeMs !== before.ctimeMs ||
+          hash.digest("hex") !== artifact.sha256
+        )
+          fail("下载源文件在保存时变化。", "OUTPUT_CHANGED");
+        await destination.sync();
+        if ((await digest(destination, artifact.bytes)) !== artifact.sha256)
+          fail("保存文件的校验失败。", "OUTPUT_CHANGED");
+        await verify();
+        let reused = false;
+        try {
+          await link(temporary, target);
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          if (!(await existingMatches(target, artifact)))
+            fail("保存目录已有不同内容的同名文件，请选择下载副本。", "OUTPUT_CONFLICT");
+          reused = true;
+        }
+        await verify();
+        if (!reused) {
+          const named = await lstat(target),
+            final = await destination.stat();
+          if (
+            !named.isFile() ||
+            named.isSymbolicLink() ||
+            !same(named, temporaryIdentity) ||
+            final.size !== artifact.bytes
+          )
+            fail("保存文件在发布时变化。", "OUTPUT_CHANGED");
+        }
+        published.push({ ...artifact, published: { path: name, reused } });
+      } catch (error) {
+        if (
+          error.code?.startsWith("OUTPUT_") ||
+          ["DIRECTORY_CHANGED", "UNSAFE_OUTPUT"].includes(error.code) ||
+          signal?.aborted
+        )
+          throw error;
+        fail("无法保存下载文件，请检查目录权限和剩余空间。", "OUTPUT_FAILED", true);
+      } finally {
+        await source?.close();
+        await destination?.close();
+        if (temporaryIdentity) {
+          const current = await lstat(temporary).catch(() => null);
+          if (current && same(current, temporaryIdentity)) await rm(temporary, { force: true });
+        }
+      }
+    }
+    return published;
+  } finally {
+    await root.close();
+  }
+}
+
 function probeFfmpeg(spawnProcess, signal) {
   return new Promise((resolveProbe) => {
     if (signal.aborted) return resolveProbe(false);
@@ -261,7 +459,13 @@ function probeFfmpeg(spawnProcess, signal) {
 
 export async function runDownload(
   raw,
-  { jobDir, signal = new AbortController().signal, progress = () => {}, spawnProcess = spawn } = {},
+  {
+    jobDir,
+    outputDir,
+    signal = new AbortController().signal,
+    progress = () => {},
+    spawnProcess = spawn,
+  } = {},
 ) {
   const request = parseDownloadRequest(raw);
   if (typeof jobDir !== "string" || !isAbsolute(jobDir)) fail("缺少 Host 任务目录。");
@@ -358,14 +562,29 @@ export async function runDownload(
   });
   signal.throwIfAborted();
   progress({ stage: "verify", message: "正在校验输出文件。" });
-  const artifacts = await collectDownloadArtifacts(jobDir, signal);
+  let artifacts = await collectDownloadArtifacts(jobDir, signal);
+  if (outputDir) {
+    progress({ stage: "publish", message: "正在保存到已授权目录。" });
+    artifacts = await publishDownloadArtifacts(jobDir, outputDir, artifacts, signal);
+  }
   progress({ stage: "complete", fraction: 1, message: `已完成 ${artifacts.length} 个文件。` });
   return { kind: "video-download", artifacts };
 }
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args.length !== 2 || args[0] !== "--job-dir") fail("下载入口需要 Host 提供任务目录。");
+  if (![2, 4].includes(args.length)) fail("下载入口需要 Host 提供任务目录。");
+  const directories = new Map();
+  for (let index = 0; index < args.length; index += 2) {
+    if (
+      !["--job-dir", "--output-dir"].includes(args[index]) ||
+      directories.has(args[index]) ||
+      !isAbsolute(args[index + 1] || "")
+    )
+      fail("下载目录参数无效。");
+    directories.set(args[index], args[index + 1]);
+  }
+  if (!directories.has("--job-dir")) fail("下载入口缺少任务目录。");
   const parts = [];
   let size = 0;
   for await (const chunk of process.stdin) {
@@ -386,7 +605,8 @@ async function main() {
   const timer = setTimeout(cancel, 6 * 60 * 60 * 1000);
   try {
     const result = await runDownload(raw, {
-      jobDir: args[1],
+      jobDir: directories.get("--job-dir"),
+      outputDir: directories.get("--output-dir"),
       signal: controller.signal,
       progress: (value) =>
         process.stdout.write(JSON.stringify({ type: "progress", progress: value }) + "\n"),
