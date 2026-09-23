@@ -348,3 +348,33 @@ This requires a Host build exposing those two methods (not yet a published
 minimum version). It does not turn page-owned download processes into durable
 background tasks; that migration and full mobile/cloud workflow acceptance
 remain separate work.
+
+### Reviewed download task entry (integration in progress)
+
+The package declares `download-runtime` and the `resources` permission for
+Host-owned downloads. Its task input is:
+
+```js
+{
+  entry: "download-runtime",
+  recovery: "retry",
+  requestKey: "stable-queue-item-id",
+  input: {
+    request: { action: "download", url, configuration },
+    directoryArguments: [{ argumentName: "--job-dir", directory: "job" }]
+  }
+}
+```
+
+The entry reads bounded JSON from stdin, invokes fixed yt-dlp/FFmpeg commands,
+reports progress, and returns hashed artifacts from the private job directory.
+Host task execution captures those artifacts into the project's resource store.
+A cancelled/interrupted job requires an explicit retry; it does not automatically
+restart network work. Browser-supplied executable paths, shell commands, raw
+options, output paths, and cookie paths are rejected.
+
+This entry is not yet wired into the existing queue UI. Shared desktop/remote
+coordination, selected output-directory delivery, sealed account authorization,
+and existing queue/history recovery must be integrated before claiming the
+user-facing workflow complete. Existing process-based downloads remain in use
+until that migration is complete.

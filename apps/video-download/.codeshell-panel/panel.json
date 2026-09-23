@@ -14,6 +14,7 @@
   "singleton": true,
   "permissions": [
     "process",
+    "resources",
     "credentials.cookies",
     "agent.task",
     "storage",
@@ -205,6 +206,10 @@
     "video-search": {
       "entry": "app/tools/search.mjs",
       "sha256": "6922fd6d45ca73b1b567448a06eaad19d21190fa4c30bc3bc334cbe15d51dd67"
+    },
+    "download-runtime": {
+      "entry": "app/tools/download.mjs",
+      "sha256": "8f1802878009d3aeb19035ffda90b3719258721d8e41cef5907737d4cd4a5558"
     }
   }
 }
