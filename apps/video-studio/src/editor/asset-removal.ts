@@ -73,7 +73,7 @@ export function planEditorAssetRemoval(
     const targets = removing.get(sequence.id)!;
     // The narration workflow's recorded captions cannot outlive their recording.
     const recorded = usage.narrationRecording
-      ? recordedNarrationClipIds(document, sequence.id, String(narration!.recordingAssetId))
+      ? recordedNarrationClipIds(document, sequence.id)
       : new Set<string>();
     for (const clip of sequence.clips) {
       if (

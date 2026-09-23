@@ -7,6 +7,8 @@ interface NarrationPanelOptions {
   scriptDraft?: string | null;
   /** The editor sequence has picture to confirm (the 30 fps view may not show real footage). */
   hasPicture?: boolean;
+  /** Why the saved confirmation no longer covers the project (it cannot be used). */
+  approvalIssue?: string | null;
 }
 
 function action(name: string, label: string, disabled: boolean, primary = false): string {
@@ -105,6 +107,11 @@ ${esc(text)}</textarea>
     <p class="narration-edit-note" data-narration-draft-note ${changed ? "" : "hidden"}>
       文案尚未保存。保存后重新确认草稿，再继续录制或对齐。
     </p>
+    ${
+      options.approvalIssue && ["approved", "recorded", "aligned"].includes(state.phase)
+        ? `<p class="narration-approval-issue" role="status">${esc(options.approvalIssue)}</p>${action("return-narration-review", "回到审阅", options.busy, true)}`
+        : ""
+    }
     <div class="narration-actions">
       ${
         state.phase === "review"

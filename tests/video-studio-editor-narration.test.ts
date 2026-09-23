@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { createProject, validateProject } from "../apps/video-studio/src/model";
-import { approveNarration, bindNarrationRecording } from "../apps/video-studio/src/narration";
+import { createProject, validateProject, type Project } from "../apps/video-studio/src/model";
+import { narrationFingerprint } from "../apps/video-studio/src/narration";
 import {
   editorNarrationFingerprint,
   hasEditorNarrationApproval,
   narrationApprovalIssue,
+  narrationOnEditorBasis,
   narrationDraftClipIds,
   planApproveNarration,
   planBindNarrationRecording,
@@ -19,7 +20,11 @@ import {
   recordedNarrationClipIds,
 } from "../apps/video-studio/src/editor/narration-edits";
 import { narrationDependencies } from "../apps/video-studio/src/editor/production-guard";
-import { planAddCaptions } from "../apps/video-studio/src/editor/captions";
+import {
+  planAddCaptions,
+  planCaptionText,
+  planTranscriptCaptions,
+} from "../apps/video-studio/src/editor/captions";
 import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
 import { applyEditorOperations, type EditorOperation } from "../apps/video-studio/src/editor/operations";
 import { setClipSpeed } from "../apps/video-studio/src/editor/clip-edits";
@@ -31,6 +36,7 @@ import {
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
 import { sequenceDuration, validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import { reconcileEditorProduction } from "../apps/video-studio/src/editor/production-guard";
 import type {
   EditorDocument,
   JsonData,
@@ -103,6 +109,15 @@ function realMedia(narration?: Record<string, JsonData>): EditorDocument {
       { id: "take", name: "本人录音", kind: "audio", duration: 12 * T + 777 },
       { id: "retake", name: "重录", kind: "audio", duration: 12 * T + 555 },
       { id: "camera-take", name: "对着镜头录的口播", kind: "video", duration: 12 * T + 999, width: 640, height: 360 },
+      { id: "music", name: "背景音乐", kind: "audio", duration: 30 * T },
+      { id: "photo", name: "照片", kind: "image", duration: 0, width: 4, height: 4 },
+      {
+        id: "tts",
+        name: "合成配音",
+        kind: "audio",
+        duration: 4 * T,
+        metadata: { speech: { text: "合成的配音", voiceId: "v", engine: "tts", rate: 1 } },
+      },
     ],
     sequences: [
       {
@@ -320,7 +335,16 @@ test("old approvals stay valid on a complete old view and ask for reconfirmation
     captions: [{ id: "draft-narration-1", startFrame: 0, endFrame: 300, text: "旧工程确认过的文稿。" }],
     narration: { phase: "review", captionBasis: "draft", draftCaptionIds: ["draft-narration-1"] },
   });
-  const old = migrateLegacyProject(await bindNarrationRecording(await approveNarration(legacy), "take"));
+  // As older versions saved it: a SHA-256 of the 30 fps view, then the take chosen.
+  const saved: Project = structuredClone(legacy);
+  saved.narration = {
+    ...saved.narration!,
+    phase: "recorded",
+    approvedScript: saved.script!,
+    approvedFingerprint: await narrationFingerprint(legacy),
+    recordingAssetId: "take",
+  };
+  const old = migrateLegacyProject(validateProject(saved));
   const state = readNarration(old)!;
   assert.equal(state.fingerprintBasis, undefined);
   assert.equal(await hasEditorNarrationApproval(old), true);
@@ -562,5 +586,345 @@ test("batch captions keep exact requested IDs and refuse collisions without writ
   assert.throws(
     () => planAddCaptions(doc, "main", [{ start: 60 * T, end: 61 * T, text: "画面之外" }]),
     /画面/,
+  );
+});
+
+test("narration dependencies order IDs by code unit, whatever the locale", () => {
+  const doc = place(
+    place(realMedia(), media("clip-a", "v2", "camera", 25 * T, T)),
+    media("clip-B", "v2", "camera", 20 * T, T),
+  );
+  const dependencies = narrationDependencies(doc);
+  // Locale-aware collation puts "clip-a" first; code units put "B" (U+0042) before "a" (U+0061).
+  assert.ok(
+    dependencies.indexOf('"id":"clip-B"') < dependencies.indexOf('"id":"clip-a"'),
+    "Clips sort by code unit",
+  );
+  const reordered = structuredClone(doc);
+  main(reordered).clips.reverse();
+  assert.equal(narrationDependencies(validateEditorDocument(reordered)), dependencies);
+});
+
+/** A 字幕-page caption from the take's real transcript, then corrected by hand. */
+function userTranscriptCaption(doc: EditorDocument) {
+  const plan = planTranscriptCaptions(
+    doc,
+    "main",
+    new Map([["take", [{ start: 1, end: 3, text: "说过的第一句" }]]]),
+    { idFactory: () => "unused" },
+  );
+  const generated = apply(doc, plan.operations);
+  const clip = subtitles(generated).find((item) => item.sourceBinding?.provenance?.assetId === "take")!;
+  return {
+    doc: apply(generated, planCaptionText(generated, "main", clip.id, "说过的第一句（手改）")),
+    id: clip.id,
+  };
+}
+
+test("script saves and alignment keep the user's own 字幕-page captions from the take", async () => {
+  const doc = place(await recorded(), media("take-1", "a1", "take", 0, 12 * T + 777));
+  const { doc: corrected, id } = userTranscriptCaption(doc);
+  assert.equal(recordedNarrationClipIds(corrected, "main").size, 0, "Not the workflow's captions");
+  const saved = apply(corrected, planNarrationScript(corrected, "main", SCRIPT));
+  assert.equal(subtitles(saved).find((clip) => clip.id === id)?.text, "说过的第一句（手改）");
+
+  const plan = planNarrationAlignment(corrected, "main", [
+    { start: 1, end: 3, text: "说过的第一句" },
+    { start: 5, end: 6, text: "第二句" },
+  ]);
+  const aligned = apply(corrected, plan.operations);
+  assert.equal(subtitles(aligned).find((clip) => clip.id === id)?.text, "说过的第一句（手改）");
+  assert.equal(plan.keptUserCaptions, 1);
+  const owned = subtitles(aligned).filter((clip) => recordedNarrationClipIds(aligned, "main").has(clip.id));
+  assert.deepEqual(
+    owned.map((clip) => [clip.start, clip.text]),
+    [[5 * T, "第二句"]],
+    "No duplicate over the user's caption",
+  );
+});
+
+test("a recorded run refuses edits to the user's subtitles and synthetic voices, but may rearrange pictures", async () => {
+  const doc = await recorded();
+  const placed = place(doc, media("take-1", "a1", "take", 1_234_567, 12 * T + 777));
+  const checkpoint = apply(placed, await reconcileNarrationRunEdit(doc, placed));
+  const refused: Array<[string, EditorDocument, RegExp]> = [
+    [
+      "subtitle text",
+      apply(checkpoint, planCaptionText(checkpoint, "main", "existing-caption", "被自动改掉")),
+      /用户自己的字幕/,
+    ],
+    [
+      "subtitle removal",
+      apply(checkpoint, [{ type: "clip.remove", sequenceId: "main", clipIds: ["existing-caption"] }]),
+      /用户自己的字幕/,
+    ],
+    [
+      "synthetic voice",
+      place(checkpoint, media("tts-1", "a1", "tts", 30 * T, 4 * T)),
+      /合成配音/,
+    ],
+  ];
+  for (const [name, after, pattern] of refused)
+    await assert.rejects(reconcileNarrationRunEdit(checkpoint, after), pattern, name);
+  const draftId = readNarration(checkpoint)!.draftCaptionIds[0]!;
+  const withoutDraft = apply(checkpoint, [{ type: "clip.remove", sequenceId: "main", clipIds: [draftId] }]);
+  assert.equal((await reconcileNarrationRunEdit(checkpoint, withoutDraft)).length, 1);
+  const moved = apply(checkpoint, [
+    { type: "clip.move", sequenceId: "main", clipIds: ["camera-overlay"], delta: 30 * T },
+  ]);
+  assert.equal((await reconcileNarrationRunEdit(checkpoint, moved)).length, 1);
+
+  // Without a chosen take the run cannot checkpoint.
+  const unbound = await approved();
+  await assert.rejects(
+    reconcileNarrationRunEdit(unbound, place(unbound, media("take-1", "a1", "take", 0, T))),
+    /请先选择本人录音/,
+  );
+});
+
+test("an old approval moves to the editor basis with a fresh fingerprint", async () => {
+  const doc = await approved();
+  const state = readNarration(doc)!;
+  const { fingerprintBasis: _basis, ...previous } = state;
+  const old = apply(doc, [
+    {
+      type: "project.production",
+      data: {
+        ...doc.production,
+        narration: { ...previous, approvedFingerprint: "b".repeat(64) } as never,
+      },
+    },
+  ]);
+  // Not verifiable (partial old view), so it stays as it was.
+  assert.equal((await narrationOnEditorBasis(old, readNarration(old)!)).fingerprintBasis, undefined);
+  assert.deepEqual(await narrationOnEditorBasis(doc, state), state);
+});
+
+test("stale temporary caption IDs never block subtitles a draft run adds", async () => {
+  const stale = Array.from({ length: 999 }, (_, index) => `gone-${index}`);
+  const doc = realMedia({ phase: "draft", captionBasis: "draft", draftCaptionIds: stale });
+  const added = apply(
+    doc,
+    planAddCaptions(doc, "main", [
+      { id: "new-1", start: 0, end: T, text: "一" },
+      { id: "new-2", start: T, end: 2 * T, text: "二" },
+    ]),
+  );
+  const next = apply(added, await reconcileDraftRunEdit(doc, added));
+  assert.deepEqual(readNarration(next)!.draftCaptionIds, ["new-1", "new-2"]);
+});
+
+test("replacing a take inside a nested sequence used elsewhere is refused; an exclusive one is cleaned up", async () => {
+  const base = realMedia({ phase: "review", captionBasis: "draft", draftCaptionIds: [] });
+  const withChild = async (shared: boolean) => {
+    const doc = structuredClone(base);
+    doc.sequences.push({
+      ...structuredClone(main(doc)),
+      id: "child",
+      name: "子序列",
+      tracks: [createTrack("cv", "video", "画面"), createTrack("ca", "audio", "口播")],
+      clips: [
+        media("inner-picture", "cv", "camera", 0, 10 * T),
+        media("inner-take", "ca", "take", 0, 12 * T + 777),
+      ],
+    });
+    const owner = (id: string) => {
+      const clip = { ...media(id, "v2", "camera", 30 * T, 10 * T), kind: "sequence", sequenceId: "child" } as unknown as SequenceClip & { assetId?: string };
+      delete clip.assetId;
+      return clip;
+    };
+    main(doc).clips.push(owner("nested"));
+    if (shared)
+      doc.sequences.push({
+        ...structuredClone(main(base)),
+        id: "other",
+        name: "另一条时间线",
+        tracks: [createTrack("ov", "video", "画面")],
+        clips: [{ ...owner("elsewhere"), trackId: "ov", start: 0 }],
+      });
+    const confirmed = await approved(validateEditorDocument(doc));
+    return apply(confirmed, await planBindNarrationRecording(confirmed, "take"));
+  };
+  await assert.rejects(planBindNarrationRecording(await withChild(true), "retake"), /其他时间线/);
+  const exclusive = await withChild(false);
+  const replaced = apply(exclusive, await planBindNarrationRecording(exclusive, "retake"));
+  assert.deepEqual(
+    replaced.sequences.find((item) => item.id === "child")!.clips.map((clip) => clip.id),
+    ["inner-picture"],
+  );
+});
+
+// Ported from the old frame-based coordinators (approve, bind, script edits).
+
+test("confirmation takes a stable reviewed draft with a script and picture", async () => {
+  const drafted = (() => {
+    const doc = realMedia({ phase: "review", captionBasis: "draft", draftCaptionIds: [] });
+    return apply(doc, planNarrationScript(doc, "main", SCRIPT));
+  })();
+  const input = structuredClone(drafted);
+  const pending = planApproveNarration(input);
+  input.production!.script = "用户刚修改了文稿。";
+  const state = readNarration(apply(drafted, await pending))!;
+  assert.equal(state.approvedScript, SCRIPT, "The digest covers the draft as it was asked for");
+  for (const phase of ["draft", "approved"]) {
+    const other = structuredClone(drafted);
+    (other.production!.narration as Record<string, JsonData>).phase = phase;
+    if (phase === "approved")
+      Object.assign(other.production!.narration as object, {
+        approvedScript: SCRIPT,
+        approvedFingerprint: "a".repeat(64),
+      });
+    await assert.rejects(planApproveNarration(validateEditorDocument(other)), /先完成草稿/);
+  }
+  const noScript = structuredClone(drafted);
+  noScript.production!.script = "";
+  await assert.rejects(planApproveNarration(noScript), /非空文本/);
+  const noPicture = structuredClone(drafted);
+  main(noPicture).clips = main(noPicture).clips.filter((clip) => clip.kind !== "media");
+  await assert.rejects(planApproveNarration(validateEditorDocument(noPicture)), /安排草稿画面/);
+});
+
+test("choosing a take changes nothing else; missing, still, synthetic or stale choices are refused", async () => {
+  const doc = await approved();
+  const bound = apply(doc, await planBindNarrationRecording(doc, "take"));
+  assert.deepEqual(bound.sequences, doc.sequences);
+  assert.deepEqual(bound.assets, doc.assets);
+  assert.equal(bound.production!.script, doc.production!.script);
+  assert.equal(await hasEditorNarrationApproval(bound), true);
+  assert.equal(
+    readNarration(apply(doc, await planBindNarrationRecording(doc, "camera-take")))!.recordingAssetId,
+    "camera-take",
+  );
+  await assert.rejects(planBindNarrationRecording(doc, "other-project-take"), /当前工程/);
+  await assert.rejects(planBindNarrationRecording(doc, "photo"), /当前工程/);
+  await assert.rejects(planBindNarrationRecording(doc, "tts"), /合成配音/);
+  const changed = apply(doc, [
+    { type: "project.production", data: { ...doc.production, script: "这是已经改动的新稿。" } },
+  ]);
+  await assert.rejects(planBindNarrationRecording(changed, "take"), /重新确认/);
+});
+
+test("checkpoints survive rebinding the same take; a user edit revokes them and reconfirming starts clean", async () => {
+  const doc = await recorded();
+  const placed = place(doc, media("take-1", "a1", "take", 0, 12 * T + 777));
+  const checkpoint = apply(placed, await reconcileNarrationRunEdit(doc, placed));
+  const rebound = apply(checkpoint, await planBindNarrationRecording(checkpoint, "take"));
+  assert.equal(readNarration(rebound)!.alignmentFingerprint, readNarration(checkpoint)!.alignmentFingerprint);
+  assert.equal(readNarration(rebound)!.approvedFingerprint, readNarration(doc)!.approvedFingerprint);
+  assert.equal(await hasEditorNarrationApproval(rebound), true);
+
+  const edited = apply(checkpoint, planCaptionText(checkpoint, "main", "existing-caption", "用户手工改了字幕。"));
+  assert.equal(await hasEditorNarrationApproval(edited), false);
+  const reviewed = apply(edited, reconcileEditorProduction(checkpoint, edited));
+  const review = readNarration(reviewed)!;
+  assert.equal(review.phase, "review");
+  for (const key of ["approvedScript", "approvedFingerprint", "alignmentFingerprint"])
+    assert.equal(Object.hasOwn(review, key), false);
+  assert.equal(review.recordingAssetId, "take");
+  const again = readNarration(apply(reviewed, await planApproveNarration(reviewed)))!;
+  assert.equal(again.phase, "approved");
+  assert.equal(again.recordingAssetId, "take");
+  assert.equal(Object.hasOwn(again, "alignmentFingerprint"), false);
+  assert.notEqual(again.approvedFingerprint, readNarration(doc)!.approvedFingerprint);
+});
+
+test("script edits normalize the text and replace only owned captions, dropping the confirmation", async () => {
+  // An unlisted caption that happens to use the draft name stays the user's.
+  const fresh = realMedia({ phase: "review", captionBasis: "draft", draftCaptionIds: [] });
+  const withTitle = await approved(
+    apply(
+      fresh,
+      planAddCaptions(fresh, "main", [{ id: "draft-narration-1", start: 0, end: T, text: "用户独立字幕" }]),
+    ),
+  );
+  const listed = apply(withTitle, await planBindNarrationRecording(withTitle, "take"));
+  const text = "  先去海边。\r\n\r\n然后慢慢走进老街，看看日常生活！  最后一起看夕阳。 ";
+  const next = apply(listed, planNarrationScript(listed, "main", text));
+  const state = readNarration(next)!;
+  assert.equal(next.production!.script, text.replace(/\r\n?/g, "\n").trim());
+  assert.equal(state.phase, "review");
+  assert.equal(state.recordingAssetId, "take");
+  for (const key of ["approvedScript", "approvedFingerprint", "alignmentFingerprint"])
+    assert.equal(Object.hasOwn(state, key), false);
+  const owned = subtitles(next).filter((clip) => state.draftCaptionIds.includes(clip.id));
+  assert.equal(owned.length, 3);
+  assert.equal(owned[0]!.id, "draft-narration-2");
+  assert.equal(owned.map((clip) => clip.text).join("").replace(/\s/g, ""), text.replace(/\s/g, ""));
+  assert.equal(subtitles(next).find((clip) => clip.id === "draft-narration-1")?.text, "用户独立字幕");
+  assert.deepEqual(
+    main(next).clips.filter((clip) => clip.kind === "media"),
+    main(listed).clips.filter((clip) => clip.kind === "media"),
+  );
+});
+
+test("editing the script after alignment, or after an edit revoked it, removes the recorded captions but keeps the take and titles", async () => {
+  const doc = await recorded();
+  const placed = place(doc, media("take-1", "a1", "take", 0, 12 * T + 777));
+  const checkpoint = apply(placed, await reconcileNarrationRunEdit(doc, placed));
+  const aligned = await markAligned(
+    apply(checkpoint, planNarrationAlignment(checkpoint, "main", [{ start: 1, end: 3, text: "第一句。" }]).operations),
+  );
+  const moved = apply(aligned, [
+    { type: "clip.move", sequenceId: "main", clipIds: ["camera-overlay"], delta: 30 * T },
+  ]);
+  const revoked = apply(moved, reconcileEditorProduction(aligned, moved));
+  assert.equal(readNarration(revoked)!.phase, "review");
+  for (const before of [aligned, revoked]) {
+    const next = apply(before, planNarrationScript(before, "main", "修改了说法。再去录一遍。"));
+    assert.equal(recordedNarrationClipIds(next, "main").size, 0);
+    assert.ok(main(next).clips.some((clip) => clip.id === "take-1"));
+    assert.ok(subtitles(next).some((clip) => clip.id === "existing-caption"));
+    assert.equal(readNarration(next)!.phase, "review");
+    assert.equal(readNarration(next)!.draftCaptionIds.length, 2);
+  }
+});
+
+test("estimated caption packing keeps long and many-sentence scripts within the real frames", () => {
+  for (const [text, frames] of [
+    ["旅".repeat(10000), 3],
+    ["🙂".repeat(4999), 3],
+    ["走。".repeat(5000), 2000],
+    ["开始。\n\n看看风景！ 结束。", 1],
+  ] as const) {
+    const doc = realMedia({ phase: "review", captionBasis: "draft", draftCaptionIds: [] });
+    doc.assets.push({ id: "long", name: "长镜头", kind: "video", duration: frames * FRAME, width: 640, height: 360 });
+    main(doc).clips = [media("short", "v1", "long", 0, frames * FRAME)];
+    const short = validateEditorDocument(doc);
+    const next = apply(short, planNarrationScript(short, "main", text));
+    const captions = subtitles(next);
+    assert.ok(captions.length > 0 && captions.length <= 1000);
+    assert.ok(captions.every((clip) => clip.text.length <= 4000 && clip.duration > 0));
+    assert.equal(captions.map((clip) => clip.text).join("").replace(/\s/g, ""), text.replace(/\s/g, ""));
+    assert.equal(captions.at(-1)!.start + captions.at(-1)!.duration, frames * FRAME);
+    assert.ok(captions.every((clip) => !/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/.test(clip.text)));
+  }
+});
+
+test("invalid or unrepresentable script edits are refused", () => {
+  const doc = realMedia({ phase: "review", captionBasis: "draft", draftCaptionIds: [] });
+  for (const text of [" ", "x".repeat(10001), "不允许\u0001字符"])
+    assert.throws(() => planNarrationScript(doc, "main", text));
+  const tiny = structuredClone(doc);
+  main(tiny).clips = [media("tiny", "v1", "camera", 0, FRAME)];
+  assert.throws(
+    () => planNarrationScript(validateEditorDocument(tiny), "main", "字".repeat(4001)),
+    /画面太短/,
+  );
+});
+
+test("replacing a take keeps other sound; choosing the same take again changes nothing", async () => {
+  let doc = await recorded();
+  doc = place(doc, media("take-1", "a1", "take", 0, 5 * T, 0));
+  doc = place(doc, media("take-2", "a1", "take", 5 * T, 5 * T, 6 * T));
+  doc = apply(doc, [{ type: "track.add", sequenceId: "main", track: createTrack("a2", "audio", "音乐") }]);
+  const placed = place(doc, media("music-1", "a2", "music", 0, 20 * T));
+  const base = await recorded();
+  const checkpoint = apply(placed, await reconcileNarrationRunEdit(base, placed));
+  const same = await planBindNarrationRecording(checkpoint, "take");
+  assert.deepEqual(apply(checkpoint, same).sequences, checkpoint.sequences);
+  const replaced = apply(checkpoint, await planBindNarrationRecording(checkpoint, "retake"));
+  assert.deepEqual(
+    main(replaced).clips.filter((clip) => clip.kind === "media" && clip.trackId.startsWith("a")).map((clip) => clip.id),
+    ["music-1"],
   );
 });

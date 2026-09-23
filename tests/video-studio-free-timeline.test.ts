@@ -9,7 +9,10 @@ import {
   type EditOperation,
   type Project,
 } from "../apps/video-studio/src/model";
-import { narrationSnapshot, updateNarrationScript } from "../apps/video-studio/src/narration";
+import { narrationSnapshot } from "../apps/video-studio/src/narration";
+import { planNarrationScript } from "../apps/video-studio/src/editor/narration-edits";
+import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
+import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 
 const MAX_FRAMES = 30 * 86400;
 const edit = (project: Project, operations: EditOperation[]) =>
@@ -300,8 +303,16 @@ test("portable free timelines normalize missing positions and order while reject
 
 test("narration duration includes gaps; placement changes invalidate approval snapshots", () => {
   const before = gappedFixture();
-  const narrated = updateNarrationScript(before, "第一句。第二句。");
-  assert.equal(Math.max(...narrated.captions.map((caption) => caption.endFrame)), 450);
+  const doc = migrateLegacyProject(before);
+  const narrated = applyEditorOperations(
+    doc,
+    planNarrationScript(doc, doc.activeSequenceId, "第一句。第二句。"),
+    doc.revision,
+  );
+  const ends = narrated.sequences[0]!.clips
+    .filter((clip) => clip.kind === "text" && clip.id.startsWith("draft-narration-"))
+    .map((clip) => clip.start + clip.duration);
+  assert.equal(Math.max(...ends), 450 * 8000);
   const noCaptions = { ...before, captions: [] };
   const moved = edit(noCaptions, [{ type: "video-move", clipId: "b", startFrame: 600 }]);
   assert.notEqual(narrationSnapshot(noCaptions), narrationSnapshot(moved));

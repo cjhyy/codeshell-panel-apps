@@ -19,8 +19,6 @@ import {
 } from "../apps/video-studio/src/production.ts";
 import { AutomaticProducer } from "../apps/video-studio/src/automatic.ts";
 import {
-  approveNarration,
-  bindNarrationRecording,
   narrationFingerprint,
 } from "../apps/video-studio/src/narration.ts";
 import type { PanelBridge, PanelTask } from "../apps/video-studio/src/host.ts";
@@ -1077,7 +1075,7 @@ function automatic(f: Awaited<ReturnType<typeof fixture>>) {
 const starts = (host: FakeHost) => host.calls.filter((call) => call.method === "agent.task.start");
 
 async function narratedProject(): Promise<Project> {
-  const current = project();
+  let current = project();
   current.script = "先从海边出发，然后走进老街。";
   current.assets.push({
     id: "own-take",
@@ -1086,8 +1084,17 @@ async function narratedProject(): Promise<Project> {
     kind: "audio",
     durationFrames: 150,
   });
-  current.narration = { phase: "review", captionBasis: "draft", draftCaptionIds: [] };
-  return bindNarrationRecording(await approveNarration(current), "own-take");
+  // A confirmed draft and chosen take, as older versions saved them (30 fps view digest).
+  current = validateProject(current);
+  current.narration = {
+    phase: "recorded",
+    captionBasis: "draft",
+    draftCaptionIds: [],
+    approvedScript: current.script,
+    approvedFingerprint: await narrationFingerprint(current),
+    recordingAssetId: "own-take",
+  };
+  return validateProject(current);
 }
 
 function narrationRun(current: Project, phase: AutoProduction["phase"] = "agent"): AutoProduction {

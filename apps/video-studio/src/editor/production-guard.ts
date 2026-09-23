@@ -2,6 +2,8 @@ import type { EditorOperation } from "./operations";
 import type { EditorDocument, EditorClip, JsonData } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
+/** Code-unit order: the hashed dependencies must not depend on the runtime's locale. */
+const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const record = (value: JsonData | undefined): Record<string, JsonData> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 function dependencies(
@@ -75,13 +77,8 @@ function dependencies(
           volume: track.volume,
           pan: track.pan,
         })),
-      clips: value.clips
-        .slice()
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .map(clip)
-        .filter(Boolean)
-        .sort((a: any, b: any) => a.id.localeCompare(b.id)),
-      transitions: value.transitions.slice().sort((a, b) => a.id.localeCompare(b.id)),
+      clips: value.clips.slice().sort(byId).map(clip).filter(Boolean),
+      transitions: value.transitions.slice().sort(byId),
     };
   };
   const timeline = sequence(document.activeSequenceId);
@@ -105,7 +102,7 @@ function dependencies(
           ? item.fingerprint
           : undefined,
       }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
+      .sort(byId),
   });
 }
 

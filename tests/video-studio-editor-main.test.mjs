@@ -2485,7 +2485,7 @@ function narrationSeed(id, extraClips = []) {
 }
 const takeClip = (id, start) => ({ ...picture(id, "a1", start, takeLength), assetId: "take" });
 
-/** The real approval coordinator, so the seeded recording is approved as the panel would. */
+/** The old-view approval digest, so a seed carries an approval as older versions saved it. */
 async function narrationModule() {
   const out = await esbuild({
     entryPoints: [resolve("apps/video-studio/src/narration.ts")],
@@ -2501,7 +2501,7 @@ async function narrationModule() {
 }
 
 test("a recorded narration run accepts only granted edits that keep the recording valid", async (t) => {
-  const { approveNarration, bindNarrationRecording } = await narrationModule();
+  const { narrationFingerprint } = await narrationModule();
   const script = "按确认稿录好的口播。";
   const draft = {
     ...seed,
@@ -2517,7 +2517,19 @@ test("a recorded narration run accepts only granted edits that keep the recordin
     ],
     narration: { phase: "review", captionBasis: "draft", draftCaptionIds: ["caption"] },
   };
-  const narrated = await bindNarrationRecording(await approveNarration(draft), "own-take");
+  // Confirmed and recorded as older versions saved it: a digest of the 30 fps view.
+  const narrated = {
+    ...draft,
+    revision: draft.revision + 2,
+    narration: {
+      phase: "recorded",
+      captionBasis: "draft",
+      draftCaptionIds: ["caption"],
+      approvedScript: script,
+      approvedFingerprint: await narrationFingerprint(draft),
+      recordingAssetId: "own-take",
+    },
+  };
   const page = await openPage(t, {
     seed: narrated,
     automatic: true,
@@ -2737,4 +2749,33 @@ test("本人口播 panel actions save, confirm, choose and replace a take on rea
   assert.equal(replaced.sequences[0].clips.find((clip) => clip.id === "camera-main").start, 1_234_567);
   const toasts = await page.evaluate(() => window.__toasts.join("\n"));
   assert.doesNotMatch(toasts, /失败|无效|旧视图|重新确认/);
+});
+
+test("an old confirmation the editor cannot verify explains itself and returns to review", async (t) => {
+  const seed = narrationSeed("narration-old-approval");
+  seed.production = {
+    script: "旧工程确认过的文案。",
+    narration: {
+      phase: "approved",
+      captionBasis: "draft",
+      draftCaptionIds: [],
+      approvedScript: "旧工程确认过的文案。",
+      approvedFingerprint: "a".repeat(64),
+    },
+  };
+  const page = await openPage(t, { seed });
+  await production(page, "ai");
+  const issue = page.locator(".narration-approval-issue");
+  await issue.waitFor();
+  assert.match(await issue.innerText(), /工程已变化，请重新确认文稿/);
+  await page.locator('[data-action="return-narration-review"]').click();
+  await page.waitForFunction(
+    () => window.__mainHost.current().production?.narration?.phase === "review",
+  );
+  const reviewed = await waitSaved(page);
+  assert.equal(reviewed.production.narration.approvedFingerprint, undefined);
+  assert.equal(reviewed.production.script, "旧工程确认过的文案。");
+  await page.locator('[data-action="approve-draft"]').waitFor();
+  assert.equal(await page.locator('[data-action="approve-draft"]').isDisabled(), false);
+  assert.equal(await issue.count(), 0);
 });

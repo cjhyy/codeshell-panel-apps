@@ -7,11 +7,36 @@ import {
   validateProject,
   type Project,
 } from "../apps/video-studio/src/model";
-import {
-  approveNarration,
-  bindNarrationRecording,
-  hasNarrationApproval,
-} from "../apps/video-studio/src/narration";
+import { narrationFingerprint } from "../apps/video-studio/src/narration";
+
+/** An approval as older versions saved it: a SHA-256 of the 30 fps compatibility view. */
+async function legacyApprove(project: Project, recordingAssetId?: string): Promise<Project> {
+  const next = validateProject(structuredClone(project));
+  next.narration = {
+    ...next.narration!,
+    phase: recordingAssetId ? "recorded" : "approved",
+    captionBasis: "draft",
+    approvedScript: next.script!,
+    approvedFingerprint: await narrationFingerprint(next),
+    ...(recordingAssetId ? { recordingAssetId } : {}),
+  };
+  return validateProject(next);
+}
+/** The old-basis approval check on this compatibility module's own project data. */
+async function hasNarrationApproval(project: Project): Promise<boolean> {
+  const state = project.narration;
+  if (
+    !state?.approvedFingerprint ||
+    !["approved", "recorded", "aligned"].includes(state.phase) ||
+    state.approvedScript !== project.script
+  )
+    return false;
+  const expected =
+    state.phase !== "approved" && state.alignmentFingerprint
+      ? state.alignmentFingerprint
+      : state.approvedFingerprint;
+  return expected === (await narrationFingerprint(project));
+}
 
 function fixture(): Project {
   const project = createProject("素材删除测试");
@@ -184,7 +209,7 @@ test("deleting a narration recording clears its approval and owned captions, ret
     captionBasis: "draft",
     draftCaptionIds: ["removed-draft-provenance"],
   };
-  const recorded = await bindNarrationRecording(await approveNarration(draft), "voice");
+  const recorded = await legacyApprove(draft, "voice");
   recorded.narration!.phase = "aligned";
   recorded.narration!.captionBasis = "recording";
   assert.equal(await hasNarrationApproval(recorded), true);
@@ -210,7 +235,7 @@ test("unrelated unused assets retain narration approval while picture deletion r
   const draft = fixture();
   draft.script = "口播文稿。";
   draft.narration = { phase: "review", captionBasis: "draft", draftCaptionIds: [] };
-  const approved = await approveNarration(draft);
+  const approved = await legacyApprove(draft);
   const unused = removeAssets(approved, ["unused"]);
   assert.deepEqual(unused.narration, approved.narration);
   assert.equal(await hasNarrationApproval(unused), true);

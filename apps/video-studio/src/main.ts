@@ -143,6 +143,7 @@ import {
   hasNarrationPicture,
   narrationApprovalIssue,
   narrationDraftClipIds,
+  narrationOnEditorBasis,
   narrationStateOperation,
   planApproveNarration,
   planBindNarrationRecording,
@@ -1346,6 +1347,7 @@ function views() {
     aiMessage,
     narrationScriptDraft,
     ...(editorSession ? { narrationHasPicture: narrationPicture() } : {}),
+    narrationApprovalIssue: currentNarrationIssue(),
     workspace,
     voiceoverMarkup: voiceover.render(),
     folderMarkup: folderImport.render(),
@@ -2746,6 +2748,29 @@ async function saveNarration(
   render();
 }
 const narrationTrackId = () => proposalIdFactory("track");
+/** Why a saved confirmation no longer applies, computed once per saved revision (hashing is
+ * asynchronous); the panel shows it with a way back to review. */
+let narrationIssue: { key: string; text: string | null } = { key: "", text: null };
+function currentNarrationIssue(): string | null {
+  if (!editorSession) return null;
+  const session = editorSession,
+    identity = session.getState().identity,
+    key = `${identity.documentId}:${identity.generation}:${identity.revision}`;
+  if (narrationIssue.key === key) return narrationIssue.text;
+  const doc = session.read(),
+    state = readNarration(doc);
+  if (!state || !["approved", "recorded", "aligned"].includes(state.phase)) {
+    narrationIssue = { key, text: null };
+    return null;
+  }
+  narrationIssue = { key, text: null };
+  void narrationApprovalIssue(doc).then((text) => {
+    if (narrationIssue.key !== key || narrationIssue.text === text) return;
+    narrationIssue = { key, text };
+    if (tab === "ai" && !playback && !document.querySelector("dialog[open]")) render();
+  }, fail);
+  return null;
+}
 /** The editor sequence has picture to confirm; the 30 fps view may not show real footage. */
 function narrationPicture(): boolean {
   const doc = editorSession!.read();
@@ -3441,6 +3466,11 @@ async function action(name: string, id?: string): Promise<void> {
       await saveNarrationScript();
       await saveNarration(planApproveNarration, "用户确认视频草稿");
       await openNarrationRecorder();
+      break;
+    case "return-narration-review":
+      assertNarrationIdle();
+      await saveNarration((current) => planNarrationPhase(current, "review"), "回到口播审阅");
+      toast("已回到审阅，确认草稿后再继续录音");
       break;
     case "record-narration":
       assertNarrationIdle();
@@ -4762,7 +4792,8 @@ async function applyAutomaticNarration(candidate: Proposal): Promise<Proposal> {
   const completing = candidate.operations.some(
     (operation) => operation.type === "workflow" && operation.workflow?.stage === "review",
   );
-  let reviewAfterBlockers = false;
+  let reviewAfterBlockers = false,
+    keptUserCaptions = 0;
   aiApplying = true;
   try {
     const state = readNarration(before);
@@ -4828,10 +4859,12 @@ async function applyAutomaticNarration(candidate: Proposal): Promise<Proposal> {
         // The same protections as granted editor edits; the alignment then records its own state.
         await reconcileNarrationRunEdit(before, after);
         const segments = await fullTranscript(state!.recordingAssetId!);
-        operations.push(...planNarrationAlignment(after, sequenceId, segments).operations);
+        const alignment = planNarrationAlignment(after, sequenceId, segments);
+        operations.push(...alignment.operations);
         after = applyEditorOperations(before, operations, before.revision);
+        keptUserCaptions = alignment.keptUserCaptions;
         const aligned: NarrationState = {
-          ...state!,
+          ...(await narrationOnEditorBasis(before, state!)),
           phase: "aligned",
           captionBasis: "recording",
           alignmentFingerprint: await editorNarrationFingerprint(after),
@@ -4854,7 +4887,7 @@ async function applyAutomaticNarration(candidate: Proposal): Promise<Proposal> {
     aiApplying = false;
   }
   proposal = null;
-  aiMessage = `已应用：${candidate.title}。历史版本可恢复。`;
+  aiMessage = `已应用：${candidate.title}。${keptUserCaptions ? `保留了字幕页用这份录音做的 ${keptUserCaptions} 条字幕，没有在它们上面重复生成。` : ""}历史版本可恢复。`;
   if (drafting && completing) {
     await automatic.finishForReview(
       "视频草稿已保存。请预览画面、修改文案，满意后点击“确认草稿，去录口播”。当前字幕按文案估时，录音后会重新对齐。",

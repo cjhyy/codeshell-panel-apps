@@ -34,6 +34,7 @@ const MAX_SEGMENTS = 10000;
 /** Coverage slack for rounding through nested time maps: well below one audio sample. */
 const COVERAGE_TOLERANCE = 4;
 
+const codeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const record = (value: JsonData | undefined): Record<string, JsonData> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 function sequenceOf(doc: EditorDocument, id: string): EditorSequence {
@@ -88,17 +89,16 @@ export function draftNamedClipIds(doc: EditorDocument, sequenceId: string): Set<
       result.add(clip.id);
   return result;
 }
-/** Subtitles generated from the selected recording's transcript by the alignment step. */
-export function recordedNarrationClipIds(
-  doc: EditorDocument,
-  sequenceId: string,
-  recordingAssetId = storedRecordingId(doc),
-): Set<string> {
+/**
+ * Subtitles the alignment step generated, known by their recorded-narration- name (clip ID or
+ * old caption ID). Captions the user made from the same recording on the 字幕 page are theirs.
+ */
+export function recordedNarrationClipIds(doc: EditorDocument, sequenceId: string): Set<string> {
   const result = new Set<string>();
   for (const clip of doc.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
     if (
       subtitle(clip) &&
-      ((recordingAssetId && clip.sourceBinding?.provenance?.assetId === recordingAssetId) ||
+      (clip.id.startsWith(RECORDED_CAPTION_PREFIX) ||
         legacyClipId(doc, sequenceId, clip, "captions").startsWith(RECORDED_CAPTION_PREFIX))
     )
       result.add(clip.id);
@@ -140,7 +140,10 @@ export async function hasEditorNarrationApproval(doc: EditorDocument): Promise<b
   return (await narrationApprovalIssue(doc)) === null;
 }
 /** A still-valid older approval is rewritten on the editor basis at the next coordinator write. */
-async function onEditorBasis(doc: EditorDocument, state: NarrationState): Promise<NarrationState> {
+export async function narrationOnEditorBasis(
+  doc: EditorDocument,
+  state: NarrationState,
+): Promise<NarrationState> {
   if (state.fingerprintBasis === "editor" || !APPROVED.has(state.phase)) return state;
   if (!(await hasEditorNarrationApproval(doc))) return state;
   const fingerprint = await editorNarrationFingerprint(doc),
@@ -294,6 +297,27 @@ export async function planApproveNarration(value: EditorDocument): Promise<Edito
   return [production(doc, { narration: narrationData(narration) })];
 }
 
+/** The root and nested sequences used only from within it (no other timeline refers to them). */
+function exclusiveSequences(doc: EditorDocument, rootId: string): Set<string> {
+  const reachable = new Set(reachableSequences(doc, rootId).map((item) => item.id)),
+    exclusive = new Set([rootId]);
+  const referrers = (id: string) =>
+    doc.sequences.filter((item) =>
+      item.clips.some((clip) => clip.kind === "sequence" && clip.sequenceId === id),
+    );
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const id of reachable) {
+      if (exclusive.has(id)) continue;
+      const from = referrers(id);
+      if (from.length && from.every((item) => exclusive.has(item.id))) {
+        exclusive.add(id);
+        changed = true;
+      }
+    }
+  }
+  return exclusive;
+}
 function reachableSequences(doc: EditorDocument, rootId: string): EditorSequence[] {
   const result: EditorSequence[] = [],
     seen = new Set<string>();
@@ -325,12 +349,24 @@ export async function planBindNarrationRecording(
   if (!asset || (asset.kind !== "audio" && asset.kind !== "video"))
     throw new Error("请选择当前工程中的本人录音或视频");
   if (asset.metadata?.speech) throw new Error("合成配音不能作为本人录音");
-  const state = await onEditorBasis(doc, readNarration(doc)!),
+  const state = await narrationOnEditorBasis(doc, readNarration(doc)!),
     previousId = state.recordingAssetId,
     replacing = Boolean(previousId && previousId !== assetId),
     operations: EditorOperation[] = [];
   if (replacing) {
-    const captions = recordedNarrationClipIds(doc, doc.activeSequenceId, previousId);
+    const captions = recordedNarrationClipIds(doc, doc.activeSequenceId),
+      exclusive = exclusiveSequences(doc, doc.activeSequenceId);
+    const plays = (sequence: EditorSequence) =>
+      sequence.clips.some(
+        (clip) =>
+          clip.kind === "media" &&
+          clip.assetId === previousId &&
+          sequence.tracks.find((track) => track.id === clip.trackId)?.kind === "audio",
+      );
+    if (reachableSequences(doc, doc.activeSequenceId).some((item) => !exclusive.has(item.id) && plays(item)))
+      throw new Error(
+        "原录音还在其他时间线也用到的嵌套序列里，请先在那个嵌套序列中移除原录音，再更换本人录音",
+      );
     for (const sequence of reachableSequences(doc, doc.activeSequenceId)) {
       const clipIds = sequence.clips
         .filter(
@@ -427,7 +463,7 @@ export function planNarrationAlignment(
   value: EditorDocument,
   sequenceId: string,
   segments: readonly TranscriptSegment[],
-): { operations: EditorOperation[]; added: number } {
+): { operations: EditorOperation[]; added: number; keptUserCaptions: number } {
   const doc = validateEditorDocument(value),
     state = readNarration(doc),
     recordingId = state?.recordingAssetId,
@@ -440,8 +476,7 @@ export function planNarrationAlignment(
     .filter((source) => source.assetId === asset.id && onAudioTrack(doc, source))
     .sort(
       (a, b) =>
-        a.ownerClipId.localeCompare(b.ownerClipId, "en") ||
-        a.instanceId.localeCompare(b.instanceId, "en"),
+        codeUnits(a.ownerClipId, b.ownerClipId) || codeUnits(a.instanceId, b.instanceId),
     );
   if (!sources.length) throw new Error("请先将本人录音放入独立音轨并开启声音，再对齐字幕");
   if (!Array.isArray(segments) || !segments.length || segments.length > MAX_SEGMENTS)
@@ -490,12 +525,18 @@ export function planNarrationAlignment(
   }
   const owned = new Set([
     ...narrationDraftClipIds(doc, sequenceId),
-    ...recordedNarrationClipIds(doc, sequenceId, asset.id),
+    ...recordedNarrationClipIds(doc, sequenceId),
   ]);
   const operations: EditorOperation[] = owned.size
     ? [{ type: "clip.remove", sequenceId, clipIds: [...owned] }]
     : [];
   const draft = applyEditorOperations(doc, operations, doc.revision);
+  // The user's own captions from this recording (字幕 page, maybe corrected) stay; the
+  // alignment does not add a second caption over them.
+  const userCaptions = sequenceOf(draft, sequenceId).clips.filter(
+    (clip): clip is TextClip =>
+      subtitle(clip) && clip.sourceBinding?.provenance?.assetId === asset.id,
+  );
   const lanes = new Map(sources.map((source, index) => [source.instanceId, index + 1]));
   const used = new Set(sequenceOf(draft, sequenceId).clips.map((clip) => clip.id));
   const plan = planTranscriptCaptions(draft, sequenceId, new Map([[asset.id, transcript]]), {
@@ -510,9 +551,21 @@ export function planNarrationAlignment(
       return id;
     },
   });
-  operations.push(...plan.operations);
+  const covered = (clip: TextClip) =>
+    userCaptions.some(
+      (user) => user.start < clip.start + clip.duration && clip.start < user.start + user.duration,
+    );
+  const generated = plan.operations.filter(
+    (operation) =>
+      operation.type === "clip.add" && operation.clip.kind === "text" && !covered(operation.clip),
+  );
+  if (generated.length)
+    operations.push(
+      ...plan.operations.filter((operation) => operation.type !== "clip.add"),
+      ...generated,
+    );
   applyEditorOperations(doc, operations, doc.revision);
-  return { operations, added: plan.added };
+  return { operations, added: generated.length, keptUserCaptions: userCaptions.length };
 }
 
 function sameCanvas(before: EditorDocument, after: EditorDocument): boolean {
@@ -552,13 +605,41 @@ export async function reconcileNarrationRunEdit(
     throw new Error("口播确认状态由面板维护，自动制作不能自行修改口播确认状态");
   if (scriptOf(before) !== scriptOf(after)) throw new Error("本人录音阶段不能改写已确认文案");
   if (!sameCanvas(before, after)) throw new Error(PROTECTED);
-  if (!state.recordingAssetId || !sameRecording(before, after, state.recordingAssetId))
-    throw new Error(PROTECTED);
+  if (!state.recordingAssetId) throw new Error("请先选择本人录音，再编排录音与画面");
+  if (!sameRecording(before, after, state.recordingAssetId)) throw new Error(PROTECTED);
+  for (const sequence of before.sequences) {
+    const owned = new Set([
+      ...narrationDraftClipIds(before, sequence.id),
+      ...recordedNarrationClipIds(before, sequence.id),
+    ]);
+    const next = after.sequences.find((item) => item.id === sequence.id);
+    for (const clip of sequence.clips) {
+      if (!subtitle(clip) || owned.has(clip.id)) continue;
+      const kept = next?.clips.find((item) => item.id === clip.id);
+      if (!kept || !subtitle(kept) || kept.text !== clip.text)
+        throw new Error("自动制作不能修改或删除用户自己的字幕，请在制作单 blockers 写明需要调整的字幕");
+    }
+  }
+  for (const sequence of after.sequences) {
+    const known = new Map(
+      (before.sequences.find((item) => item.id === sequence.id)?.clips ?? []).map((clip) => [
+        clip.id,
+        clip.kind === "media" ? clip.assetId : "",
+      ]),
+    );
+    for (const clip of sequence.clips)
+      if (
+        clip.kind === "media" &&
+        known.get(clip.id) !== clip.assetId &&
+        after.assets.find((asset) => asset.id === clip.assetId)?.metadata?.speech
+      )
+        throw new Error("本人录音阶段不能加入合成配音，请保留本人的声音");
+  }
   if (narrationDependencies(before) === narrationDependencies(after)) return [];
   if (!(await hasEditorNarrationApproval(before)))
     throw new Error("已确认的草稿已改变，请重新确认后使用本人录音");
   const narration: NarrationState = {
-    ...(await onEditorBasis(before, state)),
+    ...(await narrationOnEditorBasis(before, state)),
     phase: "recorded",
     captionBasis: "draft",
     alignmentFingerprint: await editorNarrationFingerprint(after),
@@ -581,16 +662,14 @@ export async function reconcileDraftRunEdit(
   const sequenceId = after.activeSequenceId,
     known = new Set(
       before.sequences.find((item) => item.id === sequenceId)?.clips.map((clip) => clip.id) ?? [],
-    );
+    ),
+    // Only temporary captions still on the timeline; removed ones no longer count.
+    current = [...narrationDraftClipIds(after, sequenceId)];
   const added = sequenceOf(after, sequenceId)
-    .clips.filter((clip) => subtitle(clip) && !known.has(clip.id) && !state.draftCaptionIds.includes(clip.id))
+    .clips.filter((clip) => subtitle(clip) && !known.has(clip.id) && !current.includes(clip.id))
     .map((clip) => clip.id);
   if (!added.length) return [];
-  if (state.draftCaptionIds.length + added.length > 1000)
-    throw new Error("临时字幕最多 1000 条，请先合并字幕");
-  const narration: NarrationState = {
-    ...state,
-    draftCaptionIds: [...state.draftCaptionIds, ...added],
-  };
+  if (current.length + added.length > 1000) throw new Error("临时字幕最多 1000 条，请先合并字幕");
+  const narration: NarrationState = { ...state, draftCaptionIds: [...current, ...added] };
   return [production(after, { narration: narrationData(narration) })];
 }
