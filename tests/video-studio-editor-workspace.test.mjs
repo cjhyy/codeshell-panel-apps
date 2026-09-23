@@ -526,6 +526,36 @@ test("material + appends to the end of the main picture track even with the play
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 
+test("material + on a clip end between frames puts the playhead on the new clip, so 添加文字 starts with it", async (t) => {
+  const page = await fixture(t);
+  // The main picture ends at 3.98 s, between the 3.967 s and 4.000 s frames at 30 fps.
+  const end = 4 * 240000 - 4800;
+  await page.evaluate((end) => {
+    fixture.dispatch(
+      [
+        {
+          type: "clip.update",
+          sequenceId: "main",
+          clipId: "a",
+          patch: { duration: end, timeMap: { points: [{ time: 0, source: 0 }, { time: end, source: end }] } },
+        },
+      ],
+      "缩短画面",
+    );
+  }, end);
+  await settle(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  const added = (await documentState(page)).sequences[0].clips.at(-1);
+  assert.equal(added.start, end);
+  await page.waitForFunction((end) => fixture.playhead() === end, end);
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playhead()), end, "The playhead stays on the new clip");
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  const title = (await documentState(page)).sequences[0].clips.at(-1);
+  assert.equal(title.kind, "text");
+  assert.equal(title.start, end);
+});
+
 test("sound + appends to the end of the first audio track", async (t) => {
   const page = await fixture(t, { audio: true });
   const before = await documentState(page);

@@ -170,9 +170,11 @@ export class EditorPreview {
       if (!request.signal.aborted && generation === this.generation) throw error;
     }
   }
-  async seek(time: Tick): Promise<void> {
+  /** Shows the frame containing `time`; `exact` draws that very tick (e.g. a clip's start). */
+  async seek(time: Tick, options: { exact?: boolean } = {}): Promise<void> {
     const { sequence } = this.snapshot();
-    const target = this.snap(time, sequence);
+    const snapped = this.snap(time, sequence),
+      target = options.exact ? Math.min(time, Math.max(0, sequenceDuration(sequence) - 1)) : snapped;
     this.pause();
     const request = new AbortController();
     const generation = this.generation;

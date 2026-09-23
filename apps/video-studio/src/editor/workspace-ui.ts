@@ -109,6 +109,8 @@ export class EditorWorkspace {
   private sequenceId: string;
   private revision = "";
   private playhead = 0;
+  /** The playhead sits on an exact clip start (not a frame boundary) that re-seeks keep. */
+  private exactPlayhead = false;
   private search = "";
   private visible = true;
   private sourcePreview = false;
@@ -251,6 +253,7 @@ export class EditorWorkspace {
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
       resolveAsset: options.resolveAsset,
       onFrame: (time) => {
+        if (time !== this.playhead) this.exactPlayhead = false;
         this.playhead = time;
         this.updateTime();
         this.timeline.updatePlayhead();
@@ -304,7 +307,9 @@ export class EditorWorkspace {
       pause: () => this.cancelPreparation(),
       apply,
       draft: (document) =>
-        document ? this.preview.previewDraft(document) : this.preview.seek(this.playhead),
+        document
+          ? this.preview.previewDraft(document)
+          : this.preview.seek(this.playhead, { exact: this.exactPlayhead }),
       onError: options.onError,
     });
     container.addEventListener("click", this.click);
@@ -476,14 +481,19 @@ export class EditorWorkspace {
   currentTime(): Tick {
     return this.playhead;
   }
-  async seek(time: Tick): Promise<void> {
+  /**
+   * `exact` keeps a tick between frames (a new clip's start) instead of showing the frame that
+   * contains it, which would still be the previous clip. Re-seeking the same spot keeps it.
+   */
+  async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
     if (this.disposed) return;
     this.canvasEditor?.cancel();
     this.cancelPreparation();
     this.playhead = time;
+    this.exactPlayhead = exact;
     this.updateTime();
     try {
-      await this.preview.seek(time);
+      await this.preview.seek(time, { exact });
       if (!this.disposed && !this.preparing) this.get("[data-ew-preview-error]").hidden = true;
     } catch (error) {
       this.previewError(error);
@@ -525,7 +535,7 @@ export class EditorWorkspace {
       this.preparationStatus(controller, "正在载入画面并同步声音…");
       // Resource preparation may replace an incompatible source with a verified preview proxy.
       this.preview.setDocument(doc, sequenceId);
-      await this.preview.seek(this.playhead);
+      await this.preview.seek(this.playhead, { exact: this.exactPlayhead });
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -729,7 +739,7 @@ export class EditorWorkspace {
     this.inspector.render();
     this.timing.render();
     this.activateComposition();
-    this.run(() => this.seek(at));
+    this.run(() => this.seek(at, true));
     this.revealSelection();
   }
   private click = (event: MouseEvent) => {
