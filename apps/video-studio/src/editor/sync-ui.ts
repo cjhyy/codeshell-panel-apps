@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import "./sync-ui.css";
 import type { RuntimeBridge } from "../sdk/panel-runtime";
 import { runtimeCancelled } from "../sdk/panel-runtime";
@@ -524,7 +525,7 @@ export class EditorSyncUI {
         "当前面板已保留 1024 个结构化同步回执，请完成本次工作后重新打开面板",
       );
     const operation: EditorSyncOperation = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       requestId: request.requestId,
       action: request.action,
       status: "running",
@@ -646,7 +647,7 @@ export class EditorSyncUI {
     if (this.disposed) return Promise.resolve();
     if (this.active) return this.active;
     const operation: EditorSyncOperation = supplied ?? {
-      id: crypto.randomUUID(),
+      id: randomId(),
       action: "interface",
       status: "running" as const,
       message: "同步操作已接受",
@@ -983,7 +984,7 @@ export class EditorSyncUI {
       record = {
         snapshot: captured.snapshot,
         bundle: captured.bundle,
-        transferId: `editor-${crypto.randomUUID()}`,
+        transferId: `editor-${randomId()}`,
         receipt: null,
       };
       this.records.set(snapshotId, record);
@@ -1019,7 +1020,7 @@ export class EditorSyncUI {
     await this.guard();
     await this.refreshLocal();
     const review: Review = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       identity: structuredClone(this.session!.getState().identity),
       session: this.session!,
       beforeHash: this.contentHash!,
@@ -1199,7 +1200,7 @@ export class EditorSyncUI {
     await this.guard(true, review.identity);
     const candidateHash = await editorSyncContentHash(candidate),
       record: SyncApplyRecord = {
-        id: this.state?.pendingApply?.id ?? crypto.randomUUID(),
+        id: this.state?.pendingApply?.id ?? randomId(),
         candidateHash,
         beforeHash: review.beforeHash,
         beforeStorageRevision: this.session!.getState().storageRevision,

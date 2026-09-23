@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import {
   timelineClips,
   validateProject,
@@ -1204,7 +1205,7 @@ export class ProductionController {
       now = Date.now();
     const item: RenderSubmission = {
       accepted: true,
-      operationId: `render-${crypto.randomUUID()}`,
+      operationId: `render-${randomId()}`,
       projectId: snapshot.id,
       revision: snapshot.revision,
       requestToken,

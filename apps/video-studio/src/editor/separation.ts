@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
@@ -109,7 +110,7 @@ export function planApplySeparation(
   clipId: string,
   raw: SeparationResult,
   mode: "vocals" | "instrumental" | "both",
-  idFactory: () => string = () => crypto.randomUUID(),
+  idFactory: () => string = () => randomId(),
 ): EditorOperation[] {
   const { document, sequence, clip, asset, resourceId } = separationSource(
       value,

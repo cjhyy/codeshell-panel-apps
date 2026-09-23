@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { Project } from "./model";
 import type { PanelBridge, PanelTask } from "./host";
 import {
@@ -156,7 +157,7 @@ export class AutomaticProducer {
     const project = structuredClone(this.callbacks.getProject());
     const run: AutoProduction = {
       projectId: project.id,
-      runId: crypto.randomUUID(),
+      runId: randomId(),
       prompt: prompt.trim(),
       ...(options.mode ? { mode: options.mode } : {}),
       ...(options.voice ? { voice: validateVoicePreparation(options.voice) } : {}),
@@ -276,7 +277,7 @@ export class AutomaticProducer {
       );
       return;
     }
-    const token = crypto.randomUUID();
+    const token = randomId();
     const initialization = auto.mode === "initialize";
     const narrated = auto.mode === "draft" || auto.mode === "narration";
     const skill = narrated

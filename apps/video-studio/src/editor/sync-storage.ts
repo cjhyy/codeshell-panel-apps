@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { createPanelRuntime, type RuntimeBridge } from "../sdk/panel-runtime";
 import { isResourceId } from "../external-media";
 import { validateEditorDocument } from "./validation";
@@ -293,7 +294,7 @@ export function createEditorSyncStorage(panel: RuntimeBridge, projectId: string)
         format: "mimi-video-sync-client",
         version: 1,
         projectId,
-        deviceId: crypto.randomUUID(),
+        deviceId: randomId(),
         base: null,
         pendingPublication: null,
         imports: [],

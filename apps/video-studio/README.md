@@ -323,3 +323,12 @@ Host 工程文档上限 2 MiB，保留最近 20 次持久保存。自动剪辑�
 仓库的 `npm run check` 检查类型、构建、安装包与领域行为，领域套件包含草稿批准、录音绑定和真实字幕对齐。`npm run test:ui:video-studio` 包含剪辑、字幕、过期方案、工程切换、持久制作和分阶段本人配音流程的界面回归；`npm run test:media:video-studio` 用实际有声媒体检查播放、取帧、独立混音与 WebM 导出。
 
 `native/media/tests/media-runtime.test.mjs` 验证独立 Node 工具的真实 FFmpeg 预处理、提取与增强、中文字幕 MP4、系统配音、在线适配和路径/取消边界，运行需要本机编码工具与 Chrome/Chromium。`tests/video-studio-media-task-bridge.test.ts` 验证通用任务、资源、密钥授权映射、事件与旧任务重建。Audio8 / Qwen 的独立 provider 测试保留在 `native/tests/`；真实模型试听与 HyperFrames smoke 证据单独保存，不把测试录音或模型权重打入安装包。产品官方调研与当前取舍见 [视频工作台调研](../../docs/video-studio-product-research.md)。
+
+### LAN browser identifiers (development build)
+
+Project, asset, caption, editor transfer, synchronization, voice and render operation
+IDs use the same Panel-owned UUID helper. When a LAN HTTP browser lacks
+`crypto.randomUUID`, the helper generates UUID v4 values from
+`crypto.getRandomValues`; it never falls back to time or `Math.random`. Existing
+saved IDs are preserved. This fixes identifier creation, not the remaining Host,
+recording, preview, background-task or mobile workflow adaptation requirements.

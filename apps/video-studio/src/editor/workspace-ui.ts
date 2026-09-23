@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { escapeHtml as esc, icon } from "../icons";
 import { EditorMarkers } from "./marker-ui";
 import { EditorInspector } from "./inspector-ui";
@@ -60,7 +61,7 @@ export interface EditorWorkspaceOptions {
   onError(error: unknown): void;
 }
 
-const uid = (kind: string) => `${kind}-${crypto.randomUUID()}`;
+const uid = (kind: string) => `${kind}-${randomId()}`;
 function assetLimitations(asset: EditorAsset): string[] {
   const inspection = asset.metadata?.editorInspection;
   if (!inspection || typeof inspection !== "object" || Array.isArray(inspection)) return [];

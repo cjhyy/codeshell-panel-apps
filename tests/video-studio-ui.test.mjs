@@ -88,7 +88,7 @@ after(async () => {
   assert.deepEqual(errors, [], "No runtime errors or CSP violations");
 });
 
-async function pageWithBridge(mock = false, generic = true) {
+async function pageWithBridge(mock = false, generic = true, noRandomUuid = false) {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 960 },
     acceptDownloads: true,
@@ -98,6 +98,10 @@ async function pageWithBridge(mock = false, generic = true) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
+  if (noRandomUuid)
+    await page.addInitScript(() => {
+      Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+    });
   if (mock) {
     if (generic) await page.addInitScript(installGenericMediaTaskMock);
     await page.addInitScript(() => {
@@ -183,6 +187,29 @@ async function demo(page) {
   // Canonical Material editing is covered by editor-main/workspace/timeline suites.
   await page.locator('[data-tab="ai"]').click();
 }
+
+test("LAN browser creates, saves and reopens a project without randomUUID", async () => {
+  const page = await pageWithBridge(false, true, true);
+  try {
+    assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
+    await demo(page);
+    const previous = (await readProject(page)).id;
+    await page.getByRole("button", { name: "新建工程", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector("#project-name")?.value === "未命名项目",
+    );
+    await saved(page);
+    const created = await readProject(page);
+    assert.notEqual(created.id, previous);
+    assert.equal(created.clips.length, 0);
+    await page.reload();
+    await enterLegacyProduction(page);
+    await page.locator("#studio .workspace").waitFor();
+    assert.equal((await readProject(page)).id, created.id);
+  } finally {
+    await page.close();
+  }
+});
 
 test("an explicit native media failure keeps its cause visible and blocks automatic production", async () => {
   const page = await pageWithBridge(true);

@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import {
   EditorTimelineMedia,
   TIMELINE_MEDIA_LIMITS,
@@ -63,7 +64,7 @@ type Drag = {
   moved: boolean;
   additive: boolean;
 };
-const uid = (kind: string) => `${kind}-${crypto.randomUUID()}`;
+const uid = (kind: string) => `${kind}-${randomId()}`;
 const editableTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
 const stamp = (time: Tick) => {

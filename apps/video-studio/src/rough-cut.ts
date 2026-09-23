@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import {
   timelineDuration,
   type Asset,
@@ -168,7 +169,7 @@ export function planUniformRoughCuts(
       outFrame = inFrame + length;
     }
     cuts.push({
-      id: `batch-cut-${crypto.randomUUID()}`,
+      id: `batch-cut-${randomId()}`,
       assetId: id,
       inFrame,
       outFrame,

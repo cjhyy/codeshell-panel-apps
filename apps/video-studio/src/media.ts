@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import { drawDemo } from "./demo-drawing";
 export { drawDemo } from "./demo-drawing";
 import {
@@ -414,7 +415,7 @@ export class MediaLibrary {
 
   private async importSource(file: File, existing?: Asset, signal?: AbortSignal): Promise<Asset> {
     const generation = this.generation,
-      assetId = existing?.id ?? crypto.randomUUID();
+      assetId = existing?.id ?? randomId();
     const kind = file.type.startsWith("image/")
       ? "image"
       : file.type.startsWith("audio/")
@@ -534,7 +535,7 @@ export class MediaLibrary {
           : undefined;
     if (!kind) throw new Error("文件类型不受支持");
     const asset: Asset = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       name: resource.name,
       mediaId: resource.id,
       mimeType: resource.mimeType,

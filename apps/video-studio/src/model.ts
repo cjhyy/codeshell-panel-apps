@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import { validateVideoWorkflow, type VideoWorkflow } from "./workflow";
 import { validateNarration, type NarrationState } from "./narration";
 import { validateRoughCuts } from "./rough-cut";
@@ -530,7 +531,7 @@ export function validateProject(value: unknown): Project {
 export function createProject(name = "未命名项目"): Project {
   return validateProject({
     schemaVersion: 1,
-    id: `project-${globalThis.crypto.randomUUID()}`,
+    id: `project-${randomId()}`,
     name,
     revision: 0,
     width: 1920,

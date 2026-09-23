@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { PanelBridge } from "./host";
 import type { MediaJob, VoiceCatalog, VoiceModel } from "./production";
 import { cancelled, createVoiceProcessClient, VOICE_IO, VOICE_LAUNCH } from "./local-voice-process";
@@ -273,7 +274,7 @@ export function createLocalVoiceBridge(
       )
         return;
       const data = new TextEncoder().encode(native.source),
-        token = crypto.randomUUID();
+        token = randomId();
       for (let offset = 0; offset < data.length; offset += 32768)
         await io(
           { kind: "tool", action: "write", hash: native.sha256, token, offset },
@@ -641,7 +642,7 @@ export function createLocalVoiceBridge(
     const entry: Entry = {
       input,
       job: {
-        id: `job-panel-${crypto.randomUUID()}`,
+        id: `job-panel-${randomId()}`,
         type: input.action === "setup" ? "tts-setup" : "tts-clone",
         status: "queued",
         attempt: 1,

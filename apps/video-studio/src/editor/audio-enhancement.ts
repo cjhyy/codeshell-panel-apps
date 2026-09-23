@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
@@ -175,7 +176,7 @@ export function planApplyAudioEnhancement(
   sequenceId: string,
   clipId: string,
   raw: AudioEnhancementResult,
-  idFactory: () => string = () => crypto.randomUUID(),
+  idFactory: () => string = () => randomId(),
 ): EditorOperation[] {
   const { document, sequence, clip, asset, resourceId } = audioEnhancementSource(
       value,

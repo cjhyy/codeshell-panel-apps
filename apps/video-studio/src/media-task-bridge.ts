@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { PanelBridge } from "./host";
 import type { MediaJob } from "./production";
 import { createPanelRuntime, taskValue, runtimeCancelled } from "./sdk/panel-runtime";
@@ -230,7 +231,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       params,
       inputs,
       scopeKey: scope.key,
-      jobId: `media-${crypto.randomUUID()}`,
+      jobId: `media-${randomId()}`,
     };
     const connectionIds: string[] = [];
     if (action === "status" || action === "voices")

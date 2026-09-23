@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import type { PanelBridge, PanelTask } from "../host";
 import { createPanelRuntime, runtimeCancelled, taskValue } from "../sdk/panel-runtime";
 import { isResourceId } from "../external-media";
@@ -248,7 +249,7 @@ export function createCaptionServices(context: CaptionServicesContext) {
             await runtime.call(
               "agent.task.start",
               {
-                key: `caption-translate-${crypto.randomUUID()}`,
+                key: `caption-translate-${randomId()}`,
                 label: `字幕翻译 · ${request.language}`,
                 prompt,
                 toolNames: [],

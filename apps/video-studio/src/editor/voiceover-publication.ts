@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
@@ -69,7 +70,7 @@ export function planPublishVoiceover(
   value: EditorDocument,
   result: CanonicalVoiceoverResult,
   context: VoiceoverPublication,
-  idFactory: () => string = () => crypto.randomUUID(),
+  idFactory: () => string = () => randomId(),
 ): { operations: EditorOperation[]; notice: string; placed: boolean } {
   const doc = validateEditorDocument(value),
     supplied = structuredClone(result.asset),

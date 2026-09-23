@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { Asset, Project } from "./model";
 import type { FolderEntry, createDesktopFolderSource } from "./folder-source";
 import { FolderCaptureTimeoutError } from "./folder-source";
@@ -229,7 +230,7 @@ export function createFolderImport(
       const existing = document.folders.find((f) => f.id === id);
       if (id && !existing) throw new Error("文件夹记录已变化，请重新选择");
       const folder: Folder = {
-        id: existing?.id ?? crypto.randomUUID(),
+        id: existing?.id ?? randomId(),
         name: picked.name,
         automatic,
         importMode: existing?.importMode ?? importMode,

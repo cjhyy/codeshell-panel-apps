@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import type { PanelBridge } from "../host";
 import {
   copyClips,
@@ -730,7 +731,7 @@ function planCaptionsStep(
 
 export function createEditorAgentTools(context: EditorAgentContext) {
   if (typeof context.authorize !== "function") throw new Error("v2 工具必须连接制作与录制权限检查");
-  const factory = context.idFactory ?? ((kind) => `${kind}-${crypto.randomUUID()}`);
+  const factory = context.idFactory ?? ((kind) => `${kind}-${randomId()}`);
   const exportSubmissions = createExportSubmissions();
   const current = (expected?: unknown) => {
     const session = context.session(),
@@ -790,7 +791,7 @@ export function createEditorAgentTools(context: EditorAgentContext) {
         payload = cut?.payload ?? copyClips(snapshot.document, sequenceId, selected);
       operations = cut?.operations ?? [];
       next = {
-        id: `clipboard-${crypto.randomUUID()}`,
+        id: `clipboard-${randomId()}`,
         session: snapshot.session,
         generation: snapshot.identity.generation,
         payload,

@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { evaluateAnimatedNumber, type AnimatedNumber } from "./animation";
 import { compileAudioPlan, type AudioPlanLane, type AudioPlanStage } from "./audio-plan";
 import {
@@ -54,7 +55,7 @@ export interface CaptionPlanOptions {
 }
 const MAX_RANGES = 100000,
   MAX_CAPTIONS = 2000;
-const uniqueId = () => crypto.randomUUID();
+const uniqueId = () => randomId();
 function sequence(doc: EditorDocument, id: string): EditorSequence {
   const result = doc.sequences.find((item) => item.id === id);
   if (!result) throw new Error("字幕时间线不存在");

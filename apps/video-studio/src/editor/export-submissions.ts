@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import type { SessionIdentity } from "./session";
 
 export interface ExportSubmission {
@@ -65,7 +66,7 @@ export function createExportSubmissions() {
       const receipt: ExportSubmission = {
         ...structuredClone(request),
         accepted: true,
-        operationId: `export-${crypto.randomUUID()}`,
+        operationId: `export-${randomId()}`,
         status: "preparing",
       };
       const entry = { key, fingerprint, receipt, abort: new AbortController(), cancelJob };
