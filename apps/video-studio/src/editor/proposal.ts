@@ -5,7 +5,7 @@ import { applyEditorOperations, type EditorOperation } from "./operations";
 import type { SequenceIdFactory } from "./sequence-edits";
 import type { SessionIdentity } from "./session";
 import { snapToFrame, TICKS_PER_SECOND } from "./time";
-import type { EditorDocument, EditorSequence } from "./types";
+import type { EditorClip, EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration } from "./validation";
 
 /** Where a reviewed plan came from. Automatic production keeps its own apply path. */
@@ -212,12 +212,20 @@ export function parseEditorProposal(value: unknown, context: ProposalContext): E
       throw new Error("工程或版本已改变，请基于当前工程重新生成方案");
   }
   const operations = compileEditorSteps(document, editor.steps, context.idFactory);
+  // Review the sequence the steps edit; one plan changes one sequence.
+  const targets = new Set(
+    (editor.steps as unknown[]).flatMap((step) => {
+      const value = (step as Record<string, unknown>)?.sequenceId;
+      return typeof value === "string" ? [value] : [];
+    }),
+  );
+  if (targets.size > 1) throw new Error("一份方案只能修改一条时间线，请拆分后分别导入");
   const result: EditorProposal = {
     title,
     explanation,
     origin: context.origin,
     identity,
-    sequenceId,
+    sequenceId: targets.size ? [...targets][0]! : sequenceId,
     labels: (editor.steps as unknown[]).map((step) => stepLabel(document, step)),
     operations,
   };
@@ -237,10 +245,8 @@ export function reviewEditorProposal(
   document: EditorDocument,
   identity: SessionIdentity,
 ): EditorProposalReview {
-  let stale =
-    !sameIdentity(proposal.identity, identity) ||
-    document.id !== proposal.identity.documentId ||
-    document.revision !== proposal.identity.revision;
+  // The caller passes the session's current identity together with its document.
+  let stale = !sameIdentity(proposal.identity, identity);
   const before =
     document.sequences.find((item) => item.id === proposal.sequenceId) ??
     sequenceOf(document, document.activeSequenceId);
@@ -350,12 +356,70 @@ export function planFifteenSecondDraft(
     draft = applyEditorOperations(draft, batch, draft.revision);
     operations.push(...batch);
   }
-  if (!operations.length) throw new Error("当前序列不超过 15 秒，无需精简");
   if (main().some((clip) => clip.start + clip.duration > limit))
     throw new Error("主画面轨无法精确精简到 15 秒，请手动调整后重试");
+  // Then every other track (hidden and muted included), so the whole video ends at the limit.
+  // Captions bound to a clip handled here follow their owner.
+  const others = (from: EditorDocument, test: (clip: EditorClip) => boolean) => {
+    const current = sequenceOf(from, sequenceId);
+    const chosen = current.clips.filter((clip) => clip.trackId !== trackId && test(clip));
+    const ids = new Set(chosen.map((clip) => clip.id));
+    return chosen.filter(
+      (clip) => !(clip.kind === "text" && clip.sourceBinding && ids.has(clip.sourceBinding.clipId)),
+    );
+  };
+  const later = others(draft, (clip) => clip.start >= limit),
+    crossing = others(draft, (clip) => clip.start < limit && clip.start + clip.duration > limit);
+  const current = sequenceOf(draft, sequenceId);
+  for (const clip of [...later, ...crossing]) {
+    const track = current.tracks.find((item) => item.id === clip.trackId)!;
+    if (track.locked)
+      throw new Error(`轨道「${track.name}」已锁定，无法截断 15 秒之后的内容，请先解锁后重试`);
+  }
+  const run = (batch: EditorOperation[]) => {
+    draft = applyEditorOperations(draft, batch, draft.revision);
+    operations.push(...batch);
+  };
+  if (later.length)
+    run([{ type: "clip.remove", sequenceId, clipIds: later.map((clip) => clip.id) }]);
+  const cut = others(
+    draft,
+    (clip) => clip.start < limit && clip.start + clip.duration > limit,
+  );
+  if (cut.length) {
+    const ids = new Set(cut.map((clip) => clip.id)),
+      joined = sequenceOf(draft, sequenceId).transitions.find(
+        (item) => ids.has(item.fromClipId) || ids.has(item.toClipId),
+      );
+    if (joined) {
+      const owner = sequenceOf(draft, sequenceId).clips.find((clip) => clip.id === joined.toClipId);
+      const track = sequenceOf(draft, sequenceId).tracks.find((item) => item.id === owner?.trackId);
+      throw new Error(`轨道「${track?.name ?? "画面"}」在 15 秒处有转场，请先移除这个转场后重试`);
+    }
+    run(
+      compileEditorSteps(
+        draft,
+        [
+          {
+            kind: "timing",
+            sequenceId,
+            clipIds: cut.map((clip) => clip.id),
+            action: { kind: "keep-left", time: limit },
+            options: { ripple: false },
+          },
+        ],
+        idFactory,
+      ),
+    );
+  }
+  if (!operations.length) throw new Error("当前序列不超过 15 秒，无需精简");
+  if (sequenceDuration(sequenceOf(draft, sequenceId)) > limit)
+    throw new Error("无法把整条视频精确精简到 15 秒，请手动调整后重试");
+  const truncated = later.length + cut.length;
   const labels = [
     ...(kept ? [`保留${kept}到 ${secondsText(limit)} 秒`] : []),
     ...(removed ? [`删除主画面轨 ${secondsText(limit)} 秒之后的 ${removed} 个片段`] : []),
+    ...(truncated ? [`截断其他轨道 ${secondsText(limit)} 秒之后的 ${truncated} 个片段`] : []),
   ];
   return { operations, labels };
 }

@@ -11,7 +11,7 @@ import {
   defaultTextStyle,
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
-import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import { sequenceDuration, validateEditorDocument } from "../apps/video-studio/src/editor/validation";
 import { snapToFrame } from "../apps/video-studio/src/editor/time";
 import { translateLegacyOperations } from "../apps/video-studio/src/editor/legacy-plan";
 import {
@@ -208,7 +208,9 @@ test("the 15 second draft ends real off-frame footage exactly at the frame-snapp
   assert.equal(crossing.start, 3_000_000);
   assert.equal(crossing.start + crossing.duration, limit, "Bound captions are trimmed");
   assert.equal(clip(after, "cap-after"), undefined, "Captions of removed clips go with them");
-  assert.deepEqual(clip(after, "overlay"), clip(doc, "overlay"), "Other tracks are untouched");
+  const overlay = clip(after, "overlay")!;
+  assert.deepEqual([overlay.start, overlay.duration], [0, limit], "Other tracks end at the limit too");
+  assert.equal(sequenceDuration(sequenceOf(after)), limit, "The draft is a 15 second video");
   assert.throws(
     () => planFifteenSecondDraft(after, "sequence-main", idFactory),
     /不超过 15 秒/,
@@ -248,7 +250,7 @@ test("the 15 second draft also works on a free main track and keeps the review h
   assert.equal(stale.after, null, "A stale proposal is never silently rebased");
 });
 
-test("legacy trim, remove and move on mapped clips ripple only the main track of a multitrack project", () => {
+test("legacy trim, remove and move on mapped clips leave extra tracks, titles and transitions alone", () => {
   const doc = multitrack();
   assert.equal(projectLegacyView(doc).timelineComplete, false);
   const operations = translateLegacyOperations(
@@ -270,8 +272,11 @@ test("legacy trim, remove and move on mapped clips ripple only the main track of
     time: 0,
     source: 110 * F,
   });
-  for (const id of ["overlay-1", "overlay-2", "title", "cap-early", "cap-late"])
+  for (const id of ["overlay-1", "overlay-2", "title"])
     assert.deepEqual(clip(after, id), clip(doc, id), `${id} stays where it was`);
+  // Captions the old view shows go with their picture, as in the old sequence.
+  assert.equal(clip(after, "cap-early"), undefined, "Its picture was removed");
+  assert.deepEqual([clip(after, "cap-late")!.start, clip(after, "cap-late")!.duration], [20 * F, 30 * F]);
   assert.deepEqual(sequenceOf(after).transitions, sequenceOf(doc).transitions);
 });
 
@@ -453,4 +458,273 @@ test("legacy trims and splits reach off-frame main clips through their old IDs",
   assert.deepEqual(main[3], ["c", length + 140 * F, length]);
   assert.equal((clip(after, "b") as MediaClip).timeMap.points[0]!.source, 260 * F);
   assert.deepEqual(clip(after, "overlay"), clip(doc, "overlay"));
+});
+
+test("the 15 second draft also ends narration, loose captions and titles at the limit", () => {
+  const withExtras = (locked = false) =>
+    edit(realMedia(), (sequence) => {
+      sequence.tracks.push(
+        { ...createTrack("track-voice", "audio", "旁白"), muted: true },
+        { ...createTrack("track-title", "text", "标题"), hidden: true, locked },
+      );
+      sequence.clips.push(
+        { ...media("voice", "track-voice", "video", 0, 4_500_000) },
+        text("loose-caption", "track-captions", 3_500_000, 200_000, "subtitle"),
+        text("late-title", "track-title", 4_000_000, 200_000, "title"),
+      );
+    });
+  const doc = withExtras();
+  const limit = 3_603_600;
+  const plan = planFifteenSecondDraft(doc, "sequence-main", idFactory);
+  assert.ok(plan.labels.some((label) => /截断其他轨道 15\.0\d 秒之后的 \d+ 个片段/.test(label)));
+  const after = apply(doc, plan.operations);
+  assert.equal(sequenceDuration(sequenceOf(after)), limit);
+  assert.equal(clip(after, "voice")!.duration, limit);
+  assert.equal(clip(after, "loose-caption")!.start + clip(after, "loose-caption")!.duration, limit);
+  assert.equal(clip(after, "late-title"), undefined);
+  assert.equal(clip(after, "cap-after"), undefined, "Bound captions still follow their owner");
+  assert.throws(
+    () => planFifteenSecondDraft(withExtras(true), "sequence-main", idFactory),
+    /标题.*锁定/,
+  );
+});
+
+/** Old v1 project with independent narration and a caption across a cut, migrated whole. */
+function narrated() {
+  return migrateLegacyProject(
+    validateProject({
+      ...legacy(),
+      assets: [
+        ...legacy().assets,
+        { id: "voice-asset", name: "旁白.wav", kind: "audio", durationFrames: 600 },
+      ],
+      audioClips: [
+        { id: "voice", assetId: "voice-asset", inFrame: 0, outFrame: 200, startFrame: 20, volume: 1 },
+      ],
+      captions: [
+        { id: "cap-early", text: "开场字幕", startFrame: 10, endFrame: 40 },
+        { id: "cap-span", text: "跨越剪辑点", startFrame: 80, endFrame: 110 },
+        { id: "cap-late", text: "结尾字幕", startFrame: 200, endFrame: 230 },
+      ],
+    }),
+  );
+}
+const withTitle = (doc: EditorDocument) =>
+  edit(doc, (sequence) => {
+    sequence.tracks.push(createTrack("track-title", "text", "标题"));
+    sequence.clips.push(text("title", "track-title", 0, 45 * F, "title"));
+  });
+function followers(doc: EditorDocument) {
+  return sequenceOf(doc)
+    .clips.filter((item) => item.trackId !== "track-video-main" && item.id !== "title")
+    // The old view gives each extra narration piece its own track; compare placement only.
+    .map((item) => [
+      item.kind,
+      item.start,
+      item.duration,
+      item.kind === "text" ? item.text : (item as MediaClip).timeMap.points[0]!.source,
+    ])
+    .sort((x, y) => String(x[0]).localeCompare(String(y[0])) || Number(x[1]) - Number(y[1]));
+}
+
+test("old edits move captions and narration the same way with or without an unrelated title", () => {
+  const complete = narrated(),
+    incomplete = withTitle(complete);
+  assert.equal(projectLegacyView(complete).timelineComplete, true);
+  assert.equal(projectLegacyView(incomplete).timelineComplete, false);
+  const cases: Parameters<typeof translateLegacyOperations>[2][] = [
+    [{ type: "trim", clipId: "a", inFrame: 0, outFrame: 60 }],
+    [{ type: "trim", clipId: "b", inFrame: 110, outFrame: 190 }],
+    [{ type: "remove", clipId: "a" }],
+    [{ type: "move", clipId: "c", toIndex: 0 }],
+    [
+      { type: "trim", clipId: "a", inFrame: 30, outFrame: 90 },
+      { type: "remove", clipId: "b" },
+    ],
+  ];
+  for (const operations of cases) {
+    const expected = apply(
+      complete,
+      translateLegacyOperations(complete, "sequence-main", operations, idFactory),
+    );
+    const actual = apply(
+      incomplete,
+      translateLegacyOperations(incomplete, "sequence-main", operations, idFactory),
+    );
+    const label = JSON.stringify(operations);
+    assert.deepEqual(mainTrack(actual), mainTrack(expected), label);
+    assert.deepEqual(followers(actual), followers(expected), label);
+    assert.deepEqual(clip(actual, "title"), clip(incomplete, "title"), label);
+  }
+});
+
+test("old moves reorder audio-only main clips like the old sequence", () => {
+  const base = migrateLegacyProject(
+    validateProject({
+      ...legacy(),
+      assets: [
+        ...legacy().assets,
+        { id: "voice-asset", name: "旁白.wav", kind: "audio", durationFrames: 600 },
+      ],
+      clips: [
+        { id: "a", assetId: "video", inFrame: 0, outFrame: 90, volume: 1 },
+        { id: "m", assetId: "voice-asset", inFrame: 0, outFrame: 60, volume: 1 },
+        { id: "c", assetId: "second", inFrame: 0, outFrame: 60, volume: 1 },
+      ],
+      captions: [],
+    }),
+  );
+  const positions = (doc: EditorDocument) =>
+    ["a", "m", "c"].map((id) => [id, clip(doc, id)!.trackId, clip(doc, id)!.start]);
+  for (const doc of [base, withTitle(base)]) {
+    const after = apply(
+      doc,
+      translateLegacyOperations(
+        doc,
+        "sequence-main",
+        [{ type: "move", clipId: "c", toIndex: 0 }],
+        idFactory,
+      ),
+    );
+    assert.deepEqual(positions(after), [
+      ["a", "track-video-main", 60 * F],
+      ["m", "track-audio-main", 150 * F],
+      ["c", "track-video-main", 0],
+    ]);
+  }
+});
+
+test("an old plan can split a clip and then use the new piece's old ID", () => {
+  for (const doc of [migrateLegacyProject(legacy()), multitrack()]) {
+    const after = apply(
+      doc,
+      translateLegacyOperations(
+        doc,
+        "sequence-main",
+        [
+          { type: "split", clipId: "a", atFrame: 30 },
+          { type: "remove", clipId: "clip-4" },
+        ],
+        idFactory,
+      ),
+    );
+    assert.deepEqual(mainTrack(after), [
+      ["a", 0, 30 * F],
+      ["b", 30 * F, 90 * F],
+      ["c", 120 * F, 60 * F],
+    ]);
+  }
+});
+
+test("off-frame clip edges count as unchanged when an old trim keeps them", () => {
+  const doc = edit(realMedia(), (sequence) => {
+    const b = sequence.clips.find((item) => item.id === "b") as MediaClip;
+    b.timeMap = {
+      points: [
+        { time: 0, source: 2_000_500 },
+        { time: b.duration, source: 2_000_500 + b.duration },
+      ],
+    };
+  });
+  const b = clip(doc, "b") as MediaClip;
+  assert.deepEqual(
+    translateLegacyOperations(
+      doc,
+      "sequence-main",
+      [{ type: "trim", clipId: "b", inFrame: 250, outFrame: 490 }],
+      idFactory,
+    ),
+    [],
+  );
+  const after = apply(
+    doc,
+    translateLegacyOperations(
+      doc,
+      "sequence-main",
+      [{ type: "trim", clipId: "b", inFrame: 250, outFrame: 400 }],
+      idFactory,
+    ),
+  );
+  const trimmed = clip(after, "b") as MediaClip;
+  assert.equal(trimmed.start, b.start);
+  assert.equal(trimmed.timeMap.points[0]!.source, 2_000_500);
+  assert.equal(trimmed.duration, 400 * F - 2_000_500);
+});
+
+test("retiming a bound caption through an old plan detaches its binding", () => {
+  const doc = edit(multitrack(), (sequence) => {
+    const caption = sequence.clips.find((item) => item.id === "cap-early") as TextClip;
+    caption.sourceBinding = { clipId: "a", sourceStart: 10 * F, sourceEnd: 40 * F };
+  });
+  assert.ok((clip(doc, "cap-early") as TextClip).sourceBinding);
+  const after = apply(
+    doc,
+    translateLegacyOperations(
+      doc,
+      "sequence-main",
+      [{ type: "caption", caption: { id: "cap-early", startFrame: 100, endFrame: 130, text: "开场字幕" } }],
+      idFactory,
+    ),
+  );
+  const moved = clip(after, "cap-early") as TextClip;
+  assert.equal(moved.start, 100 * F);
+  assert.equal(moved.sourceBinding, undefined);
+});
+
+test("editor proposals review the sequence their steps edit and refuse mixed sequences", () => {
+  const doc = edit(multitrack(), () => {});
+  const two = validateEditorDocument({
+    ...doc,
+    sequences: [
+      ...doc.sequences,
+      {
+        ...sequenceOf(doc),
+        id: "second",
+        name: "第二条",
+        clips: [media("second-clip", "track-video-main", "second", 0, 30 * F)],
+        transitions: [],
+        markers: [],
+      },
+    ],
+  });
+  const context = { document: two, identity: identity(two), origin: "import" as const, idFactory };
+  const proposal = parseEditorProposal(
+    { title: "第二条", editor: { steps: [{ kind: "remove", sequenceId: "second", clipIds: ["second-clip"] }] } },
+    context,
+  );
+  assert.equal(proposal.sequenceId, "second");
+  assert.throws(
+    () =>
+      parseEditorProposal(
+        {
+          title: "两条",
+          editor: {
+            steps: [
+              { kind: "remove", sequenceId: "second", clipIds: ["second-clip"] },
+              { kind: "remove", sequenceId: "sequence-main", clipIds: ["a"] },
+            ],
+          },
+        },
+        context,
+      ),
+    /一条时间线/,
+  );
+});
+
+test("the 15 second draft cuts a transition after the limit and explains one across it", () => {
+  const shifted = (first: number, second: number) =>
+    edit(multitrack(), (sequence) => {
+      sequence.clips.find((item) => item.id === "overlay-1")!.start = first * F;
+      sequence.clips.find((item) => item.id === "overlay-2")!.start = second * F;
+      sequence.transitions[0]!.start = second * F;
+    });
+  const doc = shifted(420, 470);
+  const after = apply(doc, planFifteenSecondDraft(doc, "sequence-main", idFactory).operations);
+  assert.equal(sequenceDuration(sequenceOf(after)), 450 * F);
+  assert.equal(clip(after, "overlay-2"), undefined);
+  assert.deepEqual(sequenceOf(after).transitions, []);
+  assert.throws(
+    () => planFifteenSecondDraft(shifted(395, 445), "sequence-main", idFactory),
+    /画中画.*转场/,
+  );
 });

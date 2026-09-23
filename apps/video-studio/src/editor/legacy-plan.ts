@@ -12,7 +12,7 @@ import { applyEditorOperations, type EditorOperation } from "./operations";
 import type { SequenceIdFactory } from "./sequence-edits";
 import { freezeTimeMap } from "./time";
 import { magneticBlocks, planTimelineArrangement } from "./timing-edits";
-import type { EditorClip, EditorDocument, EditorSequence } from "./types";
+import type { EditorClip, EditorDocument, EditorSequence, MediaClip } from "./types";
 
 const F = LEGACY_FRAME_TICKS;
 /** Shown when an old plan names a clip the current project cannot identify. */
@@ -106,6 +106,234 @@ function volume(value: unknown): number {
   return value;
 }
 
+/** The old model's ID for a new row: `prefix-N`, N starting after the row count. */
+function nextId(prefix: string, used: ReadonlySet<string>): string {
+  let index = used.size + 1;
+  while (used.has(`${prefix}-${index}`)) index += 1;
+  return `${prefix}-${index}`;
+}
+/** The old main sequence: clips on the view's main picture and main sound tracks, in time order. */
+function mainClips(sequence: EditorSequence, view: LegacyProjectView): EditorClip[] {
+  return sequence.clips
+    .filter(
+      (clip) =>
+        clip.trackId === view.tracks.primaryVideoTrackId ||
+        (!!view.tracks.primaryAudioTrackId && clip.trackId === view.tracks.primaryAudioTrackId),
+    )
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+}
+/** Lay the main clips end to end from zero in the given order, moving each connected group once. */
+function packMain(
+  document: EditorDocument,
+  sequenceId: string,
+  order: readonly string[],
+): EditorOperation[] {
+  const sequence = sequenceOf(document, sequenceId);
+  const find = (id: string) => sequence.clips.find((clip) => clip.id === id)!;
+  if (
+    sequence.transitions.some(
+      (item) => order.includes(item.fromClipId) || order.includes(item.toClipId),
+    )
+  )
+    throw new Error("主序列包含转场，旧方案无法重新排列，请使用新版方案格式");
+  const targets = new Map<string, number>();
+  let cursor = 0;
+  for (const id of order) {
+    const clip = find(id);
+    targets.set(id, cursor - clip.start);
+    cursor += clip.duration;
+  }
+  const moved = new Map<string, number>(),
+    operations: EditorOperation[] = [];
+  for (const id of order) {
+    const delta = targets.get(id)!;
+    if (moved.has(id)) {
+      if (moved.get(id) !== delta)
+        throw new Error("成组或关联的主序列片段无法按旧方案重排，请使用新版方案格式");
+      continue;
+    }
+    const chosen = new Set([id]);
+    for (;;) {
+      const size = chosen.size;
+      const members = sequence.clips.filter((clip) => chosen.has(clip.id));
+      const groups = new Set(members.map((clip) => clip.groupId).filter(Boolean));
+      const links = new Set(members.map((clip) => clip.linkGroupId).filter(Boolean));
+      for (const clip of sequence.clips)
+        if ((clip.groupId && groups.has(clip.groupId)) || (clip.linkGroupId && links.has(clip.linkGroupId)))
+          chosen.add(clip.id);
+      if (chosen.size === size) break;
+    }
+    for (const member of chosen) {
+      if ((targets.get(member) ?? delta) !== delta || (moved.get(member) ?? delta) !== delta)
+        throw new Error("成组或关联的主序列片段无法按旧方案重排，请使用新版方案格式");
+      moved.set(member, delta);
+    }
+    if (delta) operations.push({ type: "clip.move", sequenceId, clipIds: [id], delta });
+  }
+  return operations;
+}
+function linear(clip: EditorClip | undefined): clip is MediaClip {
+  return (
+    clip?.kind === "media" &&
+    clip.timeMap.points.every((point) => point.source - point.time === clip.timeMap.points[0]!.source)
+  );
+}
+interface Piece {
+  /** Offset of the surviving part inside the follower. */
+  local: number;
+  length: number;
+  /** New timeline start of that part. */
+  start: number;
+}
+/**
+ * The old sequence carried its captions and independent sound along with the surviving
+ * source ranges of the main clips. Reproduce that for the followers the old view shows:
+ * each keeps the parts lying over surviving main source, moved to where that source now is.
+ */
+function rippleFollowers(
+  before: EditorDocument,
+  after: EditorDocument,
+  sequenceId: string,
+  mainIds: readonly string[],
+  followerIds: readonly string[],
+  factory: SequenceIdFactory,
+): EditorOperation[] {
+  const old = sequenceOf(before, sequenceId),
+    next = sequenceOf(after, sequenceId);
+  const olds = mainIds.map((id) => old.clips.find((clip) => clip.id === id));
+  const news = new Map(next.clips.filter((clip) => mainIds.includes(clip.id)).map((clip) => [clip.id, clip]));
+  if (!olds.every(linear) || ![...news.values()].every(linear)) return [];
+  let draft = after;
+  const operations: EditorOperation[] = [];
+  for (const id of followerIds) {
+    const original = old.clips.find((clip) => clip.id === id),
+      follower = sequenceOf(draft, sequenceId).clips.find((clip) => clip.id === id);
+    if (!original || !follower || JSON.stringify(original) !== JSON.stringify(follower)) continue;
+    if (follower.kind === "text" && follower.sourceBinding) continue;
+    let pieces: Piece[] = [];
+    for (const main of olds as MediaClip[]) {
+      const moved = news.get(main.id) as MediaClip | undefined;
+      if (!moved) continue;
+      const from = Math.max(follower.start, main.start),
+        to = Math.min(follower.start + follower.duration, main.start + main.duration);
+      if (to <= from) continue;
+      const source = main.timeMap.points[0]!.source,
+        movedSource = moved.timeMap.points[0]!.source;
+      const first = Math.max(source + from - main.start, movedSource),
+        last = Math.min(source + to - main.start, movedSource + moved.duration);
+      if (last <= first)
+        continue;
+      pieces.push({
+        local: main.start + first - source - follower.start,
+        length: last - first,
+        start: moved.start + first - movedSource,
+      });
+    }
+    pieces.sort((a, b) => a.start - b.start);
+    if (
+      pieces.length === 1 &&
+      pieces[0]!.local === 0 &&
+      pieces[0]!.length === follower.duration &&
+      pieces[0]!.start === follower.start
+    )
+      continue;
+    let batch: EditorOperation[];
+    if (!pieces.length) batch = [{ type: "clip.remove", sequenceId, clipIds: [id] }];
+    else if (follower.kind === "text") {
+      // Caption parts that meet again become one caption with the same text.
+      const groups: Array<{ start: number; end: number; parts: Piece[] }> = [];
+      for (const piece of pieces) {
+        const last = groups.at(-1);
+        if (last && last.end >= piece.start) {
+          last.end = Math.max(last.end, piece.start + piece.length);
+          last.parts.push(piece);
+        } else groups.push({ start: piece.start, end: piece.start + piece.length, parts: [piece] });
+      }
+      const words = (group: (typeof groups)[number]) =>
+        follower.words.flatMap((word) =>
+          group.parts.flatMap((part) => {
+            const from = Math.max(word.start, part.local),
+              to = Math.min(word.end, part.local + part.length);
+            return to > from
+              ? [
+                  {
+                    ...word,
+                    start: part.start - group.start + from - part.local,
+                    end: part.start - group.start + to - part.local,
+                  },
+                ]
+              : [];
+          }),
+        );
+      batch = groups.map((group, index) => {
+        const placed = {
+          start: group.start,
+          duration: group.end - group.start,
+          ...(follower.words.length ? { words: words(group) } : {}),
+        };
+        return index === 0
+          ? ({ type: "clip.update", sequenceId, clipId: id, patch: placed } as EditorOperation)
+          : ({
+              type: "clip.add",
+              sequenceId,
+              clip: { ...structuredClone(follower), id: factory("clip"), ...placed },
+            } as EditorOperation);
+      });
+    } else {
+      // Sound parts join only where both timeline and source continue.
+      const merged: Piece[] = [];
+      for (const piece of pieces) {
+        const last = merged.at(-1);
+        if (last && last.start + last.length === piece.start && last.local + last.length === piece.local)
+          last.length += piece.length;
+        else merged.push({ ...piece });
+      }
+      pieces = merged;
+      const cuts = [
+        ...new Set(pieces.flatMap((piece) => [piece.local, piece.local + piece.length])),
+      ]
+        .filter((cut) => cut > 0 && cut < follower.duration)
+        .sort((a, b) => a - b);
+      let local = draft;
+      batch = [];
+      const segments = [{ id, from: 0, to: follower.duration }];
+      for (const cut of cuts) {
+        const segment = segments.at(-1)!;
+        const current = sequenceOf(local, sequenceId).clips.find((clip) => clip.id === segment.id)!;
+        const split = compileEditorSteps(
+          local,
+          [{ kind: "split", sequenceId, clipId: segment.id, time: current.start + cut - segment.from }],
+          factory,
+        );
+        const right = split.find((op) => op.type === "clip.add") as Extract<
+          EditorOperation,
+          { type: "clip.add" }
+        >;
+        local = applyEditorOperations(local, split, local.revision);
+        batch.push(...split);
+        segments.push({ id: right.clip.id, from: cut, to: segment.to });
+        segment.to = cut;
+      }
+      for (const segment of segments) {
+        const piece = pieces.find(
+          (item) => item.local === segment.from && item.local + item.length === segment.to,
+        );
+        if (!piece) batch.push({ type: "clip.remove", sequenceId, clipIds: [segment.id] });
+        else if (piece.start !== follower.start + segment.from)
+          batch.push({
+            type: "clip.move",
+            sequenceId,
+            clipIds: [segment.id],
+            delta: piece.start - follower.start - segment.from,
+          });
+      }
+    }
+    draft = applyEditorOperations(draft, batch, draft.revision);
+    operations.push(...batch);
+  }
+  return operations;
+}
+
 /** Exact old semantics through the 30 fps view: used when that view shows everything, or for additions. */
 function viaLegacyView(
   document: EditorDocument,
@@ -135,10 +363,15 @@ function native(
     case "audio-trim": {
       const clip = target!,
         source = sourceStart(clip, op.clipId);
-      const localStart = frame(op.inFrame, "入点") * F - source,
+      let localStart = frame(op.inFrame, "入点") * F - source,
         localEnd = frame(op.outFrame, "出点") * F - source;
+      // Real footage can start or end between old frames; a whole-frame edge within one
+      // frame of it means that edge is kept.
+      if (Math.abs(localStart) < F) localStart = 0;
+      if (Math.abs(localEnd - clip.duration) < F) localEnd = clip.duration;
       if (localStart < 0 || localEnd > clip.duration || localStart >= localEnd)
         throw new Error("此工程只能在片段现有范围内裁剪；延长片段请使用新版方案格式");
+      if (localStart === 0 && localEnd === clip.duration) return [];
       // Old independent audio keeps its start when trimmed; main pictures follow the sequence.
       const options = op.type === "audio-trim" ? { ripple: false } : {};
       let draft = document;
@@ -188,15 +421,51 @@ function native(
     }
     case "split":
     case "audio-split": {
-      const clip = target!;
-      return steps(document, [
-        {
-          kind: "split",
-          sequenceId,
-          clipId: clip.id,
-          time: clip.start + frame(op.atFrame, "切分位置") * F - sourceStart(clip, op.clipId),
+      const clip = target!,
+        collection = op.type === "split" ? "clips" : "audioClips";
+      // The right piece gets the ID the old model would give it, so later operations of
+      // the same plan can name it; an ID already taken is recorded as an alias instead.
+      const legacyId = nextId(
+        collection === "clips" ? "clip" : "audio",
+        new Set((view.project[collection] ?? []).map((item) => item.id)),
+      );
+      const used = new Set(
+        document.sequences.flatMap((item) => [
+          item.id,
+          ...item.tracks.map((track) => track.id),
+          ...item.transitions.map((transition) => transition.id),
+          ...item.clips.flatMap((value) => [value.id, value.groupId ?? "", value.linkGroupId ?? ""]),
+        ]),
+      );
+      const clipId = used.has(legacyId) ? factory("clip") : legacyId;
+      let first = true;
+      const operations = compileEditorSteps(
+        document,
+        [
+          {
+            kind: "split",
+            sequenceId,
+            clipId: clip.id,
+            time: clip.start + frame(op.atFrame, "切分位置") * F - sourceStart(clip, op.clipId),
+          },
+        ],
+        (kind) => {
+          if (kind === "clip" && first) {
+            first = false;
+            return clipId;
+          }
+          return factory(kind);
         },
-      ]);
+      );
+      if (clipId !== legacyId) {
+        const production = structuredClone(document.production ?? {});
+        production.legacyAliases = [
+          ...(Array.isArray(production.legacyAliases) ? production.legacyAliases : []),
+          { sequenceId, collection, legacyId, clipId },
+        ];
+        operations.push({ type: "project.production", data: production });
+      }
+      return operations;
     }
     case "remove":
     case "audio-remove":
@@ -206,20 +475,30 @@ function native(
       if (sequence.timelineMode !== "magnetic")
         throw new Error("自由时间轴请按时间移动片段，或先开启主序列磁性");
       const clip = target!;
-      const blocks = magneticBlocks(sequence, clip.trackId);
-      const moving = blocks.find((block) => block.clipIds.includes(clip.id))!;
-      const remaining = blocks.filter((block) => block !== moving);
-      const others = remaining.flatMap((block) => block.clipIds);
+      const main = mainClips(sequence, view);
       if (
         typeof op.toIndex !== "number" ||
         !Number.isSafeInteger(op.toIndex) ||
         op.toIndex < 0 ||
-        op.toIndex > others.length
+        op.toIndex >= main.length
       )
         throw new Error("片段目标位置超出范围");
-      const current = remaining.filter((block) => block.start < moving.start).flatMap(
-        (block) => block.clipIds,
-      ).length;
+      if (main.some((item) => item.trackId === view.tracks.primaryAudioTrackId)) {
+        // Like the old sequence, pictures and audio-only clips share one order.
+        const order = main.map((item) => item.id).filter((id) => id !== clip.id);
+        order.splice(op.toIndex, 0, clip.id);
+        return order.every((id, index) => id === main[index]!.id)
+          ? []
+          : packMain(document, sequenceId, order);
+      }
+      const blocks = magneticBlocks(sequence, clip.trackId);
+      const moving = blocks.find((block) => block.clipIds.includes(clip.id))!;
+      const remaining = blocks.filter((block) => block !== moving);
+      const others = remaining.flatMap((block) => block.clipIds);
+      if (op.toIndex > others.length) throw new Error("片段目标位置超出范围");
+      const current = remaining
+        .filter((block) => block.start < moving.start)
+        .flatMap((block) => block.clipIds).length;
       if (current === op.toIndex) return [];
       const desired =
         op.toIndex === 0
@@ -271,6 +550,9 @@ function native(
       }
       if (start !== clip.start) patch.start = start;
       if (end - start !== clip.duration) patch.duration = end - start;
+      // A retimed caption no longer covers the words it was bound to.
+      if (clip.sourceBinding && (patch.start !== undefined || patch.duration !== undefined))
+        patch.sourceBinding = null;
       return Object.keys(patch).length
         ? [{ type: "clip.update", sequenceId, clipId: clip.id, patch }]
         : [];
@@ -384,6 +666,43 @@ export function translateLegacyOperations(
         const next = applyEditorOperations(draft, batch, draft.revision);
         batch = [...batch, ...viaLegacyView(next, sequenceId, rest as EditOperation)];
       }
+    } else if (
+      existing &&
+      ["trim", "remove", "move"].includes(op.type) &&
+      sequenceOf(draft, sequenceId).timelineMode === "magnetic"
+    ) {
+      // Main-sequence edits also move what the old sequence moved with them.
+      const main = mainClips(sequenceOf(draft, sequenceId), view).map((clip) => clip.id);
+      batch = native(draft, view, op, factory);
+      let after = applyEditorOperations(draft, batch, draft.revision);
+      if (
+        op.type !== "move" &&
+        sequenceOf(draft, sequenceId).clips.some(
+          (clip) => clip.trackId === view.tracks.primaryAudioTrackId,
+        )
+      ) {
+        const alive = new Set(sequenceOf(after, sequenceId).clips.map((clip) => clip.id));
+        const packed = packMain(
+          after,
+          sequenceId,
+          main.filter((id) => alive.has(id)),
+        );
+        after = applyEditorOperations(after, packed, after.revision);
+        batch = [...batch, ...packed];
+      }
+      batch = [
+        ...batch,
+        ...rippleFollowers(
+          draft,
+          after,
+          sequenceId,
+          main,
+          view.clips
+            .filter((item) => item.collection !== "clips")
+            .map((item) => item.clipId),
+          factory,
+        ),
+      ];
     } else if (existing || (op.type === "add" && op.startFrame === undefined))
       batch = native(draft, view, op, factory);
     else batch = viaLegacyView(draft, sequenceId, value);
@@ -409,8 +728,8 @@ export function legacyOperationLabel(
     const clip = ref && typeof ref.id === "string" && find(document, view, ref.collection, ref.id);
     if (clip)
       named =
-        (clip.kind === "media" && document.assets.find((asset) => asset.id === clip.assetId)?.name) ||
         clip.label ||
+        (clip.kind === "media" && document.assets.find((asset) => asset.id === clip.assetId)?.name) ||
         named;
   } catch {
     /* Labels never block review; translation reports the real problem. */

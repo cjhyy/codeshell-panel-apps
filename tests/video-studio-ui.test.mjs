@@ -357,6 +357,8 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   assert.match(review, /主画面\s*3\s*→\s*2/, "The review counts clips per track");
   assert.match(review, /保留「.+」到 15\.00 秒/);
   assert.match(review, /删除主画面轨 15\.00 秒之后的 1 个片段/);
+  assert.match(review, /截断其他轨道 15\.00 秒之后的 \d+ 个片段/, "Narration and captions end too");
+  assert.match(review, /\n15\.00s\n/, "The whole video becomes 15 seconds");
   await page.screenshot({ path: resolve(screenshots, "studio-ai-review.png"), fullPage: true });
   await page.getByRole("button", { name: "应用方案", exact: true }).click();
   await saved(page);

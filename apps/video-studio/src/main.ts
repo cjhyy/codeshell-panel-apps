@@ -143,6 +143,7 @@ import {
   planFifteenSecondDraft,
   reviewEditorProposal,
   type EditorProposal,
+  type EditorProposalReview,
   type ProposalOrigin,
 } from "./editor/proposal";
 import { translateLegacyOperations } from "./editor/legacy-plan";
@@ -1285,10 +1286,7 @@ function views() {
     zoom,
     snapping,
     search,
-    proposal:
-      proposal && editorSession
-        ? reviewEditorProposal(proposal, editorSession.read(), editorSession.getState().identity)
-        : null,
+    proposal: proposalReview(),
     task,
     taskStarting,
     mediaImporting,
@@ -2531,6 +2529,22 @@ async function seek(next: number): Promise<void> {
   if (play) play.innerHTML = icon("play");
 }
 
+let reviewCache:
+  | { proposal: EditorProposal; key: string; review: EditorProposalReview }
+  | undefined;
+/** The review card's figures, recomputed only when the plan or the project version changes. */
+function proposalReview(): EditorProposalReview | null {
+  if (!proposal || !editorSession) return null;
+  const identity = editorSession.getState().identity,
+    key = `${identity.documentId}:${identity.generation}:${identity.revision}`;
+  if (reviewCache?.proposal !== proposal || reviewCache.key !== key)
+    reviewCache = {
+      proposal,
+      key,
+      review: reviewEditorProposal(proposal, editorSession.read(), identity),
+    };
+  return reviewCache.review;
+}
 function mainTrackClipCount(): number | undefined {
   if (!editorSession) return undefined;
   const doc = editorSession.read(),
@@ -2940,7 +2954,7 @@ function quickPlan(): void {
     createEditorProposal(doc, {
       title: "15 秒精简版",
       explanation:
-        "本地规则：保留主画面轨的前 15 秒，与删去画面关联的字幕一起调整，其他轨道保持不变。未进行画面识别或静音检测。",
+        "本地规则：保留主画面轨的前 15 秒，其他轨道（声音、字幕、标题等）一并截断到 15 秒，关联字幕随画面调整。未进行画面识别或静音检测。",
       origin: "local",
       identity: editorSession.getState().identity,
       sequenceId,

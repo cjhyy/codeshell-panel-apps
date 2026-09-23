@@ -713,7 +713,7 @@ ${esc(aiPrompt)}</textarea
       </div>`;
     const { stale, after } = proposal;
     const changedTracks = proposal.tracks.filter(
-      (track) => track.before || (track.after !== null && track.after !== track.before),
+      (track) => track.after !== null && track.after !== track.before,
     );
     return html`<div class="proposal-card">
       <div class="proposal-heading">
@@ -731,7 +731,7 @@ ${esc(aiPrompt)}</textarea
         ? `<ul class="proposal-tracks" aria-label="各轨道片段数">${changedTracks
             .map(
               (track) =>
-                `<li><span>${esc(track.name)}</span> <span>${track.before} → ${track.after ?? "?"}</span></li>`,
+                `<li><span>${esc(track.name)}</span> <span>${track.before} → ${track.after}</span></li>`,
             )
             .join("")}</ul>`
         : ""}

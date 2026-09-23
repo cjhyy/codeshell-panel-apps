@@ -1915,7 +1915,11 @@ test("AI 制作 rule drafts and imported plans review and apply on real off-fram
   assert.match(await card.innerText(), /46\.81s/, "The review shows the current sequence end");
   assert.match(await card.innerText(), /15\.0\ds/, "…and the frame-snapped end after applying");
   assert.match(await card.innerText(), /保留「camera-main」/);
-  assert.match(await card.innerText(), /画面\s*1\s*→\s*1/);
+  assert.equal(
+    await card.locator(".proposal-tracks").count(),
+    0,
+    "No track changes its clip count, so none is listed",
+  );
   assert.deepEqual(await saved(page), before, "Reviewing does not edit the project");
   await page.getByRole("button", { name: "应用方案", exact: true }).click();
   await page.waitForFunction(
@@ -1956,6 +1960,7 @@ test("AI 制作 rule drafts and imported plans review and apply on real off-fram
   assert.match(await card.innerText(), /去掉画中画/);
   assert.match(await card.innerText(), /删除「camera-overlay」/);
   assert.match(await card.innerText(), /画中画\s*1\s*→\s*0/);
+  assert.doesNotMatch(await card.locator(".proposal-tracks").innerText(), /画面\s*1/);
   await page.getByRole("button", { name: "应用方案", exact: true }).click();
   await page.waitForFunction(
     (revision) => window.__mainHost.current().revision > revision,
