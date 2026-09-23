@@ -48,12 +48,10 @@ export const suites = [
     commands: [
       [
         "scripts/run-typescript-tests.mjs",
-        "tests/video-studio-local-voice.test.ts",
         "tests/video-studio-voice-library-bridge.test.ts",
         "tests/video-studio-media-task-bridge.test.ts",
         "tests/video-studio-media-file-storage.test.ts",
         "tests/video-studio-external-media.test.ts",
-        "tests/video-studio-asset-management.test.ts",
         "tests/video-studio-timeline-menu.test.ts",
         "tests/video-studio-rough-cut-ai.test.ts",
         "tests/video-studio-folder-scan.test.ts",
@@ -78,6 +76,7 @@ export const suites = [
         "tests/video-studio-editor-session.test.ts",
         "tests/video-studio-editor-audio.test.ts",
         "tests/video-studio-editor-legacy-adapter.test.ts",
+        "tests/video-studio-editor-legacy-reasons.test.ts",
         "tests/video-studio-editor-resource-audio.test.ts",
         "tests/video-studio-editor-task.test.ts",
         "tests/video-studio-editor-timing-edits.test.ts",

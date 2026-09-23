@@ -58,6 +58,11 @@ export function validateFrameRate(value: unknown): FrameRate {
   return { numerator, denominator };
 }
 
+/** A frame rate as people write it: 30, 25, 29.97, 23.976. */
+export function formatFrameRate(rate: FrameRate): string {
+  return String(Number((rate.numerator / rate.denominator).toFixed(3)));
+}
+
 export function secondsToTicks(seconds: number): Tick {
   if (!Number.isFinite(seconds) || seconds < 0) throw new Error("秒数必须是非负有限数");
   return assertTick(Math.round(seconds * TICKS_PER_SECOND));

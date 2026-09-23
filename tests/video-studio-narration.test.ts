@@ -11,7 +11,6 @@ import {
 import {
   narrationFingerprint,
   narrationSnapshot,
-  reconcileNarrationEdit,
   validateNarration,
   type NarrationState,
 } from "../apps/video-studio/src/narration.ts";
@@ -104,12 +103,8 @@ test("preparation, new assets, labels and workflow metadata do not revoke approv
     nextSteps: ["录制已确认文稿。"],
     blockers: [],
   };
-  const reconciled = reconcileNarrationEdit(approved, metadata);
-  assert.deepEqual(reconciled, metadata);
-  assert.equal(await approvedNow(reconciled), true);
-  assert.equal(await narrationFingerprint(reconciled), approved.narration!.approvedFingerprint);
-  reconciled.assets[0]!.name = "副本修改";
-  assert.notEqual(metadata.assets[0]!.name, reconciled.assets[0]!.name);
+  assert.equal(await approvedNow(metadata), true);
+  assert.equal(await narrationFingerprint(metadata), approved.narration!.approvedFingerprint);
 });
 
 test("script, picture, voice, subtitle and layout edits revoke every approved phase", async () => {
@@ -161,16 +156,8 @@ test("script, picture, voice, subtitle and layout edits revoke every approved ph
       const next = structuredClone(original);
       change(next);
       next.revision++;
-      const reconciled = reconcileNarrationEdit(original, next);
-      assert.equal(reconciled.narration!.phase, "review");
-      assert.equal(reconciled.narration!.captionBasis, "draft");
-      assert.equal(Object.hasOwn(reconciled.narration!, "approvedScript"), false);
-      assert.equal(Object.hasOwn(reconciled.narration!, "approvedFingerprint"), false);
-      assert.deepEqual(reconciled.narration!.draftCaptionIds, original.narration!.draftCaptionIds);
-      assert.equal(reconciled.narration!.recordingAssetId, "my-take");
-      assert.equal(await approvedNow(reconciled), false);
+      assert.equal(await approvedNow(next), false);
       assert.equal(original.narration!.phase, phase);
-      assert.equal(reconciled.revision, next.revision);
     }
   }
 });

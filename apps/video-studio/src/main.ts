@@ -92,7 +92,12 @@ import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-s
 import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
-import { secondsToTicks } from "./editor/time";
+import { formatFrameRate, secondsToTicks } from "./editor/time";
+import {
+  legacyClipIssue,
+  legacyRestrictionReasons,
+  userFacingMessage,
+} from "./editor/legacy-reasons";
 import { planRoughCutPlacement, type RoughCutAnchor } from "./editor/rough-cut-placement";
 import {
   createEditorTaskBridge,
@@ -1383,6 +1388,8 @@ function views() {
       .sequences.find((sequence) => sequence.id === editorSession!.read().activeSequenceId)?.clips
       .length,
     mainTrackClipCount: mainTrackClipCount(),
+    frameRateLabel: activeFrameRateLabel(),
+    inspectorIssue: inspectorIssue(),
     production: {
       connected: Boolean(panel),
       status: production.status,
@@ -1415,7 +1422,7 @@ function showVoiceLibraryProgress(progress: VoiceLibraryProgress): void {
   status.textContent = `${progress.message} · ${Math.round(Math.max(0, Math.min(1, progress.fraction)) * 100)}%`;
 }
 function fail(error: unknown): void {
-  toast(error instanceof Error ? error.message : String(error));
+  toast(userFacingMessage(error instanceof Error ? error.message : String(error)));
 }
 
 function reportCleanupFailure(message: string, retry: () => Promise<void>): void {
@@ -2005,10 +2012,19 @@ function draw(): void {
     const ctx = canvas.getContext("2d");
     if (ctx) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Only the browser-only frame view gets here; playing opens the full composition.
+      const reason = legacyView
+        ? legacyRestrictionReasons(legacyView.restrictions, { all: true })[0]
+        : undefined;
       ctx.fillStyle = "#e3ede7";
       ctx.font = "24px system-ui";
       ctx.textAlign = "center";
-      ctx.fillText("请在素材页查看完整成片", canvas.width / 2, canvas.height / 2);
+      ctx.fillText(
+        reason ? `此工程${reason}` : "这里无法显示完整画面",
+        canvas.width / 2,
+        canvas.height / 2 - 18,
+      );
+      ctx.fillText("点播放查看完整成片", canvas.width / 2, canvas.height / 2 + 18);
     }
   }
 }
@@ -2605,6 +2621,17 @@ function proposalReview(): EditorProposalReview | null {
     };
   return reviewCache.review;
 }
+function activeFrameRateLabel(): string | undefined {
+  const doc = editorSession?.read(),
+    sequence = doc?.sequences.find((item) => item.id === doc.activeSequenceId);
+  return sequence ? formatFrameRate(sequence.frameRate) : undefined;
+}
+/** What the frame-based AI 制作 inspector cannot do with the selected clip, shown before any click. */
+function inspectorIssue(): { reason?: string; volume?: string } | undefined {
+  const issue = legacyView && selected ? legacyClipIssue(legacyView, selected) : null;
+  if (issue?.excluded && issue.reason) return { reason: issue.reason };
+  return issue?.volume ? { volume: issue.volume } : undefined;
+}
 function mainTrackClipCount(): number | undefined {
   if (!editorSession) return undefined;
   const doc = editorSession.read(),
@@ -2682,7 +2709,8 @@ async function handleTask(next: PanelTask): Promise<void> {
         offer({ ...parsed, projectId: taskProjectId, requestToken: taskRequestToken }, "agent");
         aiMessage = "方案已生成，请在右侧审阅。";
       } catch (error) {
-        aiMessage = `任务完成，但没有可应用的方案：${error instanceof Error ? error.message : String(error)}`;
+        const reason = error instanceof Error ? error.message : String(error);
+        aiMessage = `任务完成，但没有可应用的方案：${userFacingMessage(reason)}`;
       }
     } else aiMessage = "方案已生成，请在右侧审阅。";
   } else if (next.status === "failed") aiMessage = next.error || "任务失败，请检查模型连接后重试。";
@@ -3512,8 +3540,8 @@ async function action(name: string, id?: string): Promise<void> {
           ${tool("close-dialog", "关闭", "close")}
         </div>
         <p class="section-description">
-          粘贴新版剪辑方案（title、explanation 与 editor.steps），也兼容注明修订号
-          ${project.revision} 的旧版方案。方案先审阅，再应用。
+          粘贴剪辑方案 JSON（title、explanation 与 editor.steps）；也可粘贴注明修订号
+          ${project.revision} 的早期格式方案。方案先审阅，再应用。
         </p>
         <textarea
           id="plan-json"

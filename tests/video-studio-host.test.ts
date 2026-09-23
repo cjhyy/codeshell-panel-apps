@@ -9,7 +9,7 @@ import {
   createProjectStore,
   createProjectArchiveStore,
   parseProposal,
-  parseTaskProposal,
+  parseTaskResultJson,
 } from "../apps/video-studio/src/host.ts";
 import { createProject, type Project } from "../apps/video-studio/src/model.ts";
 
@@ -113,7 +113,10 @@ test("proposals preserve request identity and detach reviewed operations", () =>
   assert.deepEqual(proposal.operations, [{ type: "remove", clipId: "clip-1" }]);
   assert.equal(proposal.projectId, "project-123");
   assert.equal(proposal.requestToken, "request-123");
-  assert.deepEqual(parseTaskProposal("```json\n" + JSON.stringify(proposal) + "\n```"), proposal);
+  assert.deepEqual(
+    parseProposal(parseTaskResultJson("```json\n" + JSON.stringify(proposal) + "\n```")),
+    proposal,
+  );
 });
 
 test("proposal parsing rejects malformed identities, revisions and outer fields", () => {
@@ -136,7 +139,7 @@ test("proposal parsing rejects malformed identities, revisions and outer fields"
     { ...base, arbitrary: true },
   ])
     assert.throws(() => parseProposal(input));
-  assert.throws(() => parseTaskProposal("x".repeat(1_000_001)));
+  assert.throws(() => parseTaskResultJson("x".repeat(1_000_001)));
 });
 
 test("proposal diagnostics identify the invalid field without relaxing validation", () => {

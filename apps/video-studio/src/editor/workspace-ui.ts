@@ -12,7 +12,14 @@ import {
   defaultTransform,
 } from "./defaults";
 import { createExportPresets, validateExportProfile, type ExportProfile } from "./export-settings";
-import { constantTimeMap, freezeTimeMap, secondsToTicks, ticksToSeconds, type Tick } from "./time";
+import {
+  constantTimeMap,
+  formatFrameRate,
+  freezeTimeMap,
+  secondsToTicks,
+  ticksToSeconds,
+  type Tick,
+} from "./time";
 import type { EditorMediaPoolOptions } from "./media-pool";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
@@ -378,8 +385,7 @@ export class EditorWorkspace {
     this.get<HTMLInputElement>("[data-ew-seek]").max = String(
       Math.max(0, sequenceDuration(sequence) - 1),
     );
-    this.get("[data-ew-fps]").textContent =
-      `${Number((sequence.frameRate.numerator / sequence.frameRate.denominator).toFixed(3))} fps`;
+    this.get("[data-ew-fps]").textContent = `${formatFrameRate(sequence.frameRate)} fps`;
     this.renderAssets();
     this.inspector.render();
     this.timing.render();

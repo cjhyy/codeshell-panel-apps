@@ -205,23 +205,3 @@ export function draftTextSegments(value: string, duration: number): string[] {
   const limit = Math.min(1000, duration);
   return result.length > limit ? reflowDraftText(normalized, limit) : result;
 }
-
-/** Content edits revoke approval; preparation and recording imports do not change the draft. */
-export function reconcileNarrationEdit(before: Project, next: Project): Project {
-  const result = structuredClone(next);
-  if (
-    before.id !== next.id ||
-    !before.narration ||
-    !approvedPhases.has(before.narration.phase) ||
-    narrationSnapshot(before) === narrationSnapshot(next)
-  )
-    return result;
-  const state = next.narration ?? before.narration;
-  result.narration = {
-    phase: "review",
-    captionBasis: "draft",
-    draftCaptionIds: [...state.draftCaptionIds],
-    ...(state.recordingAssetId ? { recordingAssetId: state.recordingAssetId } : {}),
-  };
-  return result;
-}

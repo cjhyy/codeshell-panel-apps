@@ -72,6 +72,10 @@ export interface ViewState {
   readonly narrationHasPicture?: boolean;
   readonly narrationApprovalIssue?: string | null;
   readonly production?: ProductionViewState;
+  /** The active sequence's frame rate as people write it, e.g. 29.97. */
+  readonly frameRateLabel?: string;
+  /** What the frame-based inspector cannot do with the selected clip. */
+  readonly inspectorIssue?: { readonly reason?: string; readonly volume?: string };
 }
 
 export const button = (action: string, text: string, glyph?: string, cls = "", disabled = false) =>
@@ -123,6 +127,7 @@ export function createViews(state: ViewState) {
     state.production?.auto &&
     state.production.auto.projectId === project.id &&
     ["preparing", "agent", "waiting"].includes(state.production.auto.phase);
+  const taskRunning = Boolean(task && ["running", "queued", "cancelling"].includes(task.status));
   const narrationBusy =
     Boolean(autoActive) ||
     taskStarting ||
@@ -189,7 +194,7 @@ export function createViews(state: ViewState) {
             </div>
             <span class="muted"
               >${source ? "原片时间" : `${project.width} × ${project.height}`}
-              <span class="dot">·</span> 30 fps</span
+              <span class="dot">·</span> ${state.frameRateLabel ?? "30"} fps</span
             >
           </div>
           <div class="preview-stage">
@@ -369,40 +374,34 @@ ${esc(aiPrompt)}</textarea
           检查环境、盘点素材并保存目标与制作步骤。若选择本人声音，会准备引擎、参考与短句试听；初始化保留当前剪辑。
         </p>
         ${state.voicePreparationMarkup ?? ""}
-        ${button(
-          "ask-ai",
-          persistent && taskStarting
-            ? "正在创建任务…"
-            : persistent &&
-                (autoActive || (task && ["running", "queued", "cancelling"].includes(task.status)))
-              ? "正在自动制作…"
-              : project.workflow
-                ? "按制作单继续制作"
-                : "开始全流程制作",
-          "spark",
-          "quiet full",
-          !persistent ||
-            Boolean(autoActive) ||
-            taskStarting ||
-            Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
-        )}
-        ${!persistent
-          ? `<p class="host-required" role="status">${esc(state.production?.error || "请在 CodeShell 面板中打开，启用自动制作和后台 MP4。")}</p>`
-          : ""}
         ${connected && !persistent
-          ? button(
+          ? // Connected without persistent media storage: one request, a reviewable plan.
+            button(
               "ask-ai",
               taskStarting
                 ? "正在创建任务…"
-                : task && ["running", "queued", "cancelling"].includes(task.status)
+                : taskRunning
                   ? "正在生成方案…"
                   : "生成剪辑方案",
               "spark",
               "quiet full",
-              !(state.editorClipCount ?? project.clips.length) ||
-                taskStarting ||
-                Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
+              !(state.editorClipCount ?? project.clips.length) || taskStarting || taskRunning,
             )
+          : button(
+              "ask-ai",
+              persistent && taskStarting
+                ? "正在创建任务…"
+                : persistent && (autoActive || taskRunning)
+                  ? "正在自动制作…"
+                  : project.workflow
+                    ? "按制作单继续制作"
+                    : "开始全流程制作",
+              "spark",
+              "quiet full",
+              !persistent || Boolean(autoActive) || taskStarting || taskRunning,
+            )}
+        ${!persistent
+          ? `<p class="host-required" role="status">${esc(state.production?.error || "请在 CodeShell 面板中打开，启用自动制作和后台 MP4。")}</p>`
           : ""}
         ${autoActive || (task && ["running", "queued", "cancelling"].includes(task.status))
           ? button("cancel-ai", "取消任务", "close", "quiet full")
@@ -412,14 +411,14 @@ ${esc(aiPrompt)}</textarea
             ? persistent
               ? "真实关键帧与文稿分析；自动修改前保留历史版本。后台导出完成后可播放与保存。"
               : "使用 CodeShell 当前模型。只读取工程与已有字幕，不声称识别未分析的画面或声音。"
-            : "浏览器可体验时间轴、字幕和规则草案；自动制作需要真实 Host 能力。"}
+            : "浏览器可体验时间轴、字幕和规则草案；自动制作需要在 CodeShell 桌面面板中使用。"}
         </p>
         <div class="ai-task-status" role="status">
           ${esc(aiMessage || task?.activity?.at(-1)?.message || "")}
         </div>
         ${renderWorkflowSummary(project.workflow, project.assets)}
         <div class="local-plan">
-          <span class="eyebrow">BROWSER DEMO</span>
+          ${connected ? "" : '<span class="eyebrow">BROWSER DEMO</span>'}
           <h3>先试一版 15 秒粗剪</h3>
           <p>按现有顺序保留前 15 秒，生成草案供你审阅。</p>
           ${button(
@@ -687,9 +686,11 @@ ${esc(aiPrompt)}</textarea
       !audioClip && project.timelineMode === "free"
         ? timelineClips(project).find((item) => item.id === selected)
         : undefined;
+    const clipIssue = clip ? undefined : state.inspectorIssue?.reason;
+    const volumeIssue = clip ? state.inspectorIssue?.volume : undefined;
     return html`<div class="section-title">
         <h2>片段属性</h2>
-        <span class="muted">${clip ? "已选中" : "未选择"}</span>
+        <span class="muted">${clip || clipIssue ? "已选中" : "未选择"}</span>
       </div>
       ${audioClip
         ? `<div class="property-section"><label class="input-label">音轨在时间轴的位置（秒）<input id="audio-start" type="number" step="0.033333" min="0" value="${seconds(audioClip.startFrame)}" /></label></div>`
@@ -698,10 +699,12 @@ ${esc(aiPrompt)}</textarea
         ? `<div class="property-section"><label class="input-label">画面在时间轴的位置（秒）<input id="video-start" type="number" step="0.033333" min="0" max="86400" value="${seconds(freeClip.startFrame)}" /></label><p class="small muted">可自由拖动并保留空隙；空隙显示黑场，音乐与配音继续播放。</p></div>`
         : ""}
       ${clip && asset
-        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">${audioClip ? "音轨音量" : "原声音量"} <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}" /></div><p class="small muted">${audioClip ? "独立调整这条音轨，不改变画面；可在时间轴拖动定位或裁剪。" : "画面与原声同步裁剪、同步移动。"}</p></div><div class="reorder-actions">${button("move-left", freeClip ? "前移 1 秒" : "前移", "back", "", audioClip ? audioClip.startFrame === 0 : freeClip ? freeClip.startFrame === 0 : project.clips[0]?.id === selected)}${button("move-right", freeClip ? "后移 1 秒" : "后移", "next", "", audioClip ? audioClip.startFrame + audioClip.outFrame - audioClip.inFrame >= duration() : freeClip ? freeClip.endFrame >= 86400 * project.fps : project.clips.at(-1)?.id === selected)}</div>`
-        : '<div class="empty-inspector">' +
-          icon("film", 30) +
-          "<p>选择时间轴上的片段<br>调整时长与音量</p></div>"}
+        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">${audioClip ? "音轨音量" : "原声音量"} <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}"${volumeIssue ? ` disabled aria-describedby="clip-volume-issue"` : ""} /></div>${volumeIssue ? `<p class="small muted" id="clip-volume-issue" data-volume-issue>这个片段${esc(volumeIssue)}，请在属性面板中调整音量。</p>` : `<p class="small muted">${audioClip ? "独立调整这条音轨，不改变画面；可在时间轴拖动定位或裁剪。" : "画面与原声同步裁剪、同步移动。"}</p>`}</div><div class="reorder-actions">${button("move-left", freeClip ? "前移 1 秒" : "前移", "back", "", audioClip ? audioClip.startFrame === 0 : freeClip ? freeClip.startFrame === 0 : project.clips[0]?.id === selected)}${button("move-right", freeClip ? "后移 1 秒" : "后移", "next", "", audioClip ? audioClip.startFrame + audioClip.outFrame - audioClip.inFrame >= duration() : freeClip ? freeClip.endFrame >= 86400 * project.fps : project.clips.at(-1)?.id === selected)}</div>`
+        : clipIssue
+          ? `<div class="empty-inspector" data-inspector-issue role="status">${icon("film", 30)}<p>这个片段${esc(clipIssue)}，无法在这里调整。<br>点左侧“素材”，在属性面板中修改。</p></div>`
+          : '<div class="empty-inspector">' +
+            icon("film", 30) +
+            "<p>选择时间轴上的片段<br>调整时长与音量</p></div>"}
       ${asset?.speech
         ? `<div class="property-section"><label class="input-label">配音文案</label><p class="speech-script">${esc(asset.speech.text)}</p><p class="small muted">${esc(asset.speech.voiceId)} · ${asset.speech.rate}×</p>${button("edit-voiceover", "修改文案 / 重新配音", "volume", "full")}</div>`
         : ""}

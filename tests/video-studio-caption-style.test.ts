@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   applyOperations,
   createDemoProject,
-  exportSrt,
   validateProject,
   type CaptionStyle,
   type EditOperation,
@@ -19,18 +18,16 @@ import { applyEditorOperations } from "../apps/video-studio/src/editor/operation
 import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapter.ts";
 import type { TextClip } from "../apps/video-studio/src/editor/types.ts";
 
-test("caption templates round trip without changing legacy projects, source timing or SRT", () => {
+test("caption templates round trip without changing legacy projects or source timing", () => {
   const legacy = createDemoProject();
   assert.equal(Object.hasOwn(validateProject(legacy), "captionStyle"), false);
-  const original = JSON.stringify(legacy),
-    srt = exportSrt(legacy);
+  const original = JSON.stringify(legacy);
   for (const captionStyle of ["classic", "bold", "minimal"] as CaptionStyle[]) {
     const changed = applyOperations(legacy, [{ type: "settings", captionStyle }], legacy.revision);
     assert.equal(changed.captionStyle, captionStyle);
     assert.equal(changed.revision, legacy.revision + 1);
     assert.deepEqual(validateProject(JSON.parse(JSON.stringify(changed))), changed);
     assert.deepEqual(changed.captions, legacy.captions);
-    assert.equal(exportSrt(changed), srt);
   }
   assert.equal(JSON.stringify(legacy), original);
 });

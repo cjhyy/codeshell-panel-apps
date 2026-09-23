@@ -2081,6 +2081,98 @@ test("the AI 制作 inspector trims a main clip of a multitrack project the old 
   assert.deepEqual((await waitSaved(page)).sequences, before.sequences);
 });
 
+test("real off-frame multitrack footage shows plain wording, its real frame rate and one AI request", async (t) => {
+  const page = await openPage(t, { seed: { ...realMediaSeed, id: "plain-copy-real-media" } });
+  const internal = /旧视图|新版时间线|BROWSER DEMO|旧流程|Host\b/;
+  for (const tab of ["media", "roughcut", "recording", "spoken", "transcript", "voiceover", "ai", "jobs"]) {
+    await production(page, tab);
+    await settle(page);
+    assert.doesNotMatch(await page.locator("body").innerText(), internal, `The ${tab} page`);
+  }
+  // Connected without persistent media storage: one request button, and the rule draft stays.
+  await production(page, "ai");
+  assert.equal(await page.locator('#studio [data-action="ask-ai"]').count(), 1);
+  assert.equal(
+    await page.getByRole("button", { name: "创建规则草案", exact: true }).isVisible(),
+    true,
+  );
+  // The header reads the active sequence's frame rate, not the old fixed 30 fps.
+  await returnEditor(page);
+  await page.locator('[data-asset="camera"] .asset-thumbnail').click();
+  const heading = page.locator('#studio .viewer-panel[aria-label="原素材预览"] .panel-heading');
+  await heading.waitFor({ state: "visible" });
+  assert.match(await heading.innerText(), /29\.97 fps/);
+  assert.doesNotMatch(await heading.innerText(), /\b30 fps/);
+});
+
+test("the AI 制作 inspector explains clips it cannot adjust instead of failing on click", async (t) => {
+  const loud = {
+    ...picture("loud-main", "v1", 0, 90 * 8000),
+    audio: {
+      volume: {
+        keyframes: [
+          { time: 0, value: 0.4 },
+          { time: 90 * 8000, value: 1.4 },
+        ],
+      },
+      pan: 0,
+      fadeIn: 0,
+      fadeOut: 0,
+      pitchSemitones: 0,
+      preservePitch: true,
+    },
+  };
+  const inspectorSeed = {
+    ...realMediaSeed,
+    id: "inspector-reasons",
+    name: "检查器说明",
+    sequences: [
+      {
+        ...realMediaSeed.sequences[0],
+        frameRate: { numerator: 30, denominator: 1 },
+        clips: [loud, picture("camera-main", "v1", 1_234_567, 1_000_123)],
+      },
+    ],
+  };
+  const page = await openPage(t, { seed: inspectorSeed });
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
+      document.querySelector("#toast"),
+      { childList: true, characterData: true, subtree: true },
+    );
+  });
+  const before = await saved(page);
+  const inspector = page.locator("#studio .inspector");
+
+  // Real footage the old inspector cannot show: the reason instead of an empty prompt.
+  await page.locator('[data-et-clip="camera-main"]').click();
+  await production(page);
+  const notice = inspector.locator("[data-inspector-issue]");
+  await notice.waitFor({ state: "visible" });
+  assert.match(await notice.innerText(), /包含变速或非整帧时间/);
+  assert.equal(await inspector.getByRole("button", { name: "应用裁剪", exact: true }).count(), 0);
+
+  // Volume automation: trimming stays available, the volume slider is disabled with its reason.
+  await returnEditor(page);
+  await page.locator('[data-et-clip="loud-main"]').click();
+  await production(page);
+  const volume = page.locator("#clip-volume");
+  await volume.waitFor({ state: "visible" });
+  assert.equal(await volume.isDisabled(), true);
+  assert.match(
+    await inspector.locator(".property-section").filter({ has: volume }).innerText(),
+    /包含音量自动化或超过 200% 的音量/,
+  );
+  assert.equal(
+    await inspector.getByRole("button", { name: "应用裁剪", exact: true }).isEnabled(),
+    true,
+  );
+  assert.deepEqual(await saved(page), before, "Explaining never edits the project");
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.doesNotMatch(toasts, /旧视图|旧流程|新版/);
+});
+
 /** A saved automatic run that is waiting on its agent: the request token the agent was given. */
 const automaticRun = (projectId, mode) => ({
   "video-studio-production": [
