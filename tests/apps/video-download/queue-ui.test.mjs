@@ -92,6 +92,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
       window.__holdAnalysisCancel = false;
       window.__heldSpawns = {};
       window.__holdNextDownload = false;
+      window.__unavailable = new Set(ai.unavailable || []);
       window.__cookieAccounts = [];
       window.__cookieAuthorizationCount = 0;
       window.__denyCookieAuthorization = false;
@@ -169,6 +170,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
                 };
           }
           if (method === "process.find") {
+            if (window.__unavailable.has(args.name)) return { available: false, name: args.name };
             return {
               available: true,
               name: args.name,
@@ -384,7 +386,8 @@ test("downloads stay serial and each queued item keeps its original settings and
   await waitForStatus(page, second.id, "running");
   assert.equal(secondProcess.directoryHandle, "directory-second");
   assert.equal(secondProcess.args.at(-1), secondUrl);
-  assert.match(secondProcess.args[secondProcess.args.indexOf("--format") + 1], /height<=720/);
+  assert.equal(secondProcess.args[secondProcess.args.indexOf("--format") + 1], "bv*+ba/b");
+  assert.equal(secondProcess.args[secondProcess.args.indexOf("--format-sort") + 1], "res:720");
   assert.equal(secondProcess.args[secondProcess.args.indexOf("--playlist-items") + 1], "2-4,8");
   assert.equal(secondProcess.args[secondProcess.args.indexOf("--sub-langs") + 1], "en.*");
   assert.ok(secondProcess.args.includes("--yes-playlist"));
@@ -1274,6 +1277,60 @@ for (const [width, colorScheme] of [
     });
   });
 }
+
+test("resolution choices prefer rather than require a height, so vertical and sparse formats still download", async (t) => {
+  const page = await openPanel(t);
+  await downloadForm(page);
+  await page.locator("#quality-select").selectOption("1080");
+  await addDownload(page, firstUrl);
+  const [process] = await waitForDownloads(page, 1);
+  const format = process.args[process.args.indexOf("--format") + 1];
+  assert.doesNotMatch(format, /height/, "A height filter rejects 1080x1920 and has no fallback");
+  assert.equal(format, "bv*+ba/b");
+  // yt-dlp's res sort field uses the smaller dimension, so vertical 1080p stays 1080p.
+  assert.equal(process.args[process.args.indexOf("--format-sort") + 1], "res:1080");
+  assert.ok(process.args.includes("--merge-output-format"));
+});
+
+test("network retries pause between fragment attempts and keep yt-dlp's current user agent", async (t) => {
+  const page = await openPanel(t);
+  await addDownload(page, firstUrl);
+  const [process] = await waitForDownloads(page, 1);
+  const sleeps = process.args.flatMap((argument, index) =>
+    argument === "--retry-sleep" ? [process.args[index + 1]] : [],
+  );
+  assert.ok(sleeps.includes("exp=1:30"), `HTTP retries back off: ${sleeps}`);
+  assert.ok(sleeps.includes("fragment:exp=1:30"), `Fragment retries back off: ${sleeps}`);
+  assert.equal(
+    process.args.includes("--user-agent"),
+    false,
+    "A frozen 2021 browser UA is not sent",
+  );
+});
+
+test("a saved task uses merged formats when ffmpeg becomes available before it starts", async (t) => {
+  const page = await openPanel(t, 1280, "", 1, { unavailable: ["ffmpeg"] });
+  await downloadForm(page);
+  await page.locator("#quality-select").selectOption("1080");
+  const saved = await addDownload(page, firstUrl, { start: false });
+  await waitForStatus(page, saved.id, "pending");
+  await page.evaluate(() => window.__unavailable.delete("ffmpeg"));
+  await page.locator("#refresh-versions").click();
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#refresh-versions");
+    return (
+      !button.disabled &&
+      document.querySelector("#quality-select option[value=audio]:not([disabled])")
+    );
+  });
+  await action(page, saved.id, "resume").click();
+  const [process] = await waitForDownloads(page, 1);
+  assert.equal(process.args[process.args.indexOf("--format") + 1], "bv*+ba/b");
+  assert.ok(
+    process.args.includes("--merge-output-format"),
+    `Arguments are built when the task starts, not when it was saved: ${process.args}`,
+  );
+});
 
 test("save-only queue items stay pending while explicit downloads start and complete", async (t) => {
   const page = await openPanel(t, 1280, "", 2);

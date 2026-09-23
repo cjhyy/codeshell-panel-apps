@@ -138,9 +138,6 @@ const YT_DLP_RELEASE_BASE = "https://github.com/yt-dlp/yt-dlp/releases/download"
 const FFMPEG_LATEST_RELEASE_API =
   "https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest";
 const FFMPEG_RELEASE_BASE = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download";
-const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36";
 const SUPPORTED_FORMATS = new Set(["best", "2160", "1440", "1080", "720", "480", "360", "audio"]);
 const SUBTITLE_MODES = new Set(["manual", "auto", "both"]);
 const SUBTITLE_LANGUAGE_PRESETS = {
@@ -1409,8 +1406,8 @@ function networkArguments() {
     String(NETWORK_RETRIES),
     "--retry-sleep",
     "exp=1:30",
-    "--user-agent",
-    USER_AGENT,
+    "--retry-sleep",
+    "fragment:exp=1:30",
   ];
 }
 
@@ -2790,16 +2787,13 @@ function buildArguments(url, configuration = currentConfiguration(), copySuffix 
   if (format === "audio") {
     args.push("--extract-audio", "--audio-format", "mp3", "--audio-quality", "0");
   } else if (/^\d{3,4}$/.test(format)) {
-    args.push("--format");
-    const height = format;
+    // Sort instead of filter: `res` uses the smaller dimension (vertical 1080x1920 is 1080p)
+    // and falls back to the nearest available resolution instead of failing.
     if (dependencyReady(runtime.ffmpeg)) {
-      args.push(
-        `bestvideo*[height<=${height}]+bestaudio/best[height<=${height}]`,
-        "--merge-output-format",
-        "mp4",
-      );
+      args.push("--format", "bv*+ba/b", "--format-sort", `res:${format}`);
+      args.push("--merge-output-format", "mp4");
     } else {
-      args.push(`best[height<=${height}][ext=mp4]/best[height<=${height}]/best`);
+      args.push("--format", "b", "--format-sort", `res:${format},ext`);
     }
   } else {
     args.push("--format");
@@ -3290,6 +3284,9 @@ async function runNextDownload() {
     return;
   }
   try {
+    // Build at launch: ffmpeg may have been installed since the task was saved. The output
+    // name depends only on the frozen configuration, so paused downloads still continue.
+    job.args = buildArguments(job.url, job.configuration, job.copySuffix);
     await saveLibrary();
     const result = await panel.call("process.spawn", {
       executableHandle: job.executable.handle,
