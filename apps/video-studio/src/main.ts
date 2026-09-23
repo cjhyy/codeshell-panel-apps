@@ -470,7 +470,7 @@ const folderImport = createFolderImport(
           revision: project.revision + 1,
           assets: [...project.assets, asset],
         });
-        await saveProject(next, "导入文件夹素材");
+        await saveProject(next, "导入文件夹素材", true);
         // Once the durable write succeeds, stopping the scan must still publish this file.
         if (generation !== initialGeneration) throw new Error("工程已切换，素材未加入工程");
         mediaImporting = false;
@@ -775,7 +775,7 @@ const voicePreparation = createVoicePreparationUI(production, {
           revision: project.revision + 1,
           assets: [...project.assets, reference],
         });
-        await saveProject(next, "从我的声音库导入参考录音");
+        await saveProject(next, "从我的声音库导入参考录音", true);
       }
     } finally {
       aiApplying = false;
@@ -1046,7 +1046,7 @@ const recording = createRecordingUI({
       if (forVoice) {
         mediaImporting = true;
         try {
-          await saveProject(savedProject, "保存声音参考");
+          await saveProject(savedProject, "保存声音参考", true);
         } catch (error) {
           if (
             imported &&
@@ -1599,7 +1599,7 @@ function legacyCandidateKey(value: Project): string {
   );
 }
 /** Editor operations for an old-view candidate, before the approval guard. */
-function legacyCandidateOperations(next: Project) {
+function legacyCandidateOperations(next: Project, exactNewAssets = false) {
   if (!editorSession || !legacyView) throw new Error("工程尚未恢复，已阻止修改");
   const validated = validateProject(next);
   if (
@@ -1609,9 +1609,11 @@ function legacyCandidateOperations(next: Project) {
   )
     throw new Error("工程版本已变化，请重新读取后编辑");
   // Folder imports, referenced originals and voice references decode their files in the media
-  // library; publish that exact length instead of the old view's whole 30 fps frames.
+  // library; publish that exact length instead of the old view's whole 30 fps frames. Other
+  // additions keep whole frames so the browser-only WebM export (which renders the old view)
+  // still includes them in full.
   const assetDurations = new Map<string, number>();
-  for (const asset of validated.assets) {
+  for (const asset of exactNewAssets ? validated.assets : []) {
     const seconds = library.items.get(asset.id)?.duration;
     if (
       asset.kind !== "image" &&
@@ -1633,8 +1635,8 @@ function legacyCandidateOperations(next: Project) {
   return { operations, scriptChanged: project.script !== validated.script };
 }
 /** Old-view edits invalidate a confirmed narration exactly like editor edits do. */
-function prepareLegacyCandidate(next: Project) {
-  const { operations, scriptChanged } = legacyCandidateOperations(next);
+function prepareLegacyCandidate(next: Project, exactNewAssets = false) {
+  const { operations, scriptChanged } = legacyCandidateOperations(next, exactNewAssets);
   const doc = editorSession!.read();
   const guard = reconcileEditorProduction(
     doc,
@@ -1649,11 +1651,16 @@ function applyLegacyCandidate(next: Project, label: string): void {
   if (scriptChanged) narrationScriptDraft = null;
   synchronizeLegacyView();
 }
-async function saveProject(next: Project, label = "自动保存"): Promise<void> {
+/** `exactNewAssets`: publish newly added sources with their decoded length (see legacyCandidateOperations). */
+async function saveProject(
+  next: Project,
+  label = "自动保存",
+  exactNewAssets = false,
+): Promise<void> {
   if (!editorSession) throw new Error("工程尚未恢复，已阻止保存");
   const key = legacyCandidateKey(next);
   if (key !== legacyCandidateKey(project)) {
-    const { operations, scriptChanged } = prepareLegacyCandidate(next);
+    const { operations, scriptChanged } = prepareLegacyCandidate(next, exactNewAssets);
     stop();
     await editorSession.dispatchDurable(operations, editorSession.getState().identity, label);
     if (scriptChanged) narrationScriptDraft = null;
@@ -2485,7 +2492,7 @@ async function importReferencedMedia(): Promise<void> {
         revision: project.revision + 1,
         assets: [...project.assets, asset],
       });
-      await saveProject(next, "引用原文件");
+      await saveProject(next, "引用原文件", true);
       if (generation !== ownGeneration) return;
       mediaImporting = false;
       commit(next, true);
@@ -3193,7 +3200,11 @@ async function importMedia(
       if (audioReference || fromFolder) {
         mediaImporting = true;
         try {
-          await saveProject(validateProject(next), fromFolder ? "导入素材文件夹" : "保存声音参考");
+          await saveProject(
+            validateProject(next),
+            fromFolder ? "导入素材文件夹" : "保存声音参考",
+            true,
+          );
         } finally {
           mediaImporting = false;
         }

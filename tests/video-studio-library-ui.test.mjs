@@ -338,19 +338,9 @@ test(
       await (await menu(page, audio.id)).locator('[data-action="insert-media-playhead"]').click();
       await saved(page);
       const before = (await state(page)).project;
-      const beforeDocument = await canonical(page);
-      // The 0.12 s tone is 3.6 frames at 30 fps: the import keeps its exact decoded length, so the
-      // clip lives on the editor timeline (the old frame view cannot show a partial frame).
-      assert.equal(
-        beforeDocument.assets.find((asset) => asset.id === audio.id).duration,
-        0.12 * 240000,
-      );
-      const audioClip = beforeDocument.sequences[0].clips.find(
-        (clip) => clip.kind === "media" && clip.assetId === audio.id,
-      );
+      const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
       assert.ok(audioClip);
-      assert.equal(audioClip.start, 0, "插入到播放头 keeps the playhead position");
-      assert.equal(audioClip.duration, 0.12 * 240000);
+      assert.equal(audioClip.startFrame, 0, "插入到播放头 keeps the playhead position");
       const target = page.locator(`[data-et-clip="${audioClip.id}"]`);
       const context = page.locator("#timeline-context-menu");
       await page.locator(`[data-et-clip="${before.clips[0].id}"]`).focus();
@@ -390,22 +380,13 @@ test(
       );
       await page.keyboard.press("Enter");
       await saved(page);
-      const changed = (await state(page)).project,
-        changedDocument = await canonical(page);
-      // Only the audio clip goes; every other clip and all assets stay exactly as they were.
-      assert.deepEqual(
-        changedDocument.sequences[0].clips,
-        beforeDocument.sequences[0].clips.filter((clip) => clip.id !== audioClip.id),
-      );
-      assert.deepEqual(changedDocument.assets, beforeDocument.assets);
+      const changed = (await state(page)).project;
+      assert.deepEqual(changed.clips, before.clips);
       assert.deepEqual(changed.assets, before.assets);
+      assert.ok(!changed.audioClips.some((clip) => clip.id === audioClip.id));
       await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
       assert.deepEqual((await state(page)).project.audioClips, before.audioClips);
-      assert.deepEqual(
-        (await canonical(page)).sequences[0].clips.find((clip) => clip.id === audioClip.id),
-        audioClip,
-      );
       await assertNoResourceDeletion(page);
     } finally {
       await page.close();

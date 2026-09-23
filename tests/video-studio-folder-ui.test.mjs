@@ -339,6 +339,33 @@ test("a real recursive folder chooser preserves same-name sources, ignores unrel
   }
 });
 
+test("a folder import keeps each source's exact decoded length instead of whole 30 fps frames", async () => {
+  const folder = join(temporary, "精确时长");
+  // 1.01 s is 30.3 frames at 30 fps; rounding to whole frames would drop the last 0.01 s.
+  await sourceFile(folder, "tail.wav", wav(440, 1.01));
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+  observe(page);
+  try {
+    await page.goto(`${url}/?legacyWorkspace=1`);
+    await enterLegacyProduction(page);
+    await page.locator('[data-action="import-folder"]').waitFor();
+    await saved(page);
+    await folderChoice(page, folder);
+    await waitAssets(page, 1);
+    const asset = (await readSavedEditorDocument(page)).assets.find(
+      (item) => item.name === "tail.wav",
+    );
+    assert.equal(asset.duration, 242400);
+    assert.equal(
+      (await readProject(page)).assets.find((item) => item.name === "tail.wav").durationFrames,
+      30,
+      "The old frame view still lists whole source frames",
+    );
+  } finally {
+    await page.close();
+  }
+});
+
 test("a folder picker opened for the old project cannot import into a newly created project", async () => {
   const folder = join(temporary, "旧工程素材");
   await sourceFile(folder, "voice.wav", wav());
