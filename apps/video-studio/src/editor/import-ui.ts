@@ -1,4 +1,5 @@
 import type { RuntimeBridge } from "../sdk/panel-runtime";
+import { userFacingError } from "./legacy-reasons";
 import { createEditorMediaImporter, type EditorImportResult } from "./import-media";
 import { sameIdentity, type EditorSession } from "./session";
 import type { EditorOperation } from "./operations";
@@ -110,7 +111,7 @@ export class EditorImportUI {
         this.message.textContent =
           controller.signal.aborted || (error instanceof Error && error.name === "AbortError")
             ? "此次导入已取消"
-            : `导入失败：${String(error)}`;
+            : `导入失败：${userFacingError(error)}`;
     } finally {
       if (this.controller === controller) this.controller = undefined;
       this.cancel.hidden = true;
@@ -151,7 +152,7 @@ export class EditorImportUI {
       if (!pending.errors.length) this.hideTimer = window.setTimeout(() => this.hide(), 3000);
     } catch (error) {
       if (!this.disposed) {
-        this.message.textContent = `素材尚未加入工程：${String(error)}`;
+        this.message.textContent = `素材尚未加入工程：${userFacingError(error)}`;
         this.retry.hidden = false;
       }
     } finally {

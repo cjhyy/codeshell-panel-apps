@@ -9,6 +9,7 @@ import {
 } from "./rough-cut";
 import type { RoughCutAIController } from "./rough-cut-ai";
 import { escapeHtml as esc, html, icon } from "./icons";
+import { userFacingError } from "./editor/legacy-reasons";
 import type { RoughCutAnchor } from "./editor/rough-cut-placement";
 
 export type { RoughCutAnchor };
@@ -266,7 +267,7 @@ export function createRoughCutUI(context: RoughCutContext) {
     context.edit([{ type: "rough-cuts", cuts: next }]);
   }
   function errorMessage(error: unknown) {
-    context.toast(error instanceof Error ? error.message : "粗剪操作未完成，请重试");
+    context.toast(userFacingError(error, "粗剪操作未完成，请重试"));
   }
   function fire(work: Promise<unknown>) {
     void work.catch(errorMessage);

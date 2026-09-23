@@ -72,10 +72,13 @@ const RULES: ReadonlyArray<readonly [RegExp, string | ((...groups: string[]) => 
   [/^旧流程的基础视图已变化.*$/, "工程已变化，请刷新后重试"],
   [
     /([，,；;]\s*)?请使用新版方案格式/g,
-    (_, mark) => `${mark ? "；" : ""}请改用 editor.steps 格式的方案`,
+    (_, mark) => `${mark ? "；" : ""}请使用新版剪辑方案格式`,
   ],
   [/(请?在)新版(属性面板|文字面板|流程界面)/g, "$1$2"],
-  [/([，,；;]\s*)?请使用新版[^，。；;]*/g, (_, mark) => `${mark ? "；" : ""}${EDIT_DIRECTLY}`],
+  [
+    /([，,；;]\s*)?请使用新版(?!剪辑方案格式)[^，。；;]*/g,
+    (_, mark) => `${mark ? "；" : ""}${EDIT_DIRECTLY}`,
+  ],
   [/在旧(?:流程|投影)中/g, "在这里"],
   [/^旧流程/, "这里"],
   [/按旧方案/g, "在这里"],
@@ -99,4 +102,14 @@ export function userFacingMessage(message: string): string {
   return /旧视图|旧流程|旧投影|新版时间线/.test(plain)
     ? `这个操作无法在这里完成，${EDIT_DIRECTLY}`
     : plain;
+}
+
+/**
+ * Text for a toast or status line from any thrown value: the plain message (never the
+ * "Error: …" that String(error) produces), in user-facing words; `fallback` when there is none.
+ */
+export function userFacingError(error: unknown, fallback = "操作未完成，请重试"): string {
+  const message =
+    error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message ? userFacingMessage(message) : fallback;
 }

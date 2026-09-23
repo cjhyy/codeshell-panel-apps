@@ -6,6 +6,7 @@ import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapte
 import {
   legacyClipIssue,
   legacyRestrictionReasons,
+  userFacingError,
   userFacingMessage,
 } from "../apps/video-studio/src/editor/legacy-reasons";
 import { formatFrameRate } from "../apps/video-studio/src/editor/time";
@@ -137,6 +138,16 @@ test("compatibility refusals reach people as plain copy; ordinary messages stay 
     assert.ok(plain.length > 6, plain);
   }
   assert.match(userFacingMessage("此片段的自动化音量需要在新版属性面板中修改"), /属性面板/);
+  // People pasting a plan get the format name, not the agent tool's field path.
+  const refusal = userFacingMessage(
+    "片段「a」包含变速、倒放或定格，旧方案无法按源素材帧编辑，请使用新版方案格式",
+  );
+  assert.doesNotMatch(refusal, /editor\.steps/);
+  assert.match(refusal, /；请使用新版剪辑方案格式$/);
+  assert.equal(
+    userFacingMessage("此工程只能在片段现有范围内裁剪；延长片段请使用新版方案格式"),
+    "此工程只能在片段现有范围内裁剪；延长片段请使用新版剪辑方案格式",
+  );
   assert.equal(userFacingMessage("请先重连缺失的素材"), "请先重连缺失的素材");
   assert.equal(
     userFacingMessage("分阶段自动制作需要新版 CodeShell 桌面工作台"),
@@ -149,4 +160,16 @@ test("frame rates read as people write them", () => {
   assert.equal(formatFrameRate({ numerator: 24000, denominator: 1001 }), "23.976");
   assert.equal(formatFrameRate({ numerator: 30, denominator: 1 }), "30");
   assert.equal(formatFrameRate({ numerator: 50, denominator: 2 }), "25");
+});
+
+test("user-facing errors show the message without an \"Error:\" prefix", () => {
+  assert.equal(userFacingError(new Error("素材已移除")), "素材已移除");
+  assert.equal(userFacingError(new TypeError("网络中断")), "网络中断");
+  assert.equal(userFacingError("工程已切换"), "工程已切换");
+  assert.equal(
+    userFacingError(new Error("旧视图不能编辑这个片段")),
+    userFacingMessage("旧视图不能编辑这个片段"),
+  );
+  assert.equal(userFacingError(undefined, "操作未完成"), "操作未完成");
+  assert.equal(userFacingError(new Error(""), "操作未完成"), "操作未完成");
 });

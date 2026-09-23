@@ -97,7 +97,7 @@ import { formatFrameRate, secondsToTicks } from "./editor/time";
 import {
   legacyClipIssue,
   legacyRestrictionReasons,
-  userFacingMessage,
+  userFacingError,
 } from "./editor/legacy-reasons";
 import { isSubtitleClip } from "./editor/lookup";
 import { mainPictureTrack } from "./editor/placement";
@@ -622,7 +622,7 @@ const production = new ProductionController(panel, {
       if (projectId !== project.id || currentGeneration !== generation)
         throw new Error("素材解码期间工程已切换");
       await library.connectManaged(asset).catch((error) => {
-        aiMessage = String(error);
+        aiMessage = userFacingError(error);
       });
       if (projectId !== project.id || currentGeneration !== generation)
         throw new Error("素材解码期间工程已切换");
@@ -1072,7 +1072,7 @@ const recording = createRecordingUI({
         // The recording is already durable; keep it usable if the voice settings write fails.
         voiceReferenceRecordingSaved = true;
         toast(
-          `录音已保存，请在声音克隆中重新选择：${error instanceof Error ? error.message : String(error)}`,
+          `录音已保存，请在声音克隆中重新选择：${userFacingError(error)}`,
         );
       }
     } else if (intended) {
@@ -1085,7 +1085,7 @@ const recording = createRecordingUI({
         toast("口播已保存，点击“用我的录音完成视频”重排画面和字幕");
       } catch (error) {
         toast(
-          `原片已保存到素材库；${error instanceof Error ? error.message : String(error)}，可重新确认后选择这份录音`,
+          `原片已保存到素材库；${userFacingError(error)}，可重新确认后选择这份录音`,
         );
       }
     } else toast("录制原片已保存，可在素材库加入时间轴，再到口播页整理");
@@ -1295,7 +1295,7 @@ async function restoreManagedMedia(): Promise<void> {
   for (const asset of project.assets) {
     if (!asset.mediaId && !isDemoNarration(asset)) {
       await restoreCachedMedia(asset, currentGeneration).catch((error) => {
-        if (currentGeneration === generation) aiMessage = String(error);
+        if (currentGeneration === generation) aiMessage = userFacingError(error);
       });
       continue;
     }
@@ -1315,14 +1315,14 @@ async function restoreManagedMedia(): Promise<void> {
           library.release(stale);
           library.items.delete(asset.id);
         }
-        aiMessage = String(error);
+        aiMessage = userFacingError(error);
         continue;
       }
     }
     await (
       isDemoNarration(asset) ? library.connectBuiltin(asset) : library.connectManaged(asset)
     ).catch((error) => {
-      aiMessage = String(error);
+      aiMessage = userFacingError(error);
     });
   }
   if (currentGeneration === generation) editorWorkspace?.refreshMedia();
@@ -1443,7 +1443,7 @@ function showVoiceLibraryProgress(progress: VoiceLibraryProgress): void {
   status.textContent = `${progress.message} · ${Math.round(Math.max(0, Math.min(1, progress.fraction)) * 100)}%`;
 }
 function fail(error: unknown): void {
-  toast(userFacingMessage(error instanceof Error ? error.message : String(error)));
+  toast(userFacingError(error));
 }
 
 function reportCleanupFailure(message: string, retry: () => Promise<void>): void {
@@ -1461,7 +1461,7 @@ function reportCleanupFailure(message: string, retry: () => Promise<void>): void
     void retry()
       .then(() => warning.remove())
       .catch((error) => {
-        text.textContent = `${message}；重试失败：${String(error)}`;
+        text.textContent = `${message}；重试失败：${userFacingError(error)}`;
       })
       .finally(() => {
         button.disabled = false;
@@ -1484,7 +1484,7 @@ async function persist(): Promise<void> {
   } catch (error) {
     if (version !== saveVersion) return;
     saveText = "保存失败";
-    projectError = String(error);
+    projectError = userFacingError(error);
     toast("自动保存失败，请下载工程 JSON 备份");
   }
   updateSave();
@@ -1841,7 +1841,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
           message: "工程已切换，原自动制作请求已停止；已排队媒体任务仍保留。",
         })
         .catch((error) =>
-          reportCleanupFailure(`新工程已打开；旧任务状态保存失败：${String(error)}`, async () => {
+          reportCleanupFailure(`新工程已打开；旧任务状态保存失败：${userFacingError(error)}`, async () => {
             if (JSON.stringify(production.auto) !== JSON.stringify(automaticRun)) return;
             await production.setAuto({
               ...automaticRun,
@@ -1853,7 +1853,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
     if (sameProjectId)
       await roughCutAI.forgetSavedState().catch((error) => {
         const identity = editorSession!.getState().identity;
-        reportCleanupFailure(`新工程已打开；旧粗剪草稿清理失败：${String(error)}`, async () => {
+        reportCleanupFailure(`新工程已打开；旧粗剪草稿清理失败：${userFacingError(error)}`, async () => {
           const current = editorSession!.getState().identity;
           // New drafts supersede the stale record; do not erase their progress during a later retry.
           if (!sameIdentity(current, identity, false) || roughCutAI.state.phase !== "idle")
@@ -1899,7 +1899,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
   await folderImport.load();
   if (!sameProjectId)
     await restoreRoughCutAI().catch((error) =>
-      toast(`AI 粗剪草稿恢复失败，原记录已保留：${String(error)}`),
+      toast(`AI 粗剪草稿恢复失败，原记录已保留：${userFacingError(error)}`),
     );
   if (production.enabled) await production.refresh();
 }
@@ -2481,7 +2481,7 @@ async function importReferencedMedia(): Promise<void> {
         if (item) library.release(item);
         library.items.delete(asset.id);
       }
-      failures.push(`${ref.name}：${error instanceof Error ? error.message : String(error)}`);
+      failures.push(`${ref.name}：${userFacingError(error)}`);
     } finally {
       mediaImporting = false;
     }
@@ -2818,8 +2818,7 @@ async function handleTask(next: PanelTask): Promise<void> {
         offer({ ...parsed, projectId: taskProjectId, requestToken: taskRequestToken }, "agent");
         aiMessage = "方案已生成，请在右侧审阅。";
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        aiMessage = `任务完成，但没有可应用的方案：${userFacingMessage(reason)}`;
+        aiMessage = `任务完成，但没有可应用的方案：${userFacingError(error)}`;
       }
     } else aiMessage = "方案已生成，请在右侧审阅。";
   } else if (next.status === "failed") aiMessage = next.error || "任务失败，请检查模型连接后重试。";
@@ -3013,7 +3012,7 @@ async function requestAI(
     await handleTask((await panel.call("agent.task.get", { id: view.id })) as PanelTask);
   } catch (error) {
     if (requestToken === taskRequestToken) {
-      aiMessage = `任务创建失败：${String(error)}`;
+      aiMessage = `任务创建失败：${userFacingError(error)}`;
       taskRequestToken = "";
     }
     throw error;
@@ -3295,7 +3294,7 @@ async function record(): Promise<void> {
   } catch (error) {
     progress.querySelector("p")!.textContent = controller.signal.aborted
       ? "导出已取消。切换到后台也会取消实时导出，请保持面板可见。"
-      : String(error);
+      : userFacingError(error);
   } finally {
     document.removeEventListener("visibilitychange", cancelWhenHidden);
     exporting = null;
@@ -5779,7 +5778,7 @@ async function replaceEditorDeliveryDocument(doc: EditorDocument, identity: Sess
     if (current.documentId !== doc.id || current.generation === identity.generation) throw error;
     // The replacement is already durable. Ancillary failures must not offer another
     // replacement or invalidate the import/sync receipt for this generation.
-    reportCleanupFailure(`工程已打开，附属状态恢复失败：${String(error)}`, async () => {
+    reportCleanupFailure(`工程已打开，附属状态恢复失败：${userFacingError(error)}`, async () => {
       const latest = editorSession!.getState().identity;
       if (latest.documentId !== current.documentId || latest.generation !== current.generation)
         return;
@@ -5895,8 +5894,8 @@ async function boot(): Promise<void> {
     });
     saveText = "已就绪";
   } catch (error) {
-    if (!storageDiscovered || !editorSession) storageDiscoveryError = String(error);
-    projectError = String(error);
+    if (!storageDiscovered || !editorSession) storageDiscoveryError = userFacingError(error);
+    projectError = userFacingError(error);
     saveText = "恢复失败";
     toast("原有工程无法恢复，尚未覆盖。请检查存储或打开工程备份。");
   }
@@ -5921,7 +5920,7 @@ async function boot(): Promise<void> {
   await production.initialize();
   productionBooted = true;
   await restoreRoughCutAI().catch((error) =>
-    toast(`AI 粗剪草稿恢复失败，原记录已保留：${String(error)}`),
+    toast(`AI 粗剪草稿恢复失败，原记录已保留：${userFacingError(error)}`),
   );
   await voicePreparation.load({ runtime: false });
   // The voice tab can be opened while the engine is still connecting.

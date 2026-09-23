@@ -1,4 +1,5 @@
 import { escapeHtml as esc, html } from "./icons";
+import { userFacingError } from "./editor/legacy-reasons";
 import { button, tool } from "./views";
 import { listProjectVersions, readProjectVersion, type ProjectVersion } from "./host";
 import { mediaUrl, type ProductionController } from "./production";
@@ -86,7 +87,7 @@ export function createProductionUI(production: ProductionController, context: Pr
             } else await context.replace(value);
             context.toast("已恢复历史版本");
           })
-          .catch((error) => context.toast(String(error)));
+          .catch((error) => context.toast(userFacingError(error)));
       }),
     );
     dialog.showModal();
