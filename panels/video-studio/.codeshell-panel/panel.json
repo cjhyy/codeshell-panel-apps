@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "id": "video-studio",
-  "version": "0.6.10",
+  "version": "0.7.0",
   "title": {
     "default": "视频工作台",
     "en": "Video Studio",
