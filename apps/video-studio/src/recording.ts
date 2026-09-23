@@ -48,8 +48,15 @@ export function captureError(error: unknown, mode?: RecordingMode): string {
       mode === "microphone" ? "麦克风" : mode === "camera" ? "麦克风和摄像头" : "麦克风或屏幕录制";
     return `未获得录制权限${mode === "screen" ? "，或已取消屏幕选择" : ""}。请确认面板已获准录制，并在系统隐私设置中允许 CodeShell 使用${device}；浏览器使用时请检查网站权限，然后重新连接。`;
   }
-  if (name === "NotFoundError" || name === "DevicesNotFoundError")
-    return "没有找到所选麦克风或摄像头，请检查设备并刷新列表。";
+  // Chromium and desktop hosts report a missing device or blocked capture as NotFound/NotSupported
+  // (for example the bare English "Not supported"); both mean nothing can be recorded here.
+  if (
+    name === "NotFoundError" ||
+    name === "DevicesNotFoundError" ||
+    name === "NotSupportedError" ||
+    (error instanceof Error && /^not supported\.?$/i.test(error.message.trim()))
+  )
+    return "未找到可用的麦克风或摄像头，或当前环境不支持录制。请连接设备并刷新列表，或在 CodeShell 桌面版中录制。";
   if (name === "NotReadableError" || name === "TrackStartError")
     return "设备暂时无法使用，可能被其他应用占用。请关闭占用后重试。";
   if (name === "OverconstrainedError") return "所选设备已不可用，请重新选择设备。";

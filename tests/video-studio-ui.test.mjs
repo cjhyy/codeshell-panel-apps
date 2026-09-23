@@ -2006,6 +2006,10 @@ test("local voice cloning validates its own recording, uses real model preview, 
     assert.equal(replacementBinding.replaceTarget.assetId, "saved-clone");
     assert.equal(replacementBinding.replaceTarget.duration, 240 * 8000);
     await page.locator('[data-action="new"]').click();
+    // The voice job is still running, so the page asks before switching projects.
+    const confirmNew = page.locator("#plan-dialog[open]");
+    assert.match(await confirmNew.textContent(), /制作任务/);
+    await confirmNew.getByRole("button", { name: "仍然新建", exact: true }).click();
     await page.waitForFunction(
       (oldId) => window.__panelTools.read_video_project().project.id !== oldId,
       initial.id,

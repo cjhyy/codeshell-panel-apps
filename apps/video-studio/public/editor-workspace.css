@@ -1145,6 +1145,10 @@
   :is(.ew-viewer, .ew-properties) {
   display: none;
 }
+/* The mounted editor keeps the one undo/redo pair; the source preview does not repeat it. */
+.workspace.editor-mode .source-history {
+  display: none;
+}
 @media (max-width: 900px) {
   .workspace.editor-mode.editor-source-mode > .inspector {
     display: grid;

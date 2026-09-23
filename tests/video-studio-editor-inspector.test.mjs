@@ -616,3 +616,32 @@ test("playhead-only refreshes preserve an unfinished focused text draft", async 
   await input.dispatchEvent("change");
   assert.equal((await read("t")).text, "尚未提交的中文\n第二行");
 });
+
+test("color fields offer a color picker synced with the typed value, keeping any transparency", async () => {
+  await page.evaluate(() => select(["t"]));
+  await tab("文字");
+  const text = page.getByLabel("文字颜色", { exact: true }),
+    picker = page.getByLabel("选择文字颜色", { exact: true });
+  assert.equal(await picker.getAttribute("type"), "color");
+  assert.equal(await picker.inputValue(), (await text.inputValue()).slice(0, 7).toLowerCase());
+  await picker.fill("#336699");
+  await picker.dispatchEvent("change");
+  await page.waitForFunction(() => clip("t").style.color === "#336699");
+  assert.equal(await page.getByLabel("文字颜色", { exact: true }).inputValue(), "#336699");
+  // Picking keeps the alpha of an #RRGGBBAA background.
+  await change("文字背景颜色", "#22446680");
+  await page.getByLabel("选择文字背景颜色", { exact: true }).fill("#aabbcc");
+  await page.getByLabel("选择文字背景颜色", { exact: true }).dispatchEvent("change");
+  await page.waitForFunction(() => clip("t").style.background === "#aabbcc80");
+  // Typing a color moves the picker too.
+  await page.getByLabel("文字描边颜色", { exact: true }).fill("#102030");
+  assert.equal(await page.getByLabel("选择文字描边颜色", { exact: true }).inputValue(), "#102030");
+  await change("文字描边颜色", "#102030");
+  assert.equal((await read("t")).style.strokeColor, "#102030");
+  for (const label of ["逐词高亮颜色", "阴影颜色"])
+    assert.equal(await page.getByLabel(`选择${label}`, { exact: true }).count(), 1, label);
+  await page.evaluate(() => select(["s"]));
+  await tab("画面");
+  for (const label of ["图形填充颜色", "图形描边颜色"])
+    assert.equal(await page.getByLabel(`选择${label}`, { exact: true }).count(), 1, label);
+});

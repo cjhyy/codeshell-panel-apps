@@ -129,6 +129,47 @@
 .et-selection-status:empty {
   display: none;
 }
+.et-mode {
+  gap: 0;
+}
+.et-toolbar .et-mode button {
+  padding-inline: 9px;
+  border-color: #38393c;
+  border-radius: 0;
+  font-size: 11px;
+}
+.et-toolbar .et-mode button:first-child {
+  border-radius: 5px 0 0 5px;
+}
+.et-toolbar .et-mode button:last-child {
+  border-left-width: 0;
+  border-radius: 0 5px 5px 0;
+}
+.et-toolbar .et-mode button[aria-pressed="true"] {
+  color: var(--et-accent);
+  background: #75ddcf14;
+}
+/* Anchored to the timeline, not the scrolling toolbar, so long wording can wrap. */
+.et-notice {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  z-index: 20;
+  width: max-content;
+  max-width: min(560px, calc(100% - 24px));
+  margin: 0;
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #4b6251;
+  border-radius: 6px;
+  color: #e3efe6;
+  background: #1f2a24;
+  box-shadow: 0 6px 20px #0006;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  pointer-events: none;
+}
 .et-spacer {
   flex: 1 1 0;
 }

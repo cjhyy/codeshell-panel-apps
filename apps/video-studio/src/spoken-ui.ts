@@ -70,7 +70,9 @@ export function createSpokenUI(context: SpokenContext) {
   let pending = "",
     error = "",
     filter = "all",
-    visible = 40;
+    visible = 40,
+    /** The project (and its replacement generation) the current analysis belongs to. */
+    scope = "";
   let preset: "light" | "balanced" = "balanced",
     denoise = true,
     normalize = true;
@@ -121,6 +123,18 @@ export function createSpokenUI(context: SpokenContext) {
     notes = [];
     error = "";
     visible = 40;
+  }
+  /** Analysis, notes and errors belong to one project; opening another starts clean. */
+  function followProject() {
+    const identity = context.identity();
+    const current = identity ? `${identity.documentId}:${identity.generation}` : "";
+    if (current === scope) return;
+    const first = !scope;
+    scope = current;
+    if (first) return;
+    reset();
+    pending = "";
+    assetId = "";
   }
   function assertGeneration(version: number, identity: SessionIdentity) {
     if (disposed || version !== generation || !sameIdentity(context.identity(), identity))
@@ -303,6 +317,8 @@ export function createSpokenUI(context: SpokenContext) {
   async function action(name: string): Promise<boolean> {
     if (!name.startsWith("spoken-")) return false;
     if (disposed) throw new Error("口播编辑器已关闭");
+    followProject();
+    const started = scope;
     try {
       error = "";
       if (name === "spoken-analyze" || name === "spoken-prepare") {
@@ -430,18 +446,24 @@ export function createSpokenUI(context: SpokenContext) {
       }
       return false;
     } catch (cause) {
+      // Work for a project that has since been closed has nothing left to report here.
+      if (started !== scope) return true;
       error = cause instanceof Error ? cause.message : String(cause);
       change();
       throw cause;
     }
   }
   function render(): string {
+    followProject();
     const available = assets(),
       id = currentAssetId(),
       valid = fresh(),
       items = shown(),
       locked = !!pending;
     const transcript = sources[0]?.transcript ?? [];
+    const waiting = "请等待当前口播操作完成";
+    const noSource = "先把口播素材加入时间轴";
+    const stale = "工程已更新，请重新读取分析";
     return html`<div class="section-heading">
         <h2>口播精剪</h2>
         <span class="tag">保留你的原声</span>
@@ -461,8 +483,22 @@ export function createSpokenUI(context: SpokenContext) {
       >
       <div class="spoken-actions">
         ${context.prepare
-          ? button("spoken-prepare", "准备口播并分析", "text", "primary full", locked || !id)
-          : ""}${button("spoken-analyze", "读取已有结果", "undo", "quiet full", locked || !id)}
+          ? button(
+              "spoken-prepare",
+              "准备口播并分析",
+              "text",
+              "primary full",
+              locked || !id,
+              locked ? waiting : noSource,
+            )
+          : ""}${button(
+          "spoken-analyze",
+          "读取已有结果",
+          "undo",
+          "quiet full",
+          locked || !id,
+          locked ? waiting : noSource,
+        )}
       </div>
       ${!id
         ? '<p class="small muted">先录制或导入口播，把素材加入时间轴的任意画面或声音轨，再回来整理。</p>'
@@ -505,6 +541,7 @@ export function createSpokenUI(context: SpokenContext) {
           "volume",
           "full",
           locked || !id || !context.enhance,
+          locked ? waiting : !id ? noSource : "原声优化需要 CodeShell 桌面版",
         )}
       </details>
       ${analyzed
@@ -517,7 +554,7 @@ export function createSpokenUI(context: SpokenContext) {
             )
             .join(
               "",
-            )}</select></label><div class="spoken-actions">${button("spoken-select-pauses", "勾选长停顿", "check", "quiet", locked || !valid)}${button("spoken-clear", "清空选择", undefined, "quiet", locked)}${skipped.size ? button("spoken-restore-skipped", `恢复已跳过 ${skipped.size} 项`, undefined, "quiet", locked) : ""}</div></div>
+            )}</select></label><div class="spoken-actions">${button("spoken-select-pauses", "勾选长停顿", "check", "quiet", locked || !valid, locked ? waiting : stale)}${button("spoken-clear", "清空选择", undefined, "quiet", locked)}${skipped.size ? button("spoken-restore-skipped", `恢复已跳过 ${skipped.size} 项`, undefined, "quiet", locked) : ""}</div></div>
       <div class="spoken-candidates">${items
         .slice(0, visible)
         .map(
@@ -527,9 +564,16 @@ export function createSpokenUI(context: SpokenContext) {
         .join(
           "",
         )}</div>${items.length > visible ? button("spoken-more", `继续显示（还有 ${items.length - visible} 项）`, undefined, "quiet full") : ""}
-      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播及与它关联的轨道：这些轨道上同一时刻的其他片段也会一起剪去；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size)}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
+      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播及与它关联的轨道：这些轨道上同一时刻的其他片段也会一起剪去；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size, locked ? waiting : !valid ? stale : "先勾选要删减的候选")}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
         : ""}
-      ${button("spoken-undo", "撤销上次编辑", "undo", "quiet full", locked || !context.canUndo())}
+      ${button(
+        "spoken-undo",
+        "撤销上次编辑",
+        "undo",
+        "quiet full",
+        locked || !context.canUndo(),
+        locked ? waiting : "没有可撤销的编辑",
+      )}
       ${transcript.length
         ? `<details class="spoken-transcript"><summary>原始转写 · ${transcript.length} 段</summary><p class="small muted">点击段落试听。转写可能有错字；文案润色只改变稿件，不改变录音中说出的内容。</p><div>${transcript
             .slice(0, 500)
@@ -539,7 +583,7 @@ export function createSpokenUI(context: SpokenContext) {
             )
             .join(
               "",
-            )}</div>${transcript.length > 500 ? '<p class="small muted">当前展示前 500 段；候选分析涵盖已读取的全部文稿。</p>' : ""}${button("spoken-polish", "让 AI 提供文稿建议", "spark", "full", locked || !valid)}</details>`
+            )}</div>${transcript.length > 500 ? '<p class="small muted">当前展示前 500 段；候选分析涵盖已读取的全部文稿。</p>' : ""}${button("spoken-polish", "让 AI 提供文稿建议", "spark", "full", locked || !valid, locked ? waiting : stale)}</details>`
         : ""}`;
   }
   return {

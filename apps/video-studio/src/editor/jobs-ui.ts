@@ -23,6 +23,10 @@ export class EditorExportJobs {
   constructor(
     private readonly bridge: RuntimeBridge,
     private readonly onError: (error: unknown) => void,
+    private readonly options: {
+      /** Called once when an export this view saw running reaches a final state. */
+      onFinished?(job: RuntimeJob): void;
+    } = {},
   ) {
     this.sdk = createPanelRuntime(bridge);
     this.root.className = "editor-export-jobs";
@@ -56,6 +60,11 @@ export class EditorExportJobs {
     document.body.append(this.root);
     document.addEventListener("pointerdown", this.outsideClick);
     this.updateSummary();
+  }
+  /** Exports still queued or running in the Host. */
+  get activeCount(): number {
+    return [...this.latest.values()].filter((job) => ["queued", "running"].includes(job.status))
+      .length;
   }
   /** Keep task history beside the editor's export action instead of covering the timeline. */
   mountTrigger(container: HTMLElement, before: ChildNode | null = null): void {
@@ -196,6 +205,7 @@ export class EditorExportJobs {
     if (terminal(job)) {
       this.watching.get(job.id)?.abort();
       this.observationErrors.delete(job.id);
+      if (previous && !terminal(previous)) this.options.onFinished?.(job);
     }
     row.dataset.status = job.status;
     row.querySelector("output")!.textContent = this.observationErrors.has(job.id)

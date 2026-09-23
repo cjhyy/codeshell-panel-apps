@@ -27,6 +27,7 @@ import {
   planMagneticMove,
   planMagneticRemove,
   planClipTiming,
+  planTimelineArrangement,
 } from "./timing-edits";
 
 export interface EditorTimelineContext {
@@ -66,6 +67,17 @@ type Drag = {
   additive: boolean;
 };
 const uid = (kind: string) => `${kind}-${crypto.randomUUID()}`;
+/** Plain explanation shown when a magnetic move lands where it started. */
+const MAGNETIC_MOVE_NOTICE =
+  "磁吸模式下，主画面轨的片段会自动首尾相接，拖动只改变先后顺序，不能向后留空。要把片段放到任意位置，请在时间轴工具栏切换到「自由」。";
+const TIMELINE_MODES = [
+  [
+    "magnetic",
+    "磁吸",
+    "磁吸：主画面轨上的片段自动首尾相接，拖动只调整先后顺序，删除后自动补齐空隙。切换时会把主画面轨的空隙收拢，可撤销。",
+  ],
+  ["free", "自由", "自由：片段可以放在任意位置，允许留空；同一轨道上的片段不能重叠。"],
+] as const;
 const editableTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
 const stamp = (time: Tick) => {
@@ -114,6 +126,8 @@ export class EditorTimeline {
   private renderedWidth = 0;
   private scale = 64;
   private snapping = true;
+  /** A plain status explanation for the last gesture that changed nothing. */
+  private notice = "";
   private clipboard?: ClipClipboard;
   private drag?: Drag;
   private destroyed = false;
@@ -178,7 +192,14 @@ export class EditorTimeline {
     }
   }
   private async apply(operations: EditorOperation[], label: string) {
+    this.notice = "";
     await this.context.apply(operations, label);
+    this.render();
+  }
+  /** Magnetic moves that land where they started commit nothing; say why instead of staying silent. */
+  private async applyMagneticMove(operations: EditorOperation[], label: string) {
+    if (operations.length) return this.apply(operations, label);
+    this.notice = MAGNETIC_MOVE_NOTICE;
     this.render();
   }
   private select(ids: Iterable<string>) {
@@ -274,27 +295,30 @@ export class EditorTimeline {
       disabled = false,
       shortcut?: string,
       text = false,
-    ) => `<button type="button" data-et-action="${action}" class="et-tool${text ? " et-tool-labeled" : ""}" aria-label="${label}" title="${label}${shortcut ? ` · ${shortcut}` : ""}"${disabled ? " disabled" : ""}>${timelineIcon(icon)}${text ? `<span>${label}</span>` : ""}</button>`;
+      reason?: string,
+    ) => `<button type="button" data-et-action="${action}" class="et-tool${text ? " et-tool-labeled" : ""}" aria-label="${label}" title="${label}${shortcut ? ` · ${shortcut}` : ""}${disabled && reason ? `（${reason}）` : ""}"${disabled ? " disabled" : ""}>${timelineIcon(icon)}${text ? `<span>${label}</span>` : ""}</button>`;
+    const needSelection = "先选择片段";
     this.container.innerHTML = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
-        <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S")}${button("delete", "删除", "trash", !selected.size, "⌫")}</div>
-        <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C")}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D")}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G")}</div>
+        <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S", false, selected.size ? "一次只能切分一个片段" : "先选择一个片段")}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection)}</div>
+        <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C", false, needSelection)}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V", false, "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D", false, needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
+        <div class="et-tool-group et-mode" role="group" aria-label="时间线模式">${TIMELINE_MODES.map(([mode, label, title]) => `<button type="button" data-et-mode="${mode}" aria-pressed="${sequence.timelineMode === mode}" title="${title}">${label}</button>`).join("")}</div>
         <label class="et-snap" title="吸附 · 自动对齐片段边缘"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
         <output class="et-selection-status" aria-live="polite">${selected.size ? `已选 ${selected.size} 个片段` : ""}</output>
         <span class="et-spacer"></span>
         <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit")}<label class="et-zoom" title="时间轴缩放">${timelineIcon("minus", 14)}<input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放">${timelineIcon("plus", 14)}</label></div>
-      </div>
+      </div>${this.notice ? `<p class="et-notice" role="status">${esc(this.notice)}</p>` : ""}
       <div class="et-body"><div class="et-track-heads"><div class="et-track-top"><span>轨道</span><span class="et-track-count">${sequence.tracks.length}</span></div>${sequence.tracks
         .slice()
         .reverse()
         .map((track, index) => {
           const kindIcon = { video: "film", audio: "audio", text: "title" }[track.kind];
           const toggle = (key: "locked" | "hidden" | "muted", label: string, glyph: string) =>
-            `<button type="button" data-et-track="${esc(track.id)}" data-et-toggle="${key}" aria-label="${label}${esc(track.name)}" title="${label}${esc(track.name)}" aria-pressed="${track[key]}"${key !== "locked" && track.locked ? " disabled" : ""}>${timelineIcon(glyph, 14)}</button>`;
+            `<button type="button" data-et-track="${esc(track.id)}" data-et-toggle="${key}" aria-label="${label}${esc(track.name)}" title="${label}${esc(track.name)}${key !== "locked" && track.locked ? "（轨道已锁定，先解锁）" : ""}" aria-pressed="${track[key]}"${key !== "locked" && track.locked ? " disabled" : ""}>${timelineIcon(glyph, 14)}</button>`;
           return `<div class="et-track-head et-track-${track.kind}${track.locked ? " is-locked" : ""}${track.hidden ? " is-hidden" : ""}" data-track-head="${esc(track.id)}">
             <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"></div>
-            <div class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button></div>
-            ${track.kind !== "text" ? `<div class="et-track-mix"><label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100"${track.locked ? " disabled" : ""}></label></div>` : ""}
+            <div class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道${index === 0 ? "（已在最上方）" : ""}"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道${index === sequence.tracks.length - 1 ? "（已在最下方）" : ""}"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button></div>
+            ${track.kind !== "text" ? `<div class="et-track-mix"><label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label></div>` : ""}
           </div>`;
         })
         .join("")}<div class="et-add" role="group" aria-label="添加轨道">${button("track-video", "+ 画面", "film", false, undefined, true)}${button("track-audio", "+ 声音", "audio", false, undefined, true)}${button("track-text", "新建文字轨", "title", false, undefined, true)}</div></div>
@@ -450,6 +474,11 @@ export class EditorTimeline {
       this.run(() => this.action(action));
       return;
     }
+    const mode = target.closest<HTMLElement>("[data-et-mode]")?.dataset.etMode;
+    if (mode === "magnetic" || mode === "free") {
+      this.run(() => this.setMode(mode));
+      return;
+    }
     const toggle = target.closest<HTMLElement>("[data-et-toggle]");
     if (toggle)
       this.run(async () => {
@@ -537,6 +566,15 @@ export class EditorTimeline {
         ),
       );
   };
+  /** The same planner as the timing panel: turning magnetic on closes the main picture track's gaps. */
+  private async setMode(mode: "magnetic" | "free"): Promise<void> {
+    const { document, sequence } = this.current();
+    if (sequence.timelineMode === mode) return;
+    await this.apply(
+      planTimelineArrangement(document, sequence.id, { mode, compact: mode === "magnetic" }),
+      "切换时间线排列",
+    );
+  }
   async action(action: string): Promise<void> {
     if (action === "add-text") {
       await this.context.addText?.();
@@ -709,15 +747,18 @@ export class EditorTimeline {
         (event.key === "ArrowLeft" ? -1 : 1);
       this.run(() =>
         modified && selected.size
-          ? this.apply(
-              sequence.timelineMode === "magnetic"
-                ? planMagneticMove(document, sequence.id, [...selected], {
-                    delta,
-                    direction: event.key === "ArrowLeft" ? "previous" : "next",
-                  })
-                : [{ type: "clip.move", sequenceId: sequence.id, clipIds: [...selected], delta }],
-              sequence.timelineMode === "magnetic" ? "磁吸移动片段" : "逐帧移动片段",
-            )
+          ? sequence.timelineMode === "magnetic"
+            ? this.applyMagneticMove(
+                planMagneticMove(document, sequence.id, [...selected], {
+                  delta,
+                  direction: event.key === "ArrowLeft" ? "previous" : "next",
+                }),
+                "磁吸移动片段",
+              )
+            : this.apply(
+                [{ type: "clip.move", sequenceId: sequence.id, clipIds: [...selected], delta }],
+                "逐帧移动片段",
+              )
           : this.context.seek(Math.max(0, this.context.time() + delta)),
       );
     }
@@ -974,6 +1015,10 @@ export class EditorTimeline {
     if (event.button !== 0 || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
+    if (this.notice) {
+      this.notice = "";
+      this.container.querySelector(".et-notice")?.remove();
+    }
     const { document, sequence, selected } = this.current();
     const node = target.closest<HTMLElement>("[data-et-clip]"),
       clip = sequence.clips.find((item) => item.id === node?.dataset.etClip);
@@ -1260,23 +1305,26 @@ export class EditorTimeline {
         if (!drag.moved && !drag.additive) this.context.select([]);
       } else if (drag.moved) {
         const clip = drag.clip!;
-        if (drag.kind === "move")
+        if (drag.kind === "move" && sequence.timelineMode === "magnetic")
+          await this.applyMagneticMove(
+            planMagneticMove(document, sequence.id, drag.ids, {
+              delta: drag.delta,
+              trackId: drag.targetTrack,
+              anchorClipId: clip.id,
+            }),
+            "移动片段",
+          );
+        else if (drag.kind === "move")
           await this.apply(
-            sequence.timelineMode === "magnetic"
-              ? planMagneticMove(document, sequence.id, drag.ids, {
-                  delta: drag.delta,
-                  trackId: drag.targetTrack,
-                  anchorClipId: clip.id,
-                })
-              : [
-                  {
-                    type: "clip.move",
-                    sequenceId: sequence.id,
-                    clipIds: drag.ids,
-                    delta: drag.delta,
-                    trackId: drag.targetTrack,
-                  },
-                ],
+            [
+              {
+                type: "clip.move",
+                sequenceId: sequence.id,
+                clipIds: drag.ids,
+                delta: drag.delta,
+                trackId: drag.targetTrack,
+              },
+            ],
             "移动片段",
           );
         else

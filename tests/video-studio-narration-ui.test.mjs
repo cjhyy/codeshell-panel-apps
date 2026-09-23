@@ -444,6 +444,11 @@ test(
       assert.deepEqual(await hostCalls(page, ["agent.task.start", "media.prepare"]), []);
       await page.locator("#narration-script").fill(script + "\n这是用户补充的新意思。");
       assert.equal(await page.locator('[data-action="record-narration"]').isDisabled(), true);
+      assert.equal(
+        await page.locator('[data-action="record-narration"]').getAttribute("title"),
+        "先保存文案",
+        "A disabled narration step says what it needs",
+      );
       await page.locator('[data-action="save-narration-script"]').click();
       await page
         .waitForFunction(

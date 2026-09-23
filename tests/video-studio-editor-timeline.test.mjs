@@ -1612,3 +1612,77 @@ test("migrated overlay trim preserves the source offset without rippling a later
   assert.deepEqual(after.errors, []);
   await undo(page, before);
 });
+
+test("dragging the last main-track clip right in magnetic mode explains why nothing moved", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: magneticClips });
+  const before = (await state(page)).document;
+  await drag(page, "c", 200);
+  const after = await state(page);
+  assert.deepEqual(after.errors, []);
+  assert.deepEqual(content(after.document), content(before));
+  assert.equal(after.applied.length, 0);
+  const notice = page.locator(".et-notice");
+  await notice.waitFor();
+  assert.match(await notice.textContent(), /磁吸/);
+  assert.match(await notice.textContent(), /自由/);
+  assert.equal(await notice.getAttribute("role"), "status");
+  // A later real edit clears the explanation.
+  await drag(page, "a", 256);
+  assert.equal(await page.locator(".et-notice").count(), 0);
+});
+
+test("the timeline toolbar switches between magnetic and free layout with the shared planner", async (t) => {
+  const page = await fixture(t);
+  const group = page.getByRole("group", { name: "时间线模式", exact: true });
+  const magnetic = group.getByRole("button", { name: "磁吸", exact: true }),
+    free = group.getByRole("button", { name: "自由", exact: true });
+  assert.equal(await free.getAttribute("aria-pressed"), "true");
+  assert.equal(await magnetic.getAttribute("aria-pressed"), "false");
+  assert.match(await magnetic.getAttribute("title"), /首尾相接/);
+  assert.match(await free.getAttribute("title"), /任意位置/);
+  const before = (await state(page)).document;
+  await magnetic.click();
+  await settle(page);
+  let after = await state(page);
+  assert.deepEqual(after.errors, []);
+  assert.equal(after.document.sequences[0].timelineMode, "magnetic");
+  // The main picture track closes its gaps in the same undoable step.
+  assert.equal(findStateClip(after, "a").start, 0);
+  assert.equal(findStateClip(after, "c").start, 480000);
+  assert.equal(findStateClip(after, "b").start, 480000);
+  assert.equal(after.applied.length, 1);
+  assert.equal(after.applied[0].label, "切换时间线排列");
+  assert.equal(await magnetic.getAttribute("aria-pressed"), "true");
+  await undo(page, before);
+  await free.click();
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 1, "Choosing the current mode is a no-op");
+  await magnetic.click();
+  await settle(page);
+  await free.click();
+  await settle(page);
+  after = await state(page);
+  assert.equal(after.document.sequences[0].timelineMode, "free");
+  assert.equal(findStateClip(after, "c").start, 480000, "Free mode keeps positions");
+});
+
+test("disabled timeline tools say what they need", async (t) => {
+  const page = await fixture(t);
+  const title = (name) =>
+    page.locator(`[data-et-action="${name}"]`).evaluate((node) => ({
+      disabled: node.disabled,
+      title: node.title,
+    }));
+  assert.deepEqual(await title("split"), { disabled: true, title: "切分 · S（先选择一个片段）" });
+  assert.match((await title("delete")).title, /先选择片段/);
+  assert.match((await title("paste")).title, /先复制片段/);
+  assert.match((await title("group")).title, /至少选择两个片段/);
+  await clickClip(page, "a");
+  await clickClip(page, "b", "Shift");
+  assert.deepEqual(await title("split"), {
+    disabled: true,
+    title: "切分 · S（一次只能切分一个片段）",
+  });
+  assert.equal((await title("group")).disabled, false);
+  assert.equal((await title("group")).title, "分组 · ⌘/Ctrl G");
+});

@@ -180,10 +180,14 @@ test("a failed save preserves selected candidates, stale async results never app
     for (const resolve of window.readResolvers) resolve();
     window.readResolvers = [];
     window.delayRead = false;
+    // A new project renders the 口播 page for itself; the old read's result is simply dropped.
+    window.render();
   });
-  await p.getByRole("alert").waitFor();
+  await p.waitForFunction(() => !document.querySelector(".spoken-progress"));
+  await p.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
   assert.equal(await p.locator(".spoken-candidate").count(), 0);
-  assert.match(await p.getByRole("alert").textContent(), /工程已变化/);
+  assert.equal(await p.getByRole("alert").count(), 0, "The old project's failure is not shown");
+  assert.doesNotMatch((await p.evaluate(() => window.errors)).join("\n"), /工程已变化/);
   await click(p, "读取已有结果");
   await p.locator(".spoken-candidate").first().waitFor();
   await click(p, "勾选长停顿");

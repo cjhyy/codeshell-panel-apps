@@ -34,6 +34,7 @@ const paths: Record<string, string> = {
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
   link: '<path d="m10 13 4-4m-7 2-3 3a4 4 0 0 0 6 6l3-3m-2-10 3-3a4 4 0 0 1 6 6l-3 3"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  history: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2"/>',
 };
 
 /** HTML template tag for readable, formatter-aware markup. Escape user data with escapeHtml. */

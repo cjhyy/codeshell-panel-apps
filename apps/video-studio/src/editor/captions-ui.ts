@@ -476,6 +476,7 @@ export class EditorCaptionsUI {
     for (const id of this.drafts.keys()) if (!alive.has(id)) this.drafts.delete(id);
     this.rows.replaceChildren();
     this.exportButton.disabled = !clips.length;
+    this.exportButton.title = clips.length ? "" : "当前序列还没有字幕";
     if (!clips.length || !seq) {
       this.rows.append(
         element(

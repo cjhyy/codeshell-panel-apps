@@ -354,10 +354,16 @@ export class EditorWorkspace {
       } as const
     )[state.saveState];
     save.title = state.error?.message ?? "";
-    this.get<HTMLButtonElement>('[data-ew-action="undo"]').disabled =
-      !state.canUndo || state.phase !== "ready";
-    this.get<HTMLButtonElement>('[data-ew-action="redo"]').disabled =
-      !state.canRedo || state.phase !== "ready";
+    for (const [name, label, available, shortcut] of [
+      ["undo", "撤销", state.canUndo, "⌘/Ctrl Z"],
+      ["redo", "重做", state.canRedo, "⇧ ⌘/Ctrl Z"],
+    ] as const) {
+      const control = this.get<HTMLButtonElement>(`[data-ew-action="${name}"]`);
+      control.disabled = !available || state.phase !== "ready";
+      control.title = control.disabled
+        ? `${label}（${state.phase !== "ready" ? "工程正在保存或切换，请稍候" : `没有可${label}的操作`}）`
+        : `${label} · ${shortcut}`;
+    }
     if (state.error?.stage === "commit") save.textContent = "候选保存失败，请重试原操作";
     this.get('[data-ew-action="retry-save"]').hidden =
       state.saveState !== "failed" || state.error?.stage === "commit";

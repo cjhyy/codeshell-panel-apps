@@ -45,6 +45,8 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly editorClipCount?: number;
+  /** Status bar clips of the active editor sequence, without the subtitles counted beside them. */
+  readonly statusClipCount?: number;
   /** Clips on the main picture track of the active editor sequence. */
   readonly mainTrackClipCount?: number;
   /** Subtitles on every text track of the shown sequence. */
@@ -78,8 +80,16 @@ export interface ViewState {
   readonly inspectorIssue?: { readonly reason?: string; readonly volume?: string };
 }
 
-export const button = (action: string, text: string, glyph?: string, cls = "", disabled = false) =>
-  `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
+/** A disabled control may carry the plain reason as its tooltip, so people know what it needs. */
+export const button = (
+  action: string,
+  text: string,
+  glyph?: string,
+  cls = "",
+  disabled = false,
+  reason?: string,
+) =>
+  `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
 export const tool = (action: string, title: string, glyph: string, disabled = false) =>
   `<button type="button" data-action="${action}" class="icon-button" title="${title}" aria-label="${title}" ${disabled ? "disabled" : ""}>${icon(glyph)}</button>`;
 export const seconds = (value: number) => (value / 30).toFixed(2);
@@ -133,6 +143,13 @@ export function createViews(state: ViewState) {
     taskStarting ||
     mediaImporting ||
     Boolean(task && ["running", "queued", "cancelling"].includes(task.status));
+  /** Plain reasons for the production actions that need the desktop media service or a free queue. */
+  const needsDesktop = "需要在 CodeShell 桌面面板中打开，并连接持久媒体服务";
+  const busyReason = mediaImporting
+    ? "素材正在导入，完成后再试"
+    : autoActive
+      ? "自动制作正在进行，完成或取消后再试"
+      : "任务正在进行，完成或取消后再试";
 
   function shell(): string {
     return html`<header class="topbar">
@@ -151,7 +168,7 @@ export function createViews(state: ViewState) {
         <div class="header-actions">
           <span class="save-indicator"
             ><i></i><span id="save-state" title="${esc(projectError)}">${saveText}</span></span
-          >${state.persistentStorage ? tool("versions", "工程历史版本", "undo") : ""}${tool(
+          >${state.persistentStorage ? tool("versions", "工程历史版本", "history") : ""}${tool(
             "projects",
             "最近工程 / 打开工程",
             "folder",
@@ -161,6 +178,7 @@ export function createViews(state: ViewState) {
             "upload",
             "primary",
             !(state.editorClipCount ?? project.clips.length),
+            "时间轴上还没有片段，先加入素材再导出",
           )}
         </div>
       </header>
@@ -182,7 +200,14 @@ export function createViews(state: ViewState) {
             )
             .join("")}
           <div class="rail-bottom">
-            ${tool("new", "新建工程", "plus")}<span>v${panelVersion}</span>
+            <button
+              type="button"
+              data-action="new"
+              class="rail-item rail-new"
+              title="新建工程：先保存并归档当前工程，再打开一个空白工程"
+            >
+              ${icon("plus", 20)}<span>新建工程</span></button
+            ><span>v${panelVersion}</span>
           </div>
         </nav>
         <aside class="library-panel">${renderLibrary()}</aside>
@@ -278,7 +303,7 @@ export function createViews(state: ViewState) {
       <footer class="statusbar">
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
         ><span
-          ><span data-studio-clip-count>${state.editorClipCount ?? project.clips.length}</span>
+          ><span data-studio-clip-count>${state.statusClipCount ?? state.editorClipCount ?? project.clips.length}</span>
           个片段 <span class="dot">·</span> <span data-studio-caption-count>${state.captionCount ?? project.captions.length}</span> 条字幕
           <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
         ><span
@@ -349,6 +374,7 @@ ${esc(aiPrompt)}</textarea
           "spark",
           "primary full",
           !persistent || narrationBusy,
+          !persistent ? needsDesktop : busyReason,
         )}
         <p class="capability-note">先出可审阅的草稿。等你确认、录好口播，再用真实声音完成视频。</p>
         ${renderNarrationPanel(project, {
@@ -369,6 +395,7 @@ ${esc(aiPrompt)}</textarea
             Boolean(autoActive) ||
             taskStarting ||
             Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
+          !persistent ? needsDesktop : busyReason,
         )}
         <p class="capability-note">
           检查环境、盘点素材并保存目标与制作步骤。若选择本人声音，会准备引擎、参考与短句试听；初始化保留当前剪辑。
@@ -386,6 +413,9 @@ ${esc(aiPrompt)}</textarea
               "spark",
               "quiet full",
               !(state.editorClipCount ?? project.clips.length) || taskStarting || taskRunning,
+              !(state.editorClipCount ?? project.clips.length)
+                ? "时间轴上还没有片段，先加入素材"
+                : busyReason,
             )
           : button(
               "ask-ai",
@@ -399,6 +429,7 @@ ${esc(aiPrompt)}</textarea
               "spark",
               "quiet full",
               !persistent || Boolean(autoActive) || taskStarting || taskRunning,
+              !persistent ? needsDesktop : busyReason,
             )}
         ${!persistent
           ? `<p class="host-required" role="status">${esc(state.production?.error || "请在 CodeShell 面板中打开，启用自动制作和后台 MP4。")}</p>`
@@ -427,6 +458,7 @@ ${esc(aiPrompt)}</textarea
             "cut",
             "full",
             !(state.mainTrackClipCount ?? project.clips.length),
+            "主画面轨上还没有片段，先把素材加入时间轴",
           )}<span
             class="muted small"
             >本地规则 · 无需模型</span
@@ -440,7 +472,8 @@ ${esc(aiPrompt)}</textarea
               "quiet full",
               state.production?.status.runtimeChecked !== false &&
                 !state.production?.status.hyperframes.available,
-            ) + button("versions", "查看历史版本", "undo", "quiet full")
+              "场景制作工具未就绪，可在“任务”页查看环境检测",
+            ) + button("versions", "查看历史版本", "history", "quiet full")
           : ""}
         ${button("voiceover", "文字配音", "volume", "quiet full")}
         ${button("paste-plan", "导入剪辑方案 JSON", "text", "quiet full")}`;

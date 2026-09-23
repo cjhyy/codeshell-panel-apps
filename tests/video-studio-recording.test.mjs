@@ -568,3 +568,29 @@ test(
     }
   },
 );
+
+test("a missing device or unsupported recording environment is explained in Chinese", async () => {
+  const p = await page();
+  const expected = "未找到可用的麦克风或摄像头，或当前环境不支持录制";
+  for (const [message, name] of [
+    ["Not supported", "NotSupportedError"],
+    ["Requested device not found", "NotFoundError"],
+  ]) {
+    await p.evaluate(
+      ([message, name]) => {
+        navigator.mediaDevices.getUserMedia = async () => {
+          throw new DOMException(message, name);
+        };
+      },
+      [message, name],
+    );
+    await click(p, "连接并检查预览");
+    const alert = p.getByRole("alert");
+    await alert.waitFor();
+    const text = await alert.textContent();
+    assert.match(text, new RegExp(expected), name);
+    assert.doesNotMatch(text, /Not supported|not found/i);
+    assert.doesNotMatch((await p.evaluate(() => window.errors)).join("\n"), /Not supported/);
+  }
+  await p.close();
+});

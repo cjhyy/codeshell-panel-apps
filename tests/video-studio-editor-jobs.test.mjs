@@ -127,7 +127,10 @@ async function fixture(t, specifications = [], options = {}) {
           throw Error(`Unexpected host mutation ${method}`);
         },
       };
-      panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)));
+      const finished = [];
+      panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)), {
+        onFinished: (job) => finished.push({ id: job.id, status: job.status }),
+      });
       panel.mountTrigger(
         document.querySelector("#toolbar"),
         document.querySelector("[data-export]"),
@@ -135,6 +138,7 @@ async function fixture(t, specifications = [], options = {}) {
       window.fixture = {
         calls,
         errors,
+        finished,
         track: (id) => panel.track(structuredClone(jobs.get(id)), id),
         load: () => panel.loadMore(),
         remount: () =>
@@ -668,4 +672,29 @@ test("a late snapshot from an older attempt cannot undo a successful retry", asy
   );
   await row(page, "retry-late").getByRole("button", { name: "保存视频" }).waitFor();
   assert.equal((await calls(page, "tasks.retry")).length, 1);
+});
+
+test("finishing a watched export tells the panel once, so its readiness refreshes right away", async (t) => {
+  const page = await fixture(t, [job("running", 1, "running"), job("done", 0)], {
+    track: "running",
+  });
+  await page.waitForFunction(() => fixture.calls.some((c) => c.method === "tasks.get"));
+  await page.evaluate(() => fixture.load());
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [], "History is not a completion");
+  await page.evaluate(
+    (assetId) =>
+      fixture.notify("running", {
+        status: "succeeded",
+        updatedAt: 2,
+        result: { result: { verified: true, video: { id: assetId } } },
+      }),
+    assetId,
+  );
+  await page.waitForFunction(() => fixture.finished.length === 1);
+  await page.evaluate(() => fixture.publish("running", { updatedAt: 3 }));
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [
+    { id: "running", status: "succeeded" },
+  ]);
 });

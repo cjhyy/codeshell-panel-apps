@@ -8,6 +8,7 @@ import {
   planNestSequence,
   planCreateCompound,
   planUnpackCompound,
+  planProjectRename,
   type SequenceEditPlan,
 } from "../apps/video-studio/src/editor/sequence-edits";
 import {
@@ -405,4 +406,28 @@ test("plans reject stale transactions, invalid new identifiers and reference cyc
   assert.throws(() => planDuplicateSequence(doc, "main", { idFactory: () => "asset" }), /重复/);
   assert.throws(() => planNestSequence(doc, "main", "outer", { at: 0 }), /环/);
   assert.deepEqual(doc, snapshot);
+});
+
+test("renaming a just-created project names its empty sequence too, never an existing one", () => {
+  const base = fixture().sequences[0]!;
+  const blank: EditorDocument = validateEditorDocument({
+    ...fixture(),
+    name: "未命名项目",
+    assets: [],
+    activeSequenceId: base.id,
+    sequences: [{ ...base, name: "未命名项目", clips: [], transitions: [], markers: [] }],
+  });
+  const renamed = applyEditorOperations(blank, planProjectRename(blank, "周末探店"), blank.revision);
+  assert.equal(renamed.name, "周末探店");
+  assert.equal(renamed.sequences[0]!.name, "周末探店");
+  assert.equal(renamed.revision, blank.revision + 1, "One undoable step");
+  // A sequence that was named on its own, or already holds clips, keeps its name.
+  const own = structuredClone(blank);
+  own.sequences[0]!.name = "我的序列";
+  assert.deepEqual(planProjectRename(own, "新名字"), [{ type: "project.rename", name: "新名字" }]);
+  const existing = fixture();
+  existing.sequences[0]!.name = existing.name;
+  assert.deepEqual(planProjectRename(existing, "新名字"), [
+    { type: "project.rename", name: "新名字" },
+  ]);
 });

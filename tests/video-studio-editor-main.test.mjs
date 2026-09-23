@@ -2869,3 +2869,233 @@ test("an old confirmation the editor cannot verify explains itself and returns t
   assert.equal(await page.locator('[data-action="approve-draft"]').isDisabled(), false);
   assert.equal(await issue.count(), 0);
 });
+
+test("the status bar counts the editor sequence's clips apart from its captions, also after reload", async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed });
+  const counts = async () => ({
+    clips: await page.locator("[data-studio-clip-count]").textContent(),
+    captions: await page.locator("[data-studio-caption-count]").textContent(),
+  });
+  assert.deepEqual(await counts(), { clips: "2", captions: "1" });
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await waitSaved(page);
+  assert.deepEqual(await counts(), { clips: "2", captions: "1" });
+  await clickEditorAction(page, "rectangle");
+  await waitSaved(page);
+  await page.waitForFunction(
+    () => document.querySelector("[data-studio-clip-count]")?.textContent === "3",
+  );
+  assert.equal((await counts()).captions, "1");
+});
+
+test("one undo and redo set stays visible, and version history does not look like undo", async (t) => {
+  const page = await openPage(t);
+  const visible = (name) =>
+    page.locator(`[data-action="${name}"]:visible, [data-ew-action="${name}"]:visible`).count();
+  assert.equal(await visible("undo"), 1);
+  assert.equal(await visible("redo"), 1);
+  const undoGlyph = await action(page, "undo").locator("svg").innerHTML();
+  const versions = oldAction(page, "versions");
+  assert.equal(await versions.isVisible(), true);
+  assert.notEqual(await versions.locator("svg").innerHTML(), undoGlyph);
+  await page.locator('[data-asset="demo"] .asset-thumbnail').click();
+  await page.locator('#studio .viewer-panel[aria-label="原素材预览"]').waitFor();
+  assert.equal(await visible("undo"), 1, "Source preview keeps only the editor's undo");
+  assert.equal(await visible("redo"), 1);
+  assert.equal(
+    await action(page, "undo").getAttribute("title"),
+    "撤销（没有可撤销的操作）",
+    "A disabled undo says why",
+  );
+});
+
+test("新建工程 is labeled, opens at once when safe and asks in the page before leaving unsaved work", async (t) => {
+  const page = await openPage(t);
+  const create = oldAction(page, "new");
+  assert.equal((await create.innerText()).trim(), "新建工程");
+  assert.match(await create.getAttribute("title"), /新建工程/);
+  const original = await saved(page);
+  const dialogs = [];
+  page.on("dialog", (dialog) => {
+    dialogs.push(dialog.message());
+    void dialog.dismiss();
+  });
+  await page.evaluate(() => window.__mainHost.fail(true));
+  await page.locator("#project-name").fill("还没保存的名字");
+  await page.locator("#project-name").press("Tab");
+  await page.waitForFunction(
+    () => document.querySelector("#save-state")?.textContent === "保存失败",
+  );
+  await create.click();
+  const confirm = page.locator("#plan-dialog[open]");
+  await confirm.waitFor();
+  assert.match(await confirm.textContent(), /未保存的修改/);
+  await confirm.getByRole("button", { name: "取消", exact: true }).click();
+  assert.equal(await page.locator("#plan-dialog[open]").count(), 0);
+  assert.equal(await page.locator("#project-name").inputValue(), "还没保存的名字");
+  assert.equal((await saved(page)).id, original.id);
+  await page.evaluate(() => window.__mainHost.fail(false));
+  await create.click();
+  await confirm.getByRole("button", { name: "仍然新建", exact: true }).click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, original.id);
+  const next = await waitSaved(page);
+  assert.equal(next.name, "未命名项目");
+  assert.equal(await page.locator("#plan-dialog[open]").count(), 0);
+  // A saved project with no running work opens the next one without asking.
+  await create.click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, next.id);
+  assert.equal(await page.locator("#plan-dialog[open]").count(), 0);
+  assert.deepEqual(dialogs, [], "No browser confirm dialog is used");
+});
+
+test("a new project's sequence takes the project name given at creation, existing sequences keep theirs", async (t) => {
+  const page = await openPage(t);
+  await page.locator("#project-name").fill("已有工程改名");
+  await page.locator("#project-name").press("Tab");
+  let doc = await waitSaved(page);
+  assert.equal(doc.name, "已有工程改名");
+  assert.equal(doc.sequences[0].name, "旧工程迁移测试", "An existing sequence keeps its name");
+  await oldAction(page, "new").click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, doc.id);
+  doc = await waitSaved(page);
+  assert.equal(doc.sequences[0].name, "未命名项目");
+  await page.locator("#project-name").fill("周末探店");
+  await page.locator("#project-name").press("Tab");
+  await page.waitForFunction(() => window.__mainHost.current().name === "周末探店");
+  doc = await waitSaved(page);
+  assert.equal(doc.sequences[0].name, "周末探店");
+  assert.equal(
+    await page.locator("[data-ew-sequence] option:checked").textContent(),
+    "周末探店",
+  );
+  await clickEditorAction(page, "rectangle");
+  await waitSaved(page);
+  await page.locator("#project-name").fill("加入画面后再改名");
+  await page.locator("#project-name").press("Tab");
+  await page.waitForFunction(() => window.__mainHost.current().name === "加入画面后再改名");
+  doc = await waitSaved(page);
+  assert.equal(doc.sequences[0].name, "周末探店", "Once edited, the sequence name is its own");
+});
+
+test("leaving a project clears its 口播 analysis and old notices", async (t) => {
+  const audio = await readFile(new URL("./fixtures/static-tone.wav", import.meta.url));
+  const voiceId = `asset-${createHash("sha256").update(audio).digest("hex")}`;
+  const talk = 10 * T + 1234;
+  const page = await openPage(t, {
+    seed: {
+      ...realMediaSeed,
+      id: "spoken-leaving",
+      name: "离开前的口播",
+      assets: [
+        ...realMediaSeed.assets,
+        { id: "voice", name: "口播.wav", kind: "audio", duration: talk, resourceId: voiceId },
+      ],
+      sequences: [
+        {
+          ...realMediaSeed.sequences[0],
+          tracks: [...realMediaSeed.sequences[0].tracks, track("a1", "audio", "口播")],
+          clips: [
+            ...realMediaSeed.sequences[0].clips,
+            { ...picture("voice-clip", "a1", 0, talk), assetId: "voice" },
+          ],
+        },
+      ],
+    },
+    fullNativeAccess: true,
+    holdNativeStart: true,
+    mediaMetadata: {
+      [voiceId]: {
+        id: voiceId,
+        sha256: voiceId.slice(6),
+        bytes: audio.length,
+        mimeType: "audio/wav",
+        name: "口播.wav",
+        createdAt: 1,
+      },
+    },
+    mediaResources: { [voiceId]: { mimeType: "audio/wav", bytes: audio } },
+    records: {
+      [`video-studio-prepared-${voiceId}`]: [
+        {
+          revision: 1,
+          updatedAt: 1,
+          label: "准备完成",
+          data: { assetId: voiceId, silence: { intervals: [{ start: 2, end: 4 }] } },
+        },
+      ],
+    },
+  });
+  await page.waitForFunction(() =>
+    window.__mainHost.calls.some((call) => call.method === "media.jobs.list"),
+  );
+  const before = await saved(page);
+  await page.locator('#studio .rail [data-tab="spoken"]').click();
+  const panel = page.locator("#studio .library-panel");
+  await panel.getByRole("button", { name: "读取已有结果", exact: true }).click();
+  await panel.locator(".spoken-candidate").first().waitFor();
+  assert.match(await panel.textContent(), /尚无文稿/);
+  await oldAction(page, "new").click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, before.id);
+  await waitSaved(page);
+  await settle(page);
+  const text = await panel.textContent();
+  assert.doesNotMatch(text, /尚无文稿|工程已更新|长停顿/);
+  assert.equal(await panel.locator(".spoken-candidate").count(), 0);
+
+  const toast = page.locator("#toast");
+  await page.locator('#studio .rail [data-tab="media"]').click();
+  await page.locator('#studio [data-action="demo"]:visible').first().click();
+  await page.waitForFunction(() => document.querySelector("#toast.visible")?.textContent);
+  const demoId = (await waitSaved(page)).id;
+  await oldAction(page, "new").click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, demoId);
+  assert.equal(await toast.textContent(), "", "A notice about the old project leaves with it");
+  assert.equal(await toast.evaluate((node) => node.classList.contains("visible")), false);
+  await page.locator('#studio [data-action="demo"]:visible').first().click();
+  await page.waitForFunction(() => document.querySelector("#toast.visible")?.textContent);
+  await page.waitForFunction(() => !document.querySelector("#toast.visible"), undefined, {
+    timeout: 8000,
+  });
+  await page.waitForFunction(() => document.querySelector("#toast").textContent === "", undefined, {
+    timeout: 2000,
+  });
+});
+
+test("disabled production buttons say why instead of staying silent", async (t) => {
+  const page = await openPage(t);
+  const reason = (name) =>
+    page.locator(`#studio [data-action="${name}"]`).first().evaluate((node) => ({
+      disabled: node.disabled,
+      title: node.getAttribute("title") ?? "",
+    }));
+  await production(page, "ai");
+  for (const name of ["ask-draft", "initialize-video"]) {
+    const value = await reason(name);
+    assert.equal(value.disabled, true, name);
+    assert.match(value.title, /CodeShell 桌面/, name);
+  }
+  assert.equal((await reason("quick-plan")).disabled, false);
+  assert.equal((await reason("quick-plan")).title, "", "An enabled button needs no reason");
+  const before = await saved(page);
+  await oldAction(page, "new").click();
+  await page.waitForFunction((id) => window.__mainHost.current().id !== id, before.id);
+  await waitSaved(page);
+  assert.deepEqual(await reason("quick-plan"), {
+    disabled: true,
+    title: "主画面轨上还没有片段，先把素材加入时间轴",
+  });
+  assert.deepEqual(await reason("export"), {
+    disabled: true,
+    title: "时间轴上还没有片段，先加入素材再导出",
+  });
+  await production(page, "spoken");
+  for (const name of ["spoken-prepare", "spoken-analyze"]) {
+    const value = await reason(name).catch(() => null);
+    if (!value) continue;
+    assert.equal(value.disabled, true, name);
+    assert.match(value.title, /先把口播素材加入时间轴/, name);
+  }
+  const undo = await reason("spoken-undo");
+  if (undo.disabled) assert.equal(undo.title, "没有可撤销的编辑");
+});

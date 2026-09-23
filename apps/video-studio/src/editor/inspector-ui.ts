@@ -365,6 +365,46 @@ export class EditorInspector {
     });
     this.inputRow(parent, label, input);
   }
+  /** A typed #RRGGBB(AA) field with a synced picker; picking keeps any typed transparency. */
+  private colorField(parent: HTMLElement, scope: Scope, label: string, path: Path): void {
+    const input = el("input", "ei-input ei-color-text");
+    const value = common(scope.clips.map((clip) => String(at(clip, path))));
+    input.value = value ?? "";
+    input.placeholder = value === undefined ? "多个值" : "";
+    const picker = el("input", "ei-color-picker");
+    picker.type = "color";
+    const expanded = (text: string) =>
+      /^#[0-9a-f]{3,4}$/i.test(text)
+        ? "#" + [...text.slice(1)].map((char) => char + char).join("")
+        : text;
+    const sync = () => {
+      const color = expanded(input.value.trim());
+      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)) picker.value = color.slice(0, 7).toLowerCase();
+    };
+    picker.value = "#000000";
+    sync();
+    input.addEventListener("input", sync);
+    input.addEventListener("change", () => {
+      void this.edit(scope, `修改${label}`, (clip) =>
+        this.fieldPatch(scope, clip, path, input.value),
+      );
+    });
+    picker.addEventListener("input", () => {
+      const previous = expanded(input.value.trim());
+      input.value = picker.value + (/^#[0-9a-f]{8}$/i.test(previous) ? previous.slice(7) : "");
+    });
+    picker.addEventListener("change", () => {
+      const previous = expanded(input.value.trim());
+      const next = picker.value + (/^#[0-9a-f]{8}$/i.test(previous) ? previous.slice(7) : "");
+      input.value = next;
+      void this.edit(scope, `修改${label}`, (clip) => this.fieldPatch(scope, clip, path, next));
+    });
+    const row = this.inputRow(parent, label, input);
+    row.classList.add("ei-color-field");
+    picker.setAttribute("aria-label", `选择${label}`);
+    picker.title = `选择${label}`;
+    row.append(picker);
+  }
   private choice(
     parent: HTMLElement,
     scope: Scope,
@@ -907,8 +947,8 @@ export class EditorInspector {
           ["line", "直线"],
         ],
       );
-      this.plain(shape, shapes, "图形填充颜色", ["fill"]);
-      this.plain(shape, shapes, "图形描边颜色", ["stroke"]);
+      this.colorField(shape, shapes, "图形填充颜色", ["fill"]);
+      this.colorField(shape, shapes, "图形描边颜色", ["stroke"]);
       this.number(shape, shapes, {
         label: "图形描边宽度（像素）",
         path: ["strokeWidth"],
@@ -1224,7 +1264,7 @@ export class EditorInspector {
     const style = this.section(
       parent,
       "字体与排版",
-      "颜色支持 #RRGGBB 或包含透明度的 #RRGGBBAA。字号与间距使用序列画布像素。",
+      "颜色可用取色器选择，也可输入 #RRGGBB 或包含透明度的 #RRGGBBAA。字号与间距使用序列画布像素。",
     );
     this.plain(style, scope, "字体", ["style", "fontFamily"]);
     const missingFonts = new Set(
@@ -1281,7 +1321,7 @@ export class EditorInspector {
       ["background", "文字背景颜色"],
       ["highlightColor", "逐词高亮颜色"],
     ] as const)
-      this.plain(style, scope, label, ["style", key]);
+      this.colorField(style, scope, label, ["style", key]);
     for (const [name, label, max] of [
       ["strokeWidth", "文字描边宽度（像素）", 100],
       ["backgroundRadius", "背景圆角（像素）", 512],
@@ -1307,7 +1347,7 @@ export class EditorInspector {
     );
     this.individual(keywords, scope, "keywords", (selected) => this.keywords(keywords, selected));
     const shadow = this.section(parent, "文字阴影");
-    this.plain(shadow, scope, "阴影颜色", ["style", "shadow", "color"]);
+    this.colorField(shadow, scope, "阴影颜色", ["style", "shadow", "color"]);
     for (const [key, label, min, max] of [
       ["blur", "阴影模糊（像素）", 0, 256],
       ["x", "阴影水平偏移（像素）", -2048, 2048],
@@ -1324,7 +1364,7 @@ export class EditorInspector {
       const row = el("div", "ei-card");
       details.append(row);
       this.plain(row, scope, `关键词 ${index + 1}`, ["style", "keywords", index, "text"]);
-      this.plain(row, scope, `关键词 ${index + 1} 颜色`, ["style", "keywords", index, "color"]);
+      this.colorField(row, scope, `关键词 ${index + 1} 颜色`, ["style", "keywords", index, "color"]);
       this.action(row, `删除关键词 ${index + 1}`, () => {
         void this.edit(scope, "删除关键词强调", (current) => {
           if (current.kind !== "text" || !equal(current.style.keywords ?? [], keywords))
@@ -1341,7 +1381,19 @@ export class EditorInspector {
     phrase.placeholder = "输入需要强调的词语或短句";
     color.value = clip.style.highlightColor;
     this.inputRow(parent, "新关键词", phrase);
-    this.inputRow(parent, "新关键词颜色", color);
+    const colorRow = this.inputRow(parent, "新关键词颜色", color);
+    const picker = el("input", "ei-color-picker");
+    picker.type = "color";
+    picker.value = /^#[0-9a-f]{6}/i.test(color.value) ? color.value.slice(0, 7).toLowerCase() : "#000000";
+    picker.setAttribute("aria-label", "选择新关键词颜色");
+    picker.title = "选择新关键词颜色";
+    picker.addEventListener("input", () => (color.value = picker.value));
+    color.addEventListener("input", () => {
+      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color.value.trim()))
+        picker.value = color.value.trim().slice(0, 7).toLowerCase();
+    });
+    colorRow.classList.add("ei-color-field");
+    colorRow.append(picker);
     this.action(
       parent,
       "添加关键词强调",

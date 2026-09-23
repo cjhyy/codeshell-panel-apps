@@ -117,6 +117,7 @@ import { createCaptionController, type CaptionController } from "./editor/captio
 import { createCaptionServices } from "./editor/caption-services";
 import { EditorCaptionsUI } from "./editor/captions-ui";
 import { exportEditorSrt, listCaptions } from "./editor/captions";
+import { planProjectRename } from "./editor/sequence-edits";
 import type { NarrationState } from "./narration";
 import { createAudioSeparationBridge } from "./editor/separation-bridge";
 import {
@@ -1388,6 +1389,7 @@ function views() {
       ?.read()
       .sequences.find((sequence) => sequence.id === editorSession!.read().activeSequenceId)?.clips
       .length,
+    statusClipCount: editorStatusClipCount(),
     mainTrackClipCount: mainTrackClipCount(),
     frameRateLabel: activeFrameRateLabel(),
     inspectorIssue: inspectorIssue(),
@@ -1407,7 +1409,18 @@ function toast(message: string): void {
   el.textContent = message;
   el.classList.add("visible");
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => el.classList.remove("visible"), 4500);
+  toastTimer = window.setTimeout(() => {
+    el.classList.remove("visible");
+    // Clear after the fade so the status region never keeps an old message.
+    toastTimer = window.setTimeout(() => (el.textContent = ""), 200);
+  }, 4500);
+}
+/** Notices belong to the project they describe. */
+function clearToast(): void {
+  window.clearTimeout(toastTimer);
+  const el = $("#toast");
+  el.classList.remove("visible");
+  el.textContent = "";
 }
 function showVoiceLibraryProgress(progress: VoiceLibraryProgress): void {
   const section = studio.querySelector(".voice-preparation");
@@ -1667,6 +1680,75 @@ function edit(operations: EditOperation[], baseRevision = project.revision): voi
   synchronizeLegacyView();
   render();
 }
+/** A just-created project's empty sequence follows the name people give the project. */
+function renameProject(name: string): void {
+  if (!editorSession) {
+    edit([{ type: "settings", name }]);
+    return;
+  }
+  assertEditable();
+  const doc = editorSession.read();
+  editorSession.dispatch(
+    planProjectRename(doc, name),
+    editorSession.getState().identity,
+    "工程重命名",
+  );
+  synchronizeLegacyView();
+  render();
+}
+/** Work that a project switch would interrupt or leave unsaved, in plain words. */
+function newProjectRisks(): string[] {
+  const risks: string[] = [];
+  // An autosave still in flight is finished by the switch itself; only a failed save is at risk.
+  const saveState = editorSession?.getState().saveState;
+  if (saveState === "failed" || saveState === "conflict")
+    risks.push("当前工程还有未保存的修改，上次保存没有成功。");
+  if (taskStarting || (task && ["queued", "running", "cancelling"].includes(task.status)))
+    risks.push("AI 任务正在进行，新建工程后会停止。");
+  const auto = production.auto;
+  if (
+    production.enabled &&
+    auto?.projectId === project.id &&
+    ["preparing", "agent", "waiting"].includes(auto.phase)
+  )
+    risks.push("自动制作正在进行，新建工程后会停止。");
+  if (production.pendingJobs.length)
+    risks.push(`后台还有 ${production.pendingJobs.length} 个制作任务在运行。`);
+  const exports = editorExportJobs?.activeCount ?? 0;
+  if (exports) risks.push(`有 ${exports} 个视频正在后台导出，导出会继续完成。`);
+  if (mediaImporting) risks.push("素材正在导入，请等导入完成后再新建。");
+  if (exporting) risks.push("视频正在导出，请等导出完成后再新建。");
+  if (recording.busy || recording.hasUnsavedResult) risks.push("录制还没有保存。");
+  return risks;
+}
+/** Switch at once when nothing is at risk; otherwise ask inside the page first. */
+async function requestNewProject(): Promise<void> {
+  const risks = newProjectRisks();
+  if (!risks.length) {
+    await replace(createProject());
+    return;
+  }
+  const dialog = $<HTMLDialogElement>("#plan-dialog");
+  dialog.innerHTML = html`<div class="dialog-heading">
+      <h2>新建工程？</h2>
+      ${tool("close-dialog", "关闭", "close")}
+    </div>
+    <ul class="new-project-risks">
+      ${risks.map((risk) => `<li>${esc(risk)}</li>`).join("")}
+    </ul>
+    <p class="section-description">
+      继续新建会先保存并归档当前工程，之后可在“最近工程”里重新打开；保存没有成功时会留在当前工程。
+    </p>
+    <div class="dialog-actions">
+      ${button("close-dialog", "取消", undefined, "quiet")}${button(
+        "confirm-new-project",
+        "仍然新建",
+        "plus",
+        "primary",
+      )}
+    </div>`;
+  dialog.showModal();
+}
 /** Optional upgrade for one old demo; canonical migration already validates the real document.
  * A later v1 dialect (0.5.16) must never be rejected by this older demo-only reader. */
 function pristineLegacyDemo(value: unknown): Project | null {
@@ -1725,6 +1807,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
     if ((next as { schemaVersion?: number })?.schemaVersion === 1)
       await editorStorage.backupLegacy(next);
     await editorSession.replace(validated, { identity: expectedIdentity });
+    clearToast();
     synchronizeLegacyView();
     library.clear();
     if (stopAutomatic && automaticRun)
@@ -3415,6 +3498,10 @@ async function action(name: string, id?: string): Promise<void> {
       await action("play");
       break;
     case "new":
+      await requestNewProject();
+      break;
+    case "confirm-new-project":
+      $<HTMLDialogElement>("#plan-dialog").close();
       await replace(createProject());
       break;
     case "projects": {
@@ -4119,7 +4206,7 @@ studio.addEventListener("change", (event) => {
     return;
   const target = event.target as HTMLInputElement;
   try {
-    if (target.id === "project-name") edit([{ type: "settings", name: target.value }]);
+    if (target.id === "project-name") renameProject(target.value);
     if (target.id === "clip-volume" && selected)
       edit([
         {
@@ -5150,6 +5237,14 @@ function mountCaptionPanel(): void {
     .then(() => syncEditorCaptionCapabilities())
     .catch(fail);
 }
+/** The status bar counts the active editor sequence's clips; its subtitles are counted beside them. */
+function editorStatusClipCount(): number | undefined {
+  if (!editorSession) return undefined;
+  const doc = editorSession.read();
+  return (doc.sequences.find((sequence) => sequence.id === doc.activeSequenceId)?.clips ?? []).filter(
+    (clip) => !(clip.kind === "text" && clip.role === "subtitle"),
+  ).length;
+}
 function editorCaptionList() {
   if (!editorSession) return undefined;
   const doc = editorSession.read();
@@ -5580,7 +5675,7 @@ function mountEditorWorkspace(): void {
     openProject: () => {
       $("#project-input").click();
     },
-    newProject: () => replace(createProject()),
+    newProject: () => requestNewProject(),
     downloadProject: (doc) =>
       download(
         new Blob([JSON.stringify(doc, null, 2)], { type: "application/json" }),
@@ -5711,7 +5806,13 @@ async function boot(): Promise<void> {
     if (panel && initialContext?.availableMethods?.includes("tasks.start")) {
       editorTasks = createEditorTaskBridge(panel);
       editorSourcePreviews = new EditorSourcePreviews(editorTasks);
-      editorExportJobs = new EditorExportJobs(panel, fail);
+      editorExportJobs = new EditorExportJobs(panel, fail, {
+        // A finished export proves the MP4 tools work; show that now, not at the next status poll.
+        // The production controller re-renders the 任务 page when its status changes.
+        onFinished: () => {
+          if (production.enabled) void production.refreshStatus({ fresh: true }).catch(fail);
+        },
+      });
       const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
       if (exportToolbar)
         editorExportJobs.mountTrigger(
@@ -5733,12 +5834,7 @@ async function boot(): Promise<void> {
         const revision = studio.querySelector("#revision");
         if (revision) revision.textContent = `rev ${project.revision}`;
         const clipCount = studio.querySelector("[data-studio-clip-count]");
-        if (clipCount) {
-          const doc = editorSession!.read();
-          clipCount.textContent = String(
-            doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips.length ?? 0,
-          );
-        }
+        if (clipCount) clipCount.textContent = String(editorStatusClipCount() ?? 0);
         const captionCount = studio.querySelector("[data-studio-caption-count]");
         if (captionCount) captionCount.textContent = String(editorCaptionList()?.length ?? 0);
         const exportButton = studio.querySelector<HTMLButtonElement>(
@@ -5748,6 +5844,8 @@ async function boot(): Promise<void> {
           const doc = editorSession!.read();
           exportButton.disabled = !doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips
             .length;
+          if (exportButton.disabled) exportButton.title = "时间轴上还没有片段，先加入素材再导出";
+          else exportButton.removeAttribute("title");
         }
         if (previousAssets !== JSON.stringify(project.assets)) {
           if (!pendingMediaDeletion) refreshMediaLibrary();

@@ -122,6 +122,24 @@
   color: var(--ei-text);
   outline: none;
 }
+/* Typed color plus a native picker; the picker keeps the row at the usual width. */
+.editor-inspector .ei-color-field .ei-input {
+  width: calc(48% - 38px);
+}
+.editor-inspector .ei-color-picker {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--ei-line);
+  border-radius: 6px;
+  background: var(--ei-input);
+  cursor: pointer;
+}
+.editor-inspector .ei-color-picker:focus-visible {
+  outline: 2px solid var(--ei-accent);
+  outline-offset: 1px;
+}
 .editor-inspector .ei-input::placeholder {
   color: #73839a;
   font-style: italic;
