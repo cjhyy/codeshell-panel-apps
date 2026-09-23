@@ -1456,6 +1456,82 @@ test("口播 page cuts a pause from real off-frame multitrack media on the edito
   );
 });
 
+test("粗剪 加入成片 places real off-frame media at the playhead of a multitrack project with one undo", async (t) => {
+  const take = 10 * T + 1234,
+    at = 90 * 8008; // A whole 29.97 fps frame, so the playhead is not snapped.
+  const roughSeed = {
+    ...realMediaSeed,
+    id: "rough-cut-real-media",
+    name: "实拍粗剪",
+    assets: [
+      ...realMediaSeed.assets,
+      { id: "take", name: "实拍原片.mp4", kind: "video", duration: take, width: 640, height: 360 },
+    ],
+    production: {
+      roughCuts: [
+        { id: "keep-tail", assetId: "take", inFrame: 30, outFrame: 300, name: "保留结尾", enabled: true },
+      ],
+    },
+  };
+  const page = await openPage(t, { seed: roughSeed });
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
+      document.querySelector("#toast"),
+      { childList: true, characterData: true, subtree: true },
+    );
+  });
+  await page.locator("[data-ew-seek]").fill(String(at));
+  const before = await saved(page);
+  await page.locator('#studio .rail [data-tab="roughcut"]').click();
+  await page.locator("#roughcut-source").selectOption("take");
+  assert.equal(
+    await page.locator('[data-roughcut-field="append-anchor"]').first().inputValue(),
+    "playhead",
+  );
+  await oldAction(page, "roughcut-append").click();
+  await page.waitForFunction(
+    (revision) => window.__mainHost.current().revision > revision,
+    before.revision,
+  );
+  const placed = await waitSaved(page);
+  assert.equal(placed.revision, before.revision + 1, "The whole placement is one edit");
+  const sequence = placed.sequences[0];
+  const added = sequence.clips.filter((clip) => clip.assetId === "take");
+  assert.equal(added.length, 1);
+  assert.equal(added[0].start, at, "The cut lands at the composition playhead");
+  assert.equal(added[0].duration, take - 30 * 8000);
+  assert.deepEqual(added[0].timeMap.points, [
+    { time: 0, source: 30 * 8000 },
+    { time: take - 30 * 8000, source: take },
+  ]);
+  assert.ok(
+    !["v1", "v2"].includes(added[0].trackId),
+    "Occupied picture tracks are never overlapped; a free track is added",
+  );
+  for (const id of ["camera-main", "camera-overlay", "existing-caption"])
+    assert.deepEqual(
+      sequence.clips.find((clip) => clip.id === id),
+      before.sequences[0].clips.find((clip) => clip.id === id),
+    );
+  assert.deepEqual(placed.production.roughCuts, before.production.roughCuts);
+  // The composition returns with the new clip selected and the playhead at its start.
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(`[data-et-clip="${added[0].id}"]`).getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal(await page.locator("[data-ew-seek]").inputValue(), String(at));
+  await returnEditor(page);
+  await clickEditorAction(page, "undo");
+  const undone = await waitSaved(page);
+  assert.deepEqual(undone.sequences, before.sequences, "One undo removes the placement");
+  assert.deepEqual(undone.production, before.production);
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.match(toasts, /已按列表顺序加入 1 个视频片段/);
+  assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
+});
+
 test("an asset change on the 字幕 page never rewrites the panel in place and keeps unsaved text", async (t) => {
   const page = await openPage(t);
   await page.locator('#studio .rail [data-tab="transcript"]').click();

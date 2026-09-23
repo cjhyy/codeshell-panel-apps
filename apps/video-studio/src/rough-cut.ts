@@ -1,10 +1,4 @@
-import {
-  timelineDuration,
-  type Asset,
-  type EditOperation,
-  type Project,
-  type RoughCut,
-} from "./model";
+import type { Asset, Project, RoughCut } from "./model";
 
 export const MAX_ROUGH_CUTS = 1000;
 const MAX_FRAMES = 24 * 60 * 60 * 30;
@@ -227,59 +221,6 @@ export function splitRoughCut(project: Project, cutId: string, atFrame: number):
   const right: RoughCut = { ...cut, id: nextCutId(cuts), inFrame: atFrame };
   cuts.splice(index, 1, { ...cut, outFrame: atFrame }, right);
   return validateRoughCuts(cuts, project.assets);
-}
-
-/** Preflight the whole selection; the caller applies the returned batch atomically. */
-export function roughCutOperations(project: Project, cutIds: string[]): EditOperation[] {
-  const cuts = cutsOf(project);
-  if (
-    !Array.isArray(cutIds) ||
-    cutIds.length > MAX_ROUGH_CUTS ||
-    Array.from(cutIds).some((id) => typeof id !== "string") ||
-    new Set(cutIds).size !== cutIds.length
-  )
-    throw new Error("粗剪片段选择须为不重复的 ID 列表");
-  const byId = new Map(cuts.map((cut) => [cut.id, cut]));
-  const assetsById = new Map(project.assets.map((asset) => [asset.id, asset]));
-  let pictureEnd = timelineDuration(project);
-  let audioEnd = (project.audioClips ?? []).reduce(
-    (end, clip) => Math.max(end, clip.startFrame + clip.outFrame - clip.inFrame),
-    0,
-  );
-  let pictureCount = project.clips.length;
-  let audioCount = (project.audioClips ?? []).length;
-  const operations: EditOperation[] = [];
-  for (const id of cutIds) {
-    const cut = byId.get(id);
-    if (!cut) throw new Error(`粗剪片段不存在：${id}`);
-    const asset = source(project.assets, cut.assetId, assetsById);
-    const length = cut.outFrame - cut.inFrame;
-    if (asset.kind === "video") {
-      pictureEnd += length;
-      if (++pictureCount > 2000 || pictureEnd > MAX_FRAMES)
-        throw new Error("加入粗剪片段后超出画面数量或时长上限");
-      operations.push({
-        type: "add",
-        assetId: asset.id,
-        inFrame: cut.inFrame,
-        outFrame: cut.outFrame,
-      });
-    } else {
-      if (++audioCount > 64) throw new Error("加入粗剪片段后超过 64 条音轨上限");
-      if (audioEnd + length > pictureEnd)
-        throw new Error("音频选段超出画面时长，请先添加或延长画面");
-      operations.push({
-        type: "audio-add",
-        assetId: asset.id,
-        inFrame: cut.inFrame,
-        outFrame: cut.outFrame,
-        startFrame: audioEnd,
-        volume: 1,
-      });
-      audioEnd += length;
-    }
-  }
-  return operations;
 }
 
 /** LosslessCut-compatible seconds CSV, without a header; source list order is preserved. */

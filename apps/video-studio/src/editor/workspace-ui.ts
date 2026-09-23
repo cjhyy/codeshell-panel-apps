@@ -18,6 +18,7 @@ import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
 import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration } from "./validation";
+import { findFreeTrack } from "./rough-cut-placement";
 import { EditorExportBatch } from "./export-batch";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";
@@ -586,21 +587,8 @@ export class EditorWorkspace {
     start: Tick,
     duration: Tick,
   ): { id: string; operations: EditorOperation[] } {
-    const sequence = this.sequence();
-    const track = sequence.tracks.find(
-      (t) =>
-        t.kind === kind &&
-        !t.locked &&
-        !sequence.clips.some(
-          (c) => c.trackId === t.id && c.start < start + duration && c.start + c.duration > start,
-        ),
-    );
-    if (track) return { id: track.id, operations: [] };
-    const created = createTrack(uid("track"), kind);
-    return {
-      id: created.id,
-      operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
-    };
+    const { trackId, operations } = findFreeTrack(this.sequence(), kind, start, duration, uid);
+    return { id: trackId, operations };
   }
   addAsset(assetId: string, placement: { at?: Tick; trackId?: string } = {}): void {
     const asset = this.options.session.read().assets.find((a) => a.id === assetId);

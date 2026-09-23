@@ -585,6 +585,16 @@
   color: var(--muted);
   font-size: 10px;
 }
+.roughcut-anchor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.roughcut-panel .roughcut-anchor select {
+  padding: 6px 8px;
+}
 .roughcut-help {
   font-size: 10px;
   color: var(--muted);

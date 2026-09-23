@@ -1561,6 +1561,14 @@ test(
         fullPage: true,
       });
       await page.setViewportSize({ width: 1440, height: 1000 });
+      await page
+        .locator('[data-roughcut-queue-summary] [data-roughcut-field="append-anchor"]')
+        .selectOption("end");
+      assert.equal(
+        await page.locator('.roughcut-batch [data-roughcut-field="append-anchor"]').inputValue(),
+        "end",
+        "Both entry points share the chosen position",
+      );
       await page.locator('[data-action="roughcut-queue-append"]').click();
       await saved(page);
       const joined = (await state(page)).project;
@@ -1756,13 +1764,19 @@ test(
       const csv = await download(page, '[data-action="roughcut-csv"]');
       assert.equal(csv.name, "rough-cut-source-保留段.csv");
       assert.equal(csv.bytes.toString("utf8"), '"3","4","结尾"\r\n"1","2","开场, ""重点"""\r\n');
+      assert.equal(
+        await page.locator('.roughcut-batch [data-roughcut-field="append-anchor"]').inputValue(),
+        "playhead",
+      );
       await page.locator('[data-action="roughcut-append"]').click();
       await saved(page);
       const assembled = (await state(page)).project;
-      assert.deepEqual(assembled.clips[0], before.project.clips[0]);
+      // The composition playhead (frame 30) is nearest the start of the magnetic picture track:
+      // the cuts open a gap there and the existing clip moves after them.
+      assert.deepEqual(assembled.clips.at(-1), before.project.clips[0]);
       assert.deepEqual(
         assembled.clips
-          .slice(1)
+          .slice(0, 2)
           .map(({ assetId, inFrame, outFrame }) => [assetId, inFrame, outFrame]),
         [
           [video.id, 90, 120],
@@ -1771,7 +1785,7 @@ test(
         "Joining uses list order and exact source ranges",
       );
       assert.deepEqual(assembled.roughCuts, ordered.roughCuts);
-      await expectTimelinePreview(page, assembled.clips[1], 180);
+      await expectTimelinePreview(page, assembled.clips[0], 0);
 
       const json = await download(page, '[data-action="save-project"]');
       assert.deepEqual(
@@ -1839,7 +1853,7 @@ test(
 );
 
 test(
-  "audio source marks append to independent audio without changing the retained video",
+  "audio source marks land at the playhead on independent audio without changing the retained video",
   { timeout: 45_000 },
   async () => {
     const { page, audio } = await importedPage();
@@ -1858,10 +1872,11 @@ test(
           outFrame,
           startFrame,
         ]),
-        [[audio.id, 0, audio.durationFrames, 0]],
+        [[audio.id, 0, audio.durationFrames, 30]],
+        "Sound lands at the composition playhead on its own track",
       );
       assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
-      assert.equal((await state(page)).playheadFrame, 0);
+      assert.equal((await state(page)).playheadFrame, 30);
       assert.equal((await state(page)).selectedClipId, project.audioClips[0].id);
       const video = before.assets.find((asset) => asset.kind === "video");
       await page.locator(`[data-rough-source="${video.id}"]`).click();
@@ -1875,8 +1890,8 @@ test(
       assert.ok((await state(page)).playheadFrame > 0);
       await page.locator(`[data-audio-clip="${project.audioClips[0].id}"]`).click();
       assert.equal(await page.locator("#preview").isVisible(), true);
-      assert.equal((await state(page)).playheadFrame, 0);
-      await expectPreviewFrame(page, video.id, 0);
+      assert.equal((await state(page)).playheadFrame, 30);
+      await expectPreviewFrame(page, video.id, 30);
       await page.locator('[data-tab="media"]').click();
       await page.locator(`[data-rough-source="${video.id}"]`).click();
       await seekSource(page, 90);

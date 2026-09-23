@@ -4,12 +4,14 @@ import {
   exportRoughCutsCsv,
   invertRoughCuts,
   planUniformRoughCuts,
-  roughCutOperations,
   splitRoughCut,
   validateRoughCuts,
 } from "./rough-cut";
 import type { RoughCutAIController } from "./rough-cut-ai";
 import { escapeHtml as esc, html, icon } from "./icons";
+import type { RoughCutAnchor } from "./editor/rough-cut-placement";
+
+export type { RoughCutAnchor };
 
 export interface RoughCutContext {
   project(): Project;
@@ -19,7 +21,8 @@ export interface RoughCutContext {
   available(id: string): boolean;
   changed(): void;
   edit(operations: EditOperation[]): void;
-  appendToTimeline(operations: EditOperation[]): void;
+  /** Place these cuts, in this order, on the composition as one undoable edit. */
+  placeCuts(cutIds: string[], anchor: RoughCutAnchor): Promise<void>;
   selectAsset(id: string): Promise<void>;
   seek(frame: number): Promise<void>;
   play(inFrame?: number, outFrame?: number): Promise<void>;
@@ -92,6 +95,9 @@ const button = (
 ) =>
   `<button type="button" data-action="roughcut-${action}"${options.id ? ` data-id="${esc(options.id)}"` : ""} class="${options.className ?? ""}"${options.disabled ? " disabled" : ""}${options.title ? ` title="${esc(options.title)}" aria-label="${esc(options.title)}"` : ""}>${glyph ? icon(glyph, 15) : ""}<span>${esc(text)}</span></button>`;
 
+const anchorSelect = (anchor: RoughCutAnchor) =>
+  `<label class="roughcut-anchor">加入位置<select data-roughcut-field="append-anchor" aria-label="加入位置"><option value="playhead"${anchor === "playhead" ? " selected" : ""}>播放头</option><option value="end"${anchor === "end" ? " selected" : ""}>成片末尾</option></select></label>`;
+
 export function createRoughCutUI(context: RoughCutContext) {
   const drafts = new Map<string, Draft>();
   let queueProjectId = "";
@@ -100,6 +106,7 @@ export function createRoughCutUI(context: RoughCutContext) {
   let bulkOpen = false;
   let aiOpen = false;
   let aiScope: "current" | "queue" = "current";
+  let appendAnchor: RoughCutAnchor = "playhead";
   let batchMode = "trim",
     batchHead = "0",
     batchTail = "0",
@@ -454,6 +461,7 @@ export function createRoughCutUI(context: RoughCutContext) {
                   )}，按列表顺序加入</span
                 >
               </p>
+              ${anchorSelect(appendAnchor)}
               ${button("append", `加入 ${enabled.length} 段到成片`, "plus", {
                 className: "primary full",
                 disabled: !enabled.length,
@@ -475,7 +483,7 @@ export function createRoughCutUI(context: RoughCutContext) {
                 保留标记随工程保存，不修改原素材。加入成片后可继续调整；最终视频仍通过工作台导出。
               </p>
               ${source.kind === "audio"
-                ? "<p>音频段会连续加入独立音轨；请先为成片准备足够长的画面。</p>"
+                ? "<p>音频段会连续放在空闲的声音轨上，不会覆盖已有声音。</p>"
                 : ""}
             </details>
           `}
@@ -573,6 +581,7 @@ export function createRoughCutUI(context: RoughCutContext) {
             ? `${unmarked} 份素材尚无勾选的保留段，标记后再加入。`
             : "按上方素材顺序和各自保留段顺序加入。"}
         </p>
+        ${anchorSelect(appendAnchor)}
         ${button("queue-append", `统一加入 ${enabled.length} 段到成片`, "plus", {
           className: "primary full",
           disabled: !enabled.length,
@@ -892,6 +901,15 @@ ${esc(aiGoal)}</textarea
   function input(target: Field): boolean {
     const field = target.dataset.roughcutField;
     if (!field) return false;
+    if (field === "append-anchor") {
+      const next = target.value;
+      if ((next === "playhead" || next === "end") && next !== appendAnchor) {
+        appendAnchor = next;
+        // Both 加入 entry points share one choice.
+        context.changed();
+      }
+      return true;
+    }
     if (field === "ai-scope") {
       ensureProject();
       if (target.value === "current" || target.value === "queue") {
@@ -1121,11 +1139,10 @@ ${esc(aiGoal)}</textarea
         } else if (verb === "queue-append") {
           const enabled = queueCuts();
           if (!enabled.length) throw new Error("请先为队列中的素材保存并勾选保留段");
-          const operations = roughCutOperations(
-            context.project(),
+          await context.placeCuts(
             enabled.map((item) => item.id),
+            appendAnchor,
           );
-          context.appendToTimeline(operations);
           context.toast(
             `已按队列顺序加入 ${new Set(enabled.map((item) => item.assetId)).size} 份素材的 ${enabled.length} 个片段`,
           );
@@ -1253,11 +1270,9 @@ ${esc(aiGoal)}</textarea
       } else if (verb === "append") {
         const enabled = sourceCuts().filter((item) => item.enabled);
         if (!enabled.length) throw new Error("先勾选要加入成片的保留段");
-        context.appendToTimeline(
-          roughCutOperations(
-            context.project(),
-            enabled.map((item) => item.id),
-          ),
+        await context.placeCuts(
+          enabled.map((item) => item.id),
+          appendAnchor,
         );
         context.toast(
           `已按列表顺序加入 ${enabled.length} 个${source.kind === "audio" ? "音频" : "视频"}片段`,

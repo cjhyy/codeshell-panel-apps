@@ -10,7 +10,6 @@ import {
   type Project,
 } from "../apps/video-studio/src/model";
 import { narrationSnapshot, updateNarrationScript } from "../apps/video-studio/src/narration";
-import { roughCutOperations } from "../apps/video-studio/src/rough-cut";
 
 const MAX_FRAMES = 30 * 86400;
 const edit = (project: Project, operations: EditOperation[]) =>
@@ -299,18 +298,11 @@ test("portable free timelines normalize missing positions and order while reject
   assert.throws(() => validateProject({ ...before, timelineMode: undefined }), /磁性时间轴/);
 });
 
-test("rough-cut preflight and narration duration include gaps; placement changes invalidate approval snapshots", () => {
+test("narration duration includes gaps; placement changes invalidate approval snapshots", () => {
   const before = gappedFixture();
   const narrated = updateNarrationScript(before, "第一句。第二句。");
   assert.equal(Math.max(...narrated.captions.map((caption) => caption.endFrame)), 450);
   const noCaptions = { ...before, captions: [] };
   const moved = edit(noCaptions, [{ type: "video-move", clipId: "b", startFrame: 600 }]);
   assert.notEqual(narrationSnapshot(noCaptions), narrationSnapshot(moved));
-  const nearLimit = edit(before, [
-    { type: "video-move", clipId: "b", startFrame: MAX_FRAMES - 90 },
-  ]);
-  nearLimit.roughCuts = [
-    { id: "cut", assetId: "video-a", inFrame: 0, outFrame: 30, name: "追加", enabled: true },
-  ];
-  assert.throws(() => roughCutOperations(nearLimit, ["cut"]), /时长上限/);
 });

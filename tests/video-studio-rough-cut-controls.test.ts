@@ -35,6 +35,7 @@ function fixture() {
     downloads: { name: string; contents: string }[] = [];
   const plays: [number | undefined, number | undefined][] = [];
   const tasks: PanelTask[] = [];
+  const placements: { ids: string[]; anchor: string }[] = [];
   const startAttempts: Record<string, unknown>[] = [];
   const snapshots: (RoughCutAISnapshot | null)[] = [];
   let startError = "";
@@ -87,10 +88,27 @@ function fixture() {
       history.push(structuredClone(project));
       project = applyOperations(project, ops, project.revision);
     },
-    appendToTimeline: (ops) => {
+    placeCuts: async (ids, anchor) => {
       if (rejectEdits) throw new Error("请等待当前制作完成");
+      placements.push({ ids: [...ids], anchor });
+      // The editor document places the ranges; this legacy stand-in keeps picture order visible.
       history.push(structuredClone(project));
-      project = applyOperations(project, ops, project.revision);
+      const marks = new Map((project.roughCuts ?? []).map((cut) => [cut.id, cut]));
+      const pictures = ids
+        .map((id) => marks.get(id)!)
+        .filter(
+          (cut) => project.assets.find((asset) => asset.id === cut.assetId)?.kind === "video",
+        );
+      project = applyOperations(
+        project,
+        pictures.map(({ assetId, inFrame, outFrame }) => ({
+          type: "add" as const,
+          assetId,
+          inFrame,
+          outFrame,
+        })),
+        project.revision,
+      );
     },
     selectAsset: async (id) => {
       sourceId = id;
@@ -178,6 +196,7 @@ function fixture() {
     messages,
     downloads,
     plays,
+    placements,
   };
 }
 
@@ -697,6 +716,27 @@ test("current-source export and append honor enabled list order", async () => {
   );
 });
 
+test("加入位置 defaults to the playhead and can append at the end for both entry points", async () => {
+  const f = fixture();
+  f.input("in", "1");
+  f.input("out", "2");
+  await f.ui.action("roughcut-save");
+  const markup = f.ui.render();
+  assert.match(markup, /data-roughcut-field="append-anchor"[^>]*><option value="playhead" selected>播放头/);
+  await f.ui.action("roughcut-append");
+  assert.deepEqual(f.placements.at(-1)!.anchor, "playhead");
+  f.input("append-anchor", "end");
+  assert.match(f.ui.render(), /<option value="end" selected>成片末尾/);
+  await f.ui.action("roughcut-append");
+  assert.equal(f.placements.at(-1)!.anchor, "end");
+  f.ui.setQueue(["source-a"]);
+  await f.ui.action("roughcut-queue-append");
+  assert.deepEqual(f.placements.at(-1), { ids: [f.project().roughCuts![0]!.id], anchor: "end" });
+  f.input("append-anchor", "anywhere");
+  await f.ui.action("roughcut-append");
+  assert.equal(f.placements.at(-1)!.anchor, "end", "Unknown values are ignored");
+});
+
 test("undo reloads a changed saved baseline even while a selection has an unapplied draft", async () => {
   const f = fixture();
   f.input("in", "1");
@@ -790,7 +830,7 @@ test("batch insertion respects source order and enabled per-source order with on
   assert.deepEqual(f.project().roughCuts, before.roughCuts, "Undo preserves reusable source marks");
 });
 
-test("batch audio overflow or a rejected edit leaves all existing tracks and markers intact", async () => {
+test("mixed picture and sound go to placement together; a rejected edit leaves markers intact", async () => {
   const f = fixture();
   f.replaceProject({
     ...f.project(),
@@ -809,13 +849,18 @@ test("batch audio overflow or a rejected edit leaves all existing tracks and mar
   f.ui.setQueue(["source-a", "voice"]);
   const before = structuredClone(f.project());
   await f.ui.action("roughcut-queue-append");
-  assert.match(f.messages.at(-1)!, /音频选段超出画面时长/);
-  assert.deepEqual(f.project(), before, "A late audio failure cannot partially append the video");
+  assert.deepEqual(f.placements.at(-1), {
+    ids: before.roughCuts!.map((cut) => cut.id),
+    anchor: "playhead",
+  });
+  assert.deepEqual(f.project().roughCuts, before.roughCuts);
+  f.undo();
+  const settled = structuredClone(f.project());
   f.ui.setQueue(["source-a"]);
   f.rejectEdits();
   await f.ui.action("roughcut-queue-append");
   assert.match(f.messages.at(-1)!, /请等待当前制作完成/);
-  assert.deepEqual(f.project(), before);
+  assert.deepEqual(f.project(), settled);
 });
 
 test("queue selection and drafts reset across projects and explicit same-ID replacement", async () => {

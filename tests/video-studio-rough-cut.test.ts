@@ -12,7 +12,6 @@ import {
   createRoughCut,
   exportRoughCutsCsv,
   invertRoughCuts,
-  roughCutOperations,
   splitRoughCut,
 } from "../apps/video-studio/src/rough-cut.ts";
 import { publishProductionAssets } from "../apps/video-studio/src/voiceover.ts";
@@ -227,106 +226,6 @@ test("split preserves disabled state and names, covers the original range exactl
   assert.deepEqual(project, before);
 });
 
-test("selected rough cuts append video in the requested order without consuming markers or existing edits", () => {
-  const project = fixture();
-  project.roughCuts = [
-    cut("a", 150, 300),
-    cut("b", 30, 90, { assetId: "video-b", enabled: false }),
-  ];
-  const before = structuredClone(project);
-  const operations = roughCutOperations(project, ["b", "a"]);
-  assert.deepEqual(operations, [
-    { type: "add", assetId: "video-b", inFrame: 30, outFrame: 90 },
-    { type: "add", assetId: "video-a", inFrame: 150, outFrame: 300 },
-  ]);
-  const result = applyOperations(project, operations, project.revision);
-  assert.deepEqual(
-    result.clips.slice(1).map(({ assetId, inFrame, outFrame }) => ({ assetId, inFrame, outFrame })),
-    [
-      { assetId: "video-b", inFrame: 30, outFrame: 90 },
-      { assetId: "video-a", inFrame: 150, outFrame: 300 },
-    ],
-  );
-  assert.deepEqual(result.clips[0], project.clips[0]);
-  assert.deepEqual(result.captions, project.captions);
-  assert.deepEqual(result.roughCuts, project.roughCuts);
-  assert.deepEqual(project, before);
-  assert.throws(() => roughCutOperations(project, ["missing"]));
-  assert.throws(() => roughCutOperations(project, ["a", "a"]));
-});
-
-test("audio rough cuts start after the latest independent audio and keep every selected sample", () => {
-  const project = fixture();
-  project.audioClips = [
-    {
-      id: "audio-existing",
-      assetId: "audio-a",
-      inFrame: 30,
-      outFrame: 90,
-      startFrame: 15,
-      volume: 0.5,
-    },
-  ];
-  project.roughCuts = [
-    cut("voice-a", 90, 135, { assetId: "audio-a" }),
-    cut("voice-b", 300, 330, { assetId: "audio-a" }),
-  ];
-  const operations = roughCutOperations(project, ["voice-b", "voice-a"]);
-  const after = applyOperations(project, operations, project.revision);
-  assert.deepEqual(
-    after.audioClips!.slice(1).map(({ inFrame, outFrame, startFrame, volume }) => ({
-      inFrame,
-      outFrame,
-      startFrame,
-      volume,
-    })),
-    [
-      { inFrame: 300, outFrame: 330, startFrame: 75, volume: 1 },
-      { inFrame: 90, outFrame: 135, startFrame: 105, volume: 1 },
-    ],
-  );
-  assert.deepEqual(after.audioClips![0], project.audioClips![0]);
-  assert.deepEqual(after.clips, project.clips);
-});
-
-test("audio overflow rejects the entire proposed batch and never silently shortens a selected range", () => {
-  const project = fixture();
-  project.roughCuts = [
-    cut("voice-a", 0, 450, { assetId: "audio-a" }),
-    cut("voice-b", 0, 180, { assetId: "audio-a" }),
-  ];
-  const before = structuredClone(project);
-  assert.throws(() => roughCutOperations(project, ["voice-a", "voice-b"]), /添加或延长画面/);
-  assert.deepEqual(project, before);
-  project.clips = [];
-  project.captions = [];
-  assert.throws(() => roughCutOperations(project, ["voice-a"]), /添加或延长画面/);
-});
-
-test("mixed selections preflight in order so earlier picture additions can accommodate later audio", () => {
-  const project = fixture();
-  project.clips = [];
-  project.captions = [];
-  project.roughCuts = [cut("picture", 150, 450), cut("voice", 30, 240, { assetId: "audio-a" })];
-  const before = structuredClone(project);
-  assert.throws(() => roughCutOperations(project, ["voice", "picture"]), /添加或延长画面/);
-  const result = applyOperations(
-    project,
-    roughCutOperations(project, ["picture", "voice"]),
-    project.revision,
-  );
-  assert.equal(timelineDuration(result), 300);
-  assert.deepEqual(
-    result.audioClips?.map(({ inFrame, outFrame, startFrame }) => ({
-      inFrame,
-      outFrame,
-      startFrame,
-    })),
-    [{ inFrame: 30, outFrame: 240, startFrame: 0 }],
-  );
-  assert.deepEqual(project, before);
-});
-
 test("create, split and inversion cannot exceed the project-wide marker budget", () => {
   const project = fixture();
   project.roughCuts = Array.from({ length: 1000 }, (_, index) =>
@@ -354,20 +253,12 @@ test("LosslessCut CSV exports enabled ranges in seconds with escaped names and n
   assert.deepEqual(project, before);
 });
 
-test("identical names and source ranges remain distinct editable markers and timeline instances", () => {
+test("identical names and source ranges remain distinct editable markers", () => {
   const project = fixture();
   project.roughCuts = [
     cut("same-a", 30, 60, { name: "同名" }),
     cut("same-b", 30, 60, { name: "同名" }),
   ];
-  const result = applyOperations(
-    project,
-    roughCutOperations(project, ["same-b", "same-a"]),
-    project.revision,
-  );
-  assert.equal(result.clips.length, project.clips.length + 2);
-  assert.notEqual(result.clips.at(-1)!.id, result.clips.at(-2)!.id);
-  assert.deepEqual(result.roughCuts, project.roughCuts);
   assert.equal(exportRoughCutsCsv(project, "video-a"), '"1","2","同名"\r\n"1","2","同名"\r\n');
 });
 
@@ -395,44 +286,3 @@ test("media metadata publication preserves markers and incompatible source repla
   assert.deepEqual(project, original);
 });
 
-test("one thousand retained markers can be appended in a single atomic local batch", () => {
-  const project = validateProject({
-    ...createProject("批量粗剪"),
-    assets: Array.from({ length: 1000 }, (_, index) => ({
-      id: `source-${index}`,
-      name: `素材 ${index}`,
-      kind: "video",
-      durationFrames: 60,
-    })),
-    roughCuts: Array.from({ length: 1000 }, (_, index) =>
-      cut(`selection-${index}`, 0, 30, { assetId: `source-${index}` }),
-    ),
-  });
-  const ids = project.roughCuts!.map((item) => item.id);
-  const result = applyOperations(project, roughCutOperations(project, ids), project.revision);
-  assert.equal(result.revision, project.revision + 1);
-  assert.equal(result.clips.length, 1000);
-  assert.equal(timelineDuration(result), 30000);
-  assert.deepEqual(
-    result.clips.map((clip) => clip.assetId),
-    project.assets.map((asset) => asset.id),
-  );
-  assert.deepEqual(result.roughCuts, project.roughCuts);
-  assert.deepEqual(project.clips, []);
-});
-
-test("audio insertion follows the latest audible endpoint even when stored tracks are out of order", () => {
-  const project = fixture();
-  project.audioClips = [
-    { id: "late", assetId: "audio-a", startFrame: 300, inFrame: 0, outFrame: 60, volume: 1 },
-    { id: "early", assetId: "audio-a", startFrame: 0, inFrame: 0, outFrame: 30, volume: 1 },
-  ];
-  project.roughCuts = [cut("new-audio", 90, 120, { assetId: "audio-a" })];
-  const result = applyOperations(
-    project,
-    roughCutOperations(project, ["new-audio"]),
-    project.revision,
-  );
-  assert.equal(result.audioClips!.at(-1)!.startFrame, 360);
-  assert.deepEqual(result.audioClips!.slice(0, 2), project.audioClips);
-});

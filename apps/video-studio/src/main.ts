@@ -8,6 +8,7 @@ import {
   type Project,
   type EditOperation,
   type Asset,
+  type RoughCut,
 } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
 import { createViews, button, tool, seconds } from "./views";
@@ -95,6 +96,7 @@ import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
 import { secondsToTicks } from "./editor/time";
+import { planRoughCutPlacement, type RoughCutAnchor } from "./editor/rough-cut-placement";
 import {
   createEditorTaskBridge,
   isEditorDemoNarration,
@@ -866,7 +868,7 @@ const roughcut = createRoughCutUI({
     roughcut.sync();
   },
   edit,
-  appendToTimeline,
+  placeCuts: placeRoughCuts,
   selectAsset: (id) => selectSource(id, "roughcut", "preserve"),
   seek: seekSource,
   play: playSource,
@@ -2035,45 +2037,59 @@ function openTimelineMenu(id: string, x?: number, y?: number): void {
   timelineMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
 }
 function addMediaToTimeline(id: string, startFrame?: number): void {
-  if (editorWorkspace) {
-    assertEditorEditable();
-    showEditorWorkspace();
-    editorWorkspace.addAsset(
-      id,
-      startFrame === undefined
-        ? undefined
-        : {
-            at: secondsToTicks(startFrame / project.fps),
-          },
-    );
-    return;
-  }
-  const source = project.assets.find((asset) => asset.id === id);
-  if (!source) throw new Error("素材已不存在");
-  if (source.kind === "audio" && project.clips.length) {
-    appendToTimeline([
-      {
-        type: "audio-add",
-        assetId: id,
-        startFrame: startFrame ?? frame,
-        volume: source.speech || isDemoNarration(source) ? 1 : 0.25,
-      },
-    ]);
-  } else {
-    appendToTimeline([
-      { type: "add", assetId: id, ...(startFrame !== undefined ? { startFrame } : {}) },
-    ]);
-  }
+  if (!editorWorkspace) throw new Error("工程尚未恢复，已阻止修改");
+  assertEditorEditable();
+  showEditorWorkspace();
+  editorWorkspace.addAsset(
+    id,
+    startFrame === undefined
+      ? undefined
+      : {
+          at: secondsToTicks(startFrame / project.fps),
+        },
+  );
 }
 
-/** User insertion selects the first new segment, including a multi-source append. */
-function appendToTimeline(operations: EditOperation[]): void {
-  const previousIds = new Set([...project.clips, ...(project.audioClips ?? [])].map((c) => c.id));
-  edit(operations);
-  const added = [...timelineClips(project), ...(project.audioClips ?? [])].find(
-    (clip) => !previousIds.has(clip.id),
+/** Rough-cut ranges land on the editor document as one undo entry; the first new clip is shown. */
+async function placeRoughCuts(cutIds: string[], anchor: RoughCutAnchor): Promise<void> {
+  if (!editorSession || !editorWorkspace) throw new Error("工程尚未恢复，已阻止修改");
+  const doc = editorSession.read(),
+    identity = editorSession.getState().identity,
+    sequenceId = doc.activeSequenceId;
+  const stored = doc.production?.roughCuts;
+  const marks = new Map(
+    (Array.isArray(stored) ? (stored as unknown as RoughCut[]) : []).map((cut) => [cut?.id, cut]),
   );
-  if (added) selectTimelineClip(added.id, added.startFrame, true);
+  const cuts = cutIds.map((id) => {
+    const cut = marks.get(id);
+    if (!cut) throw new Error(`粗剪片段不存在：${id}`);
+    return cut;
+  });
+  const plan = planRoughCutPlacement(doc, sequenceId, cuts, {
+    at: editorWorkspace.currentTime(),
+    anchor,
+    idFactory: (kind) => `${kind}-${crypto.randomUUID()}`,
+  });
+  const saving = applyEditorDurable(plan.operations, identity, "加入粗剪片段");
+  aiApplying = true;
+  try {
+    await saving;
+  } finally {
+    aiApplying = false;
+  }
+  synchronizeLegacyView();
+  voiceover.stopPreview();
+  stop();
+  mediaPreview = false;
+  if (tab === "roughcut") tab = "media";
+  if ([...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === plan.clipIds[0]))
+    selected = plan.clipIds[0]!;
+  frame = Math.min(Math.floor(plan.start / LEGACY_FRAME_TICKS), Math.max(0, duration() - 1));
+  render();
+  const workspace = editorWorkspace;
+  workspace.selectClips(sequenceId, plan.clipIds);
+  await workspace.seek(plan.start);
+  workspace.revealSelection();
 }
 
 function selectTimelineClip(id: string, atFrame?: number, reveal = false): void {
