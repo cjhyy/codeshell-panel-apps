@@ -714,10 +714,23 @@ async function directoryFor(item, allowPick = false) {
   return result;
 }
 
-async function checkFiles(item, allowPick = false) {
+// A group keeps downloads from launching between the native calls of one logical operation;
+// otherwise a started download makes the next call's beforeStart guard reject it.
+function holdAuxiliaryGroup() {
   auxiliaryGroups++;
   auxiliaryBusy = true;
   updateActionAvailability();
+}
+
+function releaseAuxiliaryGroup() {
+  auxiliaryGroups--;
+  auxiliaryBusy = auxiliary.busy || auxiliaryGroups > 0;
+  updateActionAvailability();
+  if (!auxiliaryBusy) void runNextDownload();
+}
+
+async function checkFiles(item, allowPick = false) {
+  holdAuxiliaryGroup();
   try {
     if (previewMode || Number(context.apiVersion) < 14)
       throw new Error("文件检查需要更新 CodeShell。");
@@ -741,10 +754,7 @@ async function checkFiles(item, allowPick = false) {
     item.checkError = error.message;
   }
   item.checkedAt = Date.now();
-  auxiliaryGroups--;
-  auxiliaryBusy = auxiliary.busy || auxiliaryGroups > 0;
-  updateActionAvailability();
-  if (!auxiliaryBusy) void runNextDownload();
+  releaseAuxiliaryGroup();
   return fileInventoryState(item);
 }
 
@@ -3831,16 +3841,11 @@ async function searchCandidates(options) {
   // Planning can run immediately; only the native lookup needs executable handles.
   await searchExecutablesReady;
   if (options.signal?.aborted) throw new Error("已取消");
-  auxiliaryGroups++;
-  auxiliaryBusy = true;
-  updateActionAvailability();
+  holdAuxiliaryGroup();
   try {
     return await searchPlatformCandidates(options);
   } finally {
-    auxiliaryGroups--;
-    auxiliaryBusy = auxiliary.busy || auxiliaryGroups > 0;
-    updateActionAvailability();
-    if (!auxiliaryBusy) void runNextDownload();
+    releaseAuxiliaryGroup();
   }
 }
 
@@ -5934,6 +5939,7 @@ document.querySelector("#history-check").addEventListener("click", async (event)
   if (auxiliaryBusy || queueSubmissionPending) return;
   const button = event.currentTarget;
   button.disabled = true;
+  holdAuxiliaryGroup();
   try {
     for (const item of history) if (item.files?.length) await checkFiles(item);
     await saveLibrary();
@@ -5941,6 +5947,7 @@ document.querySelector("#history-check").addEventListener("click", async (event)
   } catch (error) {
     reportLibraryError(error);
   } finally {
+    releaseAuxiliaryGroup();
     button.disabled = false;
   }
 });

@@ -1309,6 +1309,49 @@ test("a pending file-check spawn does not swallow the running download's output 
   );
 });
 
+test("checking every record lets a waiting download start without failing later checks", async (t) => {
+  const page = await openPanel(t);
+  const thirdUrl = "https://www.youtube.com/watch?v=library-third";
+  const fourthUrl = "https://www.youtube.com/watch?v=library-fourth";
+  for (const [index, url] of [firstUrl, secondUrl].entries()) {
+    await addDownload(page, url);
+    await page.waitForFunction((count) => window.__downloads.length === count, index + 1);
+    await completeDownload(page, (await downloads(page))[index].processId);
+    await page.waitForFunction(
+      (count) => document.querySelectorAll('.queue-item[data-state="completed"]').length === count,
+      index + 1,
+    );
+  }
+  await addDownload(page, thirdUrl);
+  await page.waitForFunction(() => window.__downloads.length === 3);
+  await addDownload(page, fourthUrl);
+  await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 4);
+  await page.locator('[data-tab="history"]').click();
+  await page.evaluate(() => {
+    window.__holdNextNative = true;
+  });
+  await page.locator("#history-check").click();
+  await page.waitForFunction(() => Object.keys(window.__heldNativeSpawns).length === 1);
+  // The running download finishes during the check, leaving the fourth task waiting for it.
+  await completeDownload(page, (await downloads(page))[2].processId);
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 3,
+  );
+  await page.evaluate(() => {
+    for (const release of Object.values(window.__heldNativeSpawns)) release();
+  });
+  await page.waitForFunction(() => !document.querySelector("#history-check").disabled);
+  await page.waitForFunction(() => window.__downloads.length === 4);
+  assert.equal((await downloads(page))[3].args.at(-1), fourthUrl);
+  assert.equal(
+    await page.locator(".history-error").count(),
+    0,
+    `No record may be marked unreadable because a download started: ${await page
+      .locator(".history-error")
+      .allTextContents()}`,
+  );
+});
+
 test("playlist checkboxes produce the selected episode range and reject an empty selection", async (t) => {
   const page = await openPanel(t);
   await page.evaluate(() => {
