@@ -1,3 +1,4 @@
+import { supportsDurableDownloads, createDurableDownloads } from "./durable-downloads.js";
 import {
   parseVideoLinks,
   videoUrl,
@@ -168,6 +169,8 @@ let inspectedVideo = null;
 let inspectedBatch = new Map();
 let inspectionFailures = new Map();
 let context = { apiVersion: 0 };
+let durableDownloads = null;
+let durableTimer = null;
 let dependenciesChecked = false;
 let dependencyRefreshPending = false;
 let dependencyErrorActive = false;
@@ -639,7 +642,9 @@ function reportLibraryError(error) {
     ? "队列已暂停；请先复制需要保留的链接，再重新打开面板。"
     : "队列已暂停，请重试或清理记录。";
   libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。${recovery}`;
-  queuePaused = true;
+  if (!durableDownloads) queuePaused = true;
+  else
+    libraryStatus.textContent = `未能保存编辑：${error.message}。后台任务继续运行，请重新打开面板获取最新记录。`;
   renderQueue();
 }
 
@@ -662,7 +667,9 @@ function saveLibrary() {
       await libraryStorage.save(snapshot);
       libraryStatus.textContent = snapshot.truncated
         ? "记录空间有限，已清理最早记录；待下载任务已保存。"
-        : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
+        : durableDownloads
+          ? "队列已保存 · 已提交的后台下载在关闭页面后继续运行。"
+          : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
     });
   return libraryWrite;
 }
@@ -718,6 +725,14 @@ async function loadLibrary() {
 async function directoryFor(item, allowPick = false) {
   const key = directoryIdentity(item.directory);
   if (directoryGrants.has(key)) return directoryGrants.get(key);
+  if (item.directory?.bookmark && durableDownloads) {
+    const restored = await panel.call("filesystem.restoreDirectory", {
+      bookmark: item.directory.bookmark,
+    });
+    if (directoryIdentity(restored) !== key) throw new Error("原保存目录已变化，请重新选择。");
+    directoryGrants.set(key, restored);
+    return restored;
+  }
   if (!allowPick) throw new Error("原目录尚未授权，请点击记录中的“检查文件”重新选择原目录。");
   const result = await panel.call("filesystem.pickDirectory");
   if (result?.cancelled || !result?.handle) throw new Error("已取消选择目录。");
@@ -816,10 +831,18 @@ function renderDuplicates() {
 }
 
 async function prepareItem(item, allowPick = false) {
+  if (!durableDownloads && (item.nativeTaskId || item.nativeRequestKey))
+    throw new Error("此下载属于后台任务，请使用支持后台队列的 Host 查询和恢复，避免重复下载。");
   if (!dependencyReady(runtime.ytDlp)) throw new Error("请先安装下载器。");
   if (item.configuration.format === "audio" && !dependencyReady(runtime.ffmpeg))
     throw new Error("仅音频模式需要 ffmpeg。");
   item.directory = await directoryFor(item, allowPick);
+  if (durableDownloads) {
+    if (item.cookieCredentialId)
+      throw new Error("后台下载尚未接入账号授权，请先选择“不使用 Cookie”。");
+    if (!item.directory.bookmark) throw new Error("请重新选择保存目录以授权后台下载。");
+    return item;
+  }
   item.executable = { ...runtime.ytDlp };
   item.args = buildArguments(item.url, item.configuration, item.copySuffix);
   item.fileArgumentHandles = [];
@@ -945,7 +968,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         }
       }
       // A snapshot must reacquire its original directory and Cookie grants.
-      if (!isSnapshot && item.cookieCredentialId) {
+      if (!isSnapshot && item.cookieCredentialId && !durableDownloads) {
         item.executable = { ...runtime.ytDlp };
         item.args = buildArguments(item.url, item.configuration, item.copySuffix);
         // Cookie grants are scoped by site; the first link is already validated by the form.
@@ -998,6 +1021,38 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
 }
 
 async function restoreQueue(items = null) {
+  if (durableDownloads) {
+    if (queueSubmissionPending) return;
+    queueSubmissionPending = true;
+    setControlsBusy(true);
+    try {
+      const selected =
+        items ||
+        downloadQueue.filter((item) =>
+          ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status),
+        );
+      if (items && queuePaused) {
+        for (const item of downloadQueue.filter(
+          (entry) => !selected.includes(entry) && ["queued", "running"].includes(entry.status),
+        ))
+          await durableDownloads.stop(item, true);
+      }
+      for (const item of selected) {
+        if (!item.nativeTaskId && !item.nativeRequestKey) await prepareItem(item, true);
+        item.status = "queued";
+        await durableDownloads.resume(item);
+      }
+      await durableDownloads.configure(false, maxConcurrent);
+      await saveLibrary();
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      queueSubmissionPending = false;
+      setControlsBusy(false);
+    }
+    renderQueue();
+    return;
+  }
   if (
     queueSubmissionPending ||
     auxiliaryBusy ||
@@ -1056,6 +1111,14 @@ async function restoreQueue(items = null) {
 }
 
 async function pauseDownload(job = currentJob, { persist = true } = {}) {
+  if (durableDownloads && job) {
+    try {
+      await durableDownloads.stop(job, true);
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (!job || job.finishing) return;
   if (job.running) return requestDownloadStop(job, "pause");
   if (!["queued", "restored", "interrupted"].includes(job.status)) return;
@@ -1078,6 +1141,23 @@ async function pauseDownload(job = currentJob, { persist = true } = {}) {
 }
 
 async function pauseAllDownloads() {
+  if (durableDownloads) {
+    if (queueSubmissionPending) return;
+    queueSubmissionPending = true;
+    setControlsBusy(true);
+    try {
+      await durableDownloads.configure(true, maxConcurrent);
+      for (const job of downloadQueue.filter((item) => item.running || item.status === "queued"))
+        await durableDownloads.stop(job, true);
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      queueSubmissionPending = false;
+      setControlsBusy(false);
+      renderQueue();
+    }
+    return;
+  }
   ++queueControlRevision;
   queuePaused = true;
   // Set every pending state synchronously before any exit can refill a free slot.
@@ -1849,6 +1929,8 @@ function updateSessionContext(next) {
   if (libraryReady && context.cwd && next?.cwd && next.cwd !== context.cwd) {
     libraryReady = false;
     queuePaused = true;
+    durableDownloads?.close();
+    clearInterval(durableTimer);
     libraryStatus.textContent = "项目已变化，请重新打开面板载入该项目的下载记录。";
   }
   context = { ...context, ...(next || {}) };
@@ -2864,6 +2946,7 @@ function defaultTaskTitle(url) {
 }
 
 function queueStatusText(item) {
+  if (durableDownloads && item.status === "queued" && !item.nativeTaskId) return "等待提交到后台";
   if (item.status === "running") {
     if (item.pauseRequested) return "正在暂停";
     if (item.cancelRequested) return "正在取消";
@@ -3238,6 +3321,10 @@ async function startDownload({ start = true } = {}) {
 }
 
 async function runNextDownload() {
+  if (durableDownloads) {
+    if (libraryReady && !queueSubmissionPending) await durableDownloads.pump();
+    return;
+  }
   if (
     !libraryReady ||
     completionPending ||
@@ -3335,6 +3422,14 @@ async function runNextDownload() {
 }
 
 async function retryQueuedDownload(item) {
+  if (durableDownloads) {
+    try {
+      await durableDownloads.resume(item);
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (
     item.finishing ||
     item.retryPending ||
@@ -3461,6 +3556,14 @@ async function cancelCurrentJob(job = currentJob) {
 }
 
 async function requestDownloadStop(job, intent) {
+  if (durableDownloads && job) {
+    try {
+      await durableDownloads.stop(job, intent === "pause");
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (!job?.running || job.stopPending || (intent === "pause" && job.cancelRequested)) return;
   const pausing = intent === "pause";
   job.pauseRequested = pausing;
@@ -5657,7 +5760,53 @@ async function initializeRuntime() {
         : "无法使用当前项目目录，请确认项目已信任，或点击“更改”选择保存位置。";
       showError(elements.destinationPath.textContent);
     }
+    if (supportsDurableDownloads(context)) {
+      durableDownloads = createDurableDownloads({
+        panel,
+        items: () => downloadQueue,
+        save: saveLibrary,
+        queueChanged(value) {
+          queuePaused = value.paused;
+          maxConcurrent = value.maxConcurrent;
+          const select = document.querySelector("#queue-concurrency");
+          for (const option of select.options)
+            option.disabled = Number(option.value) > context.capabilities.tasks.maxConcurrent;
+          select.value = String(maxConcurrent);
+          renderQueue();
+        },
+        changed(item, finished) {
+          if (finished) {
+            history = [
+              storedRecord(item),
+              ...history.filter((record) => record.queueId !== item.queueId),
+            ]
+              .filter(Boolean)
+              .slice(0, MAX_HISTORY);
+          }
+          if (!currentJob || currentJob === item) currentJob = item;
+          updateDownloadTask(item, {
+            state: item.status,
+            title: item.title,
+            percent: item.percent,
+            status: item.error || queueStatusText(item),
+          });
+          renderQueue();
+          renderHistory();
+          setControlsBusy(false);
+        },
+        failed(error) {
+          showError(error.message);
+        },
+      });
+    }
     await loadLibrary();
+    if (durableDownloads) {
+      await durableDownloads.refresh();
+      durableTimer = setInterval(
+        () => void durableDownloads.refresh().catch((error) => showError(error.message)),
+        10000,
+      );
+    }
     await refreshRuntimeDependencies();
     await refreshCookieAccounts();
   } catch (error) {
@@ -5843,9 +5992,20 @@ function handleDownloadAction(event) {
     action === "remove" &&
     ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status)
   ) {
-    downloadQueue = downloadQueue.filter((entry) => entry !== item);
-    renderQueue();
-    void saveLibrary().catch(reportLibraryError);
+    if (durableDownloads) {
+      void durableDownloads
+        .stop(item, false)
+        .then(async () => {
+          downloadQueue = downloadQueue.filter((entry) => entry !== item);
+          await saveLibrary();
+          renderQueue();
+        })
+        .catch((error) => showError(error.message));
+    } else {
+      downloadQueue = downloadQueue.filter((entry) => entry !== item);
+      renderQueue();
+      void saveLibrary().catch(reportLibraryError);
+    }
   }
   if (action === "retry" && ["failed", "cancelled"].includes(item.status)) {
     void retryQueuedDownload(item);
@@ -5862,10 +6022,13 @@ document.querySelector("#queue-concurrency").addEventListener("change", async (e
   maxConcurrent = value;
   control.disabled = true;
   try {
+    if (durableDownloads) await durableDownloads.configure(queuePaused, value);
     await saveLibrary();
   } catch (error) {
-    maxConcurrent = previous;
-    reportLibraryError(error);
+    if (!durableDownloads) {
+      maxConcurrent = previous;
+      reportLibraryError(error);
+    } else showError(error.message);
   } finally {
     control.disabled = false;
     control.value = String(maxConcurrent);
@@ -6025,6 +6188,7 @@ const videoSearch = mountVideoSearch({
 
 if (panel) {
   panel.on("context.changed", (payload) => updateSessionContext(payload));
+  panel.on("tasks.changed", (payload) => durableDownloads?.observe(payload));
   panel.on("agent.task.changed", (payload) => {
     void handleAgentTaskChanged(payload);
     videoSearch.handleTaskChanged(payload);
@@ -6177,3 +6341,8 @@ registerAgentTools();
 activateTab(storedTab(), { persist: false });
 updateConditionalOptions();
 initializeRuntime().finally(resolveSearchExecutables);
+
+window.addEventListener("pagehide", () => {
+  clearInterval(durableTimer);
+  durableDownloads?.close();
+});

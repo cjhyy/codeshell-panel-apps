@@ -116,10 +116,26 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
               revision: "sha256:" + String(window.__hostStorageRevision).padStart(64, "0"),
             }
           : { exists: false, value: null, revision: null };
+      if (ai.durable) {
+        window.__nativeJobs = JSON.parse(localStorage.getItem("fixture-native-jobs") || "{}");
+        window.__nativeQueue = JSON.parse(
+          localStorage.getItem("fixture-native-queue") ||
+            '{"revision":0,"paused":false,"maxConcurrent":2}',
+        );
+      }
       window.codeshellPanel = {
         getContext: async () => ({
           apiVersion: 10,
           theme: "light",
+          ...(ai.durable
+            ? {
+                cwd: "/fixture/project",
+                availableMethods: ["tasks.find"],
+                capabilities: {
+                  tasks: { directoryBookmarks: true, queueControl: true, maxConcurrent: 2 },
+                },
+              }
+            : {}),
           ...(ai.versionedStorage
             ? {
                 cwd: "/fixture/project",
@@ -137,6 +153,59 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (ai.durable && method.startsWith("tasks.")) {
+            const persist = () => {
+              localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+              localStorage.setItem("fixture-native-queue", JSON.stringify(window.__nativeQueue));
+            };
+            if (method === "tasks.queue.get") return structuredClone(window.__nativeQueue);
+            if (method === "tasks.queue.set") {
+              const saved = args.expectedRevision === window.__nativeQueue.revision;
+              if (saved)
+                window.__nativeQueue = {
+                  revision: args.expectedRevision + 1,
+                  paused: args.paused,
+                  maxConcurrent: args.maxConcurrent,
+                };
+              persist();
+              return { saved, queue: structuredClone(window.__nativeQueue) };
+            }
+            if (method === "tasks.list")
+              return Object.values(window.__nativeJobs)
+                .slice(args.offset, args.offset + args.limit)
+                .map(({ input, result, ...job }) => structuredClone(job));
+            if (method === "tasks.find")
+              return structuredClone(
+                Object.values(window.__nativeJobs).find(
+                  (job) => job.requestKey === args.requestKey,
+                ) || null,
+              );
+            if (method === "tasks.get") return structuredClone(window.__nativeJobs[args.id]);
+            if (method === "tasks.start") {
+              const job = {
+                id: crypto.randomUUID(),
+                entry: { name: args.entry },
+                input: args.input,
+                requestKey: args.requestKey,
+                sequence: 1,
+                status: "queued",
+              };
+              window.__nativeJobs[job.id] = job;
+              persist();
+              if (window.__loseNativeStart) {
+                window.__loseNativeStart = false;
+                throw new Error("start reply lost");
+              }
+              return structuredClone(job);
+            }
+            const job = window.__nativeJobs[args.id];
+            if (method === "tasks.cancel") job.status = "cancelled";
+            else if (method === "tasks.retry") job.status = "queued";
+            else throw new Error(method);
+            job.sequence++;
+            persist();
+            return structuredClone(job);
+          }
           if (ai.versionedStorage && method === "storage.getSnapshot")
             return storageSnapshot(args.key);
           if (ai.versionedStorage && method === "storage.compareAndSet") {
@@ -181,7 +250,12 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
             if (args.name !== "project")
               throw new Error(`Unexpected known directory: ${args.name}`);
             if (projectDirectoryError) throw new Error(projectDirectoryError);
-            return { handle: "directory-first", name: "Project", path: "/fixture/project" };
+            return {
+              handle: "directory-first",
+              name: "Project",
+              path: "/fixture/project",
+              ...(ai.durable ? { bookmark: "11111111-1111-4111-8111-111111111111" } : {}),
+            };
           }
           if (method === "filesystem.pickDirectory") return structuredClone(window.__nextDirectory);
           if (method === "filesystem.openDirectory") return { opened: true };
@@ -1937,3 +2011,97 @@ for (const width of [390, 1440]) {
     );
   });
 }
+
+test("durable UI admits every item, recovers completed output on reload, and never restarts it", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true });
+  await page.locator("#url-input").fill(firstUrl + "\n" + secondUrl + "\n" + thirdUrl);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 3, null, {
+    timeout: 15000,
+  });
+  assert.equal((await downloads(page)).length, 0);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#library-status")?.textContent.includes("关闭页面后继续") ||
+      [...document.querySelectorAll("p,span")].some((node) =>
+        node.textContent.includes("关闭页面后继续"),
+      ),
+  );
+  await page.evaluate(() => {
+    for (const job of Object.values(window.__nativeJobs)) {
+      job.status = "succeeded";
+      job.sequence++;
+      job.result = { artifacts: [{ published: { path: job.id + ".mp4" }, bytes: 1000 }] };
+    }
+    localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+  });
+  await page.reload();
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 3,
+    null,
+    { timeout: 15000 },
+  );
+  const state = await readState(page);
+  assert.equal(state.queue.length, 3);
+  assert.ok(
+    state.queue.every((item) => item.status === "completed"),
+    JSON.stringify({
+      queue: state.queue,
+      calls: await page.evaluate(() =>
+        window.__calls.filter((call) => call.method.startsWith("tasks.")),
+      ),
+    }),
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "tasks.start").length,
+    ),
+    0,
+  );
+});
+
+test("durable UI recovers a missing start reply and removes only after cancelling the Host job", async (t) => {
+  const page = await openPanel(t, 1440, "", null, { durable: true });
+  await page.evaluate(() => {
+    window.__loseNativeStart = true;
+  });
+  const item = await addDownload(page, firstUrl);
+  await page.waitForFunction(
+    () => window.__calls.filter((call) => call.method === "tasks.find").length >= 2,
+  );
+  await action(page, item.id, "remove").click();
+  await page.waitForFunction(() => Object.values(window.__nativeJobs)[0]?.status === "cancelled");
+  assert.equal(await page.evaluate(() => Object.keys(window.__nativeJobs).length), 1);
+  assert.equal((await downloads(page)).length, 0);
+});
+
+test("durable UI pause-all then resume-one leaves the other download stopped", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true });
+  const first = await addDownload(page, firstUrl);
+  await addDownload(page, secondUrl);
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2, null, {
+    timeout: 15000,
+  });
+  await page.locator("#queue-pause").click();
+  await page.waitForFunction(
+    () =>
+      Object.values(window.__nativeJobs).every((job) => job.status === "cancelled") &&
+      document.querySelectorAll('.queue-item[data-state="paused"]').length === 2,
+    null,
+    { timeout: 15000 },
+  );
+  await action(page, first.id, "resume").click();
+  await page.waitForFunction(
+    () =>
+      Object.values(window.__nativeJobs).filter((job) => job.status === "queued").length === 1 &&
+      !window.__nativeQueue.paused,
+    null,
+    { timeout: 15000 },
+  );
+  assert.equal(
+    Object.values(await page.evaluate(() => window.__nativeJobs)).filter(
+      (job) => job.status === "cancelled",
+    ).length,
+    1,
+  );
+});

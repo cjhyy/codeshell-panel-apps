@@ -167,7 +167,19 @@ export function storedRecord(item) {
       path: text(item.directory?.path),
       name: text(item.directory?.name, 160),
       kind: item.directory?.kind === "project" ? "project" : "chosen",
+      ...(typeof item.directory?.bookmark === "string" &&
+      /^[a-f0-9-]{36}$/i.test(item.directory.bookmark)
+        ? { bookmark: item.directory.bookmark }
+        : {}),
     },
+    ...(typeof item.nativeTaskId === "string" && /^[a-f0-9-]{36}$/i.test(item.nativeTaskId)
+      ? { nativeTaskId: item.nativeTaskId }
+      : {}),
+    ...(typeof item.nativeRequestKey === "string" &&
+    /^download:[a-f0-9-]{36}$/i.test(item.nativeRequestKey)
+      ? { nativeRequestKey: item.nativeRequestKey }
+      : {}),
+    ...(item.nativePaused === true ? { nativePaused: true } : {}),
     cookieCredentialId: text(item.cookieCredentialId, 200),
     status: text(
       [
