@@ -116,6 +116,9 @@ export const button = (
 export const tool = (action: string, title: string, glyph: string, disabled = false) =>
   `<button type="button" data-action="${action}" class="icon-button" title="${title}" aria-label="${title}" ${disabled ? "disabled" : ""}>${icon(glyph)}</button>`;
 export const seconds = (value: number) => (value / 30).toFixed(2);
+/** The media kind people read on cards and clip placeholders. */
+const kindLabel = (kind: string) =>
+  ({ video: "视频", audio: "音频", image: "图片", demo: "示例" })[kind] ?? kind;
 
 /** Quote a URL as CSS before escaping the surrounding HTML attribute. */
 function cssUrl(value: string): string {
@@ -247,7 +250,7 @@ export function createViews(state: ViewState) {
         <section class="viewer-panel" aria-label="${source ? "原素材预览" : "视频预览"}">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">${source ? "SOURCE" : "PREVIEW"}</span
+              <span class="eyebrow">${source ? "原片" : "预览"}</span
               ><span>${source ? esc(source.name) : "画面预览"}</span>
             </div>
             <span class="muted"
@@ -370,7 +373,7 @@ export function createViews(state: ViewState) {
     if (libraryTab === "ai")
       return html`<div class="section-title">
           <h2>AI 自动制作</h2>
-          <span class="tiny-badge">PRODUCTION</span>
+          <span class="tiny-badge">制作</span>
         </div>
         <p class="section-description">
           导入拍好的素材，说说你想表达什么。<br />先看文案、剪辑和字幕草稿，确认后再录自己的口播。
@@ -483,7 +486,7 @@ ${esc(aiPrompt)}</textarea
         </div>
         ${renderWorkflowSummary(project.workflow, project.assets)}
         <div class="local-plan">
-          ${connected ? "" : '<span class="eyebrow">BROWSER DEMO</span>'}
+          ${connected ? "" : '<span class="eyebrow">浏览器演示</span>'}
           <h3>先试一版 15 秒粗剪</h3>
           <p>按现有顺序保留前 15 秒，生成草案供你审阅。</p>
           ${button(
@@ -648,7 +651,7 @@ ${esc(aiPrompt)}</textarea
                 ${item?.thumbnail
                   ? `<img src="${item.thumbnail}" alt="${esc(asset.name)}" />`
                   : asset.kind === "demo"
-                    ? '<span class="demo-thumb-kicker">MIMI ORIGINAL</span><strong>' +
+                    ? '<span class="demo-thumb-kicker">MIMI 示例</span><strong>' +
                       [
                         "从想法，<br>到成片。",
                         "让每一帧，<br>恰到好处。",
@@ -691,7 +694,7 @@ ${esc(aiPrompt)}</textarea
                       ? "素材待重连"
                       : asset.kind === "demo"
                         ? "示例画面"
-                        : `${isExternalMedia(asset.mediaId) ? "引用 · " : ""}${asset.kind.toUpperCase()}`}
+                        : `${isExternalMedia(asset.mediaId) ? "引用 · " : ""}${kindLabel(asset.kind)}`}
                     ${asset.width ? " · " + asset.width + "×" + asset.height : ""}</span
                   >
                 </div>
@@ -789,7 +792,7 @@ ${esc(aiPrompt)}</textarea
     if (!proposal)
       return html`<div class="assistant-card">
         <span class="assistant-icon">${icon("spark", 22)}</span
-        ><span class="eyebrow">A LITTLE HELP</span>
+        ><span class="eyebrow">小帮手</span>
         <h3>从一个目标，<br />到一条成片。</h3>
         <p>分析素材、剪辑与场景制作，<br />在同一份工程里继续完成。</p>
         ${button("show-ai", "打开 AI 制作", "chevron", "quiet full")}
@@ -945,7 +948,7 @@ ${esc(aiPrompt)}</textarea
                     >
                       ${item?.thumbnail
                         ? `<img src="${esc(item.thumbnail)}" alt="" draggable="false"/>`
-                        : `<span>${asset.kind === "demo" ? "MIMI" : asset.kind.toUpperCase()}</span>`.repeat(
+                        : `<span>${asset.kind === "demo" ? "MIMI" : kindLabel(asset.kind)}</span>`.repeat(
                             12,
                           )}
                     </div>

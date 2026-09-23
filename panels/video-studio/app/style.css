@@ -520,9 +520,9 @@ h3 {
 }
 .demo-thumb-kicker {
   font:
-    6px ui-monospace,
+    8px ui-monospace,
     monospace;
-  letter-spacing: 1.5px;
+  letter-spacing: 0.5px;
   color: #adceb8;
 }
 .demo-thumb strong {
@@ -905,8 +905,8 @@ h3 {
   gap: 11px;
 }
 .eyebrow {
-  font-size: 8px;
-  letter-spacing: 1.65px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
   color: #7c9a8a;
   display: block;
   font-weight: 600;
@@ -1178,7 +1178,7 @@ h3 {
   gap: 9px;
 }
 .tiny-badge {
-  font-size: 8px;
+  font-size: 10px;
   color: #9db5a6;
   padding: 3px 5px;
   border: 1px solid #3c5144;

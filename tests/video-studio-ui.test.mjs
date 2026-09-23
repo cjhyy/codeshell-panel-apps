@@ -631,6 +631,58 @@ test("import is undoable and original media automatically reconnects after reope
   }
 });
 
+/** Visible text nodes written only in Latin capitals (eyebrows, badges, media types). */
+const latinLabels = (page) =>
+  page.evaluate(() => {
+    const allowed = new Set(["MP4", "SRT", "WAV", "MP3", "MOV", "PNG", "JPG", "AAC", "MIMI", "AI", "FPS"]);
+    const found = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent.replace(/\s+/g, " ").trim();
+      const parent = node.parentElement;
+      if (!text || !parent || parent.closest("script,style,kbd,code,[hidden]")) continue;
+      if (!parent.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+      if (/[\u3400-\u9fff]/.test(text)) continue;
+      const words = text.match(/\b[A-Z]{3,}\b/g) ?? [];
+      if (words.some((word) => !allowed.has(word))) found.push(text);
+    }
+    return found;
+  });
+
+test("main pages and media cards label everything in Chinese, keeping only format names in Latin", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "video-studio-ui-"));
+  const fixture = resolve(directory, "still.png");
+  const page = await pageWithBridge();
+  try {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 80;
+      canvas.height = 40;
+      canvas.getContext("2d").fillRect(0, 0, 80, 40);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await writeFile(fixture, Buffer.from(png, "base64"));
+    await page.locator('[data-tab="media"]').click();
+    await page.locator("#media-input").setInputFiles(fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".asset-card").length === 1);
+    await saved(page);
+    await page.locator('[data-tab="media"]').click();
+    const card = page.locator(".asset-card").first();
+    assert.match(await card.textContent(), /图片\s*·\s*80×40/);
+    const seen = {};
+    for (const tab of ["media", "roughcut", "recording", "spoken", "transcript", "voiceover", "ai", "jobs"]) {
+      await page.locator(`[data-tab="${tab}"]`).click();
+      await page.waitForTimeout(150);
+      const labels = await latinLabels(page);
+      if (labels.length) seen[tab] = labels;
+    }
+    assert.deepEqual(seen, {});
+  } finally {
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("original audio and rough-cut marks survive a complete browser restart", async () => {
   const directory = await mkdtemp(resolve(tmpdir(), "video-studio-persistent-cache-"));
   let context;

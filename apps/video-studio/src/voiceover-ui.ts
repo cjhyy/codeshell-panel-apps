@@ -588,7 +588,7 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
     );
     return html`<div class="section-title">
         <h2>文字配音</h2>
-        <span class="tiny-badge">VOICEOVER</span>
+        <span class="tiny-badge">配音</span>
       </div>
       <p class="section-description voiceover-intro">
         选择模型，先生成短音频听效果。<br />满意后生成完整配音，加入独立音轨。

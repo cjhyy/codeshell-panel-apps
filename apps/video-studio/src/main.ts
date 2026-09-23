@@ -3282,7 +3282,7 @@ async function exportDialog(): Promise<void> {
   const dialog = $<HTMLDialogElement>("#export-dialog");
   dialog.innerHTML = html`<div class="dialog-heading">
       <div>
-        <span class="eyebrow">READY TO SHARE</span>
+        <span class="eyebrow">可以分享了</span>
         <h2>把故事带出去。</h2>
       </div>
       ${tool("close-dialog", "关闭", "close")}

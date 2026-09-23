@@ -21,7 +21,7 @@ export function createProductionUI(production: ProductionController, context: Pr
     const dialog = $<HTMLDialogElement>("#plan-dialog");
     dialog.innerHTML = html`<div class="dialog-heading">
         <div>
-          <span class="eyebrow">CREATE A SCENE</span>
+          <span class="eyebrow">制作场景</span>
           <h2>给故事一个章节。</h2>
         </div>
         ${tool("close-dialog", "关闭", "close")}

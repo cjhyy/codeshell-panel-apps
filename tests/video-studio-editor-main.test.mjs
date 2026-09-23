@@ -2339,11 +2339,18 @@ test("the AI 制作 inspector trims a main clip of a multitrack project the old 
 
 test("real off-frame multitrack footage shows plain wording, its real frame rate and one AI request", async (t) => {
   const page = await openPage(t, { seed: { ...realMediaSeed, id: "plain-copy-real-media" } });
-  const internal = /旧视图|新版时间线|BROWSER DEMO|旧流程|Host\b/;
+  const internal = /旧视图|新版时间线|浏览器演示|旧流程|Host\b/;
   for (const tab of ["media", "roughcut", "recording", "spoken", "transcript", "voiceover", "ai", "jobs"]) {
     await production(page, tab);
     await settle(page);
-    assert.doesNotMatch(await page.locator("body").innerText(), internal, `The ${tab} page`);
+    const text = await page.locator("body").innerText();
+    assert.doesNotMatch(text, internal, `The ${tab} page`);
+    // Eyebrows, badges and media types read in Chinese; format names (MP4, SRT) may stay.
+    assert.doesNotMatch(
+      text,
+      /\b(?:SOURCE|PREVIEW|A LITTLE HELP|RECORD|VOICEOVER|PRODUCTION|VIDEO|AUDIO|IMAGE|READY TO SHARE|CREATE A SCENE)\b/,
+      `The ${tab} page`,
+    );
   }
   // Connected without persistent media storage: one request button, and the rule draft stays.
   await production(page, "ai");

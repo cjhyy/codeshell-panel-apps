@@ -77,7 +77,7 @@ export function renderProductionJobs(state: ProductionViewState): string {
         : ""}
     </div>
     ${state.error ? `<p class="conflict">${esc(state.error)}</p>` : ""}${state.auto
-      ? `<div class="production-goal"><span class="eyebrow">AUTOMATIC PRODUCTION</span><strong>${esc(state.auto.prompt)}</strong><p>${esc(state.auto.message ?? "")}</p></div>`
+      ? `<div class="production-goal"><span class="eyebrow">自动制作</span><strong>${esc(state.auto.prompt)}</strong><p>${esc(state.auto.message ?? "")}</p></div>`
       : ""}
     ${renderExportJobs(exports, statuses)}
     <div class="job-list">
