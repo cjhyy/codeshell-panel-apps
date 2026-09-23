@@ -1114,9 +1114,12 @@ test("draft uses its owning skill and rejects proposal, voice and export shortcu
   assert.equal(starts(f.host)[0]!.params.key, "narration-workflow-draft");
   assert.match(starts(f.host)[0]!.params.prompt, /停下等用户确认/);
   assert.match(starts(f.host)[0]!.params.prompt, /不调用TTS或导出/);
+  assert.ok(starts(f.host)[0]!.params.skills.includes("video-studio:editor-v2"));
+  assert.match(starts(f.host)[0]!.params.prompt, /editor\.grant/);
   for (const name of [
     "prepare_video_assets",
     "apply_video_edit",
+    "apply_editor_edit",
     "set_video_script",
     "create_video_scene",
   ])
@@ -1179,7 +1182,12 @@ test("narration locks before digest validation so double starts prepare only the
     "render_video_project",
   ])
     assert.throws(() => producer.assertToolAllowed(name));
-  for (const name of ["apply_video_edit", "prepare_video_assets", "create_video_scene"])
+  for (const name of [
+    "apply_video_edit",
+    "apply_editor_edit",
+    "prepare_video_assets",
+    "create_video_scene",
+  ])
     assert.doesNotThrow(() => producer.assertToolAllowed(name));
 });
 
@@ -1431,14 +1439,21 @@ test("initialization only permits preparation and saving its production sheet", 
     "create_video_voiceover",
     "create_video_scene",
     "render_video_project",
+    "apply_editor_edit",
     "unknown_write_tool",
   ])
     assert.throws(() => producer.assertToolAllowed(name));
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /editor\.grant/);
   assert.equal(f.controller.currentJobs.length, 0);
   assert.equal(f.current.revision, 0);
   await producer.finishForReview();
   await producer.start("按制作单生成视频", { mode: "workflow" });
-  for (const name of ["enhance_video_audio", "create_video_voiceover", "render_video_project"])
+  for (const name of [
+    "enhance_video_audio",
+    "create_video_voiceover",
+    "render_video_project",
+    "apply_editor_edit",
+  ])
     assert.doesNotThrow(() => producer.assertToolAllowed(name));
 });
 

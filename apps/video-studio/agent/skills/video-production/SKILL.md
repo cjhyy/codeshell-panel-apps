@@ -7,7 +7,7 @@ description: 使用 Mimi 视频工作台的 Panel 工具，将用户目标与已
 
 ## 新版编辑入口
 
-普通精剪、多轨、关键帧、变速、转场、调色、文字和完整工程导出，先加载 `video-studio:editor-v2`，调用 `read_video_project` / `apply_video_edit` / `render_video_project` 的 `editor` 分支。它们读取唯一 schema-2 工程，使用每秒 240000 刻度与各序列有理帧率；已经授予的工具权限不需要再申请旧 requestToken。旧工具保留给下列初始化、素材生成、文稿和本人录音审批流程，其 30 fps 读取投影不是完整多轨工程，不能据此清空或重建新版内容。专门制作协调器开放的旧导出入口会另取完整 canonical 工程快照，不能自行把读取投影作为渲染源。正在进行的专门流程若拒绝通用编辑，沿原流程推进或报告具体锁定原因，不能改用另一工具绕过。
+普通精剪、多轨、关键帧、变速、转场、调色、文字和完整工程导出，先加载 `video-studio:editor-v2`，调用 `read_video_project` / `apply_video_edit` / `render_video_project` 的 `editor` 分支。它们读取唯一 schema-2 工程，使用每秒 240000 刻度与各序列有理帧率。自动制作进行中，新版编辑须在 editor 内附 `grant:{projectId,requestToken}`（本次自动制作的工程与令牌，仅 `label/steps` 与剪贴板可用），否则保持锁定；`read_video_project` 的 `legacyView.timelineComplete=false` 时旧 `apply_video_edit` 看不到全部片段，改用带 grant 的 editor 分支。自动制作中的导出调用旧参数的 `render_video_project`，它导出完整新版当前序列。旧工具保留给下列初始化、素材生成、文稿和本人录音审批流程，其 30 fps 读取投影不是完整多轨工程，不能据此清空或重建新版内容。专门制作协调器开放的旧导出入口会另取完整 canonical 工程快照，不能自行把读取投影作为渲染源。正在进行的专门流程若拒绝通用编辑，沿原流程推进或报告具体锁定原因，不能改用另一工具绕过。
 
 ## 工作流入口
 

@@ -35,6 +35,7 @@ import {
   parseTaskResultJson,
   type PanelTask,
   type PanelBridge,
+  type Proposal,
   enablePersistentStorage,
   hasPersistentStorage,
 } from "./host";
@@ -46,7 +47,11 @@ import {
 } from "./production";
 import { createProductionUI } from "./production-ui";
 import { AutomaticProducer } from "./automatic";
-import { registerProductionTools, registerProjectReadTool } from "./production-tools";
+import {
+  legacyViewSummary,
+  registerProductionTools,
+  registerProjectReadTool,
+} from "./production-tools";
 import { createNarratedDemoProject, migratePristineDemoProject, isDemoNarration } from "./demo";
 import { publishProductionAssets } from "./voiceover";
 import { createVoiceoverUI } from "./voiceover-ui";
@@ -134,7 +139,7 @@ import {
   verifyReplaceTarget,
 } from "./editor/voiceover-publication";
 import { uploadEditorResource } from "./editor/resource-upload";
-import { createEditorAgentTools } from "./editor/agent-tools";
+import { createEditorAgentTools, type EditorAgentAuthorization } from "./editor/agent-tools";
 import { reconcileEditorProduction } from "./editor/production-guard";
 import {
   createEditorProposal,
@@ -4346,7 +4351,8 @@ window.addEventListener("pagehide", () => {
 });
 
 // V1 and V2 share the manifest's established tool names. An explicit editor branch
-// never enters legacy frame conversion or automatic-request-token authorization.
+// never enters legacy frame conversion; during automatic production it carries the run's
+// request only as editor.grant, checked by the editor tools' domain guard.
 const productionToolPanel: PanelBridge | undefined = panel
   ? {
       getContext: () => panel!.getContext(),
@@ -4386,6 +4392,8 @@ registerProjectReadTool(productionToolPanel, production, () => ({
   project: structuredClone(project),
   workflowMode: automatic.mode,
   requestToken: roughCutAI.requestToken || taskRequestToken || null,
+  ...(legacyView ? { legacyView: legacyViewSummary(legacyView) } : {}),
+  ...(editorSession ? { editorIdentity: editorSession.getState().identity } : {}),
   playheadFrame:
     editorVisible && editorWorkspace
       ? Math.round((editorWorkspace.getPlayhead() / 240000) * project.fps)
@@ -4545,10 +4553,20 @@ registerProductionTools(productionToolPanel, production, {
     }
     const drafting = automatic.mode === "draft";
     const aligning = automatic.mode === "narration";
+    const partial = Boolean(editorSession && legacyView && !legacyView.timelineComplete);
+    // Old-format edits cannot see every clip of this sequence: translate them onto the
+    // editor document, as the inspector does. Draft and recorded-narration runs keep their
+    // own bookkeeping on the old view for now.
+    if (partial && !drafting && !aligning) return applyAutomaticTranslated(candidate);
     const completing = candidate.operations.some(
       (operation) => operation.type === "workflow" && operation.workflow?.stage === "review",
     );
-    let next = applyOperations(project, candidate.operations, candidate.baseRevision);
+    let next: Project;
+    try {
+      next = applyOperations(project, candidate.operations, candidate.baseRevision);
+    } catch (error) {
+      throw partial ? partialViewError(error) : error;
+    }
     const currentGeneration = generation,
       currentRevision = project.revision;
     const original = project;
@@ -4616,7 +4634,9 @@ registerProductionTools(productionToolPanel, production, {
         candidate.requestToken !== automatic.requestToken
       )
         throw new Error("工程或制作请求已变化，未应用旧修改");
-      await saveProject(next, `自动制作：${candidate.title}`, aligning);
+      await saveProject(next, `自动制作：${candidate.title}`, aligning).catch((error) => {
+        throw partial ? partialViewError(error) : error;
+      });
     } finally {
       aiApplying = false;
     }
@@ -4641,6 +4661,54 @@ registerProductionTools(productionToolPanel, production, {
     return candidate;
   },
 });
+function partialViewError(error: unknown): Error {
+  return new Error(
+    `旧格式修改看不到当前时间线的全部片段，未保存（${error instanceof Error ? error.message : String(error)}）。请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成这次编辑。`,
+  );
+}
+/** Automatic old-format edits on a sequence the old view cannot fully show. One durable save,
+ * one undo, the same approval reconciliation as the inspector's translated edits. */
+async function applyAutomaticTranslated(candidate: Proposal): Promise<Proposal> {
+  if (candidate.baseRevision !== project.revision)
+    throw new Error("工程版本已变化，请重新读取后编辑");
+  const session = editorSession!,
+    doc = session.read(),
+    identity = session.getState().identity,
+    translated = translateLegacyOperations(
+      doc,
+      legacyView!.sequenceId,
+      candidate.operations,
+      proposalIdFactory,
+    );
+  const guard = reconcileEditorProduction(
+    doc,
+    applyEditorOperations(doc, translated, doc.revision),
+  );
+  aiApplying = true;
+  try {
+    if (candidate.requestToken !== automatic.requestToken)
+      throw new Error("工程或制作请求已变化，未应用旧修改");
+    stop();
+    await session.dispatchDurable(
+      [...translated, ...guard],
+      identity,
+      `自动制作：${candidate.title}`,
+    );
+  } finally {
+    aiApplying = false;
+  }
+  synchronizeLegacyView();
+  proposal = null;
+  aiMessage = `已应用：${candidate.title}。历史版本可恢复。`;
+  render();
+  if (automatic.mode === "initialize")
+    await automatic.finishForReview(
+      project.workflow?.blockers.length
+        ? "制作单已保存，待补内容已列明；补齐后可继续全流程制作。"
+        : "初始化制作单已保存，可以继续全流程制作。",
+    );
+  return candidate;
+}
 panel?.on("agent.task.changed", (payload) => {
   void handleTask(payload as PanelTask).catch(fail);
 });
@@ -4920,6 +4988,18 @@ async function submitEditorExport(
   toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");
   return { jobId: job.id, job };
 }
+/** Editor tools stay locked during automatic production unless the call carries the run's
+ * current request; rough-cut requests never count. The recording/import locks still apply. */
+function assertEditorAgentAllowed({ before, grant }: EditorAgentAuthorization): void {
+  if (!grant) {
+    assertEditorEditable();
+    return;
+  }
+  if (!automatic.isCurrentRequest({ ...grant }) || before.id !== grant.projectId)
+    throw new Error("这次编辑不属于当前自动制作请求，已拒绝过期操作");
+  automatic.assertToolAllowed("apply_editor_edit");
+  assertProductionPublicationEditable();
+}
 function mountEditorAgentTools(): void {
   if (!panel || !editorSession || disposeEditorAgentTools) return;
   const sdk = createPanelRuntime(panel);
@@ -4957,10 +5037,15 @@ function mountEditorAgentTools(): void {
       if (!editorSession) throw new Error("工程尚未恢复");
       return editorSession;
     },
-    authorize: ({ before, after }) => {
-      assertEditorEditable();
-      return after ? reconcileEditorProduction(before, after) : undefined;
+    authorize: (request) => {
+      assertEditorAgentAllowed(request);
+      if (!request.after) return undefined;
+      const annotations = reconcileEditorProduction(request.before, request.after);
+      if (request.grant && annotations.length && automatic.mode === "narration")
+        throw new Error("这次编辑会让已确认的草稿与本人录音失效，自动制作不能这样修改");
+      return annotations;
     },
+    assertStillAuthorized: assertEditorAgentAllowed,
     exportSequence: editorTasks
       ? ({ document, sequenceId, profile }, options) =>
           submitEditorExport(document, sequenceId, profile, options?.signal)

@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import { validateToolArgsStrict } from "@cjhyy/code-shell-core";
 import {
   createEditorAgentTools,
-  registerEditorAgentTools,
   EDITOR_AGENT_LIMITS,
   type EditorAgentContext,
 } from "../apps/video-studio/src/editor/agent-tools";
@@ -670,46 +669,173 @@ test("native task reading is delegated once and exposes large actual results thr
   );
 });
 
-test("core handler registration remains complete and removes partial registrations on failure", async (t) => {
-  const h = await harness(t),
-    names: string[] = [],
-    disposed: string[] = [];
-  const context: EditorAgentContext = { session: () => h.session, authorize: () => {} };
-  const dispose = registerEditorAgentTools(
-    {
-      registerTool: (name) => {
-        names.push(name);
-        return () => disposed.push(name);
-      },
-    },
-    context,
-  );
-  assert.deepEqual(names, [
+test("the tool set exposes exactly the four editor handlers and requires a domain guard", async (t) => {
+  const h = await harness(t);
+  assert.deepEqual(Object.keys(h.tools), [
     "read_editor_project",
     "apply_editor_edit",
     "render_editor_sequence",
     "read_editor_jobs",
   ]);
-  dispose();
-  dispose();
-  assert.equal(disposed.length, 4);
-  let count = 0;
   assert.throws(
-    () =>
-      registerEditorAgentTools(
-        {
-          registerTool: () => {
-            if (++count === 2) throw new Error("bridge failed");
-            return () => {
-              count--;
-            };
-          },
-        },
-        context,
-      ),
-    /bridge failed/,
+    () => createEditorAgentTools({ session: () => h.session } as unknown as EditorAgentContext),
+    /权限检查/,
   );
-  assert.equal(count, 1);
+});
+
+test("an automatic-production grant reaches the guard unchanged and is rechecked right before saving", async (t) => {
+  const seen: any[] = [];
+  let revoked = false,
+    rechecks = 0;
+  const h = await harness(t, fixture(), {
+    authorize: (request) => {
+      seen.push(request);
+      return request.after ? reconcileEditorProduction(request.before, request.after) : undefined;
+    },
+    assertStillAuthorized: (request) => {
+      rechecks++;
+      assert.equal(request, seen.at(-1), "The same frozen request is rechecked");
+      if (revoked) throw new Error("自动制作已结束");
+    },
+  });
+  const grant = { projectId: "project", requestToken: "auto-request" },
+    rename = (name: string, extra: Record<string, unknown> = {}) =>
+      h.tools.apply_editor_edit({
+        identity: h.session.getState().identity,
+        label: "自动改名",
+        steps: [raw({ type: "project.rename", name })],
+        grant,
+        ...extra,
+      });
+  const result = await rename("自动制作的名字");
+  assert.deepEqual(seen[0].grant, grant);
+  assert.ok(Object.isFrozen(seen[0].grant));
+  assert.equal(rechecks, 1);
+  assert.equal(result.applied, true);
+  assert.equal(h.session.read().name, "自动制作的名字");
+  // Calls without a grant carry none, so the host applies its general lock.
+  await h.edit([raw({ type: "project.rename", name: "普通编辑" })]);
+  assert.equal(seen[1].grant, undefined);
+  for (const bad of [
+    { ...grant, extra: 1 },
+    { projectId: "project" },
+    { projectId: "project", requestToken: 7 },
+    "auto-request",
+  ])
+    await assert.rejects(
+      h.tools.apply_editor_edit({
+        identity: h.session.getState().identity,
+        label: "坏授权",
+        steps: [raw({ type: "project.rename", name: "不应保存" })],
+        grant: bad,
+      }),
+      /授权|未知字段|对象/,
+    );
+  assert.equal(seen.length, 2, "Malformed grants never reach the guard");
+  // Revocation between authorization and save leaves the revision unchanged.
+  revoked = true;
+  const before = h.session.getState().identity,
+    writes = h.state.writes.length;
+  await assert.rejects(rename("撤销后的名字"), /自动制作已结束/);
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.equal(h.state.writes.length, writes);
+  assert.equal(h.session.read().name, "普通编辑");
+  // The clipboard carries the same grant and recheck.
+  revoked = false;
+  const copied = (await h.tools.apply_editor_edit({
+    identity: h.session.getState().identity,
+    clipboard: { action: "copy", sequenceId, clipIds: ["a"] },
+    grant,
+  })) as any;
+  revoked = true;
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: h.session.getState().identity,
+      clipboard: { action: "paste", sequenceId, clipboardId: copied.clipboard.clipboardId, at: 10 * T },
+      grant,
+    }),
+    /自动制作已结束/,
+  );
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.deepEqual(seen.at(-1).grant, grant);
+  assert.equal(h.state.writes.length, writes);
+});
+
+test("automatic grants never open sound processing, sync, packages, alignment or editor export", async (t) => {
+  let authorized = 0;
+  const h = await harness(t, fixture(), {
+    authorize: () => {
+      authorized++;
+    },
+    sync: { getState: () => ({}), execute: () => ({}), inspectConflict: async () => ({}) } as any,
+    portable: { getState: () => ({}), execute: () => ({}), readCandidate: () => ({}) } as any,
+    exportSequence: async () => ({ jobId: "never" }),
+    alignMulticam: (async () => ({ jobId: "never" })) as any,
+  });
+  const identity = h.session.getState().identity,
+    grant = { projectId: "project", requestToken: "auto-request" };
+  for (const request of [
+    { separation: { action: "status" } },
+    { enhancement: { action: "status" } },
+    { sync: { action: "status" } },
+    { portable: { action: "status" } },
+    { alignment: { action: "cancel", jobId: "job" } },
+  ])
+    await assert.rejects(
+      h.tools.apply_editor_edit({ identity, ...request, grant }),
+      /自动制作中不可用/,
+      JSON.stringify(request),
+    );
+  await assert.rejects(
+    h.tools.render_editor_sequence({
+      identity,
+      sequenceId,
+      profileId: h.session.read().exportProfiles[0]!.id,
+      grant,
+    }),
+    /自动制作中不可用/,
+  );
+  assert.equal(authorized, 0);
+  assert.equal(h.state.writes.length, 0);
+  const manifest = JSON.parse(
+      await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8"),
+    ),
+    schemas = Object.fromEntries(
+      manifest.agent.tools.map((tool: any) => [tool.name, tool.inputSchema]),
+    );
+  for (const editor of [
+    { identity, label: "自动", steps: [raw({ type: "project.rename", name: "x" })], grant },
+    { identity, clipboard: { action: "copy", sequenceId, clipIds: ["a"] }, grant },
+  ])
+    assert.equal(
+      validateToolArgsStrict("apply_video_edit", { editor }, schemas.apply_video_edit),
+      null,
+      JSON.stringify(editor),
+    );
+  for (const editor of [
+    {
+      identity,
+      label: "自动",
+      steps: [raw({ type: "project.rename", name: "x" })],
+      grant: { ...grant, extra: 1 },
+    },
+    { identity, label: "自动", steps: [raw({ type: "project.rename", name: "x" })], grant: {} },
+    { identity, sync: { action: "status" }, grant },
+    { identity, separation: { action: "status" }, grant },
+  ])
+    assert.notEqual(
+      validateToolArgsStrict("apply_video_edit", { editor }, schemas.apply_video_edit),
+      null,
+      JSON.stringify(editor),
+    );
+  assert.notEqual(
+    validateToolArgsStrict(
+      "render_video_project",
+      { editor: { identity, sequenceId, profileId: "mp4", grant } },
+      schemas.render_video_project,
+    ),
+    null,
+  );
 });
 
 test("oversized metadata keys remain fully readable through bounded serialized pages", async (t) => {

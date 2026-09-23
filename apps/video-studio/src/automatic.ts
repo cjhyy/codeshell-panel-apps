@@ -36,6 +36,9 @@ export class AutomaticProducer {
   get mode(): NonNullable<AutoProduction["mode"]> {
     return this.production.auto?.mode ?? "produce";
   }
+  /** `apply_editor_edit` is an editor-branch edit carrying this run's request as its grant:
+   * open while producing and drafting, never while initializing, and for a recorded narration
+   * only when the edit keeps the confirmed draft and recording valid (checked by the caller). */
   assertToolAllowed(name: string): void {
     if (
       this.mode === "initialize" &&
@@ -53,6 +56,7 @@ export class AutomaticProducer {
       ![
         "prepare_video_assets",
         "apply_video_edit",
+        "apply_editor_edit",
         "set_video_script",
         "create_video_scene",
       ].includes(name)
@@ -70,6 +74,7 @@ export class AutomaticProducer {
         ![
           "prepare_video_assets",
           "apply_video_edit",
+          "apply_editor_edit",
           "create_video_scene",
           "render_video_project",
         ].includes(name)
@@ -329,6 +334,7 @@ export class AutomaticProducer {
           "video-production",
           "tts-setup",
           "narration-workflow",
+          "editor-v2",
         ]
           .filter((name) => name !== skill)
           .map((name) => `video-studio:${name}`),
@@ -349,6 +355,9 @@ export class AutomaticProducer {
             : initialization
               ? "完成或明确记录所选声音准备的缺项，等已排队素材、安装、参考提取和试听任务结束后，以 apply_video_edit 的单个 workflow 操作保存完整制作单，stage:initialized；工作台会自动结束本次初始化。失败的准备在 blockers 说明，不能伪造观察。"
               : "全流程制作将目标、素材选段与来源证据、叙事结构、下一步、实际缺项写入 project.workflow，并随粗剪、声音、字幕和验收阶段更新；后续轮次读取后继续。若导出已排队，工作台会跟踪真实完成。",
+          initialization
+            ? ""
+            : `read_video_project 的 legacyView.timelineComplete 为 false（旧视图缺少片段），或需要多轨、画中画、标题、转场、精确字幕时，加载 video-studio:editor-v2，用 read_video_project({editor:{view:'project'}}) 取得 identity，再用 apply_video_edit 的 editor 分支编辑，并附 editor.grant:{projectId:'${auto.projectId}',requestToken:'${token}'}（grant 放在 editor 对象内）；不带 grant 的新版编辑在自动制作中会被锁定。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用。需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。`,
           continuation
             ? "这是同一个目标的后续轮次。先读工程和制作任务，沿用已生成的场景、已应用的修改与结果，不重复提交相同任务。"
             : "",

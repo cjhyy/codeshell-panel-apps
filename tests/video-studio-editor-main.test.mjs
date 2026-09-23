@@ -87,7 +87,8 @@ async function openPage(t, options = {}) {
     assert.deepEqual(errors, []);
   });
   // Voiceover jobs run through the real tasks/resources contract of the media task bridge.
-  if (options.voiceover) await page.addInitScript(installGenericMediaTaskMock);
+  if (options.voiceover || options.automatic)
+    await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(
     ({ seed, options }) => {
       const records = JSON.parse(localStorage.getItem("editor-main-host") ?? "null") ?? {
@@ -195,6 +196,25 @@ async function openPage(t, options = {}) {
                 ),
               },
             };
+          }
+          if (options.automatic) {
+            // A persistent media service and an agent task host; the agent itself is the test.
+            const auto = (window.__autoHost ??= { starts: [] });
+            if (method === "media.status")
+              return {
+                persistent: true,
+                ffmpeg: { available: true },
+                transcription: { available: false },
+                hyperframes: { available: false },
+                tts: { available: false },
+              };
+            if (method === "media.jobs.list") return { jobs: [], total: 0 };
+            if (method === "agent.task.start") {
+              auto.starts.push(structuredClone(args));
+              return { id: `auto-task-${auto.starts.length}`, status: "running" };
+            }
+            if (method === "agent.task.get") return { id: args.id, status: "running" };
+            if (method === "agent.task.cancel") return { id: args.id, status: "cancelled" };
           }
           if (options.voiceover) {
             const voice = (window.__voiceHost ??= { jobs: {}, requests: [] });
@@ -2058,4 +2078,197 @@ test("the AI 制作 inspector trims a main clip of a multitrack project the old 
   await returnEditor(page);
   await clickEditorAction(page, "undo");
   assert.deepEqual((await waitSaved(page)).sequences, before.sequences);
+});
+
+/** A saved automatic run that is waiting on its agent: the request token the agent was given. */
+const automaticRun = (projectId, mode) => ({
+  "video-studio-production": [
+    {
+      revision: 1,
+      updatedAt: 1,
+      label: "制作任务进度",
+      data: {
+        schemaVersion: 1,
+        bindings: {},
+        auto: {
+          projectId,
+          runId: `run-${mode}`,
+          prompt: "把这段实拍做成成片",
+          mode,
+          phase: "agent",
+          attempts: 1,
+          startedAt: 1,
+          requestToken: `request-${mode}`,
+          taskId: `auto-task-${mode}`,
+          message: "正在制作",
+        },
+      },
+    },
+  ],
+});
+const renameStep = (name) => [
+  { kind: "operations", operations: [{ type: "project.rename", name }] },
+];
+async function editorEdit(page, editor) {
+  return page.evaluate(async (editor) => {
+    const tools = window.__mainHost.tools;
+    const identity = tools.read_video_project({ editor: { view: "project" } }).identity;
+    try {
+      return { result: await tools.apply_video_edit({ editor: { identity, ...editor } }) };
+    } catch (error) {
+      return { error: error.message };
+    }
+  }, editor);
+}
+
+test("automatic production edits real multitrack footage through the editor with its request grant", async (t) => {
+  const autoSeed = { ...realMediaSeed, id: "auto-real-media", name: "自动实拍" };
+  const page = await openPage(t, { seed: autoSeed, automatic: true });
+  await production(page);
+  await page.locator("#ai-prompt").fill("把这段实拍做成一分钟成片");
+  await page.getByRole("button", { name: "开始全流程制作", exact: true }).click();
+  await page.waitForFunction(() => window.__mainHost.tools.read_video_project().requestToken);
+  const start = await page.evaluate(() => window.__autoHost.starts[0]);
+  assert.equal(start.skill, "video-studio:video-workflow");
+  assert.ok(start.skills.includes("video-studio:editor-v2"), JSON.stringify(start.skills));
+  assert.match(start.prompt, /editor\.grant/);
+  assert.match(start.prompt, /render_video_project/);
+
+  const read = await page.evaluate(() => {
+    const tools = window.__mainHost.tools;
+    return {
+      legacy: tools.read_video_project(),
+      editor: tools.read_video_project({ editor: { view: "project" } }).identity,
+    };
+  });
+  assert.equal(read.legacy.legacyView.sequenceId, "main");
+  assert.equal(read.legacy.legacyView.timelineComplete, false);
+  assert.equal(read.legacy.legacyView.renderSafe, false);
+  assert.ok(read.legacy.legacyView.restrictionCount >= 3);
+  assert.ok(
+    read.legacy.legacyView.restrictions.some(
+      (item) => item.clipId === "camera-overlay" && item.excluded,
+    ),
+  );
+  assert.deepEqual(read.legacy.editorIdentity, read.editor);
+  const token = read.legacy.requestToken,
+    grant = { projectId: autoSeed.id, requestToken: token };
+
+  const before = await saved(page);
+  const locked = await editorEdit(page, { label: "无授权", steps: renameStep("不应保存") });
+  assert.match(locked.error, /自动制作正在处理/);
+  for (const stale of [
+    { ...grant, requestToken: "an-old-request" },
+    { ...grant, projectId: "another-project" },
+  ]) {
+    const rejected = await editorEdit(page, {
+      label: "过期授权",
+      steps: renameStep("不应保存"),
+      grant: stale,
+    });
+    assert.match(rejected.error, /不属于当前自动制作请求/);
+  }
+  assert.deepEqual(await saved(page), before, "Rejected edits never save");
+
+  const granted = await editorEdit(page, {
+    label: "自动去掉画中画",
+    steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }],
+    grant,
+  });
+  assert.equal(granted.error, undefined);
+  assert.equal(granted.result.applied, true);
+  const edited = await waitSaved(page);
+  assert.equal(edited.revision, before.revision + 1);
+  const ids = (doc) => doc.sequences[0].clips.map((clip) => clip.id);
+  assert.deepEqual(ids(edited), ["camera-main", "existing-caption"]);
+
+  // The general editor stays locked for manual work during the run.
+  await returnEditor(page);
+  await page.locator('[data-add-asset="camera"]').click();
+  await page.waitForFunction(() =>
+    /自动制作正在处理/.test(document.querySelector("#toast")?.textContent ?? ""),
+  );
+  assert.deepEqual(await saved(page), edited);
+
+  // Old-format automatic edits on real footage go through the translator, not the old view.
+  const legacy = await page.evaluate(async () => {
+    const tools = window.__mainHost.tools;
+    const current = tools.read_video_project();
+    try {
+      return {
+        result: await tools.apply_video_edit({
+          projectId: current.project.id,
+          requestToken: current.requestToken,
+          baseRevision: current.project.revision,
+          title: "删掉主画面",
+          operations: [{ type: "remove", clipId: "camera-main" }],
+        }),
+      };
+    } catch (error) {
+      return { error: error.message };
+    }
+  });
+  assert.equal(legacy.error, undefined);
+  assert.equal(legacy.result.applied, true);
+  const removed = await waitSaved(page);
+  assert.deepEqual(ids(removed), ["existing-caption"]);
+  assert.equal(removed.revision, edited.revision + 1);
+});
+
+test("automatic initialization never opens editor edits, even with its own grant", async (t) => {
+  const autoSeed = { ...realMediaSeed, id: "auto-init-media", name: "初始化实拍" };
+  const page = await openPage(t, {
+    seed: autoSeed,
+    automatic: true,
+    records: automaticRun(autoSeed.id, "initialize"),
+  });
+  await page.waitForFunction(
+    () => window.__mainHost.tools.read_video_project().requestToken === "request-initialize",
+  );
+  const before = await saved(page);
+  const rejected = await editorEdit(page, {
+    label: "初始化改名",
+    steps: renameStep("不应保存"),
+    grant: { projectId: autoSeed.id, requestToken: "request-initialize" },
+  });
+  assert.match(rejected.error, /初始化/);
+  assert.deepEqual(await saved(page), before);
+});
+
+test("an automatic draft on real footage points old-format edits to the granted editor branch", async (t) => {
+  const autoSeed = { ...realMediaSeed, id: "auto-draft-media", name: "草稿实拍" };
+  const page = await openPage(t, {
+    seed: autoSeed,
+    automatic: true,
+    records: automaticRun(autoSeed.id, "draft"),
+  });
+  await page.waitForFunction(
+    () => window.__mainHost.tools.read_video_project().requestToken === "request-draft",
+  );
+  const before = await saved(page);
+  const legacy = await page.evaluate(async () => {
+    const tools = window.__mainHost.tools;
+    const current = tools.read_video_project();
+    try {
+      await tools.apply_video_edit({
+        projectId: current.project.id,
+        requestToken: current.requestToken,
+        baseRevision: current.project.revision,
+        title: "草稿去掉主画面",
+        operations: [{ type: "remove", clipId: "camera-main" }],
+      });
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(legacy, /editor 分支/);
+  assert.match(legacy, /grant/);
+  assert.deepEqual(await saved(page), before);
+  const granted = await editorEdit(page, {
+    label: "草稿去掉画中画",
+    steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }],
+    grant: { projectId: autoSeed.id, requestToken: "request-draft" },
+  });
+  assert.equal(granted.error, undefined);
+  assert.equal((await waitSaved(page)).revision, before.revision + 1);
 });

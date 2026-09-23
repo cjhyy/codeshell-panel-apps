@@ -94,6 +94,10 @@ timing.action 为 `{kind:"speed",rate,preservePitch?}`、`{kind:"reverse"}`、`{
 
 数值可动画的字段使用常数或 `{keyframes:[{time,value,easing?},…]}`；关键帧 time 相对片段且不超过 duration。easing 为 linear/hold/ease-in/ease-out/ease-in-out，或 `{type:"cubic-bezier",x1,y1,x2,y2}`。使用已有精确值和范围。全文未知字段、无效来源、越界、同画面轨非法重叠、锁轨等会拒绝整批。
 
+## 自动制作授权
+
+自动制作进行中，工作台锁定通用编辑。只有本次自动制作任务可以在 `label/steps` 编辑和 `clipboard` 请求的 editor 内附 `grant:{projectId,requestToken}`，值取自 `read_video_project({})` 返回的 `project.id` 与 `requestToken`；不带 grant 或令牌过期、属于其他工程时拒绝，保持锁定。初始化阶段不能用 grant 编辑；本人录音阶段只接受不使已确认草稿和录音失效的编辑。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用；导出调用 `render_video_project` 的旧参数（`projectId/baseRevision/requestToken`），它导出完整新版当前序列，工作台据此跟踪完成。旧工程读取的 `legacyView.timelineComplete=false` 表示旧视图缺少片段，应改用带 grant 的 editor 分支；`editorIdentity` 与新版读取的 identity 相同。
+
 ## 本人录音与制作状态
 
 通用工具不能修改 production、伪造批准、选择本人录音、启动设备或绕过正在进行的自动制作/录制锁。初始化、先审稿再录音、文稿润色、TTS 配方与参考选择继续沿用 video-init/narration-workflow/video-production 的专门入口。它们返回的是明确注明的旧流程读视图，不是完整新版工程，不能用该投影重建或导出完整多轨内容。

@@ -26,7 +26,7 @@
     "tools": [
       {
         "name": "read_video_project",
-        "description": "读取旧制作工程/声音/任务，或仅传 editor 读取完整 v2 工程/原生任务。editor.view=project 支持 documentView=document/defaults、identity/path/offset/limit/format；view=jobs 支持 jobIds/offset/limit/path/pageOffset/format。完整翻页到 nextOffset=null，大值沿 path 展开，极长元数据用 format=json 拼接。v2 是 240000 ticks/秒及有理帧率，不是旧30fps投影。见 editor-v2 技能。",
+        "description": "读取旧制作工程/声音/任务，或仅传 editor 读取完整 v2 工程/原生任务。旧工程读取另含 legacyView{sequenceId,timelineComplete,renderSafe,restrictions,restrictionCount}（timelineComplete=false 表示旧视图缺片段，改用 editor 分支）与 editorIdentity。editor.view=project 支持 documentView=document/defaults、identity/path/offset/limit/format；view=jobs 支持 jobIds/offset/limit/path/pageOffset/format。完整翻页到 nextOffset=null，大值沿 path 展开，极长元数据用 format=json 拼接。v2 是 240000 ticks/秒及有理帧率，不是旧30fps投影。见 editor-v2 技能。",
         "readOnly": true,
         "inputSchema": {
           "type": "object",
@@ -2420,7 +2420,7 @@
       },
       {
         "name": "apply_video_edit",
-        "description": "应用旧授权方案，或用 editor 分支操作完整 v2 工程。editor:{identity,label,steps} 使用共享剪辑、字幕、序列、多机位规则，保存成功才发布一修订，可一步撤销；限100步骤/1000操作/256KiB。另可用互斥的 editor.separation、editor.enhancement、editor.alignment、editor.sync 运行声音分离、降噪/响度、真实声音对齐和开放工程同步；后台回执不等于完成，读状态后再应用候选。禁止伪造资源、改审批或解锁；录音/制作忙锁仍适用，旁白依赖变化退回审阅。身份过期须重新规划。同步版本采用保留快照并重置剪辑撤销栈。参数和分页规则详见 editor-v2 技能。",
+        "description": "应用旧授权方案，或用 editor 分支操作完整 v2 工程。editor:{identity,label,steps} 使用共享剪辑、字幕、序列、多机位规则，保存成功才发布一修订，可一步撤销；限100步骤/1000操作/256KiB。另可用互斥的 editor.separation、editor.enhancement、editor.alignment、editor.sync 运行声音分离、降噪/响度、真实声音对齐和开放工程同步；后台回执不等于完成，读状态后再应用候选。禁止伪造资源、改审批或解锁；录音/制作忙锁仍适用，自动制作中仅 label/steps 与 clipboard 可附 editor.grant:{projectId,requestToken}（当前请求）解除制作锁，其他分支与新版导出不可用；旁白依赖变化退回审阅。身份过期须重新规划。同步版本采用保留快照并重置剪辑撤销栈。参数和分页规则详见 editor-v2 技能。",
         "readOnly": false,
         "inputSchema": {
           "type": "object",
@@ -4564,6 +4564,27 @@
                           },
                           "minItems": 1,
                           "maxItems": 100
+                        },
+                        "grant": {
+                          "type": "object",
+                          "description": "仅自动制作期间使用：当前 read_video_project 返回的 projectId 与 requestToken。无授权时新版编辑在自动制作中保持锁定。",
+                          "properties": {
+                            "projectId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "requestToken": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            }
+                          },
+                          "required": [
+                            "projectId",
+                            "requestToken"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -5678,6 +5699,27 @@
                               "additionalProperties": false
                             }
                           ]
+                        },
+                        "grant": {
+                          "type": "object",
+                          "description": "仅自动制作期间使用：当前 read_video_project 返回的 projectId 与 requestToken。无授权时新版编辑在自动制作中保持锁定。",
+                          "properties": {
+                            "projectId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            },
+                            "requestToken": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
+                            }
+                          },
+                          "required": [
+                            "projectId",
+                            "requestToken"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
