@@ -17,6 +17,8 @@ export class EditorExportJobs {
   private readonly pending = new Set<string>();
   private readonly watching = new Map<string, AbortController>();
   private readonly observationErrors = new Set<string>();
+  /** Exports whose completion was already reported through onFinished. */
+  private readonly finished = new Set<string>();
   private offset = 0;
   private loading = false;
   private disposed = false;
@@ -164,8 +166,12 @@ export class EditorExportJobs {
     ))
       list.append(row);
     if (reveal) this.show();
+    const firstSight = !this.latest.has(job.id);
     this.update(job);
     const accepted = this.latest.get(job.id)!;
+    // A submitted or refreshed export can already be done when first seen; history pages are not.
+    if (firstSight && reveal && !["queued", "running"].includes(accepted.status))
+      this.reportFinished(accepted);
     if (["queued", "running"].includes(accepted.status) && !this.watching.has(job.id)) {
       const controller = new AbortController();
       this.watching.set(job.id, controller);
@@ -182,6 +188,13 @@ export class EditorExportJobs {
           if (this.watching.get(job.id) === controller) this.watching.delete(job.id);
         });
     }
+  }
+  private reportFinished(job: RuntimeJob): void {
+    // A retried export finishes again as a new attempt.
+    const key = `${job.id}:${job.attempt}`;
+    if (this.finished.has(key)) return;
+    this.finished.add(key);
+    this.options.onFinished?.(job);
   }
   private update(job: RuntimeJob): void {
     if (this.disposed) return;
@@ -205,7 +218,7 @@ export class EditorExportJobs {
     if (terminal(job)) {
       this.watching.get(job.id)?.abort();
       this.observationErrors.delete(job.id);
-      if (previous && !terminal(previous)) this.options.onFinished?.(job);
+      if (previous && !terminal(previous)) this.reportFinished(job);
     }
     row.dataset.status = job.status;
     row.querySelector("output")!.textContent = this.observationErrors.has(job.id)

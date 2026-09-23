@@ -30,6 +30,7 @@ import {
   createTrack,
   defaultAudioMix,
   defaultColorAdjustment,
+  defaultTextStyle,
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
 import {
@@ -1224,4 +1225,41 @@ test("Chinese word timings form readable captions at real word starts across rep
     captions(sentence).map((clip) => [clip.start, clip.duration, clip.text]),
     [[T, 2 * T, "没有逐字时间就保留真实整段范围"]],
   );
+});
+
+test("new subtitles avoid a title track and join the track that already holds subtitles", () => {
+  const title: TextClip = {
+    id: "title",
+    kind: "text",
+    role: "title",
+    label: "标题",
+    trackId: "t",
+    start: 0,
+    duration: T,
+    text: "标题",
+    style: defaultTextStyle(),
+    words: [],
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  };
+  const titled = fixture();
+  titled.sequences[0]!.clips.push(title);
+  const plan = planTranscriptCaptions(titled, "main", new Map([["voice", transcript]]));
+  const after = applyEditorOperations(titled, plan.operations, titled.revision);
+  const subtitles = captions(after).filter((clip) => clip.role === "subtitle");
+  assert.ok(subtitles.length);
+  assert.ok(subtitles.every((clip) => clip.trackId !== "t"), "The title track keeps only titles");
+  const both = structuredClone(titled);
+  both.sequences[0]!.tracks.push(createTrack("subs", "text", "字幕"));
+  both.sequences[0]!.clips.push({
+    ...structuredClone(title),
+    id: "old-sub",
+    role: "subtitle",
+    trackId: "subs",
+    start: 10 * T,
+  });
+  const again = planSrtImport(both, "main", "1\n00:00:01,000 --> 00:00:02,000\n新字幕\n");
+  const imported = applyEditorOperations(both, again.operations, both.revision);
+  assert.equal(captions(imported).find((clip) => clip.text === "新字幕")?.trackId, "subs");
 });

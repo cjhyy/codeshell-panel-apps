@@ -111,9 +111,13 @@ export function planAppendPlacement(
   };
 }
 
+const holdsRole = (sequence: EditorSequence, trackId: string, role: "title" | "subtitle") =>
+  sequence.clips.some((clip) => clip.trackId === trackId && clip.kind === "text" && clip.role === role);
+
 /**
- * A text track that is visible over every picture: the first unlocked text track above all video
- * tracks that is free over [start, start + duration), else a new text track on top.
+ * A text track that is visible over every picture: an unlocked text track above all video tracks
+ * that is free over [start, start + duration) and holds no subtitles, preferring one that already
+ * holds titles; else a new text track on top.
  */
 export function planTextPlacement(
   sequence: EditorSequence,
@@ -125,13 +129,16 @@ export function planTextPlacement(
     (top, item, index) => (item.kind === "video" ? index : top),
     -1,
   );
-  const track = sequence.tracks.find(
+  const candidates = sequence.tracks.filter(
     (item, index) =>
       index > topPicture &&
       item.kind === "text" &&
       !item.locked &&
+      !holdsRole(sequence, item.id, "subtitle") &&
       !overlaps(sequence, item.id, start, duration),
   );
+  const track =
+    candidates.find((item) => holdsRole(sequence, item.id, "title")) ?? candidates[0];
   if (track) return { trackId: track.id, operations: [] };
   const created = createTrack(idFactory("track"), "text");
   return {

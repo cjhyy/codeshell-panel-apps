@@ -365,45 +365,74 @@ export class EditorInspector {
     });
     this.inputRow(parent, label, input);
   }
-  /** A typed #RRGGBB(AA) field with a synced picker; picking keeps any typed transparency. */
-  private colorField(parent: HTMLElement, scope: Scope, label: string, path: Path): void {
-    const input = el("input", "ei-input ei-color-text");
-    const value = common(scope.clips.map((clip) => String(at(clip, path))));
-    input.value = value ?? "";
-    input.placeholder = value === undefined ? "多个值" : "";
+  /**
+   * Add a native picker beside a typed #RRGGBB(AA) field. Picking keeps any typed transparency;
+   * closing the picker without choosing restores the value it opened with.
+   */
+  private attachColorPicker(
+    row: HTMLElement,
+    input: HTMLInputElement,
+    label: string,
+    choose?: (value: string) => void,
+  ): void {
     const picker = el("input", "ei-color-picker");
     picker.type = "color";
     const expanded = (text: string) =>
       /^#[0-9a-f]{3,4}$/i.test(text)
         ? "#" + [...text.slice(1)].map((char) => char + char).join("")
         : text;
+    const alpha = (text: string) => {
+      const color = expanded(text.trim());
+      return /^#[0-9a-f]{8}$/i.test(color) ? color.slice(7) : "";
+    };
     const sync = () => {
       const color = expanded(input.value.trim());
-      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color)) picker.value = color.slice(0, 7).toLowerCase();
+      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color))
+        picker.value = color.slice(0, 7).toLowerCase();
     };
+    let opened = input.value,
+      chosen = false;
     picker.value = "#000000";
     sync();
     input.addEventListener("input", sync);
+    picker.addEventListener("focus", () => {
+      opened = input.value;
+      chosen = false;
+    });
+    picker.addEventListener("input", () => {
+      input.value = picker.value + alpha(opened);
+    });
+    picker.addEventListener("change", () => {
+      chosen = true;
+      input.value = picker.value + alpha(opened);
+      opened = input.value;
+      choose?.(input.value);
+    });
+    picker.addEventListener("blur", () => {
+      if (chosen) return;
+      input.value = opened;
+      sync();
+    });
+    row.classList.add("ei-color-field");
+    picker.setAttribute("aria-label", `选择${label}`);
+    picker.title = `选择${label}`;
+    row.append(picker);
+  }
+  /** A typed #RRGGBB(AA) document color with a synced picker. */
+  private colorField(parent: HTMLElement, scope: Scope, label: string, path: Path): void {
+    const input = el("input", "ei-input ei-color-text");
+    const value = common(scope.clips.map((clip) => String(at(clip, path))));
+    input.value = value ?? "";
+    input.placeholder = value === undefined ? "多个值" : "";
     input.addEventListener("change", () => {
       void this.edit(scope, `修改${label}`, (clip) =>
         this.fieldPatch(scope, clip, path, input.value),
       );
     });
-    picker.addEventListener("input", () => {
-      const previous = expanded(input.value.trim());
-      input.value = picker.value + (/^#[0-9a-f]{8}$/i.test(previous) ? previous.slice(7) : "");
-    });
-    picker.addEventListener("change", () => {
-      const previous = expanded(input.value.trim());
-      const next = picker.value + (/^#[0-9a-f]{8}$/i.test(previous) ? previous.slice(7) : "");
-      input.value = next;
+    const row = this.inputRow(parent, label, input);
+    this.attachColorPicker(row, input, label, (next) => {
       void this.edit(scope, `修改${label}`, (clip) => this.fieldPatch(scope, clip, path, next));
     });
-    const row = this.inputRow(parent, label, input);
-    row.classList.add("ei-color-field");
-    picker.setAttribute("aria-label", `选择${label}`);
-    picker.title = `选择${label}`;
-    row.append(picker);
   }
   private choice(
     parent: HTMLElement,
@@ -1381,19 +1410,7 @@ export class EditorInspector {
     phrase.placeholder = "输入需要强调的词语或短句";
     color.value = clip.style.highlightColor;
     this.inputRow(parent, "新关键词", phrase);
-    const colorRow = this.inputRow(parent, "新关键词颜色", color);
-    const picker = el("input", "ei-color-picker");
-    picker.type = "color";
-    picker.value = /^#[0-9a-f]{6}/i.test(color.value) ? color.value.slice(0, 7).toLowerCase() : "#000000";
-    picker.setAttribute("aria-label", "选择新关键词颜色");
-    picker.title = "选择新关键词颜色";
-    picker.addEventListener("input", () => (color.value = picker.value));
-    color.addEventListener("input", () => {
-      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color.value.trim()))
-        picker.value = color.value.trim().slice(0, 7).toLowerCase();
-    });
-    colorRow.classList.add("ei-color-field");
-    colorRow.append(picker);
+    this.attachColorPicker(this.inputRow(parent, "新关键词颜色", color), color, "新关键词颜色");
     this.action(
       parent,
       "添加关键词强调",

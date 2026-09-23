@@ -645,3 +645,27 @@ test("color fields offer a color picker synced with the typed value, keeping any
   for (const label of ["图形填充颜色", "图形描边颜色"])
     assert.equal(await page.getByLabel(`选择${label}`, { exact: true }).count(), 1, label);
 });
+
+test("a cancelled color picker leaves the typed value matching the document, and keyword colors keep alpha", async () => {
+  await page.evaluate(() => select(["t"]));
+  await tab("文字");
+  const text = page.getByLabel("文字颜色", { exact: true }),
+    picker = page.getByLabel("选择文字颜色", { exact: true });
+  const original = await text.inputValue();
+  // Browsing colors updates the preview text; closing the picker without choosing restores it.
+  await picker.evaluate((node) => {
+    node.focus();
+    node.value = "#ff0000";
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  assert.equal(await text.inputValue(), "#ff0000");
+  await picker.evaluate((node) => node.blur());
+  assert.equal(await text.inputValue(), original);
+  assert.equal(await picker.inputValue(), original.slice(0, 7).toLowerCase());
+  assert.equal((await read("t")).style.color, original);
+  await details("关键词列表");
+  const keyword = page.getByLabel("新关键词颜色", { exact: true });
+  await keyword.fill("#11223380");
+  await page.getByLabel("选择新关键词颜色", { exact: true }).fill("#aabbcc");
+  assert.equal(await keyword.inputValue(), "#aabbcc80");
+});

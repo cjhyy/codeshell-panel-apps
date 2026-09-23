@@ -24,7 +24,7 @@ import type { EditorMediaPoolOptions } from "./media-pool";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
 import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./types";
-import { sequenceDuration } from "./validation";
+import { MAX_EDITOR_TICK, sequenceDuration } from "./validation";
 import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./rough-cut-placement";
 import { EditorExportBatch } from "./export-batch";
 import { EditorTiming } from "./timing-ui";
@@ -635,6 +635,9 @@ export class EditorWorkspace {
     const at = append?.start ?? placement.at ?? this.playhead;
     if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
     if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
+    // Appending past the editor's time range would only fail later with a technical message.
+    if (append && at + duration > MAX_EDITOR_TICK)
+      throw new Error("加入素材后超出时长上限（24 小时）");
     if (placement.trackId !== undefined) {
       const sequence = this.sequence();
       const track = sequence.tracks.find((track) => track.id === placement.trackId);
@@ -960,7 +963,8 @@ export class EditorWorkspace {
     this.dialogAbort = controller;
     const dialog = document.createElement("dialog");
     dialog.className = "ew-dialog";
-    dialog.innerHTML = `<form><h2>${esc(title)}</h2>${content}<p class="ew-form-error" role="alert"></p><footer><button type="button" data-ew-close>取消</button><button class="ew-primary" type="submit">${submitLabel}</button></footer></form>`;
+    dialog.setAttribute("aria-labelledby", "ew-dialog-title");
+    dialog.innerHTML = `<form><h2 id="ew-dialog-title">${esc(title)}</h2>${content}<p class="ew-form-error" role="alert"></p><footer><button type="button" data-ew-close>取消</button><button class="ew-primary" type="submit">${submitLabel}</button></footer></form>`;
     const form = dialog.querySelector<HTMLFormElement>("form")!;
     const identity = this.options.session.getState().identity;
     let pending = false;

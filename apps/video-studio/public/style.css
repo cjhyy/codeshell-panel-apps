@@ -57,10 +57,18 @@ button:hover {
   border-color: #555e65;
   color: #f5f8fa;
 }
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   opacity: 0.34;
   cursor: not-allowed;
 }
+/* Unavailable but focusable actions keep their resting look on hover. */
+button[aria-disabled="true"]:hover {
+  background: #25282c;
+  border-color: #373b3f;
+  color: #c5cbd0;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -80,6 +88,11 @@ button.primary {
 }
 button.primary:hover {
   background: #d0f6db;
+}
+button.primary[aria-disabled="true"]:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #183c29;
 }
 button.quiet {
   border-color: transparent;
@@ -312,6 +325,23 @@ h3 {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+}
+/* 新建工程 reads as a rail item: same size, label and hover as the tabs above. */
+.rail-bottom > .rail-new {
+  align-self: stretch;
+}
+.rail-new:hover {
+  color: #d9e6de;
+  background: #b7eec80d;
+}
+.new-project-risks {
+  margin: 4px 0 14px;
+  padding-left: 20px;
+  color: #dbe7df;
+  line-height: 1.7;
+}
+.new-project-risks li + li {
+  margin-top: 4px;
 }
 .rail-bottom > span {
   font:

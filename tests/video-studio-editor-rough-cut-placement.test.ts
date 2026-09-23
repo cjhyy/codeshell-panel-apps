@@ -11,6 +11,7 @@ import {
   createTrack,
   defaultAudioMix,
   defaultColorAdjustment,
+  defaultTextStyle,
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
 import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapter";
@@ -18,6 +19,7 @@ import type {
   EditorDocument,
   EditorSequence,
   MediaClip,
+  TextClip,
 } from "../apps/video-studio/src/editor/types";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
 import type { RoughCut } from "../apps/video-studio/src/model";
@@ -590,4 +592,50 @@ test("text lands on a free text track above every picture track, else on a new t
   const lockedTop = structuredClone(above);
   lockedTop.tracks[2]!.locked = true;
   assert.equal(planTextPlacement(lockedTop, T, 3 * T, idFactory).operations.length, 1);
+});
+
+const text = (
+  id: string,
+  trackId: string,
+  role: "title" | "subtitle",
+  start: number,
+  duration: number,
+): TextClip => ({
+  id,
+  kind: "text",
+  role,
+  label: id,
+  trackId,
+  start,
+  duration,
+  text: id,
+  style: defaultTextStyle(),
+  words: [],
+  transform: defaultTransform(),
+  color: defaultColorAdjustment(),
+  blendMode: "normal",
+});
+
+test("titles never land on the subtitle track and prefer a track that already holds titles", () => {
+  const tracks = [createTrack("v1", "video"), createTrack("subs", "text", "字幕")];
+  // The 字幕 track has a gap exactly at the playhead; it is still not a title track.
+  const subtitlesOnly = document({
+    tracks,
+    clips: [media("p1", "v1", "broll", 0, 8 * T), text("s1", "subs", "subtitle", 0, T)],
+  }).sequences[0]!;
+  const created = planTextPlacement(subtitlesOnly, 2 * T, 3 * T, idFactory);
+  assert.equal(created.operations.length, 1, "A new text track is created for the title");
+  assert.notEqual(created.trackId, "subs");
+  const withTitles = document({
+    tracks: [...tracks, createTrack("empty", "text"), createTrack("titles", "text", "标题")],
+    clips: [
+      media("p1", "v1", "broll", 0, 8 * T),
+      text("s1", "subs", "subtitle", 0, T),
+      text("t1", "titles", "title", 6 * T, T),
+    ],
+  }).sequences[0]!;
+  assert.deepEqual(planTextPlacement(withTitles, 2 * T, 3 * T, idFactory), {
+    trackId: "titles",
+    operations: [],
+  });
 });

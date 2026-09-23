@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
@@ -125,48 +126,53 @@ async function openPage(t, options = {}) {
         latestStorageRevision: () => records["video-studio-current"][0].revision,
       };
       window.codeshellPanel = {
-        getContext: async () => ({
-          cwd: "/isolated/editor-main",
-          theme: "dark",
-          visible: true,
-          capabilities: {
-            bridge: {
-              maxCallsPerWindow: 10000,
-              maxTransferCallsPerWindow: 10000,
-              rateWindowMs: 1000,
+        getContext: async () => {
+          // Tests can hold context discovery to keep a media import in progress.
+          if (window.__holdContext)
+            await new Promise((resolve) => (window.__releaseContext = resolve));
+          return {
+            cwd: "/isolated/editor-main",
+            theme: "dark",
+            visible: true,
+            capabilities: {
+              bridge: {
+                maxCallsPerWindow: 10000,
+                maxTransferCallsPerWindow: 10000,
+                rateWindowMs: 1000,
+              },
             },
-          },
-          availableMethods: [
-            "storage.get",
-            "storage.set",
-            "media.document.get",
-            "media.document.set",
-            "media.document.versions",
-            ...(options.nativeTasks
-              ? ["tasks.start", "tasks.get", "tasks.list", "tasks.cancel", "resources.get"]
-              : []),
-            ...(options.fullNativeAccess
-              ? [
-                  "tasks.start",
-                  "tasks.get",
-                  "tasks.list",
-                  "tasks.cancel",
-                  "tasks.retry",
-                  "resources.get",
-                  "resources.read",
-                  "resources.list",
-                  "process.find",
-                  "process.resolveEntry",
-                  "process.spawn",
-                  "process.cancel",
-                  "filesystem.getKnownDirectory",
-                ]
-              : []),
-            ...(options.translation
-              ? ["agent.task.start", "agent.task.get", "agent.task.cancel"]
-              : []),
-          ],
-        }),
+            availableMethods: [
+              "storage.get",
+              "storage.set",
+              "media.document.get",
+              "media.document.set",
+              "media.document.versions",
+              ...(options.nativeTasks
+                ? ["tasks.start", "tasks.get", "tasks.list", "tasks.cancel", "resources.get"]
+                : []),
+              ...(options.fullNativeAccess
+                ? [
+                    "tasks.start",
+                    "tasks.get",
+                    "tasks.list",
+                    "tasks.cancel",
+                    "tasks.retry",
+                    "resources.get",
+                    "resources.read",
+                    "resources.list",
+                    "process.find",
+                    "process.resolveEntry",
+                    "process.spawn",
+                    "process.cancel",
+                    "filesystem.getKnownDirectory",
+                  ]
+                : []),
+              ...(options.translation
+                ? ["agent.task.start", "agent.task.get", "agent.task.cancel"]
+                : []),
+            ],
+          };
+        },
         registerTool: (name, handler) => {
           tools[name] = handler;
           return () => {
@@ -2931,6 +2937,17 @@ test("新建工程 is labeled, opens at once when safe and asks in the page befo
   const confirm = page.locator("#plan-dialog[open]");
   await confirm.waitFor();
   assert.match(await confirm.textContent(), /未保存的修改/);
+  assert.equal(
+    await page.locator(`#${await confirm.getAttribute("aria-labelledby")}`).textContent(),
+    "新建工程？",
+  );
+  assert.equal(
+    await confirm
+      .getByRole("button", { name: "取消", exact: true })
+      .evaluate((node) => node === document.activeElement),
+    true,
+    "The safe choice has focus",
+  );
   await confirm.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(await page.locator("#plan-dialog[open]").count(), 0);
   assert.equal(await page.locator("#project-name").inputValue(), "还没保存的名字");
@@ -3066,8 +3083,15 @@ test("disabled production buttons say why instead of staying silent", async (t) 
   const page = await openPage(t);
   const reason = (name) =>
     page.locator(`#studio [data-action="${name}"]`).first().evaluate((node) => ({
-      disabled: node.disabled,
+      disabled: node.disabled || node.getAttribute("aria-disabled") === "true",
       title: node.getAttribute("title") ?? "",
+    }));
+  const announced = (name) =>
+    page.locator(`#studio [data-action="${name}"]`).first().evaluate((node) => ({
+      focusable: !node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      description: document.getElementById(node.getAttribute("aria-describedby") ?? "")
+        ?.textContent,
     }));
   await production(page, "ai");
   for (const name of ["ask-draft", "initialize-video"]) {
@@ -3075,6 +3099,10 @@ test("disabled production buttons say why instead of staying silent", async (t) 
     assert.equal(value.disabled, true, name);
     assert.match(value.title, /CodeShell 桌面/, name);
   }
+  const draft = await announced("ask-draft");
+  assert.equal(draft.focusable, true);
+  assert.equal(draft.ariaDisabled, "true");
+  assert.match(draft.description, /CodeShell 桌面/);
   assert.equal((await reason("quick-plan")).disabled, false);
   assert.equal((await reason("quick-plan")).title, "", "An enabled button needs no reason");
   const before = await saved(page);
@@ -3089,6 +3117,16 @@ test("disabled production buttons say why instead of staying silent", async (t) 
     disabled: true,
     title: "时间轴上还没有片段，先加入素材再导出",
   });
+  assert.deepEqual(await announced("export"), {
+    focusable: true,
+    ariaDisabled: "true",
+    description: "时间轴上还没有片段，先加入素材再导出",
+  });
+  await oldAction(page, "export").focus();
+  await page.keyboard.press("Enter");
+  await settle(page);
+  assert.equal(await page.locator("dialog[open]").count(), 0, "Unavailable export does nothing");
+  assert.equal(await page.locator("#toast.visible").count(), 0);
   await production(page, "spoken");
   for (const name of ["spoken-prepare", "spoken-analyze"]) {
     const value = await reason(name).catch(() => null);
@@ -3098,4 +3136,30 @@ test("disabled production buttons say why instead of staying silent", async (t) 
   }
   const undo = await reason("spoken-undo");
   if (undo.disabled) assert.equal(undo.title, "没有可撤销的编辑");
+});
+
+test("新建工程 waits for an import in progress and offers only 知道了", async (t) => {
+  const page = await openPage(t);
+  const before = await saved(page);
+  await page.evaluate(() => (window.__holdContext = true));
+  await page
+    .locator("#media-input")
+    .setInputFiles(fileURLToPath(new URL("./fixtures/static-tone.wav", import.meta.url)));
+  await page.waitForFunction(() => typeof window.__releaseContext === "function");
+  await oldAction(page, "new").click();
+  const dialog = page.locator("#plan-dialog[open]");
+  await dialog.waitFor();
+  assert.match(await dialog.textContent(), /素材正在导入/);
+  assert.equal(await dialog.getByRole("button", { name: "仍然新建" }).count(), 0);
+  const ok = dialog.getByRole("button", { name: "知道了", exact: true });
+  assert.equal(await ok.evaluate((node) => node === document.activeElement), true);
+  const labelledBy = await dialog.getAttribute("aria-labelledby");
+  assert.equal(await page.locator(`#${labelledBy}`).evaluate((node) => node.tagName), "H2");
+  await ok.click();
+  assert.equal(await page.locator("#plan-dialog[open]").count(), 0);
+  assert.equal((await saved(page)).id, before.id);
+  await page.evaluate(() => {
+    window.__holdContext = false;
+    window.__releaseContext();
+  });
 });

@@ -1615,20 +1615,34 @@ test("migrated overlay trim preserves the source offset without rippling a later
 
 test("dragging the last main-track clip right in magnetic mode explains why nothing moved", async (t) => {
   const page = await fixture(t, { magnetic: true, clips: magneticClips });
+  const notice = page.locator(".et-notice");
+  // One persistent live region: screen readers hear its text change.
+  assert.equal(await notice.count(), 1);
+  assert.equal(await notice.getAttribute("role"), "status");
+  assert.equal(await notice.textContent(), "");
+  await notice.evaluate((node) => (window.__noticeNode = node));
   const before = (await state(page)).document;
   await drag(page, "c", 200);
   const after = await state(page);
   assert.deepEqual(after.errors, []);
   assert.deepEqual(content(after.document), content(before));
   assert.equal(after.applied.length, 0);
-  const notice = page.locator(".et-notice");
-  await notice.waitFor();
   assert.match(await notice.textContent(), /磁吸/);
   assert.match(await notice.textContent(), /自由/);
-  assert.equal(await notice.getAttribute("role"), "status");
+  assert.equal(await notice.evaluate((node) => node === window.__noticeNode), true);
   // A later real edit clears the explanation.
   await drag(page, "a", 256);
-  assert.equal(await page.locator(".et-notice").count(), 0);
+  assert.equal(await notice.textContent(), "");
+  assert.equal(await notice.evaluate((node) => node === window.__noticeNode), true);
+});
+
+test("the magnetic layout toggle says why it is unavailable without a picture track", async (t) => {
+  const page = await fixture(t, { tracks: ["audio", "text"], clips: [] });
+  const magnetic = page
+    .getByRole("group", { name: "时间线模式", exact: true })
+    .getByRole("button", { name: "磁吸", exact: true });
+  assert.equal(await magnetic.isDisabled(), true);
+  assert.match(await magnetic.getAttribute("title"), /还没有画面轨/);
 });
 
 test("the timeline toolbar switches between magnetic and free layout with the shared planner", async (t) => {
@@ -1666,23 +1680,52 @@ test("the timeline toolbar switches between magnetic and free layout with the sh
   assert.equal(findStateClip(after, "c").start, 480000, "Free mode keeps positions");
 });
 
-test("disabled timeline tools say what they need", async (t) => {
+test("disabled timeline tools say what they need, also to keyboard and screen-reader users", async (t) => {
   const page = await fixture(t);
-  const title = (name) =>
+  const describe = (name) =>
     page.locator(`[data-et-action="${name}"]`).evaluate((node) => ({
       disabled: node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
       title: node.title,
+      reason: node.getAttribute("aria-describedby")
+        ? document.getElementById(node.getAttribute("aria-describedby"))?.textContent
+        : undefined,
     }));
-  assert.deepEqual(await title("split"), { disabled: true, title: "切分 · S（先选择一个片段）" });
-  assert.match((await title("delete")).title, /先选择片段/);
-  assert.match((await title("paste")).title, /先复制片段/);
-  assert.match((await title("group")).title, /至少选择两个片段/);
+  // Split and delete stay focusable so their reason is announced.
+  assert.deepEqual(await describe("split"), {
+    disabled: false,
+    ariaDisabled: "true",
+    title: "切分 · S（先选择一个片段）",
+    reason: "先选择一个片段",
+  });
+  assert.deepEqual(await describe("delete"), {
+    disabled: false,
+    ariaDisabled: "true",
+    title: "删除 · ⌫（先选择片段）",
+    reason: "先选择片段",
+  });
+  await page.locator('[data-et-action="split"]').focus();
+  await page.keyboard.press("Enter");
+  await page.locator('[data-et-action="split"]').dispatchEvent("click");
+  await settle(page);
+  assert.deepEqual((await state(page)).errors, [], "An unavailable action does nothing");
+  assert.equal((await state(page)).applied.length, 0);
+  assert.match((await describe("paste")).title, /先复制片段/);
+  assert.match((await describe("group")).title, /至少选择两个片段/);
   await clickClip(page, "a");
   await clickClip(page, "b", "Shift");
-  assert.deepEqual(await title("split"), {
-    disabled: true,
-    title: "切分 · S（一次只能切分一个片段）",
-  });
-  assert.equal((await title("group")).disabled, false);
-  assert.equal((await title("group")).title, "分组 · ⌘/Ctrl G");
+  const split = await describe("split");
+  assert.equal(split.ariaDisabled, "true");
+  assert.equal(split.reason, "一次只能切分一个片段");
+  assert.equal((await describe("delete")).ariaDisabled, null);
+  assert.equal((await describe("group")).disabled, false);
+  assert.equal((await describe("group")).title, "分组 · ⌘/Ctrl G");
+});
+
+test("track creation buttons are named the same way", async (t) => {
+  const page = await fixture(t);
+  assert.deepEqual(
+    await page.getByRole("group", { name: "添加轨道", exact: true }).locator("button").allTextContents(),
+    ["新建画面轨", "新建声音轨", "新建文字轨"],
+  );
 });

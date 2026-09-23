@@ -118,6 +118,7 @@ import { createCaptionServices } from "./editor/caption-services";
 import { EditorCaptionsUI } from "./editor/captions-ui";
 import { exportEditorSrt, listCaptions } from "./editor/captions";
 import { planProjectRename } from "./editor/sequence-edits";
+import { setAnnouncedDisabled, unavailable } from "./disabled-reason";
 import type { NarrationState } from "./narration";
 import { createAudioSeparationBridge } from "./editor/separation-bridge";
 import {
@@ -1696,9 +1697,13 @@ function renameProject(name: string): void {
   synchronizeLegacyView();
   render();
 }
-/** Work that a project switch would interrupt or leave unsaved, in plain words. */
-function newProjectRisks(): string[] {
-  const risks: string[] = [];
+/**
+ * Work that a project switch would interrupt or leave unsaved, in plain words. Blocking work
+ * makes the switch refuse outright; warnings only need the person's confirmation.
+ */
+function newProjectRisks(): { blocking: string[]; warnings: string[] } {
+  const risks: string[] = [],
+    blocking: string[] = [];
   // An autosave still in flight is finished by the switch itself; only a failed save is at risk.
   const saveState = editorSession?.getState().saveState;
   if (saveState === "failed" || saveState === "conflict")
@@ -1716,38 +1721,50 @@ function newProjectRisks(): string[] {
     risks.push(`后台还有 ${production.pendingJobs.length} 个制作任务在运行。`);
   const exports = editorExportJobs?.activeCount ?? 0;
   if (exports) risks.push(`有 ${exports} 个视频正在后台导出，导出会继续完成。`);
-  if (mediaImporting) risks.push("素材正在导入，请等导入完成后再新建。");
-  if (exporting) risks.push("视频正在导出，请等导出完成后再新建。");
-  if (recording.busy || recording.hasUnsavedResult) risks.push("录制还没有保存。");
-  return risks;
+  if (mediaImporting) blocking.push("素材正在导入，请等导入完成后再新建。");
+  if (exporting) blocking.push("视频正在导出，请等导出完成或取消后再新建。");
+  if (recording.busy || recording.hasUnsavedResult)
+    blocking.push("录制还没有结束或保存，请先保存或丢弃这次录制。");
+  return { blocking, warnings: risks };
+}
+/** Name an in-page dialog by its first heading, open it, and focus the safe choice. */
+function openDialog(dialog: HTMLDialogElement, focus?: string): void {
+  const heading = dialog.querySelector("h2");
+  if (heading) {
+    heading.id ||= `${dialog.id || "dialog"}-title`;
+    dialog.setAttribute("aria-labelledby", heading.id);
+  } else dialog.removeAttribute("aria-labelledby");
+  dialog.showModal();
+  if (focus) dialog.querySelector<HTMLElement>(focus)?.focus();
 }
 /** Switch at once when nothing is at risk; otherwise ask inside the page first. */
 async function requestNewProject(): Promise<void> {
-  const risks = newProjectRisks();
-  if (!risks.length) {
+  const { blocking, warnings } = newProjectRisks();
+  if (!blocking.length && !warnings.length) {
     await replace(createProject());
     return;
   }
   const dialog = $<HTMLDialogElement>("#plan-dialog");
+  const blocked = blocking.length > 0;
   dialog.innerHTML = html`<div class="dialog-heading">
-      <h2>新建工程？</h2>
+      <h2>${blocked ? "暂时不能新建工程" : "新建工程？"}</h2>
       ${tool("close-dialog", "关闭", "close")}
     </div>
     <ul class="new-project-risks">
-      ${risks.map((risk) => `<li>${esc(risk)}</li>`).join("")}
+      ${[...blocking, ...warnings].map((risk) => `<li>${esc(risk)}</li>`).join("")}
     </ul>
     <p class="section-description">
-      继续新建会先保存并归档当前工程，之后可在“最近工程”里重新打开；保存没有成功时会留在当前工程。
+      ${blocked
+        ? "当前工程保持不变。完成上面的事项后，再点“新建工程”。"
+        : "继续新建会先保存并归档当前工程，之后可在“最近工程”里重新打开；保存没有成功时会留在当前工程。"}
     </p>
     <div class="dialog-actions">
-      ${button("close-dialog", "取消", undefined, "quiet")}${button(
-        "confirm-new-project",
-        "仍然新建",
-        "plus",
-        "primary",
-      )}
+      ${blocked
+        ? button("close-dialog", "知道了", undefined, "primary")
+        : button("close-dialog", "取消", undefined, "quiet") +
+          button("confirm-new-project", "仍然新建", "plus", "primary")}
     </div>`;
-  dialog.showModal();
+  openDialog(dialog, '.dialog-actions [data-action="close-dialog"]');
 }
 /** Optional upgrade for one old demo; canonical migration already validates the real document.
  * A later v1 dialect (0.5.16) must never be rejected by this older demo-only reader. */
@@ -2421,7 +2438,7 @@ function showMediaDeletion(ids: string[]): void {
         "danger",
       )}
     </div>`;
-  dialog.showModal();
+  openDialog(dialog);
 }
 
 async function importReferencedMedia(): Promise<void> {
@@ -3234,7 +3251,7 @@ async function exportDialog(): Promise<void> {
         "primary",
       )}
     </div>`;
-  dialog.showModal();
+  openDialog(dialog);
 }
 
 async function record(): Promise<void> {
@@ -3502,7 +3519,8 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     case "confirm-new-project":
       $<HTMLDialogElement>("#plan-dialog").close();
-      await replace(createProject());
+      if (newProjectRisks().blocking.length) await requestNewProject();
+      else await replace(createProject());
       break;
     case "projects": {
       if (!editorStorage) throw new Error("工程存储尚未恢复");
@@ -3536,7 +3554,7 @@ async function action(name: string, id?: string): Promise<void> {
           if (target) void replace(target).catch(fail);
         }),
       );
-      dialog.showModal();
+      openDialog(dialog);
       break;
     }
     case "open-project":
@@ -3643,7 +3661,7 @@ async function action(name: string, id?: string): Promise<void> {
           placeholder='{"title":"精简版","explanation":"","editor":{"steps":[]}}'
         ></textarea>
         <div class="dialog-actions">${button("load-plan", "检查方案", "check", "primary")}</div>`;
-      dialog.showModal();
+      openDialog(dialog);
       break;
     }
     case "load-plan":
@@ -3781,7 +3799,7 @@ async function action(name: string, id?: string): Promise<void> {
         <p>输入文字和编辑数字时，剪辑快捷键暂停生效。粗剪页使用自己的 I / O 标记快捷键。</p>`;
       studio.append(dialog);
       dialog.addEventListener("close", () => dialog.remove(), { once: true });
-      dialog.showModal();
+      openDialog(dialog);
       break;
     }
     case "start":
@@ -4035,6 +4053,8 @@ studio.addEventListener("click", (event) => {
     return;
   }
   if (buttonTarget) {
+    // A focusable but unavailable action explains itself through its description instead.
+    if (unavailable(buttonTarget)) return;
     void action(buttonTarget.dataset.action!, buttonTarget.dataset.id).catch(fail);
     return;
   }
@@ -5842,10 +5862,12 @@ async function boot(): Promise<void> {
         );
         if (exportButton) {
           const doc = editorSession!.read();
-          exportButton.disabled = !doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips
-            .length;
-          if (exportButton.disabled) exportButton.title = "时间轴上还没有片段，先加入素材再导出";
-          else exportButton.removeAttribute("title");
+          setAnnouncedDisabled(
+            exportButton,
+            "export-reason",
+            !doc.sequences.find((s) => s.id === doc.activeSequenceId)?.clips.length,
+            "时间轴上还没有片段，先加入素材再导出",
+          );
         }
         if (previousAssets !== JSON.stringify(project.assets)) {
           if (!pendingMediaDeletion) refreshMediaLibrary();

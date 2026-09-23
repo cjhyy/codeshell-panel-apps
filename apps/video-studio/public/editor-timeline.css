@@ -57,12 +57,13 @@
   cursor: pointer;
   box-shadow: none;
 }
-.et-toolbar button:hover:not(:disabled),
+.et-toolbar button:hover:not(:disabled, [aria-disabled="true"]),
 .et-add button:hover:not(:disabled) {
   background: #35363a;
   color: #f3f4f6;
 }
 .et-toolbar button:disabled,
+.et-toolbar button[aria-disabled="true"],
 .et-track-head button:disabled {
   color: #5c5f65;
   opacity: 0.65;
@@ -169,6 +170,13 @@
   line-height: 1.5;
   white-space: normal;
   pointer-events: none;
+}
+/* The live region stays mounted while empty; it just takes no space or paint. */
+.et-notice:empty {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
 }
 .et-spacer {
   flex: 1 1 0;

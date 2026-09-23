@@ -1,5 +1,6 @@
 import type { Project } from "./model";
 import { escapeHtml as esc, html, icon } from "./icons";
+import { announcedDisabled, setAnnouncedDisabled } from "./disabled-reason";
 
 interface NarrationPanelOptions {
   busy: boolean;
@@ -17,8 +18,14 @@ function action(
   disabled: boolean,
   primary = false,
   reason?: string,
+  announce = false,
 ): string {
-  return `<button type="button" data-action="${name}" class="${primary ? "primary" : "quiet"} full" ${disabled ? "disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}>${icon(primary ? "check" : "volume")}<span>${esc(label)}</span></button>`;
+  // Important steps stay focusable while unavailable so their reason is announced.
+  const soft = announce ? announcedDisabled(`${name}-reason`, disabled, reason ?? "") : undefined;
+  const state = soft?.attributes
+    ? soft.attributes
+    : `${disabled ? " disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}`;
+  return `<button type="button" data-action="${name}" class="${primary ? "primary" : "quiet"} full"${state}>${icon(primary ? "check" : "volume")}<span>${esc(label)}</span></button>${soft?.note ?? ""}`;
 }
 const BUSY = "正在处理其他制作任务，完成后再试";
 const NEEDS_DESKTOP = "需要在 CodeShell 桌面面板中打开，并连接持久媒体服务";
@@ -85,7 +92,8 @@ export function syncNarrationDraftUI(
   };
   disable("save-narration-script", busy || !changed || !text.trim(), why.save);
   disable("approve-draft", locked || !text.trim() || !hasPicture, why.approve);
-  disable("record-narration", locked, why.record);
+  const record = panel.querySelector<HTMLButtonElement>('[data-action="record-narration"]');
+  if (record) setAnnouncedDisabled(record, "record-narration-reason", locked, why.record);
   disable("bind-narration-recording", locked || !hasRecording, why.bind);
   disable("align-narration", locked || panel.dataset.persistent !== "true", why.align);
   const script = panel.querySelector<HTMLTextAreaElement>("#narration-script");
@@ -195,6 +203,7 @@ ${esc(text)}</textarea>
               locked,
               state.phase === "approved",
               why.record,
+              true,
             )
           : ""
       }

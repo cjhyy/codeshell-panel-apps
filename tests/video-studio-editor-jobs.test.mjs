@@ -698,3 +698,14 @@ test("finishing a watched export tells the panel once, so its readiness refreshe
     { id: "running", status: "succeeded" },
   ]);
 });
+
+test("an export first seen already finished also refreshes readiness, once", async (t) => {
+  const page = await fixture(t, [job("fast", 1)]);
+  await page.evaluate(() => fixture.track("fast"));
+  await settle(page);
+  await page.evaluate(() => fixture.track("fast"));
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [
+    { id: "fast", status: "succeeded" },
+  ]);
+});

@@ -12,6 +12,7 @@ import { TICKS_PER_SECOND, type Tick, type TimeRange } from "./editor/time";
 import type { EditorDocument } from "./editor/types";
 import { escapeHtml as esc, html } from "./icons";
 import { button } from "./views";
+import { setAnnouncedDisabled } from "./disabled-reason";
 
 export interface SpokenContext {
   /** The authoritative editor document; null until the project is restored. */
@@ -264,11 +265,24 @@ export function createSpokenUI(context: SpokenContext) {
     if (!selected.size) return "勾选后才会删减；原素材始终保留。";
     return `已选 ${selected.size} 项，预计删去 ${seconds(selectedLength())} 秒`;
   }
+  function applyReason() {
+    return pending
+      ? "请等待当前口播操作完成"
+      : !fresh()
+        ? "工程已更新，请重新读取分析"
+        : "先勾选要删减的候选";
+  }
   function updateSelection() {
     const status = document.querySelector("#spoken-selection");
     if (status) status.textContent = selectionText();
     const apply = document.querySelector<HTMLButtonElement>('[data-action="spoken-apply"]');
-    if (apply) apply.disabled = !!pending || !fresh() || !selected.size;
+    if (apply)
+      setAnnouncedDisabled(
+        apply,
+        "spoken-apply-reason",
+        !!pending || !fresh() || !selected.size,
+        applyReason(),
+      );
   }
   function input(target: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean {
     if (target.id === "spoken-asset") {
@@ -564,7 +578,7 @@ export function createSpokenUI(context: SpokenContext) {
         .join(
           "",
         )}</div>${items.length > visible ? button("spoken-more", `继续显示（还有 ${items.length - visible} 项）`, undefined, "quiet full") : ""}
-      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播及与它关联的轨道：这些轨道上同一时刻的其他片段也会一起剪去；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size, locked ? waiting : !valid ? stale : "先勾选要删减的候选")}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
+      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播及与它关联的轨道：这些轨道上同一时刻的其他片段也会一起剪去；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size, applyReason(), true)}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
         : ""}
       ${button(
         "spoken-undo",

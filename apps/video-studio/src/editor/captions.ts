@@ -355,7 +355,14 @@ function captionTrack(
     : undefined;
   if (options.trackId && (!requested || requested.kind !== "text" || requested.locked))
     throw new Error("请选择未锁定的字幕轨道");
-  const track = requested ?? seq.tracks.find((track) => track.kind === "text" && !track.locked);
+  // Subtitles join the track that already holds subtitles; a title track is never used for them.
+  const holds = (trackId: string, role: "title" | "subtitle") =>
+    seq.clips.some((clip) => clip.trackId === trackId && clip.kind === "text" && clip.role === role);
+  const usable = seq.tracks.filter((track) => track.kind === "text" && !track.locked);
+  const track =
+    requested ??
+    usable.find((track) => holds(track.id, "subtitle")) ??
+    usable.find((track) => !holds(track.id, "title"));
   if (track) return { id: track.id, operations: [] };
   const id = (options.idFactory ?? uniqueId)();
   return {

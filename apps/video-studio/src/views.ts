@@ -1,5 +1,6 @@
 import { formatTime, timelineClips, timelineDuration, type Project, type Asset } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
+import { announcedDisabled } from "./disabled-reason";
 import { renderWorkflowSummary } from "./workflow";
 import { renderNarrationPanel } from "./narration-ui";
 import type { PanelTask } from "./host";
@@ -80,7 +81,10 @@ export interface ViewState {
   readonly inspectorIssue?: { readonly reason?: string; readonly volume?: string };
 }
 
-/** A disabled control may carry the plain reason as its tooltip, so people know what it needs. */
+/**
+ * A disabled control may carry the plain reason as its tooltip, so people know what it needs.
+ * Important actions pass `announce`: they stay focusable with aria-disabled and a described reason.
+ */
 export const button = (
   action: string,
   text: string,
@@ -88,8 +92,14 @@ export const button = (
   cls = "",
   disabled = false,
   reason?: string,
-) =>
-  `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
+  announce = false,
+) => {
+  if (announce && disabled && reason) {
+    const soft = announcedDisabled(`${action}-reason`, true, reason);
+    return `<button type="button" data-action="${action}" class="${cls}"${soft.attributes}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>${soft.note}`;
+  }
+  return `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
+};
 export const tool = (action: string, title: string, glyph: string, disabled = false) =>
   `<button type="button" data-action="${action}" class="icon-button" title="${title}" aria-label="${title}" ${disabled ? "disabled" : ""}>${icon(glyph)}</button>`;
 export const seconds = (value: number) => (value / 30).toFixed(2);
@@ -179,6 +189,7 @@ export function createViews(state: ViewState) {
             "primary",
             !(state.editorClipCount ?? project.clips.length),
             "时间轴上还没有片段，先加入素材再导出",
+            true,
           )}
         </div>
       </header>
@@ -375,6 +386,7 @@ ${esc(aiPrompt)}</textarea
           "primary full",
           !persistent || narrationBusy,
           !persistent ? needsDesktop : busyReason,
+          true,
         )}
         <p class="capability-note">先出可审阅的草稿。等你确认、录好口播，再用真实声音完成视频。</p>
         ${renderNarrationPanel(project, {

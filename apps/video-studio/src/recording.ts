@@ -41,8 +41,18 @@ const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_SECONDS = 20 * 60;
 export const recordingLimits = { maxBytes: MAX_BYTES, maxSeconds: MAX_SECONDS };
 
-export function captureError(error: unknown, mode?: RecordingMode): string {
+const FORMAT_UNSUPPORTED = "当前环境不支持录制所需的格式，请使用新版 CodeShell 桌面版或 Chromium 浏览器。";
+/**
+ * Plain wording for capture failures. `stage` tells device access (getUserMedia) from encoding:
+ * NotSupported means "no usable device" only when opening a device failed.
+ */
+export function captureError(
+  error: unknown,
+  mode?: RecordingMode,
+  stage: "device" | "encode" = "device",
+): string {
   const name = error instanceof DOMException ? error.name : "";
+  if (stage === "encode" && name === "NotSupportedError") return FORMAT_UNSUPPORTED;
   if (name === "NotAllowedError" || name === "PermissionDeniedError") {
     const device =
       mode === "microphone" ? "麦克风" : mode === "camera" ? "麦克风和摄像头" : "麦克风或屏幕录制";
@@ -53,8 +63,9 @@ export function captureError(error: unknown, mode?: RecordingMode): string {
   if (
     name === "NotFoundError" ||
     name === "DevicesNotFoundError" ||
-    name === "NotSupportedError" ||
-    (error instanceof Error && /^not supported\.?$/i.test(error.message.trim()))
+    (stage === "device" &&
+      (name === "NotSupportedError" ||
+        (error instanceof Error && /^not supported\.?$/i.test(error.message.trim()))))
   )
     return "未找到可用的麦克风或摄像头，或当前环境不支持录制。请连接设备并刷新列表，或在 CodeShell 桌面版中录制。";
   if (name === "NotReadableError" || name === "TrackStartError")
@@ -79,14 +90,13 @@ export async function listRecordingDevices(): Promise<RecordingDevices> {
   return { microphones: list("audioinput", "麦克风"), cameras: list("videoinput", "摄像头") };
 }
 function preferredMime(kind: "audio" | "video"): string {
-  if (typeof MediaRecorder === "undefined")
-    throw new Error("当前环境不支持录制编码，请使用新版 CodeShell 或 Chromium 浏览器。");
+  if (typeof MediaRecorder === "undefined") throw new Error(FORMAT_UNSUPPORTED);
   const candidates =
     kind === "audio"
       ? ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]
       : ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp9,opus", "video/webm", "video/mp4"];
   const mime = candidates.find((value) => MediaRecorder.isTypeSupported(value));
-  if (!mime) throw new Error("没有可用的录制编码器，请更换浏览器后重试。");
+  if (!mime) throw new Error(FORMAT_UNSUPPORTED);
   return mime;
 }
 
@@ -344,7 +354,7 @@ export class CaptureRecorder {
       this.recorder = null;
       this.cleanupTracks();
       this.phase = "error";
-      this.error = captureError(error);
+      this.error = captureError(error, undefined, "encode");
       this.emit();
       throw new Error(this.error);
     }
@@ -379,7 +389,7 @@ export class CaptureRecorder {
       if (this.recorder.state !== "inactive") this.recorder.stop();
       else this.complete();
     } catch (error) {
-      this.error = captureError(error);
+      this.error = captureError(error, undefined, "encode");
       this.complete();
     }
     this.cleanupTracks();

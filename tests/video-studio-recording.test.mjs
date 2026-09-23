@@ -594,3 +594,25 @@ test("a missing device or unsupported recording environment is explained in Chin
   }
   await p.close();
 });
+
+test("an unsupported recording format is not reported as a missing device", { timeout: 20000 }, async () => {
+  const p = await page();
+  await p.evaluate(() => {
+    const Original = window.MediaRecorder;
+    window.MediaRecorder = class extends Original {
+      constructor() {
+        throw new DOMException("Not supported", "NotSupportedError");
+      }
+      static isTypeSupported() {
+        return true;
+      }
+    };
+  });
+  await click(p, "3 秒后开始录制");
+  const alert = p.getByRole("alert");
+  await alert.waitFor({ timeout: 8000 });
+  const text = await alert.textContent();
+  assert.match(text, /当前环境不支持录制所需的格式/);
+  assert.doesNotMatch(text, /未找到可用的麦克风/);
+  await p.close();
+});

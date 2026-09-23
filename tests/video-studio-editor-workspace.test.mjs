@@ -1675,3 +1675,28 @@ test("changing only the selected marker invalidates a detached form without requ
   assert.deepEqual(await documentState(page), doc);
   assert.match((await page.evaluate(() => fixture.errors)).at(-1), /标记选择已变化/);
 });
+
+test("material + near the 24-hour limit explains it is too long and changes nothing", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() =>
+    fixture.dispatch(
+      [
+        {
+          type: "clip.update",
+          sequenceId: "main",
+          clipId: "a",
+          patch: { start: 24 * 3600 * 240000 - 5 * 240000 },
+        },
+      ],
+      "移到末尾",
+    ),
+  );
+  await settle(page);
+  const before = await documentState(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), [
+    "Error: 加入素材后超出时长上限（24 小时）",
+  ]);
+});
