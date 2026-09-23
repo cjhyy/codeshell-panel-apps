@@ -111,6 +111,8 @@ export function planTextPlacement(
       item.kind === "text" &&
       !item.locked &&
       !holdsRole(sequence, item.id, "subtitle") &&
+      // An empty track named 字幕 stays for subtitles, so they never need a second 字幕 track.
+      (holdsRole(sequence, item.id, "title") || !/^字幕(?: \d+)?$/.test(item.name)) &&
       !overlaps(sequence, item.id, start, duration),
   );
   const track =

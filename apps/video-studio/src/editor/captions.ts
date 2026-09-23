@@ -54,6 +54,13 @@ export interface CaptionPlanOptions {
   sourceFilter?: (source: CaptionSource) => boolean;
   /** Deterministic IDs for a coordinator-owned caption set (segment and range are 0-based). */
   captionId?: (source: CaptionSource, segmentIndex: number, rangeIndex: number) => string;
+  /**
+   * Skip new subtitles that share a moment with an existing subtitle on the target track, since
+   * one would hide the other; the plan's notices say how many. The 字幕 page opts in.
+   */
+  avoidOverlaps?: boolean;
+  /** Existing subtitles that never block a new one, e.g. temporary narration captions. */
+  overlapExempt?: ReadonlySet<string>;
 }
 const MAX_RANGES = 100000,
   MAX_CAPTIONS = 2000;
@@ -368,9 +375,41 @@ function captionTrack(
   const id = (options.idFactory ?? uniqueId)();
   return {
     id,
-    operations: [{ type: "track.add", sequenceId: seq.id, track: createTrack(id, "text", "字幕") }],
+    operations: [
+      { type: "track.add", sequenceId: seq.id, track: createTrack(id, "text", subtitleTrackName(seq)) },
+    ],
   };
 }
+/** 字幕, or 字幕 2, 字幕 3… when a track already carries that name. */
+function subtitleTrackName(seq: EditorSequence): string {
+  const names = new Set(seq.tracks.map((track) => track.name));
+  if (!names.has("字幕")) return "字幕";
+  let index = 2;
+  while (names.has(`字幕 ${index}`)) index++;
+  return `字幕 ${index}`;
+}
+/** Whether an existing subtitle on the track shares any moment with [start, end). */
+function coversSubtitle(
+  seq: EditorSequence,
+  trackId: string,
+  start: Tick,
+  end: Tick,
+  options: CaptionPlanOptions,
+): boolean {
+  return (
+    !!options.avoidOverlaps &&
+    seq.clips.some(
+      (clip) =>
+        clip.trackId === trackId &&
+        isSubtitleClip(clip) &&
+        !options.overlapExempt?.has(clip.id) &&
+        clip.start < end &&
+        clip.start + clip.duration > start,
+    )
+  );
+}
+const overlapNotice = (count: number) =>
+  `${count} 条字幕与字幕轨上已有字幕时间重叠，已跳过以免互相遮挡；如需替换，请先删除或调整旧字幕`;
 /**
  * The look for new subtitles: the preset every existing subtitle shows, else the project's
  * recorded preset, else 经典. Captions from every path then match the 字幕 page choice.
@@ -431,6 +470,7 @@ export function planTranscriptCaptions(
       (!options.sourceFilter || options.sourceFilter(source)),
   );
   const result: CaptionPlan = { sequenceId, operations: [], added: 0, skipped: 0, notices: [] };
+  let overlapping = 0;
   const existing = new Map(seq.clips.map((clip) => [clip.id, clip])),
     generated = new Set<string>(),
     displayed = new Set(
@@ -526,6 +566,12 @@ export function planTranscriptCaptions(
           result.skipped++;
           continue;
         }
+        // Two subtitles at one moment on one track hide each other; keep the existing one.
+        if (coversSubtitle(seq, track.id, range.start, range.end, options)) {
+          result.skipped++;
+          overlapping++;
+          continue;
+        }
         displayed.add(key);
         const clip = textClip(id, track.id, range.start, range.end, content, look),
           owner = source.lane.stages[0]!;
@@ -551,6 +597,7 @@ export function planTranscriptCaptions(
       }
     }
   }
+  if (overlapping) result.notices.push(overlapNotice(overlapping));
   if (result.added) result.operations.unshift(...track.operations);
   return finish(doc, result);
 }
@@ -602,11 +649,17 @@ export function planSrtImport(
         .filter(isSubtitleClip)
         .map((clip) => JSON.stringify([clip.start, clip.duration, clip.text])),
     );
-  let skipped = 0;
+  let skipped = 0,
+    overlapping = 0;
   for (const cue of cues) {
     const key = JSON.stringify([cue.start, cue.end - cue.start, cue.text]);
     if (keys.has(key)) {
       skipped++;
+      continue;
+    }
+    if (coversSubtitle(seq, track.id, cue.start, cue.end, options)) {
+      skipped++;
+      overlapping++;
       continue;
     }
     keys.add(key);
@@ -629,7 +682,7 @@ export function planSrtImport(
     operations,
     added: cues.length - skipped,
     skipped,
-    notices: [],
+    notices: overlapping ? [overlapNotice(overlapping)] : [],
   });
 }
 export function exportEditorSrt(

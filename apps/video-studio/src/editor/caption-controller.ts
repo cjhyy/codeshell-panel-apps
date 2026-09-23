@@ -19,6 +19,15 @@ import {
   type CaptionTranscriptSegment,
 } from "./captions";
 import { planCaptionPreset, type CaptionPreset } from "./caption-presets";
+import { narrationDraftClipIds, recordedNarrationClipIds } from "./narration-edits";
+
+/** Temporary narration captions: the narration workflow replaces them, so they never block. */
+function workflowCaptions(doc: EditorDocument, sequenceId: string): Set<string> {
+  return new Set([
+    ...narrationDraftClipIds(doc, sequenceId),
+    ...recordedNarrationClipIds(doc, sequenceId),
+  ]);
+}
 
 export interface CaptionControllerContext {
   session(): EditorSession;
@@ -348,6 +357,8 @@ export function createCaptionController(context: CaptionControllerContext) {
         const plan = planTranscriptCaptions(snapshot.document, options.sequenceId, transcripts, {
           ...options,
           idFactory: context.idFactory,
+          avoidOverlaps: true,
+          overlapExempt: workflowCaptions(snapshot.document, options.sequenceId),
         });
         if ([...transcripts.values()].every((segments) => !segments.length))
           plan.notices.push("所选素材没有识别到语音，未生成虚构字幕");
@@ -362,6 +373,8 @@ export function createCaptionController(context: CaptionControllerContext) {
           planSrtImport(running.snapshot.document, options.sequenceId, options.text, {
             trackId: options.trackId,
             idFactory: context.idFactory,
+            avoidOverlaps: true,
+            overlapExempt: workflowCaptions(running.snapshot.document, options.sequenceId),
           }),
           "导入 SRT 字幕",
         );

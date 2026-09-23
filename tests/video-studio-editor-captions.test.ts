@@ -1263,3 +1263,108 @@ test("new subtitles avoid a title track and join the track that already holds su
   const imported = applyEditorOperations(both, again.operations, both.revision);
   assert.equal(captions(imported).find((clip) => clip.text === "新字幕")?.trackId, "subs");
 });
+
+test("generated and imported subtitles never hide under existing ones on the same track", () => {
+  const imported = (() => {
+    const doc = fixture();
+    const plan = planSrtImport(doc, "main", "1\n00:00:02,500 --> 00:00:03,500\n导入的字幕\n", {
+      idFactory: () => "imported",
+      avoidOverlaps: true,
+    });
+    return applyEditorOperations(doc, plan.operations, doc.revision);
+  })();
+  // The transcript's 1–2 s phrase is free; its 2–3 s phrase would cover the imported cue.
+  const plan = planTranscriptCaptions(
+    imported,
+    "main",
+    new Map([
+      [
+        "voice",
+        [
+          { start: 1, end: 2, text: "你好" },
+          { start: 2, end: 3, text: "世界" },
+        ],
+      ],
+    ]),
+    { avoidOverlaps: true },
+  );
+  const after = applyEditorOperations(imported, plan.operations, imported.revision);
+  const subtitles = captions(after).filter((clip) => clip.role === "subtitle");
+  for (const a of subtitles)
+    for (const b of subtitles)
+      if (a !== b && a.trackId === b.trackId)
+        assert.ok(
+          a.start + a.duration <= b.start || b.start + b.duration <= a.start,
+          `${a.text} overlaps ${b.text}`,
+        );
+  assert.ok(subtitles.some((clip) => clip.text === "导入的字幕"));
+  assert.ok(subtitles.some((clip) => clip.text === "你好"));
+  assert.ok(plan.notices.some((notice) => /重叠/.test(notice)), plan.notices.join("\n"));
+  // Importing an SRT over generated captions reports the same way.
+  const srt = planSrtImport(after, "main", "1\n00:00:01,500 --> 00:00:02,200\n盖住\n", {
+    avoidOverlaps: true,
+  });
+  assert.equal(srt.added, 0);
+  assert.ok(srt.notices.some((notice) => /重叠/.test(notice)));
+});
+
+test("a new subtitle track gets a distinct name and an empty 字幕 track is not taken by titles", async () => {
+  const { planTextPlacement } = await import("../apps/video-studio/src/editor/placement");
+  const doc = fixture();
+  const seq = doc.sequences[0]!;
+  seq.tracks = seq.tracks.filter((track) => track.id !== "t");
+  seq.tracks.push(createTrack("subs", "text", "字幕"));
+  // 添加文字 leaves the empty subtitle track for subtitles.
+  const text = planTextPlacement(seq, 0, T, () => "titles");
+  assert.notEqual(text.trackId, "subs");
+  // When titles already sit on the track named 字幕, the new subtitle track is 字幕 2.
+  seq.clips.push({
+    id: "title",
+    kind: "text",
+    role: "title",
+    label: "标题",
+    trackId: "subs",
+    start: 0,
+    duration: T,
+    text: "标题",
+    style: defaultTextStyle(),
+    words: [],
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  });
+  const valid = validateEditorDocument(doc);
+  const operations = planAddCaption(valid, "main", {
+    start: 2 * T,
+    text: "新字幕",
+    idFactory: () => "caption-new",
+  });
+  const added = operations.find((operation) => operation.type === "track.add");
+  assert.ok(added && added.type === "track.add");
+  assert.equal(added.track.name, "字幕 2");
+});
+
+test("the 字幕 page reports and skips generated or imported subtitles that would hide existing ones", async (t) => {
+  const doc = fixture();
+  doc.sequences[0]!.clips.push({
+    id: "kept",
+    kind: "text",
+    role: "subtitle",
+    label: "字幕",
+    trackId: "t",
+    start: 2 * T,
+    duration: 2 * T,
+    text: "已有字幕",
+    style: defaultTextStyle(),
+    words: [],
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  });
+  const h = await harness(t, { prepare: async () => {} }, validateEditorDocument(doc));
+  await h.controller.generate({ sequenceId: "main", assetIds: ["voice"] });
+  const candidate = h.controller.getState().candidate!;
+  assert.equal(candidate.added, 0);
+  assert.ok(candidate.notices.some((notice) => /重叠/.test(notice)), candidate.notices.join("\n"));
+  h.controller.cancel?.();
+});
