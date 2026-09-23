@@ -78,6 +78,7 @@ import { syncNarrationDraftUI } from "./narration-ui";
 import { createMediaTaskBridge } from "./media-task-bridge";
 import { createExternalMediaAccess, isExternalMedia, isResourceId } from "./external-media";
 import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
+import type { EditReceipt } from "./editor/history";
 import { EditorSession, type SessionIdentity } from "./editor/session";
 import { EditorWorkspace } from "./editor/workspace-ui";
 import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
@@ -169,6 +170,7 @@ import {
   createEditorProposal,
   parseEditorProposal,
   planFifteenSecondDraft,
+  proposalActor,
   reviewEditorProposal,
   type EditorProposal,
   type EditorProposalReview,
@@ -2794,7 +2796,13 @@ async function applyProposal(value: EditorProposal): Promise<void> {
     throw new Error("工程已修改，这份方案已过期，请重新生成");
   }
   stop();
-  const saving = applyEditorDurable([...value.operations], value.identity, value.title);
+  const saving = applyEditorDurable(
+    [...value.operations],
+    value.identity,
+    value.title,
+    "editor",
+    proposalActor(value.origin),
+  );
   aiApplying = true;
   try {
     await saving;
@@ -5125,6 +5133,7 @@ async function applyEditorDurable(
   identity: SessionIdentity,
   label: string,
   origin: "editor" | "production" = "editor",
+  actor: EditReceipt["actor"] = "user",
 ) {
   // Only verified ProductionController completion callbacks select this origin.
   // Their own automatic task must be able to publish while the general editor stays locked.
@@ -5141,7 +5150,7 @@ async function applyEditorDurable(
   const before = editorSession.read(),
     after = applyEditorOperations(before, operations, before.revision);
   const guard = reconcileEditorProduction(before, after);
-  await editorSession.dispatchDurable([...operations, ...guard], identity, label);
+  await editorSession.dispatchDurable([...operations, ...guard], identity, label, actor);
 }
 function mountEditorCaptions(root: HTMLElement): void {
   if (!editorSession || editorCaptions) return;

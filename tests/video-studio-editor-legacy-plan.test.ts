@@ -17,6 +17,7 @@ import { translateLegacyOperations } from "../apps/video-studio/src/editor/legac
 import {
   parseEditorProposal,
   planFifteenSecondDraft,
+  proposalActor,
   reviewEditorProposal,
 } from "../apps/video-studio/src/editor/proposal";
 import type { SessionIdentity } from "../apps/video-studio/src/editor/session";
@@ -727,4 +728,11 @@ test("the 15 second draft cuts a transition after the limit and explains one acr
     () => planFifteenSecondDraft(shifted(395, 445), "sequence-main", idFactory),
     /画中画.*转场/,
   );
+});
+
+test("only the local 15-second rule is saved as a user edit; imported and AI plans are agent edits", () => {
+  assert.equal(proposalActor("local"), "user");
+  assert.equal(proposalActor("import"), "agent");
+  assert.equal(proposalActor("agent"), "agent");
+  assert.equal(proposalActor("automatic"), "agent");
 });

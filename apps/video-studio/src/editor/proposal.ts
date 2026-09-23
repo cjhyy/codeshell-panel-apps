@@ -1,5 +1,6 @@
 import { parseProposal } from "../host";
 import { compileEditorSteps } from "./agent-tools";
+import type { EditReceipt } from "./history";
 import { legacyOperationLabel, translateLegacyOperations } from "./legacy-plan";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { mainPictureTrack } from "./placement";
@@ -11,6 +12,13 @@ import { sequenceDuration } from "./validation";
 
 /** Where a reviewed plan came from. Automatic production keeps its own apply path. */
 export type ProposalOrigin = "local" | "import" | "agent" | "automatic";
+/**
+ * Who authored the saved edit: the local 15-second rule is the user's own action; imported, AI
+ * and automatic plans are agent edits even though the user approves them.
+ */
+export function proposalActor(origin: ProposalOrigin): EditReceipt["actor"] {
+  return origin === "local" ? "user" : "agent";
+}
 /** A plan compiled against one exact editor document version, waiting for the user. */
 export interface EditorProposal {
   title: string;
