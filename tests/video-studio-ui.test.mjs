@@ -291,6 +291,45 @@ test("timeline activation without pointer coordinates stays inside the selected 
   }
 });
 
+test("a background render keeps keyboard focus on a timeline clip, so Enter still selects it", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const project = await readProject(page);
+    const targets = [
+      ["data-clip", project.clips[1].id],
+      ["data-audio-clip", project.audioClips[0].id],
+    ];
+    for (const [attribute, id] of targets) {
+      const selector = `#studio [${attribute}="${id}"]`;
+      await page.locator(selector).waitFor({ state: "attached" });
+      await page.evaluate((selector) => {
+        const element = document.querySelector(selector);
+        element.dataset.beforeRender = "true";
+        element.focus();
+      }, selector);
+      // A background refresh (here: the panel becoming visible again) re-renders the timeline.
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      assert.equal(
+        await page.evaluate(
+          ({ selector }) => {
+            const active = document.activeElement;
+            return active?.matches(selector) && !active.dataset.beforeRender;
+          },
+          { selector },
+        ),
+        true,
+        `${attribute} focus moves to the re-rendered clip`,
+      );
+      await page.keyboard.press("Enter");
+      const state = await page.evaluate(() => window.__panelTools.read_video_project());
+      assert.equal(state.selectedClipId, id);
+    }
+  } finally {
+    await page.close();
+  }
+});
+
 test("late media loading preserves an unapplied source trim draft", async () => {
   const page = await pageWithBridge();
   let release;

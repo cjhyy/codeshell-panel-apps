@@ -2043,6 +2043,7 @@ function render(): void {
         }))
       : [];
   const restoreAssetFocus = rememberMediaAssetFocus();
+  const restoreClipFocus = rememberTimelineClipFocus();
   renderStudioShell();
   mountCaptionPanel();
   const exportToolbar = studio.querySelector<HTMLElement>(".topbar .header-actions");
@@ -2116,6 +2117,7 @@ function render(): void {
   if (workflowDetails && workflowOpen) workflowDetails.open = true;
   $(".library-panel").scrollTop = libraryScroll;
   restoreAssetFocus?.();
+  restoreClipFocus?.();
   observeVisibleThumbnails();
   draw();
   const version = ++seekVersion;
@@ -2195,6 +2197,35 @@ function rememberMediaAssetFocus(): (() => void) | undefined {
     );
     const target = (selector && next?.querySelector<HTMLElement>(selector)) || next;
     target?.focus({ preventScroll: true });
+  };
+}
+
+/** A background render replaces the frame timeline; keep keyboard focus on the same clip. */
+function rememberTimelineClipFocus(): (() => void) | undefined {
+  const active = document.activeElement;
+  if (
+    !(active instanceof HTMLElement) ||
+    !studio.contains(active) ||
+    renderedProjectId !== project.id ||
+    renderedGeneration !== generation
+  )
+    return;
+  const attribute = active.matches("[data-clip]")
+    ? "data-clip"
+    : active.matches("[data-audio-clip]")
+      ? "data-audio-clip"
+      : undefined;
+  const id = attribute && active.getAttribute(attribute);
+  if (!attribute || !id) return;
+  const projectId = project.id,
+    ownGeneration = generation;
+  return () => {
+    if (project.id !== projectId || generation !== ownGeneration) return;
+    // Another control may have taken focus during the render (e.g. a restored text editor).
+    if (document.activeElement && document.activeElement !== document.body) return;
+    studio
+      .querySelector<HTMLElement>(`[${attribute}="${CSS.escape(id)}"]`)
+      ?.focus({ preventScroll: true });
   };
 }
 
