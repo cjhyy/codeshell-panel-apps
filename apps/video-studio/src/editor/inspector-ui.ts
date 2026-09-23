@@ -16,6 +16,8 @@ export interface EditorInspectorContext {
   apply(operations: EditorOperation[], label: string): unknown | Promise<unknown>;
   time(): Tick;
   onError(error: Error): void;
+  /** Open the voiceover page to regenerate this clip's script and replace the clip in place. */
+  editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
 }
 interface Scope {
   revision: number;
@@ -779,7 +781,40 @@ export class EditorInspector {
     else if (this.tab === "mask") this.mask(panel, scope);
     else if (this.tab === "text") this.text(panel, scope);
     else this.audio(panel, scope);
+    this.voiceover(scope);
     this.root.scrollTop = scrollTop;
+  }
+  /** Generated speech keeps its script on any audio track; regenerating replaces this clip. */
+  private voiceover(scope: Scope): void {
+    const edit = this.context.editVoiceover,
+      clip = scope.clips.length === 1 ? scope.clips[0]! : undefined;
+    if (
+      !edit ||
+      clip?.kind !== "media" ||
+      scope.sequence.tracks.find((track) => track.id === clip.trackId)?.kind !== "audio"
+    )
+      return;
+    const speech = this.context.read().assets.find((asset) => asset.id === clip.assetId)
+      ?.metadata?.speech;
+    if (
+      !speech ||
+      typeof speech !== "object" ||
+      Array.isArray(speech) ||
+      typeof speech.text !== "string"
+    )
+      return;
+    const section = this.section(this.root, "配音文案");
+    section.classList.add("ei-voiceover");
+    section.append(el("p", "ei-speech-script", speech.text));
+    this.action(
+      section,
+      "修改文案 / 重新配音",
+      () => void Promise.resolve(edit(scope.sequence.id, clip.id)).catch((error) => {
+        this.report(error);
+        this.render();
+      }),
+      this.pending || this.locked(scope),
+    );
   }
   private visual(parent: HTMLElement, scope: Scope): void {
     const transform = this.section(

@@ -7,6 +7,7 @@ import {
   type CanonicalVoiceoverResult,
   type VoiceoverOrigin,
   type VoiceoverPublication,
+  type VoiceoverReplaceTarget,
 } from "./editor/voiceover-publication";
 import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
 
@@ -158,7 +159,6 @@ export interface AssetPublication {
     assetId: string;
     startFrame: number;
     volume: number;
-    replaceClip?: AudioClip;
   };
   enhancement?: { jobId: string; assetId: string; sourceMediaId: string; baseRevision: number };
   label?: string;
@@ -237,6 +237,8 @@ interface JobBinding {
   referenceResultId?: string;
   attachAudio?: boolean;
   startFrame?: number;
+  replaceTarget?: VoiceoverReplaceTarget;
+  /** Frame snapshot written by earlier versions; still restored and resolved by alias. */
   replaceClip?: AudioClip;
   assetId?: string;
   consumed?: boolean;
@@ -281,6 +283,8 @@ export interface ProductionCallbacks {
   /** Return the real generic editor-runtime render job for the complete canonical document. */
   renderCanonical?(project: Project, options?: CanonicalRenderOptions): Promise<RuntimeJob>;
   captureVoiceoverOrigin?(): VoiceoverOrigin;
+  /** True while the chosen editor clip is still exactly where the user selected it. */
+  verifyReplaceTarget?(target: VoiceoverReplaceTarget): boolean;
   publishVoiceover?(
     projectId: string,
     result: CanonicalVoiceoverResult,
@@ -488,6 +492,7 @@ function productionDocument(value: unknown): ProductionDocument {
             "attachAudio",
             "startFrame",
             "replaceClip",
+            "replaceTarget",
             "sourceRevision",
             "voiceoverOrigin",
             "referenceRange",
@@ -525,6 +530,46 @@ function productionDocument(value: unknown): ProductionDocument {
         !Number.isFinite(clip.volume) ||
         clip.volume < 0 ||
         clip.volume > 2 ||
+        raw.purpose !== "tts" ||
+        raw.attachAudio !== true
+      )
+        return bad();
+    }
+    if (raw.replaceTarget !== undefined) {
+      const target = raw.replaceTarget,
+        tick = (n: unknown) => Number.isSafeInteger(n) && Number(n) >= 0;
+      const points = plain(target) && plain(target.timeMap) ? target.timeMap.points : undefined;
+      if (
+        !plain(target) ||
+        Object.keys(target).some(
+          (key) =>
+            ![
+              "sequenceId",
+              "clipId",
+              "trackId",
+              "assetId",
+              "start",
+              "duration",
+              "timeMap",
+            ].includes(key),
+        ) ||
+        !["sequenceId", "clipId", "trackId", "assetId"].every((key) => text(target[key], 256)) ||
+        !tick(target.start) ||
+        !tick(target.duration) ||
+        Number(target.duration) < 1 ||
+        !plain(target.timeMap) ||
+        Object.keys(target.timeMap).some((key) => key !== "points") ||
+        !Array.isArray(points) ||
+        points.length < 2 ||
+        points.length > 100000 ||
+        !points.every(
+          (point) =>
+            plain(point) &&
+            Object.keys(point).every((key) => key === "time" || key === "source") &&
+            tick(point.time) &&
+            tick(point.source),
+        ) ||
+        raw.replaceClip !== undefined ||
         raw.purpose !== "tts" ||
         raw.attachAudio !== true
       )
@@ -1142,7 +1187,7 @@ export class ProductionController {
   }
   async createVoiceover(
     params: VoiceRequest,
-    placement?: { startFrame: number; attach: boolean; replaceClip?: AudioClip },
+    placement?: { startFrame: number; attach: boolean; replaceTarget?: VoiceoverReplaceTarget },
   ): Promise<MediaJob> {
     const host = this.requireHost();
     if (!this.status.tts?.available)
@@ -1177,18 +1222,14 @@ export class ProductionController {
     const placementBinding = placement
       ? { attachAudio: placement.attach, startFrame: placement.startFrame }
       : {};
-    const replaceClip = placement?.replaceClip ? structuredClone(placement.replaceClip) : undefined;
-    if (replaceClip) {
-      const current = currentProject.audioClips?.find((clip) => clip.id === replaceClip.id);
-      if (
-        !placement?.attach ||
-        !current ||
-        !(["id", "assetId", "inFrame", "outFrame", "startFrame", "volume"] as const).every(
-          (key) => current[key] === replaceClip[key],
-        )
-      )
-        throw new Error("原配音已被调整，请重新选择后再生成");
-    }
+    const replaceTarget = placement?.replaceTarget
+      ? structuredClone(placement.replaceTarget)
+      : undefined;
+    if (
+      replaceTarget &&
+      (!placement?.attach || !this.callbacks.verifyReplaceTarget?.(structuredClone(replaceTarget)))
+    )
+      throw new Error("原配音已被调整，请重新选择后再生成");
     let referenceAssetId: string | undefined;
     if (params.modelId === "qwen3-tts" || params.modelId === "audio8-tts") {
       if (params.voiceId !== undefined && params.voiceId !== "reference")
@@ -1224,7 +1265,7 @@ export class ProductionController {
       purpose: "tts",
       ...(voiceoverOrigin ? { voiceoverOrigin: structuredClone(voiceoverOrigin) } : {}),
       ...placementBinding,
-      ...(replaceClip ? { replaceClip } : {}),
+      ...(replaceTarget ? { replaceTarget } : {}),
     });
   }
   /** Admission is small and immediate; a receipt is never presented as a native MediaJob. */
@@ -1745,7 +1786,12 @@ export class ProductionController {
               ? {
                   placement: {
                     startFrame: binding.startFrame ?? 0,
-                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
+                    ...(binding.replaceTarget
+                      ? { replaceTarget: structuredClone(binding.replaceTarget) }
+                      : {}),
+                    ...(binding.replaceClip
+                      ? { replaceClip: structuredClone(binding.replaceClip) }
+                      : {}),
                   },
                 }
               : {}),
@@ -1753,14 +1799,14 @@ export class ProductionController {
         } else
           await this.callbacks.publishAssets(projectId, [asset], {
             label: "文字配音完成",
-            ...(binding.attachAudio
+            // Only the editor can replace a clip in place; without it the voice stays in the library.
+            ...(binding.attachAudio && !binding.replaceTarget && !binding.replaceClip
               ? {
                   audioPlacement: {
                     clipId: `voice-${job.id}`,
                     assetId: asset.id,
                     startFrame: binding.startFrame ?? 0,
                     volume: 1,
-                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
                   },
                 }
               : {}),

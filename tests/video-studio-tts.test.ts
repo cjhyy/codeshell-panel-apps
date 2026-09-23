@@ -10,8 +10,13 @@ import {
   ProductionController,
   type AssetPublication,
   type MediaJob,
+  type ProductionCallbacks,
   type ProductionStatus,
 } from "../apps/video-studio/src/production.ts";
+import type {
+  VoiceoverPublication,
+  VoiceoverReplaceTarget,
+} from "../apps/video-studio/src/editor/voiceover-publication.ts";
 import { publishProductionAssets } from "../apps/video-studio/src/voiceover.ts";
 import type { PanelBridge } from "../apps/video-studio/src/host.ts";
 
@@ -114,7 +119,11 @@ class TtsHost implements PanelBridge {
     throw new Error(`unexpected call: ${method}`);
   }
 }
-async function fixture(host = new TtsHost(), initial = project()) {
+async function fixture(
+  host = new TtsHost(),
+  initial = project(),
+  extra: Partial<ProductionCallbacks> = {},
+) {
   let current = initial;
   const published: { projectId: string; assets: Asset[]; options?: AssetPublication }[] = [];
   const notices: string[] = [];
@@ -128,6 +137,7 @@ async function fixture(host = new TtsHost(), initial = project()) {
       if (result.project) current = result.project;
       if (result.notice) notices.push(result.notice);
     },
+    ...extra,
   });
   controllers.add(controller);
   await controller.initialize();
@@ -292,67 +302,86 @@ test("selected model and delivery instructions reach synthesis and survive sourc
   );
 });
 
-test("replacement intent survives restart and retains the original position and gain", async () => {
-  const initial = project();
-  initial.assets.push({ id: "old-voice", name: "原旁白", kind: "audio", durationFrames: 180 });
-  initial.audioClips = [
-    {
-      id: "original",
-      assetId: "old-voice",
-      inFrame: 15,
-      outFrame: 165,
-      startFrame: 30,
-      volume: 1.5,
+const target = (): VoiceoverReplaceTarget => ({
+  sequenceId: "sequence-main",
+  clipId: "original",
+  trackId: "voice-track",
+  assetId: "old-voice",
+  start: 240_001,
+  duration: 1_200_777,
+  timeMap: {
+    points: [
+      { time: 0, source: 120_000 },
+      { time: 1_200_777, source: 1_320_777 },
+    ],
+  },
+});
+
+test("replacement intent survives restart and reaches the editor exactly as chosen", async () => {
+  const received: VoiceoverPublication[] = [];
+  const editor: Partial<ProductionCallbacks> = {
+    verifyReplaceTarget: () => true,
+    publishVoiceover: async (_projectId, _result, context) => {
+      received.push(structuredClone(context));
     },
-  ];
-  const first = await fixture(new TtsHost(), validateProject(initial));
+  };
+  const first = await fixture(new TtsHost(), project(), editor);
   const job = first.host.add("queued");
   first.host.handlers.set("media.tts", () => structuredClone(job));
-  const snapshot = structuredClone(first.current.audioClips![0]!);
+  const chosen = target();
   await first.controller.createVoiceover(
     { text: "修改后的旁白" },
-    { startFrame: 240, attach: true, replaceClip: snapshot },
+    { startFrame: 30, attach: true, replaceTarget: chosen },
   );
-  assert.deepEqual(binding(first.host, job.id).replaceClip, snapshot);
-  snapshot.volume = 0.1;
-  assert.equal(binding(first.host, job.id).replaceClip.volume, 1.5);
+  assert.deepEqual(binding(first.host, job.id).replaceTarget, target());
+  chosen.start = 0;
+  assert.equal(binding(first.host, job.id).replaceTarget.start, 240_001);
   first.controller.dispose();
-  first.host.jobs.set(job.id, { ...job, status: "succeeded", result: speechResult(3) });
-  const restored = await fixture(first.host, first.current);
+  const result = speechResult(3);
+  first.host.jobs.set(job.id, {
+    ...job,
+    status: "succeeded",
+    result: { ...result, asset: { ...result.asset, sha256: "b".repeat(64) } },
+  });
+  const restored = await fixture(first.host, first.current, editor);
   await restored.controller.refresh();
   await until(() => binding(first.host, job.id)?.consumed === true);
-  assert.deepEqual(restored.current.audioClips, [
-    {
-      id: `voice-${job.id}`,
-      assetId: speechId,
-      inFrame: 0,
-      outFrame: 90,
-      startFrame: 30,
-      volume: 1.5,
-    },
-  ]);
-  assert.ok(restored.current.assets.some((asset) => asset.id === "old-voice"));
+  assert.deepEqual(
+    received.map((context) => context.placement),
+    [{ startFrame: 30, replaceTarget: target() }],
+  );
+  assert.equal(restored.published.length, 0, "only the editor replaces a clip in place");
+});
+
+test("without the editor a replacement result is kept in the library and never overlaid", async () => {
+  const f = await fixture(new TtsHost(), project(), { verifyReplaceTarget: () => true });
+  const job = f.host.add("succeeded", 3);
+  f.host.handlers.set("media.tts", () => structuredClone(job));
+  const before = structuredClone(f.current.audioClips);
+  await f.controller.createVoiceover(
+    { text: "修改后的旁白" },
+    { startFrame: 30, attach: true, replaceTarget: target() },
+  );
+  await until(() => binding(f.host, job.id)?.consumed === true);
+  assert.deepEqual(f.current.audioClips, before);
+  assert.ok(f.current.assets.some((asset) => asset.mediaId === speechId));
 });
 
 test("a stale replacement selection is rejected before synthesis is queued", async () => {
-  const initial = project();
-  initial.assets.push({ id: "old-voice", name: "原旁白", kind: "audio", durationFrames: 180 });
-  initial.audioClips = [
-    { id: "original", assetId: "old-voice", inFrame: 0, outFrame: 180, startFrame: 0, volume: 1 },
-  ];
-  const f = await fixture(new TtsHost(), validateProject(initial));
-  const stale = { ...f.current.audioClips![0]!, volume: 0.5 };
-  await assert.rejects(
-    f.controller.createVoiceover(
-      { text: "修改文案" },
-      { startFrame: 0, attach: true, replaceClip: stale },
-    ),
-    /原配音已被调整/,
-  );
-  assert.equal(
-    f.host.calls.some((call) => call.method === "media.tts"),
-    false,
-  );
+  for (const extra of [{ verifyReplaceTarget: () => false }, {}]) {
+    const f = await fixture(new TtsHost(), project(), extra);
+    await assert.rejects(
+      f.controller.createVoiceover(
+        { text: "修改文案" },
+        { startFrame: 0, attach: true, replaceTarget: target() },
+      ),
+      /原配音已被调整/,
+    );
+    assert.equal(
+      f.host.calls.some((call) => call.method === "media.tts"),
+      false,
+    );
+  }
 });
 
 test("replayed completed TTS jobs do not duplicate assets, audio clips or saved revisions", async () => {

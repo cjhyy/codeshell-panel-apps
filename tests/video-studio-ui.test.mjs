@@ -1653,7 +1653,22 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
   const binding = await page.evaluate(
     () => Object.values(window.__documents["video-studio-production"].data.bindings)[0],
   );
-  assert.deepEqual(binding.replaceClip, initial.audioClips[0]);
+  // The job remembers the exact editor clip, in ticks, rather than an old frame snapshot.
+  assert.equal(binding.replaceClip, undefined);
+  const { sequenceId, trackId, ...target } = binding.replaceTarget;
+  assert.ok(sequenceId && trackId);
+  assert.deepEqual(target, {
+    clipId: "old-voice-clip",
+    assetId: "saved-voice",
+    start: 30 * 8000,
+    duration: 120 * 8000,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: 120 * 8000, source: 120 * 8000 },
+      ],
+    },
+  });
   assert.equal(
     (await readProject(page)).audioClips.length,
     1,
@@ -1975,11 +1990,14 @@ test("local voice cloning validates its own recording, uses real model preview, 
     );
     const replacementBinding = await page.evaluate(() =>
       Object.values(window.__documents["video-studio-production"].data.bindings).find(
-        (binding) => binding.replaceClip,
+        (binding) => binding.replaceTarget,
       ),
     );
     assert.equal(replacementBinding.attachAudio, true);
-    assert.deepEqual(replacementBinding.replaceClip, initial.audioClips[0]);
+    assert.equal(replacementBinding.replaceClip, undefined);
+    assert.equal(replacementBinding.replaceTarget.clipId, "saved-clone-clip");
+    assert.equal(replacementBinding.replaceTarget.assetId, "saved-clone");
+    assert.equal(replacementBinding.replaceTarget.duration, 240 * 8000);
     await page.locator('[data-action="new"]').click();
     await page.waitForFunction(
       (oldId) => window.__panelTools.read_video_project().project.id !== oldId,

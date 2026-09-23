@@ -1,9 +1,9 @@
 import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
-import { projectLegacyView } from "./legacy-adapter";
+import { resolveLegacyClipId } from "./legacy-aliases";
 import { applyEditorOperations, type EditorOperation } from "./operations";
-import { TICKS_PER_SECOND } from "./time";
+import { TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorAsset, EditorDocument, JsonData, MediaClip } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
@@ -14,10 +14,110 @@ export interface VoiceoverOrigin {
   sequenceId: string;
   revision: number;
 }
+/** The exact editor clip a regenerated voice replaces, captured when the user chose it. */
+export interface VoiceoverReplaceTarget {
+  sequenceId: string;
+  clipId: string;
+  trackId: string;
+  assetId: string;
+  start: Tick;
+  duration: Tick;
+  timeMap: TimeMap;
+}
 export interface VoiceoverPublication {
   jobId: string;
   origin?: VoiceoverOrigin;
-  placement?: { startFrame: number; replaceClip?: AudioClip };
+  placement?: {
+    startFrame: number;
+    replaceTarget?: VoiceoverReplaceTarget;
+    /** Frame snapshot persisted by earlier versions; resolved through the old clip ID alias. */
+    replaceClip?: AudioClip;
+  };
+}
+/** Old frame records describe 1/30 second. */
+const LEGACY_FRAME_TICKS = 8000;
+function audioClipOnTrack(
+  doc: EditorDocument,
+  sequenceId: string,
+  clipId: string | undefined,
+): MediaClip | undefined {
+  const sequence = doc.sequences.find((s) => s.id === sequenceId),
+    clip = sequence?.clips.find((c) => c.id === clipId);
+  if (clip?.kind !== "media") return undefined;
+  if (sequence!.tracks.find((t) => t.id === clip.trackId)?.kind !== "audio") return undefined;
+  if (doc.assets.find((a) => a.id === clip.assetId)?.kind !== "audio") return undefined;
+  return clip;
+}
+/** A sound clip on any audio track of the sequence, as the user selected it in the editor. */
+export function captureReplaceTarget(
+  doc: EditorDocument,
+  sequenceId: string,
+  clipId: string,
+): VoiceoverReplaceTarget {
+  const clip = audioClipOnTrack(doc, sequenceId, clipId);
+  if (!clip) throw new Error("请选择音轨上的配音片段");
+  return {
+    sequenceId,
+    clipId: clip.id,
+    trackId: clip.trackId,
+    assetId: clip.assetId,
+    start: clip.start,
+    duration: clip.duration,
+    timeMap: structuredClone(clip.timeMap),
+  };
+}
+const isNativeTarget = (
+  target: VoiceoverReplaceTarget | AudioClip,
+): target is VoiceoverReplaceTarget => "clipId" in target;
+/** The clip a target names, whether or not it was edited since. */
+function targetClip(
+  doc: EditorDocument,
+  target: VoiceoverReplaceTarget | AudioClip,
+  sequenceId: string,
+): MediaClip | undefined {
+  if (isNativeTarget(target))
+    return target.sequenceId === sequenceId
+      ? audioClipOnTrack(doc, sequenceId, target.clipId)
+      : undefined;
+  return audioClipOnTrack(
+    doc,
+    sequenceId,
+    resolveLegacyClipId(doc, sequenceId, "audioClips", target.id),
+  );
+}
+/**
+ * The unchanged original clip, or nothing when it was moved, trimmed, re-timed or deleted.
+ * Frame snapshots could only be captured from whole-frame, constant-speed clips, so their
+ * tick comparison is exact.
+ */
+export function resolveReplaceTarget(
+  doc: EditorDocument,
+  target: VoiceoverReplaceTarget | AudioClip,
+  sequenceId: string,
+): MediaClip | undefined {
+  const clip = targetClip(doc, target, sequenceId);
+  if (!clip) return undefined;
+  if (isNativeTarget(target))
+    return clip.trackId === target.trackId &&
+      clip.assetId === target.assetId &&
+      clip.start === target.start &&
+      clip.duration === target.duration &&
+      JSON.stringify(clip.timeMap) === JSON.stringify(target.timeMap)
+      ? clip
+      : undefined;
+  const source = target.inFrame * LEGACY_FRAME_TICKS,
+    duration = (target.outFrame - target.inFrame) * LEGACY_FRAME_TICKS,
+    points = clip.timeMap.points;
+  return clip.assetId === target.assetId &&
+    clip.start === target.startFrame * LEGACY_FRAME_TICKS &&
+    clip.duration === duration &&
+    points.length === 2 &&
+    points[0]!.time === 0 &&
+    points[0]!.source === source &&
+    points[1]!.time === duration &&
+    points[1]!.source === source + duration
+    ? clip
+    : undefined;
 }
 /** Native source duration stays in ticks; the old 30 fps view never determines asset length. */
 export function canonicalVoiceoverReceipt(raw: unknown): CanonicalVoiceoverResult {
@@ -118,25 +218,14 @@ export function planPublishVoiceover(
   if (published) return finish("此配音已加入工程，后续剪辑保持完整。", true);
   if (!origin || !Number.isSafeInteger(origin.revision) || origin.revision < 0 || !sequence)
     return library("原始目标序列记录缺失");
-  const original = context.placement.replaceClip;
+  const original = context.placement.replaceTarget ?? context.placement.replaceClip;
   if (original) {
-    const view = projectLegacyView(doc, sequence.id),
-      mapped = view.clips.find((c) => c.collection === "audioClips" && c.legacyId === original.id),
-      target = sequence.clips.find((c) => c.id === mapped?.clipId);
     // A successful same-ID replacement is recognizable even after later user edits.
-    if (target?.kind === "media" && target.assetId === asset.id)
+    if (targetClip(doc, original, sequence.id)?.assetId === asset.id)
       return finish("此配音已替换，后续剪辑保持完整。", true);
     if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未替换原配音");
-    const projected = view.project.audioClips?.find((c) => c.id === original.id);
-    if (
-      !target ||
-      target.kind !== "media" ||
-      !projected ||
-      !["id", "assetId", "inFrame", "outFrame", "startFrame", "volume"].every(
-        (key) => (projected as any)[key] === (original as any)[key],
-      )
-    )
-      return library("原配音已移动、裁剪或删除，未自动替换");
+    const target = resolveReplaceTarget(doc, original, sequence.id);
+    if (!target) return library("原配音已移动、裁剪或删除，未自动替换");
     const oldAsset = doc.assets.find((a) => a.id === target.assetId)!;
     if (oldAsset.duration !== asset.duration)
       return library("新配音与原素材时长不同，需重新安排内容");
@@ -167,7 +256,7 @@ export function planPublishVoiceover(
     );
   }
   if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未自动放置配音");
-  const start = context.placement.startFrame * 8000,
+  const start = context.placement.startFrame * LEGACY_FRAME_TICKS,
     available = Math.max(0, sequenceDuration(sequence) - start);
   if (!available) return library("原放置位置没有可用的画面时长");
   const duration = Math.min(available, asset.duration),

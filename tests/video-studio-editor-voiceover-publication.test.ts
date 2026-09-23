@@ -13,10 +13,14 @@ import {
 } from "../apps/video-studio/src/editor/defaults";
 import {
   canonicalVoiceoverReceipt,
+  captureReplaceTarget,
   planPublishVoiceover,
+  resolveReplaceTarget,
   type VoiceoverPublication,
 } from "../apps/video-studio/src/editor/voiceover-publication";
-import type { MediaClip } from "../apps/video-studio/src/editor/types";
+import { resolveLegacyClipId } from "../apps/video-studio/src/editor/legacy-aliases";
+import type { EditorDocument, MediaClip } from "../apps/video-studio/src/editor/types";
+import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
 
 const T = 240000,
   source = `asset-${"a".repeat(64)}`,
@@ -67,6 +71,14 @@ function raw(seconds = 4) {
   };
 }
 function context(): VoiceoverPublication {
+  const { doc, seq, clip } = fixture();
+  return {
+    jobId: "job-tts",
+    origin: { sequenceId: seq.id, revision: doc.revision },
+    placement: { startFrame: 1, replaceTarget: captureReplaceTarget(doc, seq.id, clip.id) },
+  };
+}
+function legacyContext(): VoiceoverPublication {
   const { doc, seq } = fixture(),
     view = projectLegacyView(doc, seq.id);
   return {
@@ -74,6 +86,18 @@ function context(): VoiceoverPublication {
     origin: { sequenceId: seq.id, revision: doc.revision },
     placement: { startFrame: 0, replaceClip: structuredClone(view.project.audioClips![0]!) },
   };
+}
+/** Real footage: the voice source is not a whole number of 30 fps frames. */
+function offFrame(doc: EditorDocument, clip: MediaClip, duration = 3 * T + 777) {
+  doc.assets.find((a) => a.id === clip.assetId)!.duration = duration;
+  clip.duration = duration;
+  clip.timeMap = {
+    points: [
+      { time: 0, source: 0 },
+      { time: duration, source: duration },
+    ],
+  };
+  return validateEditorDocument(doc);
 }
 const ids = () => {
   let n = 0;
@@ -180,23 +204,8 @@ test("new placement uses original sequence and precise available ticks, survives
   assert.equal(late.placed, false);
   assert.ok(late.operations.every((op) => op.type === "asset.add"));
 });
-test("canonical production callback persists origin before completion, retries failed publication and never calls legacy replacement", async () => {
-  const { doc, seq } = fixture(),
-    view = projectLegacyView(doc, seq.id);
-  let saved: any = null,
-    revision = 0,
-    fail = true,
-    publishes = 0,
-    captured = 0;
-  const job = {
-    id: "job-tts",
-    type: "tts",
-    status: "succeeded",
-    createdAt: 1,
-    updatedAt: 1,
-    attempt: 1,
-    result: raw(),
-  };
+function productionBridge(jobs: any[], initial: any = null) {
+  const state: { saved: any; revision: number } = { saved: initial, revision: initial ? 1 : 0 };
   const bridge: any = {
     getContext: async () => ({}),
     on: () => () => {},
@@ -209,17 +218,38 @@ test("canonical production callback persists origin before completion, retries f
           hyperframes: { available: false },
           tts: { available: true },
         };
-      if (method === "media.document.get") return { data: saved, revision };
+      if (method === "media.document.get") return { data: state.saved, revision: state.revision };
       if (method === "media.document.set") {
-        assert.equal(args.baseRevision, revision);
-        saved = structuredClone(args.data);
-        return { revision: ++revision };
+        assert.equal(args.baseRevision, state.revision);
+        state.saved = structuredClone(args.data);
+        return { revision: ++state.revision };
       }
-      if (method === "media.jobs.list") return { jobs: [job] };
-      if (method === "media.jobs.get" || method === "media.tts") return job;
+      if (method === "media.jobs.list") return { jobs };
+      if (method === "media.jobs.get") return jobs.find((job) => job.id === args.id);
+      if (method === "media.tts") return jobs[0];
       throw new Error(method);
     },
   };
+  return { bridge, state };
+}
+const ttsJob = (id: string) => ({
+  id,
+  type: "tts",
+  status: "succeeded",
+  createdAt: 1,
+  updatedAt: 1,
+  attempt: 1,
+  result: raw(),
+});
+test("canonical production callback persists origin and the editor target before completion, retries failed publication and never calls legacy replacement", async () => {
+  const { doc, seq, clip } = fixture(),
+    view = projectLegacyView(doc, seq.id),
+    target = captureReplaceTarget(doc, seq.id, clip.id),
+    { bridge, state } = productionBridge([ttsJob("job-tts")]);
+  let fail = true,
+    publishes = 0,
+    captured = 0,
+    verified = 0;
   const callbacks = {
     getProject: () => view.project,
     publishAssets: async () => assert.fail("must bypass legacy"),
@@ -227,12 +257,18 @@ test("canonical production callback persists origin before completion, retries f
       captured++;
       return { sequenceId: seq.id, revision: doc.revision };
     },
+    verifyReplaceTarget: (value: any) => {
+      verified++;
+      assert.deepEqual(value, target);
+      return true;
+    },
     publishVoiceover: async (projectId: string, result: any, request: VoiceoverPublication) => {
       publishes++;
       assert.equal(projectId, doc.id);
       assert.equal(result.asset.duration, 4 * T);
       assert.deepEqual(request.origin, { sequenceId: seq.id, revision: doc.revision });
-      assert.deepEqual(request.placement!.replaceClip, view.project.audioClips![0]);
+      assert.deepEqual(request.placement!.replaceTarget, target);
+      assert.equal(request.placement!.replaceClip, undefined);
       if (fail) throw new Error("保存失败");
     },
     changed() {},
@@ -242,14 +278,14 @@ test("canonical production callback persists origin before completion, retries f
     await controller.initialize();
     await controller.createVoiceover(
       { text: "真实文案" },
-      { startFrame: 0, attach: true, replaceClip: view.project.audioClips![0] },
+      { startFrame: 0, attach: true, replaceTarget: structuredClone(target) },
     );
+    assert.equal(verified, 1);
     await assert.rejects(controller.refresh(), /保存失败/);
     assert.equal(captured, 1);
-    assert.equal(
-      Object.values(saved.bindings).some((b: any) => b.consumed),
-      false,
-    );
+    const persisted = Object.values(state.saved.bindings)[0] as any;
+    assert.deepEqual(persisted.replaceTarget, target);
+    assert.notEqual(persisted.consumed, true);
     controller.dispose();
     fail = false;
     const restored = new ProductionController(bridge, callbacks);
@@ -259,7 +295,7 @@ test("canonical production callback persists origin before completion, retries f
       assert.ok(publishes >= 2);
       assert.equal(captured, 1);
       assert.equal(
-        Object.values(saved.bindings).some((b: any) => b.consumed),
+        Object.values(state.saved.bindings).some((b: any) => b.consumed),
         true,
       );
     } finally {
@@ -267,6 +303,106 @@ test("canonical production callback persists origin before completion, retries f
     }
   } finally {
     controller.dispose();
+  }
+});
+test("a replacement target the editor no longer recognizes is rejected before synthesis is queued", async () => {
+  const { doc, seq, clip } = fixture(),
+    view = projectLegacyView(doc, seq.id),
+    target = captureReplaceTarget(doc, seq.id, clip.id),
+    { bridge } = productionBridge([ttsJob("job-tts")]);
+  const calls: string[] = [];
+  const traced: any = { ...bridge, call: (m: string, a: any) => (calls.push(m), bridge.call(m, a)) };
+  for (const verify of [() => false, undefined]) {
+    const controller = new ProductionController(traced, {
+      getProject: () => view.project,
+      publishAssets: async () => {},
+      ...(verify ? { verifyReplaceTarget: verify } : {}),
+      changed() {},
+    });
+    try {
+      await controller.initialize();
+      await assert.rejects(
+        controller.createVoiceover(
+          { text: "修改文案" },
+          { startFrame: 0, attach: true, replaceTarget: target },
+        ),
+        /原配音已被调整/,
+      );
+      assert.equal(calls.includes("media.tts"), false);
+    } finally {
+      controller.dispose();
+    }
+  }
+});
+test("saved job bindings accept the editor target and the earlier frame snapshot, and hand both to the editor", async () => {
+  const { doc, seq, clip } = fixture(),
+    view = projectLegacyView(doc, seq.id),
+    target = captureReplaceTarget(doc, seq.id, clip.id),
+    legacy = structuredClone(view.project.audioClips![0]!);
+  const binding = (jobId: string, extra: object) => ({
+    jobId,
+    projectId: doc.id,
+    purpose: "tts",
+    attachAudio: true,
+    startFrame: 30,
+    voiceoverOrigin: { sequenceId: seq.id, revision: doc.revision },
+    ...extra,
+  });
+  const documentWith = (bindings: Record<string, object>) => ({
+    schemaVersion: 1,
+    bindings,
+    auto: null,
+  });
+  const received: VoiceoverPublication[] = [];
+  const callbacks = {
+    getProject: () => view.project,
+    publishAssets: async () => assert.fail("must bypass legacy"),
+    publishVoiceover: async (_: string, __: any, request: VoiceoverPublication) => {
+      received.push(structuredClone(request));
+    },
+    changed() {},
+  };
+  const { bridge, state } = productionBridge(
+    [ttsJob("job-native"), ttsJob("job-legacy")],
+    documentWith({
+      "job-native": binding("job-native", { replaceTarget: target }),
+      "job-legacy": binding("job-legacy", { replaceClip: legacy }),
+    }),
+  );
+  const controller = new ProductionController(bridge, callbacks);
+  try {
+    await controller.initialize();
+    assert.equal(controller.error, "");
+    await controller.refresh();
+  } finally {
+    controller.dispose();
+  }
+  assert.deepEqual(
+    received.map((r) => [r.jobId, r.placement]).sort(),
+    [
+      ["job-legacy", { startFrame: 30, replaceClip: legacy }],
+      ["job-native", { startFrame: 30, replaceTarget: target }],
+    ],
+  );
+  assert.ok(Object.values(state.saved.bindings).every((b: any) => b.consumed));
+  for (const invalid of [
+    { replaceTarget: { ...target, duration: 0 } },
+    { replaceTarget: { ...target, timeMap: { points: [{ time: 0, source: 0 }] } } },
+    { replaceTarget: { ...target, extra: true } },
+    { replaceTarget: target, replaceClip: legacy },
+    { replaceTarget: target, attachAudio: false },
+  ]) {
+    const { bridge: other } = productionBridge(
+      [],
+      documentWith({ "job-bad": binding("job-bad", invalid) }),
+    );
+    const rejected = new ProductionController(other, callbacks);
+    try {
+      await rejected.initialize();
+      assert.match(rejected.error, /制作任务记录无法恢复/, JSON.stringify(Object.keys(invalid)));
+    } finally {
+      rejected.dispose();
+    }
   }
 });
 
@@ -281,4 +417,181 @@ test("identical imported bytes keep existing metadata while a distinct generated
   assert.deepEqual(next.assets[3]!.metadata!.speech, result.asset.metadata!.speech);
   assert.notEqual(next.assets[3]!.id, result.asset.id);
   assert.deepEqual(planPublishVoiceover(next, result, { jobId: "job-library" }).operations, []);
+});
+
+test("real footage voice whose length is not a whole old frame is replaced in place from the editor target", () => {
+  const { doc, seq, clip } = fixture(),
+    real = offFrame(doc, clip),
+    realClip = real.sequences[0]!.clips.find((c) => c.id === clip.id) as MediaClip;
+  assert.equal(
+    projectLegacyView(real, seq.id).clips.some((c) => c.clipId === clip.id),
+    false,
+    "the old frame view cannot see this voice",
+  );
+  const request: VoiceoverPublication = {
+    jobId: "job-real",
+    origin: { sequenceId: seq.id, revision: real.revision },
+    placement: { startFrame: 1, replaceTarget: captureReplaceTarget(real, seq.id, clip.id) },
+  };
+  const result = canonicalVoiceoverReceipt(raw((3 * T + 777) / T));
+  assert.equal(result.asset.duration, 3 * T + 777);
+  const plan = planPublishVoiceover(real, result, request, ids()),
+    next = applyEditorOperations(real, plan.operations, real.revision);
+  assert.equal(plan.placed, true, plan.notice);
+  assert.match(plan.notice, /已替换配音/);
+  assert.deepEqual(
+    next.sequences[0]!.clips.find((c) => c.id === clip.id),
+    { ...realClip, assetId: resultId },
+  );
+  assert.equal(next.sequences[0]!.clips.length, real.sequences[0]!.clips.length);
+  const replay = planPublishVoiceover(next, result, request, ids());
+  assert.equal(replay.placed, true);
+  assert.deepEqual(replay.operations, []);
+});
+
+test("a voiceover on a second audio track of a multitrack sequence is replaced without touching the first", () => {
+  const { doc, seq, clip } = fixture();
+  doc.assets.push({
+    id: "second-voice",
+    name: "第二段配音",
+    kind: "audio",
+    duration: 4 * T,
+    resourceId: `asset-${"c".repeat(64)}`,
+    fingerprint: "c".repeat(64),
+    metadata: { speech: { text: "第二段", voiceId: "voice", engine: "macos-say", rate: 1 } },
+  });
+  seq.tracks.push(createTrack("a2", "audio", "第二条配音"));
+  const second: MediaClip = {
+    ...structuredClone(clip),
+    id: "second-voice-clip",
+    trackId: "a2",
+    assetId: "second-voice",
+    start: 1_234_567,
+    duration: 2 * T + 13,
+    timeMap: {
+      points: [
+        { time: 0, source: 5 },
+        { time: 2 * T + 13, source: 2 * T + 18 },
+      ],
+    },
+  };
+  second.audio.volume = 0.6;
+  seq.clips.push(second);
+  const checked = validateEditorDocument(doc),
+    first = structuredClone(checked.sequences[0]!.clips.find((c) => c.id === clip.id));
+  const request: VoiceoverPublication = {
+      jobId: "job-second",
+      origin: { sequenceId: seq.id, revision: checked.revision },
+      placement: {
+        startFrame: 0,
+        replaceTarget: captureReplaceTarget(checked, seq.id, "second-voice-clip"),
+      },
+    },
+    plan = planPublishVoiceover(checked, canonicalVoiceoverReceipt(raw()), request, ids()),
+    next = applyEditorOperations(checked, plan.operations, checked.revision);
+  assert.equal(plan.placed, true, plan.notice);
+  const clips = next.sequences[0]!.clips;
+  assert.deepEqual(clips.find((c) => c.id === "second-voice-clip"), {
+    ...checked.sequences[0]!.clips.find((c) => c.id === "second-voice-clip"),
+    assetId: resultId,
+  });
+  assert.deepEqual(clips.find((c) => c.id === clip.id), first);
+  assert.deepEqual(next.sequences[0]!.tracks, checked.sequences[0]!.tracks);
+});
+
+test("a saved frame snapshot still finds its clip through the old ID alias and replaces it", () => {
+  const { doc, seq, clip } = fixture(),
+    request = legacyContext(),
+    legacyId = request.placement!.replaceClip!.id;
+  // A later edit gave the canonical clip a different ID; only the alias remembers the old one.
+  clip.id = "canonical-voice";
+  doc.production = {
+    ...(doc.production ?? {}),
+    legacyAliases: [
+      { sequenceId: seq.id, collection: "audioClips", legacyId, clipId: "canonical-voice" },
+    ],
+  };
+  const aliased = validateEditorDocument(doc);
+  assert.equal(resolveLegacyClipId(aliased, seq.id, "audioClips", legacyId), "canonical-voice");
+  assert.equal(resolveLegacyClipId(aliased, seq.id, "audioClips", "missing"), undefined);
+  assert.equal(
+    resolveReplaceTarget(aliased, request.placement!.replaceClip!, seq.id)?.id,
+    "canonical-voice",
+  );
+  const plan = planPublishVoiceover(aliased, canonicalVoiceoverReceipt(raw()), request, ids()),
+    next = applyEditorOperations(aliased, plan.operations, aliased.revision);
+  assert.equal(plan.placed, true, plan.notice);
+  assert.equal(
+    (next.sequences[0]!.clips.find((c) => c.id === "canonical-voice") as MediaClip).assetId,
+    resultId,
+  );
+  const replay = planPublishVoiceover(next, canonicalVoiceoverReceipt(raw()), request, ids());
+  assert.deepEqual(replay.operations, []);
+  assert.equal(replay.placed, true);
+});
+
+test("a moved, trimmed, re-timed, re-tracked or deleted original keeps the new voice in the library only", () => {
+  const edits: Array<[string, (doc: EditorDocument, clip: MediaClip) => void]> = [
+    ["moved", (_, c) => void (c.start += 1)],
+    [
+      "trimmed",
+      (_, c) => {
+        c.duration -= 8000;
+        c.timeMap.points[1] = { time: c.duration, source: c.duration };
+        c.audio.volume = 0.2;
+      },
+    ],
+    [
+      "slipped",
+      (_, c) => {
+        c.timeMap.points[0]!.source += 8000;
+        c.timeMap.points[1]!.source += 8000;
+      },
+    ],
+    [
+      "re-tracked",
+      (d, c) => {
+        d.sequences[0]!.tracks.push(createTrack("a9", "audio", "另一条音轨"));
+        c.trackId = "a9";
+      },
+    ],
+    [
+      "deleted",
+      (d, c) => void (d.sequences[0]!.clips = d.sequences[0]!.clips.filter((x) => x.id !== c.id)),
+    ],
+  ];
+  for (const legacy of [false, true])
+    for (const [name, edit] of edits) {
+      // Frame snapshots never recorded a track, exactly as before.
+      if (legacy && name === "re-tracked") continue;
+      const { doc, clip } = fixture(),
+        request = legacy ? legacyContext() : context();
+      edit(doc, clip);
+      const edited = validateEditorDocument(doc),
+        prior = structuredClone(edited.sequences),
+        plan = planPublishVoiceover(edited, canonicalVoiceoverReceipt(raw()), request, ids()),
+        next = applyEditorOperations(edited, plan.operations, edited.revision);
+      assert.equal(plan.placed, false, `${name} ${legacy}`);
+      assert.match(plan.notice, /原配音已移动、裁剪或删除，未自动替换/, `${name} ${legacy}`);
+      assert.match(plan.notice, /素材库/);
+      assert.deepEqual(next.sequences, prior);
+      assert.ok(next.assets.some((a) => a.resourceId === resultId));
+    }
+});
+
+test("capturing a target requires a sound clip on an audio track", () => {
+  const { doc, seq, clip } = fixture();
+  assert.deepEqual(captureReplaceTarget(doc, seq.id, clip.id), {
+    sequenceId: seq.id,
+    clipId: clip.id,
+    trackId: clip.trackId,
+    assetId: "voice",
+    start: clip.start,
+    duration: clip.duration,
+    timeMap: clip.timeMap,
+  });
+  const picture = seq.clips.find((c) => c.kind === "media" && c.assetId === "picture")!;
+  assert.throws(() => captureReplaceTarget(doc, seq.id, picture.id), /配音/);
+  assert.throws(() => captureReplaceTarget(doc, seq.id, "missing"), /配音/);
+  assert.throws(() => captureReplaceTarget(doc, "missing", clip.id), /配音/);
 });

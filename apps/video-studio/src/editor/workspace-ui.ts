@@ -57,6 +57,8 @@ export interface EditorWorkspaceOptions {
   showCaptions?(sequenceId: string): void | Promise<void>;
   showSeparation?(sequenceId: string, clipId: string): void | Promise<void>;
   showAudioEnhancement?(sequenceId: string, clipId: string): void | Promise<void>;
+  /** Regenerate a generated voice clip's script and replace that clip in place. */
+  editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
   showProduction(tab: string): void | Promise<void>;
   onError(error: unknown): void;
 }
@@ -166,12 +168,22 @@ export class EditorWorkspace {
     const apply = (operations: EditorOperation[], label: string) => {
       this.apply(operations, label);
     };
+    const editVoiceover = options.editVoiceover;
     this.inspector = new EditorInspector(this.get("[data-ew-inspector]"), {
       read,
       selection,
       apply,
       time: () => this.playhead,
       onError: options.onError,
+      ...(editVoiceover
+        ? {
+            editVoiceover: async (sequenceId: string, clipId: string) => {
+              this.preview.pause();
+              this.cancelPreparation();
+              await editVoiceover(sequenceId, clipId);
+            },
+          }
+        : {}),
     });
     this.timing = new EditorTiming(this.get("[data-ew-timing]"), {
       read,

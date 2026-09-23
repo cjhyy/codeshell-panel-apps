@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
+import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 
 const seed = {
   schemaVersion: 1,
@@ -85,6 +86,8 @@ async function openPage(t, options = {}) {
     await context.close();
     assert.deepEqual(errors, []);
   });
+  // Voiceover jobs run through the real tasks/resources contract of the media task bridge.
+  if (options.voiceover) await page.addInitScript(installGenericMediaTaskMock);
   await page.addInitScript(
     ({ seed, options }) => {
       const records = JSON.parse(localStorage.getItem("editor-main-host") ?? "null") ?? {
@@ -192,6 +195,52 @@ async function openPage(t, options = {}) {
                 ),
               },
             };
+          }
+          if (options.voiceover) {
+            const voice = (window.__voiceHost ??= { jobs: {}, requests: [] });
+            if (method === "media.status")
+              return {
+                persistent: true,
+                ffmpeg: { available: true },
+                transcription: { available: false },
+                hyperframes: { available: false },
+                tts: { available: true, engine: "macos-say", defaultVoiceId: "tingting" },
+              };
+            if (method === "media.tts.voices")
+              return {
+                available: true,
+                engine: "macos-say",
+                defaultModelId: "macos-say",
+                voices: [{ id: "tingting", name: "Tingting", language: "zh_CN" }],
+                models: [
+                  {
+                    id: "macos-say",
+                    name: "macOS 系统配音",
+                    provider: "Apple",
+                    available: true,
+                    voices: [{ id: "tingting", name: "Tingting", language: "zh_CN" }],
+                    defaultVoiceId: "tingting",
+                  },
+                ],
+              };
+            if (method === "media.tts") {
+              voice.requests.push(structuredClone(args));
+              const job = {
+                id: "job-voice-replace",
+                type: "tts",
+                status: "queued",
+                attempt: 1,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              };
+              voice.jobs[job.id] = job;
+              return structuredClone(job);
+            }
+            if (method === "media.jobs.list")
+              return { jobs: Object.values(voice.jobs), total: Object.keys(voice.jobs).length };
+            if (method === "media.jobs.get") return structuredClone(voice.jobs[args.id]);
+            if (method === "media.assets.get" && options.voiceover.assets?.[args.id])
+              return { asset: structuredClone(options.voiceover.assets[args.id]) };
           }
           if (method === "storage.get") return structuredClone(preferences[args.key] ?? null);
           if (method === "storage.set") {
@@ -1561,6 +1610,139 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
   const toasts = await page.evaluate(() => window.__toasts.join("\n"));
   assert.match(toasts, /已按列表顺序加入 1 个视频片段/);
   assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
+});
+
+test("配音 replaces a generated voice on a second audio track of real off-frame footage in place, one undo", async (t) => {
+  const voiceLength = 3 * T + 777,
+    oldVoice = `asset-${"d".repeat(64)}`,
+    newVoice = `asset-${"e".repeat(64)}`,
+    speech = { text: "原来的配音文案。", voiceId: "tingting", engine: "macos-say", modelId: "macos-say", rate: 1 };
+  const voiceSeed = {
+    ...realMediaSeed,
+    id: "voiceover-real-media",
+    name: "实拍配音",
+    assets: [
+      ...realMediaSeed.assets,
+      { id: "room", name: "现场声.wav", kind: "audio", duration: 10_000_123 },
+      { id: "voice", name: "配音.wav", kind: "audio", duration: voiceLength, resourceId: oldVoice, fingerprint: "d".repeat(64), metadata: { speech } },
+    ],
+    sequences: [
+      {
+        ...realMediaSeed.sequences[0],
+        tracks: [
+          ...realMediaSeed.sequences[0].tracks,
+          track("a1", "audio", "现场声"),
+          track("a2", "audio", "配音"),
+        ],
+        clips: [
+          ...realMediaSeed.sequences[0].clips,
+          { ...picture("room-clip", "a1", 0, 10_000_123), assetId: "room" },
+          {
+            ...picture("voice-clip", "a2", 1_234_567, voiceLength),
+            assetId: "voice",
+            audio: { volume: 0.6, pan: -0.2, fadeIn: 8000, fadeOut: 16000, pitchSemitones: 0, preservePitch: true },
+          },
+        ],
+      },
+    ],
+  };
+  const page = await openPage(t, {
+    seed: voiceSeed,
+    voiceover: {
+      assets: {
+        [oldVoice]: { id: oldVoice, sha256: "d".repeat(64), bytes: 44, mimeType: "audio/wav", name: "配音.wav", createdAt: 1 },
+      },
+    },
+  });
+  await page.evaluate(() => {
+    window.__toasts = [];
+    new MutationObserver(() => window.__toasts.push(document.querySelector("#toast").textContent)).observe(
+      document.querySelector("#toast"),
+      { childList: true, characterData: true, subtree: true },
+    );
+  });
+  const before = await saved(page);
+  await page.locator('[data-et-clip="voice-clip"]').click();
+  const edit = page
+    .locator("#editor-workspace")
+    .getByRole("button", { name: "修改文案 / 重新配音", exact: true });
+  await edit.click();
+  assert.equal(await page.locator("#voiceover-text").inputValue(), speech.text);
+  await page.waitForFunction(() => document.querySelector("#voiceover-voice")?.value === "tingting");
+  await page.locator("#voiceover-text").fill("修改后的配音文案。");
+  await page.getByRole("button", { name: "重新生成并替换配音", exact: true }).click();
+  await page.waitForFunction(() => window.__voiceHost?.requests.length === 1);
+  assert.equal(await page.evaluate(() => window.__voiceHost.requests[0].text), "修改后的配音文案。");
+  const binding = await page.evaluate(
+    () =>
+      Object.values(window.__mainHost.records()["video-studio-production"][0].data.bindings).find(
+        (item) => item.purpose === "tts",
+      ),
+  );
+  assert.deepEqual(binding.replaceTarget, {
+    sequenceId: "main",
+    clipId: "voice-clip",
+    trackId: "a2",
+    assetId: "voice",
+    start: 1_234_567,
+    duration: voiceLength,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: voiceLength, source: voiceLength },
+      ],
+    },
+  });
+  assert.deepEqual((await saved(page)).sequences, before.sequences, "Nothing changes until the voice is ready");
+  await page.evaluate(
+    ({ newVoice, seconds }) => {
+      const job = window.__voiceHost.jobs["job-voice-replace"];
+      Object.assign(job, {
+        status: "succeeded",
+        updatedAt: Date.now(),
+        result: {
+          asset: { id: newVoice, sha256: newVoice.slice(6), name: "新配音.wav", mimeType: "audio/wav", bytes: 384044, createdAt: 2 },
+          inspection: { kind: "audio", durationSeconds: seconds, audio: { sampleRate: 48000, channels: 1 } },
+          speech: { text: "修改后的配音文案。", voiceId: "tingting", engine: "macos-say", modelId: "macos-say", rate: 1 },
+        },
+      });
+      for (const listener of window.__mainHost.events["media.job.changed"] ?? []) listener(structuredClone(job));
+    },
+    { newVoice, seconds: voiceLength / T },
+  );
+  await page.waitForFunction(
+    () =>
+      window.__mainHost.current().sequences[0].clips.find((clip) => clip.id === "voice-clip").assetId !==
+      "voice",
+    undefined,
+    { timeout: 15000 },
+  );
+  const replaced = await waitSaved(page);
+  assert.equal(replaced.revision, before.revision + 1, "The replacement is one edit");
+  const replacedClip = replaced.sequences[0].clips.find((clip) => clip.id === "voice-clip");
+  const asset = replaced.assets.find((item) => item.id === replacedClip.assetId);
+  assert.equal(asset.resourceId, newVoice);
+  assert.equal(asset.duration, voiceLength);
+  assert.deepEqual(
+    { ...replacedClip, assetId: "voice" },
+    before.sequences[0].clips.find((clip) => clip.id === "voice-clip"),
+    "Same clip identity, exact ticks, volume, pan and fades",
+  );
+  for (const clip of before.sequences[0].clips.filter((clip) => clip.id !== "voice-clip"))
+    assert.deepEqual(replaced.sequences[0].clips.find((item) => item.id === clip.id), clip);
+  assert.ok(replaced.assets.some((item) => item.id === "voice"), "The old voice stays in the library");
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.match(toasts, /已替换配音/);
+  assert.doesNotMatch(toasts, /移动、裁剪或删除|未自动替换|未替换|失败|无效/);
+  await returnEditor(page);
+  await clickEditorAction(page, "undo");
+  await page.waitForFunction(
+    () =>
+      window.__mainHost.current().sequences[0].clips.find((clip) => clip.id === "voice-clip").assetId ===
+      "voice",
+  );
+  const undone = await waitSaved(page);
+  assert.deepEqual(undone.sequences, before.sequences, "One undo restores the original voice");
 });
 
 test("an asset change on the 字幕 page never rewrites the panel in place and keeps unsaved text", async (t) => {

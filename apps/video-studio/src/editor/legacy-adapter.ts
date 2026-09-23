@@ -12,6 +12,7 @@ import { evaluateAnimatedNumber } from "./animation";
 import { captionTemplate, sameJson } from "./caption-presets";
 import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
+import { legacyClipId, type LegacyCollection } from "./legacy-aliases";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { freezeTimeMap } from "./time";
 import type {
@@ -27,7 +28,7 @@ import { validateEditorDocument } from "./validation";
 
 /** Legacy frames describe 1/30 second regardless of the v2 sequence's frame rate. */
 export const LEGACY_FRAME_TICKS = 8000;
-type Collection = "clips" | "audioClips" | "captions";
+type Collection = LegacyCollection;
 export interface LegacyViewOptions {
   primaryVideoTrackId?: string;
   primaryAudioTrackId?: string;
@@ -95,56 +96,6 @@ function allocate(used: Set<string>, preferred: string): string {
   used.add(id);
   return id;
 }
-function legacyAlias(
-  document: EditorDocument,
-  sequenceId: string,
-  clip: EditorClip,
-  collection: Collection,
-): string {
-  const aliases = document.production?.legacyAliases;
-  if (Array.isArray(aliases)) {
-    const found = aliases.find(
-      (value) =>
-        value &&
-        typeof value === "object" &&
-        !Array.isArray(value) &&
-        value.sequenceId === sequenceId &&
-        value.clipId === clip.id &&
-        value.collection === collection,
-    );
-    if (
-      found &&
-      typeof found === "object" &&
-      !Array.isArray(found) &&
-      typeof found.legacyId === "string"
-    )
-      return found.legacyId;
-  }
-  const migration = document.production?.migration;
-  if (
-    migration &&
-    typeof migration === "object" &&
-    !Array.isArray(migration) &&
-    Array.isArray(migration.remapped)
-  ) {
-    const found = migration.remapped.find(
-      (value) =>
-        value &&
-        typeof value === "object" &&
-        !Array.isArray(value) &&
-        value.id === clip.id &&
-        value.trackId === clip.trackId,
-    );
-    if (
-      found &&
-      typeof found === "object" &&
-      !Array.isArray(found) &&
-      typeof found.original === "string"
-    )
-      return found.original;
-  }
-  return clip.id;
-}
 /** Subtitle clips whose old caption ID is listed, e.g. the narration workflow's temporary captions. */
 export function captionClipIdsForLegacyIds(
   document: EditorDocument,
@@ -158,7 +109,7 @@ export function captionClipIdsForLegacyIds(
     if (
       clip.kind === "text" &&
       clip.role === "subtitle" &&
-      wanted.has(legacyAlias(document, sequenceId, clip, "captions"))
+      wanted.has(legacyClipId(document, sequenceId, clip, "captions"))
     )
       result.add(clip.id);
   return result;
@@ -406,7 +357,7 @@ export function projectLegacyView(
         false,
       );
     const volume = Math.max(0, Math.min(2, evaluateAnimatedNumber(clip.audio.volume, 0)));
-    const id = allocate(used[collection], legacyAlias(document, sequenceId, clip, collection));
+    const id = allocate(used[collection], legacyClipId(document, sequenceId, clip, collection));
     const row: AudioClip = {
       id,
       assetId: clip.assetId,
@@ -475,7 +426,7 @@ export function projectLegacyView(
         );
         continue;
       }
-      const id = allocate(used.captions, legacyAlias(document, sequenceId, clip, "captions"));
+      const id = allocate(used.captions, legacyClipId(document, sequenceId, clip, "captions"));
       project.captions.push({
         id,
         startFrame: frames(clip.start),

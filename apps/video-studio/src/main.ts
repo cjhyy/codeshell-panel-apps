@@ -128,7 +128,11 @@ import {
 } from "./editor/audio-enhancement-controller";
 import { EditorAudioEnhancementUI } from "./editor/audio-enhancement-ui";
 import { enhancedEditorAsset } from "./editor/audio-enhancement";
-import { planPublishVoiceover } from "./editor/voiceover-publication";
+import {
+  captureReplaceTarget,
+  planPublishVoiceover,
+  resolveReplaceTarget,
+} from "./editor/voiceover-publication";
 import { uploadEditorResource } from "./editor/resource-upload";
 import { createEditorAgentTools } from "./editor/agent-tools";
 import { reconcileEditorProduction } from "./editor/production-guard";
@@ -485,6 +489,14 @@ const production = new ProductionController(panel, {
     if (!editorSession) throw new Error("工程尚未准备好");
     const doc = editorSession.read();
     return { sequenceId: doc.activeSequenceId, revision: doc.revision };
+  },
+  verifyReplaceTarget: (target) => {
+    if (!editorSession) return false;
+    const doc = editorSession.read();
+    return (
+      target.sequenceId === doc.activeSequenceId &&
+      Boolean(resolveReplaceTarget(doc, target, target.sequenceId))
+    );
   },
   publishVoiceover: async (projectId, result, context) => {
     assertProductionPublicationEditable();
@@ -3562,16 +3574,47 @@ async function action(name: string, id?: string): Promise<void> {
       render();
       await Promise.all([voicePreparation.activate(), voiceover.load()]);
       break;
-    case "edit-voiceover":
+    case "edit-voiceover": {
+      // The target is the editor clip itself, so voices on any audio track can be replaced.
+      if (!editorSession) throw new Error("工程尚未准备好");
+      const doc = editorSession.read(),
+        clipId =
+          id ??
+          (editorVisible
+            ? selected
+            : legacyView?.clips.find(
+                (item) => item.collection !== "captions" && item.legacyId === selected,
+              )?.clipId);
+      const target = captureReplaceTarget(doc, doc.activeSequenceId, clipId ?? "");
+      let speech: Asset["speech"];
+      try {
+        // The saved recipe passes the same checks as any project speech before it fills the form.
+        speech = validateProject({
+          ...createProject(),
+          assets: [
+            {
+              id: "speech",
+              name: "配音",
+              kind: "audio",
+              durationFrames: 1,
+              speech: doc.assets.find((asset) => asset.id === target.assetId)?.metadata?.speech,
+            },
+          ],
+        }).assets[0]!.speech;
+      } catch {
+        speech = undefined;
+      }
+      if (!speech) throw new Error("这段声音不是生成的配音，没有可修改的文案");
+      recording.assertSafeToLeave();
       tab = "voiceover";
+      libraryView = "feature";
+      mediaPreview = false;
       stop();
       await voicePreparation.activate();
-      await voiceover.load(
-        project.assets.find((asset) => asset.id === clip?.assetId),
-        audioClip,
-      );
+      await voiceover.load(speech, target);
       render();
       break;
+    }
     case "create-voiceover":
       voiceover.stopPreview();
       await voiceover.submit();
@@ -5115,6 +5158,7 @@ function mountEditorWorkspace(): void {
           editorAudioEnhancementUI.open(sequenceId, clipId);
         }
       : undefined,
+    editVoiceover: (_sequenceId, clipId) => action("edit-voiceover", clipId),
     showProduction: async (nextTab) => {
       recording.assertSafeToLeave();
       mediaPreview = false;
