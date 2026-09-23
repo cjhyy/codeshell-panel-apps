@@ -1416,7 +1416,8 @@ test("actual preview button sends narrated demo audio to speakers, including reo
     });
     window.__panelTools = {};
     window.codeshellPanel = {
-      getContext: async () => ({ cwd: "/test/delayed-restore" }),
+      // An older Host that still keeps its own media job list.
+      getContext: async () => ({ cwd: "/test/delayed-restore", availableMethods: ["media.jobs.list"] }),
       registerTool: (name, handler) => {
         window.__panelTools[name] = handler;
         return () => {};

@@ -399,10 +399,13 @@ export function installGenericMediaTaskMock() {
       ...raw,
       __genericTaskFixture: true,
       async getContext() {
+        const context = await raw.getContext();
         return {
-          ...(await raw.getContext()),
+          ...context,
           apiVersion: 14,
           availableMethods: [
+            // Methods the wrapped Host itself advertises (e.g. an older media.jobs.list) stay listed.
+            ...(Array.isArray(context?.availableMethods) ? context.availableMethods : []),
             "tasks.start",
             "tasks.get",
             "tasks.list",

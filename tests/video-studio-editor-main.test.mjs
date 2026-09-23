@@ -1729,9 +1729,12 @@ test("口播 page cuts a pause from real off-frame multitrack media on the edito
       { childList: true, characterData: true, subtree: true },
     );
   });
-  // The media service has restored its job list once the production controller is ready.
+  // The production controller is ready once the media service has restored its saved tasks.
   await page.waitForFunction(() =>
-    window.__mainHost.calls.some((call) => call.method === "media.jobs.list"),
+    // It reads its saved task bindings once the media service reports itself available.
+    window.__mainHost.calls.some(
+      (call) => call.method === "media.document.get" && call.args.key === "video-studio-production",
+    ),
   );
   const before = await saved(page);
   await page.locator('#studio .rail [data-tab="spoken"]').click();
@@ -3318,7 +3321,10 @@ test("leaving a project clears its 口播 analysis and old notices", async (t) =
     },
   });
   await page.waitForFunction(() =>
-    window.__mainHost.calls.some((call) => call.method === "media.jobs.list"),
+    // It reads its saved task bindings once the media service reports itself available.
+    window.__mainHost.calls.some(
+      (call) => call.method === "media.document.get" && call.args.key === "video-studio-production",
+    ),
   );
   const before = await saved(page);
   await page.locator('#studio .rail [data-tab="spoken"]').click();
