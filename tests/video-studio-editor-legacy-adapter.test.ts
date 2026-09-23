@@ -1001,3 +1001,34 @@ test("additive legacy image instances use static maps and unsafe extensions fail
   assert.throws(() => change(animated, extended), /延长或滑移/);
   assert.deepEqual(animated, original);
 });
+
+test("assets imported through the old view keep their exact decoded length, not whole 30 fps frames", () => {
+  const doc = document();
+  const view = projectLegacyView(doc),
+    after = structuredClone(view.project);
+  // 10.0125 s decodes to 300.375 frames; the old view can only store 300.
+  const exact = 10 * 240000 + 3000;
+  after.assets.push(
+    { id: "folder-take", kind: "video", name: "文件夹素材", durationFrames: 300, width: 1920, height: 1080 },
+    { id: "reference", kind: "audio", name: "参考录音", durationFrames: 90 },
+  );
+  const operations = applyLegacyProjectChange(
+    doc,
+    view,
+    structuredClone(view.project),
+    after,
+    doc.revision,
+    // A hint more than a frame away from the stored length is ignored.
+    { assetDurations: new Map([["folder-take", exact], ["reference", 95 * T]]) },
+  );
+  const next = applyEditorOperations(doc, operations, doc.revision);
+  assert.equal(next.assets.find((asset) => asset.id === "folder-take")!.duration, exact);
+  assert.equal(next.assets.find((asset) => asset.id === "reference")!.duration, 90 * T);
+  const projected = projectLegacyView(next);
+  assert.equal(projected.project.assets.find((asset) => asset.id === "folder-take")!.durationFrames, 300);
+  assert.ok(
+    projected.restrictions.some(
+      (item) => item.code === "asset-tail" && item.assetId === "folder-take" && !item.excluded,
+    ),
+  );
+});

@@ -1608,12 +1608,27 @@ function legacyCandidateOperations(next: Project) {
       legacyCandidateKey(next) !== legacyCandidateKey(project))
   )
     throw new Error("工程版本已变化，请重新读取后编辑");
+  // Folder imports, referenced originals and voice references decode their files in the media
+  // library; publish that exact length instead of the old view's whole 30 fps frames.
+  const assetDurations = new Map<string, number>();
+  for (const asset of validated.assets) {
+    const seconds = library.items.get(asset.id)?.duration;
+    if (
+      asset.kind !== "image" &&
+      !project.assets.some((item) => item.id === asset.id) &&
+      seconds !== undefined &&
+      Number.isFinite(seconds) &&
+      seconds > 0
+    )
+      assetDurations.set(asset.id, secondsToTicks(seconds));
+  }
   const operations = applyLegacyProjectChange(
     editorSession.read(),
     legacyView,
     project,
     validated,
     project.revision,
+    { assetDurations },
   );
   return { operations, scriptChanged: project.script !== validated.script };
 }

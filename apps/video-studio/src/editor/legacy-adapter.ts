@@ -16,7 +16,7 @@ import { legacyClipId, type LegacyCollection } from "./legacy-aliases";
 import { LEGACY_FRAME_TICKS } from "./legacy-time";
 import { isSubtitleClip, sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
-import { freezeTimeMap } from "./time";
+import { freezeTimeMap, type Tick } from "./time";
 import type {
   EditorAsset,
   EditorClip,
@@ -129,13 +129,24 @@ function baseProject(document: EditorDocument, sequence: EditorSequence): Projec
     timelineMode: "free",
   };
 }
-function assetFromLegacy(asset: Asset): EditorAsset {
+/**
+ * An old-format asset as an editor asset. `exact` is the decoded source length in ticks; it
+ * replaces the whole-frame length for sound and picture when it rounds to the same frame count,
+ * so an import keeps its real tail instead of a 30 fps approximation.
+ */
+function assetFromLegacy(asset: Asset, exact?: Tick): EditorAsset {
   const { id, name, kind, durationFrames, width, height, mediaId, ...metadata } = asset;
+  const usable =
+    exact !== undefined &&
+    kind !== "image" &&
+    Number.isSafeInteger(exact) &&
+    exact > 0 &&
+    Math.abs(exact - ticks(durationFrames)) < LEGACY_FRAME_TICKS;
   return {
     id,
     name,
     kind,
-    duration: ticks(durationFrames),
+    duration: usable ? exact : ticks(durationFrames),
     ...(width === undefined ? {} : { width }),
     ...(height === undefined ? {} : { height }),
     ...(mediaId === undefined ? {} : { resourceId: mediaId }),
@@ -540,6 +551,10 @@ export function applyLegacyProjectChange(
   beforeValue: Project,
   afterValue: Project,
   baseRevision: number,
+  options: {
+    /** Decoded lengths (ticks) of newly added assets, e.g. from the media library. */
+    assetDurations?: ReadonlyMap<string, Tick>;
+  } = {},
 ): EditorOperation[] {
   const document = validateEditorDocument(value);
   if (baseRevision !== document.revision || view.revision !== document.revision)
@@ -618,7 +633,9 @@ export function applyLegacyProjectChange(
     if (!old) {
       if (document.assets.some((item) => item.id === asset.id))
         throw new Error("旧流程新增素材与不可见的现有素材 ID 冲突");
-      append([{ type: "asset.add", asset: assetFromLegacy(asset) }]);
+      append([
+        { type: "asset.add", asset: assetFromLegacy(asset, options.assetDurations?.get(asset.id)) },
+      ]);
       continue;
     }
     const current = document.assets.find((item) => item.id === asset.id)!;
