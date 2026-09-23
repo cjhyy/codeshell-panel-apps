@@ -669,3 +669,48 @@ test("a cancelled color picker leaves the typed value matching the document, and
   await page.getByLabel("选择新关键词颜色", { exact: true }).fill("#aabbcc");
   assert.equal(await keyword.inputValue(), "#aabbcc80");
 });
+
+test("selecting another kind of clip switches away from a tab that does not apply to it", async () => {
+  await page.evaluate(() => {
+    const T = 240000;
+    editorHistory.apply(
+      [
+        { type: "asset.add", asset: { id: "voice", name: "旁白", kind: "audio", duration: 10 * T } },
+        {
+          type: "clip.add",
+          sequenceId: "main",
+          clip: {
+            id: "m",
+            kind: "media",
+            label: "旁白",
+            trackId: "music",
+            start: 0,
+            duration: 4 * T,
+            assetId: "voice",
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 4 * T, source: 4 * T }] },
+            audio: api.defaultAudioMix(),
+            transform: api.defaultTransform(),
+            color: api.defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        },
+      ],
+      editorHistory.revision,
+      "加入旁白",
+    );
+    select(["t"]);
+  });
+  const selectedTab = () =>
+    page.locator('[role="tab"][aria-selected="true"]').textContent();
+  await tab("文字");
+  await page.evaluate(() => select(["m"]));
+  assert.equal(await selectedTab(), "音频", "an audio clip opens its sound settings");
+  await page.evaluate(() => select(["t"]));
+  assert.equal(await selectedTab(), "文字");
+  await page.evaluate(() => select(["a"]));
+  assert.equal(await selectedTab(), "画面", "a video clip has no wording to edit");
+  // A tab that applies to the new clip stays as chosen.
+  await tab("调色");
+  await page.evaluate(() => select(["b"]));
+  assert.equal(await selectedTab(), "调色");
+});

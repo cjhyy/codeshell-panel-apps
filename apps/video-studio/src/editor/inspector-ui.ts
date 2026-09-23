@@ -44,6 +44,18 @@ const TABS: Array<[Tab, string]> = [
   ["text", "文字"],
   ["audio", "音频"],
 ];
+/** The tabs that apply to a clip; the first is where its settings open. */
+function clipTabs(clip: EditorClip, sequence: EditorSequence, doc: EditorDocument): Tab[] {
+  if (clip.kind === "text") return ["text", "visual", "color", "mask"];
+  if (clip.kind === "shape") return ["visual", "color", "mask"];
+  if (clip.kind === "media") {
+    const track = sequence.tracks.find((item) => item.id === clip.trackId),
+      asset = doc.assets.find((item) => item.id === clip.assetId);
+    if (track?.kind === "audio" || asset?.kind === "audio") return ["audio"];
+    if (asset?.kind === "image") return ["visual", "color", "mask"];
+  }
+  return ["visual", "color", "mask", "audio"];
+}
 const EASINGS: Array<[string, string]> = [
   ["linear", "匀速"],
   ["hold", "保持"],
@@ -123,6 +135,8 @@ function defaultMask(kind: Mask["kind"]): Mask {
 export class EditorInspector {
   private readonly root = el("section", "editor-inspector");
   private tab: Tab = "visual";
+  /** The selection the tab was last checked against. */
+  private tabSelection = "";
   private pending = false;
   private disposed = false;
   private error = "";
@@ -761,9 +775,20 @@ export class EditorInspector {
     svg.append(path);
     parent.append(svg);
   }
+  /** A newly selected clip never opens on a tab that does not apply to it (文字 for sound). */
+  private followSelection(scope: Scope | undefined): void {
+    const key = JSON.stringify([scope?.sequence.id, scope?.selectionIds]);
+    if (!scope?.clips.length || key === this.tabSelection) return;
+    this.tabSelection = key;
+    const doc = this.context.read(),
+      lists = scope.clips.map((clip) => clipTabs(clip, scope.sequence, doc)),
+      valid = lists[0]!.filter((tab) => lists.every((list) => list.includes(tab)));
+    if (valid.length && !valid.includes(this.tab)) this.tab = valid[0]!;
+  }
   render(): void {
     if (this.disposed) return;
     const scope = this.scope();
+    this.followSelection(scope);
     const signature = JSON.stringify([
       scope?.revision,
       scope?.sequence.id,
