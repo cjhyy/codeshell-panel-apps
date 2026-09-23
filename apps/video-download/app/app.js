@@ -1520,11 +1520,17 @@ async function cookieFileArguments(url) {
   if (!dependencyReady(runtime.ytDlp)) throw new Error("yt-dlp 还没有准备好。");
   if (previewMode) return ["preview-cookie"];
   const host = new URL(targetUrl).hostname;
+  if (supportsTaskCookies() && context.capabilities?.process?.cookieCredentials !== true)
+    throw new Error("当前 Host 尚未提供带版本校验的临时账号授权，请更新 Host 后读取视频信息。");
+  const revision = supportsTaskCookies() ? account.revision : undefined;
+  if (supportsTaskCookies() && !/^[a-f0-9]{64}$/.test(revision || ""))
+    throw new Error("所选账号缺少有效授权版本，请刷新账号列表。");
   const executableHandle = runtime.ytDlp.handle;
   if (
     cookieAuthorization?.credentialId === credentialId &&
     cookieAuthorization.executableHandle === executableHandle &&
-    cookieAuthorization.host === host
+    cookieAuthorization.host === host &&
+    cookieAuthorization.revision === revision
   ) {
     return [cookieAuthorization.fileArgumentHandle];
   }
@@ -1532,6 +1538,7 @@ async function cookieFileArguments(url) {
     credentialId,
     url: targetUrl,
     executableHandle,
+    ...(revision ? { revision } : {}),
   });
   if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
     throw new Error(
@@ -1541,7 +1548,8 @@ async function cookieFileArguments(url) {
   if (
     cookieRequestUrl(normalizedUrl()) !== targetUrl ||
     elements.cookieSelect.value !== credentialId ||
-    runtime.ytDlp?.handle !== executableHandle
+    runtime.ytDlp?.handle !== executableHandle ||
+    (revision && cookieAccounts.find((entry) => entry.id === credentialId)?.revision !== revision)
   ) {
     throw new Error("链接或 Cookie 账号已变化，请重新确认下载配置。");
   }
@@ -1550,6 +1558,7 @@ async function cookieFileArguments(url) {
     executableHandle,
     host,
     fileArgumentHandle: result.fileArgumentHandle,
+    revision,
   };
   elements.cookieHelp.textContent = `本次面板将使用 ${account.label}；关闭面板后授权自动失效。`;
   return [result.fileArgumentHandle];

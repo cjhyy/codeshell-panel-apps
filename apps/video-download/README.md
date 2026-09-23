@@ -408,8 +408,18 @@ Missing or changed accounts remain errors; they never become anonymous downloads
 Normal retry preserves the original account version; changing accounts creates a
 new task after stopping the old one.
 
-Web login capture and account-authenticated metadata inspection are not complete.
-Without `credentials.cookies.authorizeProcess`, selecting an account and requesting
-metadata shows an explicit limitation; directly submitting the background download
-still uses the saved account. These gaps, real provider login, physical phones, and
-cloud end-to-end acceptance remain required work before declaring workflow parity.
+Saved-account metadata inspection uses `credentials.cookies.authorizeProcess`
+with the selected account revision when the Host advertises
+`process.cookieCredentials`. Desktop, paired Web, and Hub expose the same opaque
+file-grant contract. The Host rechecks the account after confirmation, before
+execution, while the program runs, and before accepting its exit. Revocation or
+account replacement rejects the grant and stops the program. The Panel caches
+authorization only for the same account revision, site, and executable; changing
+the selected account requires fresh consent. This short process does not wait for
+the background download queue to resume.
+
+Hosts without the versioned temporary-process capability show an explicit
+limitation for account metadata; supported background downloads still use their
+saved account. Older Hosts retain their legacy process authorization path. Web
+login capture, real provider login, physical phones, and cloud end-to-end
+acceptance remain required work before declaring workflow parity.

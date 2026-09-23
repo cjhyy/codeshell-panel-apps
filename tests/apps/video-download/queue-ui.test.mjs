@@ -133,8 +133,10 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
                 availableMethods: [
                   "tasks.find",
                   ...(ai.taskCookies ? ["credentials.cookies.listForTask"] : []),
+                  ...(ai.processCookies ? ["credentials.cookies.authorizeProcess"] : []),
                 ],
                 capabilities: {
+                  process: { cookieCredentials: ai.processCookies === true },
                   tasks: {
                     directoryBookmarks: true,
                     queueControl: true,
@@ -2228,3 +2230,55 @@ test("an account changed after selection cannot be silently substituted at backg
   assert.equal((await downloads(page)).length, 0);
   assert.equal(await page.locator("#cookie-select").inputValue(), "saved");
 });
+
+for (const width of [390, 1440]) {
+  test(`saved-account metadata inspection remains usable with the download queue paused at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, {
+      durable: true,
+      taskCookies: true,
+      processCookies: true,
+    });
+    await page.evaluate(() => {
+      window.__nativeQueue.paused = true;
+      window.__cookieAccounts = [{ id: "saved", label: "Saved account", revision: "a".repeat(64) }];
+    });
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("saved");
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() =>
+      window.__downloads.some((call) => call.args.includes("--dump-single-json")),
+    );
+    const authorization = await page.evaluate(() =>
+      window.__calls.find((call) => call.method === "credentials.cookies.authorizeProcess"),
+    );
+    assert.equal(authorization.args.revision, "a".repeat(64));
+    await page.evaluate(() => {
+      const query = window.__downloads.find((call) => call.args.includes("--dump-single-json"));
+      if (query.fileArgumentHandles[0] !== "cookie-file-1")
+        throw new Error("missing sealed account");
+      window.__emit("process.output", {
+        processId: query.processId,
+        stream: "stdout",
+        text: JSON.stringify({
+          id: "fixture",
+          title: "Account metadata fixture",
+          duration: 10,
+          formats: [],
+        }),
+      });
+      window.__emit("process.exit", { processId: query.processId, code: 0 });
+    });
+    await page.waitForFunction(
+      () => document.querySelector("#inspect-status").dataset.state === "ready",
+    );
+    assert.ok(await page.getByText("Account metadata fixture", { exact: true }).count());
+    assert.equal(await page.evaluate(() => window.__nativeQueue.paused), true);
+    assert.equal(
+      await page.evaluate(
+        () => window.__calls.filter((call) => call.method === "tasks.start").length,
+      ),
+      0,
+    );
+  });
+}

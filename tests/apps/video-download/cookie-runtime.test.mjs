@@ -44,6 +44,7 @@ function mount({
   url = "https://www.youtube.com/watch?v=example",
   apiVersion = 10,
   taskCookies = false,
+  processCookies = false,
   call,
 } = {}) {
   const calls = [];
@@ -69,8 +70,14 @@ function mount({
       apiVersion,
       ...(taskCookies
         ? {
-            availableMethods: ["credentials.cookies.listForTask"],
-            capabilities: { tasks: { cookieCredentials: true } },
+            availableMethods: [
+              "credentials.cookies.listForTask",
+              ...(processCookies ? ["credentials.cookies.authorizeProcess"] : []),
+            ],
+            capabilities: {
+              tasks: { cookieCredentials: true },
+              process: { cookieCredentials: processCookies },
+            },
           }
         : {}),
     },
@@ -373,4 +380,28 @@ test("a removed selected account stays visibly selected and cannot silently beco
   await assert.rejects(app.run("cookieFileArguments(currentUrl)"), /已失效/);
   app.choose("");
   assert.equal((await app.run("cookieFileArguments(currentUrl)")).length, 0);
+});
+
+test("temporary metadata authorization carries the selected revision and never reuses a changed account", async () => {
+  let revision = "a".repeat(64);
+  const app = mount({
+    taskCookies: true,
+    processCookies: true,
+    call(method) {
+      return method === "credentials.cookies.listForTask"
+        ? { accounts: [{ ...saved, revision }] }
+        : { authorized: true, fileArgumentHandle: "sealed-file" };
+    },
+  });
+  await app.run("refreshCookieAccounts()");
+  app.choose(saved.id);
+  await app.run("cookieFileArguments(currentUrl)");
+  await app.run("cookieFileArguments(currentUrl)");
+  assert.equal(app.calls.filter((call) => call.method.endsWith("authorizeProcess")).length, 1);
+  assert.equal(app.calls.at(-1).params.revision, "a".repeat(64));
+  revision = "b".repeat(64);
+  await app.run("refreshCookieAccounts()");
+  await app.run("cookieFileArguments(currentUrl)");
+  assert.equal(app.calls.at(-1).params.revision, revision);
+  assert.equal(app.calls.filter((call) => call.method.endsWith("authorizeProcess")).length, 2);
 });
