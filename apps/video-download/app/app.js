@@ -4679,12 +4679,39 @@ async function installOfficialYtDlpBinary(platform, arch, libc, latest, release,
 }
 
 async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
-  const { latest, release } = await readLatestYtDlpRelease(platform, managedBin);
+  let latest;
+  let release;
+  try {
+    ({ latest, release } = await readLatestYtDlpRelease(platform, managedBin));
+  } catch (error) {
+    // A working local yt-dlp must not block the remaining setup, such as a missing ffmpeg.
+    if (!dependencyReady(runtime.ytDlp)) throw error;
+    const detail = sanitizeDiagnosticText(
+      error instanceof Error ? error.message : String(error),
+      300,
+    );
+    pushSetupActivity(
+      `未能查询 yt-dlp 最新版，保留当前 ${runtime.ytDlp.version || "可用版本"}：${detail}`,
+      "failed",
+      "plan",
+    );
+    return { skipped: true };
+  }
   if (runtime.ytDlp?.handle) {
     const installed = runtime.ytDlp.version || "";
-    if (compareYtDlpVersions(installed, latest) === 0) {
+    const comparison = compareYtDlpVersions(installed, latest);
+    if (comparison === 0) {
       pushSetupActivity(`yt-dlp 已是最新版 ${latest}`, "completed", "plan");
-      return;
+      return { skipped: false };
+    }
+    if (comparison === 1) {
+      // Nightly/master builds are newer than the stable tag; never downgrade them.
+      pushSetupActivity(
+        `yt-dlp ${installed} 比官方稳定版 ${latest} 更新，保留当前版本`,
+        "completed",
+        "plan",
+      );
+      return { skipped: false };
     }
     try {
       const updated = await runDirectSetupProcess(
@@ -4700,7 +4727,8 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
           ["--ignore-config", "--version"],
           "验证 yt-dlp 版本",
         );
-        if (verified.code === 0 && parseYtDlpVersionOutput(verified.stdout) === latest) return;
+        if (verified.code === 0 && parseYtDlpVersionOutput(verified.stdout) === latest)
+          return { skipped: false };
       }
       pushSetupActivity("现有安装无法自更新，改用官方二进制", "completed", "plan");
     } catch {
@@ -4718,6 +4746,7 @@ async function ensureLatestYtDlp(platform, arch, libc, managedBin) {
   const version = parseYtDlpVersionOutput(verified.stdout);
   if (version !== latest) throw new Error(`yt-dlp 版本验证失败：${version || "没有输出"}`);
   runtime.ytDlp = { ...installed, version };
+  return { skipped: false };
 }
 
 function ffmpegAssetFor(platform, arch) {
@@ -4877,12 +4906,15 @@ async function requestDirectSetup() {
       panel.call("process.info"),
       panel.call("filesystem.getKnownDirectory", { name: "user-bin" }),
     ]);
-    await ensureLatestYtDlp(system.platform, system.arch, system.libc, managedBin);
+    const ytDlp = await ensureLatestYtDlp(system.platform, system.arch, system.libc, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
     await ensureFfmpeg(system.platform, system.arch, managedBin);
     if (directSetupCancelled) throw new Error("安装 / 更新已取消");
     await refreshRuntimeDependencies();
-    setupTaskResult = `本地安装 / 更新完成。yt-dlp ${runtime.ytDlp?.version || "已验证"}；ffmpeg ${runtime.ffmpeg?.handle ? "已就绪" : "需要处理"}。`;
+    const ytDlpSummary = ytDlp.skipped
+      ? `未能查询 yt-dlp 最新版，保留当前 ${runtime.ytDlp?.version || "可用版本"}，可稍后重试`
+      : `yt-dlp ${runtime.ytDlp?.version || "已验证"}`;
+    setupTaskResult = `本地安装 / 更新完成。${ytDlpSummary}；ffmpeg ${runtime.ffmpeg?.handle ? "已就绪" : "需要处理"}。`;
     pushSetupActivity("下载环境复检完成", "completed", "plan");
   } catch (error) {
     setupRequestError = sanitizeDiagnosticText(
