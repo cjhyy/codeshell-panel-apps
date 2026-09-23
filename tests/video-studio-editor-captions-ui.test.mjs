@@ -176,7 +176,9 @@ async function fixture(t, options = {}) {
     });
     if (options.recheck) {
       globalThis.transcriptionHint =
-        "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
+        options.recheck === "no-local-media"
+          ? ""
+          : "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
       controller.setCapabilities({ canTranscribe: false, canTranslate: true });
     }
     ui.open();
@@ -375,6 +377,17 @@ test("unavailable transcription names the missing piece and 重新检测 refresh
   );
   assert.equal(await page.getByRole("button", { name: "重新检测" }).isVisible(), false);
   assert.equal(await page.getByText("缺少 base 模型", { exact: false }).isVisible(), false);
+});
+
+test("without local media support the caption panel never asks to install whisper", async (t) => {
+  const page = await fixture(t, { recheck: "no-local-media" });
+  assert.equal(await page.getByRole("button", { name: "生成所选声音字幕" }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "重新检测" }).isVisible(), false);
+  assert.equal(await page.locator(".ec-note").isVisible(), false);
+  assert.equal(
+    await page.locator("[data-caption-generate]").getAttribute("title"),
+    "当前环境未连接真实转写，可导入SRT",
+  );
 });
 
 test("explicit source unlink button preserves caption text and real words and can be undone", async (t) => {

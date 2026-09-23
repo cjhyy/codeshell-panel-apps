@@ -243,6 +243,24 @@ test("a fresh status request bypasses the short status cache", async () => {
   }
 });
 
+test("a fresh status request chains after a pending ordinary probe instead of joining it", async () => {
+  const f = fixture();
+  try {
+    const stale = f.bridge.call("media.status", { probe: true });
+    const fresh = f.bridge.call("media.status", { probe: true, fresh: true });
+    const joined = f.bridge.call("media.status", { probe: true, fresh: true });
+    await Promise.all([stale, fresh, joined]);
+    assert.equal(
+      f.calls.filter(
+        (call) => call.method === "tasks.start" && call.params.input.request.action === "status",
+      ).length,
+      2,
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
 test("all native media processing uses generic package tasks and directly materialized inputs", async () => {
   const f = fixture();
   try {

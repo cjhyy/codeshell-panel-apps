@@ -2332,12 +2332,12 @@ var sha256 = "e4a351b60cbeb22aed990de000475e83f16ab10451574d1aa1966ae3330a1781";
 
 // native/editor-runtime/cli.ts
 import { fileURLToPath } from "node:url";
-import { isAbsolute as isAbsolute5 } from "node:path";
+import { isAbsolute as isAbsolute6 } from "node:path";
 
 // native/editor-runtime/runtime.ts
-import { copyFile as copyFile3, readdir as readdir2, rename as rename4, rm as rm9, stat as stat9 } from "node:fs/promises";
+import { copyFile as copyFile3, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10 } from "node:fs/promises";
 import { randomUUID as randomUUID7 } from "node:crypto";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 
 // src/external-media.ts
 var isResourceId = (id3) => typeof id3 === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(id3);
@@ -5389,11 +5389,40 @@ async function exportEditorSequence(options2) {
   }
 }
 
-// native/editor-runtime/files.ts
+// native/media/media-executables.ts
 import { constants as constants3 } from "node:fs";
-import { copyFile as copyFile2, lstat, mkdir as mkdir5, open, realpath, rename as rename2, rm as rm5, stat as stat4 } from "node:fs/promises";
+import { access as access2, realpath, stat as stat4 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { delimiter as delimiter2, isAbsolute as isAbsolute4, join as join5 } from "node:path";
+function executableSearchDirectories() {
+  return [
+    ...new Set(
+      [
+        ...(process.env.PATH ?? "").split(delimiter2),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        join5(homedir2(), ".local/bin")
+      ].filter(isAbsolute4)
+    )
+  ];
+}
+async function findExecutable(name, explicit, directories = executableSearchDirectories()) {
+  const choices = explicit ? [explicit] : directories.map((dir) => join5(dir, process.platform === "win32" ? `${name}.exe` : name));
+  for (const path of choices) {
+    try {
+      await access2(path, constants3.X_OK);
+      if ((await stat4(path)).isFile()) return await realpath(path);
+    } catch {
+    }
+  }
+  return void 0;
+}
+
+// native/editor-runtime/files.ts
+import { constants as constants4 } from "node:fs";
+import { copyFile as copyFile2, lstat, mkdir as mkdir5, open, realpath as realpath2, rename as rename2, rm as rm5, stat as stat5 } from "node:fs/promises";
 import { createHash as createHash2, randomUUID as randomUUID3 } from "node:crypto";
-import { join as join5, relative as relative2, sep as sep2 } from "node:path";
+import { join as join6, relative as relative2, sep as sep2 } from "node:path";
 
 // native/editor-runtime/protocol.ts
 var EditorTaskError = class extends Error {
@@ -5620,19 +5649,19 @@ async function sealed(path) {
   const info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new EditorTaskError("INVALID_DIRECTORY", "任务目录不是授权的普通目录");
-  return realpath(path);
+  return realpath2(path);
 }
 async function directory(root, parts) {
   let path = root;
   for (const part2 of parts) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(part2) || part2 === "." || part2 === "..")
       throw new EditorTaskError("INVALID_DIRECTORY", "任务子目录无效");
-    path = join5(path, part2);
+    path = join6(path, part2);
     await mkdir5(path, { mode: 448 }).catch((error) => {
       if (error.code !== "EEXIST") throw error;
     });
     const info = await lstat(path);
-    if (!info.isDirectory() || info.isSymbolicLink() || await realpath(path) !== path)
+    if (!info.isDirectory() || info.isSymbolicLink() || await realpath2(path) !== path)
       throw new EditorTaskError("INVALID_DIRECTORY", "任务子目录已变化");
   }
   return path;
@@ -5642,18 +5671,18 @@ async function regular(root, parts) {
   for (const part2 of parts) {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(part2) || part2 === "." || part2 === "..")
       throw new EditorTaskError("INVALID_FILE", "任务文件名无效");
-    path = join5(path, part2);
+    path = join6(path, part2);
     if ((await lstat(path)).isSymbolicLink())
       throw new EditorTaskError("INVALID_FILE", "任务材料不能使用符号链接");
   }
-  const canonical = await realpath(path);
-  if (!canonical.startsWith(root + sep2) || !(await stat4(canonical)).isFile())
+  const canonical = await realpath2(path);
+  if (!canonical.startsWith(root + sep2) || !(await stat5(canonical)).isFile())
     throw new EditorTaskError("INVALID_FILE", "任务材料不在授权目录内");
   return canonical;
 }
 async function fileHash(path, signal) {
   abort(signal);
-  const hash2 = createHash2("sha256"), file = await open(path, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0)), stream = file.createReadStream();
+  const hash2 = createHash2("sha256"), file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0)), stream = file.createReadStream();
   const stop = () => stream.destroy(mediaAbortError());
   signal.addEventListener("abort", stop, { once: true });
   try {
@@ -5669,7 +5698,7 @@ async function fileHash(path, signal) {
   }
 }
 async function readBytes(root, parts, maximum) {
-  const path = await regular(root, parts), file = await open(path, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+  const path = await regular(root, parts), file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   try {
     if ((await file.stat()).size > maximum)
       throw new EditorTaskError("LIMIT_EXCEEDED", "保存的任务数据超过大小限制");
@@ -5679,7 +5708,7 @@ async function readBytes(root, parts, maximum) {
   }
 }
 async function readPrefix(root, parts, length = 32) {
-  const path = await regular(root, parts), file = await open(path, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+  const path = await regular(root, parts), file = await open(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   try {
     const result = Buffer.alloc(length), { bytesRead } = await file.read(result, 0, length, 0);
     return result.subarray(0, bytesRead);
@@ -5714,12 +5743,12 @@ async function atomic(path, bytes) {
 }
 async function publish(root, path, extension, mimeType, role, signal) {
   abort(signal);
-  const sha2562 = await fileHash(path, signal), bytes = (await stat4(path)).size;
+  const sha2562 = await fileHash(path, signal), bytes = (await stat5(path)).size;
   if (bytes < 1 || bytes > 20 * 1024 ** 3)
     throw new EditorTaskError("LIMIT_EXCEEDED", "输出文件超过当前资源接口的 20GiB 限制");
-  const outputs = await directory(root, ["outputs"]), target = join5(outputs, `${sha2562}.${extension}`);
+  const outputs = await directory(root, ["outputs"]), target = join6(outputs, `${sha2562}.${extension}`);
   if (path !== target)
-    await copyFile2(path, target, constants3.COPYFILE_EXCL).catch(async (error) => {
+    await copyFile2(path, target, constants4.COPYFILE_EXCL).catch(async (error) => {
       if (error.code !== "EEXIST" || await fileHash(await regular(outputs, [`${sha2562}.${extension}`]), signal) !== sha2562)
         throw error;
     });
@@ -5738,7 +5767,7 @@ async function publish(root, path, extension, mimeType, role, signal) {
 var yauzl = __toESM(require_yauzl(), 1);
 var yazl = __toESM(require_yazl(), 1);
 import {
-  constants as constants4,
+  constants as constants5,
   createWriteStream,
   open as openFd,
   close as closeFd,
@@ -5746,7 +5775,7 @@ import {
 } from "node:fs";
 import { link as link2, lstat as lstat2, open as open2, rm as rm6 } from "node:fs/promises";
 import { createHash as createHash3, randomUUID as randomUUID4 } from "node:crypto";
-import { dirname as dirname4, isAbsolute as isAbsolute4, join as join6, relative as relative3, sep as sep3 } from "node:path";
+import { dirname as dirname4, isAbsolute as isAbsolute5, join as join7, relative as relative3, sep as sep3 } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 /*! Bundled ZIP dependencies: yauzl / yazl (Copyright (c) 2014 Josh Wolfe),
@@ -5803,22 +5832,22 @@ async function rootsFor(options2) {
   };
 }
 async function sourcePath(path, roots) {
-  if (!isAbsolute4(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
+  if (!isAbsolute5(path)) fail("INVALID_FILE", "材料路径必须由 Host 物化");
   for (const root of roots) {
     const part2 = relative3(root, path);
-    if (part2 && !isAbsolute4(part2) && part2 !== ".." && !part2.startsWith(`..${sep3}`))
+    if (part2 && !isAbsolute5(part2) && part2 !== ".." && !part2.startsWith(`..${sep3}`))
       return regular(root, part2.split(sep3));
   }
   return fail("INVALID_FILE", "材料路径不在 Host 授权目录中");
 }
 async function outputPath(path, root) {
-  if (!isAbsolute4(path)) fail("INVALID_FILE", "输出路径必须位于任务目录");
+  if (!isAbsolute5(path)) fail("INVALID_FILE", "输出路径必须位于任务目录");
   const part2 = relative3(root, path);
-  if (!part2 || isAbsolute4(part2) || part2 === ".." || part2.startsWith(`..${sep3}`))
+  if (!part2 || isAbsolute5(part2) || part2 === ".." || part2.startsWith(`..${sep3}`))
     fail("INVALID_FILE", "输出路径不在任务目录内");
   const parts = part2.split(sep3), name = parts.pop();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) fail("INVALID_FILE", "输出文件名无效");
-  const parent = await directory(root, parts), target = join6(parent, name);
+  const parent = await directory(root, parts), target = join7(parent, name);
   try {
     await lstat2(target);
   } catch (error) {
@@ -5840,7 +5869,7 @@ async function inspectFile(path, maximum, signal) {
   abort2(signal);
   const hash2 = createHash3("sha256");
   let bytes = 0;
-  const handle = await open2(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
+  const handle = await open2(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
   const stream = handle.createReadStream({ highWaterMark: 128 * 1024 });
   const stop = () => stream.destroy(new DOMException("工程包任务已取消", "AbortError"));
   signal.addEventListener("abort", stop, { once: true });
@@ -5909,7 +5938,7 @@ async function exportPortableProject(options2) {
   const json3 = Buffer.from(JSON.stringify(manifest));
   if (json3.length > limits.maxManifestBytes || total + json3.length > limits.maxTotalBytes)
     fail("LIMIT_EXCEEDED", "工程清单或展开后总大小超过工程包限制");
-  const scratch = join6(dirname4(target), `bundle-${randomUUID4()}.partial`), zip = new writerApi.ZipFile();
+  const scratch = join7(dirname4(target), `bundle-${randomUUID4()}.partial`), zip = new writerApi.ZipFile();
   const active = /* @__PURE__ */ new Set();
   const stopStreams = (error) => {
     for (const stream of active) stream.destroy(error);
@@ -5951,7 +5980,7 @@ async function exportPortableProject(options2) {
             abort2(options2.signal);
             const path = await sourcePath(file.path, roots), hash2 = createHash3("sha256");
             let size = 0;
-            const handle = await open2(path, constants4.O_RDONLY | constants4.O_NOFOLLOW);
+            const handle = await open2(path, constants5.O_RDONLY | constants5.O_NOFOLLOW);
             const source2 = handle.createReadStream({ highWaterMark: 128 * 1024 });
             const verify = new Transform({
               transform(chunk, _encoding, done) {
@@ -5999,7 +6028,7 @@ async function exportPortableProject(options2) {
     zip.end();
     await finished;
     abort2(options2.signal);
-    const persisted = await open2(scratch, constants4.O_RDWR | constants4.O_NOFOLLOW);
+    const persisted = await open2(scratch, constants5.O_RDWR | constants5.O_NOFOLLOW);
     try {
       await persisted.sync();
     } finally {
@@ -6050,7 +6079,7 @@ async function importPortableProject(options2) {
   const fd = await new Promise(
     (resolve, reject) => openFd(
       input,
-      constants4.O_RDONLY | constants4.O_NOFOLLOW,
+      constants5.O_RDONLY | constants5.O_NOFOLLOW,
       (error, fd2) => error ? reject(error) : resolve(fd2)
     )
   );
@@ -6137,7 +6166,7 @@ async function importPortableProject(options2) {
     let extracted = 0;
     for (const item of manifest.media) {
       abort2(options2.signal);
-      const path = join6(mediaRoot, item.sha256), output = await open2(path, "wx", 384), hash2 = createHash3("sha256");
+      const path = join7(mediaRoot, item.sha256), output = await open2(path, "wx", 384), hash2 = createHash3("sha256");
       try {
         await readEntry(
           zip,
@@ -6186,8 +6215,8 @@ async function importPortableProject(options2) {
 }
 
 // native/editor-runtime/bundle-tasks.ts
-import { rm as rm7, stat as stat5, open as open3, link as link3 } from "node:fs/promises";
-import { basename, join as join7 } from "node:path";
+import { rm as rm7, stat as stat6, open as open3, link as link3 } from "node:fs/promises";
+import { basename, join as join8 } from "node:path";
 import { randomUUID as randomUUID5 } from "node:crypto";
 var PORTABLE_PUBLICATION_BATCH = 120;
 function checkedReceipt(value) {
@@ -6241,7 +6270,7 @@ async function runPortableImportRequest(request, context) {
         throw new EditorTaskError("IMPORT_MISMATCH", "同一导入暂存不能改用另一个工程包");
     } else {
       const input = await regular(context.root, ["inputs", "resource-0.bin"]);
-      const before = await stat5(input), bundleHash = await fileHash(input, context.signal);
+      const before = await stat6(input), bundleHash = await fileHash(input, context.signal);
       if (sourceResourceId.startsWith("asset-") && sourceResourceId !== `asset-${bundleHash}`)
         throw new EditorTaskError("SOURCE_CHANGED", "工程包内容与资源编号不匹配");
       let progressFailure;
@@ -6259,7 +6288,7 @@ async function runPortableImportRequest(request, context) {
       let published = false;
       try {
         if (progressFailure) throw progressFailure;
-        const after = await stat5(input);
+        const after = await stat6(input);
         if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
           throw new EditorTaskError("SOURCE_CHANGED", "工程包在读取时发生变化，请重新导入");
         const bytes = Buffer.from(JSON.stringify(imported.manifest));
@@ -6271,7 +6300,7 @@ async function runPortableImportRequest(request, context) {
             mimeType: mediaMime(imported.manifest, item.assetIds)
           }));
           const data = Buffer.from(JSON.stringify(items));
-          await atomic(join7(imported.directory, `page-${pages.length}.json`), data);
+          await atomic(join8(imported.directory, `page-${pages.length}.json`), data);
           pages.push({ sha256: bytesHash(data), bytes: data.length });
         }
         receipt = {
@@ -6284,9 +6313,9 @@ async function runPortableImportRequest(request, context) {
           mediaCount: imported.manifest.media.length,
           pages
         };
-        await atomic(join7(imported.directory, "manifest.json"), bytes);
+        await atomic(join8(imported.directory, "manifest.json"), bytes);
         abort(context.signal);
-        const temporary = join7(base, `receipt-${randomUUID5()}.tmp`), file = await open3(temporary, "wx", 384);
+        const temporary = join8(base, `receipt-${randomUUID5()}.tmp`), file = await open3(temporary, "wx", 384);
         try {
           await file.writeFile(JSON.stringify(receipt));
           await file.sync();
@@ -6294,7 +6323,7 @@ async function runPortableImportRequest(request, context) {
           await file.close();
         }
         try {
-          await link3(temporary, join7(base, "receipt.json"));
+          await link3(temporary, join8(base, "receipt.json"));
           published = true;
         } finally {
           await rm7(temporary, { force: true });
@@ -6311,11 +6340,11 @@ async function runPortableImportRequest(request, context) {
     throw new EditorTaskError("IMPORT_MISMATCH", "请求与已校验的工程包不一致");
   if (request.action === "discard-project-import") {
     await atomic(
-      join7(base, "discarded.json"),
+      join8(base, "discarded.json"),
       Buffer.from(JSON.stringify({ bundleHash: receipt.bundleHash }))
     );
-    await rm7(join7(base, receipt.directory), { recursive: true, force: true });
-    await rm7(join7(base, "receipt.json"), { force: true });
+    await rm7(join8(base, receipt.directory), { recursive: true, force: true });
+    await rm7(join8(base, "receipt.json"), { force: true });
     return { discarded: true, transferId: request.transferId, bundleHash: receipt.bundleHash };
   }
   if (request.action === "publish-project-media") {
@@ -6337,7 +6366,7 @@ async function runPortableImportRequest(request, context) {
     for (const item of batch) {
       abort(context.signal);
       const path = await regular(base, [receipt.directory, "media", item.sha256]);
-      if ((await stat5(path)).size !== item.bytes)
+      if ((await stat6(path)).size !== item.bytes)
         throw new EditorTaskError("SOURCE_CHANGED", "已校验的暂存素材发生变化，请重新导入");
       const artifact2 = await context.add(path, "bin", item.mimeType, "portable-media");
       if (artifact2.sha256 !== item.sha256 || artifact2.bytes !== item.bytes)
@@ -6385,7 +6414,7 @@ function portableTaskError(error) {
 // native/editor-runtime/waveform.ts
 import { createReadStream as createReadStream3 } from "node:fs";
 import { lstat as lstat3, readFile } from "node:fs/promises";
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 var RATE2 = 48e3;
 var MAX_SAMPLES = RATE2 * WAVEFORM_LIMITS.seconds;
 var safety = [
@@ -6469,7 +6498,7 @@ async function analyzeEditorWaveform(options2) {
     maxStdoutBytes: 65536
   })).stdout.toString();
   const recipeHash = digest2({ algorithm: "stereo-envelope-v1", sourceHash, decoder: version });
-  const path = join8(options2.cacheDir, `${recipeHash}.json`);
+  const path = join9(options2.cacheDir, `${recipeHash}.json`);
   try {
     const cached = await regular(options2.cacheDir, [`${recipeHash}.json`]);
     if ((await lstat3(cached)).size > WAVEFORM_LIMITS.bytes)
@@ -6573,8 +6602,8 @@ async function analyzeEditorWaveform(options2) {
 
 // native/editor-runtime/multicam.ts
 import { createReadStream as createReadStream4 } from "node:fs";
-import { readFile as readFile2, stat as stat6 } from "node:fs/promises";
-import { join as join9 } from "node:path";
+import { readFile as readFile2, stat as stat7 } from "node:fs/promises";
+import { join as join10 } from "node:path";
 
 // src/editor/audio-correlation.ts
 function fft(real, imag, inverse) {
@@ -6734,10 +6763,10 @@ async function alignEditorMulticam(options2) {
       sourceHash,
       windowSeconds: options2.windowSeconds,
       decoder: version
-    }), path = join9(options2.cacheDir, `${key}.json`);
+    }), path = join10(options2.cacheDir, `${key}.json`);
     try {
       const cached = await regular(options2.cacheDir, [`${key}.json`]);
-      if ((await stat6(cached)).size > 1024 * 1024) throw new Error("机位缓存超过范围");
+      if ((await stat7(cached)).size > 1024 * 1024) throw new Error("机位缓存超过范围");
       const value = JSON.parse(await readFile2(cached, "utf8"));
       if (value.sourceHash !== sourceHash || !Array.isArray(value.features) || value.features.length < 400 || value.features.length > 36e3 || !value.features.every(
         (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 30
@@ -6757,7 +6786,7 @@ async function alignEditorMulticam(options2) {
     const pcmKey = editorSourcePcmCacheKey(sourceHash, source2.duration, version);
     let usedPcm = false;
     try {
-      const pcm = await regular(options2.pcmCacheDir, [`${pcmKey}.f32`]), info = await stat6(pcm);
+      const pcm = await regular(options2.pcmCacheDir, [`${pcmKey}.f32`]), info = await stat7(pcm);
       if (info.size % 8 !== 0 || info.size < RATE3 * 2 * 8)
         throw new Error("声音缓存不完整或不足两秒");
       const stream = createReadStream4(pcm, {
@@ -6864,12 +6893,12 @@ async function alignEditorMulticam(options2) {
 }
 
 // native/editor-runtime/inspect.ts
-import { stat as stat8 } from "node:fs/promises";
+import { stat as stat9 } from "node:fs/promises";
 
 // native/editor-runtime/proxy.ts
 import { rename as rename3, rm as rm8 } from "node:fs/promises";
 import { createHash as createHash4, randomUUID as randomUUID6 } from "node:crypto";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 var safety3 = [
   "-protocol_whitelist",
   "file,pipe",
@@ -7047,7 +7076,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
       "UNSUPPORTED_TIMESTAMPS",
       "当前合成器尚不支持晚于素材起点出现的第一帧，请先整理画面起点"
     );
-  const output = join10(context.workDir, `proxy-${randomUUID6()}.mp4`);
+  const output = join11(context.workDir, `proxy-${randomUUID6()}.mp4`);
   const filter = `scale=${encodedWidth}:${encodedHeight}:flags=${purpose === "preview" ? "bilinear" : "lanczos"},setsar=1,colorspace=ispace=${inputMatrix}:iprimaries=${inputPrimaries}:itrc=${inputTransfer}:irange=${inputRange}:space=bt709:primaries=bt709:trc=bt709:range=tv:format=${purpose === "preview" ? "yuv420p" : "yuv444p"}:dither=fsb`;
   try {
     await runMediaProcess(
@@ -7109,7 +7138,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
         "PROXY_TIMING_MISMATCH",
         "兼容视频的帧时间与原素材不一致，已停止输出"
       );
-    const saved = join10(cache, "video.mp4");
+    const saved = join11(cache, "video.mp4");
     await rename3(output, saved);
     const result = {
       path: saved,
@@ -7131,7 +7160,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
       }
     };
     const { path: _path, ...publicReceipt } = result;
-    await atomic(join10(cache, "receipt.json"), Buffer.from(JSON.stringify(publicReceipt)));
+    await atomic(join11(cache, "receipt.json"), Buffer.from(JSON.stringify(publicReceipt)));
     return result;
   } finally {
     await rm8(output, { force: true });
@@ -7196,7 +7225,7 @@ var frameRate = (value) => {
 };
 var field = (value) => typeof value === "string" ? value.slice(0, 128) : "unknown";
 async function inspectEditorSource(path, resourceId2, ffprobePath, signal) {
-  const bytes = (await stat8(path)).size;
+  const bytes = (await stat9(path)).size;
   if (!Number.isSafeInteger(bytes) || bytes < 1 || bytes > 20 * 1024 ** 3)
     throw new EditorTaskError("INVALID_MEDIA", "素材为空或超过 20GiB 限制");
   const sha2562 = await fileHash(path, signal);
@@ -7429,6 +7458,19 @@ var artifactValue = (artifact) => ({
 async function runEditorRequest(raw, context) {
   const request = validateEditorRequest(raw);
   abort(context.signal);
+  const [ffmpegPath, ffprobePath] = await Promise.all(
+    ["ffmpeg", "ffprobe"].map(
+      async (name) => context.tools?.[`${name}Path`] ?? await findExecutable(name, void 0, context.toolSearchDirectories)
+    )
+  );
+  context = {
+    ...context,
+    tools: {
+      ...context.tools,
+      ...ffmpegPath ? { ffmpegPath } : {},
+      ...ffprobePath ? { ffprobePath } : {}
+    }
+  };
   hash(context.scopeKey);
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(context.jobId))
     throw new EditorTaskError("INVALID_REQUEST", "主程序任务编号无效");
@@ -7466,13 +7508,13 @@ async function runEditorRequest(raw, context) {
     return artifactValue(artifact);
   };
   const report = async (value) => {
-    const path = join11(work, `report-${randomUUID7()}.json`);
+    const path = join12(work, `report-${randomUUID7()}.json`);
     await atomic(path, Buffer.from(JSON.stringify(value)));
     return add2(path, "json", "application/json", "editor-report");
   };
   const material = async (binding) => {
     const id3 = resourceId(binding.resourceId), path = await regular(resources, [`${id3}.bin`]);
-    if (await fileHash(path, context.signal) !== hash(binding.sha256) || (await stat9(path)).size !== binding.bytes)
+    if (await fileHash(path, context.signal) !== hash(binding.sha256) || (await stat10(path)).size !== binding.bytes)
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
   };
@@ -7485,15 +7527,15 @@ async function runEditorRequest(raw, context) {
           "BUILTIN_CHANGED",
           "安装包中的示例旁白缺失或校验失败，请重新安装视频面板"
         );
-      const bytes = (await stat9(context.builtinNarrationPath)).size;
-      const temporary = join11(resources, `${id3}.${randomUUID7()}.tmp`);
+      const bytes = (await stat10(context.builtinNarrationPath)).size;
+      const temporary = join12(resources, `${id3}.${randomUUID7()}.tmp`);
       try {
         await copyFile3(context.builtinNarrationPath, temporary);
         if (await fileHash(temporary, context.signal) !== EDITOR_DEMO_NARRATION_SHA)
           throw new EditorTaskError("BUILTIN_CHANGED", "示例旁白内容变化");
-        await rename4(temporary, join11(resources, `${id3}.bin`));
+        await rename4(temporary, join12(resources, `${id3}.bin`));
         binding = { resourceId: id3, sha256: EDITOR_DEMO_NARRATION_SHA, bytes };
-        await atomic(join11(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+        await atomic(join12(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
       } finally {
         await rm9(temporary, { force: true });
       }
@@ -7535,11 +7577,11 @@ async function runEditorRequest(raw, context) {
       if (id3.startsWith("asset-") && id3 !== `asset-${sourceHash}`)
         throw new EditorTaskError("SOURCE_CHANGED", "素材内容与资源编号不匹配");
       await progress2(0, "prepare-source-video");
-      const ffmpegPath2 = context.tools?.ffmpegPath ?? "ffmpeg", ffprobePath2 = context.tools?.ffprobePath ?? "ffprobe";
-      const ffmpegVersion2 = (await runMediaProcess(ffmpegPath2, ["-hide_banner", "-version"], { signal: context.signal })).stdout.toString();
+      const ffmpegPath3 = context.tools?.ffmpegPath ?? "ffmpeg", ffprobePath3 = context.tools?.ffprobePath ?? "ffprobe";
+      const ffmpegVersion2 = (await runMediaProcess(ffmpegPath3, ["-hide_banner", "-version"], { signal: context.signal })).stdout.toString();
       const proxy = await prepareEditorProxy(input, sourceHash, {
-        ffmpegPath: ffmpegPath2,
-        ffprobePath: ffprobePath2,
+        ffmpegPath: ffmpegPath3,
+        ffprobePath: ffprobePath3,
         ffmpegVersion: ffmpegVersion2,
         cacheDir: cache,
         workDir: work,
@@ -7646,7 +7688,7 @@ async function runEditorRequest(raw, context) {
       for (let index = 0; index < request.resourceIds.length; index++) {
         const id3 = request.resourceIds[index];
         const path = await regular(root, ["inputs", `resource-${index}.bin`]);
-        const bytes = (await stat9(path)).size;
+        const bytes = (await stat10(path)).size;
         if (bytes < 1 || bytes > 20 * 1024 ** 3)
           throw new EditorTaskError("LIMIT_EXCEEDED", "素材超过当前 20GiB 资源大小限制");
         const sha2562 = await fileHash(path, context.signal);
@@ -7658,14 +7700,14 @@ async function runEditorRequest(raw, context) {
           throw new EditorTaskError("SOURCE_CHANGED", "同一快照中的原文件已变化，请创建新快照");
         if (previous) await material(previous);
         else {
-          const temporary = join11(resources, `${id3}.${randomUUID7()}.tmp`);
+          const temporary = join12(resources, `${id3}.${randomUUID7()}.tmp`);
           try {
             await copyFile3(path, temporary);
             abort(context.signal);
             if (await fileHash(temporary, context.signal) !== sha2562)
               throw new EditorTaskError("SOURCE_CHANGED", "素材在准备时发生变化");
-            await rename4(temporary, join11(resources, `${id3}.bin`));
-            await atomic(join11(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+            await rename4(temporary, join12(resources, `${id3}.bin`));
+            await atomic(join12(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
           } finally {
             await rm9(temporary, { force: true });
           }
@@ -7692,12 +7734,12 @@ async function runEditorRequest(raw, context) {
       if (metadata && metadata.count !== request.chunkCount)
         throw new EditorTaskError("INVALID_REQUEST", "工程数据块总数不一致");
       await atomic(
-        join11(doc, "chunks.json"),
+        join12(doc, "chunks.json"),
         Buffer.from(JSON.stringify({ count: request.chunkCount }))
       );
-      await atomic(join11(doc, `chunk-${request.chunkIndex}.bin`), bytes);
+      await atomic(join12(doc, `chunk-${request.chunkIndex}.bin`), bytes);
       await atomic(
-        join11(doc, `chunk-${request.chunkIndex}.json`),
+        join12(doc, `chunk-${request.chunkIndex}.json`),
         Buffer.from(JSON.stringify({ sha256: bytesHash(bytes) }))
       );
       succeeded = true;
@@ -7748,7 +7790,7 @@ async function runEditorRequest(raw, context) {
         document: selected2.document,
         bindings
       };
-      await atomic(join11(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest2)));
+      await atomic(join12(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest2)));
       succeeded = true;
       return {
         result: {
@@ -7763,10 +7805,10 @@ async function runEditorRequest(raw, context) {
       };
     }
     if (request.action === "discard") {
-      await atomic(join11(transfer, "discarded.json"), Buffer.from("{}"));
+      await atomic(join12(transfer, "discarded.json"), Buffer.from("{}"));
       for (const name of ["resources", "documents"])
-        await rm9(join11(transfer, name), { recursive: true, force: true });
-      await rm9(join11(transfer, "manifest.json"), { force: true });
+        await rm9(join12(transfer, name), { recursive: true, force: true });
+      await rm9(join12(transfer, "manifest.json"), { force: true });
       succeeded = true;
       return { result: { discarded: true, transferId: request.transferId }, artifacts };
     }
@@ -7871,7 +7913,7 @@ async function runEditorRequest(raw, context) {
         document: selected.document,
         workDir: work,
         sourceRoots: [resources],
-        outputPath: join11(work, "project.mimiproject"),
+        outputPath: join12(work, "project.mimiproject"),
         signal: context.signal,
         resolveAsset: async (asset2) => {
           const source2 = original(asset2.id);
@@ -7902,11 +7944,11 @@ async function runEditorRequest(raw, context) {
         artifacts
       };
     }
-    const ffmpegPath = context.tools?.ffmpegPath ?? "ffmpeg", ffprobePath = context.tools?.ffprobePath ?? "ffprobe";
-    const ffmpegVersion = (await runMediaProcess(ffmpegPath, ["-hide_banner", "-version"], { signal: context.signal })).stdout.toString();
+    const ffmpegPath2 = context.tools?.ffmpegPath ?? "ffmpeg", ffprobePath2 = context.tools?.ffprobePath ?? "ffprobe";
+    const ffmpegVersion = (await runMediaProcess(ffmpegPath2, ["-hide_banner", "-version"], { signal: context.signal })).stdout.toString();
     const proxyContext = {
-      ffmpegPath,
-      ffprobePath,
+      ffmpegPath: ffmpegPath2,
+      ffprobePath: ffprobePath2,
       ffmpegVersion,
       cacheDir: cache,
       workDir: work,
@@ -7967,11 +8009,11 @@ async function runEditorRequest(raw, context) {
         document: selected.document,
         sequenceId: manifest.sequenceId,
         resolveAssetPath: async (id3) => original(id3).path,
-        ffmpegPath,
-        ffprobePath,
+        ffmpegPath: ffmpegPath2,
+        ffprobePath: ffprobePath2,
         workDir: work,
         cacheDir: await directory(cache, ["pcm"]),
-        outputPath: join11(work, "mix.wav"),
+        outputPath: join12(work, "mix.wav"),
         signal: context.signal,
         onProgress: (item) => progress2(
           request.action === "render" ? item.fraction * 0.25 : item.fraction * 0.9,
@@ -7981,8 +8023,8 @@ async function runEditorRequest(raw, context) {
       const { path: _path, ...details2 } = rendered;
       const reportBytes = Buffer.from(JSON.stringify(details2));
       const assetId = `asset-${await fileHash(rendered.path, context.signal)}`;
-      await rename4(rendered.path, join11(mixes, "audio.wav"));
-      await atomic(join11(mixes, "report.json"), reportBytes);
+      await rename4(rendered.path, join12(mixes, "audio.wav"));
+      await atomic(join12(mixes, "report.json"), reportBytes);
       mix = {
         documentHash: manifest.documentHash,
         sequenceId: manifest.sequenceId,
@@ -7993,7 +8035,7 @@ async function runEditorRequest(raw, context) {
         samplesOverFullScale: rendered.samplesOverFullScale,
         reportHash: bytesHash(reportBytes)
       };
-      await atomic(join11(mixes, "receipt.json"), Buffer.from(JSON.stringify(mix)));
+      await atomic(join12(mixes, "receipt.json"), Buffer.from(JSON.stringify(mix)));
     }
     const preparedAudio = {
       documentHash: mix.documentHash,
@@ -8052,7 +8094,7 @@ async function runEditorRequest(raw, context) {
         "prepare-video"
       );
     }
-    const outputPath2 = join11(work, `video.${request.profile.container}`);
+    const outputPath2 = join12(work, `video.${request.profile.container}`);
     const output = await exportEditorSequence({
       document: selected.document,
       sequenceId: manifest.sequenceId,
@@ -8062,8 +8104,8 @@ async function runEditorRequest(raw, context) {
       workDir: work,
       audioFile: await regular(mixes, ["audio.wav"]),
       outputPath: outputPath2,
-      ffmpegPath,
-      ffprobePath,
+      ffmpegPath: ffmpegPath2,
+      ffprobePath: ffprobePath2,
       signal: context.signal,
       browserPath: context.tools?.browserPath,
       onProgress: (item) => progress2(
@@ -8103,7 +8145,7 @@ async function runEditorRequest(raw, context) {
     };
   } finally {
     await rm9(work, { recursive: true, force: true });
-    if (!succeeded) await rm9(join11(root, "outputs"), { recursive: true, force: true });
+    if (!succeeded) await rm9(join12(root, "outputs"), { recursive: true, force: true });
   }
 }
 
@@ -8145,7 +8187,7 @@ async function runEditorCli(runtime) {
       throw new EditorTaskError("INVALID_DIRECTORY", "此入口必须由主程序提供授权任务和运行目录");
     const argument = async (flag) => {
       const path = args[args.indexOf(flag) + 1];
-      if (!path || !isAbsolute5(path))
+      if (!path || !isAbsolute6(path))
         throw new EditorTaskError("INVALID_DIRECTORY", "授权运行目录无效");
       return sealed(path);
     };

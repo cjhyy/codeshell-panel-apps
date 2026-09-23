@@ -183,9 +183,9 @@ async function script(path, body) {
   await writeFile(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   return path;
 }
-async function transcriptionStatus(name, tools) {
+async function transcriptionStatus(name, tools, extra = {}) {
   const ctx = await context(name, false);
-  const response = await api.runMediaRequest({ action: "status" }, { ...ctx, tools });
+  const response = await api.runMediaRequest({ action: "status" }, { ...ctx, tools, ...extra });
   return response.result.transcription;
 }
 test("transcription status names the missing piece", { timeout: 60_000 }, async () => {
@@ -213,6 +213,12 @@ test("transcription status names the missing piece", { timeout: 60_000 }, async 
   });
   assert.equal(failed.available, false);
   assert.equal(failed.reason, "executable-failed");
+  const neither = await transcriptionStatus("status-both-missing", {
+    whisperPath: join(dir, "absent/whisper"),
+    whisperModelPath: join(dir, "absent.pt"),
+  });
+  assert.equal(neither.available, false);
+  assert.equal(neither.reason, undefined, "both missing uses the copy that names both pieces");
   const ready = await transcriptionStatus("status-ready", {
     whisperPath: ok,
     whisperModelPath: model,
@@ -233,6 +239,27 @@ test("executable lookup also searches Homebrew, /usr/local and ~/.local/bin", as
     executables.findExecutable("video-studio-probe-tool"),
   );
   assert.equal(found, await realpath(tool));
+  assert.equal(
+    await executables.findExecutable("video-studio-probe-tool", undefined, [join(root, "absent")]),
+    undefined,
+    "injected directories replace the default search list",
+  );
+  assert.equal(
+    await executables.findExecutable("video-studio-probe-tool", undefined, [
+      join(home, ".local/bin"),
+    ]),
+    await realpath(tool),
+  );
+});
+test("home redaction keeps punctuation and never rewrites a sibling user directory", async () => {
+  await withEnvironment({ HOME: "/Users/tester" }, () => {
+    assert.equal(executables.redactHomePath("位于 /Users/tester。"), "位于 ~。");
+    assert.equal(executables.redactHomePath("[/Users/tester]>"), "[~]>");
+    assert.equal(executables.redactHomePath("/Users/tester/.cache/a"), "~/.cache/a");
+    assert.equal(executables.redactHomePath("缺少 /Users/tester."), "缺少 ~.");
+    assert.equal(executables.redactHomePath("/Users/tester2/a"), "/Users/tester2/a");
+    assert.equal(executables.redactHomePath("/Users/tester.bak/a"), "/Users/tester.bak/a");
+  });
 });
 test(
   "transcription status finds whisper outside the GUI PATH",
@@ -242,8 +269,11 @@ test(
     await script(join(home, ".local/bin/whisper"), "exit 0");
     await mkdir(join(home, ".cache/whisper"), { recursive: true });
     await writeFile(join(home, ".cache/whisper/base.pt"), "model");
+    // Inject only ~/.local/bin so this proves the fallback and never runs an installed whisper.
     const status = await withEnvironment({ HOME: home, PATH: "/nonexistent-bin" }, () =>
-      transcriptionStatus("status-gui-path", {}),
+      transcriptionStatus("status-gui-path", {}, {
+        toolSearchDirectories: [join(home, ".local/bin")],
+      }),
     );
     assert.equal(status.available, true);
   },
@@ -268,6 +298,42 @@ test("standalone CLI keeps the concrete failure reason with a home-relative path
   assert.equal(event.type, "error");
   assert.match(event.message, /~\/missing-job/);
   assert.equal(event.message.includes(home), false);
+});
+async function runStandalone(args, request, env = {}) {
+  return new Promise((resolveRun, reject) => {
+    const child = spawn(process.execPath, [cli, ...args], {
+      cwd: root,
+      env: { ...process.env, ...env },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (b) => (stdout += b));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      resolveRun({ code, event: JSON.parse(stdout.trim().split("\n").at(-1)) });
+    });
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+test("standalone CLI hides absolute paths outside home and never echoes a bad connection file", async () => {
+  const home = join(root, "cli-home-2");
+  await mkdir(home, { recursive: true });
+  const outside = await runStandalone(
+    ["--job-dir", "/nonexistent-video-studio-root/job", "--runtime-dir", home],
+    { action: "status", scopeKey, jobId: "outside" },
+    { HOME: home },
+  );
+  assert.equal(outside.code, 1);
+  assert.equal(outside.event.message, "媒体工具未完成，请检查依赖、素材和任务状态后重试");
+  const connections = join(home, "connections.json");
+  await writeFile(connections, "not json SECRET-KEY-123", { mode: 0o600 });
+  const broken = await runStandalone(
+    ["--connections-file", connections, "--runtime-dir", home],
+    { action: "status", scopeKey, jobId: "connections" },
+    { HOME: home },
+  );
+  assert.equal(broken.code, 1);
+  assert.equal(broken.event.message, "配音连接配置不可用");
 });
 mediaTest("missing Whisper model reports the home-relative model path", async () => {
   const home = join(root, "model-home");

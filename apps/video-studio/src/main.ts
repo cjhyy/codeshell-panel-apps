@@ -4654,7 +4654,8 @@ function mountEditorCaptions(root: HTMLElement): void {
       panel,
       read: () => editorSession!.read(),
       assertTranscriptionReady: () => {
-        if (!production.enabled || !production.status.transcription.available)
+        if (!production.enabled) throw new Error("当前环境未连接本机媒体服务，可导入 SRT 字幕");
+        if (!production.status.transcription.available)
           throw new Error(transcriptionSetupMessage(production.status.transcription.reason));
       },
       resolveResource: async (asset, signal) => {
@@ -4716,9 +4717,12 @@ function mountEditorCaptions(root: HTMLElement): void {
     onError: fail,
     ...(editorCaptionServices
       ? {
+          // Without local media support, installing whisper would not help; keep the SRT route.
           transcriptionHint: () =>
-            transcriptionSetupMessage(production.status.transcription.reason),
-          recheckTranscription: recheckTranscription,
+            production.enabled
+              ? transcriptionSetupMessage(production.status.transcription.reason)
+              : "",
+          recheckTranscription,
         }
       : {}),
   });

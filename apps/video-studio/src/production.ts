@@ -26,18 +26,27 @@ const TRANSCRIPTION_REASONS: readonly TranscriptionUnavailableReason[] = [
   "model-missing",
   "executable-failed",
 ];
-export const TRANSCRIPTION_SETUP_MESSAGE =
-  "本机语音转写未就绪：需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt。安装后点“重新检测”，或先导入 SRT。";
-/** User-facing readiness copy naming the missing piece when the native status reports it. */
-export function transcriptionSetupMessage(reason?: TranscriptionUnavailableReason): string {
-  if (reason === "executable-missing")
-    return "本机语音转写未就绪：未找到 whisper 命令，需要安装 openai-whisper。安装后点“重新检测”，或先导入 SRT。";
-  if (reason === "model-missing")
-    return "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
-  if (reason === "executable-failed")
-    return "本机语音转写未就绪：whisper 无法运行，请检查 openai-whisper 安装。修复后点“重新检测”，或先导入 SRT。";
-  return TRANSCRIPTION_SETUP_MESSAGE;
+const TRANSCRIPTION_NEEDS: Record<TranscriptionUnavailableReason | "unknown", [string, string]> = {
+  unknown: [
+    "需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt",
+    "安装后",
+  ],
+  "executable-missing": ["未找到 whisper 命令，需要安装 openai-whisper", "安装后"],
+  "model-missing": ["缺少 base 模型 ~/.cache/whisper/base.pt", "准备好模型后"],
+  "executable-failed": ["whisper 无法运行，请检查 openai-whisper 安装", "修复后"],
+};
+/**
+ * User-facing readiness copy naming the missing piece when the native status reports it.
+ * `next` says how the blocked flow continues; the default suits flows an SRT import unblocks.
+ */
+export function transcriptionSetupMessage(
+  reason?: TranscriptionUnavailableReason,
+  next = "或先导入 SRT",
+): string {
+  const [need, after] = TRANSCRIPTION_NEEDS[reason ?? "unknown"];
+  return `本机语音转写未就绪：${need}。${after}点“重新检测”${next ? `，${next}` : ""}。`;
 }
+export const TRANSCRIPTION_SETUP_MESSAGE = transcriptionSetupMessage();
 function transcriptionStatus(value: unknown): ProductionStatus["transcription"] {
   const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const reason = TRANSCRIPTION_REASONS.find((item) => item === raw.reason);
@@ -656,6 +665,7 @@ export class ProductionController {
   private writeQueue = Promise.resolve();
   private refreshQueue = Promise.resolve();
   private statusPending?: Promise<void>;
+  private statusPendingFresh = false;
   private documentFailed = false;
   private disposed = false;
   private refreshScheduled = false;
@@ -769,7 +779,12 @@ export class ProductionController {
   /** `fresh` skips the short status cache, e.g. after the user installs local tools. */
   async refreshStatus(options: { fresh?: boolean } = {}): Promise<void> {
     if (!this.enabled || this.disposed) return;
-    this.statusPending ??= (async () => {
+    // A fresh request runs after, not instead of, a probe that may predate the user's fix.
+    if (this.statusPending && (!options.fresh || this.statusPendingFresh))
+      return this.statusPending;
+    const previous = this.statusPending;
+    const current: Promise<void> = (async () => {
+      await previous?.catch(() => {});
       const status = (await this.requireHost().call("media.status", {
         probe: true,
         ...(options.fresh ? { fresh: true } : {}),
@@ -782,9 +797,13 @@ export class ProductionController {
       };
       this.callbacks.changed();
     })().finally(() => {
+      if (this.statusPending !== current) return;
       this.statusPending = undefined;
+      this.statusPendingFresh = false;
     });
-    await this.statusPending;
+    this.statusPending = current;
+    this.statusPendingFresh = options.fresh === true;
+    await current;
   }
   private async ensureRuntime(): Promise<void> {
     if (this.status.runtimeChecked === false) await this.refreshStatus();

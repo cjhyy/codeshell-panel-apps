@@ -389,13 +389,14 @@ export class EditorCaptionsUI {
     const busy = ["preparing", "transcribing", "translating", "applying"].includes(state.phase);
     this.generateButton.disabled = busy || !state.canTranscribe;
     this.translateButton.disabled = busy || !state.canTranslate;
-    const hint = state.canTranscribe
+    // An empty hint means local media support is unavailable, so installing tools cannot help.
+    const hint = state.canTranscribe ? "" : (this.context.transcriptionHint?.() ?? "");
+    this.generateButton.title = state.canTranscribe
       ? ""
-      : this.context.transcriptionHint?.() || "当前环境未连接真实转写，可导入SRT";
-    this.generateButton.title = hint;
+      : hint || "当前环境未连接真实转写，可导入SRT";
     this.transcriptionNote.textContent = hint;
-    this.transcriptionNote.hidden = state.canTranscribe || !this.context.transcriptionHint;
-    this.recheckButton.hidden = state.canTranscribe || !this.context.recheckTranscription;
+    this.transcriptionNote.hidden = !hint;
+    this.recheckButton.hidden = !hint || !this.context.recheckTranscription;
     this.translateButton.title = state.canTranslate ? "" : "当前环境未连接翻译服务";
     this.styleButton.disabled = busy;
     this.applyButton.disabled = busy || !state.candidate?.operations.length;

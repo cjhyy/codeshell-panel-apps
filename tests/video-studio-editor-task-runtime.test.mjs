@@ -728,6 +728,45 @@ test(
   },
 );
 test(
+  "inspect-source finds ffprobe outside the app PATH through the shared tool search",
+  { timeout: 60000 },
+  async () => {
+    const real = spawnSync("sh", ["-c", "command -v ffprobe"]).stdout.toString().trim();
+    assert.ok(real, "ffprobe must be installed for native inspection tests");
+    const shims = join(temp, "tool-shims");
+    await mkdir(shims, { recursive: true });
+    await writeFile(join(shims, "ffprobe"), `#!/bin/sh\nexec "${real}" "$@"\n`, { mode: 0o755 });
+    const jobDir = await mkdtemp(join(temp, "job-"));
+    await mkdir(join(jobDir, "inputs"));
+    await copyFile(tone, join(jobDir, "inputs", "resource-0.bin"));
+    const saved = process.env.PATH;
+    process.env.PATH = "/nonexistent-video-studio-bin";
+    try {
+      const response = await api.runEditorRequest(
+        {
+          action: "inspect-source",
+          transferId: `editor-${randomUUID()}`,
+          resourceIds: [`asset-${sha(await readFile(tone))}`],
+        },
+        {
+          jobDir,
+          runtimeDir,
+          scopeKey: scope,
+          jobId: `job-${randomUUID()}`,
+          signal: new AbortController().signal,
+          runtimeSource,
+          runtimeSha,
+          reportProgress() {},
+          toolSearchDirectories: [shims],
+        },
+      );
+      assert.equal(response.result.kind, "audio");
+    } finally {
+      process.env.PATH = saved;
+    }
+  },
+);
+test(
   "inspect-source accepts MKV and preserves real VFR and rotated display geometry",
   { timeout: 60000 },
   async () => {

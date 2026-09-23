@@ -176,7 +176,10 @@ export class AutomaticProducer {
         await this.verifyNarrationRun();
         if (!this.production.status.transcription.available)
           throw new Error(
-            `${transcriptionSetupMessage(this.production.status.transcription.reason)}本人录音和草稿已保留。`,
+            transcriptionSetupMessage(
+              this.production.status.transcription.reason,
+              "再重试本人录音对齐；录音和草稿已保留",
+            ),
           );
       }
       await this.production.setAuto(run);

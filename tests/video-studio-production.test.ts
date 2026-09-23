@@ -125,6 +125,41 @@ test("transcription readiness keeps the missing piece and 重新检测 asks for 
   );
 });
 
+test("setup copy fits each blocked flow and a fresh probe never joins an older pending one", async () => {
+  assert.equal(
+    transcriptionSetupMessage("model-missing", "再重试本人录音对齐；录音和草稿已保留"),
+    "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，再重试本人录音对齐；录音和草稿已保留。",
+  );
+  assert.doesNotMatch(transcriptionSetupMessage(undefined, "再重试音频粗剪"), /SRT/);
+  assert.match(
+    transcriptionSetupMessage(undefined, "再重试音频粗剪"),
+    /openai-whisper.*base 模型.*重新检测/,
+  );
+  const host = new FakeHost();
+  const first = deferred<void>();
+  let calls = 0;
+  host.handlers.set("media.status", async ({ probe }) => {
+    calls++;
+    if (probe && calls === 2) await first.promise;
+    return {
+      persistent: true,
+      ffmpeg: { available: true },
+      transcription: { available: calls > 2 },
+      hyperframes: { available: true },
+    };
+  });
+  const f = await fixture(host);
+  const stale = f.controller.refreshStatus();
+  const fresh = f.controller.refreshStatus({ fresh: true });
+  first.resolve();
+  await Promise.all([stale, fresh]);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }, { probe: true }, { probe: true, fresh: true }],
+  );
+  assert.equal(f.controller.status.transcription.available, true);
+});
+
 test("render admission returns before storage or staging, deduplicates, and exposes only the eventual real job", async () => {
   const host = new FakeHost(),
     current = project(),

@@ -2340,10 +2340,8 @@ function executableSearchDirectories() {
     )
   ];
 }
-async function findExecutable(name, explicit) {
-  const choices = explicit ? [explicit] : executableSearchDirectories().map(
-    (dir) => join4(dir, process.platform === "win32" ? `${name}.exe` : name)
-  );
+async function findExecutable(name, explicit, directories = executableSearchDirectories()) {
+  const choices = explicit ? [explicit] : directories.map((dir) => join4(dir, process.platform === "win32" ? `${name}.exe` : name));
   for (const path of choices) {
     try {
       await access(path, constants.X_OK);
@@ -2357,7 +2355,10 @@ function redactHomePath(message) {
   const home = homedir().replace(/[\\/]+$/, "");
   if (!home) return message;
   const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return message.replace(new RegExp(`${escaped}(?=[\\\\/'"\`\\s:,;)]|$)`, "g"), "~");
+  return message.replace(new RegExp(`${escaped}(?![A-Za-z0-9_-]|\\.[A-Za-z0-9_-])`, "g"), "~");
+}
+function containsAbsolutePath(message) {
+  return /(?:^|[\s'"`(\[<=:：，,])\/[^\s/]|[A-Za-z]:\\/.test(message);
 }
 
 // src/rough-cut.ts
@@ -6254,7 +6255,7 @@ function validateMediaConnections(raw) {
   }
   return raw;
 }
-async function resolveMediaTools(tools = {}) {
+async function resolveMediaTools(tools = {}, directories) {
   const resolved = { ...tools };
   for (const [key, name] of [
     ["ffmpegPath", "ffmpeg"],
@@ -6263,7 +6264,7 @@ async function resolveMediaTools(tools = {}) {
     ["uvPath", "uv"]
   ]) {
     if (resolved[key]) continue;
-    const found = await findExecutable(name);
+    const found = await findExecutable(name, void 0, directories);
     if (found) resolved[key] = found;
   }
   return resolved;
@@ -6281,7 +6282,10 @@ async function runMediaRequest(raw, options) {
   if ((await lstat2(options.runtimeDir)).isSymbolicLink())
     throw new MediaRequestError("媒体运行目录无效");
   const runtime = await realpath4(options.runtimeDir);
-  options = { ...options, tools: await resolveMediaTools(options.tools) };
+  options = {
+    ...options,
+    tools: await resolveMediaTools(options.tools, options.toolSearchDirectories)
+  };
   const context = {
     scope: { appId: "video-studio", projectPath: options.scopeKey },
     jobId: options.jobId,
@@ -6464,28 +6468,37 @@ async function runMediaRequest(raw, options) {
         options.tools?.browserPath ?? findCaptionBrowser()
       ]);
       const whisperModel = options.tools?.whisperModelPath ?? join13(homedir5(), ".cache/whisper/base.pt");
-      const whisperExecutable = await findExecutable("whisper", options.tools?.whisperPath);
+      const whisperExecutable = await findExecutable(
+        "whisper",
+        options.tools?.whisperPath,
+        options.toolSearchDirectories
+      );
       const whisperModelReady = await access4(whisperModel).then(
         () => true,
         () => false
       );
       let whisperReason;
-      if (!whisperExecutable) whisperReason = "executable-missing";
-      else if (!whisperModelReady) whisperReason = "model-missing";
-      else
-        await runMediaProcess(whisperExecutable, ["--help"], {
+      let whisperAvailable = false;
+      if (!whisperExecutable && whisperModelReady) whisperReason = "executable-missing";
+      else if (whisperExecutable && !whisperModelReady) whisperReason = "model-missing";
+      else if (whisperExecutable)
+        whisperAvailable = await runMediaProcess(whisperExecutable, ["--help"], {
           signal: context.signal,
           maxStdoutBytes: 65536
-        }).catch(() => {
-          whisperReason = "executable-failed";
-        });
+        }).then(
+          () => true,
+          () => {
+            whisperReason = "executable-failed";
+            return false;
+          }
+        );
       result = {
         apiVersion: 1,
         persistent: true,
         processors: [...MEDIA_ACTIONS],
         ffmpeg: { available: ffmpeg },
         transcription: {
-          available: !whisperReason,
+          available: whisperAvailable,
           engine: "local-whisper",
           model: basename3(whisperModel, ".pt"),
           ...whisperReason ? { reason: whisperReason } : {}
@@ -6748,7 +6761,13 @@ async function sealedConnections() {
     const info = await file.stat();
     if (!info.isFile() || info.size > 2 * 1024 * 1024 || info.nlink !== 1 || process.platform !== "win32" && info.mode & 63)
       throw new Error("配音连接配置不可用");
-    return resolveMediaConnections(JSON.parse(await file.readFile("utf8")));
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.readFile("utf8"));
+    } catch {
+      throw new Error("配音连接配置不可用");
+    }
+    return resolveMediaConnections(parsed);
   } finally {
     await file.close();
   }
@@ -6832,7 +6851,7 @@ async function runCli(raw) {
     emit({ type: "result", result });
   } catch (error) {
     const reason = error instanceof Error ? redactHomePath(error.message) : "";
-    const message = controller.signal.aborted ? "媒体任务已取消" : reason && reason.length <= 350 && !/https?:/.test(reason) ? reason : "媒体工具未完成，请检查依赖、素材和任务状态后重试";
+    const message = controller.signal.aborted ? "媒体任务已取消" : reason && reason.length <= 350 && !/https?:/.test(reason) && !containsAbsolutePath(reason) ? reason : "媒体工具未完成，请检查依赖、素材和任务状态后重试";
     emit({ type: "error", message });
     process.exitCode = 1;
   } finally {

@@ -71,6 +71,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
   let statusCache: { at: number; value: any } | undefined,
     voicesCache: { at: number; value: any } | undefined;
   let statusPending: Promise<any> | undefined, voicesPending: Promise<any> | undefined;
+  let statusPendingFresh = false;
   let writes = Promise.resolve();
   let analysisCache: { scopeKey: string; assetId: string; value: Promise<any> } | undefined;
   const processed = new Set<string>(),
@@ -480,14 +481,23 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
             transcription: { available: false },
             hyperframes: { available: false },
           };
-        statusPending ??= completed("status")
-          .then((value) => {
-            statusCache = { at: Date.now(), value };
-            return value;
-          })
-          .finally(() => {
-            statusPending = undefined;
-          });
+        // A fresh request runs after, not instead of, a probe that may predate the user's fix.
+        if (!statusPending || (params.fresh === true && !statusPendingFresh)) {
+          const previous = statusPending;
+          const current: Promise<any> = (previous?.catch(() => undefined) ?? Promise.resolve())
+            .then(() => completed("status"))
+            .then((value) => {
+              statusCache = { at: Date.now(), value };
+              return value;
+            })
+            .finally(() => {
+              if (statusPending !== current) return;
+              statusPending = undefined;
+              statusPendingFresh = false;
+            });
+          statusPending = current;
+          statusPendingFresh = params.fresh === true;
+        }
         return clone(await statusPending);
       }
       if (method === "media.tts.voices") return catalog();

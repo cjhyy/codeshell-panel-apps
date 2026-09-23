@@ -98,6 +98,8 @@ export interface NativeMediaContext {
     nodePath?: string;
     uvPath?: string;
   };
+  /** Test-only override of the shared executable search directories. */
+  toolSearchDirectories?: string[];
 }
 export interface NativeMediaArtifact {
   file: string;
@@ -276,6 +278,7 @@ export function validateMediaConnections(raw: unknown): MediaConnection[] {
 /** Resolve default tool names once so spawned tools also work when the app PATH lacks Homebrew. */
 async function resolveMediaTools(
   tools: NativeMediaContext["tools"] = {},
+  directories?: readonly string[],
 ): Promise<NonNullable<NativeMediaContext["tools"]>> {
   const resolved = { ...tools };
   for (const [key, name] of [
@@ -285,7 +288,7 @@ async function resolveMediaTools(
     ["uvPath", "uv"],
   ] as const) {
     if (resolved[key]) continue;
-    const found = await findExecutable(name);
+    const found = await findExecutable(name, undefined, directories);
     if (found) resolved[key] = found;
   }
   return resolved;
@@ -310,7 +313,10 @@ export async function runMediaRequest(
   if ((await lstat(options.runtimeDir)).isSymbolicLink())
     throw new MediaRequestError("媒体运行目录无效");
   const runtime = await realpath(options.runtimeDir);
-  options = { ...options, tools: await resolveMediaTools(options.tools) };
+  options = {
+    ...options,
+    tools: await resolveMediaTools(options.tools, options.toolSearchDirectories),
+  };
   const context: MediaJobContext = {
     scope: { appId: "video-studio", projectPath: options.scopeKey },
     jobId: options.jobId,
@@ -515,28 +521,38 @@ export async function runMediaRequest(
       ]);
       const whisperModel =
         options.tools?.whisperModelPath ?? join(homedir(), ".cache/whisper/base.pt");
-      const whisperExecutable = await findExecutable("whisper", options.tools?.whisperPath);
+      const whisperExecutable = await findExecutable(
+        "whisper",
+        options.tools?.whisperPath,
+        options.toolSearchDirectories,
+      );
       const whisperModelReady = await access(whisperModel).then(
         () => true,
         () => false,
       );
+      // With both pieces missing no single reason applies; the generic copy names both.
       let whisperReason: "executable-missing" | "model-missing" | "executable-failed" | undefined;
-      if (!whisperExecutable) whisperReason = "executable-missing";
-      else if (!whisperModelReady) whisperReason = "model-missing";
-      else
-        await runMediaProcess(whisperExecutable, ["--help"], {
+      let whisperAvailable = false;
+      if (!whisperExecutable && whisperModelReady) whisperReason = "executable-missing";
+      else if (whisperExecutable && !whisperModelReady) whisperReason = "model-missing";
+      else if (whisperExecutable)
+        whisperAvailable = await runMediaProcess(whisperExecutable, ["--help"], {
           signal: context.signal,
           maxStdoutBytes: 65536,
-        }).catch(() => {
-          whisperReason = "executable-failed";
-        });
+        }).then(
+          () => true,
+          () => {
+            whisperReason = "executable-failed";
+            return false;
+          },
+        );
       result = {
         apiVersion: 1,
         persistent: true,
         processors: [...MEDIA_ACTIONS],
         ffmpeg: { available: ffmpeg },
         transcription: {
-          available: !whisperReason,
+          available: whisperAvailable,
           engine: "local-whisper",
           model: basename(whisperModel, ".pt"),
           ...(whisperReason ? { reason: whisperReason } : {}),

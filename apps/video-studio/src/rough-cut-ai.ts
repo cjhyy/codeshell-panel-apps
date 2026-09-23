@@ -1,7 +1,7 @@
 import type { Asset, EditOperation, Project, RoughCut } from "./model";
 import { parseProposal, parseTaskResultJson, type PanelBridge, type PanelTask } from "./host";
 import { validateRoughCuts } from "./rough-cut";
-import { TRANSCRIPTION_SETUP_MESSAGE } from "./production";
+import { transcriptionSetupMessage } from "./production";
 
 export interface RoughCutAIContext {
   project(): Project;
@@ -362,7 +362,9 @@ export class RoughCutAIController {
         .assets.filter((item) => batch.includes(item.id) && item.kind === "audio");
       if (audio.length) {
         if (!this.context.prepareAudio)
-          throw new Error(`${TRANSCRIPTION_SETUP_MESSAGE}视频可按真实关键帧初筛。`);
+          throw new Error(
+            transcriptionSetupMessage(undefined, "再重试音频粗剪；视频可按真实关键帧初筛"),
+          );
         await this.context.prepareAudio(
           audio.map((item) => item.id),
           this.preparation.signal,

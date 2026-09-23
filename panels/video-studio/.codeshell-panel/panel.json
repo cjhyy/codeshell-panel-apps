@@ -4692,11 +4692,11 @@
     },
     "media-runtime": {
       "entry": "app/tools/media-runtime.mjs",
-      "sha256": "af05fee4c7ee1a3617d2e34f9d88db2877249769978b1791437686d9dc529772"
+      "sha256": "593dc35be5e81de596e18158f44994fe23225109bdd9c0bbe84d01d22d0c1176"
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "2bd17aa85bba7ffa5e45980e3f0486e8ac375db24a6c4c682b39a34d79d9a044"
+      "sha256": "c9bc8b6432ba46ca1d0eaa22ef951f1fa50d4cbafb6cc7222408ac7abe1f6062"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",

@@ -755,8 +755,9 @@ test(
       const before = (await readState(page)).project;
       await page.locator('[data-action="align-narration"]').click();
       await page.waitForFunction(() =>
-        document.body.textContent.includes("本人录音和草稿已保留") &&
-        document.body.textContent.includes("本机语音转写未就绪"),
+        document.body.textContent.includes(
+          "点“重新检测”，再重试本人录音对齐；录音和草稿已保留。",
+        ) && document.body.textContent.includes("本机语音转写未就绪"),
       );
       const after = (await readState(page)).project;
       assert.deepEqual(after, before);
