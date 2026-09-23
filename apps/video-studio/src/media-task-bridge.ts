@@ -457,6 +457,11 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       void sdk.discover(true).catch(() => {});
     }),
   ];
+  /** Older Hosts kept media jobs themselves; ask only a Host that still lists that method. */
+  const advertised = async (method: string) => {
+    const context = await sdk.discover().catch(() => undefined);
+    return Array.isArray(context?.availableMethods) && context.availableMethods.includes(method);
+  };
   const bridge: PanelBridge = {
     getContext: () => raw.getContext(),
     registerTool: (name, handler) => raw.registerTool(name, handler),
@@ -577,9 +582,9 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
             continue;
           jobs.push(await normalize(job, scope, false));
         }
-        const legacy = (await sdk
-          .call("media.jobs.list", params)
-          .catch(() => ({ jobs: [] }))) as any;
+        const legacy = ((await advertised("media.jobs.list"))
+          ? await sdk.call("media.jobs.list", params).catch(() => ({ jobs: [] }))
+          : { jobs: [] }) as any;
         jobs.push(...(legacy.jobs ?? []));
         return {
           total: jobs.length,
@@ -591,8 +596,12 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         let native: any;
         try {
           native = await sdk.call("tasks.get", { id: params.id });
-        } catch {
-          if (method !== "media.jobs.retry") return sdk.call(method, params);
+        } catch (error) {
+          if (method !== "media.jobs.retry") {
+            if (!(await advertised(method))) throw error;
+            return sdk.call(method, params);
+          }
+          if (!(await advertised("media.jobs.recipe"))) throw error;
           const recipe = (await sdk.call("media.jobs.recipe", { id: params.id })) as any;
           if (
             !recipe ||
