@@ -1,6 +1,6 @@
 # Mimi Download
 
-Mimi Download 0.22.5 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
+Mimi Download 0.22.6 is a local-first CodeShell Panel App for `yt-dlp`. Its primary
 **Install / Update** action is deterministic and does not invoke a model. It
 resolves the latest stable yt-dlp release from the official GitHub API, tries a
 safe update of an existing installation, and otherwise downloads the exact
@@ -319,3 +319,17 @@ opening/revealing downloaded files and AI platform searches can proceed during
 startup checks. AI planning starts normally; native searches wait only for initial
 executable discovery, not version probes or the GitHub release check. Older Hosts
 retain their event-based probe path.
+
+## 0.22.6 download and setup reliability fix
+
+Resolution choices use `--format-sort res:<height>` instead of a height filter, so
+vertical videos keep their chosen resolution and a missing exact height falls back
+to the nearest available format instead of failing. Fragment retries back off like
+HTTP retries, and yt-dlp's maintained default user agent replaces a fixed 2021
+browser string. Download arguments are built when a task starts, so a task saved
+before ffmpeg was installed still merges video and audio.
+
+**Check all** keeps a waiting download from starting between record checks, so no
+record is falsely reported as unreadable. Setup keeps a newer nightly yt-dlp instead
+of replacing it with the stable release, and a failed GitHub release lookup no
+longer blocks installing a missing ffmpeg while the local yt-dlp works.
