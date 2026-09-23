@@ -1,16 +1,9 @@
-import {
-  applyOperations,
-  formatTime,
-  timelineClips,
-  timelineDuration,
-  type Project,
-  type EditOperation,
-  type Asset,
-} from "./model";
+import { formatTime, timelineClips, timelineDuration, type Project, type Asset } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
 import { renderWorkflowSummary } from "./workflow";
 import { renderNarrationPanel } from "./narration-ui";
-import type { Proposal, PanelTask } from "./host";
+import type { PanelTask } from "./host";
+import type { EditorProposalReview } from "./editor/proposal";
 import { renderProductionJobs, type ProductionViewState } from "./production-views";
 import { version as panelVersion } from "../.codeshell-panel/panel.json";
 import { demoSceneIndex } from "./demo";
@@ -38,7 +31,8 @@ export interface ViewState {
   readonly search: string;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
-  readonly proposal: Readonly<Proposal> | null;
+  /** The reviewed plan, computed on the editor document. */
+  readonly proposal: Readonly<EditorProposalReview> | null;
   readonly task: Readonly<PanelTask> | null;
   readonly taskStarting: boolean;
   readonly playing: boolean;
@@ -51,6 +45,8 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly editorClipCount?: number;
+  /** Clips on the main picture track of the active editor sequence. */
+  readonly mainTrackClipCount?: number;
   /** Subtitles on every text track of the shown sequence. */
   readonly captionCount?: number;
   readonly voiceoverMarkup?: string;
@@ -397,7 +393,7 @@ ${esc(aiPrompt)}</textarea
                   : "生成剪辑方案",
               "spark",
               "quiet full",
-              !project.clips.length ||
+              !(state.editorClipCount ?? project.clips.length) ||
                 taskStarting ||
                 Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
             )
@@ -420,7 +416,13 @@ ${esc(aiPrompt)}</textarea
           <span class="eyebrow">BROWSER DEMO</span>
           <h3>先试一版 15 秒粗剪</h3>
           <p>按现有顺序保留前 15 秒，生成草案供你审阅。</p>
-          ${button("quick-plan", "创建规则草案", "cut", "full", !project.clips.length)}<span
+          ${button(
+            "quick-plan",
+            "创建规则草案",
+            "cut",
+            "full",
+            !(state.mainTrackClipCount ?? project.clips.length),
+          )}<span
             class="muted small"
             >本地规则 · 无需模型</span
           >
@@ -709,33 +711,36 @@ ${esc(aiPrompt)}</textarea
         <p>分析素材、剪辑与场景制作，<br />在同一份工程里继续完成。</p>
         ${button("show-ai", "打开 AI 制作", "chevron", "quiet full")}
       </div>`;
-    const stale = proposal.baseRevision !== project.revision;
-    let after = 0;
-    try {
-      after = timelineDuration(
-        applyOperations(project, proposal.operations, proposal.baseRevision),
-      );
-    } catch {
-      /* Conflict is rendered and never silently rebased. */
-    }
+    const { stale, after } = proposal;
+    const changedTracks = proposal.tracks.filter(
+      (track) => track.before || (track.after !== null && track.after !== track.before),
+    );
     return html`<div class="proposal-card">
       <div class="proposal-heading">
         ${icon("spark", 18)}<strong>待审阅的方案</strong
-        ><span class="count-badge">${proposal.operations.length}</span>
+        ><span class="count-badge">${proposal.labels.length}</span>
       </div>
       <h3>${esc(proposal.title)}</h3>
       <p>${esc(proposal.explanation)}</p>
       <div class="proposal-duration">
-        <span>${seconds(duration())}s</span>${icon("chevron", 14)}<strong
-          >${stale ? "需重新生成" : seconds(after) + "s"}</strong
+        <span>${proposal.before.toFixed(2)}s</span>${icon("chevron", 14)}<strong
+          >${stale || after === null ? "需重新生成" : after.toFixed(2) + "s"}</strong
         >
       </div>
+      ${changedTracks.length
+        ? `<ul class="proposal-tracks" aria-label="各轨道片段数">${changedTracks
+            .map(
+              (track) =>
+                `<li><span>${esc(track.name)}</span> <span>${track.before} → ${track.after ?? "?"}</span></li>`,
+            )
+            .join("")}</ul>`
+        : ""}
       <ol>
-        ${proposal.operations
+        ${proposal.labels
           .slice(0, 8)
-          .map((op) => `<li>${esc(operationLabel(op))}</li>`)
-          .join("")}${proposal.operations.length > 8
-          ? `<li>另有 ${proposal.operations.length - 8} 项修改</li>`
+          .map((label) => `<li>${esc(label)}</li>`)
+          .join("")}${proposal.labels.length > 8
+          ? `<li>另有 ${proposal.labels.length - 8} 项修改</li>`
           : ""}
       </ol>
       ${stale
@@ -747,57 +752,6 @@ ${esc(aiPrompt)}</textarea
         "quiet full",
       )}
     </div>`;
-  }
-
-  function operationLabel(op: EditOperation): string {
-    const named =
-      "clipId" in op
-        ? project.assets.find(
-            (asset) =>
-              asset.id ===
-              [...project.clips, ...(project.audioClips ?? [])].find(
-                (clip) => clip.id === op.clipId,
-              )?.assetId,
-          )?.name || "片段"
-        : "";
-    switch (op.type) {
-      case "trim":
-        return `裁剪 ${named} → ${seconds(op.inFrame)}–${seconds(op.outFrame)}s`;
-      case "remove":
-        return `移除 ${named}`;
-      case "split":
-        return `切分 ${named} @ ${seconds(op.atFrame)}s`;
-      case "move":
-        return `移动 ${named} 到第 ${op.toIndex + 1} 位`;
-      case "video-move":
-        return `移动 ${named} 到 ${seconds(op.startFrame)}s`;
-      case "volume":
-        return `设置 ${named} 音量 ${Math.round(op.volume * 100)}%`;
-      case "caption":
-        return `字幕：${op.caption.text}`;
-      case "remove-caption":
-        return "删除一条字幕";
-      case "settings":
-        return "更新工程设置";
-      case "add":
-        return "添加素材到序列";
-      case "rough-cuts":
-        return `更新素材粗剪清单（${op.cuts.length} 段）`;
-      case "audio-add":
-        return "添加独立音乐 / 配音轨";
-      case "audio-split":
-        return `切分音轨 ${named} @ 源素材 ${seconds(op.atFrame)}s`;
-      case "audio-trim":
-        return `裁剪音轨 ${named} → ${seconds(op.inFrame)}–${seconds(op.outFrame)}s`;
-      case "audio-move":
-        return `移动音轨 ${named} 到 ${seconds(op.startFrame)}s`;
-      case "audio-volume":
-        return `设置音轨 ${named} 音量 ${Math.round(op.volume * 100)}%`;
-      case "audio-remove":
-        return `删除音轨 ${named}`;
-      default:
-        return "剪辑操作";
-    }
   }
 
   function renderTimeline(): string {
@@ -950,5 +904,5 @@ ${esc(aiPrompt)}</textarea
       </div>`;
   }
 
-  return { shell, renderLibrary, renderInspector, renderProposal, renderTimeline, operationLabel };
+  return { shell, renderLibrary, renderInspector, renderProposal, renderTimeline };
 }

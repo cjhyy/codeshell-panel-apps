@@ -1888,3 +1888,169 @@ test("main lazily opens multicam monitoring and releases it when returning to pr
   assert.equal(await section.isVisible(), false);
   assert.deepEqual(await saved(page), before);
 });
+
+test("AI 制作 rule drafts and imported plans review and apply on real off-frame multitrack footage", async (t) => {
+  const planSeed = { ...realMediaSeed, id: "plan-real-media", name: "实拍方案" };
+  const page = await openPage(t, { seed: planSeed });
+  const watchToasts = () =>
+    page.evaluate(() => {
+      window.__toasts = [];
+      new MutationObserver(() =>
+        window.__toasts.push(document.querySelector("#toast").textContent),
+      ).observe(document.querySelector("#toast"), {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    });
+  await watchToasts();
+  const before = await saved(page);
+  await production(page);
+  const card = page.locator("#proposal-panel .proposal-card");
+  const quick = page.getByRole("button", { name: "创建规则草案", exact: true });
+  assert.equal(await quick.isDisabled(), false, "Real footage on the main track can be drafted");
+  await quick.click();
+  await card.waitFor({ state: "visible" });
+  assert.match(await card.innerText(), /15 秒精简版/);
+  assert.match(await card.innerText(), /46\.81s/, "The review shows the current sequence end");
+  assert.match(await card.innerText(), /15\.0\ds/, "…and the frame-snapped end after applying");
+  assert.match(await card.innerText(), /保留「camera-main」/);
+  assert.match(await card.innerText(), /画面\s*1\s*→\s*1/);
+  assert.deepEqual(await saved(page), before, "Reviewing does not edit the project");
+  await page.getByRole("button", { name: "应用方案", exact: true }).click();
+  await page.waitForFunction(
+    (revision) => window.__mainHost.current().revision > revision,
+    before.revision,
+  );
+  const trimmed = await waitSaved(page);
+  assert.equal(trimmed.revision, before.revision + 1, "The whole draft is one edit");
+  const clips = (doc) => Object.fromEntries(doc.sequences[0].clips.map((clip) => [clip.id, clip]));
+  assert.equal(clips(trimmed)["camera-main"].start, 1_234_567);
+  assert.equal(clips(trimmed)["camera-main"].duration, 3_603_600 - 1_234_567);
+  for (const id of ["camera-overlay", "existing-caption"])
+    assert.deepEqual(clips(trimmed)[id], clips(before)[id]);
+  assert.equal(await card.count(), 0, "The applied draft leaves the review");
+  await returnEditor(page);
+  await clickEditorAction(page, "undo");
+  assert.deepEqual((await waitSaved(page)).sequences, before.sequences, "One undo restores");
+  await clickEditorAction(page, "redo");
+  await waitSaved(page);
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.deepEqual((await saved(page)).sequences, trimmed.sequences, "The draft survives reload");
+  await watchToasts();
+
+  // An imported plan in the editor format goes through the same review and single undo.
+  const beforeImport = await saved(page);
+  await production(page);
+  await oldAction(page, "paste-plan").click();
+  await page.locator("#plan-json").fill(
+    JSON.stringify({
+      title: "去掉画中画",
+      explanation: "只保留主画面",
+      editor: { steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }] },
+    }),
+  );
+  await oldAction(page, "load-plan").click();
+  await card.waitFor({ state: "visible" });
+  assert.match(await card.innerText(), /去掉画中画/);
+  assert.match(await card.innerText(), /删除「camera-overlay」/);
+  assert.match(await card.innerText(), /画中画\s*1\s*→\s*0/);
+  await page.getByRole("button", { name: "应用方案", exact: true }).click();
+  await page.waitForFunction(
+    (revision) => window.__mainHost.current().revision > revision,
+    beforeImport.revision,
+  );
+  const imported = await waitSaved(page);
+  assert.equal(imported.revision, beforeImport.revision + 1);
+  assert.equal(clips(imported)["camera-overlay"], undefined);
+  assert.deepEqual(clips(imported)["camera-main"], clips(beforeImport)["camera-main"]);
+  await returnEditor(page);
+  await clickEditorAction(page, "undo");
+  assert.deepEqual((await waitSaved(page)).sequences, beforeImport.sequences);
+
+  // A plan made before another edit is marked stale and cannot be applied.
+  await production(page);
+  await oldAction(page, "paste-plan").click();
+  await page.locator("#plan-json").fill(
+    JSON.stringify({
+      title: "过期方案",
+      editor: { steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }] },
+    }),
+  );
+  await oldAction(page, "load-plan").click();
+  await card.waitFor({ state: "visible" });
+  await page.evaluate(async () => {
+    const tools = window.__mainHost.tools;
+    const current = tools.read_video_project({ editor: { view: "project" } });
+    await tools.apply_video_edit({
+      editor: {
+        identity: current.identity,
+        label: "改名",
+        steps: [{ kind: "operations", operations: [{ type: "project.rename", name: "改过的名字" }] }],
+      },
+    });
+  });
+  await card.locator(".conflict").waitFor({ state: "visible" });
+  const apply = page.getByRole("button", { name: "应用方案", exact: true });
+  assert.equal(await apply.isDisabled(), true);
+  const staleBefore = await waitSaved(page);
+  await apply.evaluate((button) => {
+    button.disabled = false;
+    button.click();
+  });
+  await page.waitForFunction(() => window.__toasts.some((text) => /过期/.test(text)));
+  assert.deepEqual(await saved(page), staleBefore, "A stale plan never applies");
+  const toasts = await page.evaluate(() => window.__toasts.join("\n"));
+  assert.doesNotMatch(toasts, /旧视图/);
+});
+
+test("the AI 制作 inspector trims a main clip of a multitrack project the old view cannot fully show", async (t) => {
+  const main = (id, start, duration, source) => ({
+    ...picture(id, "v1", start, duration),
+    timeMap: {
+      points: [
+        { time: 0, source },
+        { time: duration, source: source + duration },
+      ],
+    },
+  });
+  const inspectorSeed = {
+    ...realMediaSeed,
+    id: "inspector-multitrack",
+    name: "多轨检查器",
+    sequences: [
+      {
+        ...realMediaSeed.sequences[0],
+        frameRate: { numerator: 30, denominator: 1 },
+        timelineMode: "magnetic",
+        clips: [
+          main("main-a", 0, 90 * 8000, 0),
+          main("main-b", 90 * 8000, 90 * 8000, 100 * 8000),
+          picture("camera-overlay", "v2", 0, 2_400_011),
+        ],
+      },
+    ],
+  };
+  const page = await openPage(t, { seed: inspectorSeed });
+  const before = await saved(page);
+  await page.locator('[data-et-clip="main-a"]').click();
+  await production(page);
+  await page.locator("#trim-out").fill("2");
+  await page.getByRole("button", { name: "应用裁剪", exact: true }).click();
+  await page.waitForFunction(
+    (revision) => window.__mainHost.current().revision > revision,
+    before.revision,
+  );
+  const after = await waitSaved(page);
+  const clips = Object.fromEntries(after.sequences[0].clips.map((clip) => [clip.id, clip]));
+  assert.equal(clips["main-a"].duration, 60 * 8000);
+  assert.equal(clips["main-b"].start, 60 * 8000, "The magnetic main track closes the gap");
+  assert.deepEqual(
+    clips["camera-overlay"],
+    before.sequences[0].clips.find((clip) => clip.id === "camera-overlay"),
+  );
+  await returnEditor(page);
+  await clickEditorAction(page, "undo");
+  assert.deepEqual((await waitSaved(page)).sequences, before.sequences);
+});

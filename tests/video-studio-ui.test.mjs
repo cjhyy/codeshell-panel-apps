@@ -352,6 +352,11 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   );
   await page.getByRole("button", { name: "创建规则草案", exact: true }).click();
   assert.equal((await readProject(page)).clips.length, 3, "Review does not mutate the project");
+  const review = await page.locator(".proposal-card").innerText();
+  assert.match(review, /15 秒精简版/);
+  assert.match(review, /主画面\s*3\s*→\s*2/, "The review counts clips per track");
+  assert.match(review, /保留「.+」到 15\.00 秒/);
+  assert.match(review, /删除主画面轨 15\.00 秒之后的 1 个片段/);
   await page.screenshot({ path: resolve(screenshots, "studio-ai-review.png"), fullPage: true });
   await page.getByRole("button", { name: "应用方案", exact: true }).click();
   await saved(page);

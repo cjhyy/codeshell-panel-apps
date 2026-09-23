@@ -1675,6 +1675,25 @@ h3 {
   color: #d0e7c5;
   font-size: 17px;
 }
+.proposal-card ul.proposal-tracks {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  color: #9cac99;
+  font-size: 10px;
+}
+.proposal-card ul.proposal-tracks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+}
+.proposal-card ul.proposal-tracks li span:last-child {
+  color: #d0e7c5;
+  font-family: ui-monospace, monospace;
+}
 .proposal-card ol {
   padding: 0 0 0 16px;
   color: #adbeac;

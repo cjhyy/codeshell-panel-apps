@@ -733,6 +733,30 @@ function planCaptionsStep(
   }
 }
 
+/**
+ * Compile planner steps (the apply_editor_edit step schema) into one operation list.
+ * Each step is planned against the draft left by the previous steps, so later steps
+ * see earlier ripples; the result is checked as one transaction on the input document.
+ */
+export function compileEditorSteps(
+  document: EditorDocument,
+  steps: unknown,
+  factory: SequenceIdFactory,
+): EditorOperation[] {
+  if (!Array.isArray(steps) || !steps.length || steps.length > EDITOR_AGENT_LIMITS.steps)
+    throw new Error("编辑须包含 1 至 100 个步骤");
+  let draft = document;
+  const operations: EditorOperation[] = [];
+  for (const raw of json(steps)) {
+    const batch = plan(draft, object(raw, Object.keys(raw ?? {})), factory);
+    if (operations.length + batch.length > EDITOR_AGENT_LIMITS.operations)
+      throw new Error("展开后的编辑超过 1000 项，请拆分范围");
+    draft = applyEditorOperations(draft, batch, draft.revision);
+    operations.push(...batch);
+  }
+  return operations;
+}
+
 export function createEditorAgentTools(context: EditorAgentContext) {
   if (typeof context.authorize !== "function") throw new Error("v2 工具必须连接制作与录制权限检查");
   const factory = context.idFactory ?? ((kind) => `${kind}-${crypto.randomUUID()}`);
@@ -1156,21 +1180,7 @@ export function createEditorAgentTools(context: EditorAgentContext) {
       recheck(snapshot);
       if (typeof args.label !== "string" || !args.label.trim() || args.label.length > 200)
         throw new Error("编辑说明须为 1 至 200 个字符");
-      if (
-        !Array.isArray(args.steps) ||
-        !args.steps.length ||
-        args.steps.length > EDITOR_AGENT_LIMITS.steps
-      )
-        throw new Error("编辑须包含 1 至 100 个步骤");
-      let draft = snapshot.document;
-      const operations: EditorOperation[] = [];
-      for (const raw of args.steps) {
-        const batch = plan(draft, object(raw, Object.keys(raw ?? {})), factory);
-        if (operations.length + batch.length > EDITOR_AGENT_LIMITS.operations)
-          throw new Error("展开后的编辑超过 1000 项，请拆分范围");
-        draft = applyEditorOperations(draft, batch, draft.revision);
-        operations.push(...batch);
-      }
+      const operations = compileEditorSteps(snapshot.document, args.steps, factory);
       const after = applyEditorOperations(
         snapshot.document,
         operations,
