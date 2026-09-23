@@ -43,6 +43,7 @@ import {
 import {
   ProductionController,
   transcriptionSetupMessage,
+  type AutoProduction,
   type MediaJob,
 } from "./production";
 import { createProductionUI } from "./production-ui";
@@ -4565,7 +4566,7 @@ registerProductionTools(productionToolPanel, production, {
     try {
       next = applyOperations(project, candidate.operations, candidate.baseRevision);
     } catch (error) {
-      throw partial ? partialViewError(error) : error;
+      throw partial ? partialViewError(error, automatic.mode) : error;
     }
     const currentGeneration = generation,
       currentRevision = project.revision;
@@ -4635,7 +4636,8 @@ registerProductionTools(productionToolPanel, production, {
       )
         throw new Error("工程或制作请求已变化，未应用旧修改");
       await saveProject(next, `自动制作：${candidate.title}`, aligning).catch((error) => {
-        throw partial ? partialViewError(error) : error;
+        // Only the old view's own refusal is explained; storage and other failures stay as-is.
+        throw partial && oldViewRefusal(error) ? partialViewError(error, automatic.mode) : error;
       });
     } finally {
       aiApplying = false;
@@ -4661,10 +4663,17 @@ registerProductionTools(productionToolPanel, production, {
     return candidate;
   },
 });
-function partialViewError(error: unknown): Error {
-  return new Error(
-    `旧格式修改看不到当前时间线的全部片段，未保存（${error instanceof Error ? error.message : String(error)}）。请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成这次编辑。`,
-  );
+const oldViewRefusal = (error: unknown) =>
+  error instanceof Error && /旧视图/.test(error.message);
+function partialViewError(error: unknown, mode: AutoProduction["mode"]): Error {
+  const reason = error instanceof Error ? error.message : String(error);
+  const next =
+    mode === "narration"
+      ? "本人录音阶段的 editor 分支（在 editor 内附 grant:{projectId,requestToken}）只接受不改变本人录音依赖的编辑，如标题、画面变换和效果；需要改变字幕、声音或时间安排时，请在制作单 blockers 写明，等待后续处理。"
+      : mode === "draft"
+        ? "画面剪辑请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成；草稿临时字幕仍用旧 caption 操作，ID 以 draft-narration- 开头。"
+        : "请加载 editor-v2，用 apply_video_edit 的 editor 分支并在 editor 内附 grant:{projectId,requestToken} 完成这次编辑。";
+  return new Error(`旧格式修改看不到当前时间线的全部片段，未保存（${reason}）。${next}`);
 }
 /** Automatic old-format edits on a sequence the old view cannot fully show. One durable save,
  * one undo, the same approval reconciliation as the inspector's translated edits. */
@@ -4693,6 +4702,8 @@ async function applyAutomaticTranslated(candidate: Proposal): Promise<Proposal> 
       [...translated, ...guard],
       identity,
       `自动制作：${candidate.title}`,
+      "agent",
+      automatic.requestSignal(candidate.requestToken),
     );
   } finally {
     aiApplying = false;
@@ -5046,6 +5057,7 @@ function mountEditorAgentTools(): void {
       return annotations;
     },
     assertStillAuthorized: assertEditorAgentAllowed,
+    requestSignal: ({ grant }) => (grant ? automatic.requestSignal(grant.requestToken) : undefined),
     exportSequence: editorTasks
       ? ({ document, sequenceId, profile }, options) =>
           submitEditorExport(document, sequenceId, profile, options?.signal)

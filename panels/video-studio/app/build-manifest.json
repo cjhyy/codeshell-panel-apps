@@ -4,7 +4,7 @@
   "entry": "src/main.ts",
   "files": {
     ".codeshell-panel/panel.json": "2889044c0e09257d6b462ee48413d777a29354557e1a9ed9387e13a49bea4908",
-    "agent/skills/editor-v2/SKILL.md": "3c38574377146dcae89459cd3089a55e5008aec129453f37936d6ef3eb2316e7",
+    "agent/skills/editor-v2/SKILL.md": "b6d1f80a42711f4ddd7cc7795bdec12091c3a79eab33c6ea8f9c7cb3f8cb7ce1",
     "agent/skills/narration-workflow/SKILL.md": "d1a966fe908b26f3a0d57fde53361b0e1076732f60fcf625ffa8988e1c0e1949",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
     "agent/skills/video-init/references/material-review.md": "744ad764246e8a15a23d35701103a1fd23052ba72dfceb92cc7a5ff497e89a68",
@@ -28,7 +28,7 @@
     "app/editor-workspace.css": "0168af9ad20e8258d03328883dea7d9f8a93ffe68a46b87227c2d60b887dcf5c",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "868de184b5220eae64ac494ba93830e535e5ef08691fc8cc037a2d4ca960824c",
+    "app/main.mjs": "2202e4c4e91eed11c729105e6e2a2ed0ee3fd15bf3848d8dfa769dec88e13f8b",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",

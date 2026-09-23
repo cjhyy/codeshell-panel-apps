@@ -42,10 +42,11 @@ export function legacyViewSummary(
     renderSafe: view.renderSafe,
     restrictions: view.restrictions
       .slice(0, LEGACY_RESTRICTION_LIMIT)
-      .map(({ code, clipId, assetId, excluded }) => ({
+      .map(({ code, clipId, assetId, field, excluded }) => ({
         code,
         ...(clipId ? { clipId } : {}),
         ...(assetId ? { assetId } : {}),
+        ...(field ? { field } : {}),
         excluded,
       })),
     restrictionCount: view.restrictions.length,

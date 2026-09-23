@@ -1116,6 +1116,9 @@ test("draft uses its owning skill and rejects proposal, voice and export shortcu
   assert.match(starts(f.host)[0]!.params.prompt, /不调用TTS或导出/);
   assert.ok(starts(f.host)[0]!.params.skills.includes("video-studio:editor-v2"));
   assert.match(starts(f.host)[0]!.params.prompt, /editor\.grant/);
+  assert.match(starts(f.host)[0]!.params.prompt, /临时字幕仍用旧 caption 操作[^。]*draft-narration-/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /需要导出时统一调用/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /只接受不改变本人录音依赖/);
   for (const name of [
     "prepare_video_assets",
     "apply_video_edit",
@@ -1169,6 +1172,10 @@ test("narration locks before digest validation so double starts prepare only the
   await Promise.all([first, duplicate]);
   assert.equal(starts(f.host).length, 1);
   assert.equal(starts(f.host)[0]!.params.key, "narration-workflow-narration");
+  const narrationPrompt = starts(f.host)[0]!.params.prompt;
+  assert.match(narrationPrompt, /editor 分支只接受不改变本人录音依赖的编辑（标题、画面变换、效果/);
+  assert.match(narrationPrompt, /需要导出时统一调用 render_video_project/);
+  assert.doesNotMatch(narrationPrompt, /临时字幕仍用旧 caption 操作/);
   const preparation = f.host.calls.filter(({ method }) => method === "media.prepare");
   assert.equal(preparation.length, 1);
   assert.deepEqual(preparation[0]!.params.assetIds, [`asset-${"b".repeat(64)}`]);
@@ -1448,6 +1455,10 @@ test("initialization only permits preparation and saving its production sheet", 
   assert.equal(f.current.revision, 0);
   await producer.finishForReview();
   await producer.start("按制作单生成视频", { mode: "workflow" });
+  const workflowPrompt = starts(f.host).at(-1)!.params.prompt;
+  assert.match(workflowPrompt, /editor\.grant/);
+  assert.match(workflowPrompt, /需要导出时统一调用 render_video_project/);
+  assert.doesNotMatch(workflowPrompt, /只接受不改变本人录音依赖|临时字幕仍用旧 caption 操作/);
   for (const name of [
     "enhance_video_audio",
     "create_video_voiceover",
@@ -2121,4 +2132,23 @@ test("retrying a legacy job preserves project publication under its new durable 
   assert.equal(reopened.published.length, 1);
   assert.equal(reopened.published[0]!.projectId, "project-a");
   assert.equal(binding(f.host, nextId).consumed, true);
+});
+
+test("a request signal aborts when its automatic round ends, is replaced or is cancelled", async () => {
+  const f = await fixture();
+  const { producer } = automatic(f);
+  await producer.start("按制作单生成视频", { mode: "workflow" });
+  const token = producer.requestToken;
+  assert.ok(token);
+  assert.equal(producer.requestSignal("an-old-request").aborted, true);
+  const signal = producer.requestSignal(token);
+  assert.equal(signal.aborted, false);
+  assert.equal(producer.requestSignal(token), signal, "One signal per request");
+  await producer.finishForReview("方案已完成");
+  assert.equal(signal.aborted, true);
+  await producer.start("再做一版", { mode: "workflow" });
+  const next = producer.requestSignal(producer.requestToken);
+  assert.equal(next.aborted, false);
+  await producer.cancel();
+  assert.equal(next.aborted, true);
 });

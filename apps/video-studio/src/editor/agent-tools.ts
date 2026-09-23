@@ -94,6 +94,8 @@ export interface EditorAgentContext {
   /** Synchronous recheck of the same request immediately before its durable save, so a run
    * stopped or replaced while the edit was being authorized cannot publish it. */
   assertStillAuthorized?(request: EditorAgentAuthorization): void;
+  /** Aborts once the request's automatic run ends, so a save still waiting for storage is dropped. */
+  requestSignal?(request: EditorAgentAuthorization): AbortSignal | undefined;
   exportSequence?(
     request: {
       identity: SessionIdentity;
@@ -883,6 +885,7 @@ export function createEditorAgentTools(context: EditorAgentContext) {
         snapshot.identity,
         request.action === "cut" ? "剪切片段" : "粘贴片段",
         "agent",
+        context.requestSignal?.(authorization),
       );
     }
     if (next) clipboard = next;
@@ -1245,6 +1248,7 @@ export function createEditorAgentTools(context: EditorAgentContext) {
         snapshot.identity,
         args.label,
         "agent",
+        context.requestSignal?.(authorization),
       );
       const addedClipIds = result.sequences.flatMap((seq) =>
         seq.clips

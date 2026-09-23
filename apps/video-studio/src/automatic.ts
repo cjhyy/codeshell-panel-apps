@@ -22,6 +22,7 @@ export class AutomaticProducer {
   private task: PanelTask | null = null;
   private starting = false;
   private handling = new Map<string, Promise<void>>();
+  private signals = new Map<string, AbortController>();
   constructor(
     private bridge: PanelBridge | undefined,
     private production: ProductionController,
@@ -87,6 +88,30 @@ export class AutomaticProducer {
         throw new Error("请先完整编排本人录音并按真实转写完成字幕对齐");
     }
   }
+  /** Aborted as soon as `token` stops being this run's current request (the round ends,
+   * fails, is cancelled or replaced), so an edit still saving for it is not committed. */
+  requestSignal(token: string): AbortSignal {
+    this.releaseSignals();
+    if (!token || token !== this.requestToken)
+      return AbortSignal.abort(new Error("自动制作请求已结束，未保存这次编辑"));
+    let controller = this.signals.get(token);
+    if (!controller) this.signals.set(token, (controller = new AbortController()));
+    return controller.signal;
+  }
+  private releaseSignals(): void {
+    for (const [token, controller] of this.signals)
+      if (token !== this.requestToken) {
+        controller.abort(new Error("自动制作请求已结束，未保存这次编辑"));
+        this.signals.delete(token);
+      }
+  }
+  private async setAuto(value: AutoProduction | null): Promise<void> {
+    try {
+      await this.production.setAuto(value);
+    } finally {
+      this.releaseSignals();
+    }
+  }
   isCurrentRequest(args: Record<string, unknown>): boolean {
     return Boolean(
       this.requestToken &&
@@ -138,6 +163,7 @@ export class AutomaticProducer {
     return true;
   }
   private publish(message?: string): void {
+    this.releaseSignals();
     if (this.production.auto?.projectId !== this.callbacks.getProject().id) {
       this.callbacks.state(null, false, "", "");
       return;
@@ -187,7 +213,7 @@ export class AutomaticProducer {
             ),
           );
       }
-      await this.production.setAuto(run);
+      await this.setAuto(run);
       this.task = null;
       this.publish();
       if (!this.currentRun(run)) return;
@@ -202,7 +228,7 @@ export class AutomaticProducer {
           ? await this.production.prepare(ids, this.production.status.transcription.available)
           : { jobs: [] };
       if (!this.currentRun(run)) return;
-      await this.production.setAuto({
+      await this.setAuto({
         ...this.production.auto!,
         preparationJobIds: prepared.jobs.map((job) => job.id),
       });
@@ -257,7 +283,7 @@ export class AutomaticProducer {
         )
       ) {
         if (auto.mode === "narration") this.assertToolAllowed("render_video_project");
-        await this.production.setAuto({
+        await this.setAuto({
           ...this.production.auto!,
           phase: "done",
           message: "MP4 已完成，可在制作任务中播放与保存。",
@@ -310,7 +336,7 @@ export class AutomaticProducer {
     this.starting = true;
     this.task = null;
     try {
-      await this.production.setAuto({
+      await this.setAuto({
         ...auto,
         phase: "agent",
         attempts: auto.attempts + 1,
@@ -357,7 +383,7 @@ export class AutomaticProducer {
               : "全流程制作将目标、素材选段与来源证据、叙事结构、下一步、实际缺项写入 project.workflow，并随粗剪、声音、字幕和验收阶段更新；后续轮次读取后继续。若导出已排队，工作台会跟踪真实完成。",
           initialization
             ? ""
-            : `read_video_project 的 legacyView.timelineComplete 为 false（旧视图缺少片段），或需要多轨、画中画、标题、转场、精确字幕时，加载 video-studio:editor-v2，用 read_video_project({editor:{view:'project'}}) 取得 identity，再用 apply_video_edit 的 editor 分支编辑，并附 editor.grant:{projectId:'${auto.projectId}',requestToken:'${token}'}（grant 放在 editor 对象内）；不带 grant 的新版编辑在自动制作中会被锁定。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用。需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。`,
+            : `read_video_project 的 legacyView.timelineComplete 为 false（旧视图缺少片段），或需要多轨、画中画、标题、转场、精确字幕时，加载 video-studio:editor-v2，用 read_video_project({editor:{view:'project'}}) 取得 identity，再用 apply_video_edit 的 editor 分支编辑，并附 editor.grant:{projectId:'${auto.projectId}',requestToken:'${token}'}（grant 放在 editor 对象内）；不带 grant 的新版编辑在自动制作中会被锁定。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用。${auto.mode === "draft" ? "草稿临时字幕仍用旧 caption 操作，ID 以 draft-narration- 开头，由旧 apply_video_edit 保存；editor 分支用于画面剪辑。" : auto.mode === "narration" ? "本人录音阶段 editor 分支只接受不改变本人录音依赖的编辑（标题、画面变换、效果等）；会改变文稿、字幕、声音、时间安排或画幅的编辑会被拒绝，录音编排与字幕对齐沿用旧 apply_video_edit。需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。" : "需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。"}`,
           continuation
             ? "这是同一个目标的后续轮次。先读工程和制作任务，沿用已生成的场景、已应用的修改与结果，不重复提交相同任务。"
             : "",
@@ -375,7 +401,7 @@ export class AutomaticProducer {
         return;
       }
       this.task = task;
-      await this.production.setAuto({ ...this.production.auto!, taskId: task.id });
+      await this.setAuto({ ...this.production.auto!, taskId: task.id });
       this.publish();
       await this.handleTask(task);
     } finally {
@@ -447,7 +473,7 @@ export class AutomaticProducer {
           return;
         }
       }
-      await this.production.setAuto({
+      await this.setAuto({
         ...this.production.auto!,
         phase: "done",
         message: "MP4 已完成，可在制作任务中播放与保存。",
@@ -480,7 +506,7 @@ export class AutomaticProducer {
       await this.failed("本人录音尚未完成对齐，请查看任务中的待核对内容；草稿和录音已保留。", auto);
       return;
     }
-    await this.production.setAuto({
+    await this.setAuto({
       ...this.production.auto!,
       phase: "waiting",
       message: pending ? "后台制作进行中，完成后继续…" : "正在检查制作结果并继续收尾…",
@@ -491,7 +517,7 @@ export class AutomaticProducer {
   async finishForReview(message = "方案已准备好，等待你审阅后再应用。"): Promise<void> {
     const auto = this.production.auto;
     if (!auto || auto.phase !== "agent" || !this.currentRun(auto)) return;
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "done",
       message,
@@ -504,7 +530,7 @@ export class AutomaticProducer {
     const auto = this.production.auto;
     if (!auto) return;
     if (auto.requestToken) this.production.cancelRenderSubmissions(auto.requestToken);
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "failed",
       message: "自动制作已停止，后台素材任务可在任务列表单独取消。",
@@ -517,7 +543,7 @@ export class AutomaticProducer {
     if (!this.sameRun(expected)) return;
     const auto = this.production.auto!;
     if (!working(auto)) return;
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "failed",
       message: (error instanceof Error ? error.message : String(error)).slice(0, 4000),

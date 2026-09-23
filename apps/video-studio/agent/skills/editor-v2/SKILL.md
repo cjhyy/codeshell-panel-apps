@@ -96,7 +96,7 @@ timing.action 为 `{kind:"speed",rate,preservePitch?}`、`{kind:"reverse"}`、`{
 
 ## 自动制作授权
 
-自动制作进行中，工作台锁定通用编辑。只有本次自动制作任务可以在 `label/steps` 编辑和 `clipboard` 请求的 editor 内附 `grant:{projectId,requestToken}`，值取自 `read_video_project({})` 返回的 `project.id` 与 `requestToken`；不带 grant 或令牌过期、属于其他工程时拒绝，保持锁定。初始化阶段不能用 grant 编辑；本人录音阶段只接受不使已确认草稿和录音失效的编辑。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用；导出调用 `render_video_project` 的旧参数（`projectId/baseRevision/requestToken`），它导出完整新版当前序列，工作台据此跟踪完成。旧工程读取的 `legacyView.timelineComplete=false` 表示旧视图缺少片段，应改用带 grant 的 editor 分支；`editorIdentity` 与新版读取的 identity 相同。
+自动制作进行中，工作台锁定通用编辑。只有本次自动制作任务可以在 `label/steps` 编辑和 `clipboard` 请求的 editor 内附 `grant:{projectId,requestToken}`，值取自 `read_video_project({})` 返回的 `project.id` 与 `requestToken`；不带 grant 或令牌过期、属于其他工程时拒绝，保持锁定。初始化阶段不能用 grant 编辑；先审稿再录音的草稿阶段，临时字幕仍用旧 `caption` 操作（ID 以 `draft-narration-` 开头）；本人录音阶段只接受不改变录音依赖的编辑（标题、画面变换、效果），改变文稿、字幕、声音、时间安排或画幅会被拒绝。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用；导出调用 `render_video_project` 的旧参数（`projectId/baseRevision/requestToken`），它导出完整新版当前序列，工作台据此跟踪完成。旧工程读取的 `legacyView.timelineComplete=false` 表示旧视图缺少片段，应改用带 grant 的 editor 分支；`editorIdentity` 与新版读取的 identity 相同。
 
 ## 本人录音与制作状态
 

@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { buildProject } from "../scripts/build-panels.mjs";
 import { discoverProjects, selectProjects } from "../scripts/panel-projects.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
+import { build as esbuild } from "esbuild";
 
 const seed = {
   schemaVersion: 1,
@@ -2213,6 +2214,47 @@ test("automatic production edits real multitrack footage through the editor with
   const removed = await waitSaved(page);
   assert.deepEqual(ids(removed), ["existing-caption"]);
   assert.equal(removed.revision, edited.revision + 1);
+
+  // The clipboard carries the same grant: copy, then paste as one saved edit.
+  const copied = await editorEdit(page, {
+    clipboard: { action: "copy", sequenceId: "main", clipIds: ["existing-caption"] },
+    grant,
+  });
+  assert.equal(copied.error, undefined);
+  const pasted = await editorEdit(page, {
+    clipboard: {
+      action: "paste",
+      sequenceId: "main",
+      clipboardId: copied.result.clipboard.clipboardId,
+      at: 3 * T,
+    },
+    grant,
+  });
+  assert.equal(pasted.error, undefined);
+  assert.equal(pasted.result.addedClipCount, 1);
+  const withPaste = await waitSaved(page);
+  assert.equal(withPaste.revision, removed.revision + 1);
+  assert.equal(withPaste.sequences[0].clips.length, 2);
+  assert.equal(
+    withPaste.sequences[0].clips.find((clip) => clip.id === pasted.result.addedClipIds[0].clipId)
+      .start,
+    3 * T,
+  );
+
+  // The host cancels the agent task: the run ends and its grant stops working.
+  await page.evaluate(() =>
+    window.__mainHost.events["agent.task.changed"].forEach((handler) =>
+      handler({ id: "auto-task-1", status: "cancelled" }),
+    ),
+  );
+  await page.waitForFunction(() => !window.__mainHost.tools.read_video_project().requestToken);
+  const afterCancel = await editorEdit(page, {
+    label: "取消后",
+    steps: renameStep("不应保存"),
+    grant,
+  });
+  assert.match(afterCancel.error, /不属于当前自动制作请求/);
+  assert.deepEqual(await saved(page), withPaste);
 });
 
 test("automatic initialization never opens editor edits, even with its own grant", async (t) => {
@@ -2264,11 +2306,131 @@ test("an automatic draft on real footage points old-format edits to the granted 
   assert.match(legacy, /editor 分支/);
   assert.match(legacy, /grant/);
   assert.deepEqual(await saved(page), before);
+  const grant = { projectId: autoSeed.id, requestToken: "request-draft" };
   const granted = await editorEdit(page, {
     label: "草稿去掉画中画",
     steps: [{ kind: "remove", sequenceId: "main", clipIds: ["camera-overlay"] }],
-    grant: { projectId: autoSeed.id, requestToken: "request-draft" },
+    grant,
   });
   assert.equal(granted.error, undefined);
-  assert.equal((await waitSaved(page)).revision, before.revision + 1);
+  const edited = await waitSaved(page);
+  assert.equal(edited.revision, before.revision + 1);
+
+  // A storage failure is reported as itself, not as an old-view limitation.
+  await page.evaluate(() => window.__mainHost.fail(true));
+  const failed = await page.evaluate(async () => {
+    const tools = window.__mainHost.tools;
+    const current = tools.read_video_project();
+    try {
+      await tools.apply_video_edit({
+        projectId: current.project.id,
+        requestToken: current.requestToken,
+        baseRevision: current.project.revision,
+        title: "草稿改名",
+        operations: [{ type: "settings", name: "草稿新名字" }],
+      });
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(failed, /模拟磁盘保存失败/);
+  assert.doesNotMatch(failed, /editor 分支|旧格式/);
+  await page.evaluate(() => window.__mainHost.fail(false));
+
+  // The agent task ends at the host: the draft run closes and its grant no longer edits.
+  await page.evaluate(() =>
+    window.__mainHost.events["agent.task.changed"].forEach((handler) =>
+      handler({ id: "auto-task-draft", status: "completed" }),
+    ),
+  );
+  await page.waitForFunction(() => !window.__mainHost.tools.read_video_project().requestToken);
+  const afterEnd = await editorEdit(page, { label: "结束后", steps: renameStep("不应保存"), grant });
+  assert.match(afterEnd.error, /不属于当前自动制作请求/);
+});
+
+/** The real approval coordinator, so the seeded recording is approved as the panel would. */
+async function narrationModule() {
+  const out = await esbuild({
+    entryPoints: [resolve("apps/video-studio/src/narration.ts")],
+    bundle: true,
+    format: "esm",
+    platform: "neutral",
+    write: false,
+    logLevel: "silent",
+  });
+  return import(
+    `data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString("base64")}`
+  );
+}
+
+test("a recorded narration run accepts only granted edits that keep the recording valid", async (t) => {
+  const { approveNarration, bindNarrationRecording } = await narrationModule();
+  const script = "按确认稿录好的口播。";
+  const draft = {
+    ...seed,
+    id: "auto-narration",
+    name: "本人口播",
+    script,
+    assets: [
+      ...seed.assets,
+      { id: "own-take", name: "本人录音.wav", kind: "audio", durationFrames: 300 },
+    ],
+    audioClips: [
+      { id: "own-take-clip", assetId: "own-take", inFrame: 0, outFrame: 300, startFrame: 0, volume: 1 },
+    ],
+    narration: { phase: "review", captionBasis: "draft", draftCaptionIds: ["caption"] },
+  };
+  const narrated = await bindNarrationRecording(await approveNarration(draft), "own-take");
+  const page = await openPage(t, {
+    seed: narrated,
+    automatic: true,
+    records: automaticRun(narrated.id, "narration"),
+  });
+  await page.waitForFunction(
+    () => window.__mainHost.tools.read_video_project().requestToken === "request-narration",
+  );
+  const before = await saved(page);
+  assert.equal(before.production.narration.phase, "recorded");
+  const sequence = before.sequences.find((item) => item.id === before.activeSequenceId);
+  const grant = { projectId: narrated.id, requestToken: "request-narration" };
+  const resized = await editorEdit(page, {
+    label: "改成竖屏",
+    steps: [
+      {
+        kind: "operations",
+        operations: [
+          {
+            type: "sequence.update",
+            sequenceId: sequence.id,
+            patch: { width: 360, height: 640 },
+          },
+        ],
+      },
+    ],
+    grant,
+  });
+  assert.match(resized.error, /已确认的草稿与本人录音失效/);
+  assert.deepEqual(await saved(page), before, "The refused edit never saves");
+  const picture = sequence.clips.find((clip) => clip.kind === "media" && clip.assetId === "demo");
+  const turned = await editorEdit(page, {
+    label: "画面微调",
+    steps: [
+      {
+        kind: "operations",
+        operations: [
+          {
+            type: "clip.update",
+            sequenceId: sequence.id,
+            clipId: picture.id,
+            patch: { transform: { ...picture.transform, rotation: 3 } },
+          },
+        ],
+      },
+    ],
+    grant,
+  });
+  assert.equal(turned.error, undefined);
+  const after = await waitSaved(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.deepEqual(after.production.narration, before.production.narration);
 });

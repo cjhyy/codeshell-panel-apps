@@ -479,6 +479,44 @@ test("narration guard preserves visual edits, invalidates caption/audio/timing c
   assert.equal(reconcileEditorProduction(doc, audioChanged).length, 1);
 });
 
+test("narration guard treats the active sequence size and timeline mode as recording dependencies", () => {
+  const doc = fixture();
+  doc.production = {
+    ...doc.production,
+    script: "真实口播",
+    narration: {
+      phase: "recorded",
+      captionBasis: "draft",
+      draftCaptionIds: ["caption"],
+      recordingAssetId: "voice",
+      approvedScript: "真实口播",
+      approvedFingerprint: "a".repeat(64),
+    },
+  };
+  const update = (patch: Record<string, unknown>, target = sequenceId) =>
+    applyEditorOperations(doc, [{ type: "sequence.update", sequenceId: target, patch } as any], doc.revision);
+  for (const patch of [{ width: 1080, height: 1920 }, { width: 1280 }, { timelineMode: "magnetic" }])
+    assert.equal(reconcileEditorProduction(doc, update(patch)).length, 1, JSON.stringify(patch));
+  assert.deepEqual(reconcileEditorProduction(doc, update({ name: "只改名字" })), []);
+  // Another sequence's canvas is not what the recording was approved against.
+  const other = applyEditorOperations(
+    doc,
+    [
+      {
+        type: "sequence.add",
+        sequence: { ...structuredClone(doc.sequences[0]!), id: "sequence-other", name: "备用" },
+      } as any,
+    ],
+    doc.revision,
+  );
+  const resized = applyEditorOperations(
+    other,
+    [{ type: "sequence.update", sequenceId: "sequence-other", patch: { width: 640 } } as any],
+    other.revision,
+  );
+  assert.deepEqual(reconcileEditorProduction(other, resized), []);
+});
+
 test("export flushes the exact v2 snapshot, returns promptly and later exposes the actual background job", async (t) => {
   let calls = 0,
     exported: any;
@@ -759,6 +797,51 @@ test("an automatic-production grant reaches the guard unchanged and is rechecked
   assert.deepEqual(h.session.getState().identity, before);
   assert.deepEqual(seen.at(-1).grant, grant);
   assert.equal(h.state.writes.length, writes);
+});
+
+test("an automatic request signal reaches the durable save, so an ended run commits nothing", async (t) => {
+  const controller = new AbortController(),
+    signals: unknown[] = [];
+  const h = await harness(t, fixture(), {
+    requestSignal: (request) => {
+      signals.push(request.grant);
+      return request.grant ? controller.signal : undefined;
+    },
+  });
+  const grant = { projectId: "project", requestToken: "auto-request" };
+  await h.tools.apply_editor_edit({
+    identity: h.session.getState().identity,
+    label: "自动",
+    steps: [raw({ type: "project.rename", name: "自动制作的名字" })],
+    grant,
+  });
+  assert.deepEqual(signals, [grant]);
+  const before = h.session.getState().identity,
+    writes = h.state.writes.length;
+  controller.abort(new Error("自动制作已停止"));
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: before,
+      label: "停止后",
+      steps: [raw({ type: "project.rename", name: "不应保存" })],
+      grant,
+    }),
+  );
+  const copied = (await h.tools.apply_editor_edit({
+    identity: before,
+    clipboard: { action: "copy", sequenceId, clipIds: ["a"] },
+    grant,
+  })) as any;
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: before,
+      clipboard: { action: "paste", sequenceId, clipboardId: copied.clipboard.clipboardId, at: 10 * T },
+      grant,
+    }),
+  );
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.equal(h.state.writes.length, writes);
+  assert.equal(h.session.read().name, "自动制作的名字");
 });
 
 test("automatic grants never open sound processing, sync, packages, alignment or editor export", async (t) => {

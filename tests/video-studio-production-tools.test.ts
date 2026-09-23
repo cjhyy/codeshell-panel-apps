@@ -476,11 +476,13 @@ test("the old-view summary reports completeness with a bounded restriction list"
   assert.deepEqual(summary.restrictions[0], {
     code: "unsupported-field",
     assetId: "asset-0",
+    field: "transform",
     excluded: false,
   });
   assert.deepEqual(summary.restrictions[1], {
     code: "excluded-track",
     clipId: "clip-1",
+    field: "transform",
     excluded: true,
   });
   assert.ok(JSON.stringify(summary).length < 6000, "Messages and fields are not repeated");

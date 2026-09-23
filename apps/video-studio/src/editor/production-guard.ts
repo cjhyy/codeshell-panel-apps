@@ -82,8 +82,12 @@ function dependencies(document: EditorDocument, known = document): string {
     };
   };
   const timeline = sequence(document.activeSequenceId);
+  const active = document.sequences.find((item) => item.id === document.activeSequenceId)!;
   return JSON.stringify({
     script: document.production?.script ?? "",
+    // The recorded narration was approved against this picture size and arrangement,
+    // as the old view's approval snapshot also records.
+    canvas: { width: active.width, height: active.height, timelineMode: active.timelineMode },
     timeline,
     assets: document.assets
       .filter((item) => assets.has(item.id))
