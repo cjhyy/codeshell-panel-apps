@@ -2173,6 +2173,13 @@ dialog .range-inputs {
   color: #b9a47c;
   background: #29251c;
 }
+.capability-grid .capability-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: #b9a47c;
+  font-size: 11px;
+  line-height: 1.7;
+}
 .job-list {
   display: flex;
   flex-direction: column;

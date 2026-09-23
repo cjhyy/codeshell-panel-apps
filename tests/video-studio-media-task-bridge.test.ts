@@ -226,6 +226,23 @@ test("restoring capabilities and managed assets does not start a native process"
   }
 });
 
+test("a fresh status request bypasses the short status cache", async () => {
+  const f = fixture();
+  try {
+    await f.bridge.call("media.status", { probe: true });
+    await f.bridge.call("media.status", { probe: true });
+    await f.bridge.call("media.status", { probe: true, fresh: true });
+    assert.equal(
+      f.calls.filter(
+        (call) => call.method === "tasks.start" && call.params.input.request.action === "status",
+      ).length,
+      2,
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
 test("all native media processing uses generic package tasks and directly materialized inputs", async () => {
   const f = fixture();
   try {

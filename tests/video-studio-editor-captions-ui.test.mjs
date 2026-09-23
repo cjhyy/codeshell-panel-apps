@@ -163,7 +163,22 @@ async function fixture(t, options = {}) {
       select: (sequenceId, ids) => (selection = ids),
       seek: (tick) => sought.push(tick),
       onError: (error) => errors.push(error.message),
+      ...(options.recheck
+        ? {
+            transcriptionHint: () => globalThis.transcriptionHint,
+            recheckTranscription: async () => {
+              calls.push({ kind: "recheck" });
+              globalThis.transcriptionHint = "";
+              controller.setCapabilities({ canTranscribe: true, canTranslate: true });
+            },
+          }
+        : {}),
     });
+    if (options.recheck) {
+      globalThis.transcriptionHint =
+        "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
+      controller.setCapabilities({ canTranscribe: false, canTranslate: true });
+    }
     ui.open();
     globalThis.captions = () =>
       session.read().sequences[0].clips.filter((clip) => clip.kind === "text");
@@ -346,6 +361,20 @@ test("narrow layout stays inside viewport, source text is inert, and missing ser
   }));
   assert.ok(bounds.left >= 0 && bounds.right <= 390);
   assert.ok(bounds.inner <= bounds.width + 1);
+});
+
+test("unavailable transcription names the missing piece and 重新检测 refreshes readiness", async (t) => {
+  const page = await fixture(t, { recheck: true });
+  const generate = page.getByRole("button", { name: "生成所选声音字幕" });
+  assert.equal(await generate.isDisabled(), true);
+  await page.getByText("缺少 base 模型 ~/.cache/whisper/base.pt", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "重新检测" }).click();
+  await page.waitForFunction(() => calls.some((call) => call.kind === "recheck"));
+  await page.waitForFunction(
+    () => !document.querySelector("[data-caption-generate]").disabled,
+  );
+  assert.equal(await page.getByRole("button", { name: "重新检测" }).isVisible(), false);
+  assert.equal(await page.getByText("缺少 base 模型", { exact: false }).isVisible(), false);
 });
 
 test("explicit source unlink button preserves caption text and real words and can be undone", async (t) => {

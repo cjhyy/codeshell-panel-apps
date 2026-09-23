@@ -29,6 +29,7 @@ import {
 } from "./hyperframes-adapter.js";
 import { findCaptionBrowser, MediaCaptionRenderer } from "./media-caption-renderer.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
+import { findExecutable, redactHomePath } from "./media-executables.js";
 import type { MediaAsset, MediaJobContext, MediaJobProgress } from "./media-types.js";
 
 export interface MediaConnection {
@@ -181,7 +182,7 @@ async function hashFile(path: string, signal: AbortSignal): Promise<string> {
 }
 function publicMessage(error: unknown): string {
   if (error instanceof MediaRequestError) return error.message;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactHomePath(error instanceof Error ? error.message : String(error));
   if (
     !message ||
     message.length > 350 ||
@@ -272,6 +273,23 @@ export function validateMediaConnections(raw: unknown): MediaConnection[] {
   return raw;
 }
 
+/** Resolve default tool names once so spawned tools also work when the app PATH lacks Homebrew. */
+async function resolveMediaTools(
+  tools: NativeMediaContext["tools"] = {},
+): Promise<NonNullable<NativeMediaContext["tools"]>> {
+  const resolved = { ...tools };
+  for (const [key, name] of [
+    ["ffmpegPath", "ffmpeg"],
+    ["ffprobePath", "ffprobe"],
+    ["whisperPath", "whisper"],
+    ["uvPath", "uv"],
+  ] as const) {
+    if (resolved[key]) continue;
+    const found = await findExecutable(name);
+    if (found) resolved[key] = found;
+  }
+  return resolved;
+}
 export async function runMediaRequest(
   raw: NativeMediaRequest,
   options: NativeMediaContext,
@@ -292,6 +310,7 @@ export async function runMediaRequest(
   if ((await lstat(options.runtimeDir)).isSymbolicLink())
     throw new MediaRequestError("媒体运行目录无效");
   const runtime = await realpath(options.runtimeDir);
+  options = { ...options, tools: await resolveMediaTools(options.tools) };
   const context: MediaJobContext = {
     scope: { appId: "video-studio", projectPath: options.scopeKey },
     jobId: options.jobId,
@@ -496,29 +515,31 @@ export async function runMediaRequest(
       ]);
       const whisperModel =
         options.tools?.whisperModelPath ?? join(homedir(), ".cache/whisper/base.pt");
-      const whisper = await access(whisperModel).then(
-        async () => {
-          try {
-            await runMediaProcess(options.tools?.whisperPath ?? "whisper", ["--help"], {
-              signal: context.signal,
-              maxStdoutBytes: 65536,
-            });
-            return true;
-          } catch {
-            return false;
-          }
-        },
+      const whisperExecutable = await findExecutable("whisper", options.tools?.whisperPath);
+      const whisperModelReady = await access(whisperModel).then(
+        () => true,
         () => false,
       );
+      let whisperReason: "executable-missing" | "model-missing" | "executable-failed" | undefined;
+      if (!whisperExecutable) whisperReason = "executable-missing";
+      else if (!whisperModelReady) whisperReason = "model-missing";
+      else
+        await runMediaProcess(whisperExecutable, ["--help"], {
+          signal: context.signal,
+          maxStdoutBytes: 65536,
+        }).catch(() => {
+          whisperReason = "executable-failed";
+        });
       result = {
         apiVersion: 1,
         persistent: true,
         processors: [...MEDIA_ACTIONS],
         ffmpeg: { available: ffmpeg },
         transcription: {
-          available: whisper,
+          available: !whisperReason,
           engine: "local-whisper",
           model: basename(whisperModel, ".pt"),
+          ...(whisperReason ? { reason: whisperReason } : {}),
         },
         hyperframes: {
           available: hf.available,

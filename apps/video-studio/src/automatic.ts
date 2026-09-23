@@ -2,6 +2,7 @@ import type { Project } from "./model";
 import type { PanelBridge, PanelTask } from "./host";
 import {
   ProductionController,
+  transcriptionSetupMessage,
   validateVoicePreparation,
   type AutoProduction,
   type VoicePreparation,
@@ -174,7 +175,9 @@ export class AutomaticProducer {
           throw new Error("请先确认当前草稿，并选择或保存本次口播录音");
         await this.verifyNarrationRun();
         if (!this.production.status.transcription.available)
-          throw new Error("本人录音对齐需要本地 Whisper 转写；录音和草稿已保留，可配置转写后继续");
+          throw new Error(
+            `${transcriptionSetupMessage(this.production.status.transcription.reason)}本人录音和草稿已保留。`,
+          );
       }
       await this.production.setAuto(run);
       this.task = null;

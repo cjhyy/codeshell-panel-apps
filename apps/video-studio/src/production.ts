@@ -17,12 +17,48 @@ import {
 } from "./editor/voiceover-publication";
 import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
 
+export type TranscriptionUnavailableReason =
+  | "executable-missing"
+  | "model-missing"
+  | "executable-failed";
+const TRANSCRIPTION_REASONS: readonly TranscriptionUnavailableReason[] = [
+  "executable-missing",
+  "model-missing",
+  "executable-failed",
+];
+export const TRANSCRIPTION_SETUP_MESSAGE =
+  "本机语音转写未就绪：需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt。安装后点“重新检测”，或先导入 SRT。";
+/** User-facing readiness copy naming the missing piece when the native status reports it. */
+export function transcriptionSetupMessage(reason?: TranscriptionUnavailableReason): string {
+  if (reason === "executable-missing")
+    return "本机语音转写未就绪：未找到 whisper 命令，需要安装 openai-whisper。安装后点“重新检测”，或先导入 SRT。";
+  if (reason === "model-missing")
+    return "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，或先导入 SRT。";
+  if (reason === "executable-failed")
+    return "本机语音转写未就绪：whisper 无法运行，请检查 openai-whisper 安装。修复后点“重新检测”，或先导入 SRT。";
+  return TRANSCRIPTION_SETUP_MESSAGE;
+}
+function transcriptionStatus(value: unknown): ProductionStatus["transcription"] {
+  const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const reason = TRANSCRIPTION_REASONS.find((item) => item === raw.reason);
+  return {
+    available: raw.available === true,
+    ...(typeof raw.engine === "string" ? { engine: raw.engine } : {}),
+    ...(raw.available !== true && reason ? { reason } : {}),
+  };
+}
+
 export interface ProductionStatus {
   persistent: boolean;
   /** False until an explicit production action checks local native tools. */
   runtimeChecked?: boolean;
   ffmpeg: { available: boolean };
-  transcription: { available: boolean; engine?: string };
+  transcription: {
+    available: boolean;
+    engine?: string;
+    /** Present only when unavailable and the native status names the missing piece. */
+    reason?: TranscriptionUnavailableReason;
+  };
   hyperframes: { available: boolean; version?: string };
   tts?: { available: boolean; engine?: string; defaultVoiceId?: string; reason?: string };
 }
@@ -682,7 +718,7 @@ export class ProductionController {
         this.error = "当前 CodeShell 尚未提供持久媒体服务。请更新桌面应用后重新打开视频工作台。";
         return;
       }
-      this.status = status;
+      this.status = { ...status, transcription: transcriptionStatus(status.transcription) };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.error = `媒体服务连接失败：${reason}。请检查当前项目的素材与本地工具权限，再重新打开面板；工程与原片保存不依赖制作引擎。`;
@@ -730,14 +766,20 @@ export class ProductionController {
     clearInterval(this.timer);
     this.unsubscribe?.();
   }
-  async refreshStatus(): Promise<void> {
+  /** `fresh` skips the short status cache, e.g. after the user installs local tools. */
+  async refreshStatus(options: { fresh?: boolean } = {}): Promise<void> {
     if (!this.enabled || this.disposed) return;
     this.statusPending ??= (async () => {
       const status = (await this.requireHost().call("media.status", {
         probe: true,
+        ...(options.fresh ? { fresh: true } : {}),
       })) as ProductionStatus;
       if (!status?.persistent) throw new Error("当前 CodeShell 尚未提供持久媒体服务");
-      this.status = { ...status, runtimeChecked: true };
+      this.status = {
+        ...status,
+        transcription: transcriptionStatus(status.transcription),
+        runtimeChecked: true,
+      };
       this.callbacks.changed();
     })().finally(() => {
       this.statusPending = undefined;
@@ -1036,7 +1078,7 @@ export class ProductionController {
     try {
       await this.ensureRuntime();
       if (transcribe && !this.status.transcription.available)
-        throw new Error("本机语音转写尚未就绪，请先配置本地 Whisper 与模型，或导入 SRT");
+        throw new Error(transcriptionSetupMessage(this.status.transcription.reason));
       const result = (await this.requireHost().call("media.prepare", {
         assetIds: ids,
         transcribe,
@@ -1051,7 +1093,7 @@ export class ProductionController {
   async transcribe(assetIds: string[]): Promise<{ jobs: MediaJob[] }> {
     await this.ensureRuntime();
     if (!this.status.transcription.available)
-      throw new Error("本机语音转写尚未就绪，可导入 SRT 字幕");
+      throw new Error(transcriptionSetupMessage(this.status.transcription.reason));
     const projectId = this.callbacks.getProject().id;
     const ids = [...new Set(assetIds.map((id) => this.managedId(id)))];
     const jobs: MediaJob[] = [];

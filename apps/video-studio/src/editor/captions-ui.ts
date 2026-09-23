@@ -8,6 +8,10 @@ export interface EditorCaptionsUIContext {
   select?(sequenceId: string, clipIds: string[]): void;
   seek?(tick: number): void | Promise<void>;
   onError?(error: Error): void;
+  /** Explains why local transcription is unavailable, naming the missing piece. */
+  transcriptionHint?(): string;
+  /** Checks local transcription tools again and updates the controller capabilities. */
+  recheckTranscription?(): Promise<void>;
 }
 const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
   const node = document.createElement(tag);
@@ -26,6 +30,8 @@ export class EditorCaptionsUI {
   private readonly applyButton = element("button", "应用预览");
   private readonly cancelButton = element("button", "取消任务 / 丢弃预览");
   private readonly generateButton = element("button", "生成所选声音字幕");
+  private readonly recheckButton = element("button", "重新检测");
+  private readonly transcriptionNote = element("p");
   private readonly translateButton = element("button", "预览翻译");
   private readonly file = element("input");
   private readonly track = element("select");
@@ -60,7 +66,17 @@ export class EditorCaptionsUI {
     sources.append(element("summary", "声音来源"), this.sourceList);
     this.track.setAttribute("aria-label", "目标字幕轨");
     this.generateButton.dataset.captionGenerate = "";
-    tools.append(sources, this.track, this.generateButton);
+    this.recheckButton.dataset.captionRecheck = "";
+    this.recheckButton.hidden = true;
+    this.transcriptionNote.className = "ec-note";
+    this.transcriptionNote.hidden = true;
+    tools.append(
+      sources,
+      this.track,
+      this.generateButton,
+      this.recheckButton,
+      this.transcriptionNote,
+    );
     this.file.type = "file";
     this.file.accept = ".srt,application/x-subrip,text/plain";
     this.file.hidden = true;
@@ -149,6 +165,17 @@ export class EditorCaptionsUI {
           wordHighlight: this.animation.value === "word-highlight",
         }),
       ),
+    );
+    this.recheckButton.addEventListener("click", () =>
+      this.run(async () => {
+        this.recheckButton.disabled = true;
+        try {
+          await context.recheckTranscription?.();
+        } finally {
+          this.recheckButton.disabled = false;
+          if (!this.disposed) this.renderState(context.controller.getState());
+        }
+      }),
     );
     this.translateButton.addEventListener("click", () =>
       this.run(() =>
@@ -362,7 +389,13 @@ export class EditorCaptionsUI {
     const busy = ["preparing", "transcribing", "translating", "applying"].includes(state.phase);
     this.generateButton.disabled = busy || !state.canTranscribe;
     this.translateButton.disabled = busy || !state.canTranslate;
-    this.generateButton.title = state.canTranscribe ? "" : "当前环境未连接真实转写，可导入SRT";
+    const hint = state.canTranscribe
+      ? ""
+      : this.context.transcriptionHint?.() || "当前环境未连接真实转写，可导入SRT";
+    this.generateButton.title = hint;
+    this.transcriptionNote.textContent = hint;
+    this.transcriptionNote.hidden = state.canTranscribe || !this.context.transcriptionHint;
+    this.recheckButton.hidden = state.canTranscribe || !this.context.recheckTranscription;
     this.translateButton.title = state.canTranslate ? "" : "当前环境未连接翻译服务";
     this.styleButton.disabled = busy;
     this.applyButton.disabled = busy || !state.candidate?.operations.length;

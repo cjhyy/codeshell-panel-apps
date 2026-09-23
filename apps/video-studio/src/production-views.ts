@@ -1,6 +1,12 @@
 import { html, escapeHtml as esc, icon } from "./icons";
 import { button } from "./views";
-import type { MediaJob, AutoProduction, ProductionStatus, PreparedMedia } from "./production";
+import {
+  transcriptionSetupMessage,
+  type MediaJob,
+  type AutoProduction,
+  type ProductionStatus,
+  type PreparedMedia,
+} from "./production";
 export interface ProductionViewState {
   connected?: boolean;
   status: ProductionStatus;
@@ -48,10 +54,12 @@ export function renderProductionJobs(state: ProductionViewState): string {
       <span class="${state.status.ffmpeg.available ? "ready" : "unavailable"}"
         >MP4 ${state.status.ffmpeg.available ? "已就绪" : "未就绪"}</span
       ><span class="${state.status.transcription.available ? "ready" : "unavailable"}"
-        >转写 ${state.status.transcription.available ? "已就绪" : "需本地模型"}</span
+        >转写 ${state.status.transcription.available ? "已就绪" : "未就绪"}</span
       ><span class="${state.status.hyperframes.available ? "ready" : "unavailable"}"
         >场景 ${state.status.hyperframes.available ? "已就绪" : "未就绪"}</span
-      >
+      >${state.status.persistent && !state.status.transcription.available
+        ? `${state.status.runtimeChecked === false ? "" : `<p class="capability-note">${esc(transcriptionSetupMessage(state.status.transcription.reason))}</p>`}<button type="button" class="text-button" data-action="recheck-transcription">重新检测</button>`
+        : ""}
     </div>
     ${state.error ? `<p class="conflict">${esc(state.error)}</p>` : ""}${state.auto
       ? `<div class="production-goal"><span class="eyebrow">AUTOMATIC PRODUCTION</span><strong>${esc(state.auto.prompt)}</strong><p>${esc(state.auto.message ?? "")}</p></div>`

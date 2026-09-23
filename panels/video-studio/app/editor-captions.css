@@ -99,6 +99,12 @@
   border-bottom: 1px solid #303b4c;
   align-items: center;
 }
+.editor-captions .ec-note {
+  width: 100%;
+  margin: 0;
+  color: #f0c987;
+  overflow-wrap: anywhere;
+}
 .editor-captions details {
   width: 100%;
 }

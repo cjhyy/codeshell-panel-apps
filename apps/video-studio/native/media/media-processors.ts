@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { MediaJobContext, MediaJobProcessor, MediaScope } from "./media-types.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
+import { findExecutable, redactHomePath } from "./media-executables.js";
 import { timelineClips, timelineDuration } from "../../src/model.js";
 
 export const MEDIA_PROCESSOR_CACHE_VERSION = 4;
@@ -142,17 +143,12 @@ const sourceOptions = [
 async function executablePath(command: string): Promise<string> {
   if (isAbsolute(command) || command.includes("/") || command.includes("\\"))
     return regularFile(resolve(command));
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    try {
-      const path = join(directory, command);
-      await access(path);
-      return await regularFile(path);
-    } catch {
-      /* Continue searching PATH. */
-    }
-  }
-  throw new Error(`Required local executable is unavailable: ${command}`);
+  const found = await findExecutable(command);
+  if (!found) throw new Error(`本机语音转写未就绪：未找到 ${command} 命令`);
+  return found;
 }
+const missingModel = (path: string) =>
+  new Error(`本机语音转写未就绪：缺少 ${basename(path, ".pt")} 模型 ${redactHomePath(path)}`);
 
 export async function inspectMediaFile(
   path: string,
@@ -456,7 +452,9 @@ export function createMediaJobProcessors(
       if (kind === "transcribe") {
         const modelPath =
           options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt");
-        const info = await stat(modelPath);
+        const info = await stat(modelPath).catch(() => {
+          throw missingModel(modelPath);
+        });
         const whisperExecutable = await executablePath(options.whisperPath ?? "whisper");
         const executableInfo = await stat(whisperExecutable);
         const shebang = (await readFile(whisperExecutable, "utf8")).split("\n")[0] ?? "";
@@ -848,12 +846,10 @@ export function createMediaJobProcessors(
         : String(input.language);
     if (language && !/^[a-z]{2,3}$/.test(language))
       throw new Error("Invalid transcription language");
-    const modelPath = await regularFile(
-      options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt"),
-    ).catch(() => {
-      throw new Error(
-        "A local Whisper model must be installed and configured before transcription",
-      );
+    const configuredModel =
+      options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt");
+    const modelPath = await regularFile(configuredModel).catch(() => {
+      throw missingModel(configuredModel);
     });
     const audioPath = join(context.workDir, "transcribe-source.wav");
     await encode(

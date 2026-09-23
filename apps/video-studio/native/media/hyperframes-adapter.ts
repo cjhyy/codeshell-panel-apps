@@ -17,6 +17,7 @@ import {
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createServer } from "node:net";
+import { findExecutable } from "./media-executables.js";
 
 export interface HyperframesProgress {
   phase: "inspect" | "check" | "render" | "preview" | "cache";
@@ -202,28 +203,6 @@ async function run(
     });
   });
 }
-async function executablePath(name: string, explicit?: string): Promise<string | undefined> {
-  const directories = [
-    ...(process.env.PATH ?? "").split(delimiter),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    join(homedir(), ".local/bin"),
-  ];
-  const choices = explicit
-    ? [explicit]
-    : directories
-        .filter(isAbsolute)
-        .map((dir) => join(dir, process.platform === "win32" ? `${name}.exe` : name));
-  for (const path of choices) {
-    try {
-      await access(path, constants.X_OK);
-      if ((await stat(path)).isFile()) return await realpath(path);
-    } catch {
-      /* Try next installed path. */
-    }
-  }
-  return undefined;
-}
 async function discoverCli(options: HyperframesRuntimeOptions): Promise<string | undefined> {
   if (options.cliPath) {
     await access(options.cliPath, constants.R_OK);
@@ -232,7 +211,7 @@ async function discoverCli(options: HyperframesRuntimeOptions): Promise<string |
   const candidates: string[] = [];
   if (options.projectDir)
     candidates.push(join(options.projectDir, "node_modules/hyperframes/bin/hyperframes.mjs"));
-  const global = await executablePath("hyperframes");
+  const global = await findExecutable("hyperframes");
   if (global) candidates.push(global);
   const cache = join(homedir(), ".npm/_npx");
   try {
@@ -262,9 +241,9 @@ export async function detectHyperframesRuntime(
   options: HyperframesRuntimeOptions = {},
 ): Promise<HyperframesRuntime> {
   const runtime: HyperframesRuntime = { available: false, checks: [] };
-  runtime.nodePath = await executablePath("node", options.nodePath);
-  runtime.ffmpegPath = await executablePath("ffmpeg", options.ffmpegPath);
-  runtime.ffprobePath = await executablePath("ffprobe", options.ffprobePath);
+  runtime.nodePath = await findExecutable("node", options.nodePath);
+  runtime.ffmpegPath = await findExecutable("ffmpeg", options.ffmpegPath);
+  runtime.ffprobePath = await findExecutable("ffprobe", options.ffprobePath);
   try {
     runtime.cliPath = await discoverCli(options);
   } catch (error) {

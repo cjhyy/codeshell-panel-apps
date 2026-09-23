@@ -227,7 +227,7 @@ async function installMockHost(page) {
             return {
               persistent: true,
               ffmpeg: { available: true },
-              transcription: { available: true },
+              transcription: structuredClone(window.__transcriptionStatus ?? { available: true }),
               hyperframes: { available: true },
               tts: catalog(),
             };
@@ -503,6 +503,42 @@ test(
         });
       }
       assert.equal(await page.evaluate(() => window.__deviceRequests.length), 0);
+    } finally {
+      await context.close();
+    }
+  },
+);
+
+test(
+  "task capabilities name the missing transcription piece and 重新检测 probes again",
+  { timeout: 25_000 },
+  async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
+    const page = await context.newPage();
+    page.setDefaultTimeout(8000);
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(installGenericMediaTaskMock);
+    await installMockHost(page);
+    await page.addInitScript(() => {
+      window.__transcriptionStatus = { available: false, reason: "model-missing" };
+    });
+    try {
+      await page.goto(`${url}/?legacyWorkspace=1`);
+      await enterLegacyProduction(page);
+      await page.locator("#editor-workspace").waitFor({ state: "visible" });
+      await page.locator('[data-tab="jobs"]').click();
+      const grid = page.locator(".capability-grid");
+      await grid.getByText("缺少 base 模型 ~/.cache/whisper/base.pt", { exact: false }).waitFor();
+      const probes = () =>
+        page.evaluate(() => window.__calls.filter((call) => call.method === "media.status").length);
+      const before = await probes();
+      await page.evaluate(() => {
+        window.__transcriptionStatus = { available: true };
+      });
+      await page.getByRole("button", { name: "重新检测", exact: true }).click();
+      await grid.getByText("转写 已就绪", { exact: true }).waitFor();
+      assert.equal(await probes(), before + 1);
+      assert.equal(await page.getByRole("button", { name: "重新检测", exact: true }).count(), 0);
     } finally {
       await context.close();
     }

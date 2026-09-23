@@ -42,7 +42,12 @@ import {
   hasPersistentStorage,
 } from "./host";
 
-import { ProductionController, captionSourceAssetIds, type MediaJob } from "./production";
+import {
+  ProductionController,
+  captionSourceAssetIds,
+  transcriptionSetupMessage,
+  type MediaJob,
+} from "./production";
 import { createProductionUI } from "./production-ui";
 import { AutomaticProducer } from "./automatic";
 import { registerProductionTools, registerProjectReadTool } from "./production-tools";
@@ -3673,6 +3678,9 @@ async function action(name: string, id?: string): Promise<void> {
       toast("转写已开始，完成后在字幕页点击“从文稿生成字幕”");
       break;
     }
+    case "recheck-transcription":
+      await recheckTranscription();
+      break;
     case "captions-from-transcript":
       await captionsFromTranscript();
       break;
@@ -4647,7 +4655,7 @@ function mountEditorCaptions(root: HTMLElement): void {
       read: () => editorSession!.read(),
       assertTranscriptionReady: () => {
         if (!production.enabled || !production.status.transcription.available)
-          throw new Error("本机语音转写尚未就绪，请在制作与录音中配置 Whisper，或导入 SRT");
+          throw new Error(transcriptionSetupMessage(production.status.transcription.reason));
       },
       resolveResource: async (asset, signal) => {
         if (asset.resourceId) return asset.resourceId;
@@ -4706,11 +4714,34 @@ function mountEditorCaptions(root: HTMLElement): void {
     select: (sequenceId, ids) => editorWorkspace?.selectClips(sequenceId, ids),
     seek: (time) => editorWorkspace?.seek(time),
     onError: fail,
+    ...(editorCaptionServices
+      ? {
+          transcriptionHint: () =>
+            transcriptionSetupMessage(production.status.transcription.reason),
+          recheckTranscription: recheckTranscription,
+        }
+      : {}),
   });
+}
+/** “重新检测”: probe local transcription again, bypassing the short status cache. */
+async function recheckTranscription(): Promise<void> {
+  await production.refreshStatus({ fresh: true });
+  await syncEditorCaptionCapabilities();
+  if (!document.querySelector("dialog[open]")) render();
+  toast(
+    production.status.transcription.available
+      ? "本机语音转写已就绪"
+      : transcriptionSetupMessage(production.status.transcription.reason),
+  );
 }
 async function openEditorCaptions(sequenceId: string): Promise<void> {
   if (!editorCaptions || !editorCaptionsUI) throw new Error("字幕面板尚未恢复");
   await production.refreshStatus();
+  await syncEditorCaptionCapabilities();
+  editorCaptionsUI.open(sequenceId);
+}
+async function syncEditorCaptionCapabilities(): Promise<void> {
+  if (!editorCaptions) return;
   const context = await panel?.getContext();
   editorCaptions.setCapabilities({
     canTranscribe:
@@ -4721,7 +4752,6 @@ async function openEditorCaptions(sequenceId: string): Promise<void> {
         context?.availableMethods?.includes(method),
       ),
   });
-  editorCaptionsUI.open(sequenceId);
 }
 function mountEditorSeparation(root: HTMLElement): void {
   if (!panel || !editorSession || editorSeparation) return;

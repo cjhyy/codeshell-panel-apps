@@ -15,6 +15,8 @@ import {
   type AutoProduction,
   validateVoicePreparation,
   type AssetPublication,
+  TRANSCRIPTION_SETUP_MESSAGE,
+  transcriptionSetupMessage,
 } from "../apps/video-studio/src/production.ts";
 import { AutomaticProducer } from "../apps/video-studio/src/automatic.ts";
 import {
@@ -83,6 +85,43 @@ test("project restoration defers native checks until an explicit production requ
   assert.deepEqual(
     host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
     [{ probe: false }, { probe: true }],
+  );
+});
+
+test("transcription readiness keeps the missing piece and 重新检测 asks for a fresh probe", async () => {
+  const host = new FakeHost();
+  let transcription: unknown = { available: false, reason: "model-missing" };
+  host.handlers.set("media.status", ({ probe }) => ({
+    persistent: true,
+    runtimeChecked: probe,
+    ffmpeg: { available: true },
+    transcription,
+    hyperframes: { available: true },
+  }));
+  const f = await fixture(host);
+  await assert.rejects(f.controller.transcribe(["source"]), (error: Error) => {
+    assert.equal(error.message, transcriptionSetupMessage("model-missing"));
+    assert.match(error.message, /缺少 base 模型 ~\/\.cache\/whisper\/base\.pt/);
+    assert.match(error.message, /重新检测/);
+    return true;
+  });
+  assert.equal(f.controller.status.transcription.reason, "model-missing");
+  assert.match(transcriptionSetupMessage("executable-missing"), /未找到 whisper 命令/);
+  assert.match(transcriptionSetupMessage("executable-failed"), /whisper 无法运行/);
+  assert.equal(transcriptionSetupMessage(undefined), TRANSCRIPTION_SETUP_MESSAGE);
+  assert.equal(
+    TRANSCRIPTION_SETUP_MESSAGE,
+    "本机语音转写未就绪：需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt。安装后点“重新检测”，或先导入 SRT。",
+  );
+  transcription = { available: false, reason: "not-a-known-reason" };
+  await f.controller.refreshStatus({ fresh: true });
+  assert.equal(f.controller.status.transcription.reason, undefined);
+  transcription = { available: true };
+  await f.controller.refreshStatus({ fresh: true });
+  assert.equal(f.controller.status.transcription.available, true);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }, { probe: true }, { probe: true, fresh: true }, { probe: true, fresh: true }],
   );
 });
 

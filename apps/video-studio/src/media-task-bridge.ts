@@ -468,7 +468,9 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       const params = (rawParams ?? {}) as any;
       if (method === "media.status") {
         await sdk.requireMethods(REQUIRED);
-        if (statusCache && Date.now() - statusCache.at < 30000) return clone(statusCache.value);
+        // “重新检测” asks for a fresh probe after the user installs local tools.
+        if (params.fresh !== true && statusCache && Date.now() - statusCache.at < 30000)
+          return clone(statusCache.value);
         // Restoring the editor discovers Host support without running local tools.
         if (params.probe === false)
           return {

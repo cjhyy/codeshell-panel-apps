@@ -1,9 +1,9 @@
 import { createRequire as __panelCreateRequire } from "node:module"; const require = __panelCreateRequire(import.meta.url);
 
 // native/media/media-cli.ts
-import { constants as constants3 } from "node:fs";
-import { lstat as lstat3, mkdir as mkdir13, open as open5, realpath as realpath4 } from "node:fs/promises";
-import { join as join13 } from "node:path";
+import { constants as constants4 } from "node:fs";
+import { lstat as lstat3, mkdir as mkdir13, open as open5, realpath as realpath5 } from "node:fs/promises";
+import { join as join14 } from "node:path";
 
 // native/signals.ts
 function combineAbortSignals(signals) {
@@ -2313,15 +2313,52 @@ function resolveMediaConnections(raw, options = {}) {
 
 // native/media/media-runtime.ts
 import { createReadStream as createReadStream6 } from "node:fs";
-import { access as access4, copyFile as copyFile4, lstat as lstat2, mkdir as mkdir12, realpath as realpath3, rm as rm12, stat as stat8 } from "node:fs/promises";
-import { homedir as homedir4 } from "node:os";
-import { basename as basename3, extname, join as join12, relative as relative2, resolve as resolve6, sep as sep2 } from "node:path";
+import { access as access4, copyFile as copyFile4, lstat as lstat2, mkdir as mkdir12, realpath as realpath4, rm as rm12, stat as stat9 } from "node:fs/promises";
+import { homedir as homedir5 } from "node:os";
+import { basename as basename3, extname, join as join13, relative as relative2, resolve as resolve6, sep as sep2 } from "node:path";
 
 // native/media/media-processors.ts
 import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
-import { access, mkdir as mkdir4, readFile as readFile4, realpath, rename as rename4, stat as stat3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile4, realpath as realpath2, rename as rename4, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import { homedir as homedir2 } from "node:os";
+import { basename, isAbsolute as isAbsolute4, join as join5, resolve as resolve3 } from "node:path";
+
+// native/media/media-executables.ts
+import { constants } from "node:fs";
+import { access, realpath, stat as stat3 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute as isAbsolute3, join as join4, resolve as resolve3 } from "node:path";
+import { delimiter, isAbsolute as isAbsolute3, join as join4 } from "node:path";
+function executableSearchDirectories() {
+  return [
+    ...new Set(
+      [
+        ...(process.env.PATH ?? "").split(delimiter),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        join4(homedir(), ".local/bin")
+      ].filter(isAbsolute3)
+    )
+  ];
+}
+async function findExecutable(name, explicit) {
+  const choices = explicit ? [explicit] : executableSearchDirectories().map(
+    (dir) => join4(dir, process.platform === "win32" ? `${name}.exe` : name)
+  );
+  for (const path of choices) {
+    try {
+      await access(path, constants.X_OK);
+      if ((await stat3(path)).isFile()) return await realpath(path);
+    } catch {
+    }
+  }
+  return void 0;
+}
+function redactHomePath(message) {
+  const home = homedir().replace(/[\\/]+$/, "");
+  if (!home) return message;
+  const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return message.replace(new RegExp(`${escaped}(?=[\\\\/'"\`\\s:,;)]|$)`, "g"), "~");
+}
 
 // src/rough-cut.ts
 var MAX_FRAMES = 24 * 60 * 60 * 30;
@@ -2392,8 +2429,8 @@ async function writeJson(path, value) {
   await rename4(temporary, path);
 }
 async function regularFile(path) {
-  const canonical = await realpath(path);
-  if (!(await stat3(canonical)).isFile()) throw new Error("Media source must be a regular file");
+  const canonical = await realpath2(path);
+  if (!(await stat4(canonical)).isFile()) throw new Error("Media source must be a regular file");
   return canonical;
 }
 var sourceOptions = [
@@ -2403,18 +2440,13 @@ var sourceOptions = [
   "mov,matroska,webm,avi,mp3,wav,aiff,flac,ogg,aac,png_pipe,jpeg_pipe,webp_pipe,bmp_pipe,tiff_pipe,gif,j2k_pipe"
 ];
 async function executablePath(command) {
-  if (isAbsolute3(command) || command.includes("/") || command.includes("\\"))
+  if (isAbsolute4(command) || command.includes("/") || command.includes("\\"))
     return regularFile(resolve3(command));
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    try {
-      const path = join4(directory, command);
-      await access(path);
-      return await regularFile(path);
-    } catch {
-    }
-  }
-  throw new Error(`Required local executable is unavailable: ${command}`);
+  const found = await findExecutable(command);
+  if (!found) throw new Error(`本机语音转写未就绪：未找到 ${command} 命令`);
+  return found;
 }
+var missingModel = (path) => new Error(`本机语音转写未就绪：缺少 ${basename(path, ".pt")} 模型 ${redactHomePath(path)}`);
 async function inspectMediaFile(path, context, options = {}) {
   path = await regularFile(path);
   const probe = options.ffprobePath ?? "ffprobe";
@@ -2471,7 +2503,7 @@ async function inspectMediaFile(path, context, options = {}) {
   const inspection = {
     kind: image ? "image" : video ? "video" : "audio",
     durationSeconds,
-    bytes: (await stat3(path)).size,
+    bytes: (await stat4(path)).size,
     format: String(raw.format?.format_name ?? "unknown")
   };
   if (video) {
@@ -2650,10 +2682,12 @@ function createMediaJobProcessors(options) {
       });
       let modelIdentity;
       if (kind === "transcribe") {
-        const modelPath = options.whisperModelPath ?? join4(homedir(), ".cache", "whisper", "base.pt");
-        const info = await stat3(modelPath);
+        const modelPath = options.whisperModelPath ?? join5(homedir2(), ".cache", "whisper", "base.pt");
+        const info = await stat4(modelPath).catch(() => {
+          throw missingModel(modelPath);
+        });
         const whisperExecutable = await executablePath(options.whisperPath ?? "whisper");
-        const executableInfo = await stat3(whisperExecutable);
+        const executableInfo = await stat4(whisperExecutable);
         const shebang = (await readFile4(whisperExecutable, "utf8")).split("\n")[0] ?? "";
         const python = /^#!(\/[^\r\n ]*python[\d.]*)\s*$/.exec(shebang)?.[1];
         const version = python ? (await runMediaProcess(
@@ -2694,7 +2728,7 @@ function createMediaJobProcessors(options) {
         modelIdentity,
         captions: Boolean(options.renderCaptionPng)
       });
-      const cachePath = join4(cacheDirectory, `${kind}-${key}.json`);
+      const cachePath = join5(cacheDirectory, `${kind}-${key}.json`);
       try {
         const cached = JSON.parse(await readFile4(cachePath, "utf8"));
         if (cached.version === 1 && await cachedArtifactsExist(cached.result, context)) {
@@ -2726,7 +2760,7 @@ function createMediaJobProcessors(options) {
   handlers.proxy = withJob("proxy", async (input, context) => {
     const path = await source(input, context), info = await inspectMediaFile(path, context, options);
     const width = integer(input.maxWidth ?? 1280, 160, 3840, "proxy width");
-    const output = join4(
+    const output = join5(
       context.outputDir,
       `proxy-${randomUUID4()}.${info.kind === "audio" ? "m4a" : "mp4"}`
     );
@@ -2772,7 +2806,7 @@ function createMediaJobProcessors(options) {
   });
   handlers.thumbnail = withJob("thumbnail", async (input, context) => {
     const path = await source(input, context), info = await inspectMediaFile(path, context, options);
-    const output = join4(context.outputDir, `thumbnail-${randomUUID4()}.png`);
+    const output = join5(context.outputDir, `thumbnail-${randomUUID4()}.png`);
     const seconds = bounded(
       input.seconds ?? 0,
       0,
@@ -2936,7 +2970,7 @@ function createMediaJobProcessors(options) {
       minSeconds,
       intervals
     };
-    const analysisPath = join4(context.outputDir, `silence-${randomUUID4()}.json`);
+    const analysisPath = join5(context.outputDir, `silence-${randomUUID4()}.json`);
     await writeJson(analysisPath, complete);
     return {
       ...complete,
@@ -2995,7 +3029,7 @@ function createMediaJobProcessors(options) {
       cuts,
       durationSeconds: info.durationSeconds
     };
-    const analysisPath = join4(context.outputDir, `scenes-${randomUUID4()}.json`);
+    const analysisPath = join5(context.outputDir, `scenes-${randomUUID4()}.json`);
     await writeJson(analysisPath, complete);
     return {
       ...complete,
@@ -3012,14 +3046,11 @@ function createMediaJobProcessors(options) {
     const language = input.language === void 0 || input.language === "auto" ? void 0 : String(input.language);
     if (language && !/^[a-z]{2,3}$/.test(language))
       throw new Error("Invalid transcription language");
-    const modelPath = await regularFile(
-      options.whisperModelPath ?? join4(homedir(), ".cache", "whisper", "base.pt")
-    ).catch(() => {
-      throw new Error(
-        "A local Whisper model must be installed and configured before transcription"
-      );
+    const configuredModel = options.whisperModelPath ?? join5(homedir2(), ".cache", "whisper", "base.pt");
+    const modelPath = await regularFile(configuredModel).catch(() => {
+      throw missingModel(configuredModel);
     });
-    const audioPath = join4(context.workDir, "transcribe-source.wav");
+    const audioPath = join5(context.workDir, "transcribe-source.wav");
     await encode(
       [
         ...sourceOptions,
@@ -3068,7 +3099,7 @@ function createMediaJobProcessors(options) {
       { signal: context.signal, cwd: context.workDir }
     );
     const raw = JSON.parse(
-      await readFile4(join4(context.outputDir, "transcribe-source.json"), "utf8")
+      await readFile4(join5(context.outputDir, "transcribe-source.json"), "utf8")
     );
     if (!Array.isArray(raw.segments))
       throw new Error("Whisper did not produce a timestamped transcript");
@@ -3083,7 +3114,7 @@ function createMediaJobProcessors(options) {
         probability: Number(word.probability)
       })) : []
     }));
-    const output = join4(context.outputDir, "transcript.srt");
+    const output = join5(context.outputDir, "transcript.srt");
     await writeFile4(
       output,
       captionsToSrt(
@@ -3095,7 +3126,7 @@ function createMediaJobProcessors(options) {
         }))
       )
     );
-    const transcriptPath = join4(context.outputDir, "transcript.json");
+    const transcriptPath = join5(context.outputDir, "transcript.json");
     const languageDetected = String(raw.language ?? language ?? "unknown");
     await writeJson(transcriptPath, {
       version: 1,
@@ -3116,7 +3147,7 @@ function createMediaJobProcessors(options) {
       segmentCount: segments.length,
       wordCount: segments.reduce((total, segment) => total + segment.words.length, 0),
       transcript: { path: transcriptPath, mimeType: "application/json" },
-      subtitles: (await stat3(output)).size ? await publish(output, "application/x-subrip", context) : null
+      subtitles: (await stat4(output)).size ? await publish(output, "application/x-subrip", context) : null
     };
   });
   handlers.render = withJob("render", async (input, context) => {
@@ -3151,7 +3182,7 @@ function createMediaJobProcessors(options) {
       const clip = segment.clip, media = clip ? sources.get(clip.assetId) : void 0, seconds = segment.frames / 30;
       if (clip && media && media.inspection.kind !== "image" && (!media.inspection.durationSeconds || clip.outFrame / 30 > media.inspection.durationSeconds + 1 / 30))
         throw new Error("Clip range exceeds its source media duration");
-      const output2 = join4(context.workDir, `segment-${index}.mkv`);
+      const output2 = join5(context.workDir, `segment-${index}.mkv`);
       const args2 = [];
       if (clip && media) {
         if (media.inspection.kind === "image")
@@ -3203,12 +3234,12 @@ function createMediaJobProcessors(options) {
       finishedFrames += segment.frames;
       paths.push(output2);
     }
-    const listPath = join4(context.workDir, "segments.txt");
+    const listPath = join5(context.workDir, "segments.txt");
     await writeFile4(
       listPath,
       paths.map((path) => `file '${path.replace(/'/g, "'\\''")}'`).join("\n")
     );
-    const joined = join4(context.workDir, "joined.mkv");
+    const joined = join5(context.workDir, "joined.mkv");
     await encode(
       ["-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", joined],
       context,
@@ -3216,7 +3247,7 @@ function createMediaJobProcessors(options) {
       (fraction) => 0.7 + fraction * 0.05
     );
     const prefix = `render-r${project.revision}-${randomUUID4()}`;
-    const output = join4(context.outputDir, `${prefix}.mp4`), srt = join4(context.outputDir, `${prefix}.srt`);
+    const output = join5(context.outputDir, `${prefix}.mp4`), srt = join5(context.outputDir, `${prefix}.srt`);
     await writeFile4(srt, captionsToSrt(project.captions));
     const args = ["-i", joined], filters = [];
     let videoLabel = "0:v", audioLabel = "0:a", inputIndex = 1;
@@ -3260,7 +3291,7 @@ function createMediaJobProcessors(options) {
         lastImage = overlay;
       }
       captionSequence.push(`file '${lastImage.replace(/'/g, "'\\''")}'`, "option framerate 30");
-      const captionList = join4(context.workDir, "captions.ffconcat");
+      const captionList = join5(context.workDir, "captions.ffconcat");
       await writeFile4(captionList, captionSequence.join("\n"));
       args.push("-f", "concat", "-safe", "0", "-i", captionList);
       filters.push(
@@ -3303,7 +3334,7 @@ function createMediaJobProcessors(options) {
       args.push("-i", srt);
     }
     if (filters.length) {
-      const filterPath = join4(context.workDir, "composition.filter");
+      const filterPath = join5(context.workDir, "composition.filter");
       await writeFile4(filterPath, filters.join(";"));
       args.push("-filter_complex_script", filterPath);
     }
@@ -3352,7 +3383,7 @@ function createMediaJobProcessors(options) {
 // native/media/media-audio-enhance.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
 import { mkdir as mkdir5, rename as rename5, rm as rm4 } from "node:fs/promises";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 function validateAudioEnhanceInput(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new Error("Audio enhancement parameters must be an object");
@@ -3396,8 +3427,8 @@ function createAudioEnhanceProcessor(options) {
       if (Math.ceil(duration2 * 48e3) * original.audio.channels * 2 + 4096 > maxOutputBytes)
         throw new Error("Enhanced WAV would exceed the media file budget");
       await mkdir5(context.outputDir, { recursive: true });
-      const temporary = join5(context.outputDir, `enhanced-${randomUUID5()}.partial.wav`);
-      const output = join5(context.outputDir, `enhanced-${randomUUID5()}.wav`);
+      const temporary = join6(context.outputDir, `enhanced-${randomUUID5()}.partial.wav`);
+      const output = join6(context.outputDir, `enhanced-${randomUUID5()}.wav`);
       const baseFilters = [
         // Keep the full source timeline, including a video whose audio begins late
         // or ends early. first_pts pads leading audio gaps and apad fills its tail.
@@ -3543,7 +3574,7 @@ function createAudioEnhanceProcessor(options) {
 // native/media/media-audio-extract.ts
 import { randomUUID as randomUUID6 } from "node:crypto";
 import { mkdir as mkdir6, rename as rename6, rm as rm5 } from "node:fs/promises";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 function validateAudioExtractInput(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new Error("请选择要提取的本人录音片段");
@@ -3576,8 +3607,8 @@ function createAudioExtractProcessor(options) {
           throw new Error("参考片段超出原始素材时长，请重新选择起止位置");
         const duration2 = (input.outFrame - input.inFrame) / 30;
         await mkdir6(context.outputDir, { recursive: true });
-        const temporary = join6(context.outputDir, `reference-${randomUUID6()}.partial.wav`);
-        const output = join6(context.outputDir, `reference-${randomUUID6()}.wav`);
+        const temporary = join7(context.outputDir, `reference-${randomUUID6()}.partial.wav`);
+        const output = join7(context.outputDir, `reference-${randomUUID6()}.wav`);
         try {
           await context.reportProgress({
             stage: "extract",
@@ -3696,12 +3727,12 @@ import {
   readFile as readFile6,
   rename as rename8,
   rm as rm8,
-  stat as stat5,
+  stat as stat6,
   statfs as statfs3,
   writeFile as writeFile6
 } from "node:fs/promises";
 import { totalmem as totalmem3 } from "node:os";
-import { isAbsolute as isAbsolute4, join as join8, resolve as resolve4 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join9, resolve as resolve4 } from "node:path";
 import { StringDecoder as StringDecoder3 } from "node:string_decoder";
 
 // native/media/media-tts-provider-script.ts
@@ -3831,9 +3862,9 @@ async function releaseManagedTtsSetupResources(lock, lockPath, sample, primaryFa
 // native/media/media-tts.ts
 import { createHash as createHash5, randomUUID as randomUUID7 } from "node:crypto";
 import { createReadStream as createReadStream3 } from "node:fs";
-import { copyFile, mkdir as mkdir7, readFile as readFile5, rename as rename7, rm as rm7, stat as stat4, writeFile as writeFile5 } from "node:fs/promises";
+import { copyFile, mkdir as mkdir7, readFile as readFile5, rename as rename7, rm as rm7, stat as stat5, writeFile as writeFile5 } from "node:fs/promises";
 import { release } from "node:os";
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 var CACHE_VERSION = 1;
 var MAX_AUDIO_SECONDS = 30 * 60;
 var MAX_WAV_BYTES = MAX_AUDIO_SECONDS * 48e3 * 2 + 4096;
@@ -3870,7 +3901,7 @@ async function detectLocalTts(options = {}) {
   try {
     const [listed, binary, ffmpeg, ffprobe] = await Promise.all([
       runMediaProcess(say, ["-v", "?"], { signal, maxStdoutBytes: 256 * 1024 }),
-      stat4(say),
+      stat5(say),
       runMediaProcess(options.ffmpegPath ?? "ffmpeg", ["-version"], { signal }),
       runMediaProcess(options.ffprobePath ?? "ffprobe", ["-version"], { signal })
     ]);
@@ -3909,7 +3940,7 @@ async function digestFile(path, signal) {
   return hash2.digest("hex");
 }
 async function inspectWav(path, signal, options) {
-  const info = await stat4(path);
+  const info = await stat5(path);
   if (!info.isFile() || info.size <= 44 || info.size > MAX_WAV_BYTES)
     throw new Error("系统未生成有效或大小合适的语音文件");
   const probe = await runMediaProcess(
@@ -3959,14 +3990,14 @@ async function generateLocalTts(raw, context, options = {}) {
     })
   ).digest("hex");
   const nonce = randomUUID7();
-  const output = join7(context.outputDir, `speech-${nonce}.wav`);
-  const textPath = join7(context.workDir, `speech-${nonce}.txt`);
-  const aiff = join7(context.workDir, `speech-${nonce}.aiff`);
-  const partial = join7(context.outputDir, `speech-${nonce}.partial.wav`);
-  const cacheWav = join7(context.cacheDir, `tts-${cacheKey}.wav`);
-  const cacheJson = join7(context.cacheDir, `tts-${cacheKey}.json`);
-  const cacheTemp = join7(context.cacheDir, `tts-${cacheKey}-${nonce}.tmp.wav`);
-  const metadataTemp = join7(context.cacheDir, `tts-${cacheKey}-${nonce}.tmp.json`);
+  const output = join8(context.outputDir, `speech-${nonce}.wav`);
+  const textPath = join8(context.workDir, `speech-${nonce}.txt`);
+  const aiff = join8(context.workDir, `speech-${nonce}.aiff`);
+  const partial = join8(context.outputDir, `speech-${nonce}.partial.wav`);
+  const cacheWav = join8(context.cacheDir, `tts-${cacheKey}.wav`);
+  const cacheJson = join8(context.cacheDir, `tts-${cacheKey}.json`);
+  const cacheTemp = join8(context.cacheDir, `tts-${cacheKey}-${nonce}.tmp.wav`);
+  const metadataTemp = join8(context.cacheDir, `tts-${cacheKey}-${nonce}.tmp.json`);
   let completed = false;
   try {
     for (const directory of [context.workDir, context.outputDir, context.cacheDir])
@@ -3978,7 +4009,7 @@ async function generateLocalTts(raw, context, options = {}) {
     });
     let cachedMetadata;
     try {
-      if ((await stat4(cacheJson)).size > 4096) throw new Error("Oversized speech cache metadata");
+      if ((await stat5(cacheJson)).size > 4096) throw new Error("Oversized speech cache metadata");
       const cached = JSON.parse(await readFile5(cacheJson, "utf8"));
       const metadata2 = await inspectWav(cacheWav, signal, options);
       if (cached.version !== CACHE_VERSION || cached.cacheKey !== cacheKey || cached.bytes !== metadata2.bytes || cached.durationSeconds !== metadata2.durationSeconds || cached.sha256 !== await digestFile(cacheWav, signal))
@@ -4131,7 +4162,7 @@ async function digest3(path, signal) {
   return hash2.digest("hex");
 }
 async function jsonFile(path, maxBytes = 256 * 1024) {
-  if ((await stat5(path)).size > maxBytes) throw new Error("Runtime metadata exceeds its budget");
+  if ((await stat6(path)).size > maxBytes) throw new Error("Runtime metadata exceeds its budget");
   return JSON.parse(await readFile6(path, "utf8"));
 }
 async function atomicJson(path, value) {
@@ -4208,13 +4239,13 @@ async function downloadResource(resource, target, context, signal) {
   }
 }
 function createManagedTtsProviders(options) {
-  if (!isAbsolute4(options.runtimeDir))
+  if (!isAbsolute5(options.runtimeDir))
     throw new Error("TTS runtimeDir must be an absolute Host path");
   const root = resolve4(options.runtimeDir);
-  const directory = (id2) => join8(root, id2);
-  const python = (id2) => join8(directory(id2), "venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-  const script = (id2) => join8(directory(id2), "runner.py");
-  const manifestPath = (id2) => join8(directory(id2), "runtime.json");
+  const directory = (id2) => join9(root, id2);
+  const python = (id2) => join9(directory(id2), "venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  const script = (id2) => join9(directory(id2), "runner.py");
+  const manifestPath = (id2) => join9(directory(id2), "runtime.json");
   const isolatedEnvironment = () => {
     const env = { ...process.env };
     for (const key of Object.keys(env)) {
@@ -4223,7 +4254,7 @@ function createManagedTtsProviders(options) {
     }
     return {
       ...env,
-      UV_CACHE_DIR: join8(root, "package-cache"),
+      UV_CACHE_DIR: join9(root, "package-cache"),
       UV_NO_CONFIG: "1",
       PYTHONNOUSERSITE: "1"
     };
@@ -4262,7 +4293,7 @@ function createManagedTtsProviders(options) {
     if (id2 === "kokoro" && totalmem3() < 4 * 1024 ** 3)
       return { ...result, state: "unavailable", reason: "Kokoro 本地推理至少需要 4 GB 内存" };
     try {
-      result.installed = (await stat5(python(id2))).isFile();
+      result.installed = (await stat6(python(id2))).isFile();
     } catch {
     }
     if (setupOwners.has(directory(id2)))
@@ -4273,7 +4304,7 @@ function createManagedTtsProviders(options) {
         throw new Error("Incomplete runtime");
       if (id2 === "kokoro") {
         for (const resource of RESOURCES2)
-          if ((await stat5(join8(directory(id2), resource.name))).size !== resource.bytes)
+          if ((await stat6(join9(directory(id2), resource.name))).size !== resource.bytes)
             throw new Error("Incomplete model");
       }
       return {
@@ -4289,7 +4320,7 @@ function createManagedTtsProviders(options) {
     } catch {
       let reason;
       try {
-        reason = (await jsonFile(join8(directory(id2), "failure.json"), 4096)).reason;
+        reason = (await jsonFile(join9(directory(id2), "failure.json"), 4096)).reason;
       } catch {
       }
       return {
@@ -4301,13 +4332,13 @@ function createManagedTtsProviders(options) {
   }
   async function execute(id2, data, context, signal) {
     await mkdir8(context.workDir, { recursive: true });
-    const requestPath = join8(context.workDir, `tts-request-${randomUUID8()}.json`);
+    const requestPath = join9(context.workDir, `tts-request-${randomUUID8()}.json`);
     await writeFile6(
       requestPath,
       JSON.stringify({
         providerId: id2,
-        modelPath: join8(directory(id2), RESOURCES2[0].name),
-        voicesPath: join8(directory(id2), RESOURCES2[1].name),
+        modelPath: join9(directory(id2), RESOURCES2[0].name),
+        voicesPath: join9(directory(id2), RESOURCES2[1].name),
         ...data
       }),
       { mode: 384 }
@@ -4367,7 +4398,7 @@ function createManagedTtsProviders(options) {
     ]);
   }
   async function inspect(path, signal) {
-    const size = (await stat5(path)).size;
+    const size = (await stat6(path)).size;
     if (size < 44 || size > 1800 * 48e3 * 2 + 4096)
       throw new Error("配音音频为空或超出 30 分钟预算");
     const probe = await runMediaProcess(
@@ -4419,9 +4450,9 @@ function createManagedTtsProviders(options) {
   async function render(id2, input, voice, context, signal) {
     await mkdir8(context.outputDir, { recursive: true });
     const nonce = randomUUID8();
-    const raw = join8(context.workDir, `tts-${nonce}.${id2 === "kokoro" ? "wav" : "mp3"}`);
-    const partial = join8(context.outputDir, `speech-${nonce}.partial.wav`);
-    const output = join8(context.outputDir, `speech-${nonce}.wav`);
+    const raw = join9(context.workDir, `tts-${nonce}.${id2 === "kokoro" ? "wav" : "mp3"}`);
+    const partial = join9(context.outputDir, `speech-${nonce}.partial.wav`);
+    const output = join9(context.outputDir, `speech-${nonce}.wav`);
     let complete = false;
     try {
       await execute(
@@ -4479,10 +4510,10 @@ function createManagedTtsProviders(options) {
   async function resources(id2, context, signal) {
     if (id2 !== "kokoro") return;
     for (const resource of RESOURCES2) {
-      const target = join8(directory(id2), resource.name);
+      const target = join9(directory(id2), resource.name);
       const valid = async (path) => {
         try {
-          return (await stat5(path)).size === resource.bytes && await digest3(path, signal) === resource.sha256;
+          return (await stat6(path)).size === resource.bytes && await digest3(path, signal) === resource.sha256;
         } catch (error) {
           if (signal.aborted) throw error;
           return false;
@@ -4490,8 +4521,8 @@ function createManagedTtsProviders(options) {
       };
       if (await valid(target)) continue;
       const candidates = options.reuseKokoroDir ? [
-        join8(options.reuseKokoroDir, resource.reuse, resource.name),
-        join8(options.reuseKokoroDir, resource.name)
+        join9(options.reuseKokoroDir, resource.reuse, resource.name),
+        join9(options.reuseKokoroDir, resource.name)
       ] : [];
       let reuse;
       for (const candidate of candidates)
@@ -4520,7 +4551,7 @@ function createManagedTtsProviders(options) {
     const deadline = AbortSignal.timeout(20 * 6e4);
     const signal = AbortSignal.any([context.signal, deadline]);
     let lock;
-    const lockPath = join8(dir, "setup.lock");
+    const lockPath = join9(dir, "setup.lock");
     let sample;
     let setupFailure;
     try {
@@ -4572,7 +4603,7 @@ function createManagedTtsProviders(options) {
             "--python",
             options.pythonPath ?? "3.12",
             "--no-python-downloads",
-            join8(dir, "venv")
+            join9(dir, "venv")
           ],
           { signal, env: isolatedEnvironment() }
         );
@@ -4626,7 +4657,7 @@ function createManagedTtsProviders(options) {
         defaultVoiceId: voice.id,
         state: "ready"
       });
-      await rm8(join8(dir, "failure.json"), { force: true });
+      await rm8(join9(dir, "failure.json"), { force: true });
       await context.reportProgress({
         fraction: 1,
         stage: "ready",
@@ -4638,7 +4669,7 @@ function createManagedTtsProviders(options) {
         throw setupFailure;
       }
       const reason = signal.aborted ? context.signal.aborted ? "声音准备已取消，可以重新准备" : "声音准备超时，请检查网络和运行环境后重试" : id2 === "edge-tts" ? "Edge 在线声音准备失败；需要 uv、Python 3.12、FFmpeg 及可访问的在线语音服务，可选择系统声音或本地 Kokoro" : "Kokoro 准备失败；需要 uv、Python 3.12、FFmpeg、可用依赖与完整模型，请检查网络和空间后重试";
-      await atomicJson(join8(dir, "failure.json"), { reason, at: Date.now() }).catch(() => {
+      await atomicJson(join9(dir, "failure.json"), { reason, at: Date.now() }).catch(() => {
       });
       try {
         const manifest = await loadManifest(id2);
@@ -4666,7 +4697,7 @@ function createManagedTtsProviders(options) {
     await checkTools(signal);
     if (id2 === "kokoro") {
       for (const resource of RESOURCES2)
-        if (await digest3(join8(directory(id2), resource.name), signal) !== resource.sha256) {
+        if (await digest3(join9(directory(id2), resource.name), signal) !== resource.sha256) {
           const reason = "本地模型校验失败，请重新准备声音服务";
           const manifest = await loadManifest(id2);
           await atomicJson(manifestPath(id2), { ...manifest, state: "failed", reason });
@@ -4683,15 +4714,15 @@ function createManagedTtsProviders(options) {
       })
     ).digest("hex");
     await mkdir8(context.cacheDir, { recursive: true });
-    const cacheWav = join8(context.cacheDir, `speech-${cacheKey}.wav`);
-    const cacheMeta = join8(context.cacheDir, `speech-${cacheKey}.json`);
+    const cacheWav = join9(context.cacheDir, `speech-${cacheKey}.wav`);
+    const cacheMeta = join9(context.cacheDir, `speech-${cacheKey}.json`);
     try {
       const cached = await jsonFile(cacheMeta, 4096);
       if (cached.cacheKey !== cacheKey || await digest3(cacheWav, signal) !== cached.sha256)
         throw new Error("Invalid speech cache");
       const metadata = await inspect(cacheWav, signal);
       await mkdir8(context.outputDir, { recursive: true });
-      const output = join8(context.outputDir, `speech-${randomUUID8()}.wav`);
+      const output = join9(context.outputDir, `speech-${randomUUID8()}.wav`);
       await copyFile2(cacheWav, output);
       if (signal.aborted) {
         await rm8(output, { force: true });
@@ -4760,8 +4791,8 @@ function createManagedTtsProviders(options) {
 
 // native/media/media-tts-openai.ts
 import { randomUUID as randomUUID9 } from "node:crypto";
-import { mkdir as mkdir9, open as open4, rename as rename9, rm as rm9, stat as stat6 } from "node:fs/promises";
-import { join as join9 } from "node:path";
+import { mkdir as mkdir9, open as open4, rename as rename9, rm as rm9, stat as stat7 } from "node:fs/promises";
+import { join as join10 } from "node:path";
 var MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 var MAX_DURATION_SECONDS = 600;
 var WAV_TYPES = /* @__PURE__ */ new Set(["audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"]);
@@ -4902,9 +4933,9 @@ async function generateOpenAiTts(raw, context, options) {
   if (context.signal.aborted) throw mediaAbortError();
   const deadline = AbortSignal.timeout(timeoutMs), signal = AbortSignal.any([context.signal, deadline]);
   const nonce = randomUUID9();
-  const source = join9(context.workDir, `speech-response-${nonce}.wav`);
-  const partial = join9(context.outputDir, `speech-${nonce}.partial.wav`);
-  const output = join9(context.outputDir, `speech-${nonce}.wav`);
+  const source = join10(context.workDir, `speech-response-${nonce}.wav`);
+  const partial = join10(context.outputDir, `speech-${nonce}.partial.wav`);
+  const output = join10(context.outputDir, `speech-${nonce}.wav`);
   let completed = false, failureMessage = "连接配音服务失败，请检查服务地址、凭据和网络";
   try {
     await mkdir9(context.workDir, { recursive: true });
@@ -4970,7 +5001,7 @@ async function generateOpenAiTts(raw, context, options) {
       { signal }
     );
     const metadata = await inspectWav2(partial, signal, options);
-    if (metadata.sampleRate !== 48e3 || metadata.channels !== 1 || metadata.codec !== "pcm_s16le" || (await stat6(partial)).size > MAX_DURATION_SECONDS * 48e3 * 2 + 4096)
+    if (metadata.sampleRate !== 48e3 || metadata.channels !== 1 || metadata.codec !== "pcm_s16le" || (await stat7(partial)).size > MAX_DURATION_SECONDS * 48e3 * 2 + 4096)
       throw new SpeechError("配音未能转换为有效的 48kHz 单声道 WAV");
     if (signal.aborted) throw mediaAbortError();
     await rename9(partial, output);
@@ -5001,7 +5032,7 @@ async function generateOpenAiTts(raw, context, options) {
 // native/media/hyperframes-adapter.ts
 import { spawn as spawn2 } from "node:child_process";
 import { createHash as createHash7, randomUUID as randomUUID10 } from "node:crypto";
-import { createReadStream as createReadStream5, constants } from "node:fs";
+import { createReadStream as createReadStream5, constants as constants2 } from "node:fs";
 import {
   access as access2,
   copyFile as copyFile3,
@@ -5009,14 +5040,14 @@ import {
   mkdir as mkdir10,
   readFile as readFile7,
   readdir as readdir3,
-  realpath as realpath2,
+  realpath as realpath3,
   rename as rename10,
   rm as rm10,
-  stat as stat7,
+  stat as stat8,
   writeFile as writeFile7
 } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
-import { basename as basename2, delimiter as delimiter2, dirname, isAbsolute as isAbsolute5, join as join10, relative, resolve as resolve5, sep } from "node:path";
+import { homedir as homedir3 } from "node:os";
+import { basename as basename2, delimiter as delimiter2, dirname, isAbsolute as isAbsolute6, join as join11, relative, resolve as resolve5, sep } from "node:path";
 import { createServer } from "node:net";
 var TEMPLATE_VERSION = 1;
 var MAX_SOURCE_BYTES = 1024 * 1024 * 1024;
@@ -5115,45 +5146,28 @@ async function run(executable, args, options = {}) {
     });
   });
 }
-async function executablePath2(name, explicit) {
-  const directories = [
-    ...(process.env.PATH ?? "").split(delimiter2),
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-    join10(homedir2(), ".local/bin")
-  ];
-  const choices = explicit ? [explicit] : directories.filter(isAbsolute5).map((dir) => join10(dir, process.platform === "win32" ? `${name}.exe` : name));
-  for (const path of choices) {
-    try {
-      await access2(path, constants.X_OK);
-      if ((await stat7(path)).isFile()) return await realpath2(path);
-    } catch {
-    }
-  }
-  return void 0;
-}
 async function discoverCli(options) {
   if (options.cliPath) {
-    await access2(options.cliPath, constants.R_OK);
-    return realpath2(options.cliPath);
+    await access2(options.cliPath, constants2.R_OK);
+    return realpath3(options.cliPath);
   }
   const candidates = [];
   if (options.projectDir)
-    candidates.push(join10(options.projectDir, "node_modules/hyperframes/bin/hyperframes.mjs"));
-  const global = await executablePath2("hyperframes");
+    candidates.push(join11(options.projectDir, "node_modules/hyperframes/bin/hyperframes.mjs"));
+  const global = await findExecutable("hyperframes");
   if (global) candidates.push(global);
-  const cache = join10(homedir2(), ".npm/_npx");
+  const cache = join11(homedir3(), ".npm/_npx");
   try {
     const entries = await readdir3(cache, { withFileTypes: true });
     for (const entry of entries.filter((entry2) => entry2.isDirectory()).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100)) {
-      candidates.push(join10(cache, entry.name, "node_modules/hyperframes/bin/hyperframes.mjs"));
+      candidates.push(join11(cache, entry.name, "node_modules/hyperframes/bin/hyperframes.mjs"));
     }
   } catch {
   }
   for (const path of candidates) {
     try {
-      await access2(path, constants.R_OK);
-      return realpath2(path);
+      await access2(path, constants2.R_OK);
+      return realpath3(path);
     } catch {
     }
   }
@@ -5161,9 +5175,9 @@ async function discoverCli(options) {
 }
 async function detectHyperframesRuntime(options = {}) {
   const runtime = { available: false, checks: [] };
-  runtime.nodePath = await executablePath2("node", options.nodePath);
-  runtime.ffmpegPath = await executablePath2("ffmpeg", options.ffmpegPath);
-  runtime.ffprobePath = await executablePath2("ffprobe", options.ffprobePath);
+  runtime.nodePath = await findExecutable("node", options.nodePath);
+  runtime.ffmpegPath = await findExecutable("ffmpeg", options.ffmpegPath);
+  runtime.ffprobePath = await findExecutable("ffprobe", options.ffprobePath);
   try {
     runtime.cliPath = await discoverCli(options);
   } catch (error) {
@@ -5203,8 +5217,8 @@ async function detectHyperframesRuntime(options = {}) {
         timeoutMs: 2e4
       });
       const browserPath = browser.stdout.trim().split("\n").at(-1);
-      if (!isAbsolute5(browserPath)) throw new Error("Bundled Chrome is not available");
-      await access2(browserPath, constants.X_OK);
+      if (!isAbsolute6(browserPath)) throw new Error("Bundled Chrome is not available");
+      await access2(browserPath, constants2.X_OK);
       runtime.browserPath = browserPath;
       runtime.checks.push({ name: "Chrome", ok: true, detail: browserPath });
     } catch (error) {
@@ -5224,8 +5238,8 @@ function inside(root, path) {
   return path === root || path.startsWith(root + sep);
 }
 async function within(root, path) {
-  const canonicalRoot = await realpath2(root);
-  const canonical = await realpath2(resolve5(root, path));
+  const canonicalRoot = await realpath3(root);
+  const canonical = await realpath3(resolve5(root, path));
   if (!inside(canonicalRoot, canonical))
     throw new Error("HyperFrames path is outside its authorized workspace");
   return canonical;
@@ -5244,7 +5258,7 @@ async function sourceFiles(projectDir) {
     )) {
       if (SKIP_DIRECTORIES.has(entry.name) || entry.name === META_NAME || entry.name === ".DS_Store")
         continue;
-      const path = join10(dir, entry.name);
+      const path = join11(dir, entry.name);
       if (entry.isSymbolicLink())
         throw new Error("HyperFrames source snapshots do not follow symbolic links");
       if (entry.isDirectory()) await visit(path);
@@ -5337,8 +5351,8 @@ const progress=document.querySelector('.progress').animate([{transform:'scaleX(0
 `;
 }
 async function inspectDirectory(projectDir, kind) {
-  const sourcePath = join10(projectDir, "index.html");
-  if ((await stat7(sourcePath)).size > 8 * 1024 * 1024)
+  const sourcePath = join11(projectDir, "index.html");
+  if ((await stat8(sourcePath)).size > 8 * 1024 * 1024)
     throw new Error("HyperFrames index.html exceeds 8 MiB");
   const html = await readFile7(sourcePath, "utf8");
   const root = /<[a-z][^>]*\bdata-composition-id\s*=\s*["'][^"']+["'][^>]*>/i.exec(html)?.[0];
@@ -5352,19 +5366,19 @@ async function inspectDirectory(projectDir, kind) {
   for (const file of files.filter(
     (file2) => /\.(html|css|js|mjs)$/i.test(file2.path) && file2.size <= 8 * 1024 * 1024
   )) {
-    const source = await readFile7(join10(projectDir, file.path), "utf8");
+    const source = await readFile7(join11(projectDir, file.path), "utf8");
     for (const match of source.matchAll(/https?:\/\/[^\s"'<>`)]+/g)) externalUrls.add(match[0]);
   }
   let pkg = {};
   try {
-    pkg = JSON.parse(await readFile7(join10(projectDir, "package.json"), "utf8"));
+    pkg = JSON.parse(await readFile7(join11(projectDir, "package.json"), "utf8"));
   } catch {
   }
   const pin = Object.values(pkg.scripts ?? {}).join(" ").match(/hyperframes@(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)?.[1];
   return {
     projectDir,
     sourcePath,
-    paramsPath: join10(projectDir, META_NAME),
+    paramsPath: join11(projectDir, META_NAME),
     contentHash: contentHash(files),
     kind,
     width: attr("data-width"),
@@ -5420,16 +5434,16 @@ function createHyperframesAdapter(options) {
   };
   const cacheRoot = resolve5(options.cacheRoot);
   const prepare = async () => {
-    await mkdir10(join10(cacheRoot, "sources"), { recursive: true });
-    await mkdir10(join10(cacheRoot, "renders"), { recursive: true });
+    await mkdir10(join11(cacheRoot, "sources"), { recursive: true });
+    await mkdir10(join11(cacheRoot, "renders"), { recursive: true });
   };
   async function managed(source) {
     await prepare();
-    const dir = await within(join10(cacheRoot, "sources"), source.projectDir);
+    const dir = await within(join11(cacheRoot, "sources"), source.projectDir);
     return inspectDirectory(dir, source.kind);
   }
   async function inspectProject(relativeDir) {
-    if (typeof relativeDir !== "string" || !relativeDir || isAbsolute5(relativeDir))
+    if (typeof relativeDir !== "string" || !relativeDir || isAbsolute6(relativeDir))
       throw new Error("HyperFrames import requires a workspace-relative directory");
     const dir = await within(options.workspaceRoot, relativeDir);
     return inspectDirectory(dir, "imported");
@@ -5439,22 +5453,22 @@ function createHyperframesAdapter(options) {
     await prepare();
     const p = normalizeParams(params), found = await runtime();
     const key = contentHash({ template: TEMPLATE_VERSION, params: p });
-    const target = join10(cacheRoot, "sources", key);
+    const target = join11(cacheRoot, "sources", key);
     try {
-      await access2(join10(target, META_NAME));
+      await access2(join11(target, META_NAME));
       return await inspectDirectory(target, "generated");
     } catch {
     }
-    const temporary = join10(cacheRoot, "sources", `.tmp-${randomUUID10()}`);
+    const temporary = join11(cacheRoot, "sources", `.tmp-${randomUUID10()}`);
     await mkdir10(temporary);
     try {
-      await writeFile7(join10(temporary, "index.html"), sceneHtml(p));
+      await writeFile7(join11(temporary, "index.html"), sceneHtml(p));
       await writeFile7(
-        join10(temporary, "hyperframes.json"),
+        join11(temporary, "hyperframes.json"),
         JSON.stringify({ skill: "general-video" }, null, 2)
       );
       await writeFile7(
-        join10(temporary, "package.json"),
+        join11(temporary, "package.json"),
         JSON.stringify(
           {
             private: true,
@@ -5468,7 +5482,7 @@ function createHyperframesAdapter(options) {
         )
       );
       await writeFile7(
-        join10(temporary, META_NAME),
+        join11(temporary, META_NAME),
         JSON.stringify(
           { schemaVersion: 1, templateVersion: TEMPLATE_VERSION, kind: "generated", params: p },
           null,
@@ -5494,30 +5508,30 @@ function createHyperframesAdapter(options) {
     abort(ctx.signal);
     await prepare();
     const original = await inspectProject(relativeDir), files = await sourceFiles(original.projectDir);
-    const target = join10(cacheRoot, "sources", original.contentHash);
+    const target = join11(cacheRoot, "sources", original.contentHash);
     try {
-      await access2(join10(target, META_NAME));
+      await access2(join11(target, META_NAME));
       return await inspectDirectory(target, "imported");
     } catch {
     }
-    const temporary = join10(cacheRoot, "sources", `.tmp-${randomUUID10()}`);
+    const temporary = join11(cacheRoot, "sources", `.tmp-${randomUUID10()}`);
     await mkdir10(temporary);
     try {
       for (const file of files) {
         abort(ctx.signal);
-        await mkdir10(dirname(join10(temporary, file.path)), { recursive: true });
-        await copyFile3(join10(original.projectDir, file.path), join10(temporary, file.path));
-        if (await digestFile2(join10(temporary, file.path)) !== file.hash)
+        await mkdir10(dirname(join11(temporary, file.path)), { recursive: true });
+        await copyFile3(join11(original.projectDir, file.path), join11(temporary, file.path));
+        if (await digestFile2(join11(temporary, file.path)) !== file.hash)
           throw new Error("HyperFrames source changed during import; retry the snapshot");
       }
       await writeFile7(
-        join10(temporary, META_NAME),
+        join11(temporary, META_NAME),
         JSON.stringify(
           {
             schemaVersion: 1,
             kind: "imported",
             originalRelativeDir: relative(
-              await realpath2(options.workspaceRoot),
+              await realpath3(options.workspaceRoot),
               original.projectDir
             ),
             sourceHash: original.contentHash,
@@ -5550,9 +5564,9 @@ function createHyperframesAdapter(options) {
     const parsed = JSON.parse(result.stdout);
     if (parsed.ok !== true)
       throw new Error(`HyperFrames check did not pass: ${JSON.stringify(parsed).slice(-4e3)}`);
-    await mkdir10(join10(current.projectDir, ".hyperframes"), { recursive: true });
+    await mkdir10(join11(current.projectDir, ".hyperframes"), { recursive: true });
     await writeFile7(
-      join10(current.projectDir, ".hyperframes/codeshell-check.json"),
+      join11(current.projectDir, ".hyperframes/codeshell-check.json"),
       JSON.stringify(parsed, null, 2)
     );
     report(ctx, { phase: "check", message: "HyperFrames checks passed", progress: 1 });
@@ -5565,7 +5579,7 @@ function createHyperframesAdapter(options) {
     if (!["draft", "standard", "high"].includes(quality) || ![24, 30, 60].includes(fps))
       throw new Error("Invalid HyperFrames render quality or fps");
     const key = contentHash({ source: current.contentHash, version: found.version, quality, fps });
-    const directory = join10(cacheRoot, "renders", key), artifactPath = join10(directory, "scene.mp4"), manifestPath = join10(directory, "render.json");
+    const directory = join11(cacheRoot, "renders", key), artifactPath = join11(directory, "scene.mp4"), manifestPath = join11(directory, "render.json");
     if (!current.externalUrls.length) {
       try {
         const stored = JSON.parse(await readFile7(manifestPath, "utf8"));
@@ -5592,7 +5606,7 @@ function createHyperframesAdapter(options) {
     await check2(current, ctx);
     abort(ctx.signal);
     await mkdir10(directory, { recursive: true });
-    const temporary = join10(directory, `.partial-${randomUUID10()}.mp4`);
+    const temporary = join11(directory, `.partial-${randomUUID10()}.mp4`);
     try {
       report(ctx, { phase: "render", message: "Rendering scene with HyperFrames", progress: 0 });
       await run(
@@ -5634,7 +5648,7 @@ function createHyperframesAdapter(options) {
         format: "mp4",
         rendererVersion: found.version
       };
-      const temporaryManifest = join10(directory, `.render-${randomUUID10()}.json`);
+      const temporaryManifest = join11(directory, `.render-${randomUUID10()}.json`);
       await writeFile7(temporaryManifest, JSON.stringify({ ...result, artifactHash }, null, 2));
       await rename10(temporaryManifest, manifestPath);
       report(ctx, { phase: "render", message: "HyperFrames MP4 verified", progress: 1 });
@@ -5737,10 +5751,10 @@ function createHyperframesAdapter(options) {
 // native/media/media-caption-renderer.ts
 import { spawn as spawn3 } from "node:child_process";
 import { createHash as createHash8 } from "node:crypto";
-import { constants as constants2 } from "node:fs";
+import { constants as constants3 } from "node:fs";
 import { access as access3, mkdir as mkdir11, readdir as readdir4, rm as rm11, writeFile as writeFile8 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
-import { delimiter as delimiter3, dirname as dirname2, join as join11 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { delimiter as delimiter3, dirname as dirname2, join as join12 } from "node:path";
 function validateCaptionImageRequest(request) {
   if (!request || typeof request !== "object" || Object.keys(request).some(
     (key) => !["width", "height", "fontSize", "texts", "style"].includes(key)
@@ -5822,28 +5836,28 @@ function drawCaptionPng(request) {
 async function findCaptionBrowser() {
   const names = process.platform === "win32" ? ["chrome.exe", "msedge.exe"] : process.platform === "linux" ? ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] : ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
   const directories = (process.env.PATH ?? "").split(delimiter3).filter(Boolean);
-  const candidates = process.platform === "linux" ? names.flatMap((name) => directories.map((path) => join11(path, name))) : directories.flatMap((path) => names.map((name) => join11(path, name)));
-  const home = homedir3();
-  const localAppData = process.env.LOCALAPPDATA || join11(home, "AppData", "Local");
+  const candidates = process.platform === "linux" ? names.flatMap((name) => directories.map((path) => join12(path, name))) : directories.flatMap((path) => names.map((name) => join12(path, name)));
+  const home = homedir4();
+  const localAppData = process.env.LOCALAPPDATA || join12(home, "AppData", "Local");
   if (process.platform === "win32") {
     const systemDrive = dirname2(process.env.SystemRoot || process.env.WINDIR || "C:\\Windows");
     for (const root of [
       localAppData,
-      process.env.PROGRAMFILES || join11(systemDrive, "Program Files"),
-      process.env["PROGRAMFILES(X86)"] || join11(systemDrive, "Program Files (x86)")
+      process.env.PROGRAMFILES || join12(systemDrive, "Program Files"),
+      process.env["PROGRAMFILES(X86)"] || join12(systemDrive, "Program Files (x86)")
     ])
       candidates.push(
-        join11(root, "Google", "Chrome", "Application", "chrome.exe"),
-        join11(root, "Microsoft", "Edge", "Application", "msedge.exe")
+        join12(root, "Google", "Chrome", "Application", "chrome.exe"),
+        join12(root, "Microsoft", "Edge", "Application", "msedge.exe")
       );
   }
   if (process.platform === "darwin")
     candidates.push(
       "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-      join11(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+      join12(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
     );
-  const cacheRoots = process.platform === "win32" ? [join11(localAppData, "ms-playwright")] : [join11(home, "Library/Caches/ms-playwright"), join11(home, ".cache/ms-playwright")];
+  const cacheRoots = process.platform === "win32" ? [join12(localAppData, "ms-playwright")] : [join12(home, "Library/Caches/ms-playwright"), join12(home, ".cache/ms-playwright")];
   for (const root of cacheRoots) {
     for (const name of await readdir4(root).catch(() => [])) {
       if (!/^chromium[-_]/.test(name)) continue;
@@ -5855,11 +5869,11 @@ async function findCaptionBrowser() {
         "chrome-win/chrome.exe",
         "chrome-win64/chrome.exe"
       ])
-        candidates.push(join11(root, name, binary));
+        candidates.push(join12(root, name, binary));
     }
   }
   for (const path of candidates)
-    if (await access3(path, constants2.X_OK).then(
+    if (await access3(path, constants3.X_OK).then(
       () => true,
       () => false
     ))
@@ -6029,7 +6043,7 @@ var MediaCaptionRenderer = class {
     if (!entry) {
       const executable = this.options.browserPath ?? await findCaptionBrowser();
       if (!executable) throw new Error("字幕渲染需要已安装的 Chrome、Chromium 或 Edge 浏览器");
-      const profile = join11(context.workDir, "caption-browser");
+      const profile = join12(context.workDir, "caption-browser");
       await mkdir11(profile, { recursive: true, mode: 448 });
       const browser = new CaptionBrowser(executable, profile);
       const session = (async () => {
@@ -6077,7 +6091,7 @@ var MediaCaptionRenderer = class {
       if (context.signal.aborted) throw mediaAbortError();
       if (typeof rendered !== "string" || !rendered.startsWith("data:image/png;base64,"))
         throw new Error("字幕绘制未返回 PNG");
-      const path = join11(
+      const path = join12(
         context.workDir,
         `caption-${createHash8("sha256").update(JSON.stringify(request)).digest("hex")}.png`
       );
@@ -6161,11 +6175,11 @@ async function regularWithin(root, value) {
   safeRelative(value);
   let path = root;
   for (const part of value.split("/")) {
-    path = join12(path, part);
+    path = join13(path, part);
     if ((await lstat2(path)).isSymbolicLink())
       throw new MediaRequestError("媒体文件不能使用符号链接");
   }
-  const canonical = await realpath3(path), info = await stat8(canonical);
+  const canonical = await realpath4(path), info = await stat9(canonical);
   if (!canonical.startsWith(root + sep2) || !info.isFile())
     throw new MediaRequestError("素材不在当前任务目录内");
   return canonical;
@@ -6180,7 +6194,7 @@ async function hashFile(path, signal) {
 }
 function publicMessage(error) {
   if (error instanceof MediaRequestError) return error.message;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactHomePath(error instanceof Error ? error.message : String(error));
   if (!message || message.length > 350 || /(?:\/Users\/|\/home\/|\/tmp\/|\/private\/|[A-Z]:\\|https?:\/\/|Traceback|exited with code|ENOENT|EACCES|ENOSPC)/.test(
     message
   ))
@@ -6240,6 +6254,20 @@ function validateMediaConnections(raw) {
   }
   return raw;
 }
+async function resolveMediaTools(tools = {}) {
+  const resolved = { ...tools };
+  for (const [key, name] of [
+    ["ffmpegPath", "ffmpeg"],
+    ["ffprobePath", "ffprobe"],
+    ["whisperPath", "whisper"],
+    ["uvPath", "uv"]
+  ]) {
+    if (resolved[key]) continue;
+    const found = await findExecutable(name);
+    if (found) resolved[key] = found;
+  }
+  return resolved;
+}
 async function runMediaRequest(raw, options) {
   const request = validateMediaRequest(raw), params = request.params ?? {};
   if (options.signal.aborted) throw mediaAbortError();
@@ -6248,18 +6276,19 @@ async function runMediaRequest(raw, options) {
   const jobInfo = await lstat2(options.jobDir);
   if (!jobInfo.isDirectory() || jobInfo.isSymbolicLink())
     throw new MediaRequestError("媒体任务目录无效");
-  const root = await realpath3(options.jobDir);
+  const root = await realpath4(options.jobDir);
   await mkdir12(options.runtimeDir, { recursive: true, mode: 448 });
   if ((await lstat2(options.runtimeDir)).isSymbolicLink())
     throw new MediaRequestError("媒体运行目录无效");
-  const runtime = await realpath3(options.runtimeDir);
+  const runtime = await realpath4(options.runtimeDir);
+  options = { ...options, tools: await resolveMediaTools(options.tools) };
   const context = {
     scope: { appId: "video-studio", projectPath: options.scopeKey },
     jobId: options.jobId,
     attempt: 1,
-    workDir: join12(root, "work"),
-    outputDir: join12(root, "outputs"),
-    cacheDir: join12(runtime, "cache", options.scopeKey),
+    workDir: join13(root, "work"),
+    outputDir: join13(root, "outputs"),
+    cacheDir: join13(runtime, "cache", options.scopeKey),
     signal: options.signal,
     reportProgress: async (progress) => {
       if (options.signal.aborted) throw mediaAbortError();
@@ -6291,15 +6320,15 @@ async function runMediaRequest(raw, options) {
     };
     const publish = async (path, mimeType, role = "artifact", name) => {
       if (context.signal.aborted) throw mediaAbortError();
-      const canonical = await realpath3(path);
-      if (![root, runtime].some((r) => canonical.startsWith(r + sep2)) || !(await stat8(canonical)).isFile())
+      const canonical = await realpath4(path);
+      if (![root, runtime].some((r) => canonical.startsWith(r + sep2)) || !(await stat9(canonical)).isFile())
         throw new MediaRequestError("媒体结果不在工具目录内");
-      const sha256 = await hashFile(canonical, context.signal), bytes = (await stat8(canonical)).size;
+      const sha256 = await hashFile(canonical, context.signal), bytes = (await stat9(canonical)).size;
       if (bytes < 1 || bytes > 20 * 1024 ** 3) throw new MediaRequestError("媒体结果大小无效");
       const id2 = `asset-${sha256}`;
       if (assets.has(id2)) return assets.get(id2);
       const suffix = MIME_EXTENSIONS[mimeType] ?? (/^\.[a-zA-Z0-9]{1,8}$/.test(extname(canonical)) ? extname(canonical) : ".bin");
-      const target = join12(context.outputDir, `${sha256}${suffix}`);
+      const target = join13(context.outputDir, `${sha256}${suffix}`);
       if (target !== canonical) await copyFile4(canonical, target);
       const asset = {
         id: id2,
@@ -6329,7 +6358,7 @@ async function runMediaRequest(raw, options) {
     };
     const processors = createMediaJobProcessors(processorOptions);
     const managed = createManagedTtsProviders({
-      runtimeDir: join12(runtime, "tts"),
+      runtimeDir: join13(runtime, "tts"),
       ...options.tools
     });
     const voiceRuntime = resolve6(runtime, "..");
@@ -6339,7 +6368,7 @@ async function runMediaRequest(raw, options) {
     };
     const queued = async (id2, work) => {
       const release2 = await acquireVoiceQueue(
-        join12(voiceRuntime, ".queues", id2),
+        join13(voiceRuntime, ".queues", id2),
         context.signal,
         () => context.reportProgress({ stage: "waiting", message: "等待上一段本地配音完成" })
       );
@@ -6434,30 +6463,32 @@ async function runMediaRequest(raw, options) {
         detectHyperframesRuntime(options.tools),
         options.tools?.browserPath ?? findCaptionBrowser()
       ]);
-      const whisperModel = options.tools?.whisperModelPath ?? join12(homedir4(), ".cache/whisper/base.pt");
-      const whisper = await access4(whisperModel).then(
-        async () => {
-          try {
-            await runMediaProcess(options.tools?.whisperPath ?? "whisper", ["--help"], {
-              signal: context.signal,
-              maxStdoutBytes: 65536
-            });
-            return true;
-          } catch {
-            return false;
-          }
-        },
+      const whisperModel = options.tools?.whisperModelPath ?? join13(homedir5(), ".cache/whisper/base.pt");
+      const whisperExecutable = await findExecutable("whisper", options.tools?.whisperPath);
+      const whisperModelReady = await access4(whisperModel).then(
+        () => true,
         () => false
       );
+      let whisperReason;
+      if (!whisperExecutable) whisperReason = "executable-missing";
+      else if (!whisperModelReady) whisperReason = "model-missing";
+      else
+        await runMediaProcess(whisperExecutable, ["--help"], {
+          signal: context.signal,
+          maxStdoutBytes: 65536
+        }).catch(() => {
+          whisperReason = "executable-failed";
+        });
       result = {
         apiVersion: 1,
         persistent: true,
         processors: [...MEDIA_ACTIONS],
         ffmpeg: { available: ffmpeg },
         transcription: {
-          available: whisper,
+          available: !whisperReason,
           engine: "local-whisper",
-          model: basename3(whisperModel, ".pt")
+          model: basename3(whisperModel, ".pt"),
+          ...whisperReason ? { reason: whisperReason } : {}
         },
         hyperframes: {
           available: hf.available,
@@ -6620,8 +6651,8 @@ async function runMediaRequest(raw, options) {
       const sceneParams = object2(params.params ?? params);
       const adapter = createHyperframesAdapter({
         ...options.tools,
-        workspaceRoot: join12(context.workDir, "scenes"),
-        cacheRoot: join12(runtime, "scenes", options.scopeKey)
+        workspaceRoot: join13(context.workDir, "scenes"),
+        cacheRoot: join13(runtime, "scenes", options.scopeKey)
       });
       const hfContext = {
         signal: context.signal,
@@ -6698,7 +6729,7 @@ async function runMediaRequest(raw, options) {
 async function privateDirectory(root, parts) {
   let path = root;
   for (const part of parts) {
-    path = join13(path, part);
+    path = join14(path, part);
     await mkdir13(path, { mode: 448 }).catch((error) => {
       if (error.code !== "EEXIST") throw error;
     });
@@ -6712,7 +6743,7 @@ async function sealedConnections() {
   if (index < 0) return { connections: [] };
   const path = process.argv[index + 1];
   if (!path) throw new Error("配音连接配置不可用");
-  const file = await open5(path, constants3.O_RDONLY | (constants3.O_NOFOLLOW ?? 0));
+  const file = await open5(path, constants4.O_RDONLY | (constants4.O_NOFOLLOW ?? 0));
   try {
     const info = await file.stat();
     if (!info.isFile() || info.size > 2 * 1024 * 1024 || info.nlink !== 1 || process.platform !== "win32" && info.mode & 63)
@@ -6764,7 +6795,7 @@ async function runCli(raw) {
     const request = validateMediaRequest(input);
     const cwd = process.cwd();
     if ((await lstat3(cwd)).isSymbolicLink()) throw new Error("媒体数据目录无效");
-    const root = await realpath4(cwd);
+    const root = await realpath5(cwd);
     const sealedDirectory = async (flag, fallback) => {
       const index = process.argv.indexOf(flag);
       if (index < 0) return fallback();
@@ -6773,7 +6804,7 @@ async function runCli(raw) {
         throw new Error("媒体运行目录无效");
       const info = await lstat3(path);
       if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("媒体运行目录无效");
-      return realpath4(path);
+      return realpath5(path);
     };
     const jobDir = await sealedDirectory(
       "--job-dir",
@@ -6800,7 +6831,8 @@ async function runCli(raw) {
     if (signal.aborted) throw new Error("媒体任务已取消");
     emit({ type: "result", result });
   } catch (error) {
-    const message = controller.signal.aborted ? "媒体任务已取消" : error instanceof Error && error.message.length <= 350 && !/(?:\/|\\|https?:|ENOENT|EACCES)/.test(error.message) ? error.message : "媒体工具未完成，请检查依赖、素材和任务状态后重试";
+    const reason = error instanceof Error ? redactHomePath(error.message) : "";
+    const message = controller.signal.aborted ? "媒体任务已取消" : reason && reason.length <= 350 && !/https?:/.test(reason) ? reason : "媒体工具未完成，请检查依赖、素材和任务状态后重试";
     emit({ type: "error", message });
     process.exitCode = 1;
   } finally {
