@@ -109,6 +109,51 @@ function fixture() {
   };
 }
 
+test("package history is displayed and a same-sequence read-only change blocks retry without replacing the task", async () => {
+  const f = fixture();
+  const item = f.add();
+  await f.controller.pump();
+  const job = f.jobs.get(item.nativeTaskId);
+  job.package = { version: "1.2.0", packageDigest: "a".repeat(64) };
+  job.status = "failed";
+  job.error = { message: "Original failure", retryable: true };
+  job.sequence++;
+  await f.controller.refresh();
+  assert.deepEqual(item.nativePackage, job.package);
+  const sequence = item.nativeSequence;
+  // An upgrade changes permission to retry, not the stored task's sequence.
+  job.readOnly = true;
+  await f.controller.refresh();
+  assert.equal(item.nativeSequence, sequence);
+  assert.equal(item.nativeRetryBlocked, true);
+  await assert.rejects(f.controller.resume(item), /仅可查看/);
+  assert.equal(f.calls.filter(({ method }) => method === "tasks.retry").length, 0);
+  assert.equal(f.jobs.size, 1);
+  await f.options.save();
+  assert.deepEqual(restoreLibrary(f.saved(), "/project").queue[0].nativePackage, job.package);
+  job.readOnly = false;
+  await f.controller.refresh();
+  assert.equal(item.nativeRetryBlocked, false);
+  await f.controller.resume(item);
+  assert.equal(f.jobs.size, 1);
+  assert.equal(f.calls.filter(({ method }) => method === "tasks.retry").length, 1);
+});
+
+test("legacy package history is not inferred and manually reviewed failures do not retry", async () => {
+  const f = fixture();
+  const item = f.add();
+  await f.controller.pump();
+  const job = f.jobs.get(item.nativeTaskId);
+  job.status = "interrupted";
+  job.error = { message: "Review new input", retryable: false };
+  job.sequence++;
+  await f.controller.refresh();
+  assert.equal(item.nativePackage, undefined);
+  assert.equal(item.nativeRetryBlocked, true);
+  await assert.rejects(f.controller.resume(item), /Review new input/);
+  assert.equal(f.calls.filter(({ method }) => method === "tasks.retry").length, 0);
+});
+
 test("the entire requested queue is admitted without waiting for running slots", async () => {
   const f = fixture();
   for (let n = 0; n < 10; n++) f.add();

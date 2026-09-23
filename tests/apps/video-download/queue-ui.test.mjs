@@ -2090,6 +2090,44 @@ test("durable UI recovers a missing start reply and removes only after cancellin
   assert.equal((await downloads(page)).length, 0);
 });
 
+for (const width of [390, 1440]) {
+  test(`durable package history and read-only retry at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, { durable: true });
+    const item = await addDownload(page, firstUrl);
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 1);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.package = { version: "1.2.0", packageDigest: "a".repeat(64) };
+      job.error = { message: "Original failure", retryable: true };
+      job.readOnly = false;
+      job.sequence++;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    const row = page.locator(`.queue-item[data-queue-id="${item.id}"]`);
+    await page.waitForFunction(() => document.querySelector(".queue-package")?.textContent.includes("1.2.0"));
+    assert.equal(await row.locator('[data-queue-action="retry"]').isEnabled(), true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.readOnly = true; // Project selection changed, task sequence did not.
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForFunction(() => document.querySelector('[data-queue-action="retry"]')?.disabled);
+    assert.match(await row.locator(".queue-package").innerText(), /仅供查看.*重新添加/);
+    assert.match(await page.locator(".history-package").first().textContent(), /1\.2\.0/);
+    assert.equal(await page.evaluate(() => window.__calls.filter(({ method }) => method === "tasks.retry").length), 0);
+    await row.screenshot({ path: resolve(artifacts, `package-history-${width}.png`) });
+    assert.equal(await row.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      delete job.package;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForFunction(() => document.querySelector(".queue-package")?.textContent.includes("未记录"));
+    assert.equal(await row.locator('[data-queue-action="retry"]').isDisabled(), true);
+  });
+}
+
 test("durable UI pause-all then resume-one leaves the other download stopped", async (t) => {
   const page = await openPanel(t, 390, "", null, { durable: true });
   const first = await addDownload(page, firstUrl);

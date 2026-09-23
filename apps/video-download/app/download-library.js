@@ -165,6 +165,15 @@ export function resourceRelativeFile(directory, file) {
   return relative;
 }
 
+export function taskPackageReference(value) {
+  if (
+    !value || typeof value.version !== "string" || !value.version ||
+    value.version.length > 128 || /[\u0000-\u001f\u007f]/.test(value.version) ||
+    typeof value.packageDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.packageDigest)
+  ) return undefined;
+  return { version: value.version, packageDigest: value.packageDigest };
+}
+
 export function storedRecord(item) {
   if (!item || !videoUrl(item.url)) return null;
   const allFiles = Array.isArray(item.files) ? item.files : item.file ? [{ path: item.file }] : [];
@@ -199,6 +208,10 @@ export function storedRecord(item) {
     },
     ...(typeof item.nativeTaskId === "string" && /^[a-f0-9-]{36}$/i.test(item.nativeTaskId)
       ? { nativeTaskId: item.nativeTaskId }
+      : {}),
+    // Display cache only; the Host verifies its own immutable record before retry.
+    ...(taskPackageReference(item.nativePackage)
+      ? { nativePackage: taskPackageReference(item.nativePackage) }
       : {}),
     ...(typeof item.nativeRequestKey === "string" &&
     /^download:[a-f0-9-]{36}$/i.test(item.nativeRequestKey)

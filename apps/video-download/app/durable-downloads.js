@@ -1,4 +1,4 @@
-import { cleanConfiguration, resourceFileFields } from "./download-library.js";
+import { cleanConfiguration, resourceFileFields, taskPackageReference } from "./download-library.js";
 // The Host owns scheduling and execution. This adapter only reconciles project UI records.
 export function supportsDurableDownloads(context) {
   const methods = context?.availableMethods || [];
@@ -51,14 +51,26 @@ export function createDurableDownloads({
   const terminal = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
   function apply(item, job) {
     if (closed) return;
-    if (job && Number.isSafeInteger(item.nativeSequence) && item.nativeSequence >= job.sequence)
-      return;
     if (!job || job.entry?.name !== "download-runtime")
       throw new Error("后台任务与下载记录不匹配。");
     if (job.input?.request?.url && job.input.request.url !== item.url)
       throw new Error("后台任务网址与下载记录不匹配。");
+    if (Number.isSafeInteger(item.nativeSequence) && item.nativeSequence > job.sequence) return;
+    const previousMetadata = JSON.stringify([
+      item.nativeReadOnly, item.nativePackage, item.nativeRetryBlocked,
+    ]);
+    if (typeof job.readOnly === "boolean") item.nativeReadOnly = job.readOnly;
+    item.nativePackage = taskPackageReference(job.package);
+    item.nativeRetryBlocked = item.nativeReadOnly || job.error?.retryable === false;
+    // Access can change without the stored task sequence changing (e.g. project upgrade).
+    if (item.nativeSequence === job.sequence) {
+      if (previousMetadata !== JSON.stringify([
+        item.nativeReadOnly, item.nativePackage, item.nativeRetryBlocked,
+      ]))
+        changed(item, terminal.has(job.status) && job.status !== "cancelled");
+      return;
+    }
     item.nativeTaskId = job.id;
-    item.nativeReadOnly = job.readOnly === true;
     item.running = ["running", "cancelling"].includes(job.status);
     item.status =
       job.status === "succeeded"
@@ -201,7 +213,6 @@ export function createDurableDownloads({
           changed(item, false);
           continue;
         }
-        if (item.nativeSequence === job.sequence) continue;
         apply(item, job);
       }
     })().finally(() => {
@@ -284,8 +295,16 @@ export function createDurableDownloads({
   }
   async function resume(item) {
     const job = await locate(item);
+    if (!job) {
+      item.nativePaused = false;
+      return submit(item);
+    }
+    apply(item, job);
+    if (job.readOnly || job.error?.retryable === false)
+      throw new Error(job.readOnly
+        ? "此任务仅可查看。请在下载页检查链接和设置后重新添加；原任务和结果会保留。"
+        : job.error?.message || "此任务不能直接重试，请检查输入后重新添加。");
     item.nativePaused = false;
-    if (!job) return submit(item);
     if (["failed", "cancelled", "interrupted"].includes(job.status)) {
       apply(item, await call("tasks.retry", { id: job.id }));
       await save();

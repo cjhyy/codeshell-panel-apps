@@ -454,3 +454,12 @@ independent logins: initiating logout, 390px observation, browser playback and
 byte-identical device download, followed by project stop/start and recovery of the
 same task/resource. Generated media and a loopback site are fixtures; this is not
 real-provider or physical-phone acceptance.
+
+On package-aware Hosts, download tasks show the Panel version recorded at
+submission. Project history caches the validated version/digest for display;
+only the Host's task record authorizes execution. Old-version or unversioned
+read-only records cannot be retried directly. Review the URL and settings on the
+download page before adding a new task; existing task results are retained.
+Read-only changes are reconciled even when the task sequence has not advanced.
+Package availability and content identity are checked by the Host on retry;
+the Panel never substitutes its current package for the original task's package.

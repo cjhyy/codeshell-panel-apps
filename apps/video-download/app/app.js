@@ -3324,6 +3324,16 @@ function renderQueue() {
     status.className = "queue-status";
     status.textContent = queueStatusText(item);
     copy.append(title, meta, status);
+    if (item.nativeTaskId) {
+      const version = document.createElement("small");
+      version.className = "queue-package";
+      version.textContent = item.nativePackage
+        ? `任务使用 Panel ${item.nativePackage.version}`
+        : "旧任务未记录 Panel 版本";
+      if (item.nativeReadOnly)
+        version.textContent += " · 仅供查看，请检查链接和设置后重新添加下载";
+      copy.append(version);
+    }
     if (item.status === "running") {
       const progress = document.createElement("div");
       progress.className = "queue-progress";
@@ -3360,12 +3370,16 @@ function renderQueue() {
       if (item.status === "queued") action("pause", "暂停").disabled = queueSubmissionPending;
       else
         action("resume", item.status === "pending" ? "开始下载" : "继续").disabled =
-          queueSubmissionPending || auxiliaryBusy || Boolean(completionPending) || stopping;
+          item.nativeRetryBlocked ||
+          queueSubmissionPending ||
+          auxiliaryBusy ||
+          Boolean(completionPending) ||
+          stopping;
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
       if (item.status === "failed") action("details", "查看错误");
       action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
-        item.retryPending || item.finishing,
+        item.nativeRetryBlocked || item.retryPending || item.finishing,
       );
     }
     if (
@@ -3374,7 +3388,7 @@ function renderQueue() {
       ["failed", "cancelled", "paused", "interrupted"].includes(item.status)
     )
       action("retry-account", "用所选账号重试").disabled = Boolean(
-        item.retryPending || queueSubmissionPending,
+        item.nativeReadOnly || item.retryPending || queueSubmissionPending,
       );
     row.append(copy, actions);
     elements.queueList.append(row);
@@ -3890,6 +3904,14 @@ function renderHistory() {
           : "文件待检查";
     if (!item.filesComplete) inventoryNote.textContent += " · 文件清单不完整";
     body.append(destination, inventoryNote);
+    if (item.nativeTaskId) {
+      const version = document.createElement("p");
+      version.className = "history-package";
+      version.textContent = item.nativePackage
+        ? `任务使用 Panel ${item.nativePackage.version}`
+        : "旧任务未记录 Panel 版本";
+      body.append(version);
+    }
     if (item.checkError || item.error) {
       const error = document.createElement("p");
       error.className = "history-error";
