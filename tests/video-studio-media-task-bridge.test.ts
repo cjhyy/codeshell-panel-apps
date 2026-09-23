@@ -411,6 +411,24 @@ test("SDK explains stale installed tasks in Chinese and preserves structured and
   }
 });
 
+test("SDK names the Host methods that are missing instead of a generic upgrade notice", async () => {
+  const sdk = createPanelRuntime({
+    getContext: async () => ({ availableMethods: ["tasks.start", "tasks.get", "resources.get"] }),
+    on: () => () => {},
+    call: async () => undefined,
+  });
+  try {
+    await assert.rejects(sdk.requireMethods(["resources.get", "media.export"]), (error: any) => {
+      assert.match(error.message, /缺少通用本地任务或资源接口/);
+      assert.match(error.message, /media\.export/);
+      assert.doesNotMatch(error.message, /resources\.get/);
+      return true;
+    });
+  } finally {
+    sdk.dispose();
+  }
+});
+
 test("task events normalize state, fetch terminal artifacts and omit internal checks", async () => {
   const f = fixture(),
     observed: any[] = [];

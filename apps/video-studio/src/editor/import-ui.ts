@@ -11,6 +11,8 @@ export class EditorImportUI {
   private readonly details = document.createElement("ul");
   private readonly cancel = document.createElement("button");
   private readonly retry = document.createElement("button");
+  private readonly close = document.createElement("button");
+  private hideTimer = 0;
   private readonly importer;
   private pending?: EditorImportResult;
   private controller?: AbortController;
@@ -31,11 +33,14 @@ export class EditorImportUI {
     this.root.setAttribute("aria-label", "导入进度");
     this.root.hidden = true;
     this.message.setAttribute("role", "status");
-    for (const button of [this.cancel, this.retry]) button.type = "button";
+    for (const button of [this.cancel, this.retry, this.close]) button.type = "button";
     this.cancel.textContent = "取消此次导入";
     this.retry.textContent = "重试加入工程";
     this.retry.hidden = true;
-    this.root.append(this.message, this.details, this.cancel, this.retry);
+    this.close.textContent = "关闭";
+    this.close.setAttribute("aria-label", "关闭导入提示");
+    this.close.hidden = true;
+    this.root.append(this.message, this.details, this.cancel, this.retry, this.close);
     container.append(this.input, this.root);
     this.importer = createEditorMediaImporter(panel, {
       getIdentity: () => (this.disposed ? null : session.getState().identity),
@@ -59,6 +64,7 @@ export class EditorImportUI {
     this.retry.addEventListener("click", () => {
       void this.publish();
     });
+    this.close.addEventListener("click", () => this.hide());
     this.unsubscribe = session.subscribe((state) => {
       if (
         this.pending &&
@@ -82,7 +88,9 @@ export class EditorImportUI {
     if (this.controller || this.pending || this.disposed) return;
     const controller = new AbortController();
     this.controller = controller;
+    window.clearTimeout(this.hideTimer);
     this.root.hidden = false;
+    this.close.hidden = true;
     this.cancel.hidden = false;
     this.retry.hidden = true;
     this.details.replaceChildren();
@@ -107,6 +115,7 @@ export class EditorImportUI {
     } finally {
       if (this.controller === controller) this.controller = undefined;
       this.cancel.hidden = true;
+      this.close.hidden = !!this.pending;
     }
     if (this.pending && !this.disposed) await this.publish();
   }
@@ -142,6 +151,8 @@ export class EditorImportUI {
       this.message.textContent = `已导入 ${operations.length} 个素材${pending.errors.length ? `，${pending.errors.length} 个文件未导入，详情如下` : ""}。`;
       this.pending = undefined;
       this.retry.hidden = true;
+      // A clean import needs no further attention; failures stay until the user closes them.
+      if (!pending.errors.length) this.hideTimer = window.setTimeout(() => this.hide(), 3000);
     } catch (error) {
       if (!this.disposed) {
         this.message.textContent = `素材尚未加入工程：${String(error)}`;
@@ -151,10 +162,17 @@ export class EditorImportUI {
       if (this.controller === controller) this.controller = undefined;
       this.retry.disabled = false;
       this.cancel.hidden = !this.pending;
+      this.close.hidden = !!this.pending;
     }
+  }
+  private hide(): void {
+    window.clearTimeout(this.hideTimer);
+    if (this.controller || this.pending) return;
+    this.root.hidden = true;
   }
   dispose(): void {
     this.disposed = true;
+    window.clearTimeout(this.hideTimer);
     this.controller?.abort();
     this.importer.dispose();
     this.unsubscribe();
