@@ -333,3 +333,18 @@ before ffmpeg was installed still merges video and audio.
 record is falsely reported as unreadable. Setup keeps a newer nightly yt-dlp instead
 of replacing it with the stable release, and a failed GitHub release lookup no
 longer blocks installing a missing ffmpeg while the local yt-dlp works.
+
+### Cross-device save conflicts
+
+Hosts advertising both `storage.getSnapshot` and `storage.compareAndSet` use
+conditional saves for the queue/history, search recovery, and search archive.
+An edit saved by another page or device causes a visible conflict; the stale
+page stops saving and pauses the queue instead of overwriting it. Copy any
+unsaved links before reopening to load the latest project state. Requests with
+lost replies query the stored value once; uncertain results are not replayed.
+Existing project JSON and legacy Host get/set behavior remain compatible.
+
+This requires a Host build exposing those two methods (not yet a published
+minimum version). It does not turn page-owned download processes into durable
+background tasks; that migration and full mobile/cloud workflow acceptance
+remain separate work.

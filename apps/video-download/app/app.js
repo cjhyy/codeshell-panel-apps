@@ -229,6 +229,21 @@ const directoryGrants = new Map();
 const historyActionsPending = new Set();
 let openingDirectory = false;
 const libraryKey = "video-download.library.v2";
+const libraryStorage = createProjectStorage({
+  panel,
+  key: libraryKey,
+  envelope: false,
+  getContext: () => context,
+  getScope: () => libraryScope,
+});
+const searchArchiveStorage = createProjectStorage({
+  panel,
+  key: "video-download.search-archive.v1",
+  envelope: false,
+  ready: searchScopeReady,
+  getContext: () => context,
+  getScope: () => libraryScope,
+});
 const libraryStatus = document.querySelector("#library-status");
 const batchStatus = document.querySelector("#batch-status");
 const duplicateReview = document.querySelector("#duplicate-review");
@@ -620,7 +635,10 @@ function saveHistory() {
 }
 
 function reportLibraryError(error) {
-  libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。队列已暂停，请重试或清理记录。`;
+  const recovery = ["STORAGE_CONFLICT", "STORAGE_UNCERTAIN"].includes(error?.code)
+    ? "队列已暂停；请先复制需要保留的链接，再重新打开面板。"
+    : "队列已暂停，请重试或清理记录。";
+  libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。${recovery}`;
   queuePaused = true;
   renderQueue();
 }
@@ -641,9 +659,7 @@ function saveLibrary() {
     .then(async () => {
       if (!libraryReady || (context.cwd && context.cwd !== libraryScope))
         throw new Error("项目已变化，请重新打开面板。");
-      if (!previewMode && Number(context.apiVersion) >= 14)
-        await panel.call("storage.set", { key: libraryKey, value: snapshot });
-      else localStorage.setItem(`${libraryKey}:${libraryScope}`, JSON.stringify(snapshot));
+      await libraryStorage.save(snapshot);
       libraryStatus.textContent = snapshot.truncated
         ? "记录空间有限，已清理最早记录；待下载任务已保存。"
         : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
@@ -654,10 +670,7 @@ function saveLibrary() {
 async function loadLibrary() {
   libraryScope = context.cwd || runtime.directory?.path || "preview";
   try {
-    const raw =
-      !previewMode && Number(context.apiVersion) >= 14
-        ? await panel.call("storage.get", { key: libraryKey })
-        : JSON.parse(localStorage.getItem(`${libraryKey}:${libraryScope}`) || "null");
+    const raw = await libraryStorage.load();
     const saved = restoreLibrary(raw, libraryScope);
     if (saved) {
       downloadQueue = saved.queue;
@@ -5977,25 +5990,13 @@ const videoSearch = mountVideoSearch({
     async load() {
       await searchScopeReady;
       const scope = libraryScope || context.cwd || runtime.directory?.path || "preview";
-      const value =
-        !previewMode && Number(context.apiVersion) >= 14
-          ? await panel.call("storage.get", { key: "video-download.search-archive.v1" })
-          : JSON.parse(localStorage.getItem(`video-download.search-archive.v1:${scope}`) || "null");
+      const value = await searchArchiveStorage.load();
       return { scope, value };
     },
     async save(snapshot) {
       if (!libraryReady || snapshot.scope !== libraryScope)
         throw new Error("项目已变化，请重新打开面板。");
-      if (!previewMode && Number(context.apiVersion) >= 14)
-        await panel.call("storage.set", {
-          key: "video-download.search-archive.v1",
-          value: snapshot,
-        });
-      else
-        localStorage.setItem(
-          `video-download.search-archive.v1:${snapshot.scope}`,
-          JSON.stringify(snapshot),
-        );
+      await searchArchiveStorage.save(snapshot);
     },
   },
   onQueue: async (candidates) => {

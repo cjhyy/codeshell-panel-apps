@@ -106,8 +106,27 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
       window.__emit = (name, payload) => {
         for (const handler of handlers[name] || []) handler(structuredClone(payload));
       };
+      window.__hostStorage = {};
+      window.__hostStorageRevision = 0;
+      const storageSnapshot = (key) =>
+        Object.hasOwn(window.__hostStorage, key)
+          ? {
+              exists: true,
+              value: structuredClone(window.__hostStorage[key]),
+              revision: "sha256:" + String(window.__hostStorageRevision).padStart(64, "0"),
+            }
+          : { exists: false, value: null, revision: null };
       window.codeshellPanel = {
-        getContext: async () => ({ apiVersion: 10, theme: "light" }),
+        getContext: async () => ({
+          apiVersion: 10,
+          theme: "light",
+          ...(ai.versionedStorage
+            ? {
+                cwd: "/fixture/project",
+                availableMethods: ["storage.getSnapshot", "storage.compareAndSet"],
+              }
+            : {}),
+        }),
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
           return () => {};
@@ -118,6 +137,15 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (ai.versionedStorage && method === "storage.getSnapshot")
+            return storageSnapshot(args.key);
+          if (ai.versionedStorage && method === "storage.compareAndSet") {
+            if (storageSnapshot(args.key).revision !== args.expectedRevision)
+              return { updated: false, snapshot: storageSnapshot(args.key) };
+            window.__hostStorage[args.key] = structuredClone(args.value);
+            window.__hostStorageRevision++;
+            return { updated: true, snapshot: storageSnapshot(args.key) };
+          }
           if (method === "agent.task.models") {
             if (window.__taskModelsError) throw new Error(window.__taskModelsError);
             return structuredClone(window.__taskModels);
@@ -1871,3 +1899,41 @@ test("an unavailable release server does not mark working local tools broken", a
   assert.match(result.versions.error, /GitHub/);
   assert.equal(await page.locator("#runtime-badge").getAttribute("data-state"), "ready");
 });
+
+for (const width of [390, 1440]) {
+  test(`another device's queue edit is preserved and blocks downloads at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", 1, { versionedStorage: true });
+    await page.waitForFunction(
+      () => window.__hostStorage["video-download.library.v2"]?.maxConcurrent === 1,
+    );
+    await page.evaluate(() => {
+      window.__hostStorage["video-download.library.v2"] = {
+        scope: "/fixture/project",
+        marker: "phone draft",
+      };
+      window.__hostStorageRevision++;
+    });
+    await downloadForm(page);
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() =>
+      document.querySelector("#library-status").textContent.includes("其他页面或设备"),
+    );
+    assert.equal((await downloads(page)).length, 0, "an unsaved queue must not start downloading");
+    assert.equal(
+      await page.evaluate(() => window.__hostStorage["video-download.library.v2"].marker),
+      "phone draft",
+    );
+    assert.match(await page.locator("#library-status").textContent(), /重新打开面板/);
+    const count = await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "storage.compareAndSet").length,
+    );
+    await page.locator("#download-button").click();
+    assert.equal(
+      await page.evaluate(
+        () => window.__calls.filter((call) => call.method === "storage.compareAndSet").length,
+      ),
+      count,
+    );
+  });
+}
