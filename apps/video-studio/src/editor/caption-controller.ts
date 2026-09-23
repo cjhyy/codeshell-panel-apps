@@ -274,64 +274,80 @@ export function createCaptionController(context: CaptionControllerContext) {
           await context.prepare({ assetIds: [...assetIds], signal: controller.signal });
         check(snapshot, token, controller.signal);
         const transcripts = new Map<string, CaptionTranscriptSegment[]>();
+        const names = new Map(
+          snapshot.document.assets.map((asset) => [asset.id, asset.name] as const),
+        );
         let transcriptCharacters = 0;
         for (const assetId of assetIds) {
-          set({
-            phase: "transcribing",
-            message: `读取转写 ${transcripts.size + 1}/${assetIds.length}`,
-          });
-          const segments: CaptionTranscriptSegment[] = [];
-          let offset = 0,
-            total: number | undefined,
-            revision: string | undefined;
-          const seen = new Set<string>();
-          do {
-            const page = await context.transcript!({
-              assetId,
-              offset,
-              limit: 100,
-              signal: controller.signal,
+          try {
+            set({
+              phase: "transcribing",
+              message: `读取转写 ${transcripts.size + 1}/${assetIds.length}`,
             });
-            check(snapshot, token, controller.signal);
+            const segments: CaptionTranscriptSegment[] = [];
+            let offset = 0,
+              total: number | undefined,
+              revision: string | undefined;
+            const seen = new Set<string>();
+            do {
+              const page = await context.transcript!({
+                assetId,
+                offset,
+                limit: 100,
+                signal: controller.signal,
+              });
+              check(snapshot, token, controller.signal);
+              if (
+                !page ||
+                page.assetId !== assetId ||
+                page.offset !== offset ||
+                !Number.isSafeInteger(page.total) ||
+                page.total < 0 ||
+                page.total > 100000 ||
+                (total !== undefined && page.total !== total) ||
+                !Array.isArray(page.segments) ||
+                page.segments.length > 100 ||
+                offset + page.segments.length > page.total ||
+                (!page.segments.length && offset < page.total)
+              )
+                throw new Error("转写分页不完整或身份变化，未写入字幕");
+              if (
+                page.revision !== undefined &&
+                (typeof page.revision !== "string" || !page.revision || page.revision.length > 256)
+              )
+                throw new Error("转写版本无效");
+              if (offset === 0) revision = page.revision;
+              else if (page.revision !== revision)
+                throw new Error("转写版本在分页期间变化，未写入字幕");
+              const validated = validateCaptionTranscript(page.segments);
+              for (const segment of validated) {
+                const key = JSON.stringify([segment.start, segment.end, segment.text]);
+                if (seen.has(key)) throw new Error("转写分页重复段落，未写入字幕");
+                seen.add(key);
+                transcriptCharacters +=
+                  segment.text.length +
+                  (segment.words ?? []).reduce((sum, word) => sum + word.text.length, 0);
+                if (transcriptCharacters > 16 * 1024 * 1024)
+                  throw new Error("此次转写超过16 MiB，请缩小素材选择");
+              }
+              total = page.total;
+              segments.push(...validated);
+              offset += page.segments.length;
+            } while (offset < total!);
+            transcripts.set(assetId, segments);
+            set({ completed: transcripts.size });
+          } catch (error) {
+            // Cancellation and project changes are not this source's fault.
             if (
-              !page ||
-              page.assetId !== assetId ||
-              page.offset !== offset ||
-              !Number.isSafeInteger(page.total) ||
-              page.total < 0 ||
-              page.total > 100000 ||
-              (total !== undefined && page.total !== total) ||
-              !Array.isArray(page.segments) ||
-              page.segments.length > 100 ||
-              offset + page.segments.length > page.total ||
-              (!page.segments.length && offset < page.total)
+              (error as Error)?.name === "AbortError" ||
+              /工程已变化/.test(String((error as Error)?.message ?? error))
             )
-              throw new Error("转写分页不完整或身份变化，未写入字幕");
-            if (
-              page.revision !== undefined &&
-              (typeof page.revision !== "string" || !page.revision || page.revision.length > 256)
-            )
-              throw new Error("转写版本无效");
-            if (offset === 0) revision = page.revision;
-            else if (page.revision !== revision)
-              throw new Error("转写版本在分页期间变化，未写入字幕");
-            const validated = validateCaptionTranscript(page.segments);
-            for (const segment of validated) {
-              const key = JSON.stringify([segment.start, segment.end, segment.text]);
-              if (seen.has(key)) throw new Error("转写分页重复段落，未写入字幕");
-              seen.add(key);
-              transcriptCharacters +=
-                segment.text.length +
-                (segment.words ?? []).reduce((sum, word) => sum + word.text.length, 0);
-              if (transcriptCharacters > 16 * 1024 * 1024)
-                throw new Error("此次转写超过16 MiB，请缩小素材选择");
-            }
-            total = page.total;
-            segments.push(...validated);
-            offset += page.segments.length;
-          } while (offset < total!);
-          transcripts.set(assetId, segments);
-          set({ completed: transcripts.size });
+              throw error;
+            const message = (error as Error)?.message ?? String(error);
+            throw new Error(
+              `声音来源「${names.get(assetId) ?? assetId}」：${message}。可取消勾选这个来源后重试。`,
+            );
+          }
         }
         check(snapshot, token, controller.signal);
         const plan = planTranscriptCaptions(snapshot.document, options.sequenceId, transcripts, {

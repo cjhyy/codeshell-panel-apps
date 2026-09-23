@@ -38,6 +38,7 @@ description: 使用 Mimi 视频工作台的 Panel 工具，将用户目标与已
 - `audio-add` 可从音频或视频来源添加独立音轨；`startFrame` 是序列起点，`inFrame/outFrame` 是源范围。`audio-trim` 裁源，`audio-split {clipId,atFrame}` 在源绝对帧切开音轨，切分点必须在音轨内部；两段保留原音量并在序列上无缝衔接，画面、其他音轨和字幕时间不变。`audio-move` 改序列起点，`audio-volume` 调音量，`audio-remove` 删除。最多 64 条音轨，必须全部落在画面序列内：`startFrame + outFrame - inFrame <= 画面总帧数`；音量 `0..2`，`1` 为原音量。不要依赖默认裁到画面末尾来放完整旁白。
 - 画面裁剪、删除、重排会同步影响对应的字幕与独立音轨时间范围，必要时拆分；新加回的素材范围不会恢复已删字幕。完成大范围粗剪后再补精确声音与字幕，修改后重新读取真实状态，避免重复平移。
 - 新字幕在粗剪后从源转写映射：片段序列起点等于之前画面片段长度之和；先将源字幕起止截到 `[clip.inFrame,clip.outFrame)`，只保留非空交集，再用 `序列帧 = 片段序列起点 + 源帧 - clip.inFrame` 转换两个端点。同一源出现多次，分别按各实例映射；字幕不得越出序列。
+- 新版工程优先加载 `video-studio:editor-v2`，用 `{kind:"captions"}` 步骤生成、导入、改字和套用样式：它覆盖所有字幕轨并保留精确时间。下面的旧 `caption` 操作只能看到整帧、单画面轨的旧视图，实拍素材或多轨工程会漏掉字幕，只在该视图完整时使用。
 - `caption` 使用序列 `startFrame/endFrame`；同 ID 替换已有字幕。润色保留原 ID 与时间，新增采用新的有效 ID，避免覆盖；没有词级证据不伪造逐词时点。`settings.captionStyle` 仅支持 `classic/bold/minimal`。画幅与字幕能否看清应有实际观察，不等于自动主体跟踪。
 
 旧导出受理回执与原生任务分开：用 `operationId` 或回执内的真实 `jobId` 查询时立即返回 `{operations,jobs}` 缓存状态，面板持续刷新真实后台任务；`operations` 的 `preparing/cancelling/submitted/failed/interrupted` 描述准备和提交状态，不是成片状态。相同工程修订与 `requestToken` 重复调用只返回已有回执，不能借重试绕过原审稿或本人录音审批。准备期间保持面板打开；取消自动制作会取消未入队的准备，若原生任务已入队则保留真实任务编号。重开时中断的准备标为 `interrupted`，不会自动重提；先核查后台任务和失败原因，再由新的制作请求继续。回执有界保留 100 项，已完成受理记录可淘汰，真实任务绑定仍可查询。

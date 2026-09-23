@@ -88,6 +88,8 @@ export class EditorCaptionsUI {
   private opened = false;
   private disposed = false;
   private focused: HTMLElement | undefined;
+  /** Unsaved row edits by clip ID; rows are rebuilt whenever the document changes. */
+  private readonly drafts = new Map<string, { text?: string; start?: string; end?: string }>();
   constructor(
     container: HTMLElement,
     private readonly context: EditorCaptionsUIContext,
@@ -432,10 +434,46 @@ export class EditorCaptionsUI {
   private draftIds(doc: EditorDocument): Set<string> {
     return captionClipIdsForLegacyIds(doc, this.sequenceId, narration(doc).draftCaptionIds);
   }
+  /** Keep what the user typed but has not saved, unless it now equals the saved value. */
+  private draft(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    clipId: string,
+    field: "text" | "start" | "end",
+    saved: string,
+  ) {
+    input.dataset.captionField = field;
+    input.value = saved;
+    const draft = this.drafts.get(clipId);
+    if (draft?.[field] !== undefined && draft[field] !== saved) input.value = draft[field]!;
+    else if (draft) delete draft[field];
+    input.addEventListener("input", () => {
+      this.drafts.set(clipId, { ...this.drafts.get(clipId), [field]: input.value });
+    });
+  }
+  private saved(clipId: string, fields: Array<"text" | "start" | "end">) {
+    const draft = this.drafts.get(clipId);
+    if (!draft) return;
+    for (const field of fields) delete draft[field];
+    if (!Object.keys(draft).length) this.drafts.delete(clipId);
+  }
   private renderRows() {
     const clips = this.captions(),
       seq = this.sequence(),
       drafts = this.draftIds(this.context.session().read());
+    const active = document.activeElement;
+    const focus =
+      active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
+        ? {
+            clipId: active.closest<HTMLElement>("[data-caption-id]")?.dataset.captionId,
+            field: active.dataset.captionField,
+            range:
+              active instanceof HTMLTextAreaElement
+                ? ([active.selectionStart, active.selectionEnd] as const)
+                : undefined,
+          }
+        : undefined;
+    const alive = new Set(clips.map((clip) => clip.id));
+    for (const id of this.drafts.keys()) if (!alive.has(id)) this.drafts.delete(id);
     this.rows.replaceChildren();
     this.exportButton.disabled = !clips.length;
     if (!clips.length || !seq) {
@@ -484,43 +522,47 @@ export class EditorCaptionsUI {
         head.append(badge);
       }
       const input = element("textarea");
-      input.value = clip.text;
+      this.draft(input, clip.id, "text", clip.text);
       input.setAttribute("aria-label", "字幕文字");
       input.rows = Math.min(4, clip.text.split("\n").length + 1);
       const save = element("button", "保存文字");
       save.type = "button";
       save.addEventListener("click", () =>
-        this.edit(() => this.context.controller.updateText(this.sequenceId, clip.id, input.value)),
+        this.edit(async () => {
+          await this.context.controller.updateText(this.sequenceId, clip.id, input.value);
+          this.saved(clip.id, ["text"]);
+        }),
       );
       const timing = element("div");
       timing.className = "ec-row-time";
-      const field = (label: string, tick: Tick) => {
+      const field = (label: string, tick: Tick, name: "start" | "end") => {
         const wrapper = element("label"),
           value = element("input");
         value.type = "number";
         value.min = "0";
         value.step = "0.001";
         value.inputMode = "decimal";
-        value.value = seconds(tick);
+        this.draft(value, clip.id, name, seconds(tick));
         wrapper.append(element("span", label), value);
         timing.append(wrapper);
         return value;
       };
-      const start = field("开始（秒）", clip.start),
-        end = field("结束（秒）", clip.start + clip.duration);
+      const start = field("开始（秒）", clip.start, "start"),
+        end = field("结束（秒）", clip.start + clip.duration, "end");
       const saveTime = element("button", "保存时间"),
         remove = element("button", "删除");
       saveTime.type = remove.type = "button";
       remove.className = "ec-remove";
       remove.title = "删除这条字幕";
       saveTime.addEventListener("click", () =>
-        this.edit(() => {
+        this.edit(async () => {
           const current = this.sequence();
           if (!current) throw new Error("字幕时间线不存在");
-          return this.context.controller.updateTiming(this.sequenceId, clip.id, {
+          await this.context.controller.updateTiming(this.sequenceId, clip.id, {
             start: inputTick(start, clip.start, current),
             end: inputTick(end, clip.start + clip.duration, current),
           });
+          this.saved(clip.id, ["start", "end"]);
         }),
       );
       remove.addEventListener("click", () =>
@@ -542,6 +584,15 @@ export class EditorCaptionsUI {
       row.append(head, input, actions, timing, info);
       this.rows.append(row);
     }
+    if (!focus?.clipId) return;
+    const target = [...this.rows.querySelectorAll<HTMLElement>("[data-caption-id]")]
+      .find((row) => row.dataset.captionId === focus.clipId)
+      ?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        `[data-caption-field="${focus.field}"]`,
+      );
+    target?.focus({ preventScroll: true });
+    if (target instanceof HTMLTextAreaElement && focus.range?.[0] != null && focus.range[1] != null)
+      target.setSelectionRange(focus.range[0], focus.range[1]);
   }
   private renderDocument(force = false) {
     if (this.disposed || !this.isOpen()) return;

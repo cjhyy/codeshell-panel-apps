@@ -9,7 +9,7 @@ import {
   type Project,
 } from "../model";
 import { evaluateAnimatedNumber } from "./animation";
-import { captionTemplate } from "./caption-presets";
+import { captionTemplate, sameJson } from "./caption-presets";
 import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
@@ -73,7 +73,7 @@ const metadataKeys = [
   "speech",
 ] as const;
 const annotationKeys = ["script", "workflow", "narration", "roughCuts"] as const;
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = sameJson;
 const frames = (tick: number) => tick / LEGACY_FRAME_TICKS;
 const ticks = (frame: number) => frame * LEGACY_FRAME_TICKS;
 function frozen<T>(value: T): T {

@@ -1342,6 +1342,48 @@ test("字幕 page edits real off-frame multitrack footage without the old view, 
   assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
 });
 
+test("an asset change on the 字幕 page never rewrites the panel in place and keeps unsaved text", async (t) => {
+  const page = await openPage(t);
+  await page.locator('#studio .rail [data-tab="transcript"]').click();
+  const draft = page.getByLabel("新字幕文字", { exact: true });
+  await draft.fill("还没添加的字幕");
+  await draft.focus();
+  // Rewriting .library-panel in place empties #caption-panel-host until something re-renders;
+  // background imports and job results defer that re-render while their save is pending.
+  await page.evaluate(() => {
+    window.__rewrites = 0;
+    new MutationObserver((records) => (window.__rewrites += records.length)).observe(
+      document.querySelector("#studio .library-panel"),
+      { childList: true },
+    );
+  });
+  await page.evaluate(async () => {
+    const tools = window.__mainHost.tools,
+      current = tools.read_video_project({ editor: { view: "project" } });
+    await tools.apply_video_edit({
+      editor: {
+        identity: current.identity,
+        label: "改素材名",
+        steps: [
+          {
+            kind: "operations",
+            operations: [{ type: "asset.update", assetId: "demo", patch: { name: "改名的画面" } }],
+          },
+        ],
+      },
+    });
+  });
+  const doc = await waitSaved(page);
+  assert.equal(doc.assets[0].name, "改名的画面");
+  assert.equal(await page.evaluate(() => window.__rewrites), 0);
+  assert.equal(
+    await page.locator("#studio .library-panel #caption-panel-host > .editor-captions").count(),
+    1,
+  );
+  assert.equal(await draft.inputValue(), "还没添加的字幕");
+  assert.equal(await draft.evaluate((node) => node === document.activeElement), true);
+});
+
 test("main mounts sequence management into the shared project, copy and rename survive reload", async (t) => {
   const page = await openPage(t);
   await clickEditorAction(page, "sequences");

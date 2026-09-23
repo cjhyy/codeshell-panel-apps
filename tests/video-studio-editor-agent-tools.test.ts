@@ -1694,3 +1694,45 @@ test("AI text edits cannot leave stale timed words or translation, including fre
     clip.words,
   );
 });
+
+test("agent caption preset restyles every subtitle like the 字幕 page and its schema accepts only named presets", async (t) => {
+  const h = await harness(t),
+    schema = JSON.parse(
+      await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8"),
+    ).agent.tools.find((tool: any) => tool.name === "apply_video_edit").inputSchema,
+    validate = (action: unknown) =>
+      validateToolArgsStrict(
+        "apply_video_edit",
+        {
+          editor: {
+            identity: h.session.getState().identity,
+            label: "字幕样式",
+            steps: [{ kind: "captions", sequenceId, action }],
+          },
+        },
+        schema,
+      );
+  assert.equal(validate({ kind: "preset", preset: "bold" }), null);
+  for (const bad of [
+    { kind: "preset", preset: "yellow" },
+    { kind: "preset" },
+    { kind: "preset", preset: "bold", clipIds: ["caption"] },
+  ]) {
+    assert.notEqual(validate(bad), null, JSON.stringify(bad));
+    await assert.rejects(h.edit([{ kind: "captions", sequenceId, action: bad }]));
+  }
+  assert.equal(h.state.writes.length, 0);
+  await h.edit([{ kind: "captions", sequenceId, action: { kind: "preset", preset: "bold" } }]);
+  const caption = h.session
+    .read()
+    .sequences[0]!.clips.find((clip) => clip.id === "caption") as TextClip;
+  assert.equal(caption.style.color, "#ffe46b");
+  assert.equal(caption.text, "真实字幕");
+  assert.equal(h.session.read().production?.legacyCaptionStyle, "bold");
+  h.session.undo();
+  assert.equal(
+    (h.session.read().sequences[0]!.clips.find((clip) => clip.id === "caption") as TextClip).style
+      .color,
+    "#ffffff",
+  );
+});

@@ -2122,6 +2122,30 @@
                                           "kind": {
                                             "type": "string",
                                             "enum": [
+                                              "preset"
+                                            ]
+                                          },
+                                          "preset": {
+                                            "type": "string",
+                                            "enum": [
+                                              "classic",
+                                              "bold",
+                                              "minimal"
+                                            ]
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "preset"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "enum": [
                                               "detach"
                                             ]
                                           },

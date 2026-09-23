@@ -1950,6 +1950,9 @@ function rememberMediaAssetFocus(): (() => void) | undefined {
 }
 
 function refreshMediaLibrary(): void {
+  // A feature page (e.g. 字幕) owns the panel; rewriting it in place would drop its mounted
+  // content until the next full render, which background imports and job results defer.
+  if (!showingMediaLibrary()) return;
   const restoreAssetFocus = rememberMediaAssetFocus();
   const scroll = $(".library-panel").scrollTop;
   $(".library-panel").innerHTML = views().renderLibrary();

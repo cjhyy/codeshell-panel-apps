@@ -8,7 +8,6 @@ import {
 } from "../apps/video-studio/src/model.ts";
 import {
   ProductionController,
-  transcriptCaptions,
   type ManagedAsset,
   type MediaJob,
   type PreparedMedia,
@@ -1750,46 +1749,6 @@ test("terminal failure is acknowledged and unchanged successful results are reus
   await f.controller.refresh();
   assert.equal(f.host.writes, terminalWrites);
   assert.equal(f.controller.currentJobs.find((job) => job.id === failed.id)?.status, "failed");
-});
-
-test("Chinese word timings form readable captions and preserve source mapping across repeated trims", () => {
-  const value = project();
-  value.assets[0]!.durationFrames = 600;
-  value.clips = [
-    { id: "a", assetId: "source", inFrame: 90, outFrame: 300, volume: 1 },
-    { id: "b", assetId: "source", inFrame: 0, outFrame: 150, volume: 1 },
-  ];
-  const words = Array.from({ length: 44 }, (_, index) => ({
-    start: (index * 13.82) / 44,
-    end: ((index + 1) * 13.82) / 44,
-    text: "画面",
-    probability: 0.99,
-  }));
-  const captions = transcriptCaptions(value, "source", [
-    { start: 0, end: 13.82, text: words.map((word) => word.text).join(""), words },
-  ]);
-  assert.ok(captions.length >= 5);
-  assert.ok(captions.every((caption) => [...caption.text].length <= 22));
-  assert.ok(
-    captions.every(
-      (caption) =>
-        caption.endFrame > caption.startFrame && caption.endFrame - caption.startFrame <= 120,
-    ),
-  );
-  assert.equal(captions[0]!.startFrame, 0);
-  assert.ok(captions.some((caption) => caption.startFrame === 210));
-  const starts = new Set(words.map((word) => Math.round(word.start * 30)));
-  for (const caption of captions.filter(
-    (caption) => caption.startFrame > 0 && caption.startFrame < 210,
-  ))
-    assert.ok(starts.has(caption.startFrame + 90));
-  const fallback = transcriptCaptions(project(), "source", [
-    { start: 1, end: 8, text: "没有逐字时间就保留真实整段范围" },
-  ]);
-  assert.deepEqual(
-    fallback.map(({ startFrame, endFrame, text }) => ({ startFrame, endFrame, text })),
-    [{ startFrame: 30, endFrame: 240, text: "没有逐字时间就保留真实整段范围" }],
-  );
 });
 
 test("initialization saves the selected Audio8 configuration and only samples its extracted reference, including after reopening", async () => {

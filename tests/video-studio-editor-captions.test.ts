@@ -19,6 +19,7 @@ import {
 import {
   captionPresetStyle,
   planCaptionPreset,
+  captionTemplate,
 } from "../apps/video-studio/src/editor/caption-presets";
 import { projectLegacyView } from "../apps/video-studio/src/editor/legacy-adapter";
 import {
@@ -31,7 +32,11 @@ import {
   defaultColorAdjustment,
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
-import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import {
+  sequenceDuration,
+  validateEditorDocument,
+} from "../apps/video-studio/src/editor/validation";
+import { secondsToTicks } from "../apps/video-studio/src/editor/time";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import { EditorSession } from "../apps/video-studio/src/editor/session";
 import {
@@ -921,7 +926,17 @@ test("manual caption timing detaches source following, trims real words and resp
   assert.equal(caption.sourceBinding, undefined);
   assert.equal(caption.duration, T);
   assert.deepEqual(caption.words, [{ text: "你好", start: 0, end: T }]);
-  assert.equal(caption.text, "你好");
+  assert.equal(caption.text, "你好 世界", "A retime never rewrites the caption text");
+  assert.equal(caption.style.animation, "word-highlight");
+  const clamped = applyEditorOperations(
+    doc,
+    planCaptionTiming(doc, "main", original.id, { start: T, end: 2.5 * T }),
+    doc.revision,
+  );
+  assert.deepEqual(captions(clamped)[0]!.words, [
+    { text: "你好", start: 0, end: T },
+    { text: "世界", start: T, end: 1.5 * T },
+  ]);
   const moved = applyEditorOperations(
     doc,
     planCaptionTiming(doc, "main", original.id, { start: 1.5 * T, end: 3.5 * T }),
@@ -955,5 +970,258 @@ test("manual caption timing detaches source following, trims real words and resp
   assert.throws(
     () => planAddCaption(locked, "main", { start: 0, text: "新字幕", trackId: "t" }),
     /锁定/,
+  );
+});
+
+test("retiming never lengthens the sequence and keeps duration-relative animations", () => {
+  const doc = realMedia(),
+    end = 1_234_567 + 10_000_123;
+  const tail = applyEditorOperations(
+    doc,
+    planAddCaption(doc, "main", { start: end - 2 * T, text: "尾声", idFactory: () => "tail" }),
+    doc.revision,
+  );
+  const extended = applyEditorOperations(
+    tail,
+    planCaptionTiming(tail, "main", "tail", { start: end - 2 * T, end: end + 5 * T }),
+    tail.revision,
+  );
+  const caption = listCaptions(extended, "main")[0]!;
+  assert.equal(caption.start + caption.duration, end, "Clamped to the picture end");
+  assert.equal(sequenceDuration(extended.sequences[0]!), end);
+  assert.throws(
+    () => planCaptionTiming(tail, "main", "tail", { start: end, end: end + T }),
+    /画面范围/,
+  );
+  const styled = (animation: "typewriter" | "fade") => {
+    const added = applyEditorOperations(
+      doc,
+      planAddCaption(doc, "main", {
+        start: 2 * T,
+        duration: 2 * T,
+        text: "逐字出现的字幕",
+        idFactory: () => animation,
+      }),
+      doc.revision,
+    );
+    return applyEditorOperations(
+      added,
+      planCaptionStyle(added, "main", [animation], { animation }),
+      added.revision,
+    );
+  };
+  for (const animation of ["typewriter", "fade"] as const) {
+    const before = styled(animation);
+    const shortened = applyEditorOperations(
+      before,
+      planCaptionTiming(before, "main", animation, { start: 2.5 * T, end: 3.5 * T }),
+      before.revision,
+    );
+    const clip = listCaptions(shortened, "main")[0]!;
+    assert.deepEqual([clip.start, clip.duration], [2.5 * T, T]);
+    assert.equal(clip.style.animation, animation, "The animation scales with the new length");
+    assert.equal(clip.text, "逐字出现的字幕");
+    assert.equal(clip.transform.opacity, 1, "A fade stays a fade, not baked keyframes");
+  }
+  const keyed = styled("fade");
+  const id = listCaptions(keyed, "main")[0]!.id;
+  const animated = applyEditorOperations(
+    keyed,
+    [
+      {
+        type: "clip.update",
+        sequenceId: "main",
+        clipId: id,
+        patch: {
+          transform: {
+            ...listCaptions(keyed, "main")[0]!.transform,
+            x: {
+              keyframes: [
+                { time: 0, value: 0 },
+                { time: 2 * T, value: 0.2 },
+              ],
+            },
+          },
+        },
+      },
+    ],
+    keyed.revision,
+  );
+  const halved = applyEditorOperations(
+    animated,
+    planCaptionTiming(animated, "main", id, { start: 2 * T, end: 3 * T }),
+    animated.revision,
+  );
+  assert.deepEqual(listCaptions(halved, "main")[0]!.transform.x, {
+    keyframes: [
+      { time: 0, value: 0 },
+      { time: T, value: 0.2 },
+    ],
+  });
+});
+
+test("new captions from every path follow the project's caption preset", () => {
+  const base = fixture(),
+    seq = base.sequences[0]!;
+  const look = (preset: "classic" | "bold" | "minimal") => {
+    const template = captionTemplate({
+      width: seq.width,
+      height: seq.height,
+      captionStyle: preset,
+    });
+    return { style: template.style, transform: template.transform };
+  };
+  const added = (doc: EditorDocument) =>
+    captions(
+      applyEditorOperations(
+        doc,
+        planAddCaption(doc, "main", { start: T, text: "新字幕", idFactory: () => "fresh" }),
+        doc.revision,
+      ),
+    ).find((clip) => clip.id === "fresh")!;
+  const plain = added(base);
+  assert.deepEqual({ style: plain.style, transform: plain.transform }, look("classic"));
+  const first = applyEditorOperations(
+    base,
+    planAddCaption(base, "main", { start: 0, text: "第一条", idFactory: () => "first" }),
+    base.revision,
+  );
+  const bold = applyEditorOperations(
+    first,
+    planCaptionPreset(first, "main", "bold"),
+    first.revision,
+  );
+  const again = added(bold);
+  assert.deepEqual({ style: again.style, transform: again.transform }, look("bold"));
+  const imported = applyEditorOperations(
+    bold,
+    planSrtImport(bold, "main", "1\n00:00:05,000 --> 00:00:06,000\n导入\n").operations,
+    bold.revision,
+  );
+  assert.ok(listCaptions(imported, "main").every((clip) => clip.style.color === "#ffe46b"));
+  assert.deepEqual(captions(imported).at(-1)!.style, look("bold").style);
+  const preferred = fixture();
+  preferred.production = { legacyCaptionStyle: "minimal" };
+  const transcribed = captions(generated(validateEditorDocument(preferred)))[0]!;
+  assert.deepEqual(transcribed.style, { ...look("minimal").style, animation: "word-highlight" });
+});
+
+test("word-timed transcripts caption only the words actually played in trimmed or repeated audio", () => {
+  const doc = fixture(),
+    seq = doc.sequences[0]!;
+  const trimmed = media("sound", "a", 4 * T, T);
+  trimmed.timeMap = {
+    points: [
+      { time: 0, source: T },
+      { time: T, source: 2 * T },
+    ],
+  };
+  seq.clips = [trimmed];
+  const words = [
+    { start: 0, end: 1, text: "删除" },
+    { start: 1, end: 2, text: "保留" },
+    { start: 2, end: 3, text: "删除" },
+  ];
+  const kept = applyEditorOperations(
+    validateEditorDocument(doc),
+    planTranscriptCaptions(
+      validateEditorDocument(doc),
+      "main",
+      new Map([["voice", [{ start: 0, end: 3, text: "删除保留删除", words }]]]),
+    ).operations,
+    doc.revision,
+  );
+  assert.deepEqual(
+    captions(kept).map((clip) => [clip.start, clip.duration, clip.text]),
+    [[4 * T, T, "保留"]],
+  );
+  const unplayed = planTranscriptCaptions(
+    validateEditorDocument(doc),
+    "main",
+    new Map([
+      [
+        "voice",
+        [{ start: 0, end: 3, text: "静音里的完整句子", words: [{ start: 2, end: 3, text: "没有播放" }] }],
+      ],
+    ]),
+  );
+  assert.equal(unplayed.added, 0, "Known word times inside unplayed audio never become a caption");
+  const repeated = fixture();
+  repeated.sequences[0]!.clips = [
+    media("first", "a", 3 * T, 2 * T),
+    media("again", "a", 14 * T, 2 * T),
+    { ...media("muted", "a", 17 * T, 2 * T), audio: { ...defaultAudioMix(), volume: 0 } },
+  ];
+  const placed = applyEditorOperations(
+    validateEditorDocument(repeated),
+    planTranscriptCaptions(
+      validateEditorDocument(repeated),
+      "main",
+      new Map([["voice", [{ start: 1, end: 2, text: "画面前的旁白" }]]]),
+    ).operations,
+    repeated.revision,
+  );
+  const clips = captions(placed);
+  assert.deepEqual(
+    clips.map((clip) => [clip.start, clip.duration]),
+    [
+      [4 * T, T],
+      [15 * T, T],
+    ],
+  );
+  assert.notEqual(clips[0]!.id, clips[1]!.id);
+});
+
+test("Chinese word timings form readable captions at real word starts across repeated trims", () => {
+  const doc = fixture();
+  doc.assets[0]!.duration = 20 * T;
+  const trim = (id: string, start: number, from: number, to: number) => {
+    const clip = media(id, "a", start, to - from);
+    clip.timeMap = {
+      points: [
+        { time: 0, source: from },
+        { time: to - from, source: to },
+      ],
+    };
+    return clip;
+  };
+  doc.sequences[0]!.clips = [trim("a", 0, 3 * T, 10 * T), trim("b", 7 * T, 0, 5 * T)];
+  const words = Array.from({ length: 44 }, (_, index) => ({
+    start: (index * 13.82) / 44,
+    end: ((index + 1) * 13.82) / 44,
+    text: "画面",
+  }));
+  const result = applyEditorOperations(
+    validateEditorDocument(doc),
+    planTranscriptCaptions(
+      validateEditorDocument(doc),
+      "main",
+      new Map([
+        ["voice", [{ start: 0, end: 13.82, text: words.map((w) => w.text).join(""), words }]],
+      ]),
+    ).operations,
+    doc.revision,
+  );
+  const clips = captions(result).sort((a, b) => a.start - b.start);
+  assert.ok(clips.length >= 5);
+  assert.ok(clips.every((clip) => [...clip.text].length <= 30));
+  assert.ok(clips.every((clip) => clip.duration > 0 && clip.duration <= 4.5 * T));
+  assert.equal(clips[0]!.start, 0);
+  assert.ok(clips.some((clip) => clip.start === 7 * T));
+  const starts = new Set(words.map((word) => secondsToTicks(word.start)));
+  for (const clip of clips.filter((clip) => clip.start > 0 && clip.start < 7 * T))
+    assert.ok(starts.has(clip.start + 3 * T), `caption starts at a real word: ${clip.start}`);
+  const sentence = applyEditorOperations(
+    fixture(),
+    planTranscriptCaptions(
+      fixture(),
+      "main",
+      new Map([["voice", [{ start: 1, end: 3, text: "没有逐字时间就保留真实整段范围" }]]]),
+    ).operations,
+    0,
+  );
+  assert.deepEqual(
+    captions(sentence).map((clip) => [clip.start, clip.duration, clip.text]),
+    [[T, 2 * T, "没有逐字时间就保留真实整段范围"]],
   );
 });

@@ -574,6 +574,60 @@ test("style preset select restyles every caption in one undo step and shows the 
     2,
   );
   assert.equal(await page.getByLabel("字幕样式", { exact: true }).inputValue(), "bold");
+  await page.evaluate(() => (playhead = 8 * 240000));
+  await page.getByLabel("新字幕文字", { exact: true }).fill("后加的字幕");
+  await page.getByRole("button", { name: "在播放头添加字幕", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.equal(
+    await page.evaluate(() => captions().find((clip) => clip.text === "后加的字幕").style.color),
+    "#ffe46b",
+    "A new caption keeps the project's 醒目 preset",
+  );
+  assert.equal(await page.getByLabel("字幕样式", { exact: true }).inputValue(), "bold");
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().length === 2);
   await page.evaluate(() => session.undo());
   await page.waitForFunction(() => captions().every((clip) => clip.style.color !== "#ffe46b"));
+});
+
+test("unsaved text and times in one row survive rebuilds caused by other edits", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "第一条" }),
+    await controller.add("main", { start: 6 * 240000, text: "第二条" }),
+  ]);
+  const a = page.locator(`[data-caption-id="${first}"]`),
+    b = page.locator(`[data-caption-id="${second}"]`);
+  await a.getByLabel("字幕文字", { exact: true }).fill("还没保存的改动");
+  await a.getByLabel("开始（秒）").fill("0.5");
+  await b.getByLabel("字幕文字", { exact: true }).fill("第二条已改");
+  await b.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "第二条已改"));
+  assert.equal(await a.getByLabel("字幕文字", { exact: true }).inputValue(), "还没保存的改动");
+  assert.equal(await a.getByLabel("开始（秒）").inputValue(), "0.5");
+  const text = a.getByLabel("字幕文字", { exact: true });
+  await text.focus();
+  await text.evaluate((node) => node.setSelectionRange(1, 3));
+  await page.evaluate(() =>
+    session.dispatch([{ type: "project.rename", name: "外部修改" }], session.getState().identity),
+  );
+  assert.deepEqual(
+    await text.evaluate((node) => [
+      node.value,
+      node === document.activeElement,
+      node.selectionStart,
+      node.selectionEnd,
+    ]),
+    ["还没保存的改动", true, 1, 3],
+  );
+  await a.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "还没保存的改动"));
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "第一条"));
+  assert.equal(
+    await a.getByLabel("字幕文字", { exact: true }).inputValue(),
+    "第一条",
+    "A saved draft is not kept over Undo",
+  );
+  assert.equal(await a.getByLabel("开始（秒）").inputValue(), "0.5", "Unsaved time is kept");
 });

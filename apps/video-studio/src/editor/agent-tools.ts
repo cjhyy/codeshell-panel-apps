@@ -53,6 +53,7 @@ import {
   planTranscriptCaptions,
   validateCaptionTranscript,
 } from "./captions";
+import { planCaptionPreset } from "./caption-presets";
 import {
   planCreateMulticam,
   planMulticamCut,
@@ -655,6 +656,7 @@ function planCaptionsStep(
       "transcripts",
       "assetIds",
       "wordHighlight",
+      "preset",
     ]);
   switch (action.kind) {
     case "import-srt":
@@ -723,6 +725,9 @@ function planCaptionsStep(
     case "detach":
       object(action, ["kind", "clipIds"]);
       return planDetachCaptions(document, sequenceId, ids(action.clipIds));
+    case "preset":
+      object(action, ["kind", "preset"]);
+      return planCaptionPreset(document, sequenceId, action.preset);
     default:
       throw new Error("未知字幕编辑");
   }

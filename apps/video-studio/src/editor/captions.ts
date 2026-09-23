@@ -1,12 +1,8 @@
 import { evaluateAnimatedNumber, type AnimatedNumber } from "./animation";
 import { compileAudioPlan, type AudioPlanLane, type AudioPlanStage } from "./audio-plan";
-import {
-  createTrack,
-  defaultColorAdjustment,
-  defaultTextStyle,
-  defaultTransform,
-} from "./defaults";
-import { trimClip } from "./clip-edits";
+import { createTrack } from "./defaults";
+import { stretchKeyframes } from "./caption-bindings";
+import { CAPTION_PRESETS, captionTemplate, currentCaptionPreset } from "./caption-presets";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import {
   assertTick,
@@ -363,19 +359,29 @@ function captionTrack(
     operations: [{ type: "track.add", sequenceId: seq.id, track: createTrack(id, "text", "字幕") }],
   };
 }
+/**
+ * The look for new subtitles: the preset every existing subtitle shows, else the project's
+ * recorded preset, else 经典. Captions from every path then match the 字幕 page choice.
+ */
+function captionLook(doc: EditorDocument, seq: EditorSequence): TextClip {
+  const preference = doc.production?.legacyCaptionStyle;
+  const subtitles = seq.clips.filter(
+    (clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle",
+  );
+  const preset =
+    currentCaptionPreset(seq, subtitles) ??
+    CAPTION_PRESETS.find((item) => item.value === preference)?.value ??
+    "classic";
+  return captionTemplate({ width: seq.width, height: seq.height, captionStyle: preset });
+}
 function textClip(
   id: string,
   trackId: string,
   start: Tick,
   end: Tick,
   text: string,
-  seq: EditorSequence,
+  look: TextClip,
 ): TextClip {
-  const style = defaultTextStyle();
-  style.fontSize = Math.max(12, Math.round(seq.height * 0.05));
-  style.strokeWidth = Math.max(1, Math.round(style.fontSize * 0.055));
-  const transform = defaultTransform();
-  transform.y = 0.38;
   return {
     id,
     trackId,
@@ -385,10 +391,10 @@ function textClip(
     kind: "text",
     role: "subtitle",
     text,
-    style,
+    style: structuredClone(look.style),
     words: [],
-    transform,
-    color: defaultColorAdjustment(),
+    transform: structuredClone(look.transform),
+    color: structuredClone(look.color),
     blendMode: "normal",
   };
 }
@@ -405,7 +411,8 @@ export function planTranscriptCaptions(
 ): CaptionPlan {
   const doc = validateEditorDocument(value),
     seq = sequence(doc, sequenceId),
-    track = captionTrack(seq, options);
+    track = captionTrack(seq, options),
+    look = captionLook(doc, seq);
   const sources = compileCaptionSources(doc, sequenceId).filter(
     (source) => !options.assetIds || options.assetIds.includes(source.assetId),
   );
@@ -444,6 +451,8 @@ export function planTranscriptCaptions(
             }),
           )
           .sort((a, b) => a.start - b.start || a.end - b.end || a.index - b.index);
+        // Real word times say nothing was spoken in this played range; do not show the sentence.
+        if (segment.words?.length && !mapped.length) continue;
         // Overlapping ASR words may be legal; clip word end order must stay monotone.
         if (mapped.some((word, index) => index > 0 && word.end < mapped[index - 1]!.end))
           throw new Error("映射后的词时间相互包裹，请先校准转写");
@@ -502,7 +511,7 @@ export function planTranscriptCaptions(
           continue;
         }
         displayed.add(key);
-        const clip = textClip(id, track.id, range.start, range.end, content, seq),
+        const clip = textClip(id, track.id, range.start, range.end, content, look),
           owner = source.lane.stages[0]!;
         clip.words = mapped.map(({ index: _, ...word }) => ({ ...word, text: word.text.trim() }));
         if (options.wordHighlight && clip.words.length) clip.style.animation = "word-highlight";
@@ -569,6 +578,7 @@ export function planSrtImport(
   const doc = validateEditorDocument(value),
     seq = sequence(doc, sequenceId),
     track = captionTrack(seq, options),
+    look = captionLook(doc, seq),
     cues = parseEditorSrt(text);
   const operations: EditorOperation[] = [],
     keys = new Set(
@@ -593,7 +603,7 @@ export function planSrtImport(
         cue.start,
         cue.end,
         cue.text,
-        seq,
+        look,
       ),
     });
   }
@@ -813,7 +823,14 @@ export function planAddCaption(
   if (end <= start) throw new Error("播放头不在画面范围内，请把播放头移到画面上再添加字幕");
   if (seq.clips.length + 1 > MAX_CAPTIONS) throw new Error("字幕超过序列2000片段容量");
   const track = captionTrack(seq, options),
-    clip = textClip((options.idFactory ?? uniqueId)(), track.id, start, end, text, seq);
+    clip = textClip(
+      (options.idFactory ?? uniqueId)(),
+      track.id,
+      start,
+      end,
+      text,
+      captionLook(doc, seq),
+    );
   const operations: EditorOperation[] = [
     ...track.operations,
     { type: "clip.add", sequenceId, clip },
@@ -821,9 +838,16 @@ export function planAddCaption(
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
+/** Word timings past a new length are dropped or clamped; the corrected text never changes. */
+function wordsWithin(words: TextClip["words"], duration: Tick): TextClip["words"] {
+  return words
+    .filter((word) => word.start < duration)
+    .map((word) => ({ ...word, end: Math.min(word.end, duration) }));
+}
 /**
  * Manual timing ends automatic source following first, otherwise source reconciliation would
- * restore the old range. Moving keeps clip-local words; shortening trims words past the new end.
+ * restore the old range. A retime is a length change: clip-local words move with the caption,
+ * duration-relative animations scale, and the caption never extends the picture's end.
  */
 export function planCaptionTiming(
   value: EditorDocument,
@@ -836,9 +860,13 @@ export function planCaptionTiming(
     [clip] = selectedCaptions(seq, [clipId]);
   if (!clip) throw new Error("请选择有效的字幕片段");
   const start = assertTick(timing.start, "字幕开始时间"),
-    end = assertTick(timing.end, "字幕结束时间");
-  if (end <= start) throw new Error("字幕结束时间必须晚于开始时间");
+    requested = assertTick(timing.end, "字幕结束时间");
+  if (requested <= start) throw new Error("字幕结束时间必须晚于开始时间");
   unlockedCaption(seq, clip);
+  // The current sequence end, which already includes this caption; a retime never lengthens it.
+  const limit = sequenceDuration(seq);
+  if (start >= limit) throw new Error("字幕开始时间超出画面范围，请放在画面时长之内");
+  const end = Math.min(requested, limit);
   if (start === clip.start && end === clip.start + clip.duration) return [];
   const operations: EditorOperation[] = [];
   if (clip.sourceBinding)
@@ -846,13 +874,25 @@ export function planCaptionTiming(
   if (start !== clip.start)
     operations.push({ type: "clip.move", sequenceId, clipIds: [clipId], delta: start - clip.start });
   const duration = end - start;
-  if (duration > clip.duration)
-    operations.push({ type: "clip.update", sequenceId, clipId, patch: { duration } });
-  else if (duration < clip.duration) {
-    const moved = operations.length
-      ? applyEditorOperations(doc, operations, doc.revision)
-      : doc;
-    operations.push(...trimClip(moved, sequenceId, clipId, 0, duration));
+  if (duration !== clip.duration) {
+    const translation = clip.translation?.originalWords
+      ? {
+          ...clip.translation,
+          originalWords: wordsWithin(clip.translation.originalWords, duration),
+        }
+      : undefined;
+    operations.push({
+      type: "clip.update",
+      sequenceId,
+      clipId,
+      patch: {
+        duration,
+        words: wordsWithin(clip.words, duration),
+        transform: stretchKeyframes(clip.transform, clip.duration, duration),
+        color: stretchKeyframes(clip.color, clip.duration, duration),
+        ...(translation ? { translation } : {}),
+      },
+    });
   }
   applyEditorOperations(doc, operations, doc.revision);
   return operations;

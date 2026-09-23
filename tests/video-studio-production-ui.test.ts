@@ -143,7 +143,7 @@ test("transcript fetch errors and concurrent edits never publish a partial or st
   assert.equal(h.controller.getState().phase, "stale");
 });
 
-test("reopening a modified backup with the same identity rejects pending transcript captions", async (t) => {
+test("replacing the project with a modified same-ID copy invalidates pending transcript captions", async (t) => {
   let release: () => void = () => {};
   const waiting = new Promise<void>((resolve) => {
     release = resolve;

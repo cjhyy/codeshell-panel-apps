@@ -11,7 +11,8 @@ export const CAPTION_PRESETS: ReadonlyArray<{ value: CaptionPreset; label: strin
   { value: "bold", label: "醒目 · 黄字描边" },
   { value: "minimal", label: "简洁 · 白字无框" },
 ];
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+/** Structural equality for plain editor data. */
+export const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 function preset(value: unknown): CaptionPreset {
   if (!CAPTION_PRESETS.some((item) => item.value === value)) throw new Error("字幕样式无效");
   return value as CaptionPreset;
@@ -66,7 +67,7 @@ export function currentCaptionPreset(
   if (!clips.length) return undefined;
   return CAPTION_PRESETS.map((item) => item.value).find((value) => {
     const style = captionPresetStyle(sequence, value);
-    return clips.every((clip) => same(clip.style, presetFor(clip, style)));
+    return clips.every((clip) => sameJson(clip.style, presetFor(clip, style)));
   });
 }
 /** Restyle every subtitle of the sequence; text, words, translation and animation are retained. */
@@ -86,7 +87,7 @@ export function planCaptionPreset(
     throw new Error("字幕轨已锁定，请先解锁后再套用样式");
   const style = captionPresetStyle(sequence, selected);
   const operations: EditorOperation[] = clips
-    .filter((clip) => !same(clip.style, presetFor(clip, style)))
+    .filter((clip) => !sameJson(clip.style, presetFor(clip, style)))
     .map((clip) => ({
       type: "clip.update",
       sequenceId,

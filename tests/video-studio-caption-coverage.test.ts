@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { createProject, validateProject, type Project } from "../apps/video-studio/src/model";
-import {
-  captionSourceAssetIds,
-  transcriptCaptions,
-  type PreparedMedia,
-  type TranscriptSegment,
-} from "../apps/video-studio/src/production";
+import type { TranscriptSegment } from "../apps/video-studio/src/production";
 import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
 import { EditorSession } from "../apps/video-studio/src/editor/session";
 import { createCaptionController } from "../apps/video-studio/src/editor/caption-controller";
 import {
+  compileCaptionSources,
   listCaptions,
   planAddCaption,
   planCaptionText,
@@ -92,7 +88,7 @@ const page = (segments: TranscriptSegment[], offset = 0): TranscriptPage => ({
   segments,
 });
 
-test("caption sources include independent voice, skip muted, silent and temporary sources, and request repeated sources once", () => {
+test("caption sources include independent voice, skip muted, silent and image media, and list a repeated source once", async (t) => {
   const value = project({
     clips: [
       { id: "picture", assetId: "video", inFrame: 0, outFrame: 300, volume: 0 },
@@ -109,74 +105,17 @@ test("caption sources include independent voice, skip muted, silent and temporar
         startFrame: 120,
         volume: 0.5,
       },
-      { id: "temporary", assetId: "local", inFrame: 0, outFrame: 90, startFrame: 210, volume: 1 },
     ],
   });
-  const preparations = new Map<string, PreparedMedia>([
-    [mediaId("c"), { assetId: mediaId("c"), inspection: { kind: "video", durationSeconds: 20 } }],
-  ]);
-  assert.deepEqual(captionSourceAssetIds(value, preparations), ["voice"]);
-});
-
-test("subtitle placement preserves independent narration inside a free timeline gap and repeated source occurrences", () => {
-  const value = project({
-    timelineMode: "free",
-    clips: [
-      { id: "picture", assetId: "video", inFrame: 0, outFrame: 300, startFrame: 300, volume: 0 },
-    ],
-    audioClips: [
-      { id: "first", assetId: "voice", inFrame: 30, outFrame: 90, startFrame: 90, volume: 1 },
-      { id: "repeat", assetId: "voice", inFrame: 30, outFrame: 90, startFrame: 420, volume: 1 },
-      { id: "muted", assetId: "voice", inFrame: 30, outFrame: 90, startFrame: 510, volume: 0 },
-    ],
-  });
-  const result = transcriptCaptions(value, "voice", [{ start: 1, end: 3, text: "画面前的旁白" }]);
-  assert.deepEqual(
-    result.map(({ startFrame, endFrame }) => [startFrame, endFrame]),
-    [
-      [90, 150],
-      [420, 480],
-    ],
-  );
-  assert.notEqual(result[0]!.id, result[1]!.id);
-  assert.equal(
-    transcriptCaptions(value, "video", [{ start: 0, end: 2, text: "已静音原声" }]).length,
-    0,
-  );
-});
-
-test("word-level captions exclude words outside trimmed audio instead of repeating the uncut sentence", () => {
-  const value = project({
-    audioClips: [
-      { id: "voice", assetId: "voice", inFrame: 30, outFrame: 60, startFrame: 120, volume: 1 },
-    ],
-  });
-  const result = transcriptCaptions(value, "voice", [
-    {
-      start: 0,
-      end: 3,
-      text: "删除保留删除",
-      words: [
-        { start: 0, end: 1, text: "删除" },
-        { start: 1, end: 2, text: "保留" },
-        { start: 2, end: 3, text: "删除" },
-      ],
-    },
-  ]);
-  assert.deepEqual(
-    result.map(({ startFrame, endFrame, text }) => [startFrame, endFrame, text]),
-    [[120, 150, "保留"]],
-  );
-  assert.deepEqual(
-    transcriptCaptions(value, "voice", [
-      {
-        start: 0,
-        end: 3,
-        text: "静音里的完整句子",
-        words: [{ start: 2, end: 3, text: "没有播放" }],
-      },
-    ]),
-    [],
+  const doc = migrateLegacyProject(value);
+  // Inspection found no audio stream in this picture.
+  doc.assets.find((asset) => asset.id === "silent")!.metadata = { editorInspection: {} };
+  const sources = compileCaptionSources(doc, doc.activeSequenceId);
+  assert.deepEqual([...new Set(sources.map((source) => source.assetId))], ["voice"]);
+  assert.equal(sources.length, 2, "Each audible placement maps separately");
+  const editor = await session(t, value, async () => page([]));
+  assert.ok(
+    editor.controller.sources(editor.sequenceId).every((source) => source.assetId !== "image"),
   );
 });
 
@@ -275,7 +214,7 @@ test("an empty transcript adds nothing for its source without discarding availab
     if (id === "video") throw new Error("ENOENT: transcript not found");
     return page([{ start: 1, end: 2, text: "可用旁白" }]);
   });
-  await assert.rejects(failed.generate(), /ENOENT/);
+  await assert.rejects(failed.generate(), /「画面」.*ENOENT/, "Names the source to deselect");
   assert.equal(failed.captions().length, 0);
   assert.equal(failed.writes(), 0);
 });

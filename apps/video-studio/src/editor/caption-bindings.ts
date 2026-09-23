@@ -94,6 +94,10 @@ function normalized(path: NonNullable<ReturnType<typeof route>>): string {
   }
   return JSON.stringify({ chain, outputOffset: shift + path.offset });
 }
+/** Scale every keyframe time in a clip property by a new length. */
+export function stretchKeyframes<T>(value: T, oldDuration: number, duration: number): T {
+  return stretch(value, oldDuration, duration);
+}
 function stretch(value: any, oldDuration: number, duration: number): any {
   if (!value || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((item) => stretch(item, oldDuration, duration));

@@ -77,6 +77,7 @@ timing.action 为 `{kind:"speed",rate,preservePitch?}`、`{kind:"reverse"}`、`{
 - `{kind:"style",clipIds,patch}` 批量修改提供的样式字段，其余逐条保留；逐字高亮需要已有真实词时间。
 - `{kind:"translate",clipIds,language,mode,translations:[{id,text}]}` 应用已生成并核对的译文，mode 是 `bilingual` 或 `translated`，结果 ID 必须与选中字幕完全对应。原文和原始词时间可恢复；译文不伪造逐词对齐。界面翻译请求产生候选，应用才保存；用户只要预览时先展示译文，不调用此动作。
 - `{kind:"detach",clipIds}` 明确解除来源跟随而保留文字和外观，仅在用户要求独立字幕时使用。
+- `{kind:"preset",preset}` 把当前序列全部字幕套用字幕页的同一样式：`classic`（经典 · 黑底白字）、`bold`（醒目 · 黄字描边）或 `minimal`（简洁 · 白字无框）。保留每条字幕的文字、真实词时间、译文和动画；之后新增的字幕沿用这个样式。
 
 长转写遵守 256 KiB 输入和 1000 操作上限，按完整段落分批读取和应用；每次均重新读取 identity 和现有字幕。不能把工具第一页当整段转写，也不能重复提交过期计划。字幕编辑仍会按真实旁白依赖更新制作审阅状态。
 
