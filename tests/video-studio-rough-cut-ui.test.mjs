@@ -1005,10 +1005,20 @@ test(
       const audio = imported.find((item) => item.kind === "audio");
       await page.locator("[data-et-zoom]").fill("2");
       assert.equal(await page.locator("[data-et-zoom]").inputValue(), "2");
-      for (const insertion of ["first", "append", "menu", "drop"]) {
+      for (const insertion of ["first", "append", "menu", "playhead", "drop"]) {
         const document = await readSavedEditorDocument(page);
         const sequence = document.sequences.find((item) => item.id === document.activeSequenceId);
         const end = Math.max(0, ...sequence.clips.map((clip) => clip.start + clip.duration));
+        const mainTrack =
+          (sequence.timelineMode === "magnetic" &&
+            sequence.tracks.find((track) => track.id === sequence.magneticTrackId)) ||
+          sequence.tracks.find((track) => track.kind === "video" && !track.locked);
+        const mainEnd = Math.max(
+          0,
+          ...sequence.clips
+            .filter((clip) => clip.trackId === mainTrack?.id)
+            .map((clip) => clip.start + clip.duration),
+        );
         const insertionTime = Math.max(0, end - 8000);
         await page.locator("[data-ew-seek]").fill(String(insertionTime));
         let dropTrack;
@@ -1046,9 +1056,13 @@ test(
             .dragTo(page.locator(`[data-et-lane="${dropTrack}"]`), {
               targetPosition: { x: 60, y: 30 },
             });
-        } else if (insertion === "menu") {
+        } else if (insertion === "menu" || insertion === "playhead") {
           await page.locator(`[data-action="media-menu"][data-id="${asset.id}"]`).click();
-          await page.locator('#media-context-menu [data-action="add-media"]').click();
+          await page
+            .locator(
+              `#media-context-menu [data-action="${insertion === "menu" ? "add-media" : "insert-media-playhead"}"]`,
+            )
+            .click();
         } else await page.locator(`[data-add-asset="${asset.id}"]`).click();
         await saved(page);
         const canonical = await readSavedEditorDocument(page);
@@ -1070,7 +1084,12 @@ test(
             144000,
             "A real drop at 60px and 100px/second uses the visible target time",
           );
-        } else assert.equal(clip.start, insertionTime);
+        } else if (insertion === "playhead")
+          assert.equal(clip.start, insertionTime, "插入到播放头 keeps the playhead position");
+        else {
+          assert.equal(clip.start, mainEnd, "+ and 加入时间轴 continue the main picture track");
+          if (mainTrack) assert.equal(clip.trackId, mainTrack.id);
+        }
         assert.equal(await page.locator("[data-source-audio]").count(), 0);
         await expectTimelinePreview(
           page,
@@ -1411,8 +1430,17 @@ test(
       assert.equal(sequenceAfter.clips.length, sequenceBefore.clips.length + 1);
       assert.deepEqual(sequenceAfter.clips.slice(0, -1), sequenceBefore.clips);
       assert.equal(sequenceAfter.clips.at(-1).assetId, video.id);
-      assert.equal(sequenceAfter.clips.at(-1).start, before.playheadFrame * 8000);
-      assert.notEqual(sequenceAfter.clips.at(-1).trackId, sequenceBefore.clips[0].trackId);
+      const mainTrackId = sequenceBefore.clips[0].trackId;
+      assert.equal(sequenceAfter.clips.at(-1).trackId, mainTrackId);
+      assert.equal(
+        sequenceAfter.clips.at(-1).start,
+        Math.max(
+          ...sequenceBefore.clips
+            .filter((clip) => clip.trackId === mainTrackId)
+            .map((clip) => clip.start + clip.duration),
+        ),
+        "+ continues the main picture track",
+      );
       assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal(
         await page.locator("[data-source-scrub]").count(),

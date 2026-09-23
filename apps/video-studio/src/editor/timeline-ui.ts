@@ -41,6 +41,8 @@ export interface EditorTimelineContext {
   seek(time: Tick): void | Promise<void>;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
   addAsset?(assetId: string, placement: { at: Tick; trackId: string }): void | Promise<void>;
+  /** Adds a visible title at the playhead; shown as the 添加文字 tool when provided. */
+  addText?(): void | Promise<void>;
   onError(error: unknown): void;
 }
 type Drag = {
@@ -88,6 +90,17 @@ const timelineIcons: Record<string, string> = {
   title: '<path d="M4 5h16M12 5v15M8 20h8M4 5v3m16-3v3"/>',
   up: '<path d="m6 14 6-6 6 6"/>',
 };
+/** Text and caption clips read as their first line of wording; other clips keep their name. */
+function clipLabel(clip: EditorClip): string {
+  if (clip.kind !== "text") return clip.label;
+  const line = clip.text
+    .split("\n")
+    .map((item) => item.trim())
+    .find(Boolean);
+  if (!line) return "文字";
+  const characters = [...line];
+  return characters.length > 24 ? `${characters.slice(0, 24).join("")}…` : line;
+}
 const timelineIcon = (name: string, size = 16) =>
   timelineIcons[name]
     ? `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${timelineIcons[name]}</svg>`
@@ -263,6 +276,7 @@ export class EditorTimeline {
       text = false,
     ) => `<button type="button" data-et-action="${action}" class="et-tool${text ? " et-tool-labeled" : ""}" aria-label="${label}" title="${label}${shortcut ? ` · ${shortcut}` : ""}"${disabled ? " disabled" : ""}>${timelineIcon(icon)}${text ? `<span>${label}</span>` : ""}</button>`;
     this.container.innerHTML = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
+        ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S")}${button("delete", "删除", "trash", !selected.size, "⌫")}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C")}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D")}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G")}</div>
         <label class="et-snap" title="吸附 · 自动对齐片段边缘"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
@@ -283,7 +297,7 @@ export class EditorTimeline {
             ${track.kind !== "text" ? `<div class="et-track-mix"><label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100"${track.locked ? " disabled" : ""}></label></div>` : ""}
           </div>`;
         })
-        .join("")}<div class="et-add" role="group" aria-label="添加轨道">${button("track-video", "+ 画面", "film", false, undefined, true)}${button("track-audio", "+ 声音", "audio", false, undefined, true)}${button("track-text", "+ 文字", "title", false, undefined, true)}</div></div>
+        .join("")}<div class="et-add" role="group" aria-label="添加轨道">${button("track-video", "+ 画面", "film", false, undefined, true)}${button("track-audio", "+ 声音", "audio", false, undefined, true)}${button("track-text", "新建文字轨", "title", false, undefined, true)}</div></div>
       <div class="et-scroll"><div class="et-content" style="width:${width}px"><div class="et-ruler" aria-label="时间刻度" style="--et-ruler-step:${step * this.scale / 4}px">${ticks.join("")}</div><div class="et-marker-lane" aria-label="标记范围">${sequence.markers
         .filter(
           (marker) =>
@@ -311,7 +325,7 @@ export class EditorTimeline {
               )
               .map(
                 (clip) =>
-                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clip.label)} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clip.label)}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
+                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -410,6 +424,20 @@ export class EditorTimeline {
       void this.media.render(document, sequence.id, strips);
     });
   };
+  /** Scrolls a clip into view, drawing it first when it lies outside the drawn time window. */
+  reveal(clipId: string): void {
+    const clip = this.current().sequence.clips.find((item) => item.id === clipId);
+    const viewport = this.container.querySelector<HTMLElement>(".et-scroll");
+    if (!clip || !viewport) return;
+    const start = ticksToSeconds(clip.start) * this.scale;
+    if (start < viewport.scrollLeft || start > viewport.scrollLeft + viewport.clientWidth - 40) {
+      viewport.scrollLeft = Math.max(0, start - 40);
+      this.render();
+    }
+    this.container
+      .querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clipId)}"]`)
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
   updatePlayhead(): void {
     const line = this.container.querySelector<HTMLElement>(".et-playhead");
     if (line) line.style.left = `${ticksToSeconds(this.context.time()) * this.scale}px`;
@@ -510,6 +538,10 @@ export class EditorTimeline {
       );
   };
   async action(action: string): Promise<void> {
+    if (action === "add-text") {
+      await this.context.addText?.();
+      return;
+    }
     const { document, sequence, selected } = this.current(),
       ids = [...selected],
       time = this.context.time();

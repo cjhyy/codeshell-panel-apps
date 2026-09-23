@@ -334,11 +334,13 @@ test(
       const audio = (await state(page)).project.assets.find(
         (asset) => asset.name === "Library-Alpha.wav",
       );
-      await page.locator(`[data-add-asset="${audio.id}"]`).click();
+      // "+" would append after the narration, past what the old view shows; insert at 0 instead.
+      await (await menu(page, audio.id)).locator('[data-action="insert-media-playhead"]').click();
       await saved(page);
       const before = (await state(page)).project;
       const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
       assert.ok(audioClip);
+      assert.equal(audioClip.startFrame, 0, "插入到播放头 keeps the playhead position");
       const target = page.locator(`[data-et-clip="${audioClip.id}"]`);
       const context = page.locator("#timeline-context-menu");
       await page.locator(`[data-et-clip="${before.clips[0].id}"]`).focus();

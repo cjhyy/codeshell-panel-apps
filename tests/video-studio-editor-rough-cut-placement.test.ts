@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   findFreeTrack,
+  planAppendPlacement,
   planRoughCutPlacement,
+  planTextPlacement,
 } from "../apps/video-studio/src/editor/rough-cut-placement";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import {
@@ -503,4 +505,89 @@ test("a playhead inside a transition pair or group snaps to the outer edge of th
   assert.equal(clip(afterGrouped, "g2").start, 2 * T);
   assert.equal(clip(afterGrouped, "tail").start, 5 * T);
   assertNoOverlap(afterGrouped);
+});
+
+test("default add appends picture to the end of the main track and sound to the audio track end", () => {
+  const doc = document({
+    clips: [
+      media("p1", "v1", "broll", 0, 4 * T),
+      media("overlay", "v2", "broll", 0, 9 * T),
+      media("m1", "a1", "music", T, 2 * T),
+    ],
+  });
+  const sequence = doc.sequences[0]!;
+  assert.deepEqual(planAppendPlacement(sequence, "video", idFactory), {
+    trackId: "v1",
+    start: 4 * T,
+    operations: [],
+  });
+  assert.deepEqual(planAppendPlacement(sequence, "audio", idFactory), {
+    trackId: "a1",
+    start: 3 * T,
+    operations: [],
+  });
+  // The magnetic main track wins over the first picture track, and locked tracks are skipped.
+  const magnetic = document({
+    timelineMode: "magnetic",
+    magneticTrackId: "v2",
+    tracks: [
+      createTrack("v1", "video"),
+      createTrack("v2", "video"),
+      { ...createTrack("a1", "audio"), locked: true },
+      createTrack("a2", "audio"),
+    ],
+    clips: [media("p1", "v1", "broll", 0, 6 * T), media("p2", "v2", "broll", 0, 2 * T)],
+  }).sequences[0]!;
+  assert.deepEqual(planAppendPlacement(magnetic, "video", idFactory), {
+    trackId: "v2",
+    start: 2 * T,
+    operations: [],
+  });
+  assert.deepEqual(planAppendPlacement(magnetic, "audio", idFactory), {
+    trackId: "a2",
+    start: 0,
+    operations: [],
+  });
+  const lockedMain = structuredClone(magnetic);
+  lockedMain.tracks[1]!.locked = true;
+  assert.throws(() => planAppendPlacement(lockedMain, "video", idFactory), /锁定/);
+});
+
+test("default add creates a track only when no usable track of that kind exists", () => {
+  const doc = document({ tracks: [createTrack("t1", "text"), createTrack("a1", "audio")] });
+  const video = planAppendPlacement(doc.sequences[0]!, "video", idFactory);
+  assert.equal(video.start, 0);
+  assert.equal(video.operations.length, 1);
+  const after = apply(doc, video.operations);
+  assert.equal(after.tracks[0]!.id, video.trackId, "A new main picture track sits at the bottom");
+  assert.equal(after.tracks[0]!.kind, "video");
+  const sound = planAppendPlacement(
+    document({ tracks: [createTrack("v1", "video")] }).sequences[0]!,
+    "audio",
+    idFactory,
+  );
+  assert.equal(sound.operations.length, 1);
+  assert.equal(sound.start, 0);
+});
+
+test("text lands on a free text track above every picture track, else on a new top track", () => {
+  const above = document({
+    tracks: [createTrack("v1", "video"), createTrack("a1", "audio"), createTrack("t1", "text")],
+    clips: [media("p1", "v1", "broll", 0, 4 * T)],
+  }).sequences[0]!;
+  assert.deepEqual(planTextPlacement(above, T, 3 * T, idFactory), {
+    trackId: "t1",
+    operations: [],
+  });
+  const below = document({
+    tracks: [createTrack("t1", "text"), createTrack("v1", "video"), createTrack("a1", "audio")],
+  });
+  const created = planTextPlacement(below.sequences[0]!, T, 3 * T, idFactory);
+  assert.equal(created.operations.length, 1);
+  const after = apply(below, created.operations);
+  assert.equal(after.tracks.at(-1)!.id, created.trackId, "The new text track is the top layer");
+  assert.equal(after.tracks.at(-1)!.kind, "text");
+  const lockedTop = structuredClone(above);
+  lockedTop.tracks[2]!.locked = true;
+  assert.equal(planTextPlacement(lockedTop, T, 3 * T, idFactory).operations.length, 1);
 });

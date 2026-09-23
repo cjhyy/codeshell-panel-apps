@@ -425,19 +425,17 @@ test("main retains the original studio shell and material actions add canonical 
   assert.equal(first.revision, before.revision + 1);
   assert.equal(second.revision, first.revision + 1);
   assert.equal(inserted.length, 2);
-  assert.ok(
-    inserted.every((clip) => clip.kind === "media" && clip.assetId === "demo" && clip.start === 0),
+  const picture = sequenceBefore.clips.find((clip) => clip.id === "picture");
+  assert.ok(inserted.every((clip) => clip.kind === "media" && clip.assetId === "demo"));
+  assert.deepEqual(
+    inserted.map((clip) => [clip.trackId, clip.start]),
+    [
+      [picture.trackId, picture.start + picture.duration],
+      [picture.trackId, picture.start + picture.duration + inserted[0].duration],
+    ],
+    "Repeated material + continues the main picture track instead of covering it",
   );
-  assert.equal(
-    new Set(inserted.map((clip) => clip.trackId)).size,
-    2,
-    "Repeated material + creates overlapping layers in independent tracks",
-  );
-  assert.ok(
-    inserted.every(
-      (clip) => clip.trackId !== sequenceBefore.clips.find((clip) => clip.id === "picture").trackId,
-    ),
-  );
+  assert.equal(sequence.tracks.length, sequenceBefore.tracks.length, "No new track");
   for (const original of sequenceBefore.clips)
     assert.deepEqual(
       sequence.clips.find((clip) => clip.id === original.id),

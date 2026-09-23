@@ -25,7 +25,7 @@ import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
 import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration } from "./validation";
-import { findFreeTrack } from "./rough-cut-placement";
+import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./rough-cut-placement";
 import { EditorExportBatch } from "./export-batch";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";
@@ -245,6 +245,7 @@ export class EditorWorkspace {
       },
       media: options.timelineMedia,
       addAsset: (assetId, placement) => this.addAsset(assetId, placement),
+      addText: () => this.addText(),
       onError: options.onError,
     });
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
@@ -594,10 +595,7 @@ export class EditorWorkspace {
   }
   revealSelection(): void {
     const id = this.selected[0];
-    if (id)
-      this.container
-        .querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(id)}"]`)
-        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (id) this.timeline.reveal(id);
   }
 
   private track(
@@ -608,15 +606,29 @@ export class EditorWorkspace {
     const { trackId, operations } = findFreeTrack(this.sequence(), kind, start, duration, uid);
     return { id: trackId, operations };
   }
-  addAsset(assetId: string, placement: { at?: Tick; trackId?: string } = {}): void {
+  /**
+   * Adds material to the shown sequence. Without an explicit time or track (the material "+"),
+   * picture continues the main picture track and sound the first audio track; `anchor:
+   * "playhead"` inserts at the playhead on a free track instead. Drops pass their exact spot.
+   */
+  addAsset(
+    assetId: string,
+    placement: { at?: Tick; trackId?: string; anchor?: "end" | "playhead" } = {},
+  ): void {
     const asset = this.options.session.read().assets.find((a) => a.id === assetId);
     if (!asset) throw new Error("素材已移除，请刷新后重试");
-    const at = placement.at ?? this.playhead;
-    if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
     const duration = asset.kind === "image" ? secondsToTicks(5) : asset.duration;
     if (!duration) throw new Error("素材长度尚未确认，请先完成素材准备");
-    if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
     let kind: "video" | "audio" = asset.kind === "audio" ? "audio" : "video";
+    const append =
+      placement.at === undefined &&
+      placement.trackId === undefined &&
+      placement.anchor !== "playhead"
+        ? planAppendPlacement(this.sequence(), kind, uid)
+        : undefined;
+    const at = append?.start ?? placement.at ?? this.playhead;
+    if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
+    if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
     if (placement.trackId !== undefined) {
       const sequence = this.sequence();
       const track = sequence.tracks.find((track) => track.id === placement.trackId);
@@ -653,17 +665,42 @@ export class EditorWorkspace {
         label: asset.name,
       },
       kind,
-      { ...placement, at },
+      append
+        ? { at, trackId: append.trackId, operations: append.operations }
+        : { at, ...(placement.trackId === undefined ? {} : { trackId: placement.trackId }) },
     );
+  }
+  /**
+   * Adds a 3-second title at the playhead on a text track above every picture, then opens its
+   * wording in the inspector.
+   */
+  addText(): void {
+    const at = this.playhead,
+      duration = secondsToTicks(3);
+    const { trackId, operations } = planTextPlacement(this.sequence(), at, duration, uid);
+    this.addClip(
+      {
+        kind: "text",
+        role: "title",
+        text: "输入文字",
+        words: [],
+        style: defaultTextStyle(),
+        duration,
+        label: "文字",
+      },
+      "text",
+      { at, trackId, operations },
+    );
+    this.inspector.editText();
   }
   private addClip(
     value: Partial<EditorClip> & { duration: Tick; label: string },
     kind: "video" | "audio" | "text",
-    placement: { at?: Tick; trackId?: string } = {},
+    placement: { at?: Tick; trackId?: string; operations?: EditorOperation[] } = {},
   ): void {
     const at = placement.at ?? this.playhead;
     const track = placement.trackId
-      ? { id: placement.trackId, operations: [] }
+      ? { id: placement.trackId, operations: placement.operations ?? [] }
       : this.track(kind, at, value.duration);
     const clip = {
       id: uid("clip"),
@@ -872,18 +909,7 @@ export class EditorWorkspace {
       return;
     }
     if (action === "title") {
-      this.addClip(
-        {
-          kind: "text",
-          role: "title",
-          text: "输入文字",
-          words: [],
-          style: defaultTextStyle(),
-          duration: secondsToTicks(5),
-          label: "文字",
-        },
-        "text",
-      );
+      this.addText();
       return;
     }
     if (action === "rectangle" || action === "ellipse") {

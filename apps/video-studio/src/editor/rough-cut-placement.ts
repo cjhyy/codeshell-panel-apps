@@ -71,6 +71,75 @@ export function findFreeTrack(
   };
 }
 
+/** The main picture track: the magnetic track when set, else the first unlocked video track. */
+export function mainPictureTrack(sequence: EditorSequence): EditorTrack | undefined {
+  const firstFree = () => sequence.tracks.find((item) => item.kind === "video" && !item.locked);
+  return sequence.timelineMode === "magnetic"
+    ? (sequence.tracks.find((item) => item.id === sequence.magneticTrackId) ?? firstFree())
+    : firstFree();
+}
+
+/**
+ * Default "add to timeline" spot without an explicit drop position: picture continues the main
+ * picture track, sound continues the first unlocked audio track. A track is created only when no
+ * usable track of that kind exists; a new main picture track goes below every other layer.
+ */
+export function planAppendPlacement(
+  sequence: EditorSequence,
+  kind: "video" | "audio",
+  idFactory: (kind: "track") => string,
+): { trackId: string; start: Tick; operations: EditorOperation[] } {
+  const target =
+    kind === "video"
+      ? mainPictureTrack(sequence)
+      : sequence.tracks.find((item) => item.kind === "audio" && !item.locked);
+  if (target?.locked) throw new Error("主画面轨道已锁定，请先解锁后再加入");
+  if (target?.kind === kind)
+    return { trackId: target.id, start: trackEnd(sequence, target.id), operations: [] };
+  const created = createTrack(idFactory("track"), kind);
+  return {
+    trackId: created.id,
+    start: 0,
+    operations: [
+      {
+        type: "track.add",
+        sequenceId: sequence.id,
+        track: created,
+        ...(kind === "video" ? { index: 0 } : {}),
+      },
+    ],
+  };
+}
+
+/**
+ * A text track that is visible over every picture: the first unlocked text track above all video
+ * tracks that is free over [start, start + duration), else a new text track on top.
+ */
+export function planTextPlacement(
+  sequence: EditorSequence,
+  start: Tick,
+  duration: Tick,
+  idFactory: (kind: "track") => string,
+): { trackId: string; operations: EditorOperation[] } {
+  const topPicture = sequence.tracks.reduce(
+    (top, item, index) => (item.kind === "video" ? index : top),
+    -1,
+  );
+  const track = sequence.tracks.find(
+    (item, index) =>
+      index > topPicture &&
+      item.kind === "text" &&
+      !item.locked &&
+      !overlaps(sequence, item.id, start, duration),
+  );
+  if (track) return { trackId: track.id, operations: [] };
+  const created = createTrack(idFactory("track"), "text");
+  return {
+    trackId: created.id,
+    operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
+  };
+}
+
 interface Resolved {
   cut: RoughCut;
   kind: "video" | "audio";
@@ -208,11 +277,7 @@ export function planRoughCutPlacement(
   if (video.length) {
     const length = total(video);
     const target =
-      explicitTrack(sequence, options.videoTrackId, "video") ??
-      (sequence.timelineMode === "magnetic"
-        ? (sequence.tracks.find((item) => item.id === sequence.magneticTrackId) ??
-          sequence.tracks.find((item) => item.kind === "video" && !item.locked))
-        : sequence.tracks.find((item) => item.kind === "video" && !item.locked));
+      explicitTrack(sequence, options.videoTrackId, "video") ?? mainPictureTrack(sequence);
     if (target && target.kind === "video" && isMagneticTrack(sequence, target.id)) {
       if (target.locked) throw new Error("主画面轨道已锁定，请先解锁后再加入");
       if (sequenceDuration(sequence) + length > MAX_EDITOR_TICK) throw tooLong();

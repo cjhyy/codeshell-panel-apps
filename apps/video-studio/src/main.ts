@@ -265,6 +265,7 @@ const mediaMenu = createMediaLibraryMenu({
     return [
       { action: "preview-media", label: "预览素材", glyph: "play" },
       { action: "add-media", label: "加入时间轴", glyph: "plus" },
+      { action: "insert-media-playhead", label: "插入到播放头", glyph: "plus" },
       ...(["video", "audio"].includes(asset.kind)
         ? [{ action: "roughcut-media", label: "粗剪这份素材", glyph: "cut" }]
         : []),
@@ -2159,7 +2160,8 @@ function openTimelineMenu(id: string, x?: number, y?: number): void {
     ?.getBoundingClientRect();
   timelineMenu.open(id, x ?? anchor?.left ?? 8, y ?? anchor?.bottom ?? 8);
 }
-function addMediaToTimeline(id: string, startFrame?: number): void {
+/** Without a drop position material continues the main track; "playhead" inserts there instead. */
+function addMediaToTimeline(id: string, startFrame?: number | "playhead"): void {
   if (!editorWorkspace) throw new Error("工程尚未恢复，已阻止修改");
   assertEditorEditable();
   showEditorWorkspace();
@@ -2167,9 +2169,11 @@ function addMediaToTimeline(id: string, startFrame?: number): void {
     id,
     startFrame === undefined
       ? undefined
-      : {
-          at: secondsToTicks(startFrame / project.fps),
-        },
+      : startFrame === "playhead"
+        ? { anchor: "playhead" }
+        : {
+            at: secondsToTicks(startFrame / project.fps),
+          },
   );
 }
 
@@ -3326,6 +3330,9 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     case "add-media":
       if (id) addMediaToTimeline(id);
+      break;
+    case "insert-media-playhead":
+      if (id) addMediaToTimeline(id, "playhead");
       break;
     case "delete-media":
       await requestMediaDeletion(id);
