@@ -5018,6 +5018,7 @@ async function checkWatchlist() {
 
 alertsController = createAlertsController({
   hostCall,
+  getContext: () => context,
   watchlist: () => watchlist,
   notify,
   blocked: () => !watchStorageReady || watchLoading || watchSaving || watchChecking || Boolean(watchStorageError) || watchMigrationBlocked || watchMigrationConflicts.length > 0,

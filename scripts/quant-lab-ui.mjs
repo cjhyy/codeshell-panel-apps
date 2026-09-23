@@ -1539,7 +1539,7 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
-        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set"] } : {}),
+        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "automations.createUnique"] } : {}),
       };
       window.__contextChangedHandlers = new Set();
       window.__panelEventHandlers = new Map();
@@ -1757,7 +1757,7 @@ async function installHostStub(
               throw new Error("Panel App automation timezone is invalid");
             }
           };
-          if (method === "automations.create") {
+          if (method === "automations.create" || method === "automations.createUnique") {
             if (window.__rejectAutomationNames.has(params.name)) {
               return Promise.reject(new Error(`automation create rejected: ${params.name}`));
             }
@@ -1765,6 +1765,16 @@ async function installHostStub(
               validateAutomationFields(params, { requireAll: true });
             } catch (error) {
               return Promise.reject(error);
+            }
+            if (method === "automations.createUnique") {
+              if (typeof params.key !== "string" || !/^[a-zA-Z0-9._:-]{1,80}$/.test(params.key))
+                return Promise.reject(new Error("invalid unique key"));
+              const existing = window.__automations.find(task => task.key === params.key);
+              if (existing) {
+                if (["name", "schedule", "prompt", "timezone"].some(key => existing[key] !== params[key]))
+                  return Promise.reject(new Error("different definition"));
+                return Promise.resolve(existing);
+              }
             }
             const created = {
               id: `auto-${window.__automations.length + 1}`,
@@ -1774,6 +1784,10 @@ async function installHostStub(
               ...params,
             };
             window.__automations.push(created);
+            if (method === "automations.createUnique" && window.__loseUniqueResponse) {
+              window.__loseUniqueResponse = false;
+              return Promise.reject(new Error("response lost after commit"));
+            }
             return Promise.resolve(created);
           }
           if (method === "automations.update") {
@@ -5018,7 +5032,7 @@ const failingSeed = [
   assert.deepEqual(await scenarioPage.evaluate((key) => window.__storage.get(key).items.map(item => item.symbol), watchlistKey), ["AAPL", "MSFT"]);
   assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
   await scenarioPage.evaluate(() => document.querySelector("#watch-schedule").dispatchEvent(new Event("click")));
-  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some(call => /^automations\.(create|update|delete)$/.test(call.method))), false);
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some(call => /^automations\.(create|createUnique|update|delete)$/.test(call.method))), false);
   const recoveryBounds = await scenarioPage.locator("#watch-storage-recovery").evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return { left: rect.left, right: rect.right, width: innerWidth,
@@ -5056,11 +5070,22 @@ const failingSeed = [
   assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 0);
   await scenarioPage.click("#watch-storage-reload");
   await scenarioPage.waitForFunction(() => !document.querySelector("#watch-schedule").disabled);
+  await scenarioPage.evaluate(() => { window.__loseUniqueResponse = true; });
   await scenarioPage.click("#watch-schedule");
   await scenarioPage.waitForFunction(() => window.__automations.length === 1);
   const prompt = await scenarioPage.evaluate(() => window.__automations[0].prompt);
   assert.match(prompt, /MSFT/); assert.match(prompt, /META/); assert.doesNotMatch(prompt, /GOOG/);
   assert.equal(await scenarioPage.locator("#watch-storage-state").isHidden(), true);
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-automation-us-status").textContent.includes("未确认"));
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-status").textContent.includes("未确认"));
+  const creates = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")));
+  assert.equal(creates.length, 1, "lost response retry must read back the retained job");
+  assert.equal(creates[0].method, "automations.createUnique");
+  assert.equal(creates[0].params.key, "market-alert.us");
+  assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 1);
   await scenarioContext.close();
 }
 

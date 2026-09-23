@@ -139,6 +139,7 @@ export function createAlertsController({
   beforeChange = async () => {},
   onBusyChange = () => {},
   currentEpoch = () => 0,
+  getContext = () => ({}),
 }) {
   const state = {
     tasks: { cn: null, us: null },
@@ -168,6 +169,10 @@ export function createAlertsController({
     return buildDeskAutomations(currentWatchlist());
   }
 
+  function supportsUniqueCreation() {
+    return getContext().availableMethods?.includes("automations.createUnique") === true;
+  }
+
   function planFor(market) {
     return plans().find((plan) => plan.market === market) ?? null;
   }
@@ -179,6 +184,7 @@ export function createAlertsController({
       required.every(
         (plan) =>
           usablePlan(plan) &&
+          !state.errors[plan.market] &&
           state.tasks[plan.market] &&
           taskMatches(state.tasks[plan.market], plan),
       )
@@ -251,18 +257,20 @@ export function createAlertsController({
     renderMarket("us");
     const activeCount = MARKET_ORDER.filter((market) => state.tasks[market]).length;
     const requiredCount = plans().length;
+    const needsReconciliation = Object.values(state.retryIntent).some(Boolean);
     setText(
       elements.master,
-      requiredCount > 0 && activeCount === requiredCount ? "关闭分市场提醒" : "开启分市场提醒",
+      needsReconciliation
+        ? "请先逐项核对失败的市场任务"
+        : requiredCount > 0 && activeCount === requiredCount
+          ? "关闭分市场提醒"
+          : "开启分市场提醒",
     );
     elements.master.disabled =
-      state.inFlight ||
-      requiredCount === 0 ||
-      blocked() ||
-      Object.values(state.retryIntent).includes("read");
+      state.inFlight || requiredCount === 0 || blocked() || needsReconciliation;
     setText(
       elements.summary,
-      `${activeCount}/${requiredCount} 个所需市场任务已开启${state.legacy.length ? ` · ${state.legacy.length} 个旧任务仍保留` : ""}`,
+      `${activeCount}/${requiredCount} 个所需市场任务已开启${state.legacy.length ? ` · ${state.legacy.length} 个旧任务仍保留` : ""}${supportsUniqueCreation() ? "" : " · 当前环境不能保证多个页面同时开启时不重复，请只在一个页面操作"}`,
     );
     if (elements.legacy) {
       elements.legacy.hidden = state.legacy.length === 0;
@@ -330,12 +338,22 @@ export function createAlertsController({
           });
         }
       } else {
-        await hostCall("automations.create", {
-          name: plan.name,
-          schedule: plan.schedule,
-          prompt: plan.prompt,
-          timezone: plan.timezone,
-        });
+        const unique = supportsUniqueCreation();
+        try {
+          await hostCall(unique ? "automations.createUnique" : "automations.create", {
+            ...(unique ? { key: `market-alert.${market}` } : {}),
+            name: plan.name,
+            schedule: plan.schedule,
+            prompt: plan.prompt,
+            timezone: plan.timezone,
+          });
+        } catch (error) {
+          // A transport error may occur after persistence. Never downgrade to
+          // ordinary create or automatically replay an uncertain mutation.
+          throw new Error(
+            `未确认提醒是否创建，请重试读取核对。${error instanceof Error ? error.message : ""}`,
+          );
+        }
       }
       assertCurrent(operation);
       const verified = await hostCall("automations.list", {});
@@ -409,6 +427,8 @@ export function createAlertsController({
   }
 
   async function toggleAll() {
+    if (Object.values(state.retryIntent).some(Boolean))
+      return notify("请先逐项重试核对市场任务，再统一开启或关闭。", "error");
     await withFlight(async (operation) => {
       if (blocked()) return notify("请先处理关注迁移状态；现有提醒保持不变", "error");
       const required = plans();

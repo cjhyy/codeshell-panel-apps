@@ -8,6 +8,7 @@ const INTERACTIVE_METHODS = new Set([
   "agent.submitPrompt",
   "agent.task.start",
   "automations.create",
+  "automations.createUnique",
   "automations.delete",
   "automations.update",
   "notifications.send",
