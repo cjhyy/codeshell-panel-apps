@@ -421,7 +421,7 @@ the background download queue to resume.
 Hosts without the versioned temporary-process capability show an explicit
 limitation for account metadata; supported background downloads still use their
 saved account. Older Hosts retain their legacy process authorization path. Web
-login capture, real provider login, physical phones, and cloud end-to-end
+login capture, real provider login, physical phones, and cloud saved-account end-to-end
 acceptance remain required work before declaring workflow parity.
 
 LAN HTTP browsers do not expose `crypto.randomUUID()`. Queue items, duplicate-copy
@@ -440,3 +440,17 @@ Browser **Open download directory** displays the Host's authenticated directory
 listing. These actions never ask the remote machine to launch its OS player.
 Hosts without this method keep the existing Desktop player/file-manager flow.
 Browser codec support varies; unsupported files remain available to download.
+
+
+Already open pages discover other devices' submitted project download records on
+task events and periodic refresh. They query the same native task IDs without
+resubmitting, replacing local drafts, or advancing the editor's conditional-save
+revision. Subsequent conflicting edits still require explicit recovery. This
+adopts records submitted through the project download library; it does not invent
+UI records for unrelated native jobs.
+
+The real Docker/browser smoke covers an anonymous H264 download across two
+independent logins: initiating logout, 390px observation, browser playback and
+byte-identical device download, followed by project stop/start and recovery of the
+same task/resource. Generated media and a loopback site are fixtures; this is not
+real-provider or physical-phone acceptance.

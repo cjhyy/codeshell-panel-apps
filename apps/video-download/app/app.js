@@ -609,7 +609,7 @@ function renderVersionInfo() {
     elements.versionComparison.textContent = "发现新版本，可以直接一键更新。";
   } else if (comparison === 1) {
     elements.versionComparison.dataset.state = "current";
-    elements.versionComparison.textContent = "本机版本比当前稳定版更新。";
+    elements.versionComparison.textContent = "运行环境中的版本比当前稳定版更新。";
   } else {
     elements.versionComparison.dataset.state = versionRefreshError ? "error" : "checking";
     elements.versionComparison.textContent =
@@ -2640,7 +2640,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     return "资源不存在（404），请检查链接，或确认视频是否已删除。";
   }
   if (lower.includes("sabr") && lower.includes("missing a url")) {
-    return "YouTube 返回了缺少下载地址的格式（SABR）。请先更新本机 yt-dlp；部分情况仍需要登录 Cookie。";
+    return "YouTube 返回了缺少下载地址的格式（SABR）。请先更新项目运行环境中的 yt-dlp；部分情况仍需要登录 Cookie。";
   }
   if (
     lower.includes("lockingunsupportederror") ||
@@ -5921,6 +5921,32 @@ async function initializeRuntime() {
         panel,
         items: () => downloadQueue,
         save: saveLibrary,
+        async discover() {
+          if (!libraryReady || queueSubmissionPending) return;
+          const methods = context.availableMethods || [];
+          let raw;
+          if (methods.includes("storage.getSnapshot"))
+            raw = (await panel.call("storage.getSnapshot", { key: libraryKey }))?.value;
+          else if (methods.includes("storage.get"))
+            raw = await panel.call("storage.get", { key: libraryKey });
+          else return;
+          if (context.cwd && context.cwd !== libraryScope) return;
+          const remote = restoreLibrary(raw, libraryScope);
+          if (!remote) return;
+          for (const record of remote.queue) {
+            if (!record.nativeTaskId && !record.nativeRequestKey) continue;
+            if (
+              downloadQueue.some(
+                (item) => item.queueId === record.queueId ||
+                  (record.nativeTaskId && item.nativeTaskId === record.nativeTaskId) ||
+                  (record.nativeRequestKey && item.nativeRequestKey === record.nativeRequestKey),
+              )
+            ) continue;
+            // Read-only adoption: do not advance the editor's CAS revision or save
+            // an old draft over peer changes. The coordinator supplies live state.
+            downloadQueue.push(record);
+          }
+        },
         queueChanged(value) {
           queuePaused = value.paused;
           maxConcurrent = value.maxConcurrent;

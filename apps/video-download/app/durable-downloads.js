@@ -13,6 +13,7 @@ export function createDurableDownloads({
   panel,
   items,
   save,
+  discover,
   changed,
   queueChanged,
   failed,
@@ -171,6 +172,8 @@ export function createDurableDownloads({
       queue = await call("tasks.queue.get", {});
       if (closed) return;
       queueChanged(queue);
+      await discover?.();
+      if (closed) return;
       const own = items().filter((item) => item.nativeRequestKey || item.nativeTaskId);
       if (!own.length) return;
       const summaries = new Map();
@@ -208,7 +211,11 @@ export function createDurableDownloads({
   }
   function observe(job) {
     const item = items().find((candidate) => candidate.nativeTaskId === job?.id);
-    if (!item || closed) return;
+    if (closed) return;
+    if (!item) {
+      if (discover && job?.entry?.name === "download-runtime") void refresh().catch(failed);
+      return;
+    }
     if (terminal.has(job.status)) {
       void forItem(item, async () => apply(item, await locate(item))).catch(failed);
     } else apply(item, job);

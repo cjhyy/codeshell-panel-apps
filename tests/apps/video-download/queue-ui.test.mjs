@@ -151,7 +151,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
           ...(ai.versionedStorage
             ? {
                 cwd: "/fixture/project",
-                availableMethods: ["storage.getSnapshot", "storage.compareAndSet"],
+                availableMethods: ["storage.getSnapshot", "storage.compareAndSet", ...(ai.durable ? ["tasks.find"] : [])],
               }
             : {}),
         }),
@@ -2300,4 +2300,60 @@ test("LAN browsers without randomUUID can submit distinct durable downloads", as
       /^download:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
     );
   assert.equal(await page.locator("#form-error").innerText(), "");
+});
+
+test("an already open device discovers another device's admitted download without saving a stale draft", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, versionedStorage: true });
+  await page.evaluate(() => {
+    const queueId = crypto.randomUUID(),
+      id = crypto.randomUUID();
+    const requestKey = `download:${queueId}`;
+    const record = {
+      queueId,
+      nativeRequestKey: requestKey,
+      nativeTaskId: id,
+      url: "https://example.com/remote.mp4",
+      title: "另一设备的下载",
+      directory: { path: "/fixture/project", kind: "project", bookmark: crypto.randomUUID() },
+      status: "running",
+      configuration: { format: "best" },
+    };
+    window.__hostStorage["video-download.library.v2"] = {
+      version: 2,
+      scope: "/fixture/project",
+      queue: [record],
+      history: [],
+      queuePaused: false,
+      maxConcurrent: 2,
+    };
+    window.__hostStorageRevision++;
+    window.__nativeJobs[id] = {
+      id,
+      requestKey,
+      entry: { name: "download-runtime" },
+      sequence: 2,
+      status: "succeeded",
+      input: { request: { url: record.url } },
+      result: {
+        artifacts: [
+          { assetId: `asset-${"a".repeat(64)}`, bytes: 123, published: { path: "remote.mp4" } },
+        ],
+      },
+    };
+    window.__calls = [];
+    const { input, result, ...summary } = window.__nativeJobs[id];
+    window.__emit("tasks.changed", summary);
+  });
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 1,
+  );
+  assert.match(await page.locator("#queue-list").innerText(), /另一设备的下载/);
+  assert.equal(
+    await page.evaluate(() =>
+      window.__calls.some((call) => ["tasks.start", "storage.compareAndSet"].includes(call.method)),
+    ),
+    false,
+  );
+  await page.locator('[data-tab="history"]').click();
+  assert.match(await page.locator("#history-list").innerText(), /另一设备的下载/);
 });
