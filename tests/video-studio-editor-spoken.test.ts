@@ -205,9 +205,9 @@ test("real media outside the old frame view is found and cut; later clips move b
   const candidate = fillerCandidate(doc);
   assert.equal(candidate.actionable, true);
   assert.equal(candidate.precision, "word");
-  assert.deepEqual(candidate.occurrence.source, FILLER);
-  assert.deepEqual(candidate.occurrence.timeline, [FILLER]);
-  assert.equal(candidate.occurrence.ownerClipId, "talk-a");
+  assert.deepEqual(candidate.occurrences[0]!.source, FILLER);
+  assert.deepEqual(candidate.occurrences[0]!.timeline, [FILLER]);
+  assert.equal(candidate.occurrences[0]!.ownerClipId, "talk-a");
   const plan = cut(doc);
   assert.equal(plan.removed, 72000);
   assert.equal(plan.sequenceId, "main");
@@ -312,7 +312,7 @@ test("speed and reverse clips map source moments to their actual timeline ticks"
     ],
   });
   const fastCandidate = fillerCandidate(fast);
-  assert.deepEqual(fastCandidate.occurrence.timeline, [
+  assert.deepEqual(fastCandidate.occurrences[0]!.timeline, [
     { start: FILLER.start / 2, end: FILLER.end / 2 },
   ]);
   const fastPlan = cut(fast, {}, [fastCandidate]);
@@ -334,7 +334,7 @@ test("speed and reverse clips map source moments to their actual timeline ticks"
   });
   const reverseCandidate = fillerCandidate(reverse);
   const expected = { start: 10 * T - FILLER.end + 1, end: 10 * T - FILLER.start + 1 };
-  assert.deepEqual(reverseCandidate.occurrence.timeline, [expected]);
+  assert.deepEqual(reverseCandidate.occurrences[0]!.timeline, [expected]);
   const reversePlan = cut(reverse, {}, [reverseCandidate]);
   assert.equal(reversePlan.removed, 72000);
   const reverseAfter = applyEditorOperations(reverse, reversePlan.operations, reverse.revision);
@@ -416,7 +416,7 @@ test("transitions, locked tracks, tiny leftovers and stale identities fail befor
   );
   const forged = {
     ...candidate,
-    occurrence: { ...candidate.occurrence, timeline: [{ start: 2 * T, end: 3 * T }] },
+    occurrences: [{ ...candidate.occurrences[0]!, timeline: [{ start: 2 * T, end: 3 * T }] }],
   };
   assert.throws(
     () => planEditorSpokenEdit(doc, identityOf(doc), [forged], [forged.id], { idFactory: ids() }),
@@ -503,14 +503,14 @@ test("pause candidates keep breathing room inside the clip but not at its outer 
     },
   ]);
   assert.deepEqual(
-    candidates.map((candidate) => [candidate.occurrence.source, candidate.actionable]),
+    candidates.map((candidate) => [candidate.occurrences[0]!.source, candidate.actionable]),
     [
       [{ start: T, end: 3 * T - 40000 }, true],
       [{ start: 5 * T + 40000, end: 7 * T - 40000 }, true],
       [{ start: 9.5 * T + 40000, end: 10 * T }, true],
     ],
   );
-  assert.deepEqual(candidates[0]!.occurrence.timeline, [{ start: 2 * T, end: 4 * T - 40000 }]);
+  assert.deepEqual(candidates[0]!.occurrences[0]!.timeline, [{ start: 2 * T, end: 4 * T - 40000 }]);
   // A word the clip plays only partly is never suggested.
   const partial = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
     {
@@ -582,7 +582,7 @@ test("an independent narration cuts every picture clip at its moments, latest fi
     },
   ]);
   assert.deepEqual(
-    candidates.map((candidate) => candidate.occurrence.timeline),
+    candidates.map((candidate) => candidate.occurrences[0]!.timeline),
     [[{ start: T + 40000, end: 3 * T - 40000 }], [{ start: 4 * T + 40000, end: 6 * T - 40000 }]],
   );
   const plan = cut(doc, {}, candidates),
@@ -601,4 +601,212 @@ test("an independent narration cuts every picture clip at its moments, latest fi
     [0, 3 * T - 40000, 10 * T + T - 40000],
   );
   assert.equal(sequenceDuration(after.sequences[0]!), TALK - removed);
+});
+
+function captioned(count: number, talk: number): EditorDocument {
+  const video = media("talk-v", "v1", "talk", 0, straight(0, talk));
+  const captions: TextClip[] = Array.from({ length: count }, (_, index) => ({
+    ...subtitle(),
+    id: `cap-${index}`,
+    start: index * 2 * T,
+    duration: 2 * T,
+    text: `第${index}句`,
+    words: [],
+    sourceBinding: { clipId: "talk-v", sourceStart: index * 2 * T, sourceEnd: (index + 1) * 2 * T },
+  }));
+  const doc = document({
+    tracks: [createTrack("v1", "video"), createTrack("t1", "text", "字幕")],
+  });
+  doc.assets[0]!.duration = talk;
+  doc.sequences[0]!.clips.push(video, ...captions);
+  return validateEditorDocument(doc);
+}
+
+test("hundreds of bound captions and dozens of cuts stay one compact transaction", () => {
+  const doc = captioned(300, 600 * T);
+  const silence = Array.from({ length: 30 }, (_, index) => ({
+    start: 10 + index * 19,
+    end: 11.5 + index * 19,
+  }));
+  const began = performance.now();
+  const candidates = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
+    { assetId: "talk", silence },
+  ]);
+  assert.equal(candidates.length, 30);
+  const plan = cut(doc, {}, candidates);
+  const elapsed = performance.now() - began;
+  assert.ok(plan.operations.length <= 400, `${plan.operations.length} operations`);
+  assert.ok(elapsed < 5000, `${Math.round(elapsed)} ms`);
+  const removed = 30 * (1.5 * T - 80000);
+  assert.equal(plan.removed, removed);
+  const after = applyEditorOperations(doc, plan.operations, doc.revision);
+  assert.equal(sequenceDuration(after.sequences[0]!), 600 * T - removed);
+  assert.equal(onTrack(after, "v1").length, 31);
+  const captions = onTrack(after, "t1") as TextClip[];
+  assert.ok(
+    captions.every((caption) =>
+      clips(after).some((clip) => clip.id === caption.sourceBinding!.clipId),
+    ),
+  );
+  const last = captions.at(-1)!;
+  assert.deepEqual(span(last), [598 * T - removed, 600 * T - removed]);
+});
+
+test("the operation limit refuses before editing", () => {
+  const doc = multitrack();
+  assert.throws(
+    () => planSpokenCuts(doc, "main", [FILLER], { idFactory: ids(), maxOperations: 3 }),
+    /这次删减片段过多，请分批应用/,
+  );
+});
+
+test("overlapping candidates are counted once and edge pauses trim cleanly", () => {
+  const doc = document({
+    clips: [media("talk-a", "v1", "talk", 0, straight(T, 9 * T))],
+  });
+  const overlapping = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
+    {
+      assetId: "talk",
+      silence: [
+        { start: 3, end: 5 },
+        { start: 4, end: 6 },
+      ],
+    },
+  ]);
+  assert.equal(overlapping.length, 2);
+  assert.equal(cut(doc, {}, overlapping).removed, 3 * T - 80000);
+  const edges = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
+    {
+      assetId: "talk",
+      silence: [
+        { start: 0, end: 3 },
+        { start: 9, end: 12 },
+      ],
+    },
+  ]);
+  assert.ok(edges.every((candidate) => candidate.actionable));
+  const after = applyEditorOperations(doc, cut(doc, {}, edges).operations, doc.revision);
+  assert.deepEqual(onTrack(after, "v1").map(span), [[0, 6 * T + 80000]]);
+  assert.equal(firstSource(onTrack(after, "v1")[0]), 3 * T - 40000);
+});
+
+test("a filler-only segment is actionable and a near-identical sentence is no repetition", () => {
+  const detections = detectSpokenRanges({
+    assetId: "talk",
+    transcript: [
+      { start: 2, end: 3, text: "这是完整的一句话。" },
+      { start: 3.5, end: 4.5, text: "这是完整的下一句话。" },
+      { start: 7, end: 8, text: "嗯" },
+    ],
+  });
+  assert.deepEqual(
+    detections.map((item) => [item.kind, item.precision, item.actionable]),
+    [["filler", "segment", true]],
+  );
+});
+
+test("a clip wholly inside the moment is removed with its bound caption", () => {
+  const doc = multitrack();
+  const main = doc.sequences[0]!;
+  main.clips.push(media("flash", "v2", "broll", 8 * T, straight(0, T / 2)), {
+    ...subtitle(),
+    id: "flash-caption",
+    start: 8 * T,
+    duration: T / 2,
+    text: "闪",
+    words: [],
+    sourceBinding: { clipId: "flash", sourceStart: 0, sourceEnd: T / 2 },
+  });
+  const valid = validateEditorDocument(doc);
+  const plan = planSpokenCuts(valid, "main", [{ start: 7.9 * T, end: 8.6 * T }], {
+    idFactory: ids(),
+  });
+  const after = applyEditorOperations(valid, plan.operations, valid.revision);
+  assert.equal(
+    clips(after).some((clip) => clip.id === "flash" || clip.id === "flash-caption"),
+    false,
+  );
+  assert.equal(plan.removed, 0.7 * T);
+});
+
+test("links and groups crossing a moment untouched are refused; a group cut together is regrouped", () => {
+  const linked = multitrack();
+  const main = linked.sequences[0]!;
+  main.clips.push(
+    media("early", "v2", "broll", T / 2, straight(0, T)),
+    media("late", "v2", "broll", 8 * T, straight(0, T)),
+  );
+  main.clips.find((clip) => clip.id === "early")!.linkGroupId = "across";
+  main.clips.find((clip) => clip.id === "late")!.linkGroupId = "across";
+  main.clips = main.clips.filter((clip) => clip.id !== "broll");
+  assert.throws(() => cut(validateEditorDocument(linked)), /关联片段跨越删减位置/);
+  for (const clip of main.clips)
+    if (clip.linkGroupId === "across") {
+      delete clip.linkGroupId;
+      clip.groupId = "across";
+    }
+  assert.throws(() => cut(validateEditorDocument(linked)), /成组片段跨越删减位置/);
+
+  const grouped = multitrack();
+  for (const clip of grouped.sequences[0]!.clips)
+    if (clip.id === "broll" || clip.id === "music") clip.groupId = "bed";
+  const doc = validateEditorDocument(grouped),
+    after = applyEditorOperations(doc, cut(doc).operations, doc.revision);
+  const [brollLeft, brollRight] = onTrack(after, "v2"),
+    [musicLeft, musicRight] = onTrack(after, "a3");
+  assert.equal(brollLeft!.groupId, "bed");
+  assert.equal(musicLeft!.groupId, "bed");
+  assert.ok(brollRight!.groupId && brollRight!.groupId !== "bed");
+  assert.equal(brollRight!.groupId, musicRight!.groupId);
+});
+
+test("a reverse clip's pause at its played edge reaches the clip edge without a sliver", () => {
+  const doc = document({
+    clips: [
+      media("reverse", "v1", "talk", 0, [
+        { time: 0, source: 10 * T },
+        { time: 10 * T, source: 0 },
+      ]),
+    ],
+  });
+  const [pause] = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
+    { assetId: "talk", silence: [{ start: 8.5, end: 12 }] },
+  ]);
+  assert.equal(pause!.actionable, true);
+  assert.equal(pause!.occurrences[0]!.timeline[0]!.start, 0);
+  const after = applyEditorOperations(doc, cut(doc, {}, [pause!]).operations, doc.revision);
+  assert.equal(onTrack(after, "v1")[0]!.start, 0);
+  // Reverse spans exclude their upper source tick, so the kept piece starts one tick lower.
+  assert.equal(
+    firstSource(onTrack(after, "v1")[0]),
+    10 * T - pause!.occurrences[0]!.timeline[0]!.end,
+  );
+  assert.equal(firstSource(onTrack(after, "v1")[0]), 8.5 * T + 40000 - 1);
+});
+
+test("a pause across an edit point of the same recording is one candidate", () => {
+  const doc = document({
+    clips: [
+      media("first", "v1", "talk", 0, straight(0, 5 * T)),
+      media("second", "v1", "talk", 5 * T, straight(5 * T, 5 * T)),
+    ],
+  });
+  const candidates = findEditorSpokenCandidates(doc, "main", identityOf(doc), [
+    { assetId: "talk", silence: [{ start: 4.5, end: 6 }] },
+  ]);
+  assert.equal(candidates.length, 1);
+  assert.deepEqual(
+    candidates[0]!.occurrences.map((item) => [item.ownerClipId, item.timeline]),
+    [
+      ["first", [{ start: 4.5 * T + 40000, end: 5 * T }]],
+      ["second", [{ start: 5 * T, end: 6 * T - 40000 }]],
+    ],
+  );
+  const plan = cut(doc, {}, candidates);
+  assert.equal(plan.removed, 1.5 * T - 80000);
+  const after = applyEditorOperations(doc, plan.operations, doc.revision);
+  assert.deepEqual(onTrack(after, "v1").map(span), [
+    [0, 4.5 * T + 40000],
+    [4.5 * T + 40000, 10 * T - plan.removed],
+  ]);
 });

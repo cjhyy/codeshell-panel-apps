@@ -23,7 +23,7 @@ before(async () => {
  window.makeDocument=(extra={})=>validateEditorDocument({schemaVersion:2,timebase:T,id:'spoken-ui',name:'实际交互测试',revision:0,activeSequenceId:'main',exportProfiles:[],
   assets:[{id:'talk',name:'我的口播',kind:'video',duration:20*T+1234,width:1280,height:720},{id:'music',name:'背景音乐',kind:'audio',duration:30*T}],
   sequences:[{id:'main',name:'主序列',width:1280,height:720,frameRate:{numerator:30,denominator:1},background:'#000000',timelineMode:'free',
-   tracks:[createTrack('v1','video','口播'),createTrack('a3','audio','音乐')],
+   tracks:[createTrack('v1','video','口播'),{...createTrack('a3','audio','音乐'),locked:!!extra.lockedMusic}],
    clips:[media('a','v1','talk',0,T,10*T),...(extra.music?[media('bed','a3','music',0,0,10*T)]:[])],transitions:[],markers:[]}],
   ...(extra.production?{production:extra.production}:{})});
  window.editorHistory=new EditorHistory(window.makeDocument());window.generation=1;window.plans=[];window.previewed=[];window.enhanced=[];window.polished=[];window.errors=[];window.toasts=[];window.readResolvers=[];window.failRead=false;window.failApply=false;window.delayRead=false;window.prepareCount=0;
@@ -249,5 +249,28 @@ test("every track's voice is listed, approved narration is flagged, and 仅口�
   await p.waitForFunction(() => window.plans.length === 2);
   assert.equal((await p.evaluate(() => window.spans("a3"))).length, 2);
   assert.deepEqual(await p.evaluate(() => window.errors), []);
+  await p.close();
+});
+test("the selection summary never plans; the full check runs on apply and keeps its reason visible", async () => {
+  const p = await page();
+  await p.evaluate(() => {
+    window.editorHistory = new window.editorHistory.constructor(
+      window.makeDocument({ music: true, lockedMusic: true }),
+    );
+    window.render();
+  });
+  await click(p, "读取已有结果");
+  await p.locator(".spoken-candidate").first().waitFor();
+  await click(p, "勾选长停顿");
+  // The locked music bed would refuse the whole-timeline cut; the summary still shows the length.
+  assert.match(await p.locator("#spoken-selection").textContent(), /1 项.*1.67 秒/);
+  await p.getByLabel("仅口播及关联轨").check();
+  assert.match(await p.locator(".spoken-apply").textContent(), /同一时刻的其他片段也会一起剪去/);
+  await p.getByLabel("仅口播及关联轨").uncheck();
+  await click(p, "应用所选删减");
+  await p.getByRole("alert").waitFor();
+  assert.match(await p.getByRole("alert").textContent(), /音乐.*已锁定/);
+  assert.equal(await p.evaluate(() => window.plans.length), 0);
+  assert.equal(await p.locator("[data-spoken-candidate]:checked").count(), 1);
   await p.close();
 });

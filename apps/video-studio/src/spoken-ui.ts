@@ -150,27 +150,30 @@ export function createSpokenUI(context: SpokenContext) {
       })),
     });
   }
-  let planned: { key: string; result: EditorSpokenPlan | Error } | undefined;
-  /** Rendering asks for the same plan repeatedly; plan once per document, selection and scope. */
+  /** The full plan validates and cuts every clip; it is built only when applying. */
   function plan() {
     const doc = context.document(),
       identity = context.identity();
     if (!doc || !identity) throw new Error("工程尚未准备好");
-    const key = JSON.stringify([identity, generation, [...selected].sort(), linked]);
-    if (planned?.key !== key) {
-      let result: EditorSpokenPlan | Error;
-      try {
-        result = planEditorSpokenEdit(doc, identity, candidates, [...selected], {
-          scope: linked ? "linked" : "program",
-          idFactory,
-        });
-      } catch (cause) {
-        result = cause instanceof Error ? cause : new Error(String(cause));
-      }
-      planned = { key, result };
+    return planEditorSpokenEdit(doc, identity, candidates, [...selected], {
+      scope: linked ? "linked" : "program",
+      idFactory,
+    });
+  }
+  /** Removed length of the selection: the union of its timeline moments, without planning. */
+  function selectedLength() {
+    const ranges = candidates
+      .filter((candidate) => selected.has(candidate.id))
+      .flatMap((candidate) => candidate.occurrences.flatMap((part) => part.timeline))
+      .sort((a, b) => a.start - b.start);
+    let total = 0,
+      cursor = -1;
+    for (const range of ranges) {
+      const start = Math.max(range.start, cursor);
+      if (range.end > start) total += range.end - start;
+      cursor = Math.max(cursor, range.end);
     }
-    if (planned.result instanceof Error) throw planned.result;
-    return planned.result;
+    return total;
   }
   async function analyze(prepare: boolean) {
     if (pending) throw new Error("请等待当前口播操作完成");
@@ -245,11 +248,7 @@ export function createSpokenUI(context: SpokenContext) {
   }
   function selectionText() {
     if (!selected.size) return "勾选后才会删减；原素材始终保留。";
-    try {
-      return `已选 ${selected.size} 项，预计删去 ${seconds(plan().removed)} 秒`;
-    } catch (cause) {
-      return cause instanceof Error ? cause.message : String(cause);
-    }
+    return `已选 ${selected.size} 项，预计删去 ${seconds(selectedLength())} 秒`;
   }
   function updateSelection() {
     const status = document.querySelector("#spoken-selection");
@@ -366,13 +365,16 @@ export function createSpokenUI(context: SpokenContext) {
           (item) => item.id === name.slice("spoken-preview:".length),
         );
         if (!candidate) throw new Error("候选不存在");
-        const clip = sequence()?.clips.find((item) => item.id === candidate.occurrence.ownerClipId);
-        if (!clip) throw new Error("片段已变化，请重新读取分析");
-        const first = candidate.occurrence.timeline[0]!.start,
-          last = candidate.occurrence.timeline.at(-1)!.end;
+        const parts = candidate.occurrences,
+          clips = sequence()?.clips ?? [];
+        const head = clips.find((item) => item.id === parts[0]!.ownerClipId),
+          tail = clips.find((item) => item.id === parts.at(-1)!.ownerClipId);
+        if (!head || !tail) throw new Error("片段已变化，请重新读取分析");
+        const first = parts[0]!.timeline[0]!.start,
+          last = parts.at(-1)!.timeline.at(-1)!.end;
         await context.preview({
-          start: first - Math.max(0, Math.min(PREVIEW_CONTEXT, first - clip.start)),
-          end: last + Math.max(0, Math.min(PREVIEW_CONTEXT, clip.start + clip.duration - last)),
+          start: first - Math.max(0, Math.min(PREVIEW_CONTEXT, first - head.start)),
+          end: last + Math.max(0, Math.min(PREVIEW_CONTEXT, tail.start + tail.duration - last)),
         });
         return true;
       }
@@ -520,12 +522,12 @@ export function createSpokenUI(context: SpokenContext) {
         .slice(0, visible)
         .map(
           (candidate) =>
-            `<article class="spoken-candidate"><label><input type="checkbox" data-spoken-candidate="${candidate.id}" ${selected.has(candidate.id) ? "checked" : ""} ${!valid || locked || !candidate.actionable ? "disabled" : ""}/><span><strong>${labels[candidate.kind]}</strong><small>${time(candidate.occurrence.timeline[0]!.start)} · ${seconds(length(candidate.occurrence.timeline))} 秒 · ${precisionLabels[candidate.precision]}</small></span></label><p>${esc(candidate.text)}</p><p class="small muted">${esc(candidate.reason)}</p><div class="spoken-actions">${button(`spoken-preview:${candidate.id}`, "试听定位", "play", "quiet", locked || !valid)}${button(`spoken-skip:${candidate.id}`, "跳过", undefined, "quiet", locked || !valid)}</div></article>`,
+            `<article class="spoken-candidate"><label><input type="checkbox" data-spoken-candidate="${candidate.id}" ${selected.has(candidate.id) ? "checked" : ""} ${!valid || locked || !candidate.actionable ? "disabled" : ""}/><span><strong>${labels[candidate.kind]}</strong><small>${time(candidate.occurrences[0]!.timeline[0]!.start)} · ${seconds(length(candidate.occurrences.flatMap((part) => part.timeline)))} 秒 · ${precisionLabels[candidate.precision]}</small></span></label><p>${esc(candidate.text)}</p><p class="small muted">${esc(candidate.reason)}</p><div class="spoken-actions">${button(`spoken-preview:${candidate.id}`, "试听定位", "play", "quiet", locked || !valid)}${button(`spoken-skip:${candidate.id}`, "跳过", undefined, "quiet", locked || !valid)}</div></article>`,
         )
         .join(
           "",
         )}</div>${items.length > visible ? button("spoken-more", `继续显示（还有 ${items.length - visible} 项）`, undefined, "quiet full") : ""}
-      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播和与它关联的声音；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size)}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
+      <div class="spoken-apply"><p id="spoken-selection" class="small">${esc(selectionText())}</p><label class="spoken-check"><input id="spoken-linked" type="checkbox" ${linked ? "checked" : ""} ${locked ? "disabled" : ""}/>仅口播及关联轨</label><p class="small muted">${linked ? "只剪口播及与它关联的轨道：这些轨道上同一时刻的其他片段也会一起剪去；空镜、音乐等其他轨道保持原位。" : "整条时间线同步删去这些时刻：画面、声音、音乐和字幕一起前移，其他空隙保持不变。"}</p>${approvalPending() ? '<p class="small conflict">应用后，已确认的口播会回到待审阅，需要重新审阅后再使用。</p>' : ""}${button("spoken-apply", "应用所选删减", "cut", "primary full", locked || !valid || !selected.size)}<p class="small muted">长停顿两端保留换气。建议先逐项试听。</p></div>`
         : ""}
       ${button("spoken-undo", "撤销上次编辑", "undo", "quiet full", locked || !context.canUndo())}
       ${transcript.length
