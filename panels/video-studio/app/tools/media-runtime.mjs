@@ -2313,13 +2313,13 @@ function resolveMediaConnections(raw, options = {}) {
 
 // native/media/media-runtime.ts
 import { createReadStream as createReadStream6 } from "node:fs";
-import { access as access4, copyFile as copyFile4, lstat as lstat2, mkdir as mkdir12, realpath as realpath4, rm as rm12, stat as stat9 } from "node:fs/promises";
+import { access as access4, copyFile as copyFile5, lstat as lstat2, mkdir as mkdir12, realpath as realpath4, rm as rm12, stat as stat9 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
 import { basename as basename3, extname, join as join13, relative as relative2, resolve as resolve6, sep as sep2 } from "node:path";
 
 // native/media/media-processors.ts
 import { createHash as createHash4, randomUUID as randomUUID4 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile4, realpath as realpath2, rename as rename4, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
+import { copyFile, link as link2, mkdir as mkdir4, readFile as readFile4, realpath as realpath2, rename as rename4, stat as stat4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
 import { basename, isAbsolute as isAbsolute4, join as join5, resolve as resolve3 } from "node:path";
 
@@ -2660,6 +2660,26 @@ function createMediaJobProcessors(options) {
       if (!await cachedArtifactsExist(child, context)) return false;
     return true;
   };
+  const materializeCached = async (value, context) => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const items = [];
+      for (const item of value) items.push(await materializeCached(item, context));
+      return items;
+    }
+    const record = value;
+    if (typeof record.path === "string" && typeof record.mimeType === "string") {
+      const cached = await regularFile(record.path), directory = join5(context.workDir, "cached");
+      await mkdir4(directory, { recursive: true });
+      const target = join5(directory, `${randomUUID4()}-${basename(cached)}`);
+      await link2(cached, target).catch(() => copyFile(cached, target));
+      return { ...record, path: target };
+    }
+    const output = {};
+    for (const [key, child] of Object.entries(record))
+      output[key] = await materializeCached(child, context);
+    return output;
+  };
   const withJob = (kind, work) => ({
     recovery: "restart",
     async run(input, context) {
@@ -2734,8 +2754,10 @@ function createMediaJobProcessors(options) {
         const cached = JSON.parse(await readFile4(cachePath, "utf8"));
         if (cached.version === 1 && await cachedArtifactsExist(cached.result, context)) {
           check(context);
+          const result2 = await materializeCached(cached.result, context);
+          check(context);
           await context.reportProgress({ fraction: 1, stage: "cached" });
-          return cached.result;
+          return result2;
         }
       } catch {
       }
@@ -3722,7 +3744,7 @@ function createAudioExtractProcessor(options) {
 import { createHash as createHash6, randomUUID as randomUUID8 } from "node:crypto";
 import { createReadStream as createReadStream4 } from "node:fs";
 import {
-  copyFile as copyFile2,
+  copyFile as copyFile3,
   mkdir as mkdir8,
   open as open3,
   readFile as readFile6,
@@ -3863,7 +3885,7 @@ async function releaseManagedTtsSetupResources(lock, lockPath, sample, primaryFa
 // native/media/media-tts.ts
 import { createHash as createHash5, randomUUID as randomUUID7 } from "node:crypto";
 import { createReadStream as createReadStream3 } from "node:fs";
-import { copyFile, mkdir as mkdir7, readFile as readFile5, rename as rename7, rm as rm7, stat as stat5, writeFile as writeFile5 } from "node:fs/promises";
+import { copyFile as copyFile2, mkdir as mkdir7, readFile as readFile5, rename as rename7, rm as rm7, stat as stat5, writeFile as writeFile5 } from "node:fs/promises";
 import { release } from "node:os";
 import { join as join8 } from "node:path";
 var CACHE_VERSION = 1;
@@ -4020,7 +4042,7 @@ async function generateLocalTts(raw, context, options = {}) {
       if (signal.aborted) throw error;
     }
     if (cachedMetadata) {
-      await copyFile(cacheWav, partial);
+      await copyFile2(cacheWav, partial);
       if (signal.aborted) throw mediaAbortError();
       await rename7(partial, output);
       await context.reportProgress({
@@ -4085,7 +4107,7 @@ async function generateLocalTts(raw, context, options = {}) {
     );
     const metadata = await inspectWav(partial, signal, options);
     const sha256 = await digestFile(partial, signal);
-    await copyFile(partial, cacheTemp);
+    await copyFile2(partial, cacheTemp);
     await writeFile5(
       metadataTemp,
       JSON.stringify({ version: CACHE_VERSION, cacheKey, sha256, ...metadata }),
@@ -4537,7 +4559,7 @@ function createManagedTtsProviders(options) {
           stage: "resources",
           message: `正在复用已校验的 ${resource.name}`
         });
-        await copyFile2(reuse, target);
+        await copyFile3(reuse, target);
       } else await downloadResource(resource, target, context, signal);
     }
   }
@@ -4724,7 +4746,7 @@ function createManagedTtsProviders(options) {
       const metadata = await inspect(cacheWav, signal);
       await mkdir8(context.outputDir, { recursive: true });
       const output = join9(context.outputDir, `speech-${randomUUID8()}.wav`);
-      await copyFile2(cacheWav, output);
+      await copyFile3(cacheWav, output);
       if (signal.aborted) {
         await rm8(output, { force: true });
         throw mediaAbortError();
@@ -4752,7 +4774,7 @@ function createManagedTtsProviders(options) {
       const result = await render(id2, input, voice, context, signal);
       const temporary = `${cacheWav}-${randomUUID8()}.partial`;
       try {
-        await copyFile2(result.path, temporary);
+        await copyFile3(result.path, temporary);
         await rename8(temporary, cacheWav);
         await atomicJson(cacheMeta, { cacheKey, sha256: await digest3(cacheWav, signal) });
       } finally {
@@ -5036,7 +5058,7 @@ import { createHash as createHash7, randomUUID as randomUUID10 } from "node:cryp
 import { createReadStream as createReadStream5, constants as constants2 } from "node:fs";
 import {
   access as access2,
-  copyFile as copyFile3,
+  copyFile as copyFile4,
   lstat,
   mkdir as mkdir10,
   readFile as readFile7,
@@ -5521,7 +5543,7 @@ function createHyperframesAdapter(options) {
       for (const file of files) {
         abort(ctx.signal);
         await mkdir10(dirname(join11(temporary, file.path)), { recursive: true });
-        await copyFile3(join11(original.projectDir, file.path), join11(temporary, file.path));
+        await copyFile4(join11(original.projectDir, file.path), join11(temporary, file.path));
         if (await digestFile2(join11(temporary, file.path)) !== file.hash)
           throw new Error("HyperFrames source changed during import; retry the snapshot");
       }
@@ -6333,7 +6355,7 @@ async function runMediaRequest(raw, options) {
       if (assets.has(id2)) return assets.get(id2);
       const suffix = MIME_EXTENSIONS[mimeType] ?? (/^\.[a-zA-Z0-9]{1,8}$/.test(extname(canonical)) ? extname(canonical) : ".bin");
       const target = join13(context.outputDir, `${sha256}${suffix}`);
-      if (target !== canonical) await copyFile4(canonical, target);
+      if (target !== canonical) await copyFile5(canonical, target);
       const asset = {
         id: id2,
         name: name ?? basename3(canonical),

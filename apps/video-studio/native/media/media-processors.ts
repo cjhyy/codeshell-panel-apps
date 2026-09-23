@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import type { MediaJobContext, MediaJobProcessor, MediaScope } from "./media-types.js";
@@ -424,6 +424,32 @@ export function createMediaJobProcessors(
       if (!(await cachedArtifactsExist(child, context))) return false;
     return true;
   };
+  /**
+   * A cached result names files a previous task produced in its own directory. The runtime only
+   * publishes files inside the current task, so bring each one into this task's work directory
+   * (a hard link where the file system allows it, otherwise a copy) and return those paths.
+   */
+  const materializeCached = async (value: unknown, context: MediaJobContext): Promise<unknown> => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const items: unknown[] = [];
+      for (const item of value) items.push(await materializeCached(item, context));
+      return items;
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record.path === "string" && typeof record.mimeType === "string") {
+      const cached = await regularFile(record.path),
+        directory = join(context.workDir, "cached");
+      await mkdir(directory, { recursive: true });
+      const target = join(directory, `${randomUUID()}-${basename(cached)}`);
+      await link(cached, target).catch(() => copyFile(cached, target));
+      return { ...record, path: target };
+    }
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(record))
+      output[key] = await materializeCached(child, context);
+    return output;
+  };
   const withJob = (
     kind: string,
     work: (input: Record<string, any>, context: MediaJobContext) => Promise<unknown>,
@@ -511,8 +537,10 @@ export function createMediaJobProcessors(
         const cached = JSON.parse(await readFile(cachePath, "utf8"));
         if (cached.version === 1 && (await cachedArtifactsExist(cached.result, context))) {
           check(context);
+          const result = await materializeCached(cached.result, context);
+          check(context);
           await context.reportProgress({ fraction: 1, stage: "cached" });
-          return cached.result;
+          return result;
         }
       } catch {
         /* Invalid or evicted derived media is regenerated. */

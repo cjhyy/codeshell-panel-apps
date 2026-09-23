@@ -363,6 +363,21 @@ mediaTest(
   },
 );
 mediaTest(
+  "re-preparing an already prepared source publishes the cached results into the new task",
+  async () => {
+    const first = await context("prepare-first");
+    const original = await api.runMediaRequest(input("prepare", { assetId: sourceId }), first);
+    const again = await context("prepare-again");
+    const response = await api.runMediaRequest(input("prepare", { assetId: sourceId }), again);
+    assert.equal(response.result.proxy.asset.id, original.result.proxy.asset.id);
+    assert.equal(response.result.thumbnail.asset.id, original.result.thumbnail.asset.id);
+    await assertArtifacts(response, again);
+    // The cached copy is the new task's own file: removing the first task keeps it valid.
+    await rm(first.jobDir, { recursive: true, force: true });
+    await assertArtifacts(response, again);
+  },
+);
+mediaTest(
   "real extraction retains selected duration and enhancement validates complete audio",
   async () => {
     const extract = await context("extract");
