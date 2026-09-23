@@ -11,6 +11,8 @@ const INTERACTIVE_METHODS = new Set([
   "automations.createUnique",
   "automations.delete",
   "automations.update",
+  "automations.updateIfRevision",
+  "automations.deleteIfRevision",
   "notifications.send",
   "process.cancel",
   "workspace.writeText",

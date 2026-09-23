@@ -1,3 +1,5 @@
+import { mutateAutomation } from "./automation-mutation.mjs";
+
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
 const INSIGHTS_DIRECTORY = "data/market-insights";
@@ -809,6 +811,7 @@ function pulseTaskMatches(task, plan) {
 
 export function createMarketPulseAutomationController({
   hostCall,
+  getContext = () => ({}),
   elements,
   notify = () => {},
 }) {
@@ -868,8 +871,7 @@ export function createMarketPulseAutomationController({
     const current = await readState();
     if (current) {
       if (!pulseTaskMatches(current, plan)) {
-        await hostCall("automations.update", {
-          id: current.id,
+        await mutateAutomation(hostCall, getContext, "update", current, {
           name: plan.name,
           schedule: plan.schedule,
           prompt: plan.prompt,
@@ -892,7 +894,7 @@ export function createMarketPulseAutomationController({
   async function remove() {
     const current = await readState();
     if (!current) return;
-    const result = await hostCall("automations.delete", { id: current.id });
+    const result = await mutateAutomation(hostCall, getContext, "delete", current);
     if (result?.ok === false) throw new Error("Host 未删除任务");
     const verified = await hostCall("automations.list", {});
     state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
@@ -923,7 +925,7 @@ export function createMarketPulseAutomationController({
       }
     } catch (error) {
       state.error = error instanceof Error ? error.message : "任务操作失败";
-      state.retryIntent = action ?? "read";
+      state.retryIntent = error?.code === "AUTOMATION_CONFLICT" ? "read" : action ?? "read";
       notify(state.error, "error");
     } finally {
       state.inFlight = false;

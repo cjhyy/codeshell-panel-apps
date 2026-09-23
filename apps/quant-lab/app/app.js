@@ -2464,6 +2464,7 @@ marketInsightsController = createMarketInsightsController({
 
 marketPulseAutomationController = createMarketPulseAutomationController({
   hostCall,
+  getContext: () => context,
   notify,
   elements: {
     root: elements.marketPulseAutomation,
@@ -5050,6 +5051,7 @@ alertsController = createAlertsController({
 
 newsController = createNewsController({
   hostCall,
+  getContext: () => context,
   root: elements.newsRoot,
   currentEpoch: () => workspaceEpoch,
   now: currentInstant,

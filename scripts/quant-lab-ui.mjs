@@ -1524,7 +1524,9 @@ async function installHostStub(
       window.__hostCalls = [];
       window.__historyLibrarySummary = fixtureHistoryLibrarySummary;
       window.__written = {};
-      window.__automations = structuredClone(seededAutomations);
+      let automationVersion = 0;
+      window.__nextAutomationRevision = () => (++automationVersion).toString(16).padStart(64, "0");
+      window.__automations = structuredClone(seededAutomations).map(task => fixtureVersionedStorage ? {...task,revision:window.__nextAutomationRevision()} : task);
       window.__agentTasks = [];
       window.__rejectAutomationNames = new Set(rejectedAutomationNames);
       window.__rejectAutomationDeleteIds = new Set(rejectedAutomationDeleteIds);
@@ -1539,7 +1541,7 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
-        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "automations.createUnique"] } : {}),
+        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] } : {}),
       };
       window.__contextChangedHandlers = new Set();
       window.__panelEventHandlers = new Map();
@@ -1733,8 +1735,10 @@ async function installHostStub(
             }
             return Promise.reject(new Error("file not found"));
           }
-          if (method === "automations.list")
-            return Promise.resolve({ automations: window.__automations });
+          if (method === "automations.list") {
+            if (fixtureVersionedStorage) for (const task of window.__automations) task.revision ??= window.__nextAutomationRevision();
+            return Promise.resolve({ automations: structuredClone(window.__automations) });
+          }
           // Mirrors createPanelAutomation/updatePanelAutomation in the real
           // panel-app-bridge: the stub must never be looser than the Host.
           const validateAutomationFields = (fields, { requireAll }) => {
@@ -1757,6 +1761,23 @@ async function installHostStub(
               throw new Error("Panel App automation timezone is invalid");
             }
           };
+          if (method === "automations.updateIfRevision" || method === "automations.deleteIfRevision") {
+            const index = window.__automations.findIndex(task => task.id === params.id);
+            if (index < 0) return Promise.resolve({ok:false,conflict:true});
+            if (window.__conflictAutomationMutation) {
+              window.__conflictAutomationMutation = false;
+              window.__automations[index] = {...window.__automations[index], prompt:"Other device definition",revision:window.__nextAutomationRevision()};
+            }
+            if (window.__automations[index].revision !== params.expectedRevision) return Promise.resolve({ok:false,conflict:true});
+            if (method === "automations.deleteIfRevision") {
+              window.__automations.splice(index,1);
+              return Promise.resolve({ok:true});
+            }
+            const {id: _id, expectedRevision: _expected, ...patch} = params;
+            validateAutomationFields(patch,{requireAll:false});
+            window.__automations[index] = {...window.__automations[index],...patch,revision:window.__nextAutomationRevision()};
+            return Promise.resolve({ok:true,automation:structuredClone(window.__automations[index])});
+          }
           if (method === "automations.create" || method === "automations.createUnique") {
             if (window.__rejectAutomationNames.has(params.name)) {
               return Promise.reject(new Error(`automation create rejected: ${params.name}`));
@@ -1781,6 +1802,7 @@ async function installHostStub(
               enabled: true,
               permissionLevel: "full",
               resumeSessionId: "session-e2e",
+              ...(fixtureVersionedStorage ? {revision:window.__nextAutomationRevision()} : {}),
               ...params,
             };
             window.__automations.push(created);
@@ -5086,6 +5108,21 @@ const failingSeed = [
   assert.equal(creates[0].method, "automations.createUnique");
   assert.equal(creates[0].params.key, "market-alert.us");
   assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 1);
+  await scenarioPage.evaluate(() => {window.__conflictAutomationMutation = true;});
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-automation-us-status").textContent.includes("其他页面"));
+  assert.equal(await scenarioPage.evaluate(() => window.__automations[0].prompt), "Other device definition");
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  const mutationsBeforeRead = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.endsWith("IfRevision")).length);
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-status").textContent.includes("其他页面"));
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.endsWith("IfRevision")).length), mutationsBeforeRead);
+  assert.equal(await scenarioPage.evaluate(() => window.__automations[0].prompt), "Other device definition");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => window.__automations[0].prompt !== "Other device definition");
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "automations.update").length), 0);
   await scenarioContext.close();
 }
 

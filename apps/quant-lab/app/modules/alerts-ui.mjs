@@ -1,3 +1,5 @@
+import { mutateAutomation } from "./automation-mutation.mjs";
+
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
 const MARKET_ORDER = ["cn", "us"];
@@ -289,7 +291,7 @@ export function createAlertsController({
     }
   }
 
-  async function readState(operation = scope()) {
+  async function readState(operation = scope(), clearReadFailures = true) {
     assertCurrent(operation);
     const result = await hostCall("automations.list", {});
     assertCurrent(operation);
@@ -297,7 +299,7 @@ export function createAlertsController({
     for (const market of MARKET_ORDER) {
       const plan = planFor(market) ?? MARKET_TASKS[market];
       state.tasks[market] = exactTask(tasks, plan);
-      if (state.retryIntent[market] === "read") {
+      if (clearReadFailures && state.retryIntent[market] === "read") {
         state.errors[market] = null;
         state.retryIntent[market] = null;
       }
@@ -331,8 +333,7 @@ export function createAlertsController({
       let task = exactTask(tasks, plan);
       if (task) {
         if (!taskMatches(task, plan)) {
-          await hostCall("automations.update", {
-            id: task.id,
+          await mutateAutomation(hostCall, getContext, "update", task, {
             name: plan.name,
             schedule: plan.schedule,
             prompt: plan.prompt,
@@ -370,7 +371,7 @@ export function createAlertsController({
     } catch (error) {
       if (!current(operation)) return null;
       state.errors[market] = error instanceof Error ? error.message : "任务操作失败";
-      state.retryIntent[market] = "ensure";
+      state.retryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "ensure";
       return null;
     } finally {
       if (current(operation)) render();
@@ -389,7 +390,7 @@ export function createAlertsController({
         state.retryIntent[market] = null;
         return true;
       }
-      const result = await hostCall("automations.delete", { id: task.id });
+      const result = await mutateAutomation(hostCall, getContext, "delete", task);
       assertCurrent(operation);
       if (result?.ok === false) throw new Error("Host 未删除任务");
       state.tasks[market] = null;
@@ -398,7 +399,7 @@ export function createAlertsController({
     } catch (error) {
       if (!current(operation)) return false;
       state.errors[market] = error instanceof Error ? error.message : "任务关闭失败";
-      state.retryIntent[market] = "remove";
+      state.retryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "remove";
       return false;
     } finally {
       if (current(operation)) render();
@@ -415,7 +416,7 @@ export function createAlertsController({
       await verifyChange(operation);
       await action(operation);
       assertCurrent(operation);
-      await readState(operation).catch(() => undefined);
+      await readState(operation, false).catch(() => undefined);
     } catch (error) {
       if (current(operation))
         notify(error instanceof Error ? error.message : "提醒操作失败", "error");
@@ -497,7 +498,7 @@ export function createAlertsController({
       for (const task of [...state.legacy]) {
         try {
           await verifyChange(operation);
-          const result = await hostCall("automations.delete", { id: task.id });
+          const result = await mutateAutomation(hostCall, getContext, "delete", task);
           assertCurrent(operation);
           if (result?.ok === false) throw new Error("Host 未删除旧任务");
         } catch (error) {

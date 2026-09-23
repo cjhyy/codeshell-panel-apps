@@ -1,3 +1,5 @@
+import { mutateAutomation } from "./automation-mutation.mjs";
+
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
 import {
@@ -93,6 +95,7 @@ function expectedWriteParams(file) {
 
 export function createNewsController({
   hostCall,
+  getContext = () => ({}),
   root,
   currentEpoch,
   subscriptionSymbols,
@@ -570,7 +573,7 @@ export function createNewsController({
       await readTasks();
       let task = taskFor(market);
       if (task && !newsAutomationMatches(task, plan)) {
-        await hostCall("automations.update", { id: task.id, name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
+        await mutateAutomation(hostCall, getContext, "update", task, { name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
       } else if (!task) {
         await hostCall("automations.create", { name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
       }
@@ -581,7 +584,7 @@ export function createNewsController({
       return true;
     } catch (error) {
       state.taskErrors[market] = error instanceof Error ? error.message : "automation 操作失败";
-      state.taskRetryIntent[market] = "ensure";
+      state.taskRetryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "ensure";
       renderAutomation(market);
       return false;
     }
@@ -596,7 +599,7 @@ export function createNewsController({
         state.taskRetryIntent[market] = null;
         return true;
       }
-      const result = await hostCall("automations.delete", { id: task.id });
+      const result = await mutateAutomation(hostCall, getContext, "delete", task);
       if (result?.ok === false) throw new Error("Host 未删除任务");
       await readTasks();
       if (taskFor(market)) throw new Error("删除后任务仍存在");
@@ -604,7 +607,7 @@ export function createNewsController({
       return true;
     } catch (error) {
       state.taskErrors[market] = error instanceof Error ? error.message : "automation 删除失败";
-      state.taskRetryIntent[market] = "remove";
+      state.taskRetryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "remove";
       renderAutomation(market);
       return false;
     }

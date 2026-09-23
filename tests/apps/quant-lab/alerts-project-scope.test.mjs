@@ -179,3 +179,31 @@ test("saved records are checked again after the asynchronous task lookup, before
   );
   assert.match(f.controller.state.errors.us, /changed while loading/);
 });
+
+test("a conditional conflict never falls back and retry only reads the other device's task", async () => {
+  const [plan] = buildDeskAutomations(items);
+  let current = { ...plan, id: "shared", prompt: "previous definition", revision: "a".repeat(64) };
+  const writes = [];
+  const f = fixture({
+    getContext: () => ({
+      availableMethods: ["automations.updateIfRevision", "automations.deleteIfRevision"],
+    }),
+    hostCall: async (method, params) => {
+      if (method === "automations.list") return [structuredClone(current)];
+      writes.push({ method, params });
+      assert.equal(method, "automations.updateIfRevision");
+      assert.equal(params.expectedRevision, "a".repeat(64));
+      current = { ...current, prompt: "other device", revision: "b".repeat(64) };
+      return { ok: false, conflict: true };
+    },
+  });
+  await f.controller.load();
+  await f.controller.toggleMarket("us");
+  assert.equal(f.controller.state.retryIntent.us, "read");
+  assert.match(f.controller.state.errors.us, /其他页面/u);
+  assert.equal(writes.length, 1);
+  await f.controller.toggleMarket("us");
+  assert.equal(writes.length, 1);
+  assert.equal(f.controller.state.tasks.us.prompt, "other device");
+  assert.equal(f.controller.state.errors.us, null);
+});
