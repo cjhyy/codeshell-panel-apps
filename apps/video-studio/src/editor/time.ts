@@ -13,6 +13,20 @@ export interface TimeRange {
   start: Tick;
   end: Tick;
 }
+/**
+ * Sorted union of the non-empty ranges; ranges at most `gap` apart join. Returns new objects and
+ * leaves the input untouched.
+ */
+export function mergeTimeRanges(ranges: readonly TimeRange[], gap = 0): TimeRange[] {
+  const result: TimeRange[] = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (range.end <= range.start) continue;
+    const last = result.at(-1);
+    if (last && range.start <= last.end + gap) last.end = Math.max(last.end, range.end);
+    else result.push({ ...range });
+  }
+  return result;
+}
 
 const MAX_TICK = BigInt(Number.MAX_SAFE_INTEGER);
 const SUPPORTED_RATES = new Set([

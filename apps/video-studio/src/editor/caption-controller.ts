@@ -1,4 +1,4 @@
-import type { EditorSession, SessionIdentity } from "./session";
+import { sameIdentity, type EditorSession, type SessionIdentity } from "./session";
 import type { EditorDocument, TextStyle } from "./types";
 import type { EditorOperation } from "./operations";
 import { applyEditorOperations } from "./operations";
@@ -78,11 +78,6 @@ export interface CaptionControllerState {
   canTranscribe: boolean;
   canTranslate: boolean;
 }
-function equal(a: SessionIdentity, b: SessionIdentity): boolean {
-  return (
-    a.documentId === b.documentId && a.generation === b.generation && a.revision === b.revision
-  );
-}
 export function createCaptionController(context: CaptionControllerContext) {
   let state: CaptionControllerState = {
     phase: "idle",
@@ -117,7 +112,7 @@ export function createCaptionController(context: CaptionControllerContext) {
       throw new DOMException("字幕操作已取消", "AbortError");
     if (
       context.session() !== snapshot.session ||
-      !equal(context.session().getState().identity, snapshot.identity)
+      !sameIdentity(context.session().getState().identity, snapshot.identity)
     )
       throw new Error("生成期间工程已变化，请重新读取后生成字幕");
   };
@@ -130,7 +125,7 @@ export function createCaptionController(context: CaptionControllerContext) {
     pendingSession = snapshot.session;
     unwatch?.();
     unwatch = snapshot.session.subscribe((current) => {
-      if (disposed || state.phase === "applying" || equal(current.identity, snapshot.identity))
+      if (disposed || state.phase === "applying" || sameIdentity(current.identity, snapshot.identity))
         return;
       serial++;
       work?.abort();
@@ -454,7 +449,7 @@ export function createCaptionController(context: CaptionControllerContext) {
       if (!candidate) throw new Error("没有待应用的字幕");
       const snapshot = read(),
         token = ++serial;
-      if (snapshot.session !== pendingSession || !equal(snapshot.identity, candidate.identity)) {
+      if (snapshot.session !== pendingSession || !sameIdentity(snapshot.identity, candidate.identity)) {
         set({ phase: "stale", message: "工程已变化，请重新生成预览", candidate: undefined });
         throw new Error(state.message);
       }

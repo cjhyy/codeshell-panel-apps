@@ -14,9 +14,10 @@ import {
 } from "./captions";
 import { captionClipIdsForLegacyIds, projectLegacyView } from "./legacy-adapter";
 import { legacyClipId } from "./legacy-aliases";
+import { isSubtitleClip, sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { narrationDependencies, reconcileEditorProduction } from "./production-guard";
-import { frameToTicks, secondsToTicks, TICKS_PER_SECOND, type Tick, type TimeMap, type TimeRange } from "./time";
+import { frameToTicks, mergeTimeRanges, secondsToTicks, TICKS_PER_SECOND, type Tick, type TimeMap, type TimeRange } from "./time";
 import type { EditorDocument, EditorSequence, JsonData, TextClip } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
@@ -37,13 +38,8 @@ const COVERAGE_TOLERANCE = 4;
 const codeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const record = (value: JsonData | undefined): Record<string, JsonData> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-function sequenceOf(doc: EditorDocument, id: string): EditorSequence {
-  const sequence = doc.sequences.find((item) => item.id === id);
-  if (!sequence) throw new Error("口播对应的时间线不存在");
-  return sequence;
-}
-const subtitle = (clip: EditorSequence["clips"][number]): clip is TextClip =>
-  clip.kind === "text" && clip.role === "subtitle";
+const sequenceOf = (doc: EditorDocument, id: string) =>
+  findSequence(doc, id, "口播对应的时间线不存在");
 
 /** The validated narration state, or undefined when the project has none (or an unusable one). */
 export function readNarration(doc: EditorDocument): NarrationState | undefined {
@@ -73,7 +69,7 @@ export function narrationDraftClipIds(doc: EditorDocument, sequenceId: string): 
     result = new Set<string>();
   if (!ids.length) return result;
   for (const clip of doc.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
-    if (subtitle(clip) && wanted.has(clip.id)) result.add(clip.id);
+    if (isSubtitleClip(clip) && wanted.has(clip.id)) result.add(clip.id);
   for (const id of captionClipIdsForLegacyIds(doc, sequenceId, ids)) result.add(id);
   return result;
 }
@@ -82,7 +78,7 @@ export function draftNamedClipIds(doc: EditorDocument, sequenceId: string): Set<
   const result = new Set<string>();
   for (const clip of doc.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
     if (
-      subtitle(clip) &&
+      isSubtitleClip(clip) &&
       (clip.id.startsWith(DRAFT_CAPTION_PREFIX) ||
         legacyClipId(doc, sequenceId, clip, "captions").startsWith(DRAFT_CAPTION_PREFIX))
     )
@@ -97,7 +93,7 @@ export function recordedNarrationClipIds(doc: EditorDocument, sequenceId: string
   const result = new Set<string>();
   for (const clip of doc.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
     if (
-      subtitle(clip) &&
+      isSubtitleClip(clip) &&
       (clip.id.startsWith(RECORDED_CAPTION_PREFIX) ||
         legacyClipId(doc, sequenceId, clip, "captions").startsWith(RECORDED_CAPTION_PREFIX))
     )
@@ -402,16 +398,6 @@ interface TranscriptSegment {
   text: string;
   words?: { text: string; start: number; end: number }[];
 }
-function mergeRanges(ranges: TimeRange[], gap = 0): TimeRange[] {
-  const result: TimeRange[] = [];
-  for (const range of ranges.slice().sort((a, b) => a.start - b.start || a.end - b.end)) {
-    if (range.end <= range.start) continue;
-    const last = result.at(-1);
-    if (last && range.start <= last.end + gap) last.end = Math.max(last.end, range.end);
-    else result.push({ ...range });
-  }
-  return result;
-}
 /** Source extent played by local [start, end) of a continuous, piecewise linear time map. */
 function mapImage(map: TimeMap, start: Tick, end: Tick): TimeRange[] {
   const result: TimeRange[] = [];
@@ -432,7 +418,7 @@ function mapImage(map: TimeMap, start: Tick, end: Tick): TimeRange[] {
 function retainedSource(source: CaptionSource): TimeRange[] {
   let ranges = source.ranges.map((range) => ({ ...range }));
   for (const stage of source.lane.stages) {
-    ranges = mergeRanges(
+    ranges = mergeTimeRanges(
       ranges.flatMap((range) => {
         const from = Math.max(range.start, stage.start) - stage.start,
           to = Math.min(range.end, stage.start + stage.duration) - stage.start;
@@ -509,7 +495,7 @@ export function planNarrationAlignment(
         .map((word) => ({ text: word.text, start: word.start, end: Math.min(word.end, end) }));
     return result;
   });
-  const retained = mergeRanges(sources.flatMap(retainedSource), COVERAGE_TOLERANCE);
+  const retained = mergeTimeRanges(sources.flatMap(retainedSource), COVERAGE_TOLERANCE);
   for (const [index, segment] of transcript.entries()) {
     const from = secondsToTicks(segment.start),
       to = secondsToTicks(segment.end);
@@ -535,7 +521,7 @@ export function planNarrationAlignment(
   // alignment does not add a second caption over them.
   const userCaptions = sequenceOf(draft, sequenceId).clips.filter(
     (clip): clip is TextClip =>
-      subtitle(clip) && clip.sourceBinding?.provenance?.assetId === asset.id,
+      isSubtitleClip(clip) && clip.sourceBinding?.provenance?.assetId === asset.id,
   );
   const lanes = new Map(sources.map((source, index) => [source.instanceId, index + 1]));
   const used = new Set(sequenceOf(draft, sequenceId).clips.map((clip) => clip.id));
@@ -614,9 +600,9 @@ export async function reconcileNarrationRunEdit(
     ]);
     const next = after.sequences.find((item) => item.id === sequence.id);
     for (const clip of sequence.clips) {
-      if (!subtitle(clip) || owned.has(clip.id)) continue;
+      if (!isSubtitleClip(clip) || owned.has(clip.id)) continue;
       const kept = next?.clips.find((item) => item.id === clip.id);
-      if (!kept || !subtitle(kept) || kept.text !== clip.text)
+      if (!kept || !isSubtitleClip(kept) || kept.text !== clip.text)
         throw new Error("自动制作不能修改或删除用户自己的字幕，请在制作单 blockers 写明需要调整的字幕");
     }
   }
@@ -666,7 +652,7 @@ export async function reconcileDraftRunEdit(
     // Only temporary captions still on the timeline; removed ones no longer count.
     current = [...narrationDraftClipIds(after, sequenceId)];
   const added = sequenceOf(after, sequenceId)
-    .clips.filter((clip) => subtitle(clip) && !known.has(clip.id) && !current.includes(clip.id))
+    .clips.filter((clip) => isSubtitleClip(clip) && !known.has(clip.id) && !current.includes(clip.id))
     .map((clip) => clip.id);
   if (!added.length) return [];
   if (current.length + added.length > 1000) throw new Error("临时字幕最多 1000 条，请先合并字幕");

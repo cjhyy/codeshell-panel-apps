@@ -1,5 +1,6 @@
 import { recordedNarrationClipIds } from "./narration-edits";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import { validateTimeMap } from "./time";
 import type { EditorDocument, EditorSequence, JsonData, TextClip } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
@@ -169,7 +170,7 @@ export function planEditorAssetRemoval(
       const track = sequence.tracks.find((track) => track.id === clip.trackId)!;
       if (track.locked)
         throw new Error(`序列“${sequence.name}”的轨道“${track.name}”已锁定，请先解锁后删除素材`);
-      if (clip.kind === "text" && clip.role === "subtitle") usage.affectedCaptionCount++;
+      if (isSubtitleClip(clip)) usage.affectedCaptionCount++;
     }
     usage.transitionCount += sequence.transitions.filter(
       (transition) => targets.has(transition.fromClipId) || targets.has(transition.toClipId),

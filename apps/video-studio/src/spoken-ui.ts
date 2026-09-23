@@ -1,6 +1,6 @@
 import type { TranscriptSegment } from "./production";
 import type { SpokenSource } from "./spoken-edit";
-import type { SessionIdentity } from "./editor/session";
+import { sameIdentity, type SessionIdentity } from "./editor/session";
 import {
   findEditorSpokenCandidates,
   locateSourceRange,
@@ -50,12 +50,6 @@ const time = (tick: Tick) => {
 const seconds = (tick: Tick) => (tick / TICKS_PER_SECOND).toFixed(2);
 const length = (ranges: readonly TimeRange[]) =>
   ranges.reduce((sum, range) => sum + range.end - range.start, 0);
-const sameIdentity = (a: SessionIdentity | null, b: SessionIdentity | null) =>
-  !!a &&
-  !!b &&
-  a.documentId === b.documentId &&
-  a.generation === b.generation &&
-  a.revision === b.revision;
 export function createSpokenUI(context: SpokenContext) {
   let assetId = "",
     candidates: EditorSpokenCandidate[] = [],
@@ -210,8 +204,7 @@ export function createSpokenUI(context: SpokenContext) {
         if (
           !prepared ||
           !preparedIdentity ||
-          preparedIdentity.documentId !== identity.documentId ||
-          preparedIdentity.generation !== identity.generation ||
+          !sameIdentity(preparedIdentity, identity, false) ||
           editingState(prepared) !== editingState(snapshot)
         )
           throw new Error("准备期间工程已变化，请重新读取口播分析");

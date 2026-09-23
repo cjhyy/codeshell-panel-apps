@@ -20,6 +20,24 @@ export interface SessionIdentity {
   generation: number;
   revision: number;
 }
+/**
+ * Whether two identities name the same open document version. With `revisions` false only the
+ * document and its open generation must match (a later edit is fine, a switch or restore is not).
+ * A missing identity never matches.
+ */
+export function sameIdentity(
+  a: SessionIdentity | null | undefined,
+  b: SessionIdentity | null | undefined,
+  revisions = true,
+): boolean {
+  return (
+    !!a &&
+    !!b &&
+    a.documentId === b.documentId &&
+    a.generation === b.generation &&
+    (!revisions || a.revision === b.revision)
+  );
+}
 export interface EditorSessionOptions {
   /** Used only after a successful read of an explicitly empty slot. */
   initialDocument?: EditorDocument;
@@ -281,13 +299,7 @@ export class EditorSession {
       );
   }
   private checkIdentity(identity: SessionIdentity): void {
-    const current = this.getState().identity;
-    if (
-      !identity ||
-      identity.documentId !== current.documentId ||
-      identity.generation !== current.generation ||
-      identity.revision !== current.revision
-    )
+    if (!sameIdentity(identity, this.getState().identity))
       throw new Error("工程或版本已改变，请基于当前工程重新操作");
   }
   dispatch(

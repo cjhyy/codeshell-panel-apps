@@ -1,6 +1,6 @@
 import type { RuntimeBridge } from "../sdk/panel-runtime";
 import { createEditorMediaImporter, type EditorImportResult } from "./import-media";
-import type { EditorSession } from "./session";
+import { sameIdentity, type EditorSession } from "./session";
 import type { EditorOperation } from "./operations";
 
 /** Native metadata import with a retained publish proposal when project persistence fails. */
@@ -68,8 +68,7 @@ export class EditorImportUI {
     this.unsubscribe = session.subscribe((state) => {
       if (
         this.pending &&
-        (this.pending.identity.documentId !== state.identity.documentId ||
-          this.pending.identity.generation !== state.identity.generation)
+        !sameIdentity(this.pending.identity, state.identity, false)
       ) {
         this.pending = undefined;
         this.root.hidden = true;
@@ -128,10 +127,7 @@ export class EditorImportUI {
     this.cancel.hidden = false;
     try {
       const identity = this.session.getState().identity;
-      if (
-        identity.documentId !== pending.identity.documentId ||
-        identity.generation !== pending.identity.generation
-      )
+      if (!sameIdentity(identity, pending.identity, false))
         throw new Error("工程已切换，请重新导入素材");
       const existing = new Set(this.session.read().assets.map((asset) => asset.resourceId));
       const operations: EditorOperation[] = [];

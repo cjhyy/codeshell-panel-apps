@@ -8,6 +8,7 @@ import {
 } from "./legacy-adapter";
 import { resolveLegacyClipId, type LegacyCollection } from "./legacy-aliases";
 import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./legacy-time";
+import { sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import type { SequenceIdFactory } from "./sequence-edits";
 import { freezeTimeMap } from "./time";
@@ -19,11 +20,8 @@ const F = LEGACY_FRAME_TICKS;
 export const UNMAPPED_LEGACY_CLIP = "在当前工程中无法对应，请使用新版方案格式";
 type Operation = Record<string, any>;
 
-function sequenceOf(document: EditorDocument, sequenceId: string): EditorSequence {
-  const sequence = document.sequences.find((item) => item.id === sequenceId);
-  if (!sequence) throw new Error("方案对应的时间线不存在");
-  return sequence;
-}
+const sequenceOf = (document: EditorDocument, sequenceId: string) =>
+  findSequence(document, sequenceId, "方案对应的时间线不存在");
 function frame(value: unknown, label: string): number {
   if (
     typeof value !== "number" ||

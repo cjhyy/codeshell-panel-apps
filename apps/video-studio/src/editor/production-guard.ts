@@ -1,4 +1,5 @@
 import type { EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import type { EditorDocument, EditorClip, JsonData } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
@@ -42,7 +43,7 @@ function dependencies(
         audio: item.audio,
       };
     }
-    if (item.kind === "text" && item.role === "subtitle")
+    if (isSubtitleClip(item))
       return {
         ...base,
         text: item.text,

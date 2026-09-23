@@ -1,6 +1,7 @@
 import type { CaptionStyle, Project } from "../model";
 import { migrateLegacyProject } from "./migration";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import type { EditorDocument, EditorSequence, TextClip, TextStyle } from "./types";
 import { validateEditorDocument } from "./validation";
 
@@ -81,7 +82,7 @@ export function planCaptionPreset(
     sequence = doc.sequences.find((item) => item.id === sequenceId);
   if (!sequence) throw new Error("字幕时间线不存在");
   const clips = sequence.clips.filter(
-    (clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle",
+    isSubtitleClip,
   );
   if (clips.some((clip) => sequence.tracks.find((track) => track.id === clip.trackId)?.locked))
     throw new Error("字幕轨已锁定，请先解锁后再套用样式");

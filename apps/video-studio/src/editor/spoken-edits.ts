@@ -2,9 +2,10 @@ import type { TranscriptSegment } from "../production";
 import type { SpokenSource } from "../spoken-edit";
 import { splitClip, trimClip, type ClipIdFactory } from "./clip-edits";
 import { applyEditorOperations, type EditorClipPatch, type EditorOperation } from "./operations";
-import type { SessionIdentity } from "./session";
+import { sameIdentity, type SessionIdentity } from "./session";
 import {
   assertTick,
+  mergeTimeRanges,
   sourceRangesToTimeline,
   TICKS_PER_SECOND,
   type Tick,
@@ -77,15 +78,6 @@ function idOf(value: string) {
   for (const char of value) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
   return (hash >>> 0).toString(36);
 }
-function merge(ranges: readonly TimeRange[]): TimeRange[] {
-  const merged: TimeRange[] = [];
-  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
-    const last = merged.at(-1);
-    if (last && range.start <= last.end) last.end = Math.max(last.end, range.end);
-    else if (range.start < range.end) merged.push({ ...range });
-  }
-  return merged;
-}
 function played(map: TimeMap): TimeRange {
   const sources = map.points.map((point) => point.source);
   return { start: Math.min(...sources), end: Math.max(...sources) };
@@ -101,11 +93,6 @@ function timelineOf(clip: { start: Tick; timeMap: TimeMap }, source: TimeRange):
     end: range.end + clip.start,
   }));
 }
-const sameIdentity = (a: SessionIdentity | undefined, b: SessionIdentity) =>
-  !!a &&
-  a.documentId === b.documentId &&
-  a.generation === b.generation &&
-  a.revision === b.revision;
 const end = (clip: EditorClip) => clip.start + clip.duration;
 const bound = (clip: EditorClip) => clip.kind === "text" && !!clip.sourceBinding;
 
@@ -255,7 +242,7 @@ function occurrencesIn(
         push(
           clip,
           found.source,
-          merge(
+          mergeTimeRanges(
             found.timeline.flatMap((part) => {
               const visible = intersect(part, window);
               return visible ? timelineOf(clip, visible) : [];
@@ -287,7 +274,7 @@ export function locateSourceRange(
 /** Removing `timeline` from its owner must not leave a flash shorter than 0.2 s. */
 function leavesSliver(clip: EditorClip, timeline: readonly TimeRange[]): boolean {
   let cursor = clip.start;
-  for (const range of [...merge(timeline), { start: end(clip), end: end(clip) }]) {
+  for (const range of [...mergeTimeRanges(timeline), { start: end(clip), end: end(clip) }]) {
     const piece = Math.min(range.start, end(clip)) - cursor;
     if (piece > 0 && piece < MIN_FRAGMENT) return true;
     cursor = Math.max(cursor, range.end);
@@ -715,7 +702,7 @@ export function planSpokenCuts(
     assertTick(range?.end, "删减出点");
     if (range.end <= range.start) throw new Error("删减时间必须具有正时长");
   }
-  const ranges = merge(timelineRanges);
+  const ranges = mergeTimeRanges(timelineRanges);
   if (!ranges.length) throw new Error("请先勾选需要删减的候选");
   const total = sequenceDuration(sequence),
     removed = ranges.reduce((sum, range) => sum + range.end - range.start, 0);

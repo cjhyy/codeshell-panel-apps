@@ -14,6 +14,7 @@ import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { legacyClipId, type LegacyCollection } from "./legacy-aliases";
 import { LEGACY_FRAME_TICKS } from "./legacy-time";
+import { isSubtitleClip, sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { freezeTimeMap } from "./time";
 import type {
@@ -85,11 +86,8 @@ function frozen<T>(value: T): T {
   }
   return value;
 }
-function sequenceOf(document: EditorDocument, id: string): EditorSequence {
-  const sequence = document.sequences.find((sequence) => sequence.id === id);
-  if (!sequence) throw new Error("旧流程对应的序列不存在");
-  return sequence;
-}
+const sequenceOf = (document: EditorDocument, id: string) =>
+  findSequence(document, id, "旧流程对应的序列不存在");
 function allocate(used: Set<string>, preferred: string): string {
   let id = preferred,
     suffix = 0;
@@ -412,7 +410,7 @@ export function projectLegacyView(
   for (const clip of sequence.clips.filter((clip) => !primary.includes(clip))) {
     const track = sequence.tracks.find((track) => track.id === clip.trackId)!;
     if (clip.kind === "media" && track.kind === "audio") addMedia(clip, "audioClips");
-    else if (clip.kind === "text" && clip.role === "subtitle") {
+    else if (isSubtitleClip(clip)) {
       const end = Math.max(
         0,
         ...project.clips.map((clip) => clip.startFrame! + clip.outFrame - clip.inFrame),
@@ -1032,7 +1030,7 @@ export function applyLegacyProjectChange(
       throw new Error("自定义或未完整投影的字幕不能套用旧版全局样式，请使用新版文字面板");
     const style = captionTemplate(after).style;
     for (const clip of sequence().clips.filter(
-      (clip) => clip.kind === "text" && clip.role === "subtitle",
+      isSubtitleClip,
     ))
       append([{ type: "clip.update", sequenceId, clipId: clip.id, patch: { style } }]);
     production.legacyCaptionStyle = after.captionStyle ?? "classic";

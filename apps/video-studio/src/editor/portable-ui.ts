@@ -1,5 +1,5 @@
 import { createPanelRuntime, runtimeCancelled, type RuntimeBridge } from "../sdk/panel-runtime";
-import type { EditorSession, SessionIdentity } from "./session";
+import { sameIdentity, type EditorSession, type SessionIdentity } from "./session";
 import type { EditorDocument } from "./types";
 import type {
   createEditorTaskBridge,
@@ -49,10 +49,6 @@ interface Pending {
   saved?: boolean;
   applyAttempted?: boolean;
 }
-const sameIdentity = (a: SessionIdentity, b: SessionIdentity, revisions = true) =>
-  a.documentId === b.documentId &&
-  a.generation === b.generation &&
-  (!revisions || a.revision === b.revision);
 const sizeLabel = (bytes: number) =>
   bytes >= 1024 ** 3
     ? `${(bytes / 1024 ** 3).toFixed(2)} GB`

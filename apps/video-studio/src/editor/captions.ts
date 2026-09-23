@@ -4,6 +4,7 @@ import { createTrack } from "./defaults";
 import { stretchKeyframes } from "./caption-bindings";
 import { CAPTION_PRESETS, captionTemplate, currentCaptionPreset } from "./caption-presets";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import {
   assertTick,
   sourceRangesToTimeline,
@@ -377,7 +378,7 @@ function captionTrack(
 function captionLook(doc: EditorDocument, seq: EditorSequence): TextClip {
   const preference = doc.production?.legacyCaptionStyle;
   const subtitles = seq.clips.filter(
-    (clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle",
+    isSubtitleClip,
   );
   const preset =
     currentCaptionPreset(seq, subtitles) ??
@@ -434,7 +435,7 @@ export function planTranscriptCaptions(
     generated = new Set<string>(),
     displayed = new Set(
       seq.clips
-        .filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+        .filter(isSubtitleClip)
         .map((clip) => JSON.stringify([clip.start, clip.duration, clip.text])),
     );
   for (const assetId of new Set(sources.map((source) => source.assetId)))
@@ -598,7 +599,7 @@ export function planSrtImport(
   const operations: EditorOperation[] = [],
     keys = new Set(
       seq.clips
-        .filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+        .filter(isSubtitleClip)
         .map((clip) => JSON.stringify([clip.start, clip.duration, clip.text])),
     );
   let skipped = 0;
@@ -661,14 +662,14 @@ function selectedCaptions(seq: EditorSequence, ids?: readonly string[]): TextCli
       ids.some(
         (id) =>
           !seq.clips.some(
-            (clip) => clip.id === id && clip.kind === "text" && clip.role === "subtitle",
+            (clip) => clip.id === id && isSubtitleClip(clip),
           ),
       ))
   )
     throw new Error("请选择有效的字幕片段");
   return seq.clips.filter(
     (clip): clip is TextClip =>
-      clip.kind === "text" && clip.role === "subtitle" && (!ids || ids.includes(clip.id)),
+      isSubtitleClip(clip) && (!ids || ids.includes(clip.id)),
   );
 }
 export function captionTranslationItems(
@@ -808,7 +809,7 @@ export function planDetachCaptions(
 /** Every subtitle of the sequence on any text track, in playback order; titles are never listed. */
 export function listCaptions(value: EditorDocument, sequenceId: string): TextClip[] {
   return sequence(value, sequenceId)
-    .clips.filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+    .clips.filter(isSubtitleClip)
     .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
 }
 const DEFAULT_CAPTION_DURATION = 3 * TICKS_PER_SECOND;

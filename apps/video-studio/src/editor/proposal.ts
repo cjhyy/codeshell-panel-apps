@@ -2,10 +2,11 @@ import { parseProposal } from "../host";
 import { compileEditorSteps } from "./agent-tools";
 import type { EditReceipt } from "./history";
 import { legacyOperationLabel, translateLegacyOperations } from "./legacy-plan";
+import { sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { mainPictureTrack } from "./placement";
 import type { SequenceIdFactory } from "./sequence-edits";
-import type { SessionIdentity } from "./session";
+import { sameIdentity, type SessionIdentity } from "./session";
 import { snapToFrame, TICKS_PER_SECOND } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration } from "./validation";
@@ -61,8 +62,6 @@ export interface EditorProposalReview {
 
 const FIFTEEN_SECONDS = 15 * TICKS_PER_SECOND;
 const secondsText = (tick: number) => (tick / TICKS_PER_SECOND).toFixed(2);
-const sameIdentity = (a: SessionIdentity, b: SessionIdentity) =>
-  a.documentId === b.documentId && a.generation === b.generation && a.revision === b.revision;
 function plain(value: unknown, label: string): Record<string, unknown> {
   if (
     !value ||
@@ -73,11 +72,8 @@ function plain(value: unknown, label: string): Record<string, unknown> {
     throw new Error(`${label}必须是一个 JSON 对象`);
   return value as Record<string, unknown>;
 }
-function sequenceOf(document: EditorDocument, sequenceId: string): EditorSequence {
-  const sequence = document.sequences.find((item) => item.id === sequenceId);
-  if (!sequence) throw new Error("方案对应的时间线不存在");
-  return sequence;
-}
+const sequenceOf = (document: EditorDocument, sequenceId: string) =>
+  findSequence(document, sequenceId, "方案对应的时间线不存在");
 function frozen<T>(value: T): T {
   if (value && typeof value === "object") {
     for (const child of Object.values(value)) frozen(child);

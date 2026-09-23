@@ -79,7 +79,7 @@ import { createMediaTaskBridge } from "./media-task-bridge";
 import { createExternalMediaAccess, isExternalMedia, isResourceId } from "./external-media";
 import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
 import type { EditReceipt } from "./editor/history";
-import { EditorSession, type SessionIdentity } from "./editor/session";
+import { EditorSession, sameIdentity, type SessionIdentity } from "./editor/session";
 import { EditorWorkspace } from "./editor/workspace-ui";
 import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
 import {
@@ -99,6 +99,7 @@ import {
   legacyRestrictionReasons,
   userFacingMessage,
 } from "./editor/legacy-reasons";
+import { isSubtitleClip } from "./editor/lookup";
 import { mainPictureTrack } from "./editor/placement";
 import { planRoughCutPlacement, type RoughCutAnchor } from "./editor/rough-cut-placement";
 import {
@@ -512,12 +513,7 @@ const production = new ProductionController(panel, {
     await session.flush();
     options?.assertCurrent?.();
     const latest = editorSession?.getState().identity;
-    if (
-      editorSession !== session ||
-      latest?.documentId !== identity.documentId ||
-      latest?.generation !== identity.generation ||
-      latest?.revision !== identity.revision
-    )
+    if (editorSession !== session || !sameIdentity(latest, identity))
       throw new Error("保存期间工程已变化，请重新读取后导出");
     return (
       await submitEditorExport(
@@ -1205,11 +1201,7 @@ const spoken = createSpokenUI({
       const expected = editorSession.getState().identity;
       await editorAudioEnhancement.refresh();
       const current = editorSession.getState().identity;
-      if (
-        expected.documentId !== current.documentId ||
-        expected.generation !== current.generation ||
-        expected.revision !== current.revision
-      )
+      if (!sameIdentity(expected, current))
         throw new Error("工程已变化，请重新选择要优化的片段");
       if (editorAudioEnhancement.getState().capability?.state !== "ready")
         throw new Error(editorAudioEnhancement.getState().message);
@@ -1864,11 +1856,7 @@ async function replace(next: unknown, expectedIdentity?: SessionIdentity): Promi
         reportCleanupFailure(`新工程已打开；旧粗剪草稿清理失败：${String(error)}`, async () => {
           const current = editorSession!.getState().identity;
           // New drafts supersede the stale record; do not erase their progress during a later retry.
-          if (
-            current.documentId !== identity.documentId ||
-            current.generation !== identity.generation ||
-            roughCutAI.state.phase !== "idle"
-          )
+          if (!sameIdentity(current, identity, false) || roughCutAI.state.phase !== "idle")
             return;
           await roughCutAI.forgetSavedState();
         });
@@ -2787,11 +2775,7 @@ function offer(value: unknown, origin: ProposalOrigin): void {
 async function applyProposal(value: EditorProposal): Promise<void> {
   if (!editorSession) throw new Error("工程尚未恢复");
   const current = editorSession.getState().identity;
-  if (
-    current.documentId !== value.identity.documentId ||
-    current.generation !== value.identity.generation ||
-    current.revision !== value.identity.revision
-  ) {
+  if (!sameIdentity(current, value.identity)) {
     showProposal(value);
     throw new Error("工程已修改，这份方案已过期，请重新生成");
   }
@@ -5140,12 +5124,7 @@ async function applyEditorDurable(
   if (origin === "production") assertProductionPublicationEditable();
   else assertEditorEditable();
   if (!editorSession) throw new Error("工程尚未恢复");
-  const current = editorSession.getState().identity;
-  if (
-    current.documentId !== identity.documentId ||
-    current.generation !== identity.generation ||
-    current.revision !== identity.revision
-  )
+  if (!sameIdentity(editorSession.getState().identity, identity))
     throw new Error("工程已变化，请重新生成候选");
   const before = editorSession.read(),
     after = applyEditorOperations(before, operations, before.revision);
@@ -5293,7 +5272,7 @@ function editorStatusClipCount(): number | undefined {
   if (!editorSession) return undefined;
   const doc = editorSession.read();
   return (doc.sequences.find((sequence) => sequence.id === doc.activeSequenceId)?.clips ?? []).filter(
-    (clip) => !(clip.kind === "text" && clip.role === "subtitle"),
+    (clip) => !isSubtitleClip(clip),
   ).length;
 }
 function editorCaptionList() {
@@ -5540,8 +5519,7 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
     const currentIdentity = editorSession!.getState().identity;
     const current = editorSession!.read().assets.find((asset) => asset.id === source.id);
     if (
-      identity.documentId !== currentIdentity.documentId ||
-      identity.generation !== currentIdentity.generation ||
+      !sameIdentity(identity, currentIdentity, false) ||
       !current ||
       editorSourceKey(current) !== editorSourceKey(source)
     )
