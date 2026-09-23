@@ -423,3 +423,10 @@ limitation for account metadata; supported background downloads still use their
 saved account. Older Hosts retain their legacy process authorization path. Web
 login capture, real provider login, physical phones, and cloud end-to-end
 acceptance remain required work before declaring workflow parity.
+
+LAN HTTP browsers do not expose `crypto.randomUUID()`. Queue items, duplicate-copy
+suffixes, restored legacy records, and search operation IDs use a shared helper
+that falls back to UUID v4 from `crypto.getRandomValues`. This preserves secure
+randomness without requiring a secure context just to add a download; it does not
+change transport encryption or account authorization. No time-based or
+`Math.random` identifier fallback is used.

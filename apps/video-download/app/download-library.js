@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 // Serializable download metadata. Executable, directory and Cookie grants never
 // cross a panel lifetime; restored records must obtain fresh Host handles.
 export const LIBRARY_VERSION = 2;
@@ -159,7 +160,7 @@ export function storedRecord(item) {
         : "unavailable",
     }));
   return {
-    queueId: text(item.queueId, 100) || crypto.randomUUID(),
+    queueId: text(item.queueId, 100) || randomId(),
     url: videoUrl(item.url),
     title: text(item.title, 500),
     configuration: cleanConfiguration(item.configuration),

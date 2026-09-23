@@ -78,6 +78,8 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
   });
   await page.addInitScript(
     ({ projectDirectoryError, ai }) => {
+      const fixtureUuid = crypto.randomUUID.bind(crypto);
+      if (ai.noRandomUuid) Object.defineProperty(crypto, "randomUUID", { value: undefined });
       const handlers = {};
       let nextProcess = 0;
       window.__panelTools = {};
@@ -193,7 +195,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
             if (method === "tasks.get") return structuredClone(window.__nativeJobs[args.id]);
             if (method === "tasks.start") {
               const job = {
-                id: crypto.randomUUID(),
+                id: fixtureUuid(),
                 entry: { name: args.entry },
                 input: args.input,
                 requestKey: args.requestKey,
@@ -2282,3 +2284,20 @@ for (const width of [390, 1440]) {
     );
   });
 }
+
+test("LAN browsers without randomUUID can submit distinct durable downloads", async (t) => {
+  const page = await openPanel(t, 390, "", 1, { durable: true, noRandomUuid: true });
+  assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
+  await addDownload(page, firstUrl);
+  await addDownload(page, secondUrl);
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2);
+  const jobs = await page.evaluate(() => Object.values(window.__nativeJobs));
+  const keys = jobs.map((job) => job.requestKey);
+  assert.equal(new Set(keys).size, 2);
+  for (const key of keys)
+    assert.match(
+      key,
+      /^download:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+  assert.equal(await page.locator("#form-error").innerText(), "");
+});

@@ -1,4 +1,5 @@
 import { supportsDurableDownloads, createDurableDownloads } from "./durable-downloads.js";
+import { randomId } from "./ids.js";
 import {
   parseVideoLinks,
   videoUrl,
@@ -924,7 +925,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
       )
         throw new Error("批量链接来自不同网站，请先选择“不使用 Cookie”，或按网站分批添加。");
       const item = {
-        queueId: crypto.randomUUID(),
+        queueId: randomId(),
         url,
         title:
           candidate?.title ||
@@ -953,7 +954,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         error: "",
         percent: 0,
         ...(copy
-          ? { copySuffix: crypto.randomUUID().slice(0, 8) }
+          ? { copySuffix: randomId().slice(0, 8) }
           : candidate?.copySuffix
             ? { copySuffix: candidate.copySuffix }
             : {}),
@@ -981,7 +982,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
           if (state === "missing") {
             missing++;
             if (record.files.some((file) => ["empty", "changed"].includes(file.status)))
-              item.copySuffix = crypto.randomUUID().slice(0, 8);
+              item.copySuffix = randomId().slice(0, 8);
           } else unknown++;
         }
         if (existing) {
