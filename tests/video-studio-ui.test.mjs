@@ -178,8 +178,10 @@ async function saved(page) {
   );
 }
 async function demo(page) {
-  await page.locator('[data-action="demo"]:visible').first().click();
   await saved(page);
+  const previous = await readProject(page);
+  await page.locator('[data-action="demo"]:visible').first().click();
+  await waitForProjectSwitch(page, previous?.id, readProject);
   // These older tests exercise the production page's frame-based controls.
   // Canonical Material editing is covered by editor-main/workspace/timeline suites.
   await page.locator('[data-tab="ai"]').click();
@@ -264,7 +266,14 @@ test("timeline activation without pointer coordinates stays inside the selected 
     const original = await readProject(page);
     let start = 0;
     for (const clip of original.clips) {
-      await page.locator(`[data-clip="${clip.id}"]`).evaluate((element) => element.click());
+      // Find and activate the clip in one page task. A locator evaluate resolves the element and
+      // runs the callback in two round trips, so a background render in between would click a
+      // detached, already replaced clip.
+      await page.locator(`#studio [data-clip="${clip.id}"]`).waitFor({ state: "attached" });
+      await page.evaluate(
+        (id) => document.querySelector(`#studio [data-clip="${CSS.escape(id)}"]`).click(),
+        clip.id,
+      );
       const state = await page.evaluate(() => window.__panelTools.read_video_project());
       assert.equal(state.selectedClipId, clip.id);
       assert.equal(state.playheadFrame, start);
