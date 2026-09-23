@@ -46,6 +46,15 @@ interface Resolved {
   duration: Tick;
 }
 
+/**
+ * A cut someone named (段A) labels its clip; an automatic name (片段 2, 反选片段 1) says little
+ * on its own, so the source name stays in front of it.
+ */
+function cutLabel(cut: RoughCut, source: string): string {
+  const name = typeof cut.name === "string" ? cut.name.replace(/\s+/g, " ").trim() : "";
+  if (!name) return source;
+  return (/^(?:反选)?片段 \d+$/.test(name) ? `${source} · ${name}` : name).slice(0, 200);
+}
 function resolveCuts(document: EditorDocument, cuts: readonly RoughCut[]): Resolved[] {
   if (!Array.isArray(cuts) || !cuts.length || cuts.length > MAX_CUTS)
     throw new Error(`请选择 1–${MAX_CUTS} 个粗剪片段`);
@@ -77,7 +86,7 @@ function resolveCuts(document: EditorDocument, cuts: readonly RoughCut[]): Resol
       cut,
       kind: asset.kind,
       assetId: asset.id,
-      label: asset.name,
+      label: cutLabel(cut, asset.name),
       inTick,
       outTick,
       duration: outTick - inTick,

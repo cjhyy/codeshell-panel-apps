@@ -121,6 +121,8 @@ export function createRoughCutUI(context: RoughCutContext) {
   let queueIds: string[] | undefined;
   let queueExpanded = false;
   let bulkOpen = false;
+  /** The last 加入成片 result, shown on 粗剪 with 查看成片 until the project changes. */
+  let placed: { projectId: string; message: string } | undefined;
   let aiOpen = false;
   let aiScope: "current" | "queue" = "current";
   let appendAnchor: RoughCutAnchor = storedAnchor();
@@ -304,6 +306,9 @@ export function createRoughCutUI(context: RoughCutContext) {
         <span class="roughcut-tag">先挑段，再成片</span>
       </div>
       <p class="section-description">素材先挑段，加入成片后继续剪辑。</p>
+      ${placed?.projectId === context.project().id
+        ? `<p class="roughcut-notice roughcut-placed" role="status">${esc(placed.message)}<button type="button" class="quiet" data-action="view-program">查看成片</button></p>`
+        : ""}
       <label class="roughcut-source-label" for="roughcut-source">当前素材</label>
       <select id="roughcut-source" data-roughcut-field="asset" aria-label="选择粗剪素材">
         <option value="" ${!source ? "selected" : ""}>选择一段视频或音频</option>
@@ -1161,9 +1166,11 @@ ${esc(aiGoal)}</textarea
             enabled.map((item) => item.id),
             appendAnchor,
           );
-          context.toast(
-            `已按队列顺序加入 ${new Set(enabled.map((item) => item.assetId)).size} 份素材的 ${enabled.length} 个片段`,
-          );
+          placed = {
+            projectId: context.project().id,
+            message: `已按队列顺序加入 ${new Set(enabled.map((item) => item.assetId)).size} 份素材的 ${enabled.length} 个片段`,
+          };
+          context.changed();
         } else return false;
       } catch (error) {
         errorMessage(error);
@@ -1292,9 +1299,11 @@ ${esc(aiGoal)}</textarea
           enabled.map((item) => item.id),
           appendAnchor,
         );
-        context.toast(
-          `已按列表顺序加入 ${enabled.length} 个${source.kind === "audio" ? "音频" : "视频"}片段`,
-        );
+        placed = {
+          projectId: context.project().id,
+          message: `已按列表顺序加入 ${enabled.length} 个${source.kind === "audio" ? "音频" : "视频"}片段`,
+        };
+        context.changed();
       } else if (verb === "csv") {
         if (!sourceCuts().some((item) => item.enabled)) throw new Error("先勾选要导出的保留段");
         context.downloadCsv(

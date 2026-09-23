@@ -141,7 +141,7 @@ test("placing at the playhead on real media keeps the source's true tail", () =>
     { time: 0, source: 30 * F },
     { time: TALK - 30 * F, source: TALK },
   ]);
-  assert.equal(placed.label, "口播原片");
+  assert.equal(placed.label, "c1", "The cut's own name labels the clip");
   assert.deepEqual(placed.audio, defaultAudioMix());
   // An interior out point stays on its frame.
   const inner = planRoughCutPlacement(doc, "main", [cut("c2", "talk", 30, 90)], { at, idFactory });
@@ -674,4 +674,16 @@ test("titles never land on the subtitle track and prefer a track that already ho
     trackId: "titles",
     operations: [],
   });
+});
+
+test("a named cut labels its placed clip; an automatic name keeps the source name in front", () => {
+  const doc = document({ clips: [] });
+  const named = { ...cut("n1", "talk", 0, 30), name: "段A" };
+  const automatic = { ...cut("n2", "talk", 30, 60), name: "片段 2" };
+  const plan = planRoughCutPlacement(doc, "main", [named, automatic], { at: 0, idFactory });
+  const after = apply(doc, plan.operations);
+  assert.deepEqual(
+    plan.clipIds.map((id) => clip(after, id).label),
+    ["段A", "口播原片 · 片段 2"],
+  );
 });

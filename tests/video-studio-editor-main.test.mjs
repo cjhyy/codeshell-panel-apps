@@ -1840,9 +1840,23 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
       before.sequences[0].clips.find((clip) => clip.id === id),
     );
   assert.deepEqual(placed.production.roughCuts, before.production.roughCuts);
-  // The composition returns with the new clip selected and the playhead after the placed run.
+  assert.equal(added[0].label, "保留结尾", "The placed clip carries the cut's name");
+  // 粗剪 stays open for the next cut; 查看成片 shows the new clip selected, playhead after the run.
   const end = at + take - 30 * 8000;
+  const notice = page.locator("#studio .roughcut-placed");
+  await notice.waitFor({ state: "visible" });
+  assert.match(await notice.textContent(), /已按列表顺序加入 1 个视频片段/);
+  assert.equal(await page.locator("#roughcut-source").isVisible(), true, "Still on 粗剪");
+  assert.equal(
+    await page.locator('#studio .rail [data-tab="roughcut"]').getAttribute("aria-pressed"),
+    "true",
+  );
+  await notice.getByRole("button", { name: "查看成片", exact: true }).click();
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator('#studio .rail [data-tab="media"]').getAttribute("aria-pressed"),
+    "true",
+  );
   assert.equal(
     await page.locator(`[data-et-clip="${added[0].id}"]`).getAttribute("aria-selected"),
     "true",
@@ -1875,6 +1889,7 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
   );
   assert.equal(second.start, end, "The next placement follows the previous one");
   assert.equal(second.duration, 30 * 8000);
+  assert.equal(second.label, "第二段");
   for (const a of twice.clips)
     for (const b of twice.clips)
       if (a.id < b.id && a.trackId === b.trackId)
@@ -1884,8 +1899,8 @@ test("粗剪 加入成片 places real off-frame media at the playhead of a multi
   const undone = await waitSaved(page);
   assert.deepEqual(undone.sequences, placed.sequences, "One undo removes one placement");
   assert.equal(undone.production.roughCuts.length, 2, "Undo keeps the saved marks");
+  // The placement result is the 粗剪 notice above; nothing technical or failed was announced.
   const toasts = await page.evaluate(() => window.__toasts.join("\n"));
-  assert.match(toasts, /已按列表顺序加入 1 个视频片段/);
   assert.doesNotMatch(toasts, /旧视图|失败|无效|不能/);
 });
 

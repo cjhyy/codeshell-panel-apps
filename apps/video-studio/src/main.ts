@@ -2366,7 +2366,7 @@ async function placeRoughCuts(cutIds: string[], anchor: RoughCutAnchor): Promise
   voiceover.stopPreview();
   stop();
   mediaPreview = false;
-  if (tab === "roughcut") tab = "media";
+  // 粗剪 stays open for the next cut; its notice offers 查看成片.
   if ([...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === plan.clipIds[0]))
     selected = plan.clipIds[0]!;
   // The playhead continues after the placed run, so the next 加入 keeps the order.
@@ -4052,6 +4052,10 @@ async function action(name: string, id?: string): Promise<void> {
     }
     case "recheck-transcription":
       await recheckTranscription();
+      break;
+    case "view-program":
+      showEditorWorkspace();
+      editorWorkspace?.revealSelection();
       break;
     case "open-export-jobs":
       editorExportJobs?.show(id);

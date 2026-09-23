@@ -950,6 +950,10 @@ async function expectPreviewFrame(page, assetId, sourceFrame) {
   );
 }
 
+/** 加入成片 keeps 粗剪 open; its notice's 查看成片 shows the composition. */
+async function viewProgram(page) {
+  await page.locator(".roughcut-placed").getByRole("button", { name: "查看成片", exact: true }).click();
+}
 /** Rough-cut placement leaves the playhead after the placed run; single adds leave it at the start. */
 async function expectTimelinePreview(page, clip, frame, playheadFrame = frame) {
   assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
@@ -1621,6 +1625,7 @@ test(
         ],
       );
       assert.deepEqual(joined.roughCuts, marked.roughCuts);
+      await viewProgram(page);
       await expectTimelinePreview(page, joined.clips[before.project.clips.length], 180, 240);
       // Return from rough cutting to the visible timeline, then verify that
       // selecting a different clip changes real composition pixels.
@@ -1816,6 +1821,7 @@ test(
         "Joining uses list order and exact source ranges",
       );
       assert.deepEqual(assembled.roughCuts, ordered.roughCuts);
+      await viewProgram(page);
       await expectTimelinePreview(page, assembled.clips[1], 180, 240);
 
       const json = await download(page, '[data-action="save-project"]');
@@ -1910,7 +1916,8 @@ test(
       assert.equal(first.clips[1].id, before.clips[0].id);
       assert.equal((await state(page)).playheadFrame, 30, "The playhead continues after the insert");
       assert.equal((await state(page)).selectedClipId, first.clips[0].id);
-      await page.locator(`[data-rough-source="${video.id}"]`).click();
+      // 粗剪 stays open with the same source, ready for the next cut.
+      assert.equal(await page.locator("#roughcut-source").inputValue(), video.id);
       assert.equal(await anchor.inputValue(), "playhead", "The chosen position is remembered");
       await page.locator('[data-action="roughcut-append"]').click();
       await saved(page);
@@ -1926,6 +1933,7 @@ test(
         "A second insert continues after the first instead of reversing the order",
       );
       assert.equal((await state(page)).playheadFrame, 60);
+      await viewProgram(page);
       await page
         .locator('[data-action="undo"]:visible,[data-ew-action="undo"]:visible')
         .first()
@@ -1960,6 +1968,7 @@ test(
         ]),
         [[audio.id, 0, audio.durationFrames, 0]],
       );
+      await viewProgram(page);
       assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       const after = (await state(page)).playheadFrame;
       assert.ok(
