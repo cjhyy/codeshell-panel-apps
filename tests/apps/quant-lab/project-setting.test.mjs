@@ -234,3 +234,15 @@ test("capability changes cannot silently fall back to unconditional writes", asy
   await assert.rejects(store.save({ industry: "eastmoney" }), { code: "STORAGE_MODE_CHANGED" });
   assert.equal(f.calls.length, 1);
 });
+
+test("verifying current data before a dependent operation rejects changes without adopting their revision", async () => {
+  const f = fixture({ items: [] });
+  const a = f.store({ label: "关注记录" }),
+    b = f.store({ label: "关注记录" });
+  await Promise.all([a.load(), b.load()]);
+  await a.assertCurrent();
+  await b.save({ items: [{ symbol: "AAPL" }] });
+  await assert.rejects(a.assertCurrent(), /其他页面或设备已修改关注记录/);
+  await assert.rejects(a.save({ items: [{ symbol: "MSFT" }] }), { code: "STORAGE_CONFLICT" });
+  assert.deepEqual(f.snapshot().value, { items: [{ symbol: "AAPL" }] });
+});

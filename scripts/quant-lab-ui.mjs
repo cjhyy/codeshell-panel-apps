@@ -1482,10 +1482,11 @@ async function installHostStub(
     availableRuntimes = ["node", "nodejs"],
     localDataAvailable = true,
     liveRefreshFailure = "",
+    versionedStorage = false,
   } = {},
 ) {
   await target.addInitScript(
-    ([fixtureCsv, fixtureFingerprint, seed, expectedWorkspaceRoot, fixedNow, rejectedKeys, fileSeed, rejectedWritePaths, seededAutomations, rejectedAutomationNames, rejectedAutomationDeleteIds, fixtureLiveSnapshot, fixtureSelectionSnapshot, fixtureStockDetailSnapshot, fixtureUsStockDetailSnapshot, fixtureHistoryLibrarySummary, fixtureRuntimeNames, fixtureLocalDataAvailable, fixtureLiveRefreshFailure]) => {
+    ([fixtureCsv, fixtureFingerprint, seed, expectedWorkspaceRoot, fixedNow, rejectedKeys, fileSeed, rejectedWritePaths, seededAutomations, rejectedAutomationNames, rejectedAutomationDeleteIds, fixtureLiveSnapshot, fixtureSelectionSnapshot, fixtureStockDetailSnapshot, fixtureUsStockDetailSnapshot, fixtureHistoryLibrarySummary, fixtureRuntimeNames, fixtureLocalDataAvailable, fixtureLiveRefreshFailure, fixtureVersionedStorage]) => {
       const persisted = window.localStorage.getItem("quant-lab-e2e-storage");
       const store = new Map(persisted ? JSON.parse(persisted) : seed);
       const persistedFiles = window.localStorage.getItem("quant-lab-e2e-files");
@@ -1509,6 +1510,16 @@ async function installHostStub(
       persistStore();
       persistFiles();
       window.__storage = store;
+      window.__rejectStorageReads = new Set();
+      // Opaque content revision for this bridge fixture; actual SHA/file locking
+      // is exercised by the cross-repository Host verifier.
+      const storageSnapshot = (key) => {
+        const exists = store.has(key);
+        const value = exists ? structuredClone(store.get(key)) : null;
+        let hash = 2166136261;
+        for (const char of JSON.stringify([key, value])) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+        return { exists, value, revision: exists ? `sha256:${(hash >>> 0).toString(16).padStart(8, "0").repeat(8)}` : null };
+      };
       window.__files = files;
       window.__hostCalls = [];
       window.__historyLibrarySummary = fixtureHistoryLibrarySummary;
@@ -1528,6 +1539,7 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
+        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set"] } : {}),
       };
       window.__contextChangedHandlers = new Set();
       window.__panelEventHandlers = new Map();
@@ -1821,6 +1833,16 @@ async function installHostStub(
               revision: nextRevision,
             });
           }
+          if (method === "storage.getSnapshot") {
+            if (window.__rejectStorageReads.has(params.key)) return Promise.reject(new Error("storage read unavailable"));
+            return Promise.resolve(storageSnapshot(params.key));
+          }
+          if (method === "storage.compareAndSet") {
+            if (rejectedKeys.includes(params.key)) return Promise.reject(new Error("Panel App storage quota exceeded"));
+            const updated = params.expectedRevision === storageSnapshot(params.key).revision;
+            if (updated) { store.set(params.key, structuredClone(params.value)); persistStore(); }
+            return Promise.resolve({ updated, snapshot: storageSnapshot(params.key) });
+          }
           if (method === "storage.get") return Promise.resolve(store.get(params.key) ?? null);
           if (method === "storage.set") {
             if (rejectedKeys.includes(params.key)) {
@@ -1906,6 +1928,7 @@ async function installHostStub(
       availableRuntimes,
       localDataAvailable,
       liveRefreshFailure,
+      versionedStorage,
     ],
   );
 }
@@ -4971,6 +4994,73 @@ const failingSeed = [
     failingSeed[0][1],
     "a failed write must leave the original value in place",
   );
+  await scenarioContext.close();
+}
+
+// Modern Host: stale device edits remain drafts and cannot alter reminders.
+{
+  const initial = { items: [{ id: "original", symbol: "AAPL", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null }], watchlistMigrationVersion: 1 };
+  const { scenarioContext, scenarioPage } = await openScenario([[watchlistKey, initial]], { versionedStorage: true });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  await scenarioPage.click('[data-module-tab="watch"]');
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-add").disabled);
+  await scenarioPage.evaluate((key) => {
+    const value = structuredClone(window.__storage.get(key));
+    value.items.push({ id: "other-device", symbol: "MSFT", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null });
+    window.__storage.set(key, value);
+  }, watchlistKey);
+  await scenarioPage.fill("#watch-symbol", "GOOG");
+  await scenarioPage.selectOption("#watch-rule", "rsi-oversold");
+  await scenarioPage.click("#watch-add");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.doesNotMatch(await scenarioPage.locator("#toast").textContent(), /已关注/);
+  assert.deepEqual(await scenarioPage.evaluate((key) => window.__storage.get(key).items.map(item => item.symbol), watchlistKey), ["AAPL", "MSFT"]);
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  await scenarioPage.evaluate(() => document.querySelector("#watch-schedule").dispatchEvent(new Event("click")));
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some(call => /^automations\.(create|update|delete)$/.test(call.method))), false);
+  const recoveryBounds = await scenarioPage.locator("#watch-storage-recovery").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, width: innerWidth,
+      heights: [...element.querySelectorAll("button")].map(button => button.getBoundingClientRect().height) };
+  });
+  assert(recoveryBounds.left >= 0 && recoveryBounds.right <= recoveryBounds.width);
+  assert(recoveryBounds.heights.every(height => height >= 44));
+  if (process.env.QUANT_LAB_WATCH_STORAGE_SCREENSHOT) {
+    await scenarioPage.locator("#watch-storage-state").scrollIntoViewIfNeeded();
+    await scenarioPage.screenshot({ path: process.env.QUANT_LAB_WATCH_STORAGE_SCREENSHOT });
+  }
+  const downloading = scenarioPage.waitForEvent("download");
+  await scenarioPage.click("#watch-storage-backup");
+  const backup = JSON.parse(await readFile(await (await downloading).path(), "utf8"));
+  assert.deepEqual(backup.items.map(item => item.symbol), ["AAPL", "GOOG"]);
+  await scenarioPage.evaluate((key) => window.__rejectStorageReads.add(key), watchlistKey);
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("读取失败"));
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-add").isDisabled(), true);
+  await scenarioPage.evaluate(() => window.__rejectStorageReads.clear());
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-add").disabled);
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /MSFT/);
+  assert.doesNotMatch(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-storage-recovery").isHidden(), true);
+  // A fresh remote change must also be caught when the user never attempts a save.
+  await scenarioPage.evaluate((key) => {
+    const value = structuredClone(window.__storage.get(key));
+    value.items.push({ id: "other-change", symbol: "META", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null });
+    window.__storage.set(key, value);
+  }, watchlistKey);
+  await scenarioPage.click("#watch-schedule");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 0);
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-schedule").disabled);
+  await scenarioPage.click("#watch-schedule");
+  await scenarioPage.waitForFunction(() => window.__automations.length === 1);
+  const prompt = await scenarioPage.evaluate(() => window.__automations[0].prompt);
+  assert.match(prompt, /MSFT/); assert.match(prompt, /META/); assert.doesNotMatch(prompt, /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-storage-state").isHidden(), true);
   await scenarioContext.close();
 }
 

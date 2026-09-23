@@ -49,7 +49,8 @@ function publicRule(item) {
   const rule = item?.rule && typeof item.rule === "object" ? item.rule : {};
   // `signal-entry` evaluates the strategy snapshot the user validated; without
   // it `evaluateWatchItem` cannot run and the agent would have to improvise.
-  const strategy = rule.type === "signal-entry" ? rule.strategy ?? item?.strategy ?? null : undefined;
+  const strategy =
+    rule.type === "signal-entry" ? (rule.strategy ?? item?.strategy ?? null) : undefined;
   return {
     id: item?.id ?? `${item?.symbol ?? "watch"}:${rule.type ?? "rule"}`,
     symbol: item?.symbol ?? null,
@@ -119,9 +120,9 @@ function exactTask(tasks, plan) {
 function taskMatches(task, plan) {
   return Boolean(
     task &&
-      task.schedule === plan.schedule &&
-      task.timezone === plan.timezone &&
-      task.prompt === plan.prompt,
+    task.schedule === plan.schedule &&
+    task.timezone === plan.timezone &&
+    task.prompt === plan.prompt,
   );
 }
 
@@ -135,6 +136,9 @@ export function createAlertsController({
   watchlist: currentWatchlist,
   notify = () => {},
   blocked = () => false,
+  beforeChange = async () => {},
+  onBusyChange = () => {},
+  currentEpoch = () => 0,
 }) {
   const state = {
     tasks: { cn: null, us: null },
@@ -144,6 +148,21 @@ export function createAlertsController({
     loaded: false,
     inFlight: false,
   };
+
+  let generation = 0;
+  const scope = () => ({ epoch: currentEpoch(), generation });
+  const current = (operation) =>
+    operation.epoch === currentEpoch() && operation.generation === generation;
+  function assertCurrent(operation) {
+    if (!current(operation)) throw new Error("项目已切换，旧项目的提醒操作已停止。");
+  }
+  async function verifyChange(operation) {
+    assertCurrent(operation);
+    if (blocked()) throw new Error("请先保存并核对关注记录，现有提醒保持不变。");
+    await beforeChange();
+    assertCurrent(operation);
+    if (blocked()) throw new Error("关注记录尚未核对，现有提醒保持不变。");
+  }
 
   function plans() {
     return buildDeskAutomations(currentWatchlist());
@@ -158,7 +177,10 @@ export function createAlertsController({
     return (
       required.length > 0 &&
       required.every(
-        (plan) => usablePlan(plan) && state.tasks[plan.market] && taskMatches(state.tasks[plan.market], plan),
+        (plan) =>
+          usablePlan(plan) &&
+          state.tasks[plan.market] &&
+          taskMatches(state.tasks[plan.market], plan),
       )
     );
   }
@@ -221,8 +243,7 @@ export function createAlertsController({
       setText(row.status, "未开启");
       setText(row.button, "开启");
     }
-    row.button.disabled =
-      state.inFlight || blocked() || (!task && (!plan || Boolean(plan.error)));
+    row.button.disabled = state.inFlight || blocked() || (!task && (!plan || Boolean(plan.error)));
   }
 
   function render() {
@@ -258,8 +279,10 @@ export function createAlertsController({
     }
   }
 
-  async function readState() {
+  async function readState(operation = scope()) {
+    assertCurrent(operation);
     const result = await hostCall("automations.list", {});
+    assertCurrent(operation);
     const tasks = automationList(result);
     for (const market of MARKET_ORDER) {
       const plan = planFor(market) ?? MARKET_TASKS[market];
@@ -269,13 +292,16 @@ export function createAlertsController({
         state.retryIntent[market] = null;
       }
     }
-    state.legacy = tasks.filter((task) => typeof task?.name === "string" && LEGACY_NAME.test(task.name));
+    state.legacy = tasks.filter(
+      (task) => typeof task?.name === "string" && LEGACY_NAME.test(task.name),
+    );
     state.loaded = true;
     render();
     return tasks;
   }
 
-  async function ensureMarket(market) {
+  async function ensureMarket(market, operation) {
+    assertCurrent(operation);
     const plan = planFor(market);
     state.errors[market] = null;
     if (!plan) {
@@ -290,7 +316,8 @@ export function createAlertsController({
       return null;
     }
     try {
-      const tasks = await readState();
+      const tasks = await readState(operation);
+      await verifyChange(operation);
       let task = exactTask(tasks, plan);
       if (task) {
         if (!taskMatches(task, plan)) {
@@ -310,7 +337,9 @@ export function createAlertsController({
           timezone: plan.timezone,
         });
       }
+      assertCurrent(operation);
       const verified = await hostCall("automations.list", {});
+      assertCurrent(operation);
       task = exactTask(automationList(verified), plan);
       if (!task || !taskMatches(task, plan)) {
         throw new Error("创建后 list 验证不一致");
@@ -319,18 +348,21 @@ export function createAlertsController({
       state.retryIntent[market] = null;
       return task;
     } catch (error) {
+      if (!current(operation)) return null;
       state.errors[market] = error instanceof Error ? error.message : "任务操作失败";
       state.retryIntent[market] = "ensure";
       return null;
     } finally {
-      render();
+      if (current(operation)) render();
     }
   }
 
-  async function deleteMarket(market) {
+  async function deleteMarket(market, operation) {
+    assertCurrent(operation);
     state.errors[market] = null;
     try {
-      const tasks = await readState();
+      const tasks = await readState(operation);
+      await verifyChange(operation);
       const task = exactTask(tasks, MARKET_TASKS[market]);
       if (!task) {
         state.tasks[market] = null;
@@ -338,46 +370,61 @@ export function createAlertsController({
         return true;
       }
       const result = await hostCall("automations.delete", { id: task.id });
+      assertCurrent(operation);
       if (result?.ok === false) throw new Error("Host 未删除任务");
       state.tasks[market] = null;
       state.retryIntent[market] = null;
       return true;
     } catch (error) {
+      if (!current(operation)) return false;
       state.errors[market] = error instanceof Error ? error.message : "任务关闭失败";
       state.retryIntent[market] = "remove";
       return false;
     } finally {
-      render();
+      if (current(operation)) render();
     }
   }
 
-  async function withFlight(operation) {
+  async function withFlight(action) {
     if (state.inFlight) return;
+    const operation = scope();
     state.inFlight = true;
+    onBusyChange();
     render();
     try {
-      await operation();
-      await readState().catch(() => undefined);
+      await verifyChange(operation);
+      await action(operation);
+      assertCurrent(operation);
+      await readState(operation).catch(() => undefined);
+    } catch (error) {
+      if (current(operation))
+        notify(error instanceof Error ? error.message : "提醒操作失败", "error");
     } finally {
-      state.inFlight = false;
-      render();
+      if (current(operation)) {
+        state.inFlight = false;
+        onBusyChange();
+        render();
+      }
     }
   }
 
   async function toggleAll() {
-    await withFlight(async () => {
+    await withFlight(async (operation) => {
       if (blocked()) return notify("请先处理关注迁移状态；现有提醒保持不变", "error");
       const required = plans();
       if (required.length === 0) return notify("请先添加关注标的", "error");
-      await readState();
+      await readState(operation);
       if (required.every((plan) => state.tasks[plan.market])) {
-        for (const plan of required) await deleteMarket(plan.market);
+        for (const plan of required) await deleteMarket(plan.market, operation);
+        assertCurrent(operation);
         notify("分市场提醒关闭结果已逐项显示");
       } else {
         for (const plan of required) {
           const task = state.tasks[plan.market];
-          if (!task || (usablePlan(plan) && !taskMatches(task, plan))) await ensureMarket(plan.market);
+          if (!task || (usablePlan(plan) && !taskMatches(task, plan)))
+            await ensureMarket(plan.market, operation);
         }
+        assertCurrent(operation);
         notify("分市场提醒开启结果已逐项显示");
       }
     });
@@ -385,10 +432,10 @@ export function createAlertsController({
 
   async function toggleMarket(market) {
     let action = state.retryIntent[market];
-    await withFlight(async () => {
+    await withFlight(async (operation) => {
       if (blocked()) return notify("请先处理关注迁移状态；现有提醒保持不变", "error");
       try {
-        await readState();
+        await readState(operation);
         if (action === "read") {
           for (const candidate of MARKET_ORDER) {
             if (state.retryIntent[candidate] !== "read") continue;
@@ -401,14 +448,16 @@ export function createAlertsController({
         }
         const plan = planFor(market);
         const task = state.tasks[market];
-        action ??= task && usablePlan(plan) && !taskMatches(task, plan)
-          ? "ensure"
-          : task
-            ? "remove"
-            : "ensure";
-        if (action === "remove") await deleteMarket(market);
-        else await ensureMarket(market);
+        action ??=
+          task && usablePlan(plan) && !taskMatches(task, plan)
+            ? "ensure"
+            : task
+              ? "remove"
+              : "ensure";
+        if (action === "remove") await deleteMarket(market, operation);
+        else await ensureMarket(market, operation);
       } catch (error) {
+        if (!current(operation)) return;
         state.errors[market] = error instanceof Error ? error.message : "无法读取任务";
         state.retryIntent[market] = action ?? "read";
         render();
@@ -417,21 +466,24 @@ export function createAlertsController({
   }
 
   async function removeLegacy() {
-    await withFlight(async () => {
-      await readState();
+    await withFlight(async (operation) => {
+      await readState(operation);
       if (!allRequiredActive()) {
         notify("新分市场任务尚未全部验证，旧任务继续保留", "error");
         return;
       }
       for (const task of [...state.legacy]) {
         try {
+          await verifyChange(operation);
           const result = await hostCall("automations.delete", { id: task.id });
+          assertCurrent(operation);
           if (result?.ok === false) throw new Error("Host 未删除旧任务");
         } catch (error) {
+          if (!current(operation)) return;
           notify(error instanceof Error ? error.message : "旧任务删除失败", "error");
         }
       }
-      await readState();
+      await readState(operation);
       if (state.legacy.length === 0) notify("旧版单任务已移除；分市场任务继续运行");
     });
   }
@@ -443,20 +495,25 @@ export function createAlertsController({
   elements.legacyRemove?.addEventListener("click", () => void removeLegacy());
 
   return {
-    load: () => readState().catch((error) => {
-      const message = error instanceof Error ? error.message : "无法读取任务";
-      state.errors.cn = message;
-      state.errors.us = message;
-      state.retryIntent.cn = "read";
-      state.retryIntent.us = "read";
-      render();
-    }),
+    load() {
+      const operation = scope();
+      return readState(operation).catch((error) => {
+        if (!current(operation)) return;
+        const message = error instanceof Error ? error.message : "无法读取任务";
+        state.errors.cn = message;
+        state.errors.us = message;
+        state.retryIntent.cn = "read";
+        state.retryIntent.us = "read";
+        render();
+      });
+    },
     render,
     state,
     toggleAll,
     toggleMarket,
     removeLegacy,
     reset() {
+      generation++;
       state.tasks.cn = null;
       state.tasks.us = null;
       state.errors.cn = null;
@@ -466,6 +523,7 @@ export function createAlertsController({
       state.legacy = [];
       state.loaded = false;
       state.inFlight = false;
+      onBusyChange();
       render();
     },
   };

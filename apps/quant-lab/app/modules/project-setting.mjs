@@ -18,7 +18,13 @@ function snapshot(raw) {
 
 // One instance belongs to one loaded project setting. Reloading is explicit:
 // a conflict response must never authorize an automatic retry of an old draft.
-export function createProjectSetting({ hostCall, key, currentEpoch, getContext }) {
+export function createProjectSetting({
+  hostCall,
+  key,
+  currentEpoch,
+  getContext,
+  label = "数据源配置",
+}) {
   const epoch = currentEpoch();
   const methods = getContext().availableMethods;
   const versioned =
@@ -59,7 +65,7 @@ export function createProjectSetting({ hostCall, key, currentEpoch, getContext }
   }
   function uncertain() {
     return failure(
-      "无法确认配置是否已保存。当前填写内容已保留，请先备份，再读取最新配置核对。",
+      `无法确认${label}是否已保存。当前填写内容已保留，请先备份，再读取最新记录核对。`,
       "STORAGE_UNCERTAIN",
     );
   }
@@ -83,6 +89,21 @@ export function createProjectSetting({ hostCall, key, currentEpoch, getContext }
         loaded = true;
         blocked = undefined;
         return value;
+      });
+    },
+    assertCurrent() {
+      return serial(async () => {
+        if (blocked) throw blocked;
+        if (!loaded) throw failure(`${label}尚未成功读取，请先重新读取。`, "STORAGE_NOT_LOADED");
+        if (!versioned) return;
+        const record = await readSnapshot();
+        if (record.revision !== revision) {
+          blocked = failure(
+            `其他页面或设备已修改${label}。请先备份当前内容，再读取最新记录。`,
+            "STORAGE_CONFLICT",
+          );
+          throw blocked;
+        }
       });
     },
     save(value) {
@@ -119,7 +140,7 @@ export function createProjectSetting({ hostCall, key, currentEpoch, getContext }
           const record = snapshot(result?.snapshot);
           if (result.updated === false) {
             blocked = failure(
-              "其他页面或设备已修改数据源配置。当前填写内容已保留，请先备份，再读取最新配置。",
+              `其他页面或设备已修改${label}。当前填写内容已保留，请先备份，再读取最新记录。`,
               "STORAGE_CONFLICT",
             );
             throw blocked;
