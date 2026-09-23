@@ -136,6 +136,8 @@ export class EditorTimeline {
     container.addEventListener("pointerup", this.pointerup);
     container.addEventListener("pointercancel", this.cancel);
     container.addEventListener("lostpointercapture", this.lostCapture);
+    window.addEventListener("blur", this.interrupt);
+    globalThis.document.addEventListener("visibilitychange", this.interrupt);
     container.addEventListener("dragover", this.dragover);
     container.addEventListener("drop", this.drop);
     container.addEventListener("contextmenu", this.contextmenu);
@@ -322,7 +324,9 @@ export class EditorTimeline {
     scroll.addEventListener(
       "scroll",
       () => {
-        if (scroll.scrollLeft === this.scrollPosition) return;
+        // A scroll event queued for a scroller this render replaced still fires after it is
+        // detached, where scrollLeft reads 0. Rendering for it would queue the next stale event.
+        if (scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
         this.scrollPosition = scroll.scrollLeft;
         if (!this.drag) this.render();
       },
@@ -1005,6 +1009,11 @@ export class EditorTimeline {
   private pointermove = (event: PointerEvent) => {
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    // A release this page never received must not let later hovering resume the gesture.
+    if (event.buttons === 0) {
+      this.cancel();
+      return;
+    }
     drag.lastX = event.clientX;
     drag.lastY = event.clientY;
     this.run(() => {
@@ -1288,6 +1297,12 @@ export class EditorTimeline {
   private lostCapture = (event: PointerEvent) => {
     if (this.drag?.pointerId === event.pointerId) this.cancel();
   };
+  /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
+  private interrupt = (event: Event) => {
+    const hidden = globalThis.document.visibilityState === "hidden";
+    if (!this.drag || (event.type === "visibilitychange" && !hidden)) return;
+    this.run(() => this.cancel());
+  };
   dispose(): void {
     this.closeMenu();
     this.cancel();
@@ -1303,6 +1318,8 @@ export class EditorTimeline {
     this.container.removeEventListener("pointerup", this.pointerup);
     this.container.removeEventListener("pointercancel", this.cancel);
     this.container.removeEventListener("lostpointercapture", this.lostCapture);
+    window.removeEventListener("blur", this.interrupt);
+    globalThis.document.removeEventListener("visibilitychange", this.interrupt);
     this.container.removeEventListener("dragover", this.dragover);
     this.container.removeEventListener("drop", this.drop);
     this.container.removeEventListener("contextmenu", this.contextmenu);

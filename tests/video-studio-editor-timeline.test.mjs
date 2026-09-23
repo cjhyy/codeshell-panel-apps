@@ -699,6 +699,122 @@ test("Escape, lost pointer capture and disposal stop automatic scrolling without
   }
 });
 
+/** Rebuilds of the timeline DOM over a quiet period; an idle timeline must not rebuild at all. */
+async function idleRenders(page, milliseconds = 300) {
+  return page.evaluate(
+    (milliseconds) =>
+      new Promise((resolve) => {
+        let count = 0;
+        const observer = new MutationObserver((records) => {
+          count += records.filter((record) => record.target.id === "timeline").length;
+        });
+        observer.observe(document.querySelector("#timeline"), { childList: true });
+        setTimeout(() => {
+          observer.disconnect();
+          resolve(count);
+        }, milliseconds);
+      }),
+    milliseconds,
+  );
+}
+
+test("selecting a clip at the right edge or releasing an edge drag leaves a scrolled timeline idle and clickable", async (t) => {
+  const clips = [
+    { id: "a", trackId: "v1", start: 1, duration: 2 },
+    { id: "edge", trackId: "v2", start: 14.5, duration: 1.2 },
+    { id: "far", trackId: "v1", start: 100, duration: 3 },
+  ];
+  const page = await fixture(t, { clips });
+  const view = await page.locator(".et-scroll").boundingBox(),
+    edge = await clip(page, "edge").boundingBox();
+  assert.ok(
+    edge.x < view.x + view.width && edge.x + edge.width > view.x + view.width,
+    "The fixture clip must straddle the right edge of the viewport",
+  );
+  // Playwright reveals the clip like browser focus does, then clicks it without moving.
+  await clip(page, "edge").click();
+  await settle(page);
+  const scrolled = await scrollSnapshot(page);
+  assert.ok(scrolled.left > 0, "Revealing the straddling clip scrolls the timeline");
+  assert.deepEqual((await state(page)).selected, ["edge"]);
+  assert.equal(
+    await idleRenders(page),
+    0,
+    "A finished click must not keep rebuilding the timeline",
+  );
+  await assertScrollStopped(page);
+  assert.equal((await scrollSnapshot(page)).left, scrolled.left);
+  await clickClip(page, "a");
+  assert.deepEqual((await state(page)).selected, ["a"], "A later click still selects");
+  assert.equal((await state(page)).applied.length, 0, "Selection alone never edits");
+
+  // Two rebuilds in one task at a non-zero scroll position must also settle.
+  await page.evaluate(() => {
+    fixture.replaceGeneration();
+    fixture.replaceGeneration();
+  });
+  await settle(page);
+  assert.equal(await idleRenders(page), 0, "Back-to-back renders must not feed each other");
+
+  const dragged = await fixture(t, { clips });
+  await startEdgeDrag(dragged);
+  await dragged.mouse.up();
+  await settle(dragged);
+  assert.equal((await state(dragged)).applied.length, 1);
+  assert.equal(
+    await idleRenders(dragged),
+    0,
+    "Releasing an auto-scrolled drag must leave the timeline idle",
+  );
+  await assertScrollStopped(dragged);
+  await clickClip(dragged, "edge");
+  assert.deepEqual((await state(dragged)).selected, ["edge"], "A later click still selects");
+  assert.deepEqual((await state(dragged)).errors, []);
+});
+
+test("window blur and a hidden document stop automatic scrolling and orphaned moves never resume a drag", async (t) => {
+  for (const ending of ["blur", "hidden", "orphaned"]) {
+    const page = await fixture(t, {
+        clips: [
+          { id: "a", trackId: "v1", start: 1, duration: 2 },
+          { id: "far", trackId: "v1", start: 100, duration: 3 },
+        ],
+      }),
+      before = (await state(page)).document;
+    await startEdgeDrag(page);
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else if (ending === "hidden")
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    else
+      // A release the page never saw: later moves arrive with no button held.
+      await page.evaluate(() => {
+        const timeline = document.querySelector("#timeline"),
+          view = document.querySelector(".et-scroll").getBoundingClientRect();
+        timeline.dispatchEvent(
+          new PointerEvent("pointermove", {
+            bubbles: true,
+            pointerId: 1,
+            buttons: 0,
+            clientX: view.right - 2,
+            clientY: view.top + 60,
+          }),
+        );
+      });
+    await settle(page);
+    await assertScrollStopped(page);
+    await page.mouse.up();
+    await settle(page);
+    await assertScrollStopped(page);
+    assert.deepEqual((await state(page)).document, before, `${ending} must not commit`);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await idleRenders(page), 0);
+    assert.deepEqual((await state(page)).errors, []);
+  }
+});
+
 test("an external revision during automatic scrolling cancels the gesture before applying old coordinates", async (t) => {
   const page = await fixture(t, {
     clips: [
