@@ -6747,11 +6747,11 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "c9bc8b6432ba46ca1d0eaa22ef951f1fa50d4cbafb6cc7222408ac7abe1f6062"
+      "sha256": "e11c84ee5730ac0c23e4a44f6951b2a3d287a6bd6ae8b37fd6d5d07df29dd46d"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",
-      "sha256": "c3ad0c8fde9cff1419f3002aaab50ceefd6c646f07fc03fee19be44cedce19e8"
+      "sha256": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1"
     },
     "audio-separation": {
       "entry": "app/tools/audio-separation.mjs",

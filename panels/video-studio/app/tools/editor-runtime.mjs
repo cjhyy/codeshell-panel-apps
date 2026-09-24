@@ -35,9 +35,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../../codeshell-panel-apps/node_modules/pend/index.js
+// ../../node_modules/pend/index.js
 var require_pend = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/pend/index.js"(exports, module) {
+  "../../node_modules/pend/index.js"(exports, module) {
     module.exports = Pend;
     function Pend() {
       this.pending = 0;
@@ -90,9 +90,9 @@ var require_pend = __commonJS({
   }
 });
 
-// ../../../codeshell-panel-apps/node_modules/yauzl/fd-slicer.js
+// ../../node_modules/yauzl/fd-slicer.js
 var require_fd_slicer = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/yauzl/fd-slicer.js"(exports) {
+  "../../node_modules/yauzl/fd-slicer.js"(exports) {
     var fs = __require("fs");
     var util = __require("util");
     var stream = __require("stream");
@@ -247,9 +247,9 @@ var require_fd_slicer = __commonJS({
   }
 });
 
-// ../../../codeshell-panel-apps/node_modules/yauzl/crc32.js
+// ../../node_modules/yauzl/crc32.js
 var require_crc32 = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/yauzl/crc32.js"(exports, module) {
+  "../../node_modules/yauzl/crc32.js"(exports, module) {
     var CRC_TABLE = new Int32Array([
       0,
       1996959894,
@@ -519,9 +519,9 @@ var require_crc32 = __commonJS({
   }
 });
 
-// ../../../codeshell-panel-apps/node_modules/yauzl/index.js
+// ../../node_modules/yauzl/index.js
 var require_yauzl = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/yauzl/index.js"(exports) {
+  "../../node_modules/yauzl/index.js"(exports) {
     var fs = __require("fs");
     var zlib = __require("zlib");
     var fd_slicer = require_fd_slicer();
@@ -1378,9 +1378,9 @@ var require_yauzl = __commonJS({
   }
 });
 
-// ../../../codeshell-panel-apps/node_modules/buffer-crc32/dist/index.cjs
+// ../../node_modules/buffer-crc32/dist/index.cjs
 var require_dist = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/buffer-crc32/dist/index.cjs"(exports, module) {
+  "../../node_modules/buffer-crc32/dist/index.cjs"(exports, module) {
     "use strict";
     function getDefaultExportFromCjs(x) {
       return x && x.__esModule && Object.prototype.hasOwnProperty.call(x, "default") ? x["default"] : x;
@@ -1686,9 +1686,9 @@ var require_dist = __commonJS({
   }
 });
 
-// ../../../codeshell-panel-apps/node_modules/yazl/index.js
+// ../../node_modules/yazl/index.js
 var require_yazl = __commonJS({
-  "../../../codeshell-panel-apps/node_modules/yazl/index.js"(exports) {
+  "../../node_modules/yazl/index.js"(exports) {
     var fs = __require("fs");
     var Transform2 = __require("stream").Transform;
     var PassThrough = __require("stream").PassThrough;
