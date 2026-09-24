@@ -18,7 +18,7 @@ import {
 import { planCutClips, duplicateClipsInPlace } from "./clipboard-edits";
 import type { EditorOperation } from "./operations";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
-import type { EditorClip, EditorDocument, EditorSequence } from "./types";
+import type { EditorClip, EditorDocument, EditorSequence, EditorTrack } from "./types";
 import type { SessionIdentity } from "./session";
 import { sequenceDuration } from "./validation";
 import {
@@ -137,6 +137,8 @@ export class EditorTimeline {
   private autoScrollFrame: number | undefined;
   private autoScrollTime = 0;
   private autoScrollRemainder = { x: 0, y: 0 };
+  /** A track whose deletion waits for confirmation because it still holds clips. */
+  private confirmTrack?: { trackId: string; documentId: string; revision: number };
   private menu?: {
     element: HTMLElement;
     lifetime: AbortController;
@@ -236,7 +238,7 @@ export class EditorTimeline {
         ? focused.closest<HTMLElement>("[data-et-clip]")?.dataset.etClip
         : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
-    const { sequence, selected } = this.current();
+    const { document: project, sequence, selected } = this.current();
     if (this.menu && !this.menuCurrent()) this.closeMenu();
     for (const id of selected)
       if (!sequence.clips.some((clip) => clip.id === id)) selected.delete(id);
@@ -336,9 +338,16 @@ export class EditorTimeline {
           const kindIcon = { video: "film", audio: "audio", text: "title" }[track.kind];
           const toggle = (key: "locked" | "hidden" | "muted", label: string, glyph: string) =>
             `<button type="button" data-et-track="${esc(track.id)}" data-et-toggle="${key}" aria-label="${label}${esc(track.name)}" title="${label}${esc(track.name)}${key !== "locked" && track.locked ? "（轨道已锁定，先解锁）" : ""}" aria-pressed="${track[key]}"${key !== "locked" && track.locked ? " disabled" : ""}>${timelineIcon(glyph, 14)}</button>`;
+          // The magnetic main track anchors the timeline; the operation layer refuses to remove it.
+          const deleteBlocked = track.locked
+            ? "轨道已锁定，先解锁再删除"
+            : track.id === sequence.magneticTrackId
+              ? "这是磁吸主轨，不能删除"
+              : "";
+          const mix = `<div class="et-track-mix">${track.kind !== "text" ? `<label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label>` : ""}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道${index === 0 ? "（已在最上方）" : ""}"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道${index === sequence.tracks.length - 1 ? "（已在最下方）" : ""}"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button><button type="button" data-et-delete-track="${esc(track.id)}" aria-label="删除轨道${esc(track.name)}" title="${deleteBlocked || "删除轨道"}"${deleteBlocked ? " disabled" : ""}>${timelineIcon("trash", 14)}</button></div>`;
           return `<div class="et-track-head et-track-${track.kind}${track.locked ? " is-locked" : ""}${track.hidden ? " is-hidden" : ""}" data-track-head="${esc(track.id)}">
             <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"><span class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}</span></div>
-            <div class="et-track-mix">${track.kind !== "text" ? `<label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label>` : ""}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道${index === 0 ? "（已在最上方）" : ""}"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道${index === sequence.tracks.length - 1 ? "（已在最下方）" : ""}"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button></div>
+            ${this.trackConfirmation(project.id, project.revision, sequence, track) || mix}
           </div>`;
         })
         .join("")}</div>
@@ -521,6 +530,19 @@ export class EditorTimeline {
           "调整轨道",
         );
       });
+    const remove = target.closest<HTMLElement>(
+      "[data-et-delete-track],[data-et-delete-confirm],[data-et-delete-cancel]",
+    );
+    if (remove) {
+      if (remove.hasAttribute("data-et-delete-cancel")) {
+        this.confirmTrack = undefined;
+        this.render();
+        return;
+      }
+      const confirmed = remove.dataset.etDeleteConfirm;
+      this.run(() => this.removeTrack(confirmed ?? remove.dataset.etDeleteTrack!, !!confirmed));
+      return;
+    }
     const direction = target.closest<HTMLElement>("[data-et-up],[data-et-down]");
     if (direction)
       this.run(async () => {
@@ -590,6 +612,49 @@ export class EditorTimeline {
         ),
       );
   };
+  private trackConfirmation(
+    documentId: string,
+    revision: number,
+    sequence: EditorSequence,
+    track: EditorTrack,
+  ): string {
+    const pending = this.confirmTrack;
+    if (
+      pending?.trackId !== track.id ||
+      pending.documentId !== documentId ||
+      pending.revision !== revision
+    )
+      return "";
+    const count = sequence.clips.filter((clip) => clip.trackId === track.id).length;
+    return `<div class="et-track-confirm" role="alert"><span>删除轨道和 ${count} 个片段？</span><button type="button" class="danger" data-et-delete-confirm="${esc(track.id)}">删除</button><button type="button" data-et-delete-cancel>取消</button></div>`;
+  }
+  /** Empty tracks go at once; a track with clips asks first. Either way it is one undo step. */
+  private async removeTrack(trackId: string, confirmed: boolean): Promise<void> {
+    const { document, sequence } = this.current();
+    const track = sequence.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const count = sequence.clips.filter((clip) => clip.trackId === trackId).length;
+    if (count && !confirmed) {
+      this.confirmTrack = { trackId, documentId: document.id, revision: document.revision };
+      this.render();
+      this.container
+        .querySelector<HTMLElement>(`[data-et-delete-confirm="${CSS.escape(trackId)}"]`)
+        ?.focus({ preventScroll: true });
+      return;
+    }
+    this.confirmTrack = undefined;
+    await this.apply(
+      [
+        {
+          type: "track.remove",
+          sequenceId: sequence.id,
+          trackId,
+          ...(count ? { removeClips: true } : {}),
+        },
+      ],
+      "删除轨道",
+    );
+  }
   /** The same planner as the timing panel: turning magnetic on closes the main picture track's gaps. */
   private async setMode(mode: "magnetic" | "free"): Promise<void> {
     const { document, sequence } = this.current();
@@ -701,6 +766,12 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (editableTarget(event.target)) return;
+    if (event.key === "Escape" && this.confirmTrack) {
+      event.preventDefault();
+      this.confirmTrack = undefined;
+      this.render();
+      return;
+    }
     const contextTarget =
       event.target instanceof HTMLElement
         ? event.target.closest<HTMLElement>("[data-et-clip]")
