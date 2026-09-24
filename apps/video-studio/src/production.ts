@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import { validateProject, type Asset, type AudioClip, type Project } from "./model";
 import type { PanelBridge } from "./host";
 import type { RuntimeJob } from "./sdk/panel-runtime";
@@ -1304,7 +1305,7 @@ export class ProductionController {
       now = Date.now();
     const item: RenderSubmission = {
       accepted: true,
-      operationId: `render-${crypto.randomUUID()}`,
+      operationId: `render-${randomId()}`,
       projectId: snapshot.id,
       revision: snapshot.revision,
       requestToken,

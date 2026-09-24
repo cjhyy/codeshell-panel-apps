@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import {
   createPanelRuntime,
   runtimeCancelled,
@@ -370,7 +371,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       throw new Error("编辑器快照超过 32MiB，请拆分序列后导出");
     const snapshot: EditorTaskSnapshot = {
       ...(project ? { kind: "project" as const } : {}),
-      transferId: transferId(options.transferId ?? `editor-${crypto.randomUUID()}`),
+      transferId: transferId(options.transferId ?? `editor-${randomId()}`),
       documentHash: await editorSha256(bytes),
       documentId: selected.document.id,
       revision: selected.document.revision,
@@ -722,7 +723,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
     };
     const request = {
       action: "align-multicam",
-      transferId: transferId(options.transferId ?? `editor-${crypto.randomUUID()}`),
+      transferId: transferId(options.transferId ?? `editor-${randomId()}`),
       resourceIds,
       alignment: {
         referenceResourceId,
@@ -807,7 +808,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       )
         throw new Error("工程包恢复回执不属于当前工程或资源");
       const id = transferId(
-        prior?.transferId ?? options.transferId ?? `editor-${crypto.randomUUID()}`,
+        prior?.transferId ?? options.transferId ?? `editor-${randomId()}`,
       );
       const result = await complete(
         prior
@@ -929,7 +930,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         result = await complete(
           {
             action: "analyze-waveform",
-            transferId: `editor-${crypto.randomUUID()}`,
+            transferId: `editor-${randomId()}`,
             resourceIds: [resourceId],
             sourceDuration: options.sourceDuration,
           },
@@ -1150,7 +1151,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         result = await complete(
           {
             action: "prepare-source-video",
-            transferId: `editor-${crypto.randomUUID()}`,
+            transferId: `editor-${randomId()}`,
             resourceIds: [resourceId],
             sourceDuration: options.sourceDuration,
           },
@@ -1202,7 +1203,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         result = await complete(
           {
             action: "inspect-source",
-            transferId: `editor-${crypto.randomUUID()}`,
+            transferId: `editor-${randomId()}`,
             resourceIds: [resourceId],
           },
           [resourceId],

@@ -1,3 +1,4 @@
+import { createProjectSetting } from "./project-setting.mjs";
 import {
   DATA_SOURCE_CATALOG,
   DATA_SOURCE_CAPABILITIES,
@@ -9,12 +10,16 @@ export function createDataSourcesController({
   hostCall,
   storageKey,
   currentEpoch,
+  getContext = () => ({}),
   onApply,
   onHistory,
 }) {
   const el = (id) => document.getElementById(id);
   let config = parseDataSourceConfig(),
     ready = false;
+  let store,
+    busy = false,
+    generation = 0;
   const dialog = el("data-sources-dialog");
   function render() {
     el("sources-industry").value = config.industry;
@@ -36,10 +41,70 @@ export function createDataSourcesController({
         return card;
       }),
     );
-    el("sources-save").disabled = !ready;
+    syncControls();
   }
+  function syncControls() {
+    el("sources-save").disabled = !ready || busy;
+    el("sources-reload").disabled = busy;
+    // Do not let later edits disappear when the submitted snapshot completes.
+    for (const id of ["sources-industry", "sources-label", "sources-endpoint"])
+      el(id).disabled = busy;
+  }
+  function showRecovery() {
+    el("sources-recovery").hidden = false;
+  }
+  async function load() {
+    const epoch = currentEpoch();
+    const ownGeneration = ++generation;
+    const current = () => epoch === currentEpoch() && ownGeneration === generation;
+    ready = false;
+    busy = true;
+    syncControls();
+    store = createProjectSetting({ hostCall, key: storageKey(), currentEpoch, getContext });
+    const operationStore = store;
+    el("sources-storage-warning").hidden = operationStore.versioned;
+    try {
+      const value = await operationStore.load();
+      if (!current()) return;
+      config = parseDataSourceConfig(value ?? {});
+      ready = true;
+      el("sources-recovery").hidden = true;
+      el("sources-state").textContent =
+        "自动模式优先新浪，受限时尝试东方财富。行业分类、成分和重试记录按来源隔离。";
+      render();
+    } catch (error) {
+      if (!current()) return;
+      el("sources-state").textContent =
+        `配置读取失败：${error.message}。已保留当前填写内容，未覆盖已保存配置。`;
+      showRecovery();
+    } finally {
+      if (current()) {
+        busy = false;
+        syncControls();
+      }
+    }
+  }
+  el("sources-reload").addEventListener("click", () => {
+    if (!busy) void load();
+  });
+  el("sources-backup").addEventListener("click", () => {
+    const draft = {
+      industry: el("sources-industry").value,
+      label: el("sources-label").value,
+      endpoint: el("sources-endpoint").value,
+    };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "quant-data-sources-draft.json";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  });
   el("data-sources-open").addEventListener("click", () => {
-    render();
     dialog.showModal();
   });
   el("sources-close").addEventListener("click", () => dialog.close());
@@ -53,30 +118,43 @@ export function createDataSourcesController({
   el("sources-example").textContent = JSON.stringify(STANDARD_INDUSTRY_EXAMPLE, null, 2);
   el("sources-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!ready || busy) return;
     const epoch = currentEpoch();
+    const ownGeneration = generation;
+    const operationStore = store;
+    const current = () => epoch === currentEpoch() && ownGeneration === generation;
     try {
       const next = parseDataSourceConfig({
         industry: el("sources-industry").value,
         label: el("sources-label").value,
         endpoint: el("sources-endpoint").value,
       });
-      el("sources-save").disabled = true;
-      await hostCall("storage.set", { key: storageKey(), value: next });
-      if (epoch !== currentEpoch()) return;
+      busy = true;
+      syncControls();
+      await operationStore.save(next);
+      if (!current()) return;
       config = next;
       el("sources-state").textContent =
         "配置已保存。正在读取该来源的选股数据，连接结果会显示在下方。";
       const snapshot = await onApply();
-      if (epoch === currentEpoch())
+      if (current())
         el("sources-state").textContent = snapshot
           ? "配置已应用。以下显示本次取得的数据和仍未恢复的来源。"
           : "配置已保存；本次选股读取未完成，请查看选股页的具体错误后重试。";
     } catch (error) {
-      if (epoch === currentEpoch())
+      if (current()) {
         el("sources-state").textContent =
           error instanceof Error ? error.message : "保存失败，请重试";
+        if (operationStore.blocked) {
+          ready = false;
+          showRecovery();
+        }
+      }
     } finally {
-      if (epoch === currentEpoch()) el("sources-save").disabled = !ready;
+      if (current()) {
+        busy = false;
+        syncControls();
+      }
     }
   });
   render();
@@ -84,23 +162,12 @@ export function createDataSourcesController({
     get config() {
       return config;
     },
-    async load() {
-      const epoch = currentEpoch();
-      ready = false;
-      try {
-        const value = await hostCall("storage.get", { key: storageKey() });
-        if (epoch !== currentEpoch()) return;
-        config = parseDataSourceConfig(value ?? {});
-        ready = true;
-        el("sources-state").textContent =
-          "自动模式优先新浪，受限时尝试东方财富。行业分类、成分和重试记录按来源隔离。";
-      } catch (error) {
-        if (epoch !== currentEpoch()) return;
-        config = parseDataSourceConfig();
-        el("sources-state").textContent =
-          `配置读取失败：${error.message}。本次使用默认来源，未覆盖已保存配置。`;
-      }
+    load() {
+      // Called on project changes: do not show the former project's form or use
+      // its applied source if the next project's read fails.
+      config = parseDataSourceConfig();
       render();
+      return load();
     },
     update(snapshot) {
       if (!snapshot) {

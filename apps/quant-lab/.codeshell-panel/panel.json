@@ -177,7 +177,8 @@
     ],
     "skills": [
       "agent/skills/investment-research/SKILL.md",
-      "agent/skills/portfolio-management/SKILL.md"
+      "agent/skills/portfolio-management/SKILL.md",
+      "agent/skills/project-runtime/SKILL.md"
     ]
   }
 }

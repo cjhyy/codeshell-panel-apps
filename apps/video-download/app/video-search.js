@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import {
   cleanSearchRecord,
   readSearchArchive,
@@ -414,7 +415,7 @@ export function mountVideoSearch({
     if (!state.query || !["ready", "empty", "error"].includes(status)) return;
     const record = cleanSearchRecord(
       {
-        id: crypto.randomUUID(),
+        id: randomId(),
         query: state.query,
         platforms: state.platforms,
         modelId: state.model,
@@ -681,7 +682,7 @@ export function mountVideoSearch({
         resolve,
         reject,
         id: existing?.id || "",
-        key: existing?.key || `video-search-${phase}-${crypto.randomUUID().slice(0, 8)}`,
+        key: existing?.key || `video-search-${phase}-${randomId().slice(0, 8)}`,
         updatedAt: 0,
         pollTimer: null,
         timeout: null,

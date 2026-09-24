@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import {
   createPanelRuntime,
   runtimeCancelled,
@@ -266,7 +267,7 @@ export function createEditorMediaImporter(panel: RuntimeBridge, options: EditorI
           )
             throw new Error("原生分析与持久素材内容不一致");
           const asset: EditorAsset = {
-            id: crypto.randomUUID(),
+            id: randomId(),
             resourceId: id!,
             name,
             kind: inspected.kind,

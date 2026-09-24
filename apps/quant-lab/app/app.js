@@ -1,3 +1,4 @@
+import { createProjectSetting } from "./modules/project-setting.mjs";
 import { createDataSourcesController } from "./modules/data-sources-ui.mjs";
 import { registerPortfolioTools } from "./portfolio-import.mjs";
 /* Quant Lab Panel App runtime. */
@@ -179,6 +180,10 @@ const elements = {
   watchSchedule: document.querySelector("#watch-schedule"),
   watchScheduleState: document.querySelector("#watch-schedule-state"),
   watchMigrationState: document.querySelector("#watch-migration-state"),
+  watchStorageState: document.querySelector("#watch-storage-state"),
+  watchStorageRecovery: document.querySelector("#watch-storage-recovery"),
+  watchStorageReload: document.querySelector("#watch-storage-reload"),
+  watchStorageBackup: document.querySelector("#watch-storage-backup"),
   todayPrimaryTitle: document.querySelector("#today-primary-title"),
   todayPrimaryDetail: document.querySelector("#today-primary-detail"),
   todayPrimaryEvidence: document.querySelector("#today-primary-evidence"),
@@ -470,6 +475,10 @@ const elements = {
   selectionReviewSummary: document.querySelector("#selection-review-summary"),
   selectionReviewList: document.querySelector("#selection-review-list"),
   selectionLabDisclosure: document.querySelector("#selection-lab-disclosure"),
+  selectionWatchStorageState: document.querySelector("#selection-watch-storage-state"),
+  selectionWatchStorageRecovery: document.querySelector("#selection-watch-storage-recovery"),
+  selectionWatchStorageReload: document.querySelector("#selection-watch-storage-reload"),
+  selectionWatchStorageBackup: document.querySelector("#selection-watch-storage-backup"),
   selectionWatchCount: document.querySelector("#selection-watch-count"),
   selectionWatchTitle: document.querySelector("#selection-watch-title"),
   selectionWatchSummary: document.querySelector("#selection-watch-summary"),
@@ -1732,6 +1741,7 @@ function hostCall(method, params) {
   if (!window.codeshellPanel?.call) return mockHostCall(method, params);
   panelHostCallScheduler ??= createPanelHostCallScheduler({
     invoke: (nextMethod, nextParams) => window.codeshellPanel.call(nextMethod, nextParams),
+    currentScope: () => workspaceEpoch,
     ...(window.__quantLabTestHostCallLimits ?? {}),
   });
   return panelHostCallScheduler.call(method, params);
@@ -2134,6 +2144,7 @@ liveMarketController = createLiveMarketController({
 
 aShareSelectionController = createAShareSelectionController({
   hostCall,
+  getContext: () => context,
   dataSources: () => dataSourcesController?.config ?? null,
   onHostEvent: typeof window.codeshellPanel?.on === "function"
     ? (event, listener) => window.codeshellPanel.on(event, listener)
@@ -2252,6 +2263,10 @@ aShareSelectionController = createAShareSelectionController({
     reviewSummary: elements.selectionReviewSummary,
     reviewList: elements.selectionReviewList,
     labDisclosure: elements.selectionLabDisclosure,
+    watchStorageState: elements.selectionWatchStorageState,
+    watchStorageRecovery: elements.selectionWatchStorageRecovery,
+    watchStorageReload: elements.selectionWatchStorageReload,
+    watchStorageBackup: elements.selectionWatchStorageBackup,
     watchCount: elements.selectionWatchCount,
     watchTitle: elements.selectionWatchTitle,
     watchSummary: elements.selectionWatchSummary,
@@ -2458,6 +2473,8 @@ marketInsightsController = createMarketInsightsController({
 
 marketPulseAutomationController = createMarketPulseAutomationController({
   hostCall,
+  currentEpoch: () => workspaceEpoch,
+  getContext: () => context,
   notify,
   elements: {
     root: elements.marketPulseAutomation,
@@ -2582,7 +2599,7 @@ holdingsController = createHoldingsController({
       const { ledger, holdings } = holdingsController.noteContext();
       void aShareSelectionController.syncPortfolio(ledger, holdings).then(({ skipped }) => {
         if (epoch === workspaceEpoch && skipped.length) {
-          notify(`关注列表已达 20 只上限，${skipped.length} 只持仓暂未加入，请整理关注列表后重新读取持仓`, "error");
+          notify(`关注列表已达容量上限，${skipped.length} 只持仓暂未加入，请整理关注列表后重新读取持仓`, "error");
         }
       }).catch(() => {
         if (epoch === workspaceEpoch) notify("持仓已读取，但自动关注保存失败；请重新读取持仓重试", "error");
@@ -3809,9 +3826,7 @@ async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
     saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
   resetUiState();
   restoreUiState(saved?.workspaceRoot === workspaceIdentity ? saved : null);
-  const savedWatch = await hostCall("storage.get", { key: watchStorageKey() }).catch(() => null);
-  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  await restoreWatchlistState(savedWatch);
+  await loadWatchlist();
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   // The default screen is the market dashboard: restore its saved research
   // before the heavier portfolio/news/note views so first paint becomes useful
@@ -4276,6 +4291,13 @@ function updateContext(next) {
     watchlistStorageValue = { items: [] };
     watchMigrationBlocked = false;
     watchMigrationConflicts = [];
+    watchStore = null;
+    watchStorageReady = false;
+    watchStorageError = "";
+    watchSaving = false;
+    watchChecking = false;
+    watchLoading = false;
+    watchLoadGeneration++;
     hasPortfolioPositions = false;
     portfolioTodayState = {
       ledgerExists: false,
@@ -4433,6 +4455,62 @@ let watchlistStorageValue = { items: [] };
 let watchEvents = [];
 let watchMigrationBlocked = false;
 let watchMigrationConflicts = [];
+let watchStore = null;
+let watchStorageReady = false;
+let watchStorageError = "";
+let watchSaving = false;
+let watchChecking = false;
+let watchLoading = false;
+let watchLoadGeneration = 0;
+
+function watchEditingBlocked() {
+  return !watchStorageReady || watchSaving || watchChecking || watchLoading || alertsController?.state.inFlight;
+}
+function renderWatchStorageState() {
+  elements.watchAdd.disabled = Boolean(watchEditingBlocked());
+  elements.watchCheck.disabled = Boolean(watchEditingBlocked());
+  elements.watchStorageReload.disabled = watchSaving || watchChecking || watchLoading || Boolean(alertsController?.state.inFlight);
+  for (const button of elements.watchlistItems.querySelectorAll(".watch-remove")) button.disabled = Boolean(watchEditingBlocked());
+  elements.watchStorageRecovery.hidden = !watchStorageError;
+  elements.watchStorageState.hidden = !watchStorageError && watchStore?.versioned !== false;
+  elements.watchStorageState.textContent = watchStorageError ||
+    "当前执行环境尚不支持关注记录版本校验，请避免在多个页面同时修改。";
+  alertsController?.render();
+}
+async function loadWatchlist() {
+  const epoch = workspaceEpoch;
+  const generation = ++watchLoadGeneration;
+  const current = () => epoch === workspaceEpoch && generation === watchLoadGeneration;
+  watchLoading = true;
+  watchStorageReady = false;
+  renderWatchStorageState();
+  const store = createProjectSetting({ hostCall, key: watchStorageKey(), label: "关注记录",
+    currentEpoch: () => workspaceEpoch, getContext: () => context });
+  try {
+    const saved = await store.load();
+    if (!current()) return;
+    await restoreWatchlistState(saved, store, current);
+    if (!current()) return;
+    watchStore = store;
+    watchStorageReady = true;
+  } catch (error) {
+    if (!current()) return;
+    watchStorageError = `关注记录读取失败：${error.message}。原记录未覆盖，当前页面内容已保留。`;
+  } finally {
+    if (current()) { watchLoading = false; renderWatchStorageState(); }
+  }
+}
+async function verifySavedWatchlist() {
+  if (!watchStorageReady || watchSaving || watchChecking || watchLoading || watchStorageError || watchMigrationBlocked || watchMigrationConflicts.length)
+    throw new Error("请先保存并核对关注记录，现有提醒保持不变。");
+  const epoch = workspaceEpoch;
+  try { await watchStore.assertCurrent(); }
+  catch (error) {
+    if (epoch === workspaceEpoch) { watchStorageError = error.message; renderWatchStorageState(); }
+    throw error;
+  }
+}
+
 
 function watchStorageKey() {
   return scopedStorageKey("watchlist", context.cwd ?? "preview");
@@ -4554,32 +4632,32 @@ function renderWatchMigrationState() {
   alertsController?.render();
 }
 
-async function restoreWatchlistState(savedWatch) {
-  watchMigrationBlocked = false;
-  watchMigrationConflicts = [];
-  if (!savedWatch || typeof savedWatch !== "object" || Array.isArray(savedWatch)) {
-    watchlistStorageValue = { items: [] };
-    watchlist = [];
-    watchEvents = [];
-    renderWatchlist();
-    renderWatchMigrationState();
-    return;
-  }
-  const migration = migrateWatchlistStorage(savedWatch);
-  watchlistStorageValue = migration.value;
-  watchlist = migration.value.items.filter(isWatchItem);
-  watchEvents = Array.isArray(migration.value.events) ? migration.value.events.filter(isWatchEvent).slice(-200) : [];
-  watchMigrationConflicts = migration.conflicts;
-  if (migration.changed) {
-    try {
-      await hostCall("storage.set", { key: watchStorageKey(), value: migration.value });
-    } catch {
-      watchlistStorageValue = savedWatch;
-      watchlist = Array.isArray(savedWatch.items) ? savedWatch.items.filter(isWatchItem) : [];
-      watchEvents = Array.isArray(savedWatch.events) ? savedWatch.events.filter(isWatchEvent).slice(-200) : [];
-      watchMigrationBlocked = true;
+async function restoreWatchlistState(savedWatch, store, current) {
+  if (savedWatch !== null && savedWatch !== undefined &&
+      (!savedWatch || typeof savedWatch !== "object" || Array.isArray(savedWatch)))
+    throw new Error("关注记录格式无效，请保留原记录并检查存储");
+  const source = savedWatch ?? { items: [] };
+  if (Object.hasOwn(source, "items") && !Array.isArray(source.items))
+    throw new Error("关注列表格式无效，已保留原记录");
+  const migration = migrateWatchlistStorage(source);
+  let value = migration.value;
+  let migrationBlocked = false;
+  let errorMessage = "";
+  if (savedWatch != null && migration.changed) {
+    try { await store.save(value); }
+    catch (error) {
+      value = source;
+      migrationBlocked = true;
+      errorMessage = `关注迁移未能写回：${error.message}。原记录未覆盖。`;
     }
   }
+  if (!current()) return;
+  watchlistStorageValue = value;
+  watchlist = Array.isArray(value.items) ? value.items.filter(isWatchItem) : [];
+  watchEvents = Array.isArray(value.events) ? value.events.filter(isWatchEvent).slice(-200) : [];
+  watchMigrationConflicts = migration.conflicts;
+  watchMigrationBlocked = migrationBlocked;
+  watchStorageError = errorMessage;
   renderWatchlist();
   renderWatchMigrationState();
 }
@@ -4638,18 +4716,34 @@ function watchDataPath(symbol) {
 // a conflict clears as soon as the user deletes one side of it, and a write that
 // was blocked at startup is retried with the user's explicit change.
 async function saveWatchlist() {
+  const epoch = workspaceEpoch;
+  if (!watchStorageReady || !watchStore) return false;
   const migration = migrateWatchlistStorage({ ...watchlistStorageValue, items: watchlist, events: watchEvents.slice(-200) });
   watchlistStorageValue = migration.value;
   watchlist = migration.value.items.filter(isWatchItem);
   watchMigrationConflicts = migration.conflicts;
+  watchSaving = true;
   renderWatchlist();
+  renderWatchStorageState();
   try {
-    await hostCall("storage.set", { key: watchStorageKey(), value: watchlistStorageValue });
+    await watchStore.save(watchlistStorageValue);
+    if (epoch !== workspaceEpoch) return false;
     watchMigrationBlocked = false;
-  } catch {
-    // Keep the in-memory list; the banner (if any) already says storage is stale.
+    watchStorageError = "";
+    return true;
+  } catch (error) {
+    if (epoch === workspaceEpoch) {
+      watchStorageError = `关注记录未保存：${error.message}。页面修改已保留，现有提醒保持不变。`;
+      notify(watchStorageError, "error");
+    }
+    return false;
+  } finally {
+    if (epoch === workspaceEpoch) {
+      watchSaving = false;
+      renderWatchMigrationState();
+      renderWatchStorageState();
+    }
   }
-  renderWatchMigrationState();
 }
 
 function renderWatchEvents() {
@@ -4787,7 +4881,8 @@ async function exportWatchlist() {
   }
 }
 
-function addWatchItem() {
+async function addWatchItem() {
+  if (watchEditingBlocked()) return;
   const rawInput = elements.watchSymbol.value.trim();
   if (!rawInput) return notify("请填写股票名称或代码", "error");
   const aShare = resolveAShareStock(rawInput, aShareStockDirectory);
@@ -4842,22 +4937,23 @@ function addWatchItem() {
   elements.watchSymbol.value = "";
   elements.watchThreshold.value = "";
   renderWatchlist();
-  void saveWatchlist();
-  notify(`已关注 ${symbol}`);
+  if (await saveWatchlist()) notify(`已关注 ${symbol}`);
 }
 
-function removeWatchItem(index) {
+async function removeWatchItem(index) {
+  if (watchEditingBlocked()) return;
   if (index < 0 || index >= watchlist.length) return;
   const [removed] = watchlist.splice(index, 1);
   renderWatchlist();
-  void saveWatchlist();
-  notify(`已移除 ${removed.symbol}`);
+  if (await saveWatchlist()) notify(`已移除 ${removed.symbol}`);
 }
 
 async function checkWatchlist() {
+  if (watchEditingBlocked()) return;
   if (watchlist.length === 0) return notify("请先添加关注标的", "error");
   const operationWorkspaceEpoch = workspaceEpoch;
-  elements.watchCheck.disabled = true;
+  watchChecking = true;
+  renderWatchStorageState();
   try {
     for (const item of watchlist) {
       try {
@@ -4893,7 +4989,9 @@ async function checkWatchlist() {
         } catch {
           // No sidecar: keep showing the code.
         }
+        if (operationWorkspaceEpoch !== workspaceEpoch) return;
       } catch (error) {
+        if (operationWorkspaceEpoch !== workspaceEpoch) return;
         // A missing CSV is the common case, not a crash: the user has not
         // synced that symbol yet. Say so instead of failing the whole run.
         item.last = {
@@ -4920,20 +5018,24 @@ async function checkWatchlist() {
       return left - right;
     });
     renderWatchlist();
-    void saveWatchlist();
+    if (!(await saveWatchlist())) return;
     holdingsController.refreshRules();
     const hits = watchlist.filter((item) => item.last?.triggered).length;
     notify(hits ? `${hits} 个标的触发提醒` : "没有标的触发提醒");
   } finally {
-    if (operationWorkspaceEpoch === workspaceEpoch) elements.watchCheck.disabled = false;
+    if (operationWorkspaceEpoch === workspaceEpoch) { watchChecking = false; renderWatchStorageState(); }
   }
 }
 
 alertsController = createAlertsController({
   hostCall,
+  getContext: () => context,
   watchlist: () => watchlist,
   notify,
-  blocked: () => watchMigrationBlocked || watchMigrationConflicts.length > 0,
+  blocked: () => !watchStorageReady || watchLoading || watchSaving || watchChecking || Boolean(watchStorageError) || watchMigrationBlocked || watchMigrationConflicts.length > 0,
+  beforeChange: verifySavedWatchlist,
+  onBusyChange: renderWatchStorageState,
+  currentEpoch: () => workspaceEpoch,
   elements: {
     master: elements.watchSchedule,
     summary: elements.watchScheduleState,
@@ -4959,6 +5061,7 @@ alertsController = createAlertsController({
 
 newsController = createNewsController({
   hostCall,
+  getContext: () => context,
   root: elements.newsRoot,
   currentEpoch: () => workspaceEpoch,
   now: currentInstant,
@@ -5389,7 +5492,21 @@ elements.sizerType.addEventListener("change", () => {
 });
 elements.runValidation.addEventListener("click", runValidation);
 elements.watchRule.addEventListener("change", syncWatchThresholdField);
-elements.watchAdd.addEventListener("click", addWatchItem);
+elements.watchStorageReload.addEventListener("click", () => {
+  if (!elements.watchStorageReload.disabled) void loadWatchlist();
+});
+elements.watchStorageBackup.addEventListener("click", () => {
+  const value = { ...watchlistStorageValue, items: watchlist, events: watchEvents };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "quant-watchlist-draft.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+});
+elements.watchAdd.addEventListener("click", () => void addWatchItem());
 elements.watchSymbol.addEventListener("keydown", (event) => {
   if (event.key === "Enter") addWatchItem();
 });
@@ -5693,6 +5810,7 @@ async function initialize() {
 
 dataSourcesController = createDataSourcesController({
   hostCall, currentEpoch: () => workspaceEpoch,
+  getContext: () => context,
   storageKey: () => scopedStorageKey("dataSources", context.cwd ?? "preview"),
   async onApply() {
     const epoch = workspaceEpoch;

@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { planMarkerEdit, type MarkerEditRequest } from "./marker-edits";
 import type { EditorOperation } from "./operations";
 import { sameIdentity, type SessionIdentity } from "./session";
@@ -82,7 +83,7 @@ export class EditorMarkers {
         : time;
     this.selectedId = undefined;
     this.draft = {
-      id: `marker-${crypto.randomUUID()}`,
+      id: `marker-${randomId()}`,
       time,
       duration: end - time,
       name: kind === "range" ? "新范围" : "新标记",

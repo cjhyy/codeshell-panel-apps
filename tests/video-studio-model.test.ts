@@ -33,6 +33,26 @@ function fixture(): Project {
   return validateProject(project);
 }
 
+test("LAN browsers can create portable projects without randomUUID", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
+  Object.defineProperty(globalThis.crypto, "randomUUID", { configurable: true, value: undefined });
+  try {
+    const first = createProject("手机项目");
+    const second = createDemoProject();
+    assert.notEqual(first.id, second.id);
+    for (const project of [first, second]) {
+      assert.match(
+        project.id,
+        /^project-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+      );
+      assert.deepEqual(validateProject(JSON.parse(JSON.stringify(project))), project);
+    }
+  } finally {
+    if (original) Object.defineProperty(globalThis.crypto, "randomUUID", original);
+    else Reflect.deleteProperty(globalThis.crypto, "randomUUID");
+  }
+});
+
 test("new and demo projects are valid portable 30 fps data", () => {
   assert.equal(timelineDuration(createProject()), 0);
   const demo = createDemoProject();

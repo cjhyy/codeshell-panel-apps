@@ -89,7 +89,7 @@ after(async () => {
   assert.deepEqual(errors, [], "No runtime errors or CSP violations");
 });
 
-async function pageWithBridge(mock = false, generic = true) {
+async function pageWithBridge(mock = false, generic = true, noRandomUuid = false) {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 960 },
     acceptDownloads: true,
@@ -99,6 +99,10 @@ async function pageWithBridge(mock = false, generic = true) {
     if (message.type() === "error" && /Content Security Policy|Refused to/.test(message.text()))
       errors.push(message.text());
   });
+  if (noRandomUuid)
+    await page.addInitScript(() => {
+      Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+    });
   if (mock) {
     if (generic) await page.addInitScript(installGenericMediaTaskMock);
     await page.addInitScript(() => {
@@ -186,6 +190,29 @@ async function demo(page) {
   // Canonical Material editing is covered by editor-main/workspace/timeline suites.
   await page.locator('[data-tab="ai"]').click();
 }
+
+test("LAN browser creates, saves and reopens a project without randomUUID", async () => {
+  const page = await pageWithBridge(false, true, true);
+  try {
+    assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
+    await demo(page);
+    const previous = (await readProject(page)).id;
+    await page.getByRole("button", { name: "新建工程", exact: true }).click();
+    await page.waitForFunction(
+      () => document.querySelector("#project-name")?.value === "未命名项目",
+    );
+    await saved(page);
+    const created = await readProject(page);
+    assert.notEqual(created.id, previous);
+    assert.equal(created.clips.length, 0);
+    await page.reload();
+    await enterLegacyProduction(page);
+    await page.locator("#studio .workspace").waitFor();
+    assert.equal((await readProject(page)).id, created.id);
+  } finally {
+    await page.close();
+  }
+});
 
 test("an explicit native media failure keeps its cause visible and blocks automatic production", async () => {
   const page = await pageWithBridge(true);
@@ -2405,6 +2432,15 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
     // Saving finishes before original-media recovery; the input clears only after replacement completes.
     await page.waitForFunction(() => document.querySelector("#project-input").value === "");
     const imported = await readProject(page);
+    // Fitting rebuilds the controls. Exercise a real layout change during that render,
+    // so fitting against the detached, wider viewport cannot pass by timing luck.
+    await page.addStyleTag({
+      content: 'body:has(#timeline-zoom[value^="0."]) #timeline-scroll { max-width: 900px; }',
+    });
+    const beforeFitWidth = await page
+      .locator("#timeline-scroll")
+      .evaluate((scroll) => scroll.clientWidth);
+    assert.ok(beforeFitWidth > 900);
     await page.locator('[data-action="fit-timeline"]').click();
     const fitted = await page.locator("#timeline-scroll").evaluate((scroll) => ({
       width: scroll.clientWidth,
@@ -2412,8 +2448,9 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
       zoom: Number(document.querySelector("#timeline-zoom").value),
       labels: document.querySelectorAll("#ruler > span").length,
     }));
+    assert.equal(fitted.width, 900);
     assert.ok(fitted.zoom < 12);
-    assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1);
+    assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1, JSON.stringify(fitted));
     assert.equal(fitted.left, 0);
     assert.ok(fitted.labels > 0 && fitted.labels < 100);
 

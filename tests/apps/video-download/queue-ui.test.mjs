@@ -78,6 +78,8 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
   });
   await page.addInitScript(
     ({ projectDirectoryError, ai }) => {
+      const fixtureUuid = crypto.randomUUID.bind(crypto);
+      if (ai.noRandomUuid) Object.defineProperty(crypto, "randomUUID", { value: undefined });
       const handlers = {};
       let nextProcess = 0;
       window.__panelTools = {};
@@ -106,8 +108,53 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
       window.__emit = (name, payload) => {
         for (const handler of handlers[name] || []) handler(structuredClone(payload));
       };
+      window.__hostStorage = {};
+      window.__hostStorageRevision = 0;
+      const storageSnapshot = (key) =>
+        Object.hasOwn(window.__hostStorage, key)
+          ? {
+              exists: true,
+              value: structuredClone(window.__hostStorage[key]),
+              revision: "sha256:" + String(window.__hostStorageRevision).padStart(64, "0"),
+            }
+          : { exists: false, value: null, revision: null };
+      if (ai.durable) {
+        window.__nativeJobs = JSON.parse(localStorage.getItem("fixture-native-jobs") || "{}");
+        window.__nativeQueue = JSON.parse(
+          localStorage.getItem("fixture-native-queue") ||
+            '{"revision":0,"paused":false,"maxConcurrent":2}',
+        );
+      }
       window.codeshellPanel = {
-        getContext: async () => ({ apiVersion: 10, theme: "light" }),
+        getContext: async () => ({
+          apiVersion: 10,
+          theme: "light",
+          ...(ai.durable
+            ? {
+                cwd: "/fixture/project",
+                availableMethods: [
+                  "tasks.find",
+                  ...(ai.taskCookies ? ["credentials.cookies.listForTask"] : []),
+                  ...(ai.processCookies ? ["credentials.cookies.authorizeProcess"] : []),
+                ],
+                capabilities: {
+                  process: { cookieCredentials: ai.processCookies === true },
+                  tasks: {
+                    directoryBookmarks: true,
+                    queueControl: true,
+                    maxConcurrent: 2,
+                    cookieCredentials: ai.taskCookies === true,
+                  },
+                },
+              }
+            : {}),
+          ...(ai.versionedStorage
+            ? {
+                cwd: "/fixture/project",
+                availableMethods: ["storage.getSnapshot", "storage.compareAndSet", ...(ai.durable ? ["tasks.find"] : [])],
+              }
+            : {}),
+        }),
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
           return () => {};
@@ -118,6 +165,68 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (ai.durable && method.startsWith("tasks.")) {
+            const persist = () => {
+              localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+              localStorage.setItem("fixture-native-queue", JSON.stringify(window.__nativeQueue));
+            };
+            if (method === "tasks.queue.get") return structuredClone(window.__nativeQueue);
+            if (method === "tasks.queue.set") {
+              const saved = args.expectedRevision === window.__nativeQueue.revision;
+              if (saved)
+                window.__nativeQueue = {
+                  revision: args.expectedRevision + 1,
+                  paused: args.paused,
+                  maxConcurrent: args.maxConcurrent,
+                };
+              persist();
+              return { saved, queue: structuredClone(window.__nativeQueue) };
+            }
+            if (method === "tasks.list")
+              return Object.values(window.__nativeJobs)
+                .slice(args.offset, args.offset + args.limit)
+                .map(({ input, result, ...job }) => structuredClone(job));
+            if (method === "tasks.find")
+              return structuredClone(
+                Object.values(window.__nativeJobs).find(
+                  (job) => job.requestKey === args.requestKey,
+                ) || null,
+              );
+            if (method === "tasks.get") return structuredClone(window.__nativeJobs[args.id]);
+            if (method === "tasks.start") {
+              const job = {
+                id: fixtureUuid(),
+                entry: { name: args.entry },
+                input: args.input,
+                requestKey: args.requestKey,
+                sequence: 1,
+                status: "queued",
+              };
+              window.__nativeJobs[job.id] = job;
+              persist();
+              if (window.__loseNativeStart) {
+                window.__loseNativeStart = false;
+                throw new Error("start reply lost");
+              }
+              return structuredClone(job);
+            }
+            const job = window.__nativeJobs[args.id];
+            if (method === "tasks.cancel") job.status = "cancelled";
+            else if (method === "tasks.retry") job.status = "queued";
+            else throw new Error(method);
+            job.sequence++;
+            persist();
+            return structuredClone(job);
+          }
+          if (ai.versionedStorage && method === "storage.getSnapshot")
+            return storageSnapshot(args.key);
+          if (ai.versionedStorage && method === "storage.compareAndSet") {
+            if (storageSnapshot(args.key).revision !== args.expectedRevision)
+              return { updated: false, snapshot: storageSnapshot(args.key) };
+            window.__hostStorage[args.key] = structuredClone(args.value);
+            window.__hostStorageRevision++;
+            return { updated: true, snapshot: storageSnapshot(args.key) };
+          }
           if (method === "agent.task.models") {
             if (window.__taskModelsError) throw new Error(window.__taskModelsError);
             return structuredClone(window.__taskModels);
@@ -153,11 +262,19 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
             if (args.name !== "project")
               throw new Error(`Unexpected known directory: ${args.name}`);
             if (projectDirectoryError) throw new Error(projectDirectoryError);
-            return { handle: "directory-first", name: "Project", path: "/fixture/project" };
+            return {
+              handle: "directory-first",
+              name: "Project",
+              path: "/fixture/project",
+              ...(ai.durable ? { bookmark: "11111111-1111-4111-8111-111111111111" } : {}),
+            };
           }
           if (method === "filesystem.pickDirectory") return structuredClone(window.__nextDirectory);
           if (method === "filesystem.openDirectory") return { opened: true };
-          if (method === "credentials.cookies.list") {
+          if (
+            method === "credentials.cookies.list" ||
+            method === "credentials.cookies.listForTask"
+          ) {
             return { accounts: structuredClone(window.__cookieAccounts) };
           }
           if (method === "credentials.cookies.authorizeProcess") {
@@ -1870,4 +1987,411 @@ test("an unavailable release server does not mark working local tools broken", a
   assert.equal(result.ready, true);
   assert.match(result.versions.error, /GitHub/);
   assert.equal(await page.locator("#runtime-badge").getAttribute("data-state"), "ready");
+});
+
+for (const width of [390, 1440]) {
+  test(`another device's queue edit is preserved and blocks downloads at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", 1, { versionedStorage: true });
+    await page.waitForFunction(
+      () => window.__hostStorage["video-download.library.v2"]?.maxConcurrent === 1,
+    );
+    await page.evaluate(() => {
+      window.__hostStorage["video-download.library.v2"] = {
+        scope: "/fixture/project",
+        marker: "phone draft",
+      };
+      window.__hostStorageRevision++;
+    });
+    await downloadForm(page);
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() =>
+      document.querySelector("#library-status").textContent.includes("其他页面或设备"),
+    );
+    assert.equal((await downloads(page)).length, 0, "an unsaved queue must not start downloading");
+    assert.equal(
+      await page.evaluate(() => window.__hostStorage["video-download.library.v2"].marker),
+      "phone draft",
+    );
+    assert.match(await page.locator("#library-status").textContent(), /重新打开面板/);
+    const count = await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "storage.compareAndSet").length,
+    );
+    await page.locator("#download-button").click();
+    assert.equal(
+      await page.evaluate(
+        () => window.__calls.filter((call) => call.method === "storage.compareAndSet").length,
+      ),
+      count,
+    );
+  });
+}
+
+test("durable UI admits every item, recovers completed output on reload, and never restarts it", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true });
+  await page.locator("#url-input").fill(firstUrl + "\n" + secondUrl + "\n" + thirdUrl);
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 3, null, {
+    timeout: 15000,
+  });
+  assert.equal((await downloads(page)).length, 0);
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#library-status")?.textContent.includes("关闭页面后继续") ||
+      [...document.querySelectorAll("p,span")].some((node) =>
+        node.textContent.includes("关闭页面后继续"),
+      ),
+  );
+  await page.evaluate(() => {
+    for (const job of Object.values(window.__nativeJobs)) {
+      job.status = "succeeded";
+      job.sequence++;
+      job.result = { artifacts: [{ published: { path: job.id + ".mp4" }, bytes: 1000 }] };
+    }
+    localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+  });
+  await page.reload();
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 3,
+    null,
+    { timeout: 15000 },
+  );
+  const state = await readState(page);
+  assert.equal(state.queue.length, 3);
+  assert.ok(
+    state.queue.every((item) => item.status === "completed"),
+    JSON.stringify({
+      queue: state.queue,
+      calls: await page.evaluate(() =>
+        window.__calls.filter((call) => call.method.startsWith("tasks.")),
+      ),
+    }),
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.__calls.filter((call) => call.method === "tasks.start").length,
+    ),
+    0,
+  );
+});
+
+test("durable UI recovers a missing start reply and removes only after cancelling the Host job", async (t) => {
+  const page = await openPanel(t, 1440, "", null, { durable: true });
+  await page.evaluate(() => {
+    window.__loseNativeStart = true;
+  });
+  const item = await addDownload(page, firstUrl);
+  await page.waitForFunction(
+    () => window.__calls.filter((call) => call.method === "tasks.find").length >= 2,
+  );
+  await action(page, item.id, "remove").click();
+  await page.waitForFunction(() => Object.values(window.__nativeJobs)[0]?.status === "cancelled");
+  assert.equal(await page.evaluate(() => Object.keys(window.__nativeJobs).length), 1);
+  assert.equal((await downloads(page)).length, 0);
+});
+
+for (const width of [390, 1440]) {
+  test(`durable package history and read-only retry at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, { durable: true });
+    const item = await addDownload(page, firstUrl);
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 1);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.package = { version: "1.2.0", packageDigest: "a".repeat(64) };
+      job.error = { message: "Original failure", retryable: true };
+      job.readOnly = false;
+      job.sequence++;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    const row = page.locator(`.queue-item[data-queue-id="${item.id}"]`);
+    await page.waitForFunction(() => document.querySelector(".queue-package")?.textContent.includes("1.2.0"));
+    assert.equal(await row.locator('[data-queue-action="retry"]').isEnabled(), true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.readOnly = true; // Project selection changed, task sequence did not.
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForFunction(() => document.querySelector('[data-queue-action="retry"]')?.disabled);
+    assert.match(await row.locator(".queue-package").innerText(), /仅供查看.*重新添加/);
+    assert.match(await page.locator(".history-package").first().textContent(), /1\.2\.0/);
+    assert.equal(await page.evaluate(() => window.__calls.filter(({ method }) => method === "tasks.retry").length), 0);
+    await row.screenshot({ path: resolve(artifacts, `package-history-${width}.png`) });
+    assert.equal(await row.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      delete job.package;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForFunction(() => document.querySelector(".queue-package")?.textContent.includes("未记录"));
+    assert.equal(await row.locator('[data-queue-action="retry"]').isDisabled(), true);
+  });
+}
+
+test("durable UI pause-all then resume-one leaves the other download stopped", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true });
+  const first = await addDownload(page, firstUrl);
+  await addDownload(page, secondUrl);
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2, null, {
+    timeout: 15000,
+  });
+  await page.locator("#queue-pause").click();
+  await page.waitForFunction(
+    () =>
+      Object.values(window.__nativeJobs).every((job) => job.status === "cancelled") &&
+      document.querySelectorAll('.queue-item[data-state="paused"]').length === 2,
+    null,
+    { timeout: 15000 },
+  );
+  await action(page, first.id, "resume").click();
+  await page.waitForFunction(
+    () =>
+      Object.values(window.__nativeJobs).filter((job) => job.status === "queued").length === 1 &&
+      !window.__nativeQueue.paused,
+    null,
+    { timeout: 15000 },
+  );
+  assert.equal(
+    Object.values(await page.evaluate(() => window.__nativeJobs)).filter(
+      (job) => job.status === "cancelled",
+    ).length,
+    1,
+  );
+});
+
+for (const width of [390, 1440]) {
+  test(`background account downloads retain the original grant on retry and explicitly replace it at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, { durable: true, taskCookies: true });
+    await page.evaluate(() => {
+      window.__cookieAccounts = [
+        { id: "original", label: "Original account", revision: "a".repeat(64) },
+        { id: "replacement", label: "Replacement account", revision: "b".repeat(64) },
+      ];
+    });
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("original");
+    assert.equal(await page.locator("#cookie-login").isDisabled(), true);
+    await page.locator("#download-button").click();
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 1);
+    const original = Object.values(await page.evaluate(() => window.__nativeJobs))[0];
+    assert.equal(original.input.cookieArgument.credentialId, "original");
+    assert.equal(original.input.cookieArgument.revision, "a".repeat(64));
+    assert.equal(original.input.request.useSavedLogin, true);
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.sequence++;
+      localStorage.setItem("fixture-native-jobs", JSON.stringify(window.__nativeJobs));
+    });
+    await page.reload();
+    await page.waitForSelector('.queue-item[data-state="failed"]');
+    const row = page.locator('.queue-item[data-state="failed"]').first();
+    await page.locator("#url-input").fill(firstUrl);
+    await page.evaluate(() => {
+      window.__cookieAccounts = [
+        { id: "replacement", label: "Replacement account", revision: "b".repeat(64) },
+      ];
+    });
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("replacement");
+    await row.locator('[data-queue-action="retry"]').click();
+    await page.waitForFunction(() => window.__calls.some((call) => call.method === "tasks.retry"));
+    assert.equal(
+      Object.values(await page.evaluate(() => window.__nativeJobs))[0].input.cookieArgument
+        .credentialId,
+      "original",
+    );
+    await page.evaluate(() => {
+      const job = Object.values(window.__nativeJobs)[0];
+      job.status = "failed";
+      job.sequence++;
+      window.__emit("tasks.changed", structuredClone(job));
+    });
+    await page.waitForSelector('.queue-item[data-state="failed"]');
+    await page.locator('[data-queue-action="retry-account"]').first().click();
+    await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2, null, {
+      timeout: 15000,
+    });
+    const jobs = Object.values(await page.evaluate(() => window.__nativeJobs));
+    assert.equal(
+      jobs.find((job) => job.id !== original.id).input.cookieArgument.credentialId,
+      "replacement",
+    );
+    assert.equal(
+      jobs.find((job) => job.id === original.id).input.cookieArgument.credentialId,
+      "original",
+    );
+    assert.equal((await downloads(page)).length, 0);
+  });
+}
+
+test("denied background account submission never falls back to an anonymous or page process", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, taskCookies: true });
+  await page.evaluate(() => {
+    window.__cookieAccounts = [{ id: "private", label: "Private", revision: "a".repeat(64) }];
+    const call = window.codeshellPanel.call.bind(window.codeshellPanel);
+    window.codeshellPanel.call = async (method, args) => {
+      if (method === "tasks.start") {
+        window.__calls.push({ method, args });
+        throw new Error("已取消账号授权");
+      }
+      return call(method, args);
+    };
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("private");
+  await page.locator("#download-button").click();
+  await page.waitForSelector('.queue-item[data-state="failed"]');
+  const starts = await page.evaluate(() =>
+    window.__calls.filter((call) => call.method === "tasks.start"),
+  );
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].args.input.cookieArgument.credentialId, "private");
+  assert.equal(Object.keys(await page.evaluate(() => window.__nativeJobs)).length, 0);
+  assert.equal((await downloads(page)).length, 0);
+});
+
+test("an account changed after selection cannot be silently substituted at background admission", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, taskCookies: true });
+  await page.evaluate(() => {
+    window.__cookieAccounts = [{ id: "saved", label: "Saved account", revision: "a".repeat(64) }];
+  });
+  await page.locator("#url-input").fill(firstUrl);
+  await page.locator("#cookie-refresh").click();
+  await page.locator("#cookie-select").selectOption("saved");
+  await page.evaluate(() => {
+    window.__cookieAccounts[0].revision = "b".repeat(64);
+  });
+  await page.locator("#download-button").click();
+  await page.waitForFunction(() => document.body.textContent.includes("原账号授权已变化"));
+  assert.equal(Object.keys(await page.evaluate(() => window.__nativeJobs)).length, 0);
+  assert.equal((await downloads(page)).length, 0);
+  assert.equal(await page.locator("#cookie-select").inputValue(), "saved");
+});
+
+for (const width of [390, 1440]) {
+  test(`saved-account metadata inspection remains usable with the download queue paused at ${width}px`, async (t) => {
+    const page = await openPanel(t, width, "", null, {
+      durable: true,
+      taskCookies: true,
+      processCookies: true,
+    });
+    await page.evaluate(() => {
+      window.__nativeQueue.paused = true;
+      window.__cookieAccounts = [{ id: "saved", label: "Saved account", revision: "a".repeat(64) }];
+    });
+    await page.locator("#url-input").fill(firstUrl);
+    await page.locator("#cookie-refresh").click();
+    await page.locator("#cookie-select").selectOption("saved");
+    await page.locator("#inspect-button").click();
+    await page.waitForFunction(() =>
+      window.__downloads.some((call) => call.args.includes("--dump-single-json")),
+    );
+    const authorization = await page.evaluate(() =>
+      window.__calls.find((call) => call.method === "credentials.cookies.authorizeProcess"),
+    );
+    assert.equal(authorization.args.revision, "a".repeat(64));
+    await page.evaluate(() => {
+      const query = window.__downloads.find((call) => call.args.includes("--dump-single-json"));
+      if (query.fileArgumentHandles[0] !== "cookie-file-1")
+        throw new Error("missing sealed account");
+      window.__emit("process.output", {
+        processId: query.processId,
+        stream: "stdout",
+        text: JSON.stringify({
+          id: "fixture",
+          title: "Account metadata fixture",
+          duration: 10,
+          formats: [],
+        }),
+      });
+      window.__emit("process.exit", { processId: query.processId, code: 0 });
+    });
+    await page.waitForFunction(
+      () => document.querySelector("#inspect-status").dataset.state === "ready",
+    );
+    assert.ok(await page.getByText("Account metadata fixture", { exact: true }).count());
+    assert.equal(await page.evaluate(() => window.__nativeQueue.paused), true);
+    assert.equal(
+      await page.evaluate(
+        () => window.__calls.filter((call) => call.method === "tasks.start").length,
+      ),
+      0,
+    );
+  });
+}
+
+test("LAN browsers without randomUUID can submit distinct durable downloads", async (t) => {
+  const page = await openPanel(t, 390, "", 1, { durable: true, noRandomUuid: true });
+  assert.equal(await page.evaluate(() => typeof crypto.randomUUID), "undefined");
+  await addDownload(page, firstUrl);
+  await addDownload(page, secondUrl);
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2);
+  const jobs = await page.evaluate(() => Object.values(window.__nativeJobs));
+  const keys = jobs.map((job) => job.requestKey);
+  assert.equal(new Set(keys).size, 2);
+  for (const key of keys)
+    assert.match(
+      key,
+      /^download:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+  assert.equal(await page.locator("#form-error").innerText(), "");
+});
+
+test("an already open device discovers another device's admitted download without saving a stale draft", async (t) => {
+  const page = await openPanel(t, 390, "", null, { durable: true, versionedStorage: true });
+  await page.evaluate(() => {
+    const queueId = crypto.randomUUID(),
+      id = crypto.randomUUID();
+    const requestKey = `download:${queueId}`;
+    const record = {
+      queueId,
+      nativeRequestKey: requestKey,
+      nativeTaskId: id,
+      url: "https://example.com/remote.mp4",
+      title: "另一设备的下载",
+      directory: { path: "/fixture/project", kind: "project", bookmark: crypto.randomUUID() },
+      status: "running",
+      configuration: { format: "best" },
+    };
+    window.__hostStorage["video-download.library.v2"] = {
+      version: 2,
+      scope: "/fixture/project",
+      queue: [record],
+      history: [],
+      queuePaused: false,
+      maxConcurrent: 2,
+    };
+    window.__hostStorageRevision++;
+    window.__nativeJobs[id] = {
+      id,
+      requestKey,
+      entry: { name: "download-runtime" },
+      sequence: 2,
+      status: "succeeded",
+      input: { request: { url: record.url } },
+      result: {
+        artifacts: [
+          { assetId: `asset-${"a".repeat(64)}`, bytes: 123, published: { path: "remote.mp4" } },
+        ],
+      },
+    };
+    window.__calls = [];
+    const { input, result, ...summary } = window.__nativeJobs[id];
+    window.__emit("tasks.changed", summary);
+  });
+  await page.waitForFunction(
+    () => document.querySelectorAll('.queue-item[data-state="completed"]').length === 1,
+  );
+  assert.match(await page.locator("#queue-list").innerText(), /另一设备的下载/);
+  assert.equal(
+    await page.evaluate(() =>
+      window.__calls.some((call) => ["tasks.start", "storage.compareAndSet"].includes(call.method)),
+    ),
+    false,
+  );
+  await page.locator('[data-tab="history"]').click();
+  assert.match(await page.locator("#history-list").innerText(), /另一设备的下载/);
 });

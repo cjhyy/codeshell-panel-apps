@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { assertTick, type Tick } from "./time";
@@ -94,7 +95,7 @@ export function planCreateMulticam(
     });
   }
   const id = (kind: "clip" | "track" | "angle") => {
-    const result = options.idFactory?.(kind) ?? `${kind}-${crypto.randomUUID()}`;
+    const result = options.idFactory?.(kind) ?? `${kind}-${randomId()}`;
     if (used.has(result)) throw new Error("多机位对象编号重复");
     used.add(result);
     return result;

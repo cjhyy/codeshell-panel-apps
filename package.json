@@ -13,6 +13,7 @@
     "test:fidelity:real": "node scripts/design-studio-real-html-fidelity.mjs",
     "test:large-doc": "node scripts/design-studio-large-document.mjs",
     "test:ui:quant-lab": "node scripts/quant-lab-ui.mjs",
+    "test:ui:quant-lab-storage": "node scripts/quant-lab-storage-ui.mjs",
     "build": "node scripts/build-panels.mjs",
     "build:check": "node scripts/build-panels.mjs --check",
     "sync:panel-select": "node scripts/sync-panel-select.mjs",

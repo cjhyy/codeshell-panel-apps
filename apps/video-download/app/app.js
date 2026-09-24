@@ -1,3 +1,5 @@
+import { supportsDurableDownloads, createDurableDownloads } from "./durable-downloads.js";
+import { randomId } from "./ids.js";
 import {
   parseVideoLinks,
   videoUrl,
@@ -5,6 +7,8 @@ import {
   directoryIdentity,
   fileInventoryState,
   storedRecord,
+  resourceFileFields,
+  resourceRelativeFile,
   serializeLibrary,
   restoreLibrary,
   MAX_HISTORY,
@@ -168,6 +172,8 @@ let inspectedVideo = null;
 let inspectedBatch = new Map();
 let inspectionFailures = new Map();
 let context = { apiVersion: 0 };
+let durableDownloads = null;
+let durableTimer = null;
 let dependenciesChecked = false;
 let dependencyRefreshPending = false;
 let dependencyErrorActive = false;
@@ -229,6 +235,21 @@ const directoryGrants = new Map();
 const historyActionsPending = new Set();
 let openingDirectory = false;
 const libraryKey = "video-download.library.v2";
+const libraryStorage = createProjectStorage({
+  panel,
+  key: libraryKey,
+  envelope: false,
+  getContext: () => context,
+  getScope: () => libraryScope,
+});
+const searchArchiveStorage = createProjectStorage({
+  panel,
+  key: "video-download.search-archive.v1",
+  envelope: false,
+  ready: searchScopeReady,
+  getContext: () => context,
+  getScope: () => libraryScope,
+});
 const libraryStatus = document.querySelector("#library-status");
 const batchStatus = document.querySelector("#batch-status");
 const duplicateReview = document.querySelector("#duplicate-review");
@@ -588,7 +609,7 @@ function renderVersionInfo() {
     elements.versionComparison.textContent = "发现新版本，可以直接一键更新。";
   } else if (comparison === 1) {
     elements.versionComparison.dataset.state = "current";
-    elements.versionComparison.textContent = "本机版本比当前稳定版更新。";
+    elements.versionComparison.textContent = "运行环境中的版本比当前稳定版更新。";
   } else {
     elements.versionComparison.dataset.state = versionRefreshError ? "error" : "checking";
     elements.versionComparison.textContent =
@@ -620,8 +641,13 @@ function saveHistory() {
 }
 
 function reportLibraryError(error) {
-  libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。队列已暂停，请重试或清理记录。`;
-  queuePaused = true;
+  const recovery = ["STORAGE_CONFLICT", "STORAGE_UNCERTAIN"].includes(error?.code)
+    ? "队列已暂停；请先复制需要保留的链接，再重新打开面板。"
+    : "队列已暂停，请重试或清理记录。";
+  libraryStatus.textContent = `未能保存下载记录：${error instanceof Error ? error.message : String(error)}。${recovery}`;
+  if (!durableDownloads) queuePaused = true;
+  else
+    libraryStatus.textContent = `未能保存编辑：${error.message}。后台任务继续运行，请重新打开面板获取最新记录。`;
   renderQueue();
 }
 
@@ -641,12 +667,12 @@ function saveLibrary() {
     .then(async () => {
       if (!libraryReady || (context.cwd && context.cwd !== libraryScope))
         throw new Error("项目已变化，请重新打开面板。");
-      if (!previewMode && Number(context.apiVersion) >= 14)
-        await panel.call("storage.set", { key: libraryKey, value: snapshot });
-      else localStorage.setItem(`${libraryKey}:${libraryScope}`, JSON.stringify(snapshot));
+      await libraryStorage.save(snapshot);
       libraryStatus.textContent = snapshot.truncated
         ? "记录空间有限，已清理最早记录；待下载任务已保存。"
-        : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
+        : durableDownloads
+          ? "队列已保存 · 已提交的后台下载在关闭页面后继续运行。"
+          : "队列已保存 · 关闭面板会中断当前下载，重新打开后可恢复。";
     });
   return libraryWrite;
 }
@@ -654,10 +680,7 @@ function saveLibrary() {
 async function loadLibrary() {
   libraryScope = context.cwd || runtime.directory?.path || "preview";
   try {
-    const raw =
-      !previewMode && Number(context.apiVersion) >= 14
-        ? await panel.call("storage.get", { key: libraryKey })
-        : JSON.parse(localStorage.getItem(`${libraryKey}:${libraryScope}`) || "null");
+    const raw = await libraryStorage.load();
     const saved = restoreLibrary(raw, libraryScope);
     if (saved) {
       downloadQueue = saved.queue;
@@ -705,6 +728,14 @@ async function loadLibrary() {
 async function directoryFor(item, allowPick = false) {
   const key = directoryIdentity(item.directory);
   if (directoryGrants.has(key)) return directoryGrants.get(key);
+  if (item.directory?.bookmark && durableDownloads) {
+    const restored = await panel.call("filesystem.restoreDirectory", {
+      bookmark: item.directory.bookmark,
+    });
+    if (directoryIdentity(restored) !== key) throw new Error("原保存目录已变化，请重新选择。");
+    directoryGrants.set(key, restored);
+    return restored;
+  }
   if (!allowPick) throw new Error("原目录尚未授权，请点击记录中的“检查文件”重新选择原目录。");
   const result = await panel.call("filesystem.pickDirectory");
   if (result?.cancelled || !result?.handle) throw new Error("已取消选择目录。");
@@ -743,6 +774,7 @@ async function checkFiles(item, allowPick = false) {
       );
     item.files = checked.map((file, index) => ({
       ...file,
+      ...resourceFileFields(item.files[index]),
       ...(Number.isSafeInteger(item.files[index].bytes) ? { bytes: item.files[index].bytes } : {}),
       ...(Number.isSafeInteger(item.files[index].modifiedAt)
         ? { modifiedAt: item.files[index].modifiedAt }
@@ -803,10 +835,32 @@ function renderDuplicates() {
 }
 
 async function prepareItem(item, allowPick = false) {
+  if (!durableDownloads && (item.nativeTaskId || item.nativeRequestKey))
+    throw new Error("此下载属于后台任务，请使用支持后台队列的 Host 查询和恢复，避免重复下载。");
   if (!dependencyReady(runtime.ytDlp)) throw new Error("请先安装下载器。");
   if (item.configuration.format === "audio" && !dependencyReady(runtime.ffmpeg))
     throw new Error("仅音频模式需要 ffmpeg。");
   item.directory = await directoryFor(item, allowPick);
+  if (durableDownloads) {
+    if (item.cookieCredentialId) {
+      if (!supportsTaskCookies()) throw new Error("当前 Host 尚未提供后台账号授权，请更新后重试。");
+      const url = cookieRequestUrl(item.url);
+      if (!url) throw new Error("账号下载需要 HTTPS 视频网址。");
+      const result = await panel.call("credentials.cookies.listForTask", { url });
+      const account = result?.accounts?.find((entry) => entry.id === item.cookieCredentialId);
+      if (!account || !/^[a-f0-9]{64}$/.test(account.revision || ""))
+        throw new Error("原账号已不可用，请重新选择账号后添加下载。");
+      if (
+        (item.cookieCredentialRevision && item.cookieCredentialRevision !== account.revision) ||
+        (item.cookieCredentialUrl && item.cookieCredentialUrl !== url)
+      )
+        throw new Error("原账号授权已变化，请重新选择账号后添加下载。");
+      item.cookieCredentialRevision = account.revision;
+      item.cookieCredentialUrl = url;
+    }
+    if (!item.directory.bookmark) throw new Error("请重新选择保存目录以授权后台下载。");
+    return item;
+  }
   item.executable = { ...runtime.ytDlp };
   item.args = buildArguments(item.url, item.configuration, item.copySuffix);
   item.fileArgumentHandles = [];
@@ -874,7 +928,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
       )
         throw new Error("批量链接来自不同网站，请先选择“不使用 Cookie”，或按网站分批添加。");
       const item = {
-        queueId: crypto.randomUUID(),
+        queueId: randomId(),
         url,
         title:
           candidate?.title ||
@@ -888,6 +942,14 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         configuration: isSnapshot ? { ...candidate.configuration } : { ...configuration },
         directory: isSnapshot ? { ...candidate.directory } : { ...runtime.directory },
         cookieCredentialId: isSnapshot ? candidate.cookieCredentialId || "" : credentialId,
+        cookieCredentialRevision: isSnapshot
+          ? candidate.cookieCredentialRevision || ""
+          : cookieAccounts.find((account) => account.id === credentialId)?.revision || "",
+        cookieCredentialUrl: isSnapshot
+          ? candidate.cookieCredentialUrl || ""
+          : credentialId
+            ? cookieRequestUrl(url)
+            : "",
         status: start && candidate?.status !== "pending" ? "queued" : "pending",
         addedAt: Date.now(),
         files: [],
@@ -895,7 +957,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         error: "",
         percent: 0,
         ...(copy
-          ? { copySuffix: crypto.randomUUID().slice(0, 8) }
+          ? { copySuffix: randomId().slice(0, 8) }
           : candidate?.copySuffix
             ? { copySuffix: candidate.copySuffix }
             : {}),
@@ -923,7 +985,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
           if (state === "missing") {
             missing++;
             if (record.files.some((file) => ["empty", "changed"].includes(file.status)))
-              item.copySuffix = crypto.randomUUID().slice(0, 8);
+              item.copySuffix = randomId().slice(0, 8);
           } else unknown++;
         }
         if (existing) {
@@ -932,7 +994,7 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
         }
       }
       // A snapshot must reacquire its original directory and Cookie grants.
-      if (!isSnapshot && item.cookieCredentialId) {
+      if (!isSnapshot && item.cookieCredentialId && !durableDownloads) {
         item.executable = { ...runtime.ytDlp };
         item.args = buildArguments(item.url, item.configuration, item.copySuffix);
         // Cookie grants are scoped by site; the first link is already validated by the form.
@@ -985,6 +1047,38 @@ async function enqueueCandidates(candidates, { copy = false, start = true } = {}
 }
 
 async function restoreQueue(items = null) {
+  if (durableDownloads) {
+    if (queueSubmissionPending) return;
+    queueSubmissionPending = true;
+    setControlsBusy(true);
+    try {
+      const selected =
+        items ||
+        downloadQueue.filter((item) =>
+          ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status),
+        );
+      if (items && queuePaused) {
+        for (const item of downloadQueue.filter(
+          (entry) => !selected.includes(entry) && ["queued", "running"].includes(entry.status),
+        ))
+          await durableDownloads.stop(item, true);
+      }
+      for (const item of selected) {
+        if (!item.nativeTaskId && !item.nativeRequestKey) await prepareItem(item, true);
+        item.status = "queued";
+        await durableDownloads.resume(item);
+      }
+      await durableDownloads.configure(false, maxConcurrent);
+      await saveLibrary();
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      queueSubmissionPending = false;
+      setControlsBusy(false);
+    }
+    renderQueue();
+    return;
+  }
   if (
     queueSubmissionPending ||
     auxiliaryBusy ||
@@ -1043,6 +1137,14 @@ async function restoreQueue(items = null) {
 }
 
 async function pauseDownload(job = currentJob, { persist = true } = {}) {
+  if (durableDownloads && job) {
+    try {
+      await durableDownloads.stop(job, true);
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (!job || job.finishing) return;
   if (job.running) return requestDownloadStop(job, "pause");
   if (!["queued", "restored", "interrupted"].includes(job.status)) return;
@@ -1065,6 +1167,23 @@ async function pauseDownload(job = currentJob, { persist = true } = {}) {
 }
 
 async function pauseAllDownloads() {
+  if (durableDownloads) {
+    if (queueSubmissionPending) return;
+    queueSubmissionPending = true;
+    setControlsBusy(true);
+    try {
+      await durableDownloads.configure(true, maxConcurrent);
+      for (const job of downloadQueue.filter((item) => item.running || item.status === "queued"))
+        await durableDownloads.stop(job, true);
+    } catch (error) {
+      showError(error.message);
+    } finally {
+      queueSubmissionPending = false;
+      setControlsBusy(false);
+      renderQueue();
+    }
+    return;
+  }
   ++queueControlRevision;
   queuePaused = true;
   // Set every pending state synchronously before any exit can refill a free slot.
@@ -1166,6 +1285,19 @@ function rememberCookieSelection() {
   }
 }
 
+function supportsTaskCookies() {
+  return (
+    context.capabilities?.tasks?.cookieCredentials === true &&
+    context.availableMethods?.includes("credentials.cookies.listForTask")
+  );
+}
+
+function supportsCookieMethod(method) {
+  return Array.isArray(context.availableMethods)
+    ? context.availableMethods.includes(method)
+    : Number(context.apiVersion) >= 10;
+}
+
 function cookieControlsUnavailable() {
   return (
     queueSubmissionPending ||
@@ -1173,13 +1305,15 @@ function cookieControlsUnavailable() {
     cookieLoading ||
     cookieLoginPending ||
     !cookieRequestUrl(normalizedUrl()) ||
-    Number(context.apiVersion) < 10
+    (!supportsTaskCookies() && !supportsCookieMethod("credentials.cookies.list"))
   );
 }
 
 function renderCookieAccounts(message = "", preferredId = null) {
   const url = cookieRequestUrl(normalizedUrl());
-  const selected = preferredId ?? (cookieAccountsUrl === url ? elements.cookieSelect.value : "");
+  const selected =
+    preferredId ??
+    (cookieAccountsUrl === url ? elements.cookieSelect.value : cookieSelections.get(url) || "");
   elements.cookieSelect.replaceChildren();
   const none = document.createElement("option");
   none.value = "";
@@ -1195,13 +1329,21 @@ function renderCookieAccounts(message = "", preferredId = null) {
     option.disabled = account.health === "corrupted";
     elements.cookieSelect.append(option);
   }
-  if (accounts.some((account) => account.id === selected && account.health !== "corrupted")) {
+  if (selected) {
+    if (!accounts.some((account) => account.id === selected)) {
+      const missing = document.createElement("option");
+      missing.value = selected;
+      missing.textContent = "原账号不可用，请重新选择";
+      missing.disabled = true;
+      elements.cookieSelect.append(missing);
+    }
     elements.cookieSelect.value = selected;
   }
   const unavailable = cookieControlsUnavailable();
   elements.cookieSelect.disabled = unavailable;
   elements.cookieRefresh.disabled = unavailable;
-  elements.cookieLogin.disabled = unavailable;
+  elements.cookieLogin.disabled =
+    unavailable || !supportsCookieMethod("credentials.cookies.loginAndSave");
   const validUrl = Boolean(normalizedUrl());
   elements.cookieHelp.textContent =
     message ||
@@ -1218,9 +1360,11 @@ function renderCookieAccounts(message = "", preferredId = null) {
               ? "正在读取与该网站匹配的已保存账号…"
               : accounts.length
                 ? elements.cookieSelect.value
-                  ? `已选择 ${accounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；首次使用时会确认授权。`
+                  ? `已选择 ${accounts.find((account) => account.id === elements.cookieSelect.value)?.label || "登录账号"}；${supportsTaskCookies() ? "提交和重试时会确认授权" : "首次使用时会确认授权"}。`
                   : `找到 ${accounts.length} 个匹配账号，请在上方选择要使用的账号。`
-                : "未找到该网站的已保存账号。可点击“登录并保存”；不会自动读取系统浏览器的 Cookie。");
+                : supportsCookieMethod("credentials.cookies.loginAndSave")
+                  ? "未找到该网站的已保存账号。可点击“登录并保存”；不会自动读取系统浏览器的 Cookie。"
+                  : "未找到该网站的已保存账号。请先在执行项目的 Host 中保存账号，再刷新；不会读取手机浏览器的登录状态。");
 }
 
 async function refreshCookieAccounts(options = {}) {
@@ -1233,7 +1377,7 @@ async function refreshCookieAccounts(options = {}) {
     typeof options.selectId === "string" ? options.selectId : cookieSelections.get(url) || "";
   invalidateCookieAuthorization();
   cookieAccountsError = "";
-  if (!url || Number(context.apiVersion) < 10) {
+  if (!url || (!supportsTaskCookies() && !supportsCookieMethod("credentials.cookies.list"))) {
     cookieAccounts = [];
     cookieAccountsUrl = "";
     cookieLoading = false;
@@ -1249,7 +1393,10 @@ async function refreshCookieAccounts(options = {}) {
             { id: "preview-account", label: "示例登录账号", domain: new URL(url).hostname },
           ],
         }
-      : await panel.call("credentials.cookies.list", { url });
+      : await panel.call(
+          supportsTaskCookies() ? "credentials.cookies.listForTask" : "credentials.cookies.list",
+          { url },
+        );
     if (requestId !== cookieRequestId || cookieRequestUrl(normalizedUrl()) !== url) return [];
     if (!Array.isArray(result?.accounts))
       throw new Error("CodeShell 没有返回有效的账号列表，请刷新重试。");
@@ -1315,9 +1462,11 @@ async function loginAndSaveCookie() {
     showError("请先粘贴 HTTPS 视频链接，再登录并保存 Cookie。");
     return;
   }
-  if (Number(context.apiVersion) < 10 || previewMode) {
+  if (!supportsCookieMethod("credentials.cookies.loginAndSave") || previewMode) {
     renderCookieAccounts(
-      previewMode ? "预览模式不会打开登录窗口。" : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+      previewMode
+        ? "预览模式不会打开登录窗口。"
+        : "当前入口不支持登录采集，请在执行项目的 Host 中保存账号。",
     );
     return;
   }
@@ -1368,14 +1517,24 @@ async function cookieFileArguments(url) {
   const account = cookieAccounts.find((item) => item.id === credentialId);
   if (!account || account.health === "corrupted")
     throw new Error("这个 Cookie 已失效，请重新登录并保存。");
+  if (!supportsCookieMethod("credentials.cookies.authorizeProcess"))
+    throw new Error(
+      "当前入口尚不支持带账号读取视频信息；可以直接加入后台下载队列，或在桌面读取信息。",
+    );
   if (!dependencyReady(runtime.ytDlp)) throw new Error("yt-dlp 还没有准备好。");
   if (previewMode) return ["preview-cookie"];
   const host = new URL(targetUrl).hostname;
+  if (supportsTaskCookies() && context.capabilities?.process?.cookieCredentials !== true)
+    throw new Error("当前 Host 尚未提供带版本校验的临时账号授权，请更新 Host 后读取视频信息。");
+  const revision = supportsTaskCookies() ? account.revision : undefined;
+  if (supportsTaskCookies() && !/^[a-f0-9]{64}$/.test(revision || ""))
+    throw new Error("所选账号缺少有效授权版本，请刷新账号列表。");
   const executableHandle = runtime.ytDlp.handle;
   if (
     cookieAuthorization?.credentialId === credentialId &&
     cookieAuthorization.executableHandle === executableHandle &&
-    cookieAuthorization.host === host
+    cookieAuthorization.host === host &&
+    cookieAuthorization.revision === revision
   ) {
     return [cookieAuthorization.fileArgumentHandle];
   }
@@ -1383,6 +1542,7 @@ async function cookieFileArguments(url) {
     credentialId,
     url: targetUrl,
     executableHandle,
+    ...(revision ? { revision } : {}),
   });
   if (!result?.authorized || typeof result.fileArgumentHandle !== "string") {
     throw new Error(
@@ -1392,7 +1552,8 @@ async function cookieFileArguments(url) {
   if (
     cookieRequestUrl(normalizedUrl()) !== targetUrl ||
     elements.cookieSelect.value !== credentialId ||
-    runtime.ytDlp?.handle !== executableHandle
+    runtime.ytDlp?.handle !== executableHandle ||
+    (revision && cookieAccounts.find((entry) => entry.id === credentialId)?.revision !== revision)
   ) {
     throw new Error("链接或 Cookie 账号已变化，请重新确认下载配置。");
   }
@@ -1401,6 +1562,7 @@ async function cookieFileArguments(url) {
     executableHandle,
     host,
     fileArgumentHandle: result.fileArgumentHandle,
+    revision,
   };
   elements.cookieHelp.textContent = `本次面板将使用 ${account.label}；关闭面板后授权自动失效。`;
   return [result.fileArgumentHandle];
@@ -1836,6 +1998,8 @@ function updateSessionContext(next) {
   if (libraryReady && context.cwd && next?.cwd && next.cwd !== context.cwd) {
     libraryReady = false;
     queuePaused = true;
+    durableDownloads?.close();
+    clearInterval(durableTimer);
     libraryStatus.textContent = "项目已变化，请重新打开面板载入该项目的下载记录。";
   }
   context = { ...context, ...(next || {}) };
@@ -2267,7 +2431,8 @@ function setControlsBusy(busy, operation = "download") {
   const cookieUnavailable = busy || cookieControlsUnavailable();
   elements.cookieSelect.disabled = cookieUnavailable;
   elements.cookieRefresh.disabled = cookieUnavailable;
-  elements.cookieLogin.disabled = cookieUnavailable;
+  elements.cookieLogin.disabled =
+    cookieUnavailable || !supportsCookieMethod("credentials.cookies.loginAndSave");
   elements.subtitles.disabled = busy || selectedFormat() === "audio";
   elements.subtitleMode.disabled = busy || selectedFormat() === "audio";
   elements.subtitleLanguagePreset.disabled = busy || selectedFormat() === "audio";
@@ -2475,7 +2640,7 @@ function friendlyYtDlpError(stderr, operation = "下载", exitCode = null) {
     return "资源不存在（404），请检查链接，或确认视频是否已删除。";
   }
   if (lower.includes("sabr") && lower.includes("missing a url")) {
-    return "YouTube 返回了缺少下载地址的格式（SABR）。请先更新本机 yt-dlp；部分情况仍需要登录 Cookie。";
+    return "YouTube 返回了缺少下载地址的格式（SABR）。请先更新项目运行环境中的 yt-dlp；部分情况仍需要登录 Cookie。";
   }
   if (
     lower.includes("lockingunsupportederror") ||
@@ -2851,6 +3016,7 @@ function defaultTaskTitle(url) {
 }
 
 function queueStatusText(item) {
+  if (durableDownloads && item.status === "queued" && !item.nativeTaskId) return "等待提交到后台";
   if (item.status === "running") {
     if (item.pauseRequested) return "正在暂停";
     if (item.cancelRequested) return "正在取消";
@@ -3158,6 +3324,16 @@ function renderQueue() {
     status.className = "queue-status";
     status.textContent = queueStatusText(item);
     copy.append(title, meta, status);
+    if (item.nativeTaskId) {
+      const version = document.createElement("small");
+      version.className = "queue-package";
+      version.textContent = item.nativePackage
+        ? `任务使用 Panel ${item.nativePackage.version}`
+        : "旧任务未记录 Panel 版本";
+      if (item.nativeReadOnly)
+        version.textContent += " · 仅供查看，请检查链接和设置后重新添加下载";
+      copy.append(version);
+    }
     if (item.status === "running") {
       const progress = document.createElement("div");
       progress.className = "queue-progress";
@@ -3194,14 +3370,26 @@ function renderQueue() {
       if (item.status === "queued") action("pause", "暂停").disabled = queueSubmissionPending;
       else
         action("resume", item.status === "pending" ? "开始下载" : "继续").disabled =
-          queueSubmissionPending || auxiliaryBusy || Boolean(completionPending) || stopping;
+          item.nativeRetryBlocked ||
+          queueSubmissionPending ||
+          auxiliaryBusy ||
+          Boolean(completionPending) ||
+          stopping;
       action("remove", "移除");
     } else if (item.status === "failed" || item.status === "cancelled") {
       if (item.status === "failed") action("details", "查看错误");
       action("retry", item.retryPending ? "正在授权…" : "重试").disabled = Boolean(
-        item.retryPending || item.finishing,
+        item.nativeRetryBlocked || item.retryPending || item.finishing,
       );
     }
+    if (
+      durableDownloads &&
+      supportsTaskCookies() &&
+      ["failed", "cancelled", "paused", "interrupted"].includes(item.status)
+    )
+      action("retry-account", "用所选账号重试").disabled = Boolean(
+        item.nativeReadOnly || item.retryPending || queueSubmissionPending,
+      );
     row.append(copy, actions);
     elements.queueList.append(row);
   }
@@ -3225,6 +3413,10 @@ async function startDownload({ start = true } = {}) {
 }
 
 async function runNextDownload() {
+  if (durableDownloads) {
+    if (libraryReady && !queueSubmissionPending) await durableDownloads.pump();
+    return;
+  }
   if (
     !libraryReady ||
     completionPending ||
@@ -3321,7 +3513,63 @@ async function runNextDownload() {
   }
 }
 
+async function retryWithSelectedAccount(item) {
+  if (
+    !durableDownloads ||
+    item.retryPending ||
+    queueSubmissionPending ||
+    !["failed", "cancelled", "paused", "interrupted"].includes(item.status)
+  )
+    return;
+  const url = cookieRequestUrl(item.url);
+  const account = cookieAccounts.find((entry) => entry.id === elements.cookieSelect.value);
+  if (
+    !url ||
+    cookieRequestUrl(normalizedUrl()) !== url ||
+    cookieAccountsUrl !== url ||
+    cookieLoading ||
+    !account ||
+    !/^[a-f0-9]{64}$/.test(account.revision || "")
+  ) {
+    showError("请先在上方输入此任务的网站链接，刷新并选择要使用的账号。");
+    return;
+  }
+  const replacement = {
+    url: item.url,
+    title: item.title,
+    configuration: { ...item.configuration, cookieAccount: account.label },
+    directory: { ...item.directory },
+    cookieCredentialId: account.id,
+    cookieCredentialRevision: account.revision,
+    cookieCredentialUrl: url,
+    copySuffix: item.copySuffix,
+  };
+  item.retryPending = true;
+  renderQueue();
+  try {
+    await prepareItem(replacement);
+    // Resolve any earlier submission and stop that exact job before admitting a new one.
+    // The original immutable task remains in history with its original account.
+    await durableDownloads.stop(item, false);
+    await enqueueCandidates([replacement]);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    item.retryPending = false;
+    renderQueue();
+  }
+}
+
 async function retryQueuedDownload(item) {
+  if (item.retryPending) return;
+  if (durableDownloads) {
+    try {
+      await durableDownloads.resume(item);
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (
     item.finishing ||
     item.retryPending ||
@@ -3448,6 +3696,14 @@ async function cancelCurrentJob(job = currentJob) {
 }
 
 async function requestDownloadStop(job, intent) {
+  if (durableDownloads && job) {
+    try {
+      await durableDownloads.stop(job, intent === "pause");
+    } catch (error) {
+      showError(error.message);
+    }
+    return;
+  }
   if (!job?.running || job.stopPending || (intent === "pause" && job.cancelRequested)) return;
   const pausing = intent === "pause";
   job.pauseRequested = pausing;
@@ -3648,6 +3904,14 @@ function renderHistory() {
           : "文件待检查";
     if (!item.filesComplete) inventoryNote.textContent += " · 文件清单不完整";
     body.append(destination, inventoryNote);
+    if (item.nativeTaskId) {
+      const version = document.createElement("p");
+      version.className = "history-package";
+      version.textContent = item.nativePackage
+        ? `任务使用 Panel ${item.nativePackage.version}`
+        : "旧任务未记录 Panel 版本";
+      body.append(version);
+    }
     if (item.checkError || item.error) {
       const error = document.createElement("p");
       error.className = "history-error";
@@ -3692,7 +3956,10 @@ function renderHistory() {
         .join(" · ");
       const controls = document.createElement("div");
       controls.className = "history-actions";
-      controls.append(button("open", "打开", index), button("reveal", "定位", index));
+      controls.append(
+        button("open", "打开", index),
+        button("reveal", browserResourcePreview() ? "下载目录" : "定位", index),
+      );
       line.append(name, state, controls);
       body.append(line);
     });
@@ -3712,14 +3979,17 @@ function renderHistory() {
       actions.append(retry);
     } else if (mediaIndex >= 0) {
       const play = button("play", "播放", mediaIndex, true);
-      play.title = "优先使用已安装的兼容播放器；详情中的“打开”使用系统默认应用";
+      play.title = browserResourcePreview()
+        ? "在当前浏览器预览，可保存到此设备"
+        : "优先使用已安装的兼容播放器；详情中的“打开”使用系统默认应用";
       play.classList.add("history-primary-action");
       play.prepend(historyIcon("play"));
       actions.append(play);
     }
     if (files.length) {
-      const reveal = button("reveal", "定位文件", primaryIndex, true);
-      reveal.title = "定位文件";
+      const reveal = button(
+        "reveal", browserResourcePreview() ? "打开下载目录" : "定位文件", primaryIndex, true,
+      );
       reveal.classList.add("history-icon-button");
       reveal.replaceChildren(historyIcon("folder"));
       actions.append(reveal);
@@ -3748,6 +4018,10 @@ function renderHistory() {
     row.append(details, actions);
     elements.historyList.append(row);
   }
+}
+
+function browserResourcePreview() {
+  return context.availableMethods?.includes("resources.open") === true;
 }
 
 async function handleHistoryAction(event) {
@@ -3796,7 +4070,8 @@ async function handleHistoryAction(event) {
       const file = item.files[Number(button.dataset.fileIndex)];
       if (!file) return;
       const directory = await directoryFor(item, true);
-      const [result] = await auxiliary.files(directory, action, [file]);
+      const browserPreview = browserResourcePreview();
+      const [result] = await auxiliary.files(directory, browserPreview ? "check" : action, [file]);
       if (result.error === "unable-to-open-file")
         throw new Error(
           action === "reveal"
@@ -3805,10 +4080,29 @@ async function handleHistoryAction(event) {
         );
       if (result.status !== "present")
         throw new Error("文件已删除、变化或暂时无法访问。可按原设置重新下载。");
-      item.files[Number(button.dataset.fileIndex)] = result;
+      const checked = { ...result, ...resourceFileFields(file) };
+      if (browserPreview) {
+        if (action === "reveal") {
+          await panel.call("filesystem.openDirectory", { handle: directory.handle });
+        } else {
+          if (!checked.assetId) {
+            const captured = await panel.call("resources.capture", {
+              directoryHandle: directory.handle,
+              path: resourceRelativeFile(directory, checked),
+              expectedBytes: checked.bytes,
+            });
+            Object.assign(checked, resourceFileFields({ assetId: captured?.asset?.id }));
+            if (!checked.assetId) throw new Error("文件未能准备好，请重试预览。");
+          }
+          await panel.call("resources.open", { assetId: checked.assetId });
+        }
+      }
+      item.files[Number(button.dataset.fileIndex)] = checked;
       item.checkError = "";
       await saveLibrary();
-      feedback.textContent = `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
+      feedback.textContent = browserPreview
+        ? `${action === "reveal" ? "已显示下载目录" : "已在当前浏览器打开文件预览"}：${item.title || "下载文件"}`
+        : `${action === "reveal" ? "已在文件夹中定位" : `已交给${result.player || "系统默认应用"}打开`}：${item.title || "下载文件"}`;
     }
   } catch (error) {
     item.checkError = error.message;
@@ -4197,7 +4491,7 @@ function videoContextForAgent() {
       cookieNote:
         Number(context.apiVersion) >= 10
           ? "Cookie 由 Host 以不透明临时文件授权给 yt-dlp，内容和路径不会暴露给面板。"
-          : "选择 Cookie 需要 CodeShell 0.8.16 或更新版本。",
+          : "当前入口不支持登录采集，请在执行项目的 Host 中保存账号。",
     },
   };
 }
@@ -5644,7 +5938,79 @@ async function initializeRuntime() {
         : "无法使用当前项目目录，请确认项目已信任，或点击“更改”选择保存位置。";
       showError(elements.destinationPath.textContent);
     }
+    if (supportsDurableDownloads(context)) {
+      durableDownloads = createDurableDownloads({
+        panel,
+        items: () => downloadQueue,
+        save: saveLibrary,
+        async discover() {
+          if (!libraryReady || queueSubmissionPending) return;
+          const methods = context.availableMethods || [];
+          let raw;
+          if (methods.includes("storage.getSnapshot"))
+            raw = (await panel.call("storage.getSnapshot", { key: libraryKey }))?.value;
+          else if (methods.includes("storage.get"))
+            raw = await panel.call("storage.get", { key: libraryKey });
+          else return;
+          if (context.cwd && context.cwd !== libraryScope) return;
+          const remote = restoreLibrary(raw, libraryScope);
+          if (!remote) return;
+          for (const record of remote.queue) {
+            if (!record.nativeTaskId && !record.nativeRequestKey) continue;
+            if (
+              downloadQueue.some(
+                (item) => item.queueId === record.queueId ||
+                  (record.nativeTaskId && item.nativeTaskId === record.nativeTaskId) ||
+                  (record.nativeRequestKey && item.nativeRequestKey === record.nativeRequestKey),
+              )
+            ) continue;
+            // Read-only adoption: do not advance the editor's CAS revision or save
+            // an old draft over peer changes. The coordinator supplies live state.
+            downloadQueue.push(record);
+          }
+        },
+        queueChanged(value) {
+          queuePaused = value.paused;
+          maxConcurrent = value.maxConcurrent;
+          const select = document.querySelector("#queue-concurrency");
+          for (const option of select.options)
+            option.disabled = Number(option.value) > context.capabilities.tasks.maxConcurrent;
+          select.value = String(maxConcurrent);
+          renderQueue();
+        },
+        changed(item, finished) {
+          if (finished) {
+            history = [
+              storedRecord(item),
+              ...history.filter((record) => record.queueId !== item.queueId),
+            ]
+              .filter(Boolean)
+              .slice(0, MAX_HISTORY);
+          }
+          if (!currentJob || currentJob === item) currentJob = item;
+          updateDownloadTask(item, {
+            state: item.status,
+            title: item.title,
+            percent: item.percent,
+            status: item.error || queueStatusText(item),
+          });
+          renderQueue();
+          renderHistory();
+          setControlsBusy(false);
+        },
+        failed(error) {
+          showError(error.message);
+        },
+      });
+    }
     await loadLibrary();
+    if (durableDownloads) {
+      await durableDownloads.refresh();
+      durableTimer = setInterval(
+        () => void durableDownloads.refresh().catch((error) => showError(error.message)),
+        10000,
+      );
+    }
     await refreshRuntimeDependencies();
     await refreshCookieAccounts();
   } catch (error) {
@@ -5821,6 +6187,7 @@ function handleDownloadAction(event) {
     if (["completed", "failed", "cancelled"].includes(item.status)) showDownloadHistory(item);
     else selectDownloadTask(item);
   }
+  if (action === "retry-account") void retryWithSelectedAccount(item);
   if (action === "details") selectDownloadTask(item);
   if (action === "history") showDownloadHistory(item);
   if (action === "cancel") void cancelCurrentJob(item);
@@ -5830,9 +6197,20 @@ function handleDownloadAction(event) {
     action === "remove" &&
     ["pending", "queued", "paused", "restored", "interrupted"].includes(item.status)
   ) {
-    downloadQueue = downloadQueue.filter((entry) => entry !== item);
-    renderQueue();
-    void saveLibrary().catch(reportLibraryError);
+    if (durableDownloads) {
+      void durableDownloads
+        .stop(item, false)
+        .then(async () => {
+          downloadQueue = downloadQueue.filter((entry) => entry !== item);
+          await saveLibrary();
+          renderQueue();
+        })
+        .catch((error) => showError(error.message));
+    } else {
+      downloadQueue = downloadQueue.filter((entry) => entry !== item);
+      renderQueue();
+      void saveLibrary().catch(reportLibraryError);
+    }
   }
   if (action === "retry" && ["failed", "cancelled"].includes(item.status)) {
     void retryQueuedDownload(item);
@@ -5849,10 +6227,13 @@ document.querySelector("#queue-concurrency").addEventListener("change", async (e
   maxConcurrent = value;
   control.disabled = true;
   try {
+    if (durableDownloads) await durableDownloads.configure(queuePaused, value);
     await saveLibrary();
   } catch (error) {
-    maxConcurrent = previous;
-    reportLibraryError(error);
+    if (!durableDownloads) {
+      maxConcurrent = previous;
+      reportLibraryError(error);
+    } else showError(error.message);
   } finally {
     control.disabled = false;
     control.value = String(maxConcurrent);
@@ -5977,25 +6358,13 @@ const videoSearch = mountVideoSearch({
     async load() {
       await searchScopeReady;
       const scope = libraryScope || context.cwd || runtime.directory?.path || "preview";
-      const value =
-        !previewMode && Number(context.apiVersion) >= 14
-          ? await panel.call("storage.get", { key: "video-download.search-archive.v1" })
-          : JSON.parse(localStorage.getItem(`video-download.search-archive.v1:${scope}`) || "null");
+      const value = await searchArchiveStorage.load();
       return { scope, value };
     },
     async save(snapshot) {
       if (!libraryReady || snapshot.scope !== libraryScope)
         throw new Error("项目已变化，请重新打开面板。");
-      if (!previewMode && Number(context.apiVersion) >= 14)
-        await panel.call("storage.set", {
-          key: "video-download.search-archive.v1",
-          value: snapshot,
-        });
-      else
-        localStorage.setItem(
-          `video-download.search-archive.v1:${snapshot.scope}`,
-          JSON.stringify(snapshot),
-        );
+      await searchArchiveStorage.save(snapshot);
     },
   },
   onQueue: async (candidates) => {
@@ -6024,6 +6393,7 @@ const videoSearch = mountVideoSearch({
 
 if (panel) {
   panel.on("context.changed", (payload) => updateSessionContext(payload));
+  panel.on("tasks.changed", (payload) => durableDownloads?.observe(payload));
   panel.on("agent.task.changed", (payload) => {
     void handleAgentTaskChanged(payload);
     videoSearch.handleTaskChanged(payload);
@@ -6176,3 +6546,8 @@ registerAgentTools();
 activateTab(storedTab(), { persist: false });
 updateConditionalOptions();
 initializeRuntime().finally(resolveSearchExecutables);
+
+window.addEventListener("pagehide", () => {
+  clearInterval(durableTimer);
+  durableDownloads?.close();
+});

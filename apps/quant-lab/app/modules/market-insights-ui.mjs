@@ -1,3 +1,12 @@
+import { createProjectOperations } from "./project-operation.mjs";
+import {
+  createAutomation,
+  mutateAutomation,
+  supportsUniqueAutomation,
+} from "./automation-mutation.mjs";
+
+import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
+
 const INSIGHTS_DIRECTORY = "data/market-insights";
 const INSIGHT_SCHEMA_VERSION = 1;
 
@@ -227,12 +236,12 @@ function stockReportPrompt(subject, now, technicalInput = null) {
 }
 
 function marketPulsePrompt(path) {
-  const toolPath = "$HOME/.code-shell/panel-apps/quant-lab/app/tools/build-market-pulse.mjs";
+  const toolPath = "$PANEL_TOOL";
   const command = `node "${toolPath}" --out "${path}"`;
   return [
     "这是投资工作台发起的确定性 A 股市场脉搏任务。",
     "行情宽度、指数长期趋势、行业板块强弱和新闻关键词关联必须完全由冻结的本地工具计算；不要自行补写数字、因果、情绪、行业结论或买卖动作。",
-    `先确认工具文件可读：${toolPath}。如果不存在，报告 bundled-market-pulse-tool-not-found，不要下载或改用未审核脚本。`,
+    projectRuntimePrompt("build-market-pulse.mjs", "bundled-market-pulse-tool-not-found"),
     "确认后在当前项目根目录执行以下固定命令：",
     command,
     `成功后只读检查 ${path}，报告 marketDate、asOf、盘中/当日收盘/最近收盘状态、行情股票数、行业数、宽基趋势数、新闻条数和 sourceErrors。`,
@@ -350,12 +359,12 @@ export const MARKET_PULSE_AUTOMATION = Object.freeze({
 });
 
 export function buildMarketPulseAutomation() {
-  const toolPath = "$HOME/.code-shell/panel-apps/quant-lab/app/tools/build-market-pulse.mjs";
+  const toolPath = "$PANEL_TOOL";
   return {
     ...MARKET_PULSE_AUTOMATION,
     prompt: [
       "执行投资工作台的 A 股市场脉搏定时播报。",
-      `先在 shell 中运行 \`test -r "${toolPath}"\`；若失败，只报告 bundled-market-pulse-tool-not-found。`,
+      projectRuntimePrompt("build-market-pulse.mjs", "bundled-market-pulse-tool-not-found"),
       `工具存在时，在当前项目根目录执行：\`node "${toolPath}" --persist-panel-data\`。不要添加 --dry-run，也不要自行生成或改写报告。`,
       "工具会按运行时 UTC 时间生成 data/market-insights/<STAMP>-market-overview.json，并在单个板块/新闻源失败时做显式降级。",
       "同一轮已取得的完整沪深 A 股行情会同步写入 CodeShell 私人数据目录；不得为了保存再执行第二次行情请求。",
@@ -807,6 +816,8 @@ function pulseTaskMatches(task, plan) {
 
 export function createMarketPulseAutomationController({
   hostCall,
+  getContext = () => ({}),
+  currentEpoch = () => 0,
   elements,
   notify = () => {},
 }) {
@@ -820,6 +831,7 @@ export function createMarketPulseAutomationController({
     retryIntent: null,
   };
   let loadPromise = null;
+  const operations = createProjectOperations(hostCall, currentEpoch);
 
   function render() {
     const drift = state.task && !pulseTaskMatches(state.task, plan);
@@ -842,19 +854,25 @@ export function createMarketPulseAutomationController({
       ? "处理中…"
       : loading
         ? "读取中"
-        : drift
-          ? "更新"
-          : state.task
-            ? "关闭"
-            : state.error
-              ? "重试"
-              : "开启";
+        : state.error && state.retryIntent === "read"
+          ? "重新读取"
+          : drift
+            ? "更新"
+            : state.task
+              ? "关闭"
+              : state.error
+                ? "重试"
+                : "开启";
+    if (!state.error && !loading && !supportsUniqueAutomation(getContext)) {
+      elements.status.textContent += " · 当前 Host 不能保证多个页面同时开启时不重复，请只在一个页面开启";
+    }
     elements.action.setAttribute("aria-pressed", String(Boolean(state.task)));
     elements.action.disabled = state.disabled || state.inFlight || loading;
   }
 
-  async function readState() {
-    const result = await hostCall("automations.list", {});
+  async function readState(operation) {
+    const result = await operation.call("automations.list", {});
+    operation.check();
     state.task = automationList(result).find((task) => task?.name === plan.name) ?? null;
     state.loaded = true;
     state.error = null;
@@ -862,70 +880,91 @@ export function createMarketPulseAutomationController({
     return state.task;
   }
 
-  async function ensure() {
-    const current = await readState();
-    if (current) {
-      if (!pulseTaskMatches(current, plan)) {
-        await hostCall("automations.update", {
-          id: current.id,
+  async function ensure(operation) {
+    const current = await readState(operation);
+    operation.check();
+    let creationAttempted = false;
+    try {
+      if (current) {
+        if (!pulseTaskMatches(current, plan)) {
+          await mutateAutomation(operation.call, getContext, "update", current, {
+            name: plan.name,
+            schedule: plan.schedule,
+            prompt: plan.prompt,
+            timezone: plan.timezone,
+          });
+        }
+      } else {
+        creationAttempted = true;
+        await createAutomation(operation.call, getContext, "market-pulse.daily", {
           name: plan.name,
           schedule: plan.schedule,
           prompt: plan.prompt,
           timezone: plan.timezone,
         });
       }
-    } else {
-      await hostCall("automations.create", {
-        name: plan.name,
-        schedule: plan.schedule,
-        prompt: plan.prompt,
-        timezone: plan.timezone,
-      });
+      const verified = await operation.call("automations.list", {});
+      operation.check();
+      state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
+      if (!pulseTaskMatches(state.task, plan)) throw new Error("创建后任务配置验证不一致");
+    } catch (error) {
+      if (creationAttempted) {
+        const uncertain = new Error(error instanceof Error ? error.message : "未确认任务是否创建，请重新读取核对");
+        uncertain.code = "AUTOMATION_CREATE_UNCERTAIN";
+        throw uncertain;
+      }
+      throw error;
     }
-    const verified = await hostCall("automations.list", {});
-    state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
-    if (!pulseTaskMatches(state.task, plan)) throw new Error("创建后任务配置验证不一致");
   }
 
-  async function remove() {
-    const current = await readState();
+  async function remove(operation) {
+    const current = await readState(operation);
+    operation.check();
     if (!current) return;
-    const result = await hostCall("automations.delete", { id: current.id });
+    const result = await mutateAutomation(operation.call, getContext, "delete", current);
     if (result?.ok === false) throw new Error("Host 未删除任务");
-    const verified = await hostCall("automations.list", {});
+    const verified = await operation.call("automations.list", {});
+    operation.check();
     state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
     if (state.task) throw new Error("删除后任务仍然存在");
   }
 
   async function toggle() {
     if (state.inFlight || state.disabled) return;
+    const operation = operations.capture();
     let action = state.retryIntent;
     state.inFlight = true;
     state.error = null;
     render();
     try {
-      await readState();
+      await readState(operation);
+      operation.check();
       if (action === "read") {
         state.retryIntent = null;
         notify(state.task ? "已重新读取每日盘面留档任务" : "已重新读取：每日盘面留档尚未开启");
       } else if ((action ?? (state.task && pulseTaskMatches(state.task, plan) ? "remove" : "ensure")) === "remove") {
         action = "remove";
-        await remove();
+        await remove(operation);
+        operation.check();
         state.retryIntent = null;
         notify("每日盘面留档已关闭；已保存的历史快报仍会保留");
       } else {
         action = "ensure";
-        await ensure();
+        await ensure(operation);
+        operation.check();
         state.retryIntent = null;
         notify("每日盘面留档已开启：工作日 10:10 / 15:10");
       }
     } catch (error) {
+      if (!operation.isCurrent()) return;
       state.error = error instanceof Error ? error.message : "任务操作失败";
-      state.retryIntent = action ?? "read";
+      state.retryIntent = ["AUTOMATION_CONFLICT", "AUTOMATION_CREATE_UNCERTAIN"].includes(error?.code) ? "read" : action ?? "read";
       notify(state.error, "error");
     } finally {
-      state.inFlight = false;
-      render();
+      if (operation.isCurrent()) {
+        state.inFlight = false;
+        render();
+      }
     }
   }
 
@@ -933,17 +972,20 @@ export function createMarketPulseAutomationController({
   render();
   function load() {
     if (loadPromise) return loadPromise;
-    loadPromise = readState()
+    const operation = operations.capture();
+    const pending = readState(operation)
       .catch((error) => {
+        if (!operation.isCurrent()) return null;
         state.error = error instanceof Error ? error.message : "无法读取任务";
         state.retryIntent = "read";
         render();
         return null;
       })
       .finally(() => {
-        loadPromise = null;
+        if (loadPromise === pending) loadPromise = null;
       });
-    return loadPromise;
+    loadPromise = pending;
+    return pending;
   }
   return {
     load,
@@ -953,6 +995,7 @@ export function createMarketPulseAutomationController({
       render();
     },
     reset() {
+      operations.reset();
       state.task = null;
       state.error = null;
       state.loaded = false;

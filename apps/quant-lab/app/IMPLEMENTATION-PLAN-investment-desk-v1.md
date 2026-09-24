@@ -244,7 +244,7 @@ ECB verification 与 journal 输入未接入时分别显示真实 unavailable/ne
 
 - 精确文件：修改 `app/app.js`，新增 `app/modules/alerts-ui.mjs`；修改 UI 测试。
 - 固定接口：`buildDeskAutomations(watchlist)` 只为非空市场返回 PRD §13.2 两个精确 name/cron/timezone/prompt；真实 Host 契约只用 `automations.list/create/update/delete`，创建后再次 list 验证（不存在 `get`）。
-- 先失败测试：两个 cron、`Asia/Shanghai`、市场 prompt 分组、prompt 无 Host 不支持的 `<panel>` 占位符且引用 `$HOME/.code-shell/panel-apps/quant-lab/app/tools/fetch-market-data.mjs`、bundled 工具缺失时明确 unavailable/禁止估算，full permission/session/配额披露、幂等、单边失败不回滚、逐市场重试与关闭、旧任务永不先删且二次确认后才删、空市场不建。
+- 先失败测试：两个 cron、`Asia/Shanghai`、市场 prompt 分组、prompt 无 Host 不支持的 `<panel>` 占位符，调用 `quant-lab:project-runtime` 定位项目选定包的程序、bundled 工具缺失时明确 unavailable/禁止估算，full permission/session/配额披露、幂等、单边失败不回滚、逐市场重试与关闭、旧任务永不先删且二次确认后才删、空市场不建。
 - 最小实现：只升级用户明确点击的任务；一市场失败不误报另一市场；只消费 storage 中真实 watch evaluation，不把 automation 完成伪装成今日触发；不因旧盯盘已启用而自动开启资讯。
 - 运行命令：`npm run test:ui:quant-lab`。
 - 验收：提醒无空窗；设备时区不影响 cron；后台结果不冒充源成功。

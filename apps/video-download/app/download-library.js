@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 // Serializable download metadata. Executable, directory and Cookie grants never
 // cross a panel lifetime; restored records must obtain fresh Host handles.
 export const LIBRARY_VERSION = 2;
@@ -141,6 +142,38 @@ export function fileInventoryState(record) {
   return "unknown";
 }
 
+export function resourceFileFields(file) {
+  return typeof file?.assetId === "string" && /^asset-[a-f0-9]{64}$/.test(file.assetId)
+    ? { assetId: file.assetId }
+    : {};
+}
+
+// The Host resolves the directory grant and checks containment again. Never send
+// an absolute host path as a resource request or accept a traversal from history.
+export function resourceRelativeFile(directory, file) {
+  const base = String(directory?.path || "").replace(/\\/g, "/").replace(/(.)\/+$/, "$1");
+  const path = String(file?.path || "").replace(/\\/g, "/");
+  const prefix = base.endsWith("/") ? base : base + "/";
+  const relative = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  if (
+    !base || !relative || /^(?:\/|[A-Za-z]:)/.test(relative) ||
+    relative.split("/").some((part) =>
+      !part || part === "." || part === ".." || /[:\u0000-\u001f\u007f]/.test(part),
+    )
+  )
+    throw new Error("文件不在原下载目录内，请检查记录后重试。");
+  return relative;
+}
+
+export function taskPackageReference(value) {
+  if (
+    !value || typeof value.version !== "string" || !value.version ||
+    value.version.length > 128 || /[\u0000-\u001f\u007f]/.test(value.version) ||
+    typeof value.packageDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.packageDigest)
+  ) return undefined;
+  return { version: value.version, packageDigest: value.packageDigest };
+}
+
 export function storedRecord(item) {
   if (!item || !videoUrl(item.url)) return null;
   const allFiles = Array.isArray(item.files) ? item.files : item.file ? [{ path: item.file }] : [];
@@ -149,6 +182,7 @@ export function storedRecord(item) {
     .filter((file) => file && text(file.path))
     .map((file) => ({
       path: text(file.path),
+      ...resourceFileFields(file),
       ...(Number.isSafeInteger(file.bytes) && file.bytes >= 0 ? { bytes: file.bytes } : {}),
       ...(Number.isFinite(file.modifiedAt) && file.modifiedAt >= 0
         ? { modifiedAt: Math.trunc(file.modifiedAt) }
@@ -159,7 +193,7 @@ export function storedRecord(item) {
         : "unavailable",
     }));
   return {
-    queueId: text(item.queueId, 100) || crypto.randomUUID(),
+    queueId: text(item.queueId, 100) || randomId(),
     url: videoUrl(item.url),
     title: text(item.title, 500),
     configuration: cleanConfiguration(item.configuration),
@@ -167,8 +201,31 @@ export function storedRecord(item) {
       path: text(item.directory?.path),
       name: text(item.directory?.name, 160),
       kind: item.directory?.kind === "project" ? "project" : "chosen",
+      ...(typeof item.directory?.bookmark === "string" &&
+      /^[a-f0-9-]{36}$/i.test(item.directory.bookmark)
+        ? { bookmark: item.directory.bookmark }
+        : {}),
     },
+    ...(typeof item.nativeTaskId === "string" && /^[a-f0-9-]{36}$/i.test(item.nativeTaskId)
+      ? { nativeTaskId: item.nativeTaskId }
+      : {}),
+    // Display cache only; the Host verifies its own immutable record before retry.
+    ...(taskPackageReference(item.nativePackage)
+      ? { nativePackage: taskPackageReference(item.nativePackage) }
+      : {}),
+    ...(typeof item.nativeRequestKey === "string" &&
+    /^download:[a-f0-9-]{36}$/i.test(item.nativeRequestKey)
+      ? { nativeRequestKey: item.nativeRequestKey }
+      : {}),
+    ...(item.nativePaused === true ? { nativePaused: true } : {}),
     cookieCredentialId: text(item.cookieCredentialId, 200),
+    ...(typeof item.cookieCredentialRevision === "string" &&
+    /^[a-f0-9]{64}$/.test(item.cookieCredentialRevision)
+      ? { cookieCredentialRevision: item.cookieCredentialRevision }
+      : {}),
+    ...(typeof item.cookieCredentialUrl === "string" && /^https:\/\//.test(item.cookieCredentialUrl)
+      ? { cookieCredentialUrl: text(item.cookieCredentialUrl, 2048) }
+      : {}),
     status: text(
       [
         "pending",

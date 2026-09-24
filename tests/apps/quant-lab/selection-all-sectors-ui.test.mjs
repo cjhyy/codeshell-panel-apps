@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -165,7 +166,7 @@ class MockElement {
   click() { this.listeners.get("click")?.({ target: this }); }
 }
 
-async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt, storageInput = null } = {}) {
+async function withController(run, { persistent = true, holdContinuation = false, snapshotInput = fixture(), initialNow = generatedAt, storageInput = null, versioned = false } = {}) {
   const originals = { window: globalThis.window, document: globalThis.document };
   const timers = new Map();
   let nextTimer = 0;
@@ -182,6 +183,14 @@ async function withController(run, { persistent = true, holdContinuation = false
   const held = [];
   let spawned = 0;
   let currentNow = initialNow;
+  let stored = structuredClone(storageInput), epoch = 0;
+  let readError = false, writeError = false, loseWriteReply = false;
+  let holdWrite = null;
+  const storageSnapshot = () => ({
+    exists: stored !== null,
+    value: structuredClone(stored),
+    revision: stored === null ? null : `sha256:${createHash("sha256").update(JSON.stringify(stored)).digest("hex")}`,
+  });
   const elements = new Proxy({}, { get(target, key) { return target[key] ??= new MockElement(); } });
   const hostCall = async (method, args) => {
     calls.push({ method, args });
@@ -190,8 +199,18 @@ async function withController(run, { persistent = true, holdContinuation = false
       if (!persistent && args.name === "app-data") throw new Error("unsupported");
       return { handle: "data" };
     }
-    if (method === "storage.get") return storageInput;
-    if (method === "storage.set") return {};
+    if (["storage.get", "storage.getSnapshot"].includes(method)) {
+      if (readError) throw Error("offline read");
+      return method === "storage.getSnapshot" ? storageSnapshot() : structuredClone(stored);
+    }
+    if (["storage.set", "storage.compareAndSet"].includes(method)) {
+      if (holdWrite) await holdWrite;
+      if (writeError) throw Error("write unavailable");
+      const updated = method === "storage.set" || args.expectedRevision === storageSnapshot().revision;
+      if (updated) stored = structuredClone(args.value);
+      if (loseWriteReply) throw Error("reply lost after commit");
+      return method === "storage.set" ? {} : { updated, snapshot: storageSnapshot() };
+    }
     if (method === "process.cancel") { events.get("process.exit")?.({ processId: args.processId, code: 1 }); return {}; }
     if (method === "process.spawn") {
       spawned += 1;
@@ -208,7 +227,7 @@ async function withController(run, { persistent = true, holdContinuation = false
   };
   let controller;
   try {
-    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, notify(message, tone) { notifications.push({ message, tone }); }, onUpdate(value) { updates.push(value); }, storageKey: () => "selection.global", currentEpoch: () => 0, now: () => new Date(currentNow), elements });
+    controller = createAShareSelectionController({ hostCall, onHostEvent(name, callback) { events.set(name, callback); return () => events.delete(name); }, notify(message, tone) { notifications.push({ message, tone }); }, onUpdate(value) { updates.push(value); }, storageKey: () => "selection.global", currentEpoch: () => epoch, getContext: () => ({ availableMethods: versioned ? ["storage.getSnapshot", "storage.compareAndSet"] : [] }), now: () => new Date(currentNow), elements });
     await controller.start();
     const tickContinuation = async () => {
       const entry = [...timers].find(([, timer]) => timer.delay === 5_000);
@@ -216,7 +235,11 @@ async function withController(run, { persistent = true, holdContinuation = false
       timers.delete(entry[0]); entry[1].callback();
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     };
-    await run({ controller, elements, timers, calls, updates, notifications, document, tickContinuation, setNow(value) { currentNow = value; }, finishHeld() { held.shift()?.(); } });
+    await run({ controller, elements, timers, calls, updates, notifications, document, tickContinuation,
+      setStored(value) { stored = structuredClone(value); }, stored: () => structuredClone(stored),
+      failReads(value) { readError = value; }, failWrites(value) { writeError = value; },
+      loseReply() { loseWriteReply = true; }, holdWrites(promise) { holdWrite = promise; },
+      switchProject() { epoch++; controller.reset(); }, setNow(value) { currentNow = value; }, finishHeld() { held.shift()?.(); } });
   } finally {
     controller?.dispose();
     globalThis.window = originals.window;
@@ -251,6 +274,7 @@ test("actual controller displays non-priority pending rows and preserves selecti
     elements.sectorList.listeners.get("click")({ target: pending });
     assert.match(elements.candidateTitle.textContent, /冷门行业/u);
     assert.match(elements.candidateList.textContent, /成员尚未扫描/u);
+    await new Promise((resolve) => setImmediate(resolve)); // Wait for the selection preference to save.
     await tickContinuation();
     assert.match(elements.candidateTitle.textContent, /冷门行业/u);
     assert.equal(controller.snapshot.sectors.length, 45);
@@ -652,4 +676,115 @@ test("hiding the window preserves a running batch and resumes scheduling when vi
     document.listeners.get("visibilitychange")();
     assert([...timers.values()].some((timer) => timer.delay === 5_000));
   }, { holdContinuation: true });
+});
+
+
+test("long-term watch preserves a conflicting draft and blocks scans until explicit reload", async () => {
+  await withController(async ({ controller, elements, calls, notifications, setStored, stored }) => {
+    setStored({ version: 2, stocks: [{ symbol: "SH600036", name: "other device" }], sectors: [] });
+    const before = calls.filter((call) => call.method === "process.spawn").length;
+    assert.equal(await controller.followStock("SH600519", "my draft"), false);
+    assert.equal(controller.watch.stocks[0].symbol, "SH600519");
+    assert.equal(stored().stocks[0].symbol, "SH600036");
+    assert.match(elements.watchStorageState.textContent, /其他页面或设备/);
+    assert.equal(elements.watchStockAdd.disabled, true);
+    assert.equal(elements.watchStorageRecovery.hidden, false);
+    assert.equal(notifications.some((item) => item.message === "已长期关注 my draft"), false);
+    await controller.refresh({ manual: true });
+    assert.equal(calls.filter((call) => call.method === "process.spawn").length, before);
+    const writes = calls.filter((call) => call.method === "storage.compareAndSet").length;
+    assert.equal(await controller.followStock("SH600000", "blocked"), false);
+    assert.equal(calls.filter((call) => call.method === "storage.compareAndSet").length, writes);
+    elements.watchStorageReload.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(controller.watch.stocks[0].symbol, "SH600036");
+    assert.equal(elements.watchStockAdd.disabled, false);
+    assert.equal(elements.watchStorageRecovery.hidden, true);
+    assert.equal(calls.some((call) => call.method === "storage.set"), false);
+  }, { versioned: true });
+});
+
+test("long-term watch reload failure keeps the draft and a lost committed reply is reconciled without another write", async () => {
+  await withController(async ({ controller, elements, calls, failWrites, failReads, loseReply, stored }) => {
+    failWrites(true);
+    assert.equal(await controller.followStock("SH600519", "draft"), false);
+    failReads(true);
+    elements.watchStorageReload.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(controller.watch.stocks[0].symbol, "SH600519");
+    assert.match(elements.watchStorageState.textContent, /读取失败/);
+    assert.equal(elements.watchStockAdd.disabled, true);
+    failReads(false); failWrites(false);
+    elements.watchStorageReload.click();
+    await new Promise((resolve) => setImmediate(resolve));
+    loseReply();
+    const before = calls.filter((call) => call.method === "storage.compareAndSet").length;
+    assert.equal(await controller.followStock("SH600036", "confirmed"), true);
+    assert.equal(stored().stocks[0].symbol, "SH600036");
+    assert.equal(calls.filter((call) => call.method === "storage.compareAndSet").length, before + 1);
+    assert.equal(elements.watchStorageRecovery.hidden, true);
+  }, { versioned: true });
+});
+
+test("a pending long-term watch save cannot publish success or start scans in the next project", async () => {
+  await withController(async ({ controller, elements, calls, notifications, holdWrites, switchProject }) => {
+    let release;
+    holdWrites(new Promise((resolve) => { release = resolve; }));
+    const pending = controller.followStock("SH600519", "old project");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(elements.watchStockAdd.disabled, true);
+    switchProject();
+    const count = calls.length;
+    release();
+    assert.equal(await pending, false);
+    assert.equal(controller.watch.stocks.length, 0);
+    assert.equal(calls.length, count);
+    assert.equal(notifications.some((item) => item.message === "已长期关注 old project"), false);
+  }, { versioned: true });
+});
+
+test("portfolio synchronization cannot silently claim success after a conflicting save", async () => {
+  await withController(async ({ controller, elements, setStored, stored }) => {
+    setStored({ stocks: [{ symbol: "SH600036", name: "other" }], sectors: [] });
+    await assert.rejects(controller.syncPortfolio(
+      { instruments: [{ id: "stock", market: "cn", symbol: "SH600519", name: "holding" }] },
+      { positionsByAccount: [{ instrumentId: "stock", quantity: 1 }] },
+    ), /尚未保存/);
+    assert.equal(stored().stocks[0].symbol, "SH600036");
+    assert.equal(controller.watch.stocks[0].symbol, "SH600519");
+    assert.equal(elements.watchStockAdd.disabled, true);
+  }, { versioned: true });
+});
+
+test("unsupported long-term watch records cannot be replaced by an empty default", async () => {
+  for (const storageInput of [{ version: 999, stocks: [] }, { stocks: "broken" }, { stocks: [{ symbol: "invalid" }] }]) {
+    await withController(async ({ controller, elements, calls, stored }) => {
+      assert.equal(await controller.followStock("SH600519", "blocked"), false);
+      assert.match(elements.watchStorageState.textContent, /读取失败/);
+      assert.deepEqual(stored(), storageInput);
+      assert.equal(calls.some((call) => ["storage.set", "storage.compareAndSet", "process.spawn"].includes(call.method)), false);
+    }, { versioned: true, storageInput });
+  }
+});
+
+
+test("pausing scans leaves project watch storage writable without restarting scans", async () => {
+  await withController(async ({ controller, elements, calls, stored, holdWrites }) => {
+    controller.pauseScan();
+    const scans = calls.filter((call) => call.method === "process.spawn").length;
+    assert.equal(await controller.followStock("SH600519", "after pause"), true);
+    assert.equal(stored().stocks[0].symbol, "SH600519");
+    assert.equal(elements.watchStockAdd.disabled, false);
+    let release;
+    holdWrites(new Promise((resolve) => { release = resolve; }));
+    const pending = controller.followStock("SH600036", "during pause");
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.pauseScan();
+    release();
+    assert.equal(await pending, true);
+    assert.equal(elements.watchStockAdd.disabled, false);
+    assert.equal(stored().stocks.length, 2);
+    assert.equal(calls.filter((call) => call.method === "process.spawn").length, scans);
+    assert.equal(elements.watchStorageRecovery.hidden, true);
+  }, { versioned: true });
 });

@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { createPanelRuntime, runtimeCancelled, type RuntimeBridge } from "../sdk/panel-runtime";
 import { sameIdentity, type EditorSession, type SessionIdentity } from "./session";
 import type { EditorDocument } from "./types";
@@ -231,7 +232,7 @@ export class EditorPortableUI {
       identity = structuredClone(session.getState().identity);
     const frozenDocument = mode === "export" ? session.read() : undefined;
     const p: Pending = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       mode,
       session,
       identity,

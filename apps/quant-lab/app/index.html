@@ -1336,6 +1336,11 @@
               </div>
               <span id="selection-watch-count">0 项</span>
             </header>
+            <p id="selection-watch-storage-state" class="migration-state" role="status"></p>
+            <div id="selection-watch-storage-recovery" class="watch-storage-recovery" hidden>
+              <button id="selection-watch-storage-backup" class="ghost-button" type="button">下载当前长期关注</button>
+              <button id="selection-watch-storage-reload" class="ghost-button" type="button">放弃页面修改并读取最新记录</button>
+            </div>
             <div class="selection-watch-adders">
               <label>
                 <span>添加板块</span>
@@ -1361,6 +1366,11 @@
               <p class="selection-empty">还没有长期关注项。</p>
             </div>
           </section>
+          <p id="watch-storage-state" class="migration-state" role="status" hidden></p>
+          <div id="watch-storage-recovery" class="watch-storage-recovery" hidden>
+            <button id="watch-storage-backup" class="ghost-button" type="button">下载当前关注记录</button>
+            <button id="watch-storage-reload" class="ghost-button" type="button">放弃页面修改并读取最新记录</button>
+          </div>
           <p id="watch-migration-state" class="migration-state" role="status" hidden></p>
           <article id="watchlist-card" class="trades-card watchlist-card">
             <header class="card-header">
@@ -2384,6 +2394,11 @@
           <button id="sources-save" type="submit">保存并应用</button>
         </form>
         <p id="sources-state" role="status"></p>
+        <p id="sources-storage-warning" hidden>当前执行环境尚不支持配置版本校验，请避免在多个页面同时修改。</p>
+        <div id="sources-recovery" hidden>
+          <button id="sources-backup" type="button">下载当前填写内容</button>
+          <button id="sources-reload" type="button">放弃当前修改并读取最新配置</button>
+        </div>
         <h3>当前连接与数据状态</h3><pre id="sources-health">尚未取得连接结果</pre>
         <h3>已接入能力</h3><div id="sources-catalog" class="sources-catalog"></div>
         <button id="sources-history" type="button">配置历史日线与凭证</button>

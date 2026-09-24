@@ -5,6 +5,18 @@
 - **播放**：此前每次编辑后点播放，都会让 CodeShell 重新复制全部原片（实测约 10 MB/s，近 1 GB 素材每次等 1–2 分钟），界面却一直显示“正在生成快速预览画面”。现在已校验的原片按工程保存一份（硬链接，不额外占用磁盘），编辑后再次播放直接复用；外部引用的素材复用前会先向主程序确认仍然可用。复制与转码期间显示实际进度和已等待时间，可随时取消。工程首次播放时每个新素材仍需复制一次原片。
 - **轨道**：时间线轨道头新增删除按钮。空轨道一键删除；有片段的轨道先确认“删除轨道和 N 个片段？”，均可一步撤销。锁定轨道和磁吸主轨不可删除，并说明原因。
 
+## 待发布：升级前工程备份
+
+「工程历史版本」增加「升级前原始工程」。旧版文档转换前，先保存经过校验的原始 JSON
+和独立备份目录；备份不随最近 20 次保存被淘汰。可恢复为当前编辑格式，也可导出原格式
+的 `.video-project.json`，在对应旧版应用里重新打开。恢复前先保存并归档当前工程；
+保存失败、备份损坏或读取期间切换工程／关闭窗口时，不替换当前编辑内容。
+
+原格式导出只包含工程文档，媒体和字体仍需单独保留；它不自动切换 Panel 安装版本。
+早期未建立备份目录的版本，可以从仍在的旧存储和最近版本中的 v1 文档补建目录；
+已经失去这些来源、只留下未知摘要快照的历史，不能据此承诺自动找回。浏览器网站数据
+被清理后也不能恢复仅存于该浏览器的备份。原 Host 项目文档和权限契约不变。
+
 ## 0.7.0：各功能直接编辑多轨工程
 
 字幕、口播、粗剪加入成片、配音替换、AI 规则草案与导入方案、自动制作以及本人口播流程，现在都直接读写多轨工程。真实拍摄的素材（时长不是整帧）、附加画面轨、文字、变速和转场不再让这些功能显示“没有素材”、按钮变灰或点击报错。
@@ -343,3 +355,12 @@ Host 工程文档上限 2 MiB，保留最近 20 次持久保存。自动剪辑�
 仓库的 `npm run check` 检查类型、构建、安装包与领域行为，领域套件包含草稿批准、录音绑定和真实字幕对齐。`npm run test:ui:video-studio` 包含剪辑、字幕、过期方案、工程切换、持久制作和分阶段本人配音流程的界面回归；`npm run test:media:video-studio` 用实际有声媒体检查播放、取帧、独立混音与 WebM 导出。
 
 `native/media/tests/media-runtime.test.mjs` 验证独立 Node 工具的真实 FFmpeg 预处理、提取与增强、中文字幕 MP4、系统配音、在线适配和路径/取消边界，运行需要本机编码工具与 Chrome/Chromium。`tests/video-studio-media-task-bridge.test.ts` 验证通用任务、资源、密钥授权映射、事件与旧任务重建。Audio8 / Qwen 的独立 provider 测试保留在 `native/tests/`；真实模型试听与 HyperFrames smoke 证据单独保存，不把测试录音或模型权重打入安装包。产品官方调研与当前取舍见 [视频工作台调研](../../docs/video-studio-product-research.md)。
+
+### LAN browser identifiers (development build)
+
+Project, asset, caption, editor transfer, synchronization, voice and render operation
+IDs use the same Panel-owned UUID helper. When a LAN HTTP browser lacks
+`crypto.randomUUID`, the helper generates UUID v4 values from
+`crypto.getRandomValues`; it never falls back to time or `Math.random`. Existing
+saved IDs are preserved. This fixes identifier creation, not the remaining Host,
+recording, preview, background-task or mobile workflow adaptation requirements.

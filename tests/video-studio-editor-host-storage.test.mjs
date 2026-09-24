@@ -773,3 +773,178 @@ test("0.5.16 strict validation rejects unknown fields before Host backup or fall
   assert.equal(calls.filter((call) => call.method === "storage.get").length, 0);
   assert.deepEqual((await current()).data, raw);
 });
+
+test("upgrade backups survive more than twenty saves and read exact v1 after reopening", async () => {
+  const raw = await installedFixture();
+  legacyValues.set("video-studio-project-v1", raw);
+  const result = await page.evaluate(async () => {
+    const storage = host(),
+      first = await storage.read();
+    const document = api.migrateLegacyProject(first.data);
+    for (let revision = 0; revision < 23; revision++) {
+      document.name = `New edit ${revision}`;
+      await storage.write(document, revision, "继续编辑");
+    }
+    const reopened = host(),
+      backups = await reopened.upgradeBackups();
+    return {
+      backups,
+      original: await reopened.readUpgradeBackup(backups[0].digest),
+      current: await reopened.read(),
+      versions: await reopened.versions(),
+    };
+  });
+  assert.equal(result.backups.length, 1);
+  assert.deepEqual(result.original, raw);
+  assert.equal(result.current.data.name, "New edit 22");
+  assert.equal(result.versions.length, 20);
+  assert.ok(result.versions.every((version) => version.revision > 1));
+});
+
+test("a failed backup directory write prevents migration and lost acknowledgement is recovered", async () => {
+  legacyValues.set("video-studio-project-v1", await page.evaluate(() => old));
+  failure = { method: "media.document.set", key: "video-studio-upgrade-backups" };
+  const error = await page.evaluate(async () => {
+    try {
+      await host().write(doc, 0, "升级");
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(error, /injected/);
+  assert.equal((await current()).data, null);
+  failure = {
+    method: "media.document.set",
+    key: "video-studio-upgrade-backups",
+    mode: "after",
+    once: true,
+  };
+  const result = await page.evaluate(async () => {
+    await host().write(doc, 0, "重试升级");
+    return host().upgradeBackups();
+  });
+  assert.equal(result.length, 1);
+  assert.equal((await current()).revision, 1);
+});
+
+test("simultaneous old project imports retain both backup references without overwriting", async () => {
+  const result = await page.evaluate(async () => {
+    const another = { ...old, id: "other", name: "第二个工程" };
+    await Promise.all([host().backupLegacy(old), host().backupLegacy(another)]);
+    const reopened = host(),
+      backups = await reopened.upgradeBackups();
+    return {
+      backups,
+      documents: await Promise.all(
+        backups.map((entry) => reopened.readUpgradeBackup(entry.digest)),
+      ),
+    };
+  });
+  assert.deepEqual(result.backups.map((entry) => entry.documentId).sort(), ["other", "project"]);
+  assert.deepEqual(result.documents.map((entry) => entry.id).sort(), ["other", "project"]);
+});
+
+test("corrupt current data does not hide indexed backups, but corrupt backup bytes cannot be restored", async () => {
+  const [entry] = await page.evaluate(async () => {
+    await host().backupLegacy(old);
+    return host().upgradeBackups();
+  });
+  await hostStore.set(hostScope, "video-studio-current", {
+    baseRevision: 0,
+    data: { bad: true },
+    label: "损坏",
+  });
+  assert.deepEqual(await page.evaluate(() => host().upgradeBackups()), [entry]);
+  const key = `video-studio-legacy-${entry.digest}`,
+    packed = await hostStore.get(hostScope, key);
+  packed.data.data.name = "changed outside";
+  await hostStore.set(hostScope, key, {
+    baseRevision: packed.revision,
+    data: packed.data,
+    label: "损坏",
+  });
+  const error = await page.evaluate(async (digest) => {
+    try {
+      await host().readUpgradeBackup(digest);
+    } catch (error) {
+      return error.message;
+    }
+  }, entry.digest);
+  assert.match(error, /校验失败/);
+  assert.deepEqual((await current()).data, { bad: true });
+});
+
+test("pre-directory v1 history is indexed without replacing current or discarding extension omissions", async () => {
+  const raw = await installedFixture();
+  await hostStore.set(hostScope, "video-studio-current", {
+    baseRevision: 0,
+    data: raw,
+    label: "旧版",
+  });
+  await hostStore.set(hostScope, "video-studio-current", {
+    baseRevision: 1,
+    data: await page.evaluate(() => doc),
+    label: "新版",
+  });
+  const result = await page.evaluate(async () => {
+    const storage = host(),
+      backups = await storage.upgradeBackups();
+    return { backups, exact: await storage.readUpgradeBackup(backups[0].digest) };
+  });
+  assert.equal(result.backups.length, 1);
+  assert.deepEqual(result.exact, raw);
+  assert.equal((await current()).revision, 2);
+});
+
+test("browser upgrade backup index survives reopening, stays scoped and preserves chunked exact JSON", async () => {
+  const result = await page.evaluate(async () => {
+    const raw = {
+      ...old,
+      captions: Array.from({ length: 1500 }, (_, index) => ({
+        id: `caption-${index}`,
+        startFrame: 0,
+        endFrame: 1,
+        text: "字幕".repeat(100),
+      })),
+    };
+    await local().backupLegacy(raw);
+    const backups = await local().upgradeBackups();
+    const restored = await local().readUpgradeBackup(backups[0].digest);
+    const other = api.createEditorHostStorage(undefined, {
+      persistent: false,
+      scopeKey: "separate-backups",
+    });
+    return {
+      equal: JSON.stringify(raw) === JSON.stringify(restored),
+      backups,
+      other: await other.upgradeBackups(),
+    };
+  });
+  assert.equal(result.equal, true);
+  assert.equal(result.backups.length, 1);
+  assert.deepEqual(result.other, []);
+});
+
+test("invalid backup index is preserved and cannot be replaced by an upgrade", async () => {
+  legacyValues.set("video-studio-project-v1", await page.evaluate(() => old));
+  const broken = {
+    format: "video-studio-upgrade-backups",
+    version: 1,
+    entries: [{ digest: "bad" }],
+  };
+  await hostStore.set(hostScope, "video-studio-upgrade-backups", {
+    baseRevision: 0,
+    data: broken,
+    label: "损坏目录",
+  });
+  const error = await page.evaluate(async () => {
+    try {
+      await host().write(doc, 0, "升级");
+    } catch (error) {
+      return error.message;
+    }
+  });
+  assert.match(error, /备份记录损坏/);
+  assert.deepEqual((await hostStore.get(hostScope, "video-studio-upgrade-backups")).data, broken);
+  assert.equal((await current()).data, null);
+});

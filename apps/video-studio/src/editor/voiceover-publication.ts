@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
@@ -197,7 +198,7 @@ export function planPublishVoiceover(
   value: EditorDocument,
   result: CanonicalVoiceoverResult,
   context: VoiceoverPublication,
-  idFactory: () => string = () => crypto.randomUUID(),
+  idFactory: () => string = () => randomId(),
 ): { operations: EditorOperation[]; notice: string; placed: boolean } {
   const doc = validateEditorDocument(value),
     supplied = structuredClone(result.asset),
@@ -331,7 +332,7 @@ export function planPublishedAudioPlacement(
   value: EditorDocument,
   sequenceId: string,
   placement: { clipId: string; assetId: string; startFrame: number; volume: number },
-  idFactory: (kind: "track") => string = () => `track-${crypto.randomUUID()}`,
+  idFactory: (kind: "track") => string = () => `track-${randomId()}`,
 ): { operations: EditorOperation[]; notice?: string } {
   const doc = validateEditorDocument(value),
     sequence = doc.sequences.find((item) => item.id === sequenceId);

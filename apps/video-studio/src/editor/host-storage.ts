@@ -9,6 +9,15 @@ export interface EditorHostStorage extends EditorSessionStorage {
   readVersion(revision: number): Promise<unknown>;
   archive(document: EditorDocument): Promise<void>;
   listArchived(): Promise<EditorDocument[]>;
+  upgradeBackups(): Promise<EditorUpgradeBackup[]>;
+  readUpgradeBackup(digest: string): Promise<unknown>;
+}
+export interface EditorUpgradeBackup {
+  digest: string;
+  documentId: string;
+  name: string;
+  revision: number;
+  createdAt: number;
 }
 export interface EditorHostStorageOptions {
   persistent: boolean;
@@ -48,6 +57,7 @@ const CURRENT = "video-studio-current";
 const LEGACY = "video-studio-project-v1";
 const OLD_ARCHIVE = "video-studio-recent-v1";
 const ARCHIVE = "video-studio-recent-v2";
+const UPGRADES = "video-studio-upgrade-backups";
 const MAX_BYTES = 32 * 1024 * 1024;
 const INLINE_BYTES = 704 * 1024;
 const CHUNK_BYTES = 704 * 1024; // Base64 + JSON envelope stays below 1 MiB IPC payloads.
@@ -512,13 +522,100 @@ export function createEditorHostStorage(
     initialRead ??= readCurrent();
     return initialRead;
   };
+  const upgradeIndex = async () => {
+    const stored = await backend.get(UPGRADES);
+    if (stored.data === null)
+      return { revision: stored.revision, entries: [] as EditorUpgradeBackup[] };
+    const raw = stored.data;
+    if (
+      !plain(raw) ||
+      raw.format !== UPGRADES ||
+      raw.version !== 1 ||
+      Object.keys(raw).some((key) => !["format", "version", "entries"].includes(key)) ||
+      !Array.isArray(raw.entries) ||
+      raw.entries.length > MAX_ENTRIES
+    )
+      throw new Error("升级前备份目录损坏，原备份已保留");
+    const digests = new Set<string>();
+    const entries = raw.entries.map((entry: unknown): EditorUpgradeBackup => {
+      if (
+        !plain(entry) ||
+        Object.keys(entry).some(
+          (key) => !["digest", "documentId", "name", "revision", "createdAt"].includes(key),
+        ) ||
+        typeof entry.digest !== "string" ||
+        !hashPattern.test(entry.digest) ||
+        digests.has(entry.digest) ||
+        typeof entry.documentId !== "string" ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(entry.documentId) ||
+        typeof entry.name !== "string" ||
+        entry.name.length > 200
+      )
+        throw new Error("升级前备份记录损坏，原备份已保留");
+      digests.add(entry.digest);
+      return {
+        digest: entry.digest,
+        documentId: entry.documentId,
+        name: entry.name,
+        revision: integer(entry.revision, "原工程版本"),
+        createdAt: integer(entry.createdAt, "备份时间"),
+      };
+    });
+    return { revision: stored.revision, entries };
+  };
   const backupLegacy = async (raw: unknown): Promise<void> => {
     const exact = exactJSON(raw);
     if (!plain(exact) || exact.schemaVersion !== 1)
       throw new Error("旧工程备份必须是完整的版本 1 JSON");
-    migrateLegacyProject(exact);
+    const document = migrateLegacyProject(exact);
     const packed = await pack(exact);
     await immutable(`video-studio-legacy-${packed.sha256}`, packed, "升级前原始工程备份");
+    // Publish discoverability before v2 can replace the current document. A lost
+    // response is verified by reading, and concurrent imports only add entries.
+    const entry: EditorUpgradeBackup = {
+      digest: packed.sha256,
+      documentId: document.id,
+      name: document.name,
+      revision: integer(exact.revision, "原工程版本"),
+      createdAt: Date.now(),
+    };
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await upgradeIndex();
+      const found = current.entries.find((value) => value.digest === entry.digest);
+      if (found) {
+        if (
+          found.documentId !== entry.documentId ||
+          found.name !== entry.name ||
+          found.revision !== entry.revision
+        )
+          throw new Error("升级前备份身份与目录不一致");
+        return;
+      }
+      if (current.entries.length >= MAX_ENTRIES)
+        throw new Error("升级前备份目录已满，请先导出整理；原工程未替换");
+      try {
+        await backend.set(
+          UPGRADES,
+          { format: UPGRADES, version: 1, entries: [entry, ...current.entries] },
+          current.revision,
+          "登记升级前原始工程备份",
+        );
+        return;
+      } catch (error) {
+        const latest = await upgradeIndex().catch(() => undefined);
+        if (
+          latest?.entries.some(
+            (value) =>
+              value.digest === entry.digest &&
+              value.documentId === entry.documentId &&
+              value.name === entry.name &&
+              value.revision === entry.revision,
+          )
+        )
+          return;
+        if (!conflict(error) || attempt === 3) throw error;
+      }
+    }
   };
   const snapshot = async (document: EditorDocument): Promise<string> => {
     const packed = await pack(validateEditorDocument(document)),
@@ -625,6 +722,42 @@ export function createEditorHostStorage(
       return { revision: receipt.revision };
     },
     backupLegacy,
+    async upgradeBackups() {
+      const existing = await upgradeIndex();
+      if (existing.entries.length) return existing.entries;
+      // Earlier releases retained exact payloads without a directory. Recover
+      // discoverable v1 sources; never invent a v1 document from migrated v2.
+      const source = await legacy(LEGACY);
+      if (plain(source) && source.schemaVersion === 1) await backupLegacy(source);
+      for (const version of await backend.versions(CURRENT)) {
+        const raw = await unpack((await backend.get(CURRENT, version.revision)).data);
+        if (plain(raw) && raw.schemaVersion === 1) await backupLegacy(raw);
+      }
+      return (await upgradeIndex()).entries;
+    },
+    async readUpgradeBackup(digest) {
+      if (typeof digest !== "string" || !hashPattern.test(digest))
+        throw new Error("升级前备份标识无效");
+      const entry = (await upgradeIndex()).entries.find((value) => value.digest === digest);
+      if (!entry) throw new Error("找不到这份升级前备份，请重新打开历史版本");
+      const packed = (await backend.get(`video-studio-legacy-${digest}`)).data;
+      if (
+        !plain(packed) ||
+        packed.format !== "video-studio-packed-document" ||
+        packed.sha256 !== digest
+      )
+        throw new Error("升级前备份缺失或内容地址不一致，当前工程保持不变");
+      const raw = await unpack(packed);
+      if (!plain(raw) || raw.schemaVersion !== 1) throw new Error("升级前备份不是原始旧版工程");
+      const document = migrateLegacyProject(raw);
+      if (
+        document.id !== entry.documentId ||
+        document.name !== entry.name ||
+        raw.revision !== entry.revision
+      )
+        throw new Error("升级前备份身份与目录不一致，当前工程保持不变");
+      return raw;
+    },
     async versions() {
       return backend.versions(CURRENT);
     },

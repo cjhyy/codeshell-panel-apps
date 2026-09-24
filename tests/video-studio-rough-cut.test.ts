@@ -285,4 +285,3 @@ test("media metadata publication preserves markers and incompatible source repla
   assert.throws(() => publishProductionAssets(project, [{ ...source, kind: "image" }]), /粗剪/);
   assert.deepEqual(project, original);
 });
-

@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { PanelBridge } from "./host";
 import { cancelled, createVoiceProcessClient } from "./local-voice-process";
 import { createPanelRuntime } from "./sdk/panel-runtime";
@@ -156,7 +157,7 @@ export function createVoiceLibraryBridge(panel: PanelBridge, options: Options = 
       const reference = await sourceMeta(cwd, snapshot.referenceMediaId, signal);
       const sample = await sourceMeta(cwd, snapshot.sampleMediaId, signal);
       const saved: Entry = { schemaVersion: 1, recipe: snapshot, reference, sample };
-      const token = crypto.randomUUID();
+      const token = randomId();
       let begun = false,
         committed = false,
         total = 0;

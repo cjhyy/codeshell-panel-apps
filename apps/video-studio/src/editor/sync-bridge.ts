@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { createPanelRuntime, runtimeCancelled, type RuntimeBridge } from "../sdk/panel-runtime";
 import { isResourceId } from "../external-media";
 import {
@@ -431,7 +432,7 @@ export function createEditorSyncBridge(panel: RuntimeBridge, options: { guard?()
         bundle = artifact(input.bundle),
         receipt = input.receipt
           ? validateEditorSyncPublicationReceipt(input.receipt)
-          : { snapshot, token: crypto.randomUUID(), bundle, supersededTokens: [] };
+          : { snapshot, token: randomId(), bundle, supersededTokens: [] };
       receipt.snapshot = await verifySnapshot(receipt.snapshot);
       if (
         receipt.snapshot.id !== snapshot.id ||
@@ -464,7 +465,7 @@ export function createEditorSyncBridge(panel: RuntimeBridge, options: { guard?()
             "暂存恢复次数达到限制，请清理本次暂存后重新发布",
           );
         receipt.supersededTokens.push(receipt.token);
-        receipt.token = crypto.randomUUID();
+        receipt.token = randomId();
         await opts.onReceipt?.(structuredClone(receipt));
         await authorized(directory, signal);
       }

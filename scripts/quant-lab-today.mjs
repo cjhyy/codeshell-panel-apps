@@ -265,8 +265,8 @@ assertClock("2026-12-07T13:30:00.000Z", "us", "open", /12-08 04:00/u);
     assert.doesNotMatch(plan.prompt, /<panel>/u, "Host does not expand panel path templates");
     assert.match(
       plan.prompt,
-      /\$HOME\/\.code-shell\/panel-apps\/quant-lab\/app\/tools\/fetch-market-data\.mjs/u,
-      "automation must name the real bundled install path",
+      /quant-lab:project-runtime[\s\S]*app\/tools\/fetch-market-data\.mjs/u,
+      "automation must resolve the project-selected package through its Skill",
     );
     assert.match(
       plan.prompt,
@@ -443,8 +443,8 @@ function oversizedWatchlist() {
   assert.doesNotMatch(plan.prompt, /--out-dir data\/market --force/u, "the job must never overwrite a user's adjustment basis");
   assert.match(plan.prompt, /禁止使用 `--force`/u);
   assert.match(plan.prompt, /meta\.json[\s\S]*--adjust/u, "reuse the existing sidecar adjust basis");
-  assert.match(plan.prompt, /test -r/u, "the install path check must run in a shell so $HOME expands");
-  assert.match(plan.prompt, /installed\.json/u);
+  assert.match(plan.prompt, /test -r/u, "the resolved program must be readable before execution");
+  assert.doesNotMatch(plan.prompt, /installed\.json|\$HOME\/\.code-shell/u);
   assert.match(plan.prompt, /同一.*rule id[\s\S]*asOf[\s\S]*不重复通知/u, "multi-point runs must not re-notify an unchanged hit");
   assert.match(plan.prompt, /provisional/u);
   assert(plan.prompt.length <= HOST_AUTOMATION_LIMITS.prompt);

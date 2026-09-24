@@ -208,13 +208,24 @@ describe(
         const runtimeDir = join(root, "cancel-install");
         const installer = join(root, "uv-fixture");
         const started = join(root, "installer-started");
+        // This test observes installer cancellation and environment filtering, not
+        // the cold-start time of the machine's real FFmpeg / FFprobe binaries.
+        const mediaProbe = join(root, "media-probe-fixture");
+        await writeFile(mediaProbe, "#!/bin/sh\nexit 0\n");
+        await chmod(mediaProbe, 0o700);
         await writeFile(
           installer,
           `#!/bin/sh\nprintf '%s' "$UV_EXTRA_INDEX_URL|$PIP_EXTRA_INDEX_URL|$PYTHONPATH|$HF_TOKEN|$HF_HOME" > '${started}'\nexec /bin/sleep 30\n`,
         );
         await chmod(installer, 0o700);
-        const api = createAudio8TtsProvider({ runtimeDir, uvPath: installer });
-        const other = createAudio8TtsProvider({ runtimeDir, uvPath: installer });
+        const options = {
+          runtimeDir,
+          uvPath: installer,
+          ffmpegPath: mediaProbe,
+          ffprobePath: mediaProbe,
+        };
+        const api = createAudio8TtsProvider(options);
+        const other = createAudio8TtsProvider(options);
         const controller = new AbortController();
         const job = context(controller);
         const keys = ["UV_EXTRA_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PYTHONPATH", "HF_TOKEN"];

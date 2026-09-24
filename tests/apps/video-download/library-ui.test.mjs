@@ -144,6 +144,7 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
     window.codeshellPanel = {
       getContext: async () => ({
         apiVersion: 14,
+        ...(localStorage.getItem("fixture.browserPreview") ? { availableMethods: ["resources.open", "resources.capture"] } : {}),
         theme: "light",
         workspace: { root: "/fixture/project", trusted: true },
         projectPath: "/fixture/project",
@@ -158,6 +159,11 @@ async function openPanel(t, { width = 1100, colorScheme = "light", concurrency =
       },
       async call(method, args = {}) {
         window.__calls.push({ method, args: structuredClone(args) });
+        if (method === "resources.capture") {
+          if (window.__failCapture) throw new Error("文件已变化，请重新检查");
+          return { asset: { id: `asset-${"a".repeat(64)}`, bytes: args.expectedBytes } };
+        }
+        if (method === "resources.open") return { opened: true };
         if (method === "storage.get")
           return JSON.parse(localStorage.getItem(`fixture.storage.${args.key}`) || "null");
         if (method === "storage.set") {
@@ -1792,4 +1798,58 @@ test("inspection errors identify the failing link and can be dismissed without a
   await page.locator("#dismiss-error").click();
   assert.equal(await page.locator("#error-analysis").isVisible(), false);
   assert.equal((await readState(page)).queue.length, 0);
+});
+
+
+for (const width of [390, 1440]) test(`browser history previews legacy files, retains resource IDs, and opens its directory at ${width}px`, async t => {
+  const page = await openPanel(t, { width });
+  await page.evaluate(() => localStorage.setItem("fixture.browserPreview", "true"));
+  await page.reload();
+  await ready(page);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.locator('[data-tab="history"]').click();
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() => window.__calls.some(call => call.method === "resources.open"));
+  const capture = await page.evaluate(() => window.__calls.find(call => call.method === "resources.capture").args);
+  assert.equal(capture.directoryHandle, "directory-project");
+  assert.equal(capture.expectedBytes, 100);
+  assert.match(capture.path, /^process-\d+\.mp4$/);
+  await page.waitForFunction(() => document.querySelector("#history-action-status").textContent.includes("当前浏览器"));
+  assert.equal(await page.evaluate(() => window.__fileActions.length), 0, "browser must not launch any OS file opener");
+  await page.reload();
+  await ready(page);
+  await page.locator('[data-tab="history"]').click();
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() => window.__calls.some(call => call.method === "resources.open"));
+  assert.equal(await page.evaluate(() => window.__calls.filter(call => call.method === "resources.capture").length), 0, "reopen must reuse the persisted resource");
+  await page.waitForFunction(() => !document.querySelector('[data-history-shortcut="reveal"]').disabled);
+  await page.locator('[data-history-shortcut="reveal"]').click();
+  await page.waitForFunction(() => window.__calls.some(call => call.method === "filesystem.openDirectory"));
+  assert.equal(await page.evaluate(() => window.__fileActions.length), 0);
+  await page.waitForFunction(() => !document.querySelector('[data-history-shortcut="play"]').disabled);
+  await page.evaluate(() => {
+    for (const path of Object.keys(window.__fileMap)) window.__setFiles({ [path]: { status: "missing" } });
+    window.__calls = [];
+  });
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() => document.querySelector("#history-action-status").textContent.includes("已删除"));
+  assert.equal(await page.evaluate(() => window.__calls.filter(call => ["resources.open", "resources.capture"].includes(call.method)).length), 0);
+});
+
+test("browser preview capture failure is visible and never falls back to a host opener", async t => {
+  const page = await openPanel(t, { width: 390 });
+  await page.evaluate(() => localStorage.setItem("fixture.browserPreview", "true"));
+  await page.reload();
+  await ready(page);
+  await addDownload(page);
+  await page.waitForFunction(() => window.__downloads.length === 1);
+  await completeDownload(page, (await downloads(page))[0].processId);
+  await page.evaluate(() => { window.__failCapture = true; });
+  await page.locator('[data-tab="history"]').click();
+  await page.locator('[data-history-shortcut="play"]').click();
+  await page.waitForFunction(() => document.querySelector("#history-action-status").textContent.includes("文件已变化"));
+  assert.equal(await page.evaluate(() => window.__fileActions.length), 0);
+  assert.equal(await page.evaluate(() => window.__calls.some(call => call.method === "resources.open")), false);
 });

@@ -1877,6 +1877,20 @@ dialog .range-inputs {
 .recent-project small {
   color: #8fa595;
 }
+.upgrade-backup {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.upgrade-backup small {
+  color: var(--muted);
+}
+.upgrade-backup .dialog-actions {
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;

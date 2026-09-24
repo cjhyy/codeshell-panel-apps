@@ -1706,6 +1706,10 @@ input:focus-visible + i {
 .queue-copy {
   min-width: 0;
 }
+.queue-copy .queue-package {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 
 .queue-copy strong,
 .queue-copy small {

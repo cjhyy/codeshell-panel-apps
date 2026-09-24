@@ -96,7 +96,7 @@ assert.equal(manifest.id, "quant-lab");
 assert.equal(manifest.version, "0.46.1");
 assert.equal(manifest.schemaVersion, 2);
 assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
-assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
+assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md", "agent/skills/project-runtime/SKILL.md"]);
 assert.equal(manifest.title.default, "投资工作台");
 assert.equal(manifest.title["zh-CN"], "投资工作台");
 assert(manifest.permissions.includes("external.open"), "M4 external links require the real Host permission");
@@ -1482,10 +1482,11 @@ async function installHostStub(
     availableRuntimes = ["node", "nodejs"],
     localDataAvailable = true,
     liveRefreshFailure = "",
+    versionedStorage = false,
   } = {},
 ) {
   await target.addInitScript(
-    ([fixtureCsv, fixtureFingerprint, seed, expectedWorkspaceRoot, fixedNow, rejectedKeys, fileSeed, rejectedWritePaths, seededAutomations, rejectedAutomationNames, rejectedAutomationDeleteIds, fixtureLiveSnapshot, fixtureSelectionSnapshot, fixtureStockDetailSnapshot, fixtureUsStockDetailSnapshot, fixtureHistoryLibrarySummary, fixtureRuntimeNames, fixtureLocalDataAvailable, fixtureLiveRefreshFailure]) => {
+    ([fixtureCsv, fixtureFingerprint, seed, expectedWorkspaceRoot, fixedNow, rejectedKeys, fileSeed, rejectedWritePaths, seededAutomations, rejectedAutomationNames, rejectedAutomationDeleteIds, fixtureLiveSnapshot, fixtureSelectionSnapshot, fixtureStockDetailSnapshot, fixtureUsStockDetailSnapshot, fixtureHistoryLibrarySummary, fixtureRuntimeNames, fixtureLocalDataAvailable, fixtureLiveRefreshFailure, fixtureVersionedStorage]) => {
       const persisted = window.localStorage.getItem("quant-lab-e2e-storage");
       const store = new Map(persisted ? JSON.parse(persisted) : seed);
       const persistedFiles = window.localStorage.getItem("quant-lab-e2e-files");
@@ -1509,11 +1510,23 @@ async function installHostStub(
       persistStore();
       persistFiles();
       window.__storage = store;
+      window.__rejectStorageReads = new Set();
+      // Opaque content revision for this bridge fixture; actual SHA/file locking
+      // is exercised by the cross-repository Host verifier.
+      const storageSnapshot = (key) => {
+        const exists = store.has(key);
+        const value = exists ? structuredClone(store.get(key)) : null;
+        let hash = 2166136261;
+        for (const char of JSON.stringify([key, value])) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+        return { exists, value, revision: exists ? `sha256:${(hash >>> 0).toString(16).padStart(8, "0").repeat(8)}` : null };
+      };
       window.__files = files;
       window.__hostCalls = [];
       window.__historyLibrarySummary = fixtureHistoryLibrarySummary;
       window.__written = {};
-      window.__automations = structuredClone(seededAutomations);
+      let automationVersion = 0;
+      window.__nextAutomationRevision = () => (++automationVersion).toString(16).padStart(64, "0");
+      window.__automations = structuredClone(seededAutomations).map(task => fixtureVersionedStorage ? {...task,revision:window.__nextAutomationRevision()} : task);
       window.__agentTasks = [];
       window.__rejectAutomationNames = new Set(rejectedAutomationNames);
       window.__rejectAutomationDeleteIds = new Set(rejectedAutomationDeleteIds);
@@ -1528,6 +1541,7 @@ async function installHostStub(
         cwd: expectedWorkspaceRoot,
         trusted: true,
         busy: false,
+        ...(fixtureVersionedStorage ? { availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"] } : {}),
       };
       window.__contextChangedHandlers = new Set();
       window.__panelEventHandlers = new Map();
@@ -1721,8 +1735,10 @@ async function installHostStub(
             }
             return Promise.reject(new Error("file not found"));
           }
-          if (method === "automations.list")
-            return Promise.resolve({ automations: window.__automations });
+          if (method === "automations.list") {
+            if (fixtureVersionedStorage) for (const task of window.__automations) task.revision ??= window.__nextAutomationRevision();
+            return Promise.resolve({ automations: structuredClone(window.__automations) });
+          }
           // Mirrors createPanelAutomation/updatePanelAutomation in the real
           // panel-app-bridge: the stub must never be looser than the Host.
           const validateAutomationFields = (fields, { requireAll }) => {
@@ -1745,7 +1761,24 @@ async function installHostStub(
               throw new Error("Panel App automation timezone is invalid");
             }
           };
-          if (method === "automations.create") {
+          if (method === "automations.updateIfRevision" || method === "automations.deleteIfRevision") {
+            const index = window.__automations.findIndex(task => task.id === params.id);
+            if (index < 0) return Promise.resolve({ok:false,conflict:true});
+            if (window.__conflictAutomationMutation) {
+              window.__conflictAutomationMutation = false;
+              window.__automations[index] = {...window.__automations[index], prompt:"Other device definition",revision:window.__nextAutomationRevision()};
+            }
+            if (window.__automations[index].revision !== params.expectedRevision) return Promise.resolve({ok:false,conflict:true});
+            if (method === "automations.deleteIfRevision") {
+              window.__automations.splice(index,1);
+              return Promise.resolve({ok:true});
+            }
+            const {id: _id, expectedRevision: _expected, ...patch} = params;
+            validateAutomationFields(patch,{requireAll:false});
+            window.__automations[index] = {...window.__automations[index],...patch,revision:window.__nextAutomationRevision()};
+            return Promise.resolve({ok:true,automation:structuredClone(window.__automations[index])});
+          }
+          if (method === "automations.create" || method === "automations.createUnique") {
             if (window.__rejectAutomationNames.has(params.name)) {
               return Promise.reject(new Error(`automation create rejected: ${params.name}`));
             }
@@ -1754,14 +1787,29 @@ async function installHostStub(
             } catch (error) {
               return Promise.reject(error);
             }
+            if (method === "automations.createUnique") {
+              if (typeof params.key !== "string" || !/^[a-zA-Z0-9._:-]{1,80}$/.test(params.key))
+                return Promise.reject(new Error("invalid unique key"));
+              const existing = window.__automations.find(task => task.key === params.key);
+              if (existing) {
+                if (["name", "schedule", "prompt", "timezone"].some(key => existing[key] !== params[key]))
+                  return Promise.reject(new Error("different definition"));
+                return Promise.resolve(existing);
+              }
+            }
             const created = {
               id: `auto-${window.__automations.length + 1}`,
               enabled: true,
               permissionLevel: "full",
               resumeSessionId: "session-e2e",
+              ...(fixtureVersionedStorage ? {revision:window.__nextAutomationRevision()} : {}),
               ...params,
             };
             window.__automations.push(created);
+            if (method === "automations.createUnique" && window.__loseUniqueResponse) {
+              window.__loseUniqueResponse = false;
+              return Promise.reject(new Error("response lost after commit"));
+            }
             return Promise.resolve(created);
           }
           if (method === "automations.update") {
@@ -1820,6 +1868,16 @@ async function installHostStub(
               modifiedAt: nextRevision,
               revision: nextRevision,
             });
+          }
+          if (method === "storage.getSnapshot") {
+            if (window.__rejectStorageReads.has(params.key)) return Promise.reject(new Error("storage read unavailable"));
+            return Promise.resolve(storageSnapshot(params.key));
+          }
+          if (method === "storage.compareAndSet") {
+            if (rejectedKeys.includes(params.key)) return Promise.reject(new Error("Panel App storage quota exceeded"));
+            const updated = params.expectedRevision === storageSnapshot(params.key).revision;
+            if (updated) { store.set(params.key, structuredClone(params.value)); persistStore(); }
+            return Promise.resolve({ updated, snapshot: storageSnapshot(params.key) });
           }
           if (method === "storage.get") return Promise.resolve(store.get(params.key) ?? null);
           if (method === "storage.set") {
@@ -1906,6 +1964,7 @@ async function installHostStub(
       availableRuntimes,
       localDataAvailable,
       liveRefreshFailure,
+      versionedStorage,
     ],
   );
 }
@@ -4394,7 +4453,7 @@ for (const automation of automations) {
   assert.doesNotMatch(automation.prompt, /<panel>/u);
   assert.match(
     automation.prompt,
-    /\$HOME\/\.code-shell\/panel-apps\/quant-lab\/app\/tools\/fetch-market-data\.mjs/u,
+    /quant-lab:project-runtime[\s\S]*app\/tools\/fetch-market-data\.mjs/u,
   );
   assert.match(automation.prompt, /bundled-fetch-tool-not-found[\s\S]*unavailable[\s\S]*禁止.*估算/u);
   assert.match(automation.prompt, /evaluateWatchItem/u);
@@ -4974,6 +5033,150 @@ const failingSeed = [
   await scenarioContext.close();
 }
 
+// Long-term watch uses the same conflict/recovery contract on a phone-sized page.
+{
+  const initial = { version: 2, custom: { keep: true }, stocks: [{ symbol: "SH600519", name: "贵州茅台", note: "keep-stock" }], sectors: [{ id: "new_energy", name: "电力设备", color: "keep-sector" }] };
+  const { scenarioContext, scenarioPage } = await openScenario([[selectionWatchKey, initial]], { versionedStorage: true });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  await scenarioPage.click('[data-module-tab="watch"]');
+  await scenarioPage.waitForFunction(() => !document.querySelector("#selection-watch-stock-add").disabled);
+  await scenarioPage.evaluate((key) => {
+    const record = structuredClone(window.__storage.get(key));
+    record.stocks.push({ symbol: "SH600036", name: "另一设备", note: "remote-note" });
+    window.__storage.set(key, record);
+  }, selectionWatchKey);
+  await scenarioPage.locator('[data-selection-priority-stock="SH600519"]').click();
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.equal(await scenarioPage.locator("#selection-watch-stock-add").isDisabled(), true);
+  assert.equal(await scenarioPage.evaluate((key) => window.__storage.get(key).stocks[0].priority, selectionWatchKey), undefined);
+  const downloading = scenarioPage.waitForEvent("download");
+  await scenarioPage.click("#selection-watch-storage-backup");
+  const backup = JSON.parse(await readFile(await (await downloading).path(), "utf8"));
+  assert.equal(backup.stocks.length, 1);
+  assert.equal(backup.stocks[0].priority, "focus");
+  assert.equal(backup.stocks[0].note, "keep-stock");
+  assert.equal(backup.sectors[0].color, "keep-sector");
+  assert.deepEqual(backup.custom, { keep: true });
+  const bounds = await scenarioPage.locator("#selection-watch-storage-recovery").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, width: innerWidth, heights: [...element.querySelectorAll("button")].map(button => button.getBoundingClientRect().height) };
+  });
+  assert(bounds.left >= 0 && bounds.right <= bounds.width);
+  assert(bounds.heights.every(height => height >= 44));
+  await scenarioPage.evaluate((key) => window.__rejectStorageReads.add(key), selectionWatchKey);
+  await scenarioPage.click("#selection-watch-storage-reload");
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-storage-state").textContent.includes("读取失败"));
+  assert.match(await scenarioPage.locator("#selection-watch-count").textContent(), /1 重点/);
+  assert.equal(await scenarioPage.locator("#selection-watch-stock-add").isDisabled(), true);
+  await scenarioPage.evaluate(() => window.__rejectStorageReads.clear());
+  await scenarioPage.click("#selection-watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#selection-watch-stock-add").disabled);
+  assert.match(await scenarioPage.locator("#selection-watch-list").textContent(), /另一设备/);
+  await scenarioPage.locator('[data-selection-priority-stock="SH600519"]').click();
+  await scenarioPage.waitForFunction((key) => window.__storage.get(key).stocks[0].priority === "focus", selectionWatchKey);
+  const saved = await scenarioPage.evaluate((key) => window.__storage.get(key), selectionWatchKey);
+  assert.equal(saved.stocks[1].note, "remote-note");
+  assert.equal(saved.stocks[0].note, "keep-stock");
+  assert.equal(saved.sectors[0].color, "keep-sector");
+  assert.deepEqual(saved.custom, { keep: true });
+  assert.equal(await scenarioPage.evaluate((key) => window.__hostCalls.some(call => call.method === "storage.set" && call.params.key === key), selectionWatchKey), false);
+  assert(await scenarioPage.evaluate((key) => window.__hostCalls.some(call => call.method === "storage.compareAndSet" && call.params.key === key), selectionWatchKey));
+  await scenarioContext.close();
+}
+
+// Modern Host: stale device edits remain drafts and cannot alter reminders.
+{
+  const initial = { items: [{ id: "original", symbol: "AAPL", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null }], watchlistMigrationVersion: 1 };
+  const { scenarioContext, scenarioPage } = await openScenario([[watchlistKey, initial]], { versionedStorage: true });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  await scenarioPage.click('[data-module-tab="watch"]');
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-add").disabled);
+  await scenarioPage.evaluate((key) => {
+    const value = structuredClone(window.__storage.get(key));
+    value.items.push({ id: "other-device", symbol: "MSFT", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null });
+    window.__storage.set(key, value);
+  }, watchlistKey);
+  await scenarioPage.fill("#watch-symbol", "GOOG");
+  await scenarioPage.selectOption("#watch-rule", "rsi-oversold");
+  await scenarioPage.click("#watch-add");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.doesNotMatch(await scenarioPage.locator("#toast").textContent(), /已关注/);
+  assert.deepEqual(await scenarioPage.evaluate((key) => window.__storage.get(key).items.map(item => item.symbol), watchlistKey), ["AAPL", "MSFT"]);
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  await scenarioPage.evaluate(() => document.querySelector("#watch-schedule").dispatchEvent(new Event("click")));
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.some(call => /^automations\.(create|createUnique|update|delete)$/.test(call.method))), false);
+  const recoveryBounds = await scenarioPage.locator("#watch-storage-recovery").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, width: innerWidth,
+      heights: [...element.querySelectorAll("button")].map(button => button.getBoundingClientRect().height) };
+  });
+  assert(recoveryBounds.left >= 0 && recoveryBounds.right <= recoveryBounds.width);
+  assert(recoveryBounds.heights.every(height => height >= 44));
+  if (process.env.QUANT_LAB_WATCH_STORAGE_SCREENSHOT) {
+    await scenarioPage.locator("#watch-storage-state").scrollIntoViewIfNeeded();
+    await scenarioPage.screenshot({ path: process.env.QUANT_LAB_WATCH_STORAGE_SCREENSHOT });
+  }
+  const downloading = scenarioPage.waitForEvent("download");
+  await scenarioPage.click("#watch-storage-backup");
+  const backup = JSON.parse(await readFile(await (await downloading).path(), "utf8"));
+  assert.deepEqual(backup.items.map(item => item.symbol), ["AAPL", "GOOG"]);
+  await scenarioPage.evaluate((key) => window.__rejectStorageReads.add(key), watchlistKey);
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("读取失败"));
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-add").isDisabled(), true);
+  await scenarioPage.evaluate(() => window.__rejectStorageReads.clear());
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-add").disabled);
+  assert.match(await scenarioPage.locator("#watchlist-items").textContent(), /MSFT/);
+  assert.doesNotMatch(await scenarioPage.locator("#watchlist-items").textContent(), /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-storage-recovery").isHidden(), true);
+  // A fresh remote change must also be caught when the user never attempts a save.
+  await scenarioPage.evaluate((key) => {
+    const value = structuredClone(window.__storage.get(key));
+    value.items.push({ id: "other-change", symbol: "META", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null });
+    window.__storage.set(key, value);
+  }, watchlistKey);
+  await scenarioPage.click("#watch-schedule");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 0);
+  await scenarioPage.click("#watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-schedule").disabled);
+  await scenarioPage.evaluate(() => { window.__loseUniqueResponse = true; });
+  await scenarioPage.click("#watch-schedule");
+  await scenarioPage.waitForFunction(() => window.__automations.length === 1);
+  const prompt = await scenarioPage.evaluate(() => window.__automations[0].prompt);
+  assert.match(prompt, /MSFT/); assert.match(prompt, /META/); assert.doesNotMatch(prompt, /GOOG/);
+  assert.equal(await scenarioPage.locator("#watch-storage-state").isHidden(), true);
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-automation-us-status").textContent.includes("未确认"));
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-status").textContent.includes("未确认"));
+  const creates = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")));
+  assert.equal(creates.length, 1, "lost response retry must read back the retained job");
+  assert.equal(creates[0].method, "automations.createUnique");
+  assert.equal(creates[0].params.key, "market-alert.us");
+  assert.equal(await scenarioPage.evaluate(() => window.__automations.length), 1);
+  await scenarioPage.evaluate(() => {window.__conflictAutomationMutation = true;});
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => document.querySelector("#watch-automation-us-status").textContent.includes("其他页面"));
+  assert.equal(await scenarioPage.evaluate(() => window.__automations[0].prompt), "Other device definition");
+  assert.equal(await scenarioPage.locator("#watch-schedule").isDisabled(), true);
+  const mutationsBeforeRead = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.endsWith("IfRevision")).length);
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-status").textContent.includes("其他页面"));
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.endsWith("IfRevision")).length), mutationsBeforeRead);
+  assert.equal(await scenarioPage.evaluate(() => window.__automations[0].prompt), "Other device definition");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#watch-automation-us-action").disabled);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() => window.__automations[0].prompt !== "Other device definition");
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "automations.update").length), 0);
+  await scenarioContext.close();
+}
+
 // --- Round 13 Today: with real positions the dedicated quote feed is not
 // integrated, so `stale-quotes` is a permanent P0 *unavailable*. That must not
 // bury a fresh, persisted watch hit (its own CSV evidence is available); only a
@@ -5245,10 +5448,18 @@ const dualMarketWatchSeed = [
   assert.match(await scenarioPage.locator("#watch-automation-us-status").textContent(), /失败/u);
   assert.equal(await scenarioPage.locator("#watch-legacy-remove").isDisabled(), true);
 
-  // Retry only the failed market. A-share remains one task (no duplicate).
+  // The first retry only reconciles the uncertain outcome. The next explicit
+  // click creates the absent US task; A-share remains one task throughout.
   await scenarioPage.evaluate(() =>
     window.__rejectAutomationNames.delete("投资工作台 · 美股开盘后"),
   );
+  const beforeRetryCreates = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")).length);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() =>
+    document.querySelector("#watch-automation-us")?.dataset.state === "off",
+  );
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")).length), beforeRetryCreates);
+  assert.equal(await scenarioPage.locator("#watch-legacy-remove").isDisabled(), true);
   await scenarioPage.click("#watch-automation-us-action");
   await scenarioPage.waitForFunction(() =>
     document.querySelector("#watch-automation-us")?.dataset.state === "active",
@@ -5710,6 +5921,47 @@ const newsFiles = {
   assert.match(cnPrompt, /full permission.*session.*外部网络/u);
   assert.equal(cnPrompt.includes("Investment Desk contact@example.com"), false);
   assert.match(await scenarioPage.locator("#news-live-status").textContent(), /部分市场的后台任务失败/u);
+  await scenarioContext.close();
+}
+
+// Modern Hosts must use retained unique creation for each news market and pulse.
+// A lost reply followed by another device's edit is resolved by a read-only click.
+{
+  const { scenarioContext, scenarioPage } = await openScenario(seededStorage, {
+    workspaceFiles: { ...rawFiles, ...newsFiles },
+    versionedStorage: true,
+  });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  for (const spec of [
+    { key: "news-sync.cn", action: "#news-automation-cn-action", status: "#news-automation-cn-status", tab: "news" },
+    { key: "news-sync.us", action: "#news-automation-us-action", status: "#news-automation-us-status", tab: "news" },
+    { key: "market-pulse.daily", action: "#market-pulse-automation-action", status: "#market-pulse-automation-status", tab: "today" },
+  ]) {
+    await scenarioPage.click(`[data-module-tab="${spec.tab}"]`);
+    if (spec.tab === "today") await scenarioPage.click('button[data-home-section="research"]');
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.disabled, spec.action);
+    await scenarioPage.evaluate(() => { window.__loseUniqueResponse = true; });
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("未确认"), spec.status);
+    await scenarioPage.evaluate((key) => {
+      const task = window.__automations.find(task => task.key === key);
+      if (!task) throw Error("unique task was not retained");
+      task.prompt = "Other device definition";
+      task.revision = window.__nextAutomationRevision();
+    }, spec.key);
+    const writes = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => /^automations\.(create|createUnique|update|delete|updateIfRevision|deleteIfRevision)$/.test(call.method)).length);
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.disabled, spec.action);
+    assert.match(await scenarioPage.locator(spec.action).textContent(), /读取/u);
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.textContent.includes("未确认"), spec.status);
+    assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => /^automations\.(create|createUnique|update|delete|updateIfRevision|deleteIfRevision)$/.test(call.method)).length), writes);
+    assert.equal(await scenarioPage.evaluate((key) => window.__automations.find(task => task.key === key)?.prompt, spec.key), "Other device definition");
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((key) => window.__automations.find(task => task.key === key)?.prompt !== "Other device definition", spec.key);
+    assert.equal(await scenarioPage.evaluate((key) => window.__automations.filter(task => task.key === key).length, spec.key), 1);
+    assert.equal(await scenarioPage.evaluate((key) => window.__hostCalls.filter(call => call.method === "automations.createUnique" && call.params.key === key).length, spec.key), 1);
+  }
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "automations.create" || call.method === "automations.update").length), 0);
   await scenarioContext.close();
 }
 

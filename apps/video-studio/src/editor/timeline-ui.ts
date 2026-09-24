@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import {
   EditorTimelineMedia,
   TIMELINE_MEDIA_LIMITS,
@@ -66,7 +67,7 @@ type Drag = {
   moved: boolean;
   additive: boolean;
 };
-const uid = (kind: string) => `${kind}-${crypto.randomUUID()}`;
+const uid = (kind: string) => `${kind}-${randomId()}`;
 /** Plain explanation shown when a magnetic move lands where it started. */
 const MAGNETIC_MOVE_NOTICE =
   "磁吸模式下，主画面轨的片段会自动首尾相接，拖动只改变先后顺序，不能向后留空。要把片段放到任意位置，请在时间轴工具栏切换到「自由」。";

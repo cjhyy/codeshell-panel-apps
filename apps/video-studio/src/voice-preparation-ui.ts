@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import { escapeHtml as esc, html } from "./icons";
 import type { Asset, Project } from "./model";
 import type { MediaJob, ProductionController, VoiceModel, VoicePreparation } from "./production";
@@ -802,7 +803,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
             throw new Error("请填写 1–80 字的声音名称。");
           const recipe: LibraryVoiceRecipe = {
             ...(existing ?? {
-              id: crypto.randomUUID(),
+              id: randomId(),
               name: recipeName.trim(),
               modelId: value.modelId,
               referenceMediaId: source.mediaId!,

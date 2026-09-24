@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { Asset, Project, RoughCut } from "./model";
 
 export const MAX_ROUGH_CUTS = 1000;
@@ -162,7 +163,7 @@ export function planUniformRoughCuts(
       outFrame = inFrame + length;
     }
     cuts.push({
-      id: `batch-cut-${crypto.randomUUID()}`,
+      id: `batch-cut-${randomId()}`,
       assetId: id,
       inFrame,
       outFrame,

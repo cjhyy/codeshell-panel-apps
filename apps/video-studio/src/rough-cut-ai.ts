@@ -1,3 +1,4 @@
+import { randomId } from "./ids.js";
 import type { Asset, EditOperation, Project, RoughCut } from "./model";
 import { parseProposal, parseTaskResultJson, type PanelBridge, type PanelTask } from "./host";
 import { validateRoughCuts } from "./rough-cut";
@@ -344,7 +345,7 @@ export class RoughCutAIController {
     this.value.phase = "preparing";
     this.value.starting = true;
     this.value.task = null;
-    this.token = crypto.randomUUID();
+    this.token = randomId();
     this.pending = null;
     this.frames.clear();
     this.transcripts.clear();
@@ -532,7 +533,7 @@ export class RoughCutAIController {
     if (this.value.cuts.length + cuts.length + (project.roughCuts?.length ?? 0) > 1000)
       throw new Error("保留段将超过 1000 段，请减少候选段后提交");
     this.pending = {
-      cuts: cuts.map((cut) => ({ ...cut, id: `ai-cut-${crypto.randomUUID()}` })),
+      cuts: cuts.map((cut) => ({ ...cut, id: `ai-cut-${randomId()}` })),
       explanation: proposal.explanation,
     };
     return {

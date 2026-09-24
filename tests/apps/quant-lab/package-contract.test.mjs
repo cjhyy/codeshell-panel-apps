@@ -39,7 +39,7 @@ export async function runPackageContract({ root, manifest, html, packagePath }) 
       `${packagePath}: M4 permissions must include only the implemented Host surface`,
     );
     assert.deepEqual(manifest.agent.tools.map((tool) => [tool.name, tool.readOnly]), [["get_portfolio_context", true], ["import_portfolio_snapshot", false]]);
-    assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md"]);
+    assert.deepEqual(manifest.agent.skills, ["agent/skills/investment-research/SKILL.md", "agent/skills/portfolio-management/SKILL.md", "agent/skills/project-runtime/SKILL.md"]);
     assert.deepEqual(
       [...html.matchAll(/data-module-tab="([a-z]+)"/g)].map((match) => match[1]),
       moduleOrder,

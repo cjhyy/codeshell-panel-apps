@@ -1,3 +1,4 @@
+import { randomId } from "../ids.js";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { assertTick, sourceTimeAt, type FrameRate, type Tick } from "./time";
@@ -40,7 +41,7 @@ function fresh(doc: EditorDocument, factory?: SequenceIdFactory): SequenceIdFact
     });
   }
   return (kind) => {
-    const id = factory ? factory(kind) : `${kind}-${crypto.randomUUID()}`;
+    const id = factory ? factory(kind) : `${kind}-${randomId()}`;
     if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id) || used.has(id))
       throw new Error("新对象标识无效或重复");
     used.add(id);
