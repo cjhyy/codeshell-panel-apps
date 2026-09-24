@@ -1511,6 +1511,13 @@ async function installHostStub(
       persistFiles();
       window.__storage = store;
       window.__rejectStorageReads = new Set();
+      window.__holdStorageReads = new Set();
+      window.__holdStorageWrites = new Set();
+      window.__pendingStorageReads = new Map();
+      window.__pendingStorageWrites = new Map();
+      window.__loseStorageResponses = new Set();
+      window.__holdFileReads = new Set();
+      window.__pendingFileReads = new Map();
       // Opaque content revision for this bridge fixture; actual SHA/file locking
       // is exercised by the cross-repository Host verifier.
       const storageSnapshot = (key) => {
@@ -1706,7 +1713,11 @@ async function installHostStub(
           if (method === "workspace.readText") {
             if (files.has(params.path)) {
               const file = files.get(params.path);
-              return Promise.resolve({ path: params.path, ...file, size: file.content.length });
+              const record = { path: params.path, ...file, size: file.content.length };
+              if (window.__holdFileReads.has(params.path)) {
+                return new Promise(resolve => window.__pendingFileReads.set(params.path, () => resolve(record)));
+              }
+              return Promise.resolve(record);
             }
             if (params.path.endsWith(".meta.json")) {
               if (/TEST|WATCH/.test(params.path)) {
@@ -1871,13 +1882,26 @@ async function installHostStub(
           }
           if (method === "storage.getSnapshot") {
             if (window.__rejectStorageReads.has(params.key)) return Promise.reject(new Error("storage read unavailable"));
-            return Promise.resolve(storageSnapshot(params.key));
+            const record = storageSnapshot(params.key);
+            if (window.__holdStorageReads.has(params.key)) {
+              return new Promise(resolve => window.__pendingStorageReads.set(params.key, () => resolve(record)));
+            }
+            return Promise.resolve(record);
           }
           if (method === "storage.compareAndSet") {
             if (rejectedKeys.includes(params.key)) return Promise.reject(new Error("Panel App storage quota exceeded"));
-            const updated = params.expectedRevision === storageSnapshot(params.key).revision;
-            if (updated) { store.set(params.key, structuredClone(params.value)); persistStore(); }
-            return Promise.resolve({ updated, snapshot: storageSnapshot(params.key) });
+            const commit = () => {
+              const updated = params.expectedRevision === storageSnapshot(params.key).revision;
+              if (updated) { store.set(params.key, structuredClone(params.value)); persistStore(); }
+              if (window.__loseStorageResponses.delete(params.key)) throw new Error("reply lost after commit");
+              return { updated, snapshot: storageSnapshot(params.key) };
+            };
+            if (window.__holdStorageWrites.has(params.key)) {
+              return new Promise((resolve, reject) => window.__pendingStorageWrites.set(params.key, () => {
+                try { resolve(commit()); } catch (error) { reject(error); }
+              }));
+            }
+            return Promise.resolve().then(commit);
           }
           if (method === "storage.get") return Promise.resolve(store.get(params.key) ?? null);
           if (method === "storage.set") {
@@ -4531,6 +4555,167 @@ async function openScenario(storageSeed, options) {
   await scenarioPage.goto("http://quant-lab.localhost/index.html");
   await scenarioPage.waitForSelector("#run-backtest", { state: "attached" });
   return { scenarioContext, scenarioPage };
+}
+
+// Backtest settings use the project's conditional storage without rewriting on open.
+{
+  const { scenarioContext, scenarioPage: p } = await openScenario(seededStorage, { versionedStorage: true });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  const writes = () => p.evaluate(key => window.__hostCalls.filter(call =>
+    ["storage.set", "storage.compareAndSet"].includes(call.method) && call.params.key === key).length, configurationKey);
+  assert.equal(await writes(), 0, "opening the project must not rewrite parameters");
+  await p.evaluate(key => {
+    const value = structuredClone(window.__storage.get(key));
+    value.strategy.fast = 23;
+    window.__storage.set(key, value);
+  }, configurationKey);
+  await p.fill("#fast-period", "19");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("其他页面或设备"));
+  assert.equal(await p.inputValue("#fast-period"), "19");
+  assert.equal(await p.evaluate(key => window.__storage.get(key).strategy.fast, configurationKey), 23);
+  const conflictWrites = await writes();
+  await p.fill("#slow-period", "");
+  await p.click("#run-backtest");
+  assert.equal(await writes(), conflictWrites, "editing a blocked draft never rebases or retries its write");
+  if (process.env.QUANT_LAB_BACKTEST_STORAGE_SCREENSHOT) {
+    await p.locator(".backtest-storage").screenshot({ path: process.env.QUANT_LAB_BACKTEST_STORAGE_SCREENSHOT });
+  }
+  const downloading = p.waitForEvent("download");
+  await p.click("#backtest-storage-backup");
+  const draft = JSON.parse(await readFile(await (await downloading).path(), "utf8"));
+  assert.equal(draft.fields.fastPeriod, "19");
+  assert.equal(draft.fields.slowPeriod, "", "backup retains invalid intermediate input");
+  assert.equal(draft.configuration.futureConfigurationField, "preserve-configuration");
+  await p.evaluate(key => window.__rejectStorageReads.add(key), configurationKey);
+  await p.click("#backtest-storage-reload");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("读取失败"));
+  assert.equal(await p.inputValue("#slow-period"), "");
+  assert.equal(await writes(), conflictWrites);
+  await p.evaluate(() => window.__rejectStorageReads.clear());
+  await p.click("#backtest-storage-reload");
+  await p.waitForFunction(() => document.querySelector("#fast-period").value === "23");
+  assert.equal(await writes(), conflictWrites, "explicit read does not silently overwrite the remote record");
+  await p.evaluate(key => window.__loseStorageResponses.add(key), configurationKey);
+  await p.fill("#fast-period", "24");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("一致"));
+  assert.equal(await writes(), conflictWrites + 1, "a committed write with a lost reply is read back, not resent");
+  assert.equal(await p.evaluate(key => window.__storage.get(key).strategy.fast, configurationKey), 24);
+  assert.equal(await p.evaluate(key => window.__storage.get(key).futureConfigurationField, configurationKey), "preserve-configuration");
+  assert.equal(await p.evaluate(key => window.__hostCalls.some(call => call.method === "storage.set" && call.params.key === key), configurationKey), false);
+  // Backups are explicit new edits, never a way to restore an obsolete version token.
+  const upload = value => p.locator("#backtest-storage-file").setInputFiles({
+    name: "parameters.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(value)),
+  });
+  await upload({ ...draft, workspaceRoot: "/another-project" });
+  await p.waitForFunction(() => document.querySelector("#toast").textContent.includes("当前项目"));
+  assert.equal(await writes(), conflictWrites + 1);
+  await upload(draft);
+  await p.waitForFunction(() => document.querySelector("#slow-period").value === "");
+  assert.equal(await writes(), conflictWrites + 1, "invalid imported fields remain a recoverable draft");
+  await p.fill("#slow-period", "61");
+  await p.waitForFunction(key => window.__storage.get(key).strategy.fast === 19, configurationKey);
+  await p.fill("#fee-bps", "");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("手续费"));
+  assert.equal(await p.evaluate(key => window.__storage.get(key).feeBps, configurationKey), 5, "an empty field must not silently persist zero fees");
+  await p.fill("#fee-bps", "5");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("一致"));
+  assert.equal(await p.evaluate(key => window.__storage.get(key).futureConfigurationField, configurationKey), "preserve-configuration");
+  await scenarioContext.close();
+}
+
+// A pending write and another queued edit cannot escape into the next project.
+{
+  const secondRoot = "/tmp/backtest-second";
+  const secondKey = scopedStorageKey("configuration", secondRoot);
+  const secondValue = { ...seededStorage[0][1], workspaceRoot: secondRoot, strategy: { type: "sma-cross", fast: 9, slow: 40 } };
+  const { scenarioContext, scenarioPage: p } = await openScenario([...seededStorage, [secondKey, secondValue]], { versionedStorage: true });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  await p.evaluate(key => window.__holdStorageWrites.add(key), configurationKey);
+  await p.fill("#fast-period", "18");
+  await p.waitForFunction(key => window.__pendingStorageWrites.has(key), configurationKey);
+  await p.fill("#fast-period", "19");
+  await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
+  await p.evaluate(key => window.__pendingStorageWrites.get(key)(), configurationKey);
+  await p.waitForFunction(key => window.__storage.get(key).strategy.fast === 18, configurationKey);
+  assert.deepEqual(await p.evaluate(key => window.__storage.get(key), secondKey), secondValue);
+  assert.equal(await p.inputValue("#fast-period"), "9");
+  await p.evaluate(root => window.__switchWorkspace(root), workspaceRoot);
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("未确认草稿"));
+  assert.equal(await p.inputValue("#fast-period"), "19");
+  assert.equal(await p.evaluate(key => window.__hostCalls.filter(call => call.method === "storage.compareAndSet" && call.params.key === key).length, configurationKey), 1);
+  // A delayed read captured in A is ignored after B is selected.
+  await p.evaluate(key => window.__holdStorageReads.add(key), configurationKey);
+  await p.click('[data-module-tab="research"]');
+  await p.click("#backtest-storage-reload");
+  await p.waitForFunction(key => window.__pendingStorageReads.has(key), configurationKey);
+  assert.equal(await p.locator("#fast-period").isDisabled(), true);
+  await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
+  await p.evaluate(key => window.__pendingStorageReads.get(key)(), configurationKey);
+  assert.equal(await p.inputValue("#fast-period"), "9");
+  assert.deepEqual(await p.evaluate(key => window.__storage.get(key), secondKey), secondValue);
+  await scenarioContext.close();
+}
+
+// Damaged records stay untouched; even a successful local calculation cannot replace them.
+{
+  const damaged = { workspaceRoot, strategy: { type: "future-strategy" }, custom: "retain" };
+  const { scenarioContext, scenarioPage: p } = await openScenario([[configurationKey, damaged]], { versionedStorage: true });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("格式异常"));
+  await p.fill("#fast-period", "12");
+  await p.click("#run-backtest");
+  assert.deepEqual(await p.evaluate(key => window.__storage.get(key), configurationKey), damaged);
+  assert.equal(await p.evaluate(key => window.__hostCalls.some(call => ["storage.set", "storage.compareAndSet"].includes(call.method) && call.params.key === key), configurationKey), false);
+  await scenarioContext.close();
+}
+
+// An unresolved save (including legacy quota errors) remains visible and blocks retries.
+for (const versionedStorage of [true, false]) {
+  const { scenarioContext, scenarioPage: p } = await openScenario(seededStorage, {
+    versionedStorage, rejectStorageKeys: [configurationKey],
+  });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => !document.querySelector("#fast-period").disabled);
+  if (!versionedStorage) assert.match(await p.locator("#backtest-storage-status").textContent(), /不支持冲突检查/u);
+  await p.fill("#fast-period", "18");
+  await p.waitForFunction(() => document.querySelector("#backtest-storage-status").textContent.includes("未确认保存"));
+  await p.fill("#fast-period", "19");
+  await p.click("#run-backtest");
+  assert.equal(await p.evaluate(key => window.__storage.get(key).strategy.fast, configurationKey), 17);
+  assert.equal(await p.evaluate(key => window.__hostCalls.filter(call => ["storage.set", "storage.compareAndSet"].includes(call.method) && call.params.key === key).length, configurationKey), 1);
+  assert.equal(await p.inputValue("#fast-period"), "19");
+  await scenarioContext.close();
+}
+
+// A saved strategy read started in A cannot change B's controls or persisted settings.
+{
+  const secondRoot = "/tmp/backtest-strategy-second";
+  const secondKey = scopedStorageKey("configuration", secondRoot);
+  const secondValue = { ...seededStorage[0][1], workspaceRoot: secondRoot, strategy: { type: "sma-cross", fast: 9, slow: 40 } };
+  const { scenarioContext, scenarioPage: p } = await openScenario([...seededStorage, [secondKey, secondValue]], { versionedStorage: true });
+  await p.click('[data-module-tab="research"]');
+  await p.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  await p.click("#save-strategy");
+  await p.waitForFunction(() => [...window.__files.keys()].some(path => path.startsWith("quant/strategies/")));
+  await p.locator("#backtest-saved-plans summary").click();
+  const button = p.locator("[data-saved-strategy-load]").first();
+  await button.waitFor();
+  const path = await button.getAttribute("data-saved-strategy-load");
+  await p.evaluate(path => window.__holdFileReads.add(path), path);
+  await button.click();
+  await p.waitForFunction(path => window.__pendingFileReads.has(path), path);
+  await p.evaluate(root => window.__switchWorkspace(root), secondRoot);
+  await p.waitForFunction(() => document.querySelector("#fast-period").value === "9");
+  await p.evaluate(path => window.__pendingFileReads.get(path)(), path);
+  // Cross an event-loop boundary so the delayed read's handler has actually run.
+  await p.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
+  assert.equal(await p.inputValue("#fast-period"), "9");
+  assert.deepEqual(await p.evaluate(key => window.__storage.get(key), secondKey), secondValue);
+  await scenarioContext.close();
 }
 
 // A funded account exposes actual daily returns, interactive history and safe raw-data refresh.

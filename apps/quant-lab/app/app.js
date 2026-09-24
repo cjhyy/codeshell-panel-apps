@@ -635,6 +635,15 @@ let visibilityMarketProbeInFlight = false;
 let backgroundMarketProbeTimer = null;
 let marketNetworkProbeGeneration = 0;
 let configurationStorageValue = {};
+let configurationSession = null;
+// Unconfirmed edits stay attached to their original project for this page's lifetime.
+const configurationDrafts = new Map();
+const configurationFieldNames = [
+  "strategyType", "fastPeriod", "slowPeriod", "rsiPeriod", "rsiOversold",
+  "rsiOverbought", "breakoutPeriod", "initialCapital", "feeBps", "slippageBps",
+  "stopLoss", "maxHoldingDays", "signalMode", "sizerType", "sizerPct",
+  "sizerAnnual", "sizerLookback", "riskFreeRate", "wfInSample", "wfOutSample", "dataPath",
+];
 let hasPortfolioPositions = false;
 let holdingsController = null;
 let dataSourcesController = null;
@@ -1312,6 +1321,7 @@ function numberValue(
 ) {
   const value = Number(element.value);
   if (
+    element.value.trim() === "" ||
     !Number.isFinite(value) ||
     value < minimum ||
     (maximumInclusive ? value > maximum : value >= maximum) ||
@@ -3011,14 +3021,15 @@ function renderTrades() {
   }
 }
 
-function run() {
+function run({ persist = true } = {}) {
+  if (configurationSession?.loading) return false;
   elements.runBacktest.disabled = true;
   setRunState("回测中");
   try {
     applyRunResult(runBacktest(bars, currentConfiguration()));
     renderDataset();
     setRunState("已完成");
-    void saveUiState();
+    if (persist) void saveUiState();
     return true;
   } catch (error) {
     clearRunResult();
@@ -3556,6 +3567,8 @@ async function refreshSavedStrategies() {
 }
 
 async function loadSavedStrategy(pathInput) {
+  const operationWorkspaceEpoch = workspaceEpoch;
+  if (configurationSession?.loading) return;
   const path = savedStrategyPath(pathInput);
   if (!path) return notify("保存方案路径无效", "error");
   const button = [...elements.backtestSavedList.querySelectorAll("[data-saved-strategy-load]")]
@@ -3563,6 +3576,7 @@ async function loadSavedStrategy(pathInput) {
   if (button) button.disabled = true;
   try {
     const file = await hostCall("workspace.readText", { path });
+    if (operationWorkspaceEpoch !== workspaceEpoch) return;
     const saved = parseSavedStrategySpec(file.content);
     restoreUiState(saved.configuration);
     invalidateValidation();
@@ -3573,6 +3587,7 @@ async function loadSavedStrategy(pathInput) {
     } else {
       elements.dataPath.value = saved.dataset;
       await loadCsv();
+      if (operationWorkspaceEpoch !== workspaceEpoch) return;
       if (dataset.path !== saved.dataset) throw new Error("方案数据未能载入");
     }
     const changed = fingerprintBars(bars) !== saved.sampleFingerprint;
@@ -3580,9 +3595,10 @@ async function loadSavedStrategy(pathInput) {
       ? `${saved.name} 已载入；数据指纹已变化，本轮按当前数据复测`
       : `${saved.name} 已按原数据指纹载入复测`);
   } catch (error) {
+    if (operationWorkspaceEpoch !== workspaceEpoch) return;
     notify(error instanceof Error ? error.message : "保存方案载入失败", "error");
   } finally {
-    if (button) button.disabled = false;
+    if (operationWorkspaceEpoch === workspaceEpoch && button) button.disabled = false;
   }
 }
 
@@ -3733,26 +3749,148 @@ function updateParameterVisibility() {
   elements.breakoutParams.hidden = type !== "breakout";
 }
 
-function saveUiState(workspaceRoot = context.cwd ?? null) {
-  let configuration;
-  try {
-    configuration = currentConfiguration();
-  } catch {
-    return Promise.resolve();
+function configurationFields() {
+  return Object.fromEntries(configurationFieldNames.map((name) => [name, elements[name].value]));
+}
+
+function restoreConfigurationFields(fields) {
+  for (const name of configurationFieldNames) {
+    if (typeof fields?.[name] === "string") elements[name].value = fields[name];
   }
-  const value = {
-    ...configurationStorageValue,
-    workspaceRoot,
-    ...configuration,
-    inSampleBars: Number(elements.wfInSample.value),
-    outOfSampleBars: Number(elements.wfOutSample.value),
-    dataPath: elements.dataPath.value.trim(),
+  syncSizerFields();
+  updateParameterVisibility();
+  invalidateValidation();
+}
+
+function renderConfigurationStorage() {
+  const session = configurationSession;
+  const status = document.getElementById("backtest-storage-status");
+  status.textContent = session?.loading ? "正在读取项目回测参数…"
+    : session?.error || (session?.dirty ? "参数尚未保存到项目。"
+      : session?.exists ? "回测参数已与项目记录一致。" : "项目尚无已保存参数，修改后将保存。")
+      + (session?.store.versioned ? "" : " 当前执行环境不支持冲突检查，请避免同时编辑。");
+  status.dataset.tone = session?.error ? "error" : "idle";
+  document.getElementById("backtest-storage-reload").disabled = !session || session.loading;
+  document.getElementById("backtest-storage-backup").disabled = !session || session.loading;
+  for (const name of configurationFieldNames) elements[name].disabled = Boolean(session?.loading);
+  document.getElementById("backtest-storage-import").disabled = !session || session.loading;
+}
+
+function rememberConfigurationDraft(session = configurationSession) {
+  if (!session || session !== configurationSession) return;
+  configurationDrafts.set(session.workspaceRoot, {
+    workspaceRoot: session.workspaceRoot,
+    configuration: structuredClone(configurationStorageValue),
+    fields: configurationFields(),
+  });
+}
+
+function backupConfigurationDraft() {
+  const draft = {
+    format: "codeshell.quant-backtest-draft", version: 1,
+    workspaceRoot: context.cwd ?? null,
+    configuration: configurationStorageValue,
+    fields: configurationFields(),
   };
-  configurationStorageValue = value;
-  return hostCall("storage.set", {
-    key: scopedStorageKey("configuration", workspaceRoot ?? "preview"),
-    value,
-  }).catch(() => undefined);
+  const url = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "quant-backtest-draft.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function saveUiState() {
+  const session = configurationSession;
+  if (!session || session.loading) return;
+  session.dirty = true;
+  const sequence = ++session.sequence;
+  rememberConfigurationDraft(session);
+  if (!session.ready) return renderConfigurationStorage();
+  let value;
+  try {
+    value = {
+      ...configurationStorageValue,
+      workspaceRoot: session.workspaceRoot,
+      ...currentConfiguration(),
+      inSampleBars: Number(elements.wfInSample.value),
+      outOfSampleBars: Number(elements.wfOutSample.value),
+      dataPath: elements.dataPath.value.trim(),
+    };
+    if (![value.inSampleBars, value.outOfSampleBars].every((n) => Number.isSafeInteger(n) && n > 0)) {
+      throw new Error("样本内与样本外窗口必须为正整数");
+    }
+  } catch (error) {
+    session.error = `参数未保存：${error.message}。当前填写内容可备份。`;
+    renderConfigurationStorage();
+    return;
+  }
+  renderConfigurationStorage();
+  try {
+    await session.store.save(value);
+    if (session !== configurationSession) return;
+    configurationStorageValue = value;
+    session.exists = true;
+    if (sequence === session.sequence) {
+      session.dirty = false;
+      session.error = "";
+      configurationDrafts.delete(session.workspaceRoot);
+    }
+  } catch (error) {
+    if (session !== configurationSession) return;
+    session.ready = false;
+    session.error = `参数未确认保存：${error.message} 当前草稿只保留在此页面，请备份后读取最新记录。`;
+  }
+  renderConfigurationStorage();
+}
+
+async function loadConfiguration(workspaceRoot, storageRoot, epoch, { reload = false } = {}) {
+  const previous = configurationSession;
+  const session = {
+    workspaceRoot, epoch, loading: true, ready: false, error: "", dirty: false, sequence: 0,
+    store: createProjectSetting({ hostCall, key: scopedStorageKey("configuration", storageRoot),
+      currentEpoch: () => workspaceEpoch, getContext: () => context, label: "回测参数" }),
+  };
+  configurationSession = session;
+  const retained = configurationDrafts.get(workspaceRoot);
+  if (!reload) {
+    resetUiState();
+    if (retained) {
+      configurationStorageValue = retained.configuration;
+      restoreConfigurationFields(retained.fields);
+    }
+  }
+  renderConfigurationStorage();
+  try {
+    const saved = await session.store.load();
+    if (session !== configurationSession || epoch !== workspaceEpoch) return;
+    if (saved != null && (
+      typeof saved !== "object" || Array.isArray(saved) || saved.workspaceRoot !== workspaceRoot
+      || !["sma-cross", "rsi-reversion", "breakout"].includes(saved.strategy?.type)
+    )) throw new Error("项目回测参数格式异常，已阻止覆盖原记录。");
+    if (retained && !reload) {
+      session.dirty = true;
+      session.error = "已找回本页中此项目的未确认草稿。请先备份，再读取最新记录，避免覆盖其他设备的修改。";
+    } else {
+      configurationStorageValue = saved ?? {};
+      session.exists = saved != null;
+      resetUiState();
+      restoreUiState(saved);
+      configurationDrafts.delete(workspaceRoot);
+      session.ready = true;
+    }
+  } catch (error) {
+    if (session !== configurationSession || epoch !== workspaceEpoch) return;
+    session.dirty = Boolean(retained || (reload && previous?.dirty));
+    session.error = `回测参数读取失败：${error.message}。已阻止覆盖项目记录，可继续试算并备份草稿。`;
+  } finally {
+    if (session === configurationSession && epoch === workspaceEpoch) {
+      session.loading = false;
+      renderConfigurationStorage();
+    }
+  }
 }
 
 function resetUiState() {
@@ -3818,14 +3956,8 @@ function restoreUiState(value) {
 }
 
 async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
-  const saved = await hostCall("storage.get", {
-    key: scopedStorageKey("configuration", storageRoot),
-  }).catch(() => null);
+  await loadConfiguration(workspaceIdentity, storageRoot, epoch);
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
-  configurationStorageValue =
-    saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
-  resetUiState();
-  restoreUiState(saved?.workspaceRoot === workspaceIdentity ? saved : null);
   await loadWatchlist();
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   // The default screen is the market dashboard: restore its saved research
@@ -3860,9 +3992,10 @@ async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
   await restoreActiveModule(storageRoot, epoch);
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   await alertsController.load();
+  if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   updateParameterVisibility();
   renderDataset();
-  run();
+  run({ persist: false });
 }
 
 function updateChartTooltip(event) {
@@ -4278,7 +4411,9 @@ function updateContext(next) {
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
   const workspaceChanged = contextInitialized && previousWorkspaceRoot !== nextWorkspaceRoot;
   if (workspaceChanged) {
-    void saveUiState(previousWorkspaceRoot);
+    // The Host has already switched projects: do not submit an old-project write.
+    if (configurationSession?.dirty) rememberConfigurationDraft();
+    configurationSession = null;
     configurationStorageValue = {};
     bars = generateDemoBars();
     dataset = {
@@ -5453,6 +5588,50 @@ function runValidation() {
     }
   }, 0);
 }
+
+for (const name of configurationFieldNames) {
+  elements[name].addEventListener("input", () => void saveUiState());
+}
+document.getElementById("backtest-storage-import").addEventListener("click", () => {
+  if (!configurationSession?.loading) document.getElementById("backtest-storage-file").click();
+});
+document.getElementById("backtest-storage-file").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  const epoch = workspaceEpoch;
+  if (!file || configurationSession?.loading) return;
+  try {
+    if (file.size > 1_000_000) throw new Error("参数备份文件过大");
+    const draft = JSON.parse(await file.text());
+    if (epoch !== workspaceEpoch) return;
+    if (draft?.format !== "codeshell.quant-backtest-draft" || draft.version !== 1
+      || draft.workspaceRoot !== (context.cwd ?? null)
+      || !configurationFieldNames.every(name => typeof draft.fields?.[name] === "string")) {
+      throw new Error("请选择当前项目的完整回测参数备份");
+    }
+    restoreConfigurationFields(draft.fields);
+    // Import is a new explicit edit against the currently loaded project version.
+    // Never replace the version or unknown project fields with the backup's snapshot.
+    await saveUiState();
+    if (epoch === workspaceEpoch) run({ persist: false });
+  } catch (error) {
+    if (epoch === workspaceEpoch) notify(error.message || "参数备份载入失败", "error");
+  }
+});
+window.addEventListener("beforeunload", (event) => {
+  if (configurationDrafts.size === 0) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+document.getElementById("backtest-storage-backup").addEventListener("click", backupConfigurationDraft);
+document.getElementById("backtest-storage-reload").addEventListener("click", async () => {
+  if (configurationSession?.loading) return;
+  // Export the actual raw fields, including incomplete input, before replacing them.
+  backupConfigurationDraft();
+  const epoch = workspaceEpoch;
+  await loadConfiguration(context.cwd ?? null, context.cwd ?? "preview", epoch, { reload: true });
+  if (epoch === workspaceEpoch) run({ persist: false });
+});
 
 elements.strategyType.addEventListener("change", () => {
   updateParameterVisibility();
