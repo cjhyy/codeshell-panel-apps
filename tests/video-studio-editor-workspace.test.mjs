@@ -127,11 +127,17 @@ async function fixture(t, options = {}) {
           frameRate: { numerator: 30, denominator: 1 },
           background: "#000000",
           timelineMode: "free",
-          tracks: [
-            editor.createTrack("video", "video", "画面轨"),
-            editor.createTrack("audio", "audio", "声音轨"),
-            editor.createTrack("text", "text", "文字轨"),
-          ],
+          tracks: options.textBelow
+            ? [
+                editor.createTrack("text", "text", "文字轨"),
+                editor.createTrack("video", "video", "画面轨"),
+                editor.createTrack("audio", "audio", "声音轨"),
+              ]
+            : [
+                editor.createTrack("video", "video", "画面轨"),
+                editor.createTrack("audio", "audio", "声音轨"),
+                editor.createTrack("text", "text", "文字轨"),
+              ],
           clips: [
             media("a", "video", "demo"),
             ...(options.audio ? [media("sound", "audio", "audio")] : []),
@@ -286,6 +292,10 @@ async function fixture(t, options = {}) {
     globalThis.fixture = {
       read: () => session.read(),
       addAsset: (assetId, placement) => workspace.addAsset(assetId, placement),
+      playhead: () => workspace.getPlayhead(),
+      selection: () => workspace.getSelection().clipIds,
+      dispatch: (operations, label) =>
+        session.dispatch(operations, session.getState().identity, label),
       state: () => session.getState(),
       stored: () => structuredClone(stored),
       writes,
@@ -465,8 +475,10 @@ test("workspace imports into its session and adds asset plus required track as o
   const added = await documentState(page),
     sequence = added.sequences[0];
   assert.equal(added.revision, imported.revision + 1);
-  assert.equal(sequence.tracks.length, 4, "An overlapping picture gets a new video track");
+  assert.equal(sequence.tracks.length, 3, "Picture continues the main track instead of a new one");
   assert.equal(sequence.clips.at(-1).assetId, "imported");
+  assert.equal(sequence.clips.at(-1).trackId, "video");
+  assert.equal(sequence.clips.at(-1).start, 4 * 240000);
   assert.equal(await clip(page, sequence.clips.at(-1).id).getAttribute("aria-selected"), "true");
   await action(page, "undo").click();
   assert.deepEqual(semantic(await documentState(page)), semantic(imported));
@@ -474,6 +486,167 @@ test("workspace imports into its session and adds asset plus required track as o
   assert.equal(await page.locator("[data-ew-asset]").count(), 1);
   assert.equal(await page.locator("[data-ew-asset]").getAttribute("data-ew-asset"), "imported");
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("material + appends to the end of the main picture track even with the playhead at 0", async (t) => {
+  const page = await fixture(t);
+  assert.equal(await page.evaluate(() => fixture.playhead()), 0);
+  const before = await documentState(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  await settle(page);
+  const after = await documentState(page),
+    sequence = after.sequences[0],
+    added = sequence.clips.at(-1);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(sequence.tracks.length, before.sequences[0].tracks.length, "No new track");
+  assert.deepEqual([added.trackId, added.start], ["video", 4 * 240000]);
+  assert.deepEqual(sequence.clips[0], before.sequences[0].clips[0], "The original picture stays");
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), [added.id]);
+  await page.waitForFunction(() => fixture.playhead() === 4 * 240000);
+  // A second + keeps appending, never overlapping; a zoomed-in timeline scrolls to show it.
+  await page.locator("[data-et-zoom]").fill("2.5");
+  await page.locator(".et-scroll").evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+  await settle(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  const again = (await documentState(page)).sequences[0].clips.at(-1);
+  assert.deepEqual([again.trackId, again.start], ["video", 8 * 240000]);
+  await settle(page);
+  const shown = await page.evaluate((id) => {
+    const viewport = document.querySelector(".et-scroll").getBoundingClientRect();
+    const segment = document.querySelector(`[data-et-clip="${id}"]`)?.getBoundingClientRect();
+    return Boolean(segment) && segment.left >= viewport.left - 1 && segment.left < viewport.right;
+  }, again.id);
+  assert.equal(shown, true, "The appended clip is drawn and scrolled into view");
+  // Inserting at the playhead stays available as an explicit choice.
+  await page.evaluate(() => fixture.addAsset("demo", { anchor: "playhead" }));
+  const inserted = (await documentState(page)).sequences[0];
+  assert.equal(inserted.clips.at(-1).start, await page.evaluate(() => fixture.playhead()));
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("material + on a clip end between frames puts the playhead on the new clip, so 添加文字 starts with it", async (t) => {
+  const page = await fixture(t);
+  // The main picture ends at 3.98 s, between the 3.967 s and 4.000 s frames at 30 fps.
+  const end = 4 * 240000 - 4800;
+  await page.evaluate((end) => {
+    fixture.dispatch(
+      [
+        {
+          type: "clip.update",
+          sequenceId: "main",
+          clipId: "a",
+          patch: { duration: end, timeMap: { points: [{ time: 0, source: 0 }, { time: end, source: end }] } },
+        },
+      ],
+      "缩短画面",
+    );
+  }, end);
+  await settle(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  const added = (await documentState(page)).sequences[0].clips.at(-1);
+  assert.equal(added.start, end);
+  await page.waitForFunction((end) => fixture.playhead() === end, end);
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playhead()), end, "The playhead stays on the new clip");
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  const title = (await documentState(page)).sequences[0].clips.at(-1);
+  assert.equal(title.kind, "text");
+  assert.equal(title.start, end);
+});
+
+test("sound + appends to the end of the first audio track", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const before = await documentState(page);
+  await page.locator('[data-ew-asset="audio"]').click();
+  const sequence = (await documentState(page)).sequences[0],
+    added = sequence.clips.at(-1);
+  assert.equal(sequence.tracks.length, before.sequences[0].tracks.length);
+  assert.deepEqual([added.assetId, added.trackId, added.start], ["audio", "audio", 4 * 240000]);
+});
+
+test("添加文字 puts an editable title above every picture at the playhead", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    const seek = document.querySelector("[data-ew-seek]");
+    seek.value = String(240000);
+    seek.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await page.waitForFunction(() => fixture.playhead() === 240000);
+  const before = await documentState(page);
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  const after = await documentState(page),
+    sequence = after.sequences[0],
+    added = sequence.clips.at(-1);
+  assert.equal(after.revision, before.revision + 1);
+  assert.deepEqual(
+    [added.kind, added.role, added.trackId, added.start, added.duration],
+    ["text", "title", "text", 240000, 3 * 240000],
+  );
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), [added.id]);
+  assert.equal(
+    await page.getByRole("tab", { name: "文字", exact: true }).getAttribute("aria-selected"),
+    "true",
+  );
+  const field = page.getByLabel("文字内容（保留换行）", { exact: true });
+  assert.equal(await field.inputValue(), "输入文字");
+  assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await clip(page, added.id).locator(".et-clip-label").textContent(), "输入文字");
+  await field.fill("  第一行标题\n第二行");
+  await field.press("Tab");
+  assert.equal(await clip(page, added.id).locator(".et-clip-label").textContent(), "第一行标题");
+  // The track-only button says what it does.
+  assert.equal(await page.getByRole("button", { name: "新建文字轨", exact: true }).count(), 1);
+  await field.fill("");
+  await field.press("Tab");
+  assert.equal(await clip(page, added.id).locator(".et-clip-label").textContent(), "文字");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("添加文字 creates a top text track when the existing one sits below the picture", async (t) => {
+  const page = await fixture(t, { textBelow: true });
+  await page.getByRole("button", { name: "添加文字", exact: true }).click();
+  const sequence = (await documentState(page)).sequences[0],
+    added = sequence.clips.at(-1);
+  assert.equal(sequence.tracks.length, 4);
+  assert.equal(sequence.tracks.at(-1).kind, "text");
+  assert.equal(added.trackId, sequence.tracks.at(-1).id, "Text is the top layer, visible");
+  assert.equal(added.start, 0);
+});
+
+test("caption clips show their words on the timeline", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() =>
+    fixture.dispatch(
+      [
+        {
+          type: "clip.add",
+          sequenceId: "main",
+          clip: {
+            id: "caption",
+            kind: "text",
+            role: "subtitle",
+            label: "字幕",
+            trackId: "text",
+            start: 0,
+            duration: 240000,
+            text: "大家好，欢迎来到我的频道，今天我们聊一聊怎样把一段很长的口播剪得更紧凑",
+            words: [],
+            style: editor.defaultTextStyle(),
+            transform: editor.defaultTransform(),
+            color: editor.defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        },
+      ],
+      "加字幕",
+    ),
+  );
+  await settle(page);
+  const label = await clip(page, "caption").locator(".et-clip-label").textContent();
+  assert.match(label, /^大家好，欢迎来到我的频道/);
+  assert.match(label, /…$/);
 });
 
 test("material drops use the actual target track and snapped time, with atomic overlap and kind rejection", async (t) => {
@@ -582,7 +755,7 @@ test("title, rectangle and ellipse are real clips with a single undo for each ad
       added = after.sequences[0].clips.at(-1);
     assert.equal(after.revision, before.revision + 1);
     assert.equal(added.kind, kind);
-    assert.equal(added.duration, 5 * 240000);
+    assert.equal(added.duration, (shape ? 5 : 3) * 240000);
     if (shape) assert.equal(added.shape, shape);
     else assert.equal(added.text, "输入文字");
     assert.equal(await clip(page, added.id).getAttribute("aria-selected"), "true");
@@ -1531,4 +1704,29 @@ test("changing only the selected marker invalidates a detached form without requ
   await settle(page);
   assert.deepEqual(await documentState(page), doc);
   assert.match((await page.evaluate(() => fixture.errors)).at(-1), /标记选择已变化/);
+});
+
+test("material + near the 24-hour limit explains it is too long and changes nothing", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() =>
+    fixture.dispatch(
+      [
+        {
+          type: "clip.update",
+          sequenceId: "main",
+          clipId: "a",
+          patch: { start: 24 * 3600 * 240000 - 5 * 240000 },
+        },
+      ],
+      "移到末尾",
+    ),
+  );
+  await settle(page);
+  const before = await documentState(page);
+  await page.locator('[data-ew-asset="demo"]').click();
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), [
+    "Error: 加入素材后超出时长上限（24 小时）",
+  ]);
 });

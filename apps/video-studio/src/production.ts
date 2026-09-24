@@ -1,12 +1,5 @@
 import { randomId } from "./ids.js";
-import {
-  timelineClips,
-  validateProject,
-  type Asset,
-  type AudioClip,
-  type Caption,
-  type Project,
-} from "./model";
+import { validateProject, type Asset, type AudioClip, type Project } from "./model";
 import type { PanelBridge } from "./host";
 import type { RuntimeJob } from "./sdk/panel-runtime";
 import { canonicalRenderMediaJob } from "./editor/render-media-job";
@@ -15,15 +8,62 @@ import {
   type CanonicalVoiceoverResult,
   type VoiceoverOrigin,
   type VoiceoverPublication,
+  type VoiceoverReplaceTarget,
 } from "./editor/voiceover-publication";
+import { MAX_LEGACY_FRAME } from "./editor/legacy-time";
 import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
+
+export type TranscriptionUnavailableReason =
+  | "executable-missing"
+  | "model-missing"
+  | "executable-failed";
+const TRANSCRIPTION_REASONS: readonly TranscriptionUnavailableReason[] = [
+  "executable-missing",
+  "model-missing",
+  "executable-failed",
+];
+const TRANSCRIPTION_NEEDS: Record<TranscriptionUnavailableReason | "unknown", [string, string]> = {
+  unknown: [
+    "需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt",
+    "安装后",
+  ],
+  "executable-missing": ["未找到 whisper 命令，需要安装 openai-whisper", "安装后"],
+  "model-missing": ["缺少 base 模型 ~/.cache/whisper/base.pt", "准备好模型后"],
+  "executable-failed": ["whisper 无法运行，请检查 openai-whisper 安装", "修复后"],
+};
+/**
+ * User-facing readiness copy naming the missing piece when the native status reports it.
+ * `next` says how the blocked flow continues; the default suits flows an SRT import unblocks.
+ */
+export function transcriptionSetupMessage(
+  reason?: TranscriptionUnavailableReason,
+  next = "或先导入 SRT",
+): string {
+  const [need, after] = TRANSCRIPTION_NEEDS[reason ?? "unknown"];
+  return `本机语音转写未就绪：${need}。${after}点“重新检测”${next ? `，${next}` : ""}。`;
+}
+export const TRANSCRIPTION_SETUP_MESSAGE = transcriptionSetupMessage();
+function transcriptionStatus(value: unknown): ProductionStatus["transcription"] {
+  const raw = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const reason = TRANSCRIPTION_REASONS.find((item) => item === raw.reason);
+  return {
+    available: raw.available === true,
+    ...(typeof raw.engine === "string" ? { engine: raw.engine } : {}),
+    ...(raw.available !== true && reason ? { reason } : {}),
+  };
+}
 
 export interface ProductionStatus {
   persistent: boolean;
   /** False until an explicit production action checks local native tools. */
   runtimeChecked?: boolean;
   ffmpeg: { available: boolean };
-  transcription: { available: boolean; engine?: string };
+  transcription: {
+    available: boolean;
+    engine?: string;
+    /** Present only when unavailable and the native status names the missing piece. */
+    reason?: TranscriptionUnavailableReason;
+  };
   hyperframes: { available: boolean; version?: string };
   tts?: { available: boolean; engine?: string; defaultVoiceId?: string; reason?: string };
 }
@@ -121,7 +161,6 @@ export interface AssetPublication {
     assetId: string;
     startFrame: number;
     volume: number;
-    replaceClip?: AudioClip;
   };
   enhancement?: { jobId: string; assetId: string; sourceMediaId: string; baseRevision: number };
   label?: string;
@@ -200,6 +239,12 @@ interface JobBinding {
   referenceResultId?: string;
   attachAudio?: boolean;
   startFrame?: number;
+  replaceTarget?: VoiceoverReplaceTarget;
+  /**
+   * Read-only compatibility: a frame snapshot written by earlier versions. New bindings never set
+   * it (they use replaceTarget); persisted ones are still validated, restored and resolved through
+   * the old clip ID alias so a pending voiceover can finish its replacement.
+   */
   replaceClip?: AudioClip;
   assetId?: string;
   consumed?: boolean;
@@ -244,6 +289,8 @@ export interface ProductionCallbacks {
   /** Return the real generic editor-runtime render job for the complete canonical document. */
   renderCanonical?(project: Project, options?: CanonicalRenderOptions): Promise<RuntimeJob>;
   captureVoiceoverOrigin?(): VoiceoverOrigin;
+  /** True while the chosen editor clip is still exactly where the user selected it. */
+  verifyReplaceTarget?(target: VoiceoverReplaceTarget): boolean;
   publishVoiceover?(
     projectId: string,
     result: CanonicalVoiceoverResult,
@@ -451,6 +498,7 @@ function productionDocument(value: unknown): ProductionDocument {
             "attachAudio",
             "startFrame",
             "replaceClip",
+            "replaceTarget",
             "sourceRevision",
             "voiceoverOrigin",
             "referenceRange",
@@ -493,6 +541,46 @@ function productionDocument(value: unknown): ProductionDocument {
       )
         return bad();
     }
+    if (raw.replaceTarget !== undefined) {
+      const target = raw.replaceTarget,
+        tick = (n: unknown) => Number.isSafeInteger(n) && Number(n) >= 0;
+      const points = plain(target) && plain(target.timeMap) ? target.timeMap.points : undefined;
+      if (
+        !plain(target) ||
+        Object.keys(target).some(
+          (key) =>
+            ![
+              "sequenceId",
+              "clipId",
+              "trackId",
+              "assetId",
+              "start",
+              "duration",
+              "timeMap",
+            ].includes(key),
+        ) ||
+        !["sequenceId", "clipId", "trackId", "assetId"].every((key) => text(target[key], 256)) ||
+        !tick(target.start) ||
+        !tick(target.duration) ||
+        Number(target.duration) < 1 ||
+        !plain(target.timeMap) ||
+        Object.keys(target.timeMap).some((key) => key !== "points") ||
+        !Array.isArray(points) ||
+        points.length < 2 ||
+        points.length > 100000 ||
+        !points.every(
+          (point) =>
+            plain(point) &&
+            Object.keys(point).every((key) => key === "time" || key === "source") &&
+            tick(point.time) &&
+            tick(point.source),
+        ) ||
+        raw.replaceClip !== undefined ||
+        raw.purpose !== "tts" ||
+        raw.attachAudio !== true
+      )
+        return bad();
+    }
     const jobId = raw.jobId ?? key;
     if (
       !text(jobId) ||
@@ -530,7 +618,7 @@ function productionDocument(value: unknown): ProductionDocument {
       (raw.startFrame !== undefined &&
         (!Number.isSafeInteger(raw.startFrame) ||
           Number(raw.startFrame) < 0 ||
-          Number(raw.startFrame) > 2592000)) ||
+          Number(raw.startFrame) > MAX_LEGACY_FRAME)) ||
       (raw.assetId !== undefined &&
         (typeof raw.assetId !== "string" ||
           !/^(?:asset|external)-[a-f0-9]{64}$/.test(raw.assetId))) ||
@@ -621,6 +709,7 @@ export class ProductionController {
   private writeQueue = Promise.resolve();
   private refreshQueue = Promise.resolve();
   private statusPending?: Promise<void>;
+  private statusPendingFresh = false;
   private documentFailed = false;
   private disposed = false;
   private refreshScheduled = false;
@@ -683,7 +772,7 @@ export class ProductionController {
         this.error = "当前 CodeShell 尚未提供持久媒体服务。请更新桌面应用后重新打开视频工作台。";
         return;
       }
-      this.status = status;
+      this.status = { ...status, transcription: transcriptionStatus(status.transcription) };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.error = `媒体服务连接失败：${reason}。请检查当前项目的素材与本地工具权限，再重新打开面板；工程与原片保存不依赖制作引擎。`;
@@ -731,19 +820,34 @@ export class ProductionController {
     clearInterval(this.timer);
     this.unsubscribe?.();
   }
-  async refreshStatus(): Promise<void> {
+  /** `fresh` skips the short status cache, e.g. after the user installs local tools. */
+  async refreshStatus(options: { fresh?: boolean } = {}): Promise<void> {
     if (!this.enabled || this.disposed) return;
-    this.statusPending ??= (async () => {
+    // A fresh request runs after, not instead of, a probe that may predate the user's fix.
+    if (this.statusPending && (!options.fresh || this.statusPendingFresh))
+      return this.statusPending;
+    const previous = this.statusPending;
+    const current: Promise<void> = (async () => {
+      await previous?.catch(() => {});
       const status = (await this.requireHost().call("media.status", {
         probe: true,
+        ...(options.fresh ? { fresh: true } : {}),
       })) as ProductionStatus;
       if (!status?.persistent) throw new Error("当前 CodeShell 尚未提供持久媒体服务");
-      this.status = { ...status, runtimeChecked: true };
+      this.status = {
+        ...status,
+        transcription: transcriptionStatus(status.transcription),
+        runtimeChecked: true,
+      };
       this.callbacks.changed();
     })().finally(() => {
+      if (this.statusPending !== current) return;
       this.statusPending = undefined;
+      this.statusPendingFresh = false;
     });
-    await this.statusPending;
+    this.statusPending = current;
+    this.statusPendingFresh = options.fresh === true;
+    await current;
   }
   private async ensureRuntime(): Promise<void> {
     if (this.status.runtimeChecked === false) await this.refreshStatus();
@@ -1037,7 +1141,7 @@ export class ProductionController {
     try {
       await this.ensureRuntime();
       if (transcribe && !this.status.transcription.available)
-        throw new Error("本机语音转写尚未就绪，请先配置本地 Whisper 与模型，或导入 SRT");
+        throw new Error(transcriptionSetupMessage(this.status.transcription.reason));
       const result = (await this.requireHost().call("media.prepare", {
         assetIds: ids,
         transcribe,
@@ -1052,7 +1156,7 @@ export class ProductionController {
   async transcribe(assetIds: string[]): Promise<{ jobs: MediaJob[] }> {
     await this.ensureRuntime();
     if (!this.status.transcription.available)
-      throw new Error("本机语音转写尚未就绪，可导入 SRT 字幕");
+      throw new Error(transcriptionSetupMessage(this.status.transcription.reason));
     const projectId = this.callbacks.getProject().id;
     const ids = [...new Set(assetIds.map((id) => this.managedId(id)))];
     const jobs: MediaJob[] = [];
@@ -1089,7 +1193,7 @@ export class ProductionController {
   }
   async createVoiceover(
     params: VoiceRequest,
-    placement?: { startFrame: number; attach: boolean; replaceClip?: AudioClip },
+    placement?: { startFrame: number; attach: boolean; replaceTarget?: VoiceoverReplaceTarget },
   ): Promise<MediaJob> {
     const host = this.requireHost();
     if (!this.status.tts?.available)
@@ -1115,7 +1219,7 @@ export class ProductionController {
       placement &&
       (!Number.isSafeInteger(placement.startFrame) ||
         placement.startFrame < 0 ||
-        placement.startFrame > 2592000)
+        placement.startFrame > MAX_LEGACY_FRAME)
     )
       throw new Error("配音位置无效");
     const currentProject = this.callbacks.getProject();
@@ -1124,18 +1228,14 @@ export class ProductionController {
     const placementBinding = placement
       ? { attachAudio: placement.attach, startFrame: placement.startFrame }
       : {};
-    const replaceClip = placement?.replaceClip ? structuredClone(placement.replaceClip) : undefined;
-    if (replaceClip) {
-      const current = currentProject.audioClips?.find((clip) => clip.id === replaceClip.id);
-      if (
-        !placement?.attach ||
-        !current ||
-        !(["id", "assetId", "inFrame", "outFrame", "startFrame", "volume"] as const).every(
-          (key) => current[key] === replaceClip[key],
-        )
-      )
-        throw new Error("原配音已被调整，请重新选择后再生成");
-    }
+    const replaceTarget = placement?.replaceTarget
+      ? structuredClone(placement.replaceTarget)
+      : undefined;
+    if (
+      replaceTarget &&
+      (!placement?.attach || !this.callbacks.verifyReplaceTarget?.(structuredClone(replaceTarget)))
+    )
+      throw new Error("原配音已被调整，请重新选择后再生成");
     let referenceAssetId: string | undefined;
     if (params.modelId === "qwen3-tts" || params.modelId === "audio8-tts") {
       if (params.voiceId !== undefined && params.voiceId !== "reference")
@@ -1171,7 +1271,7 @@ export class ProductionController {
       purpose: "tts",
       ...(voiceoverOrigin ? { voiceoverOrigin: structuredClone(voiceoverOrigin) } : {}),
       ...placementBinding,
-      ...(replaceClip ? { replaceClip } : {}),
+      ...(replaceTarget ? { replaceTarget } : {}),
     });
   }
   /** Admission is small and immediate; a receipt is never presented as a native MediaJob. */
@@ -1692,7 +1792,12 @@ export class ProductionController {
               ? {
                   placement: {
                     startFrame: binding.startFrame ?? 0,
-                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
+                    ...(binding.replaceTarget
+                      ? { replaceTarget: structuredClone(binding.replaceTarget) }
+                      : {}),
+                    ...(binding.replaceClip
+                      ? { replaceClip: structuredClone(binding.replaceClip) }
+                      : {}),
                   },
                 }
               : {}),
@@ -1700,14 +1805,14 @@ export class ProductionController {
         } else
           await this.callbacks.publishAssets(projectId, [asset], {
             label: "文字配音完成",
-            ...(binding.attachAudio
+            // Only the editor can replace a clip in place; without it the voice stays in the library.
+            ...(binding.attachAudio && !binding.replaceTarget && !binding.replaceClip
               ? {
                   audioPlacement: {
                     clipId: `voice-${job.id}`,
                     assetId: asset.id,
                     startFrame: binding.startFrame ?? 0,
                     volume: 1,
-                    ...(binding.replaceClip ? { replaceClip: binding.replaceClip } : {}),
                   },
                 }
               : {}),
@@ -1760,6 +1865,7 @@ export function preparedAsset(
   const previous = project.assets.find((a) => a.mediaId === managed.id);
   const inspection = prepared.inspection;
   const video = inspection.video;
+  const probed = (inspection.durationSeconds ?? 5) * 30;
   return {
     ...previous,
     id: previous?.id ?? managed.id,
@@ -1773,146 +1879,18 @@ export function preparedAsset(
     durationFrames:
       inspection.kind === "image"
         ? (previous?.durationFrames ?? 150)
-        : Math.max(1, Math.round((inspection.durationSeconds ?? 5) * 30)),
+        : // The old view shows an exact editor length as its whole frames (rounded down).
+          // A probe of the same source keeps that count, so preparing never rewrites the
+          // editor's exact decoded length with a rounded-up 30 fps approximation.
+          previous &&
+            previous.kind !== "image" &&
+            inspection.durationSeconds !== null &&
+            probed >= previous.durationFrames &&
+            probed - previous.durationFrames < 1
+          ? previous.durationFrames
+          : Math.max(1, Math.round(probed)),
     ...(video
       ? { width: video.displayWidth || video.width, height: video.displayHeight || video.height }
       : {}),
   };
-}
-
-/** Split only at recognizer-provided word times; never invent per-word timing. */
-function readableTranscriptSegments(
-  segment: TranscriptSegment,
-  inFrame: number,
-  outFrame: number,
-  fps: number,
-): TranscriptSegment[] {
-  const words = segment.words;
-  if (
-    !Array.isArray(words) ||
-    !words.length ||
-    words.some(
-      (word, index) =>
-        !word ||
-        typeof word.text !== "string" ||
-        !word.text.trim() ||
-        !Number.isFinite(word.start) ||
-        !Number.isFinite(word.end) ||
-        word.end < word.start ||
-        word.start < segment.start - 1 / 30 ||
-        word.end > segment.end + 1 / 30 ||
-        (index > 0 && (word.start < words[index - 1]!.start || word.end < words[index - 1]!.end)),
-    )
-  )
-    return [segment];
-  const result: TranscriptSegment[] = [];
-  let group: typeof words = [];
-  const chars = (text: string) => [...text.replace(/\s/g, "")].length;
-  const content = () =>
-    group
-      .map((word) => word.text)
-      .join("")
-      .trim();
-  const flush = () => {
-    if (!group.length) return;
-    const start = group[0]!.start,
-      end = group[group.length - 1]!.end;
-    if (end > start) result.push({ start, end, text: content() });
-    group = [];
-  };
-  for (const word of words.filter(
-    (word) => word.end * fps > inFrame && word.start * fps < outFrame,
-  )) {
-    if (group.length) {
-      const elapsed = group[group.length - 1]!.end - group[0]!.start;
-      if (
-        (chars(content() + word.text) > 22 && chars(content()) >= 14) ||
-        (word.end - group[0]!.start > 4 && elapsed >= 2) ||
-        (word.start - group[group.length - 1]!.end >= 0.8 && elapsed >= 1)
-      )
-        flush();
-    }
-    group.push(word);
-    const elapsed = word.end - group[0]!.start;
-    if (
-      elapsed >= 2 &&
-      (/[。！？!?；;，,]$/.test(word.text.trim()) || chars(content()) >= 22 || elapsed >= 4)
-    )
-      flush();
-  }
-  flush();
-  return result;
-}
-
-/** Only persistent sources that can actually be heard in the edited film need captions. */
-export function captionSourceAssetIds(
-  project: Project,
-  preparations: ReadonlyMap<string, PreparedMedia>,
-): string[] {
-  const used = [...project.clips, ...(project.audioClips ?? [])]
-    .filter((clip) => clip.volume > 0)
-    .map((clip) => clip.assetId);
-  return [...new Set(used)].filter((id) => {
-    const asset = project.assets.find((candidate) => candidate.id === id);
-    if (!asset?.mediaId || !["audio", "video"].includes(asset.kind) || asset.scene) return false;
-    const prepared = preparations.get(asset.mediaId);
-    return !prepared || Boolean(prepared.inspection.audio);
-  });
-}
-
-/** Keep corrected text associated with the same source occurrence when generating again. */
-function transcriptCaptionId(source: string): string {
-  let hash = 14695981039346656037n;
-  for (const char of source) {
-    hash ^= BigInt(char.charCodeAt(0));
-    hash = BigInt.asUintN(64, hash * 1099511628211n);
-  }
-  return `transcript-${hash.toString(16)}`;
-}
-
-/** Map truthful source transcript time to each used occurrence of a source. */
-export function transcriptCaptions(
-  project: Project,
-  assetId: string,
-  segments: TranscriptSegment[],
-): Caption[] {
-  const captions: Caption[] = [];
-  const placements = [
-    ...timelineClips(project).map((clip) => ({ ...clip, track: "video" })),
-    ...(project.audioClips ?? []).map((clip) => ({ ...clip, track: "audio" })),
-  ].filter((clip) => clip.assetId === assetId && clip.volume > 0);
-  const seen = new Set<string>();
-  for (const clip of placements)
-    for (const original of segments) {
-      if (
-        !original ||
-        !Number.isFinite(original.start) ||
-        !Number.isFinite(original.end) ||
-        original.end <= original.start ||
-        typeof original.text !== "string" ||
-        !original.text.trim()
-      )
-        continue;
-      for (const segment of readableTranscriptSegments(
-        original,
-        clip.inFrame,
-        clip.outFrame,
-        project.fps,
-      )) {
-        const start = Math.max(clip.inFrame, Math.round(segment.start * project.fps));
-        const end = Math.min(clip.outFrame, Math.round(segment.end * project.fps));
-        if (end > start) {
-          const caption = {
-            id: transcriptCaptionId(JSON.stringify([clip.track, clip.id, assetId, start, end])),
-            startFrame: clip.startFrame + start - clip.inFrame,
-            endFrame: clip.startFrame + end - clip.inFrame,
-            text: segment.text.trim(),
-          };
-          const key = JSON.stringify([caption.startFrame, caption.endFrame, caption.text]);
-          if (!seen.has(key)) captions.push(caption);
-          seen.add(key);
-        }
-      }
-    }
-  return captions.sort((a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame);
 }

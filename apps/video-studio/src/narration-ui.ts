@@ -1,14 +1,63 @@
 import type { Project } from "./model";
 import { escapeHtml as esc, html, icon } from "./icons";
+import { announcedDisabled, setAnnouncedDisabled } from "./disabled-reason";
 
 interface NarrationPanelOptions {
   busy: boolean;
   persistent: boolean;
   scriptDraft?: string | null;
+  /** The editor sequence has picture to confirm (the 30 fps view may not show real footage). */
+  hasPicture?: boolean;
+  /** Why the saved confirmation no longer covers the project (it cannot be used). */
+  approvalIssue?: string | null;
 }
 
-function action(name: string, label: string, disabled: boolean, primary = false): string {
-  return `<button type="button" data-action="${name}" class="${primary ? "primary" : "quiet"} full" ${disabled ? "disabled" : ""}>${icon(primary ? "check" : "volume")}<span>${esc(label)}</span></button>`;
+function action(
+  name: string,
+  label: string,
+  disabled: boolean,
+  primary = false,
+  reason?: string,
+  announce = false,
+): string {
+  // Important steps stay focusable while unavailable so their reason is announced.
+  const soft = announce ? announcedDisabled(`${name}-reason`, disabled, reason ?? "") : undefined;
+  const state = soft?.attributes
+    ? soft.attributes
+    : `${disabled ? " disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}`;
+  return `<button type="button" data-action="${name}" class="${primary ? "primary" : "quiet"} full"${state}>${icon(primary ? "check" : "volume")}<span>${esc(label)}</span></button>${soft?.note ?? ""}`;
+}
+const BUSY = "正在处理其他制作任务，完成后再试";
+const NEEDS_DESKTOP = "需要在 CodeShell 桌面面板中打开，并连接持久媒体服务";
+/** The first unmet need, in plain words, for a disabled narration action. */
+function reasons(state: {
+  busy: boolean;
+  changed: boolean;
+  text: string;
+  hasPicture: boolean;
+  hasRecording: boolean;
+  persistent: boolean;
+}): Record<"save" | "approve" | "record" | "bind" | "align", string> {
+  const pick = (checks: Array<[boolean, string]>) => checks.find(([unmet]) => unmet)?.[1] ?? "";
+  const base: Array<[boolean, string]> = [
+    [state.busy, BUSY],
+    [state.changed, "先保存文案"],
+  ];
+  return {
+    save: pick([
+      [state.busy, BUSY],
+      [!state.changed, "文案没有修改"],
+      [!state.text.trim(), "先写好文案"],
+    ]),
+    approve: pick([
+      ...base,
+      [!state.text.trim(), "先写好文案"],
+      [!state.hasPicture, "时间轴上还没有画面，先加入素材"],
+    ]),
+    record: pick(base),
+    bind: pick([...base, [!state.hasRecording, "素材库里还没有本人录音或视频"]]),
+    align: pick([...base, [!state.persistent, NEEDS_DESKTOP]]),
+  };
 }
 
 /** Update editing affordances without replacing the textarea or disturbing its caret. */
@@ -16,6 +65,7 @@ export function syncNarrationDraftUI(
   project: Readonly<Project>,
   draft: string | null,
   busy = false,
+  hasPicture = project.clips.length > 0,
 ): void {
   const panel = document.querySelector<HTMLElement>(".narration-panel");
   if (!panel || !project.narration) return;
@@ -25,15 +75,27 @@ export function syncNarrationDraftUI(
   const hasRecording = project.assets.some(
     (asset) => (asset.kind === "audio" || asset.kind === "video") && !asset.speech,
   );
-  const disable = (name: string, value: boolean) => {
+  const why = reasons({
+    busy,
+    changed,
+    text,
+    hasPicture,
+    hasRecording,
+    persistent: panel.dataset.persistent === "true",
+  });
+  const disable = (name: string, value: boolean, reason: string) => {
     const button = panel.querySelector<HTMLButtonElement>(`[data-action="${name}"]`);
-    if (button) button.disabled = value;
+    if (!button) return;
+    button.disabled = value;
+    if (value && reason) button.title = reason;
+    else button.removeAttribute("title");
   };
-  disable("save-narration-script", busy || !changed || !text.trim());
-  disable("approve-draft", locked || !text.trim() || !project.clips.length);
-  disable("record-narration", locked);
-  disable("bind-narration-recording", locked || !hasRecording);
-  disable("align-narration", locked || panel.dataset.persistent !== "true");
+  disable("save-narration-script", busy || !changed || !text.trim(), why.save);
+  disable("approve-draft", locked || !text.trim() || !hasPicture, why.approve);
+  const record = panel.querySelector<HTMLButtonElement>('[data-action="record-narration"]');
+  if (record) setAnnouncedDisabled(record, "record-narration-reason", locked, why.record);
+  disable("bind-narration-recording", locked || !hasRecording, why.bind);
+  disable("align-narration", locked || panel.dataset.persistent !== "true", why.align);
   const script = panel.querySelector<HTMLTextAreaElement>("#narration-script");
   if (script) script.disabled = busy;
   const assets = panel.querySelector<HTMLSelectElement>("#narration-recording-asset");
@@ -54,9 +116,18 @@ export function renderNarrationPanel(
   const text = options.scriptDraft ?? project.script ?? "";
   const changed = text !== (project.script ?? "");
   const locked = options.busy || changed;
+  const hasPicture = options.hasPicture ?? project.clips.length > 0;
   const recordings = project.assets.filter(
     (asset) => (asset.kind === "audio" || asset.kind === "video") && !asset.speech,
   );
+  const why = reasons({
+    busy: options.busy,
+    changed,
+    text,
+    hasPicture,
+    hasRecording: recordings.length > 0,
+    persistent: options.persistent,
+  });
   const description = {
     draft: "先看文案和画面搭配。草稿完成后，再决定怎样用自己的声音讲。",
     review: "播放草稿，检查文案、镜头顺序和临时字幕。满意后确认，再开始口播。",
@@ -97,34 +168,59 @@ export function renderNarrationPanel(
       ${options.busy ? "disabled" : ""}
     >
 ${esc(text)}</textarea>
-    ${action("save-narration-script", "保存文案", options.busy || !changed || !text.trim())}
+    ${action(
+      "save-narration-script",
+      "保存文案",
+      options.busy || !changed || !text.trim(),
+      false,
+      why.save,
+    )}
     <p class="narration-edit-note" data-narration-draft-note ${changed ? "" : "hidden"}>
       文案尚未保存。保存后重新确认草稿，再继续录制或对齐。
     </p>
+    ${
+      options.approvalIssue && ["approved", "recorded", "aligned"].includes(state.phase)
+        ? `<p class="narration-approval-issue" role="status">${esc(options.approvalIssue)}</p>${action("return-narration-review", "回到审阅", options.busy, true, BUSY)}`
+        : ""
+    }
     <div class="narration-actions">
       ${
         state.phase === "review"
           ? action(
               "approve-draft",
               "确认草稿，去录口播",
-              locked || !text.trim() || !project.clips.length,
+              locked || !text.trim() || !hasPicture,
+              true,
+              why.approve,
+            )
+          : ""
+      }
+      ${
+        ["approved", "recorded", "aligned"].includes(state.phase)
+          ? action(
+              "record-narration",
+              "照稿录制",
+              locked,
+              state.phase === "approved",
+              why.record,
               true,
             )
           : ""
       }
       ${
         ["approved", "recorded", "aligned"].includes(state.phase)
-          ? action("record-narration", "照稿录制", locked, state.phase === "approved")
-          : ""
-      }
-      ${
-        ["approved", "recorded", "aligned"].includes(state.phase)
-          ? `<div class="narration-recording-choice"><label class="input-label" for="narration-recording-asset">或使用已录好的口播</label><select id="narration-recording-asset" ${locked || !recordings.length ? "disabled" : ""}><option value="" ${state.recordingAssetId ? "" : "selected"}>选择本人录音或视频</option>${recordings.map((asset) => `<option value="${esc(asset.id)}" ${asset.id === state.recordingAssetId ? "selected" : ""}>${esc(asset.name)}</option>`).join("")}</select>${action("bind-narration-recording", "使用这份口播", locked || !recordings.length)}<p class="narration-edit-note">可先在素材页导入录音。这里选择的是你本人录下的内容。</p></div>`
+          ? `<div class="narration-recording-choice"><label class="input-label" for="narration-recording-asset">或使用已录好的口播</label><select id="narration-recording-asset" ${locked || !recordings.length ? "disabled" : ""}><option value="" ${state.recordingAssetId ? "" : "selected"}>选择本人录音或视频</option>${recordings.map((asset) => `<option value="${esc(asset.id)}" ${asset.id === state.recordingAssetId ? "selected" : ""}>${esc(asset.name)}</option>`).join("")}</select>${action("bind-narration-recording", "使用这份口播", locked || !recordings.length, false, why.bind)}<p class="narration-edit-note">可先在素材页导入录音。这里选择的是你本人录下的内容。</p></div>`
           : ""
       }
       ${
         state.phase === "recorded"
-          ? action("align-narration", "用我的录音完成视频", locked || !options.persistent, true)
+          ? action(
+              "align-narration",
+              "用我的录音完成视频",
+              locked || !options.persistent,
+              true,
+              why.align,
+            )
           : ""
       }
       ${

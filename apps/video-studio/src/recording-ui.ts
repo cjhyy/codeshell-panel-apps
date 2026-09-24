@@ -343,7 +343,7 @@ export function createRecordingUI(context: RecordingContext) {
       `<option value="">系统默认</option>${items.map((device) => `<option value="${esc(device.id)}" ${device.id === selected ? "selected" : ""}>${esc(device.name)}</option>`).join("")}`;
     return html`<div class="section-title">
         <h2>录制口播</h2>
-        <span class="tiny-badge">RECORD</span>
+        <span class="tiny-badge">录制</span>
       </div>
       <p class="section-description">
         ${esc(

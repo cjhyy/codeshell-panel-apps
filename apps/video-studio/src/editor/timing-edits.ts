@@ -483,6 +483,17 @@ function blocks(
     .filter((block) => block.clips.length)
     .sort((a, b) => a.start - b.start);
 }
+/** Connected blocks on one track (groups, links, bound captions, transitions), in time order. */
+export function magneticBlocks(
+  sequence: EditorSequence,
+  trackId: string,
+): { clipIds: string[]; start: Tick; end: Tick }[] {
+  return blocks(sequence, trackId).map((block) => ({
+    clipIds: block.clips.map((clip) => clip.id),
+    start: block.start,
+    end: block.start + block.duration,
+  }));
+}
 function packBlocks(values: MagneticBlock[], targets: Map<string, Tick>): void {
   let cursor = 0;
   for (const block of values) {

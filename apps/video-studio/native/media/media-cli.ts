@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { combineAbortSignals } from "../signals.js";
 import { runMediaRequest, validateMediaRequest } from "./media-runtime.js";
 import { resolveMediaConnections } from "./media-connections.js";
+import { containsAbsolutePath, redactHomePath } from "./media-executables.js";
 
 async function privateDirectory(root: string, parts: string[]): Promise<string> {
   let path = root;
@@ -32,7 +33,14 @@ async function sealedConnections() {
       (process.platform !== "win32" && info.mode & 0o077)
     )
       throw new Error("配音连接配置不可用");
-    return resolveMediaConnections(JSON.parse(await file.readFile("utf8")));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.readFile("utf8"));
+    } catch {
+      // Parser errors quote the file; it may hold credentials.
+      throw new Error("配音连接配置不可用");
+    }
+    return resolveMediaConnections(parsed);
   } finally {
     await file.close();
   }
@@ -123,12 +131,12 @@ export async function runCli(raw?: unknown): Promise<void> {
     if (signal.aborted) throw new Error("媒体任务已取消");
     emit({ type: "result", result });
   } catch (error) {
+    // Keep the concrete reason with home paths shown as ~; any other local path is withheld.
+    const reason = error instanceof Error ? redactHomePath(error.message) : "";
     const message = controller.signal.aborted
       ? "媒体任务已取消"
-      : error instanceof Error &&
-          error.message.length <= 350 &&
-          !/(?:\/|\\|https?:|ENOENT|EACCES)/.test(error.message)
-        ? error.message
+      : reason && reason.length <= 350 && !/https?:/.test(reason) && !containsAbsolutePath(reason)
+        ? reason
         : "媒体工具未完成，请检查依赖、素材和任务状态后重试";
     emit({ type: "error", message });
     process.exitCode = 1;

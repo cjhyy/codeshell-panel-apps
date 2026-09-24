@@ -439,7 +439,17 @@ test("real timeline only allocates visible media strips, skips hidden tracks, an
   await page.waitForFunction(
     () => document.querySelectorAll('canvas[data-et-media-state="ready"]').length > 0,
   );
-  assert.ok((await page.locator("canvas.et-media-strip").count()) < 9);
+  // At most one strip per lane the timeline body shows, never one per clip of all 80 tracks.
+  const visibleLanes = () =>
+    page.evaluate(() => {
+      const body = document.querySelector(".et-body").getBoundingClientRect();
+      return [...document.querySelectorAll(".et-lane")].filter((lane) => {
+        const rect = lane.getBoundingClientRect();
+        return rect.bottom > body.top && rect.top < body.bottom;
+      }).length;
+    });
+  const stripCount = () => page.locator("canvas.et-media-strip").count();
+  assert.ok((await stripCount()) <= (await visibleLanes()) && (await stripCount()) < 16);
   assert.equal(await page.locator('[data-et-clip="clip79"] canvas').count(), 0);
   if (process.env.VIDEO_STUDIO_TIMELINE_MEDIA_SCREENSHOT) {
     await page.evaluate(() => {
@@ -460,7 +470,7 @@ test("real timeline only allocates visible media strips, skips hidden tracks, an
   await page.waitForFunction(() =>
     document.querySelector('[data-et-clip="a"] canvas[data-et-media-state="ready"]'),
   );
-  assert.ok((await page.locator("canvas.et-media-strip").count()) < 9);
+  assert.ok((await stripCount()) <= (await visibleLanes()) && (await stripCount()) < 16);
   assert.equal(await page.evaluate(() => editorHistory.revision), 0);
   assert.equal(await page.evaluate(() => editorHistory.read().sequences[0].tracks[0].locked), true);
 });

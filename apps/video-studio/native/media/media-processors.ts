@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { copyFile, link, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type { MediaJobContext, MediaJobProcessor, MediaScope } from "./media-types.js";
 import { mediaAbortError, runMediaProcess } from "./media-process-runner.js";
+import { findExecutable, redactHomePath } from "./media-executables.js";
 import { timelineClips, timelineDuration } from "../../src/model.js";
 
 export const MEDIA_PROCESSOR_CACHE_VERSION = 4;
@@ -142,17 +143,12 @@ const sourceOptions = [
 async function executablePath(command: string): Promise<string> {
   if (isAbsolute(command) || command.includes("/") || command.includes("\\"))
     return regularFile(resolve(command));
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    try {
-      const path = join(directory, command);
-      await access(path);
-      return await regularFile(path);
-    } catch {
-      /* Continue searching PATH. */
-    }
-  }
-  throw new Error(`Required local executable is unavailable: ${command}`);
+  const found = await findExecutable(command);
+  if (!found) throw new Error(`本机语音转写未就绪：未找到 ${command} 命令`);
+  return found;
 }
+const missingModel = (path: string) =>
+  new Error(`本机语音转写未就绪：缺少 ${basename(path, ".pt")} 模型 ${redactHomePath(path)}`);
 
 export async function inspectMediaFile(
   path: string,
@@ -428,6 +424,32 @@ export function createMediaJobProcessors(
       if (!(await cachedArtifactsExist(child, context))) return false;
     return true;
   };
+  /**
+   * A cached result names files a previous task produced in its own directory. The runtime only
+   * publishes files inside the current task, so bring each one into this task's work directory
+   * (a hard link where the file system allows it, otherwise a copy) and return those paths.
+   */
+  const materializeCached = async (value: unknown, context: MediaJobContext): Promise<unknown> => {
+    if (!value || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      const items: unknown[] = [];
+      for (const item of value) items.push(await materializeCached(item, context));
+      return items;
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record.path === "string" && typeof record.mimeType === "string") {
+      const cached = await regularFile(record.path),
+        directory = join(context.workDir, "cached");
+      await mkdir(directory, { recursive: true });
+      const target = join(directory, `${randomUUID()}-${basename(cached)}`);
+      await link(cached, target).catch(() => copyFile(cached, target));
+      return { ...record, path: target };
+    }
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(record))
+      output[key] = await materializeCached(child, context);
+    return output;
+  };
   const withJob = (
     kind: string,
     work: (input: Record<string, any>, context: MediaJobContext) => Promise<unknown>,
@@ -456,7 +478,9 @@ export function createMediaJobProcessors(
       if (kind === "transcribe") {
         const modelPath =
           options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt");
-        const info = await stat(modelPath);
+        const info = await stat(modelPath).catch(() => {
+          throw missingModel(modelPath);
+        });
         const whisperExecutable = await executablePath(options.whisperPath ?? "whisper");
         const executableInfo = await stat(whisperExecutable);
         const shebang = (await readFile(whisperExecutable, "utf8")).split("\n")[0] ?? "";
@@ -513,8 +537,10 @@ export function createMediaJobProcessors(
         const cached = JSON.parse(await readFile(cachePath, "utf8"));
         if (cached.version === 1 && (await cachedArtifactsExist(cached.result, context))) {
           check(context);
+          const result = await materializeCached(cached.result, context);
+          check(context);
           await context.reportProgress({ fraction: 1, stage: "cached" });
-          return cached.result;
+          return result;
         }
       } catch {
         /* Invalid or evicted derived media is regenerated. */
@@ -848,12 +874,10 @@ export function createMediaJobProcessors(
         : String(input.language);
     if (language && !/^[a-z]{2,3}$/.test(language))
       throw new Error("Invalid transcription language");
-    const modelPath = await regularFile(
-      options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt"),
-    ).catch(() => {
-      throw new Error(
-        "A local Whisper model must be installed and configured before transcription",
-      );
+    const configuredModel =
+      options.whisperModelPath ?? join(homedir(), ".cache", "whisper", "base.pt");
+    const modelPath = await regularFile(configuredModel).catch(() => {
+      throw missingModel(configuredModel);
     });
     const audioPath = join(context.workDir, "transcribe-source.wav");
     await encode(

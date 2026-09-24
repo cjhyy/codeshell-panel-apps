@@ -13,6 +13,7 @@ import type { EditorDocument } from "../../src/editor/types.js";
 import { renderEditorAudio } from "../media/editor-audio-renderer.js";
 import { exportEditorSequence } from "../media/editor-export.js";
 import { runMediaProcess } from "../process-runner.js";
+import { findExecutable } from "../media/media-executables.js";
 import {
   abort,
   atomic,
@@ -53,6 +54,8 @@ export interface EditorRuntimeContext {
   /** Reviewed package/test configuration, never accepted from task JSON. */
   builtinNarrationPath?: string;
   tools?: { ffmpegPath?: string; ffprobePath?: string; browserPath?: string };
+  /** Test-only override of the shared executable search directories. */
+  toolSearchDirectories?: string[];
 }
 interface Binding {
   resourceId: string;
@@ -87,6 +90,22 @@ export async function runEditorRequest(
 ): Promise<{ result: any; artifacts: EditorArtifact[] }> {
   const request = validateEditorRequest(raw);
   abort(context.signal);
+  // The app PATH often lacks Homebrew; resolve default tool names once for every job below.
+  const [ffmpegPath, ffprobePath] = await Promise.all(
+    (["ffmpeg", "ffprobe"] as const).map(
+      async (name) =>
+        context.tools?.[`${name}Path`] ??
+        (await findExecutable(name, undefined, context.toolSearchDirectories)),
+    ),
+  );
+  context = {
+    ...context,
+    tools: {
+      ...context.tools,
+      ...(ffmpegPath ? { ffmpegPath } : {}),
+      ...(ffprobePath ? { ffprobePath } : {}),
+    },
+  };
   hash(context.scopeKey);
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(context.jobId))
     throw new EditorTaskError("INVALID_REQUEST", "主程序任务编号无效");

@@ -23,6 +23,22 @@ async function legacyAdapter() {
   return adapter;
 }
 
+/**
+ * A project switch (「新建工程」, the demo, a recent project) archives the old project before it
+ * commits the new one, and the save label keeps reading 已自动保存 for the old project meanwhile.
+ * Wait until `readProject` reports a different project, then for that project's save.
+ */
+export async function waitForProjectSwitch(page, previousId, readProject, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while ((await readProject(page))?.id === previousId) {
+    if (Date.now() > deadline) throw new Error("The new project was never committed");
+    await page.waitForTimeout(25);
+  }
+  await page.waitForFunction(
+    () => document.querySelector("#save-state")?.textContent === "已自动保存",
+  );
+}
+
 /** Follow the actual visible product navigation; never toggle hidden styles or bypass its state. */
 export async function enterLegacyProduction(page, tab = "media") {
   await page.waitForFunction(

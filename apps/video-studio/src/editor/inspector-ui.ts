@@ -16,6 +16,8 @@ export interface EditorInspectorContext {
   apply(operations: EditorOperation[], label: string): unknown | Promise<unknown>;
   time(): Tick;
   onError(error: Error): void;
+  /** Open the voiceover page to regenerate this clip's script and replace the clip in place. */
+  editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
 }
 interface Scope {
   revision: number;
@@ -42,6 +44,18 @@ const TABS: Array<[Tab, string]> = [
   ["text", "文字"],
   ["audio", "音频"],
 ];
+/** The tabs that apply to a clip; the first is where its settings open. */
+function clipTabs(clip: EditorClip, sequence: EditorSequence, doc: EditorDocument): Tab[] {
+  if (clip.kind === "text") return ["text", "visual", "color", "mask"];
+  if (clip.kind === "shape") return ["visual", "color", "mask"];
+  if (clip.kind === "media") {
+    const track = sequence.tracks.find((item) => item.id === clip.trackId),
+      asset = doc.assets.find((item) => item.id === clip.assetId);
+    if (track?.kind === "audio" || asset?.kind === "audio") return ["audio"];
+    if (asset?.kind === "image") return ["visual", "color", "mask"];
+  }
+  return ["visual", "color", "mask", "audio"];
+}
 const EASINGS: Array<[string, string]> = [
   ["linear", "匀速"],
   ["hold", "保持"],
@@ -121,6 +135,8 @@ function defaultMask(kind: Mask["kind"]): Mask {
 export class EditorInspector {
   private readonly root = el("section", "editor-inspector");
   private tab: Tab = "visual";
+  /** The selection the tab was last checked against. */
+  private tabSelection = "";
   private pending = false;
   private disposed = false;
   private error = "";
@@ -135,6 +151,20 @@ export class EditorInspector {
     this.root.setAttribute("aria-label", "片段属性");
     container.append(this.root);
     this.render();
+  }
+  /** Shows the text tab for the selection and puts the cursor in its wording, ready to type. */
+  editText(): void {
+    if (this.disposed) return;
+    this.tab = "text";
+    this.error = "";
+    this.render();
+    const field = this.root.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="文字内容（保留换行）"]',
+    );
+    if (!field || field.disabled) return;
+    field.focus({ preventScroll: true });
+    field.select();
+    field.scrollIntoView({ block: "nearest" });
   }
   dispose(): void {
     this.disposed = true;
@@ -348,6 +378,75 @@ export class EditorInspector {
       );
     });
     this.inputRow(parent, label, input);
+  }
+  /**
+   * Add a native picker beside a typed #RRGGBB(AA) field. Picking keeps any typed transparency;
+   * closing the picker without choosing restores the value it opened with.
+   */
+  private attachColorPicker(
+    row: HTMLElement,
+    input: HTMLInputElement,
+    label: string,
+    choose?: (value: string) => void,
+  ): void {
+    const picker = el("input", "ei-color-picker");
+    picker.type = "color";
+    const expanded = (text: string) =>
+      /^#[0-9a-f]{3,4}$/i.test(text)
+        ? "#" + [...text.slice(1)].map((char) => char + char).join("")
+        : text;
+    const alpha = (text: string) => {
+      const color = expanded(text.trim());
+      return /^#[0-9a-f]{8}$/i.test(color) ? color.slice(7) : "";
+    };
+    const sync = () => {
+      const color = expanded(input.value.trim());
+      if (/^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(color))
+        picker.value = color.slice(0, 7).toLowerCase();
+    };
+    let opened = input.value,
+      chosen = false;
+    picker.value = "#000000";
+    sync();
+    input.addEventListener("input", sync);
+    picker.addEventListener("focus", () => {
+      opened = input.value;
+      chosen = false;
+    });
+    picker.addEventListener("input", () => {
+      input.value = picker.value + alpha(opened);
+    });
+    picker.addEventListener("change", () => {
+      chosen = true;
+      input.value = picker.value + alpha(opened);
+      opened = input.value;
+      choose?.(input.value);
+    });
+    picker.addEventListener("blur", () => {
+      if (chosen) return;
+      input.value = opened;
+      sync();
+    });
+    row.classList.add("ei-color-field");
+    picker.setAttribute("aria-label", `选择${label}`);
+    picker.title = `选择${label}`;
+    row.append(picker);
+  }
+  /** A typed #RRGGBB(AA) document color with a synced picker. */
+  private colorField(parent: HTMLElement, scope: Scope, label: string, path: Path): void {
+    const input = el("input", "ei-input ei-color-text");
+    const value = common(scope.clips.map((clip) => String(at(clip, path))));
+    input.value = value ?? "";
+    input.placeholder = value === undefined ? "多个值" : "";
+    input.addEventListener("change", () => {
+      void this.edit(scope, `修改${label}`, (clip) =>
+        this.fieldPatch(scope, clip, path, input.value),
+      );
+    });
+    const row = this.inputRow(parent, label, input);
+    this.attachColorPicker(row, input, label, (next) => {
+      void this.edit(scope, `修改${label}`, (clip) => this.fieldPatch(scope, clip, path, next));
+    });
   }
   private choice(
     parent: HTMLElement,
@@ -676,9 +775,20 @@ export class EditorInspector {
     svg.append(path);
     parent.append(svg);
   }
+  /** A newly selected clip never opens on a tab that does not apply to it (文字 for sound). */
+  private followSelection(scope: Scope | undefined): void {
+    const key = JSON.stringify([scope?.sequence.id, scope?.selectionIds]);
+    if (!scope?.clips.length || key === this.tabSelection) return;
+    this.tabSelection = key;
+    const doc = this.context.read(),
+      lists = scope.clips.map((clip) => clipTabs(clip, scope.sequence, doc)),
+      valid = lists[0]!.filter((tab) => lists.every((list) => list.includes(tab)));
+    if (valid.length && !valid.includes(this.tab)) this.tab = valid[0]!;
+  }
   render(): void {
     if (this.disposed) return;
     const scope = this.scope();
+    this.followSelection(scope);
     const signature = JSON.stringify([
       scope?.revision,
       scope?.sequence.id,
@@ -779,7 +889,40 @@ export class EditorInspector {
     else if (this.tab === "mask") this.mask(panel, scope);
     else if (this.tab === "text") this.text(panel, scope);
     else this.audio(panel, scope);
+    this.voiceover(scope);
     this.root.scrollTop = scrollTop;
+  }
+  /** Generated speech keeps its script on any audio track; regenerating replaces this clip. */
+  private voiceover(scope: Scope): void {
+    const edit = this.context.editVoiceover,
+      clip = scope.clips.length === 1 ? scope.clips[0]! : undefined;
+    if (
+      !edit ||
+      clip?.kind !== "media" ||
+      scope.sequence.tracks.find((track) => track.id === clip.trackId)?.kind !== "audio"
+    )
+      return;
+    const speech = this.context.read().assets.find((asset) => asset.id === clip.assetId)
+      ?.metadata?.speech;
+    if (
+      !speech ||
+      typeof speech !== "object" ||
+      Array.isArray(speech) ||
+      typeof speech.text !== "string"
+    )
+      return;
+    const section = this.section(this.root, "配音文案");
+    section.classList.add("ei-voiceover");
+    section.append(el("p", "ei-speech-script", speech.text));
+    this.action(
+      section,
+      "修改文案 / 重新配音",
+      () => void Promise.resolve(edit(scope.sequence.id, clip.id)).catch((error) => {
+        this.report(error);
+        this.render();
+      }),
+      this.pending || this.locked(scope),
+    );
   }
   private visual(parent: HTMLElement, scope: Scope): void {
     const transform = this.section(
@@ -858,8 +1001,8 @@ export class EditorInspector {
           ["line", "直线"],
         ],
       );
-      this.plain(shape, shapes, "图形填充颜色", ["fill"]);
-      this.plain(shape, shapes, "图形描边颜色", ["stroke"]);
+      this.colorField(shape, shapes, "图形填充颜色", ["fill"]);
+      this.colorField(shape, shapes, "图形描边颜色", ["stroke"]);
       this.number(shape, shapes, {
         label: "图形描边宽度（像素）",
         path: ["strokeWidth"],
@@ -1175,7 +1318,7 @@ export class EditorInspector {
     const style = this.section(
       parent,
       "字体与排版",
-      "颜色支持 #RRGGBB 或包含透明度的 #RRGGBBAA。字号与间距使用序列画布像素。",
+      "颜色可用取色器选择，也可输入 #RRGGBB 或包含透明度的 #RRGGBBAA。字号与间距使用序列画布像素。",
     );
     this.plain(style, scope, "字体", ["style", "fontFamily"]);
     const missingFonts = new Set(
@@ -1232,7 +1375,7 @@ export class EditorInspector {
       ["background", "文字背景颜色"],
       ["highlightColor", "逐词高亮颜色"],
     ] as const)
-      this.plain(style, scope, label, ["style", key]);
+      this.colorField(style, scope, label, ["style", key]);
     for (const [name, label, max] of [
       ["strokeWidth", "文字描边宽度（像素）", 100],
       ["backgroundRadius", "背景圆角（像素）", 512],
@@ -1258,7 +1401,7 @@ export class EditorInspector {
     );
     this.individual(keywords, scope, "keywords", (selected) => this.keywords(keywords, selected));
     const shadow = this.section(parent, "文字阴影");
-    this.plain(shadow, scope, "阴影颜色", ["style", "shadow", "color"]);
+    this.colorField(shadow, scope, "阴影颜色", ["style", "shadow", "color"]);
     for (const [key, label, min, max] of [
       ["blur", "阴影模糊（像素）", 0, 256],
       ["x", "阴影水平偏移（像素）", -2048, 2048],
@@ -1275,7 +1418,7 @@ export class EditorInspector {
       const row = el("div", "ei-card");
       details.append(row);
       this.plain(row, scope, `关键词 ${index + 1}`, ["style", "keywords", index, "text"]);
-      this.plain(row, scope, `关键词 ${index + 1} 颜色`, ["style", "keywords", index, "color"]);
+      this.colorField(row, scope, `关键词 ${index + 1} 颜色`, ["style", "keywords", index, "color"]);
       this.action(row, `删除关键词 ${index + 1}`, () => {
         void this.edit(scope, "删除关键词强调", (current) => {
           if (current.kind !== "text" || !equal(current.style.keywords ?? [], keywords))
@@ -1292,7 +1435,7 @@ export class EditorInspector {
     phrase.placeholder = "输入需要强调的词语或短句";
     color.value = clip.style.highlightColor;
     this.inputRow(parent, "新关键词", phrase);
-    this.inputRow(parent, "新关键词颜色", color);
+    this.attachColorPicker(this.inputRow(parent, "新关键词颜色", color), color, "新关键词颜色");
     this.action(
       parent,
       "添加关键词强调",

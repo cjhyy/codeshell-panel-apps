@@ -127,7 +127,17 @@ async function fixture(t, specifications = [], options = {}) {
           throw Error(`Unexpected host mutation ${method}`);
         },
       };
-      panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)));
+      const finished = [];
+      let savedTitles = structuredClone(options.titles ?? null);
+      panel = new editor.EditorExportJobs(bridge, (error) => errors.push(String(error)), {
+        onFinished: (job) => finished.push({ id: job.id, status: job.status }),
+        titles: {
+          read: async () => structuredClone(savedTitles),
+          write: async (value) => {
+            savedTitles = structuredClone(value);
+          },
+        },
+      });
       panel.mountTrigger(
         document.querySelector("#toolbar"),
         document.querySelector("[data-export]"),
@@ -135,7 +145,9 @@ async function fixture(t, specifications = [], options = {}) {
       window.fixture = {
         calls,
         errors,
-        track: (id) => panel.track(structuredClone(jobs.get(id)), id),
+        finished,
+        track: (id, name = id) => panel.track(structuredClone(jobs.get(id)), name),
+        savedTitles: () => structuredClone(savedTitles),
         load: () => panel.loadMore(),
         remount: () =>
           panel.mountTrigger(
@@ -668,4 +680,68 @@ test("a late snapshot from an older attempt cannot undo a successful retry", asy
   );
   await row(page, "retry-late").getByRole("button", { name: "保存视频" }).waitFor();
   assert.equal((await calls(page, "tasks.retry")).length, 1);
+});
+
+test("finishing a watched export tells the panel once, so its readiness refreshes right away", async (t) => {
+  const page = await fixture(t, [job("running", 1, "running"), job("done", 0)], {
+    track: "running",
+  });
+  await page.waitForFunction(() => fixture.calls.some((c) => c.method === "tasks.get"));
+  await page.evaluate(() => fixture.load());
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [], "History is not a completion");
+  await page.evaluate(
+    (assetId) =>
+      fixture.notify("running", {
+        status: "succeeded",
+        updatedAt: 2,
+        result: { result: { verified: true, video: { id: assetId } } },
+      }),
+    assetId,
+  );
+  await page.waitForFunction(() => fixture.finished.length === 1);
+  await page.evaluate(() => fixture.publish("running", { updatedAt: 3 }));
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [
+    { id: "running", status: "succeeded" },
+  ]);
+});
+
+test("an export first seen already finished also refreshes readiness, once", async (t) => {
+  const page = await fixture(t, [job("fast", 1)]);
+  await page.evaluate(() => fixture.track("fast"));
+  await settle(page);
+  await page.evaluate(() => fixture.track("fast"));
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.finished), [
+    { id: "fast", status: "succeeded" },
+  ]);
+});
+
+test("export titles stay readable after a reload instead of showing the internal sequence id", async (t) => {
+  const exported = job("export-a", 10, "succeeded", {
+    input: {
+      request: { action: "render", sequenceId: "sequence-main", profile: { name: "自定义导出" } },
+    },
+  });
+  const other = job("export-b", 5, "succeeded", {
+    input: {
+      request: { action: "render", sequenceId: "sequence-main", profile: { name: "1080p 横屏" } },
+    },
+  });
+  const first = await fixture(t, [exported, other]);
+  await first.evaluate(() => fixture.track("export-a", "未命名项目 · 自定义导出"));
+  await first.waitForFunction(() => fixture.savedTitles()?.["export-a"]);
+  const titles = await first.evaluate(() => fixture.savedTitles());
+  // A reload discovers the same durable jobs from the Host task list.
+  const page = await fixture(t, [exported, other], { titles });
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.equal(
+    await row(page, "export-a").locator("strong").textContent(),
+    "未命名项目 · 自定义导出",
+  );
+  // Without a remembered title the preset still names it; the internal id never shows.
+  assert.equal(await row(page, "export-b").locator("strong").textContent(), "视频导出 · 1080p 横屏");
+  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
 });

@@ -8,18 +8,6 @@ import {
 } from "./model";
 import type { AssetPublication } from "./production";
 
-function sameAudioClip(current: AudioClip | undefined, original: AudioClip): boolean {
-  return Boolean(
-    current &&
-    current.id === original.id &&
-    current.assetId === original.assetId &&
-    current.inFrame === original.inFrame &&
-    current.outFrame === original.outFrame &&
-    current.startFrame === original.startFrame &&
-    current.volume === original.volume,
-  );
-}
-
 /** One saved revision includes both the durable source and its optional placement. */
 export function publishProductionAssets(
   project: Project,
@@ -34,25 +22,16 @@ export function publishProductionAssets(
   }
   let notice: string | undefined;
   const placement = options?.audioPlacement;
-  if (placement?.replaceClip?.id === placement?.clipId && placement?.replaceClip)
-    throw new Error("替换配音需要独立的结果编号");
   // The job-specific result ID survives subsequent trims/moves. Replaying a
   // completion must not reset those edits or insert another audible instance.
   if (placement && !(next.audioClips ?? []).some((clip) => clip.id === placement.clipId)) {
     const asset = next.assets.find((asset) => asset.id === placement.assetId);
     if (!asset || asset.kind !== "audio") throw new Error("配音素材无效");
-    const original = placement.replaceClip;
-    const originalIndex = original
-      ? (next.audioClips ?? []).findIndex((clip) => clip.id === original.id)
-      : -1;
-    const startFrame = original?.startFrame ?? placement.startFrame;
-    const volume = original?.volume ?? placement.volume;
+    const { startFrame, volume } = placement;
     if (!Number.isSafeInteger(startFrame) || startFrame < 0) throw new Error("配音位置无效");
     if (!Number.isFinite(volume) || volume < 0 || volume > 2) throw new Error("配音音量无效");
     const available = Math.max(0, timelineDuration(next) - startFrame);
-    if (original && !sameAudioClip(next.audioClips?.[originalIndex], original)) {
-      notice = "原配音在生成期间已被修改或删除。新配音已保留在素材库，未替换当前音轨。";
-    } else if (available > 0) {
+    if (available > 0) {
       const clip: AudioClip = {
         id: placement.clipId,
         assetId: asset.id,
@@ -61,16 +40,11 @@ export function publishProductionAssets(
         startFrame,
         volume,
       };
-      if (original) next.audioClips!.splice(originalIndex, 1, clip);
-      else next.audioClips = [...(next.audioClips ?? []), clip];
+      next.audioClips = [...(next.audioClips ?? []), clip];
       if (available < asset.durationFrames)
-        notice = `${original ? "原配音已替换。" : ""}完整配音 ${(asset.durationFrames / 30).toFixed(1)} 秒已保留在素材库；画面只剩 ${(available / 30).toFixed(1)} 秒，当前音轨到画面结尾。请延长画面并调整配音出点，避免漏掉句尾。`;
-      else
-        notice = original
-          ? "原配音已替换，保留原来的位置和音量；完整文案和音频已保存"
-          : "配音已加入当前播放位置，完整文案和音频已保存";
-    } else
-      notice = `${original ? "原配音未替换。" : ""}完整配音已保存到素材库。请先添加或延长画面，再将配音加入时间轴。`;
+        notice = `完整配音 ${(asset.durationFrames / 30).toFixed(1)} 秒已保留在素材库；画面只剩 ${(available / 30).toFixed(1)} 秒，当前音轨到画面结尾。请延长画面并调整配音出点，避免漏掉句尾。`;
+      else notice = "配音已加入当前播放位置，完整文案和音频已保存";
+    } else notice = "完整配音已保存到素材库。请先添加或延长画面，再将配音加入时间轴。";
   }
   const enhanced = options?.enhancement;
   if (

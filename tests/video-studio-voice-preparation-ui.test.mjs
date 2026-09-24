@@ -555,6 +555,10 @@ test(
         fullPage: true,
       });
       await page.locator('[data-action="new"]').click();
+      // Automatic production is still running, so the page asks before switching projects.
+      const confirmNew = page.locator("#plan-dialog[open]");
+      assert.match(await confirmNew.textContent(), /自动制作正在进行/);
+      await confirmNew.getByRole("button", { name: "仍然新建", exact: true }).click();
       await page.waitForFunction(
         () => window.__panelTools.read_video_project().project.id !== "voice-preparation-project",
       );

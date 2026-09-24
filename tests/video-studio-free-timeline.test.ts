@@ -9,9 +9,10 @@ import {
   type EditOperation,
   type Project,
 } from "../apps/video-studio/src/model";
-import { narrationSnapshot, updateNarrationScript } from "../apps/video-studio/src/narration";
-import { roughCutOperations } from "../apps/video-studio/src/rough-cut";
-import { buildSpokenEditPlan } from "../apps/video-studio/src/spoken-edit";
+import { narrationSnapshot } from "../apps/video-studio/src/narration";
+import { planNarrationScript } from "../apps/video-studio/src/editor/narration-edits";
+import { migrateLegacyProject } from "../apps/video-studio/src/editor/migration";
+import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 
 const MAX_FRAMES = 30 * 86400;
 const edit = (project: Project, operations: EditOperation[]) =>
@@ -300,21 +301,19 @@ test("portable free timelines normalize missing positions and order while reject
   assert.throws(() => validateProject({ ...before, timelineMode: undefined }), /磁性时间轴/);
 });
 
-test("rough-cut preflight and narration duration include gaps; placement changes invalidate approval snapshots", () => {
+test("narration duration includes gaps; placement changes invalidate approval snapshots", () => {
   const before = gappedFixture();
-  const narrated = updateNarrationScript(before, "第一句。第二句。");
-  assert.equal(Math.max(...narrated.captions.map((caption) => caption.endFrame)), 450);
+  const doc = migrateLegacyProject(before);
+  const narrated = applyEditorOperations(
+    doc,
+    planNarrationScript(doc, doc.activeSequenceId, "第一句。第二句。"),
+    doc.revision,
+  );
+  const ends = narrated.sequences[0]!.clips
+    .filter((clip) => clip.kind === "text" && clip.id.startsWith("draft-narration-"))
+    .map((clip) => clip.start + clip.duration);
+  assert.equal(Math.max(...ends), 450 * 8000);
   const noCaptions = { ...before, captions: [] };
   const moved = edit(noCaptions, [{ type: "video-move", clipId: "b", startFrame: 600 }]);
   assert.notEqual(narrationSnapshot(noCaptions), narrationSnapshot(moved));
-  const nearLimit = edit(before, [
-    { type: "video-move", clipId: "b", startFrame: MAX_FRAMES - 90 },
-  ]);
-  nearLimit.roughCuts = [
-    { id: "cut", assetId: "video-a", inFrame: 0, outFrame: 30, name: "追加", enabled: true },
-  ];
-  assert.throws(() => roughCutOperations(nearLimit, ["cut"]), /时长上限/);
-  const snapshot = structuredClone(before);
-  assert.throws(() => buildSpokenEditPlan(before, [], []), /先开启主序列磁性/);
-  assert.deepEqual(before, snapshot);
 });

@@ -1,14 +1,13 @@
 import { randomId } from "../ids.js";
 import { evaluateAnimatedNumber, type AnimatedNumber } from "./animation";
 import { compileAudioPlan, type AudioPlanLane, type AudioPlanStage } from "./audio-plan";
-import {
-  createTrack,
-  defaultColorAdjustment,
-  defaultTextStyle,
-  defaultTransform,
-} from "./defaults";
+import { createTrack } from "./defaults";
+import { stretchKeyframes } from "./caption-bindings";
+import { CAPTION_PRESETS, captionTemplate, currentCaptionPreset } from "./caption-presets";
 import { applyEditorOperations, type EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import {
+  assertTick,
   sourceRangesToTimeline,
   sourceTimeAt,
   secondsToTicks,
@@ -16,7 +15,7 @@ import {
   type Tick,
   type TimeRange,
 } from "./time";
-import { MAX_EDITOR_TICK, validateEditorDocument } from "./validation";
+import { MAX_EDITOR_TICK, sequenceDuration, validateEditorDocument } from "./validation";
 import type { EditorDocument, EditorSequence, TextClip, TextStyle } from "./types";
 
 export interface CaptionTranscriptWord {
@@ -52,6 +51,17 @@ export interface CaptionPlanOptions {
   assetIds?: string[];
   wordHighlight?: boolean;
   idFactory?: () => string;
+  /** Keep only these audible source instances, e.g. one recording on audio tracks. */
+  sourceFilter?: (source: CaptionSource) => boolean;
+  /** Deterministic IDs for a coordinator-owned caption set (segment and range are 0-based). */
+  captionId?: (source: CaptionSource, segmentIndex: number, rangeIndex: number) => string;
+  /**
+   * Skip new subtitles that share a moment with an existing subtitle on the target track, since
+   * one would hide the other; the plan's notices say how many. The 字幕 page opts in.
+   */
+  avoidOverlaps?: boolean;
+  /** Existing subtitles that never block a new one, e.g. temporary narration captions. */
+  overlapExempt?: ReadonlySet<string>;
 }
 const MAX_RANGES = 100000,
   MAX_CAPTIONS = 2000;
@@ -354,13 +364,67 @@ function captionTrack(
     : undefined;
   if (options.trackId && (!requested || requested.kind !== "text" || requested.locked))
     throw new Error("请选择未锁定的字幕轨道");
-  const track = requested ?? seq.tracks.find((track) => track.kind === "text" && !track.locked);
+  // Subtitles join the track that already holds subtitles; a title track is never used for them.
+  const holds = (trackId: string, role: "title" | "subtitle") =>
+    seq.clips.some((clip) => clip.trackId === trackId && clip.kind === "text" && clip.role === role);
+  const usable = seq.tracks.filter((track) => track.kind === "text" && !track.locked);
+  const track =
+    requested ??
+    usable.find((track) => holds(track.id, "subtitle")) ??
+    usable.find((track) => !holds(track.id, "title"));
   if (track) return { id: track.id, operations: [] };
   const id = (options.idFactory ?? uniqueId)();
   return {
     id,
-    operations: [{ type: "track.add", sequenceId: seq.id, track: createTrack(id, "text", "字幕") }],
+    operations: [
+      { type: "track.add", sequenceId: seq.id, track: createTrack(id, "text", subtitleTrackName(seq)) },
+    ],
   };
+}
+/** 字幕, or 字幕 2, 字幕 3… when a track already carries that name. */
+function subtitleTrackName(seq: EditorSequence): string {
+  const names = new Set(seq.tracks.map((track) => track.name));
+  if (!names.has("字幕")) return "字幕";
+  let index = 2;
+  while (names.has(`字幕 ${index}`)) index++;
+  return `字幕 ${index}`;
+}
+/** Whether an existing subtitle on the track shares any moment with [start, end). */
+function coversSubtitle(
+  seq: EditorSequence,
+  trackId: string,
+  start: Tick,
+  end: Tick,
+  options: CaptionPlanOptions,
+): boolean {
+  return (
+    !!options.avoidOverlaps &&
+    seq.clips.some(
+      (clip) =>
+        clip.trackId === trackId &&
+        isSubtitleClip(clip) &&
+        !options.overlapExempt?.has(clip.id) &&
+        clip.start < end &&
+        clip.start + clip.duration > start,
+    )
+  );
+}
+const overlapNotice = (count: number) =>
+  `${count} 条字幕与字幕轨上已有字幕时间重叠，已跳过以免互相遮挡；如需替换，请先删除或调整旧字幕`;
+/**
+ * The look for new subtitles: the preset every existing subtitle shows, else the project's
+ * recorded preset, else 经典. Captions from every path then match the 字幕 page choice.
+ */
+function captionLook(doc: EditorDocument, seq: EditorSequence): TextClip {
+  const preference = doc.production?.legacyCaptionStyle;
+  const subtitles = seq.clips.filter(
+    isSubtitleClip,
+  );
+  const preset =
+    currentCaptionPreset(seq, subtitles) ??
+    CAPTION_PRESETS.find((item) => item.value === preference)?.value ??
+    "classic";
+  return captionTemplate({ width: seq.width, height: seq.height, captionStyle: preset });
 }
 function textClip(
   id: string,
@@ -368,13 +432,8 @@ function textClip(
   start: Tick,
   end: Tick,
   text: string,
-  seq: EditorSequence,
+  look: TextClip,
 ): TextClip {
-  const style = defaultTextStyle();
-  style.fontSize = Math.max(12, Math.round(seq.height * 0.05));
-  style.strokeWidth = Math.max(1, Math.round(style.fontSize * 0.055));
-  const transform = defaultTransform();
-  transform.y = 0.38;
   return {
     id,
     trackId,
@@ -384,10 +443,10 @@ function textClip(
     kind: "text",
     role: "subtitle",
     text,
-    style,
+    style: structuredClone(look.style),
     words: [],
-    transform,
-    color: defaultColorAdjustment(),
+    transform: structuredClone(look.transform),
+    color: structuredClone(look.color),
     blendMode: "normal",
   };
 }
@@ -404,16 +463,20 @@ export function planTranscriptCaptions(
 ): CaptionPlan {
   const doc = validateEditorDocument(value),
     seq = sequence(doc, sequenceId),
-    track = captionTrack(seq, options);
+    track = captionTrack(seq, options),
+    look = captionLook(doc, seq);
   const sources = compileCaptionSources(doc, sequenceId).filter(
-    (source) => !options.assetIds || options.assetIds.includes(source.assetId),
+    (source) =>
+      (!options.assetIds || options.assetIds.includes(source.assetId)) &&
+      (!options.sourceFilter || options.sourceFilter(source)),
   );
   const result: CaptionPlan = { sequenceId, operations: [], added: 0, skipped: 0, notices: [] };
+  let overlapping = 0;
   const existing = new Map(seq.clips.map((clip) => [clip.id, clip])),
     generated = new Set<string>(),
     displayed = new Set(
       seq.clips
-        .filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+        .filter(isSubtitleClip)
         .map((clip) => JSON.stringify([clip.start, clip.duration, clip.text])),
     );
   for (const assetId of new Set(sources.map((source) => source.assetId)))
@@ -423,7 +486,7 @@ export function planTranscriptCaptions(
       );
   for (const source of sources) {
     const segments = validateCaptionTranscript(transcripts.get(source.assetId) ?? []);
-    for (const segment of segments.flatMap(readableSegments)) {
+    for (const [segmentIndex, segment] of segments.flatMap(readableSegments).entries()) {
       const from = secondsToTicks(segment.start),
         to = secondsToTicks(segment.end);
       if (to > source.lane.sourceDuration) throw new Error(`转写超出素材实际时长：${source.name}`);
@@ -443,6 +506,8 @@ export function planTranscriptCaptions(
             }),
           )
           .sort((a, b) => a.start - b.start || a.end - b.end || a.index - b.index);
+        // Real word times say nothing was spoken in this played range; do not show the sentence.
+        if (segment.words?.length && !mapped.length) continue;
         // Overlapping ASR words may be legal; clip word end order must stay monotone.
         if (mapped.some((word, index) => index > 0 && word.end < mapped[index - 1]!.end))
           throw new Error("映射后的词时间相互包裹，请先校准转写");
@@ -461,7 +526,9 @@ export function planTranscriptCaptions(
           !result.notices.includes("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容")
         )
           result.notices.push("部分转写仅有句子时间，字幕未伪造逐字时间；裁剪处请校对句子内容");
-        const id = `caption-asr-${hash(JSON.stringify([sequenceId, source.instanceId, source.assetId, from, to, rangeIndex]))}`;
+        const id = options.captionId
+          ? options.captionId(source, segmentIndex, rangeIndex)
+          : `caption-asr-${hash(JSON.stringify([sequenceId, source.instanceId, source.assetId, from, to, rangeIndex]))}`;
         if (generated.has(id)) {
           result.skipped++;
           continue;
@@ -500,8 +567,14 @@ export function planTranscriptCaptions(
           result.skipped++;
           continue;
         }
+        // Two subtitles at one moment on one track hide each other; keep the existing one.
+        if (coversSubtitle(seq, track.id, range.start, range.end, options)) {
+          result.skipped++;
+          overlapping++;
+          continue;
+        }
         displayed.add(key);
-        const clip = textClip(id, track.id, range.start, range.end, content, seq),
+        const clip = textClip(id, track.id, range.start, range.end, content, look),
           owner = source.lane.stages[0]!;
         clip.words = mapped.map(({ index: _, ...word }) => ({ ...word, text: word.text.trim() }));
         if (options.wordHighlight && clip.words.length) clip.style.animation = "word-highlight";
@@ -525,6 +598,7 @@ export function planTranscriptCaptions(
       }
     }
   }
+  if (overlapping) result.notices.push(overlapNotice(overlapping));
   if (result.added) result.operations.unshift(...track.operations);
   return finish(doc, result);
 }
@@ -568,18 +642,25 @@ export function planSrtImport(
   const doc = validateEditorDocument(value),
     seq = sequence(doc, sequenceId),
     track = captionTrack(seq, options),
+    look = captionLook(doc, seq),
     cues = parseEditorSrt(text);
   const operations: EditorOperation[] = [],
     keys = new Set(
       seq.clips
-        .filter((clip): clip is TextClip => clip.kind === "text" && clip.role === "subtitle")
+        .filter(isSubtitleClip)
         .map((clip) => JSON.stringify([clip.start, clip.duration, clip.text])),
     );
-  let skipped = 0;
+  let skipped = 0,
+    overlapping = 0;
   for (const cue of cues) {
     const key = JSON.stringify([cue.start, cue.end - cue.start, cue.text]);
     if (keys.has(key)) {
       skipped++;
+      continue;
+    }
+    if (coversSubtitle(seq, track.id, cue.start, cue.end, options)) {
+      skipped++;
+      overlapping++;
       continue;
     }
     keys.add(key);
@@ -592,7 +673,7 @@ export function planSrtImport(
         cue.start,
         cue.end,
         cue.text,
-        seq,
+        look,
       ),
     });
   }
@@ -602,7 +683,7 @@ export function planSrtImport(
     operations,
     added: cues.length - skipped,
     skipped,
-    notices: [],
+    notices: overlapping ? [overlapNotice(overlapping)] : [],
   });
 }
 export function exportEditorSrt(
@@ -635,14 +716,14 @@ function selectedCaptions(seq: EditorSequence, ids?: readonly string[]): TextCli
       ids.some(
         (id) =>
           !seq.clips.some(
-            (clip) => clip.id === id && clip.kind === "text" && clip.role === "subtitle",
+            (clip) => clip.id === id && isSubtitleClip(clip),
           ),
       ))
   )
     throw new Error("请选择有效的字幕片段");
   return seq.clips.filter(
     (clip): clip is TextClip =>
-      clip.kind === "text" && clip.role === "subtitle" && (!ids || ids.includes(clip.id)),
+      isSubtitleClip(clip) && (!ids || ids.includes(clip.id)),
   );
 }
 export function captionTranslationItems(
@@ -775,6 +856,188 @@ export function planDetachCaptions(
       clipId: clip.id,
       patch: { sourceBinding: null },
     }));
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+
+/** Every subtitle of the sequence on any text track, in playback order; titles are never listed. */
+export function listCaptions(value: EditorDocument, sequenceId: string): TextClip[] {
+  return sequence(value, sequenceId)
+    .clips.filter(isSubtitleClip)
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+}
+const DEFAULT_CAPTION_DURATION = 3 * TICKS_PER_SECOND;
+function unlockedCaption(seq: EditorSequence, clip: TextClip): void {
+  if (seq.tracks.find((track) => track.id === clip.trackId)?.locked)
+    throw new Error("字幕轨已锁定，请先解锁字幕轨");
+}
+/** A plain subtitle at an exact tick; it never extends the picture beyond the current sequence end. */
+export function planAddCaption(
+  value: EditorDocument,
+  sequenceId: string,
+  options: {
+    start: Tick;
+    duration?: Tick;
+    text: string;
+    trackId?: string;
+    idFactory?: () => string;
+  },
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    text = cleanText(options.text, "字幕文字"),
+    start = assertTick(options.start, "字幕开始时间"),
+    length = assertTick(options.duration ?? DEFAULT_CAPTION_DURATION, "字幕时长"),
+    end = Math.min(start + length, sequenceDuration(seq));
+  if (!length) throw new Error("字幕时长必须大于零");
+  if (end <= start) throw new Error("播放头不在画面范围内，请把播放头移到画面上再添加字幕");
+  if (seq.clips.length + 1 > MAX_CAPTIONS) throw new Error("字幕超过序列2000片段容量");
+  const track = captionTrack(seq, options),
+    clip = textClip(
+      (options.idFactory ?? uniqueId)(),
+      track.id,
+      start,
+      end,
+      text,
+      captionLook(doc, seq),
+    );
+  const operations: EditorOperation[] = [
+    ...track.operations,
+    { type: "clip.add", sequenceId, clip },
+  ];
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+export interface CaptionDraft {
+  /** Exact clip ID to create; otherwise the ID factory names it. */
+  id?: string;
+  start: Tick;
+  end: Tick;
+  text: string;
+  trackId?: string;
+}
+/**
+ * Several plain subtitles in one transaction, each at exact ticks inside the current picture.
+ * Requested IDs are kept exactly (e.g. the narration workflow's temporary captions).
+ */
+export function planAddCaptions(
+  value: EditorDocument,
+  sequenceId: string,
+  items: readonly CaptionDraft[],
+  options: { trackId?: string; idFactory?: () => string } = {},
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    limit = sequenceDuration(seq),
+    look = captionLook(doc, seq);
+  if (!Array.isArray(items) || !items.length) throw new Error("请提供要添加的字幕");
+  if (seq.clips.length + items.length > MAX_CAPTIONS)
+    throw new Error("字幕超过序列2000片段容量，请先整理时间线片段");
+  const used = new Set(seq.clips.map((clip) => clip.id)),
+    operations: EditorOperation[] = [],
+    tracks = new Map<string, string>();
+  for (const item of items) {
+    const text = cleanText(item?.text, "字幕文字"),
+      start = assertTick(item.start, "字幕开始时间"),
+      requested = assertTick(item.end, "字幕结束时间");
+    if (requested <= start) throw new Error("字幕结束时间必须晚于开始时间");
+    if (start >= limit) throw new Error("字幕开始时间超出画面范围，请放在画面时长之内");
+    const id = item.id ?? (options.idFactory ?? uniqueId)();
+    if (typeof id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id))
+      throw new Error("字幕 ID 格式不正确");
+    if (used.has(id)) throw new Error(`字幕 ID 已被时间线片段使用：${id}`);
+    used.add(id);
+    const key = item.trackId ?? options.trackId ?? "";
+    let trackId = tracks.get(key);
+    if (trackId === undefined) {
+      const track = captionTrack(seq, {
+        ...(key ? { trackId: key } : {}),
+        ...(options.idFactory ? { idFactory: options.idFactory } : {}),
+      });
+      operations.push(...track.operations);
+      tracks.set(key, (trackId = track.id));
+    }
+    operations.push({
+      type: "clip.add",
+      sequenceId,
+      clip: textClip(id, trackId, start, Math.min(requested, limit), text, look),
+    });
+  }
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+/** Word timings past a new length are dropped or clamped; the corrected text never changes. */
+function wordsWithin(words: TextClip["words"], duration: Tick): TextClip["words"] {
+  return words
+    .filter((word) => word.start < duration)
+    .map((word) => ({ ...word, end: Math.min(word.end, duration) }));
+}
+/**
+ * Manual timing ends automatic source following first, otherwise source reconciliation would
+ * restore the old range. A retime is a length change: clip-local words move with the caption,
+ * duration-relative animations scale, and the caption never extends the picture's end.
+ */
+export function planCaptionTiming(
+  value: EditorDocument,
+  sequenceId: string,
+  clipId: string,
+  timing: { start: Tick; end: Tick },
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    [clip] = selectedCaptions(seq, [clipId]);
+  if (!clip) throw new Error("请选择有效的字幕片段");
+  const start = assertTick(timing.start, "字幕开始时间"),
+    requested = assertTick(timing.end, "字幕结束时间");
+  if (requested <= start) throw new Error("字幕结束时间必须晚于开始时间");
+  unlockedCaption(seq, clip);
+  // The current sequence end, which already includes this caption; a retime never lengthens it.
+  const limit = sequenceDuration(seq);
+  if (start >= limit) throw new Error("字幕开始时间超出画面范围，请放在画面时长之内");
+  const end = Math.min(requested, limit);
+  if (start === clip.start && end === clip.start + clip.duration) return [];
+  const operations: EditorOperation[] = [];
+  if (clip.sourceBinding)
+    operations.push({ type: "clip.update", sequenceId, clipId, patch: { sourceBinding: null } });
+  if (start !== clip.start)
+    operations.push({ type: "clip.move", sequenceId, clipIds: [clipId], delta: start - clip.start });
+  const duration = end - start;
+  if (duration !== clip.duration) {
+    const translation = clip.translation?.originalWords
+      ? {
+          ...clip.translation,
+          originalWords: wordsWithin(clip.translation.originalWords, duration),
+        }
+      : undefined;
+    operations.push({
+      type: "clip.update",
+      sequenceId,
+      clipId,
+      patch: {
+        duration,
+        words: wordsWithin(clip.words, duration),
+        transform: stretchKeyframes(clip.transform, clip.duration, duration),
+        color: stretchKeyframes(clip.color, clip.duration, duration),
+        ...(translation ? { translation } : {}),
+      },
+    });
+  }
+  applyEditorOperations(doc, operations, doc.revision);
+  return operations;
+}
+export function planRemoveCaptions(
+  value: EditorDocument,
+  sequenceId: string,
+  clipIds: string[],
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    seq = sequence(doc, sequenceId),
+    clips = selectedCaptions(seq, clipIds);
+  if (!clips.length) throw new Error("请选择要删除的字幕");
+  for (const clip of clips) unlockedCaption(seq, clip);
+  const operations: EditorOperation[] = [
+    { type: "clip.remove", sequenceId, clipIds: clips.map((clip) => clip.id) },
+  ];
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }

@@ -1,7 +1,7 @@
 import { randomId } from "../ids.js";
 import { planMarkerEdit, type MarkerEditRequest } from "./marker-edits";
 import type { EditorOperation } from "./operations";
-import type { SessionIdentity } from "./session";
+import { sameIdentity, type SessionIdentity } from "./session";
 import { secondsToTicks, ticksToSeconds, type Tick } from "./time";
 import type { EditorDocument, TimelineMarker } from "./types";
 import { MAX_EDITOR_TICK } from "./validation";
@@ -16,8 +16,6 @@ export interface EditorMarkersContext {
   onSelection(markerId: string | undefined): void;
   onError(error: unknown): void;
 }
-const sameIdentity = (a: SessionIdentity, b: SessionIdentity) =>
-  a.documentId === b.documentId && a.generation === b.generation && a.revision === b.revision;
 const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -144,11 +142,7 @@ export class EditorMarkers {
       );
       if (this.disposed) return;
       const current = this.context.identity();
-      if (
-        current.documentId !== identity.documentId ||
-        current.generation !== identity.generation ||
-        sequenceId !== this.context.selection().sequenceId
-      )
+      if (!sameIdentity(current, identity, false) || sequenceId !== this.context.selection().sequenceId)
         return;
       this.draft = undefined;
       this.selectedId = request.action === "remove" ? undefined : plan.markerId;
@@ -175,11 +169,7 @@ export class EditorMarkers {
       (!sameIdentity(this.renderedIdentity, identity) || this.renderedSequence !== seq.id)
     ) {
       this.draft = undefined;
-      if (
-        this.renderedIdentity.documentId !== identity.documentId ||
-        this.renderedIdentity.generation !== identity.generation ||
-        this.renderedSequence !== seq.id
-      )
+      if (!sameIdentity(this.renderedIdentity, identity, false) || this.renderedSequence !== seq.id)
         this.selectedId = undefined;
     }
     this.renderedIdentity = { ...identity };

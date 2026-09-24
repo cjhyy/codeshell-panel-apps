@@ -1,5 +1,4 @@
 import { randomId } from "../ids.js";
-import type { PanelBridge } from "../host";
 import {
   copyClips,
   pasteClips,
@@ -46,6 +45,7 @@ import {
   type SequenceIdFactory,
 } from "./sequence-edits";
 import {
+  planAddCaptions,
   planCaptionStyle,
   planCaptionText,
   planCaptionTranslation,
@@ -54,6 +54,7 @@ import {
   planTranscriptCaptions,
   validateCaptionTranscript,
 } from "./captions";
+import { planCaptionPreset } from "./caption-presets";
 import {
   planCreateMulticam,
   planMulticamCut,
@@ -76,6 +77,13 @@ export interface EditorAgentAuthorization {
   after?: EditorDocument;
   steps?: readonly Record<string, unknown>[];
   sequenceId?: string;
+  /** The current automatic-production request this edit belongs to. Only timeline edits and
+   * the clipboard accept one; without it the host applies its general automatic-work lock. */
+  grant?: EditorAgentGrant;
+}
+export interface EditorAgentGrant {
+  projectId: string;
+  requestToken: string;
 }
 export interface EditorAgentContext {
   session(): EditorSession;
@@ -85,6 +93,11 @@ export interface EditorAgentContext {
   authorize(
     request: EditorAgentAuthorization,
   ): void | EditorOperation[] | Promise<void | EditorOperation[]>;
+  /** Synchronous recheck of the same request immediately before its durable save, so a run
+   * stopped or replaced while the edit was being authorized cannot publish it. */
+  assertStillAuthorized?(request: EditorAgentAuthorization): void;
+  /** Aborts once the request's automatic run ends, so a save still waiting for storage is dropped. */
+  requestSignal?(request: EditorAgentAuthorization): AbortSignal | undefined;
   exportSequence?(
     request: {
       identity: SessionIdentity;
@@ -179,6 +192,22 @@ function identity(value: unknown): SessionIdentity {
     generation: integer(data.generation, 1, Number.MAX_SAFE_INTEGER, "会话代数"),
     revision: integer(data.revision, 0, Number.MAX_SAFE_INTEGER, "版本"),
   };
+}
+function grant(value: unknown): EditorAgentGrant | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("自动制作授权须为 {projectId, requestToken} 对象");
+  const data = object(value, ["projectId", "requestToken"]);
+  for (const key of ["projectId", "requestToken"])
+    if (typeof data[key] !== "string" || !data[key] || data[key].length > 128)
+      throw new Error("自动制作授权须包含当前 projectId 和 requestToken");
+  return { projectId: data.projectId, requestToken: data.requestToken };
+}
+/** Sound processing, sync, packages, alignment and editor export stay outside automatic runs;
+ * their export goes through the production render tool, which the run tracks to completion. */
+function rejectGrant(value: unknown): void {
+  if (value && typeof value === "object" && Object.hasOwn(value, "grant"))
+    throw new Error("此功能在自动制作中不可用；自动制作中只能用授权进行时间线编辑与剪贴板操作");
 }
 function sameIdentity(
   session: EditorSession,
@@ -656,8 +685,26 @@ function planCaptionsStep(
       "transcripts",
       "assetIds",
       "wordHighlight",
+      "preset",
+      "start",
+      "end",
     ]);
   switch (action.kind) {
+    case "add":
+      object(action, ["kind", "text", "start", "end", "trackId"]);
+      return planAddCaptions(
+        document,
+        sequenceId,
+        [
+          {
+            text: action.text as string,
+            start: action.start as number,
+            end: action.end as number,
+            ...(action.trackId === undefined ? {} : { trackId: id(action.trackId) }),
+          },
+        ],
+        { idFactory: () => factory("clip") },
+      );
     case "import-srt":
       object(action, ["kind", "text", "trackId"]);
       return planSrtImport(document, sequenceId, action.text, {
@@ -724,9 +771,36 @@ function planCaptionsStep(
     case "detach":
       object(action, ["kind", "clipIds"]);
       return planDetachCaptions(document, sequenceId, ids(action.clipIds));
+    case "preset":
+      object(action, ["kind", "preset"]);
+      return planCaptionPreset(document, sequenceId, action.preset);
     default:
       throw new Error("未知字幕编辑");
   }
+}
+
+/**
+ * Compile planner steps (the apply_editor_edit step schema) into one operation list.
+ * Each step is planned against the draft left by the previous steps, so later steps
+ * see earlier ripples; the result is checked as one transaction on the input document.
+ */
+export function compileEditorSteps(
+  document: EditorDocument,
+  steps: unknown,
+  factory: SequenceIdFactory,
+): EditorOperation[] {
+  if (!Array.isArray(steps) || !steps.length || steps.length > EDITOR_AGENT_LIMITS.steps)
+    throw new Error("编辑须包含 1 至 100 个步骤");
+  let draft = document;
+  const operations: EditorOperation[] = [];
+  for (const raw of json(steps)) {
+    const batch = plan(draft, object(raw, Object.keys(raw ?? {})), factory);
+    if (operations.length + batch.length > EDITOR_AGENT_LIMITS.operations)
+      throw new Error("展开后的编辑超过 1000 项，请拆分范围");
+    draft = applyEditorOperations(draft, batch, draft.revision);
+    operations.push(...batch);
+  }
+  return operations;
 }
 
 export function createEditorAgentTools(context: EditorAgentContext) {
@@ -747,7 +821,8 @@ export function createEditorAgentTools(context: EditorAgentContext) {
     | { id: string; session: EditorSession; generation: number; payload: ClipClipboard }
     | undefined;
   const clipboardWorkflow = async (value: unknown) => {
-    const args = object(json(value), ["identity", "clipboard"]),
+    const args = object(json(value), ["identity", "clipboard", "grant"]),
+      automatic = grant(args.grant),
       snapshot = current(identity(args.identity)),
       request = object(args.clipboard, [
         "action",
@@ -805,14 +880,14 @@ export function createEditorAgentTools(context: EditorAgentContext) {
           operations,
           snapshot.identity.revision,
         ),
-        annotations = await context.authorize(
-          frozen({
-            kind: "edit",
-            identity: snapshot.identity,
-            before: structuredClone(snapshot.document),
-            after,
-          }),
-        );
+        authorization = frozen<EditorAgentAuthorization>({
+          kind: "edit",
+          identity: snapshot.identity,
+          before: structuredClone(snapshot.document),
+          after,
+          ...(automatic ? { grant: automatic } : {}),
+        }),
+        annotations = await context.authorize(authorization);
       recheck(snapshot);
       if (annotations) {
         if (
@@ -823,11 +898,13 @@ export function createEditorAgentTools(context: EditorAgentContext) {
           throw new Error("审批协调器只能补充制作状态");
         operations.push(...annotations);
       }
+      context.assertStillAuthorized?.(authorization);
       await snapshot.session.dispatchDurable(
         operations,
         snapshot.identity,
         request.action === "cut" ? "剪切片段" : "粘贴片段",
         "agent",
+        context.requestSignal?.(authorization),
       );
     }
     if (next) clipboard = next;
@@ -1138,6 +1215,14 @@ export function createEditorAgentTools(context: EditorAgentContext) {
     async apply_editor_edit(value: unknown) {
       if (value && typeof value === "object" && Object.hasOwn(value, "clipboard"))
         return clipboardWorkflow(value);
+      if (
+        value &&
+        typeof value === "object" &&
+        ["separation", "enhancement", "sync", "portable", "alignment"].some((key) =>
+          Object.hasOwn(value, key),
+        )
+      )
+        rejectGrant(value);
       if (value && typeof value === "object" && Object.hasOwn(value, "separation"))
         return audioWorkflow(value, "separation");
       if (value && typeof value === "object" && Object.hasOwn(value, "enhancement"))
@@ -1147,40 +1232,27 @@ export function createEditorAgentTools(context: EditorAgentContext) {
         return portable(value);
       if (value && typeof value === "object" && Object.hasOwn(value, "alignment"))
         return align(value);
-      const args = object(json(value), ["identity", "label", "steps"]),
+      const args = object(json(value), ["identity", "label", "steps", "grant"]),
+        automatic = grant(args.grant),
         snapshot = current(identity(args.identity));
       recheck(snapshot);
       if (typeof args.label !== "string" || !args.label.trim() || args.label.length > 200)
         throw new Error("编辑说明须为 1 至 200 个字符");
-      if (
-        !Array.isArray(args.steps) ||
-        !args.steps.length ||
-        args.steps.length > EDITOR_AGENT_LIMITS.steps
-      )
-        throw new Error("编辑须包含 1 至 100 个步骤");
-      let draft = snapshot.document;
-      const operations: EditorOperation[] = [];
-      for (const raw of args.steps) {
-        const batch = plan(draft, object(raw, Object.keys(raw ?? {})), factory);
-        if (operations.length + batch.length > EDITOR_AGENT_LIMITS.operations)
-          throw new Error("展开后的编辑超过 1000 项，请拆分范围");
-        draft = applyEditorOperations(draft, batch, draft.revision);
-        operations.push(...batch);
-      }
+      const operations = compileEditorSteps(snapshot.document, args.steps, factory);
       const after = applyEditorOperations(
         snapshot.document,
         operations,
         snapshot.identity.revision,
       );
-      const annotations = await context.authorize(
-        frozen({
-          kind: "edit",
-          identity: snapshot.identity,
-          before: structuredClone(snapshot.document),
-          after,
-          steps: args.steps,
-        }),
-      );
+      const authorization = frozen<EditorAgentAuthorization>({
+        kind: "edit",
+        identity: snapshot.identity,
+        before: structuredClone(snapshot.document),
+        after,
+        steps: args.steps,
+        ...(automatic ? { grant: automatic } : {}),
+      });
+      const annotations = await context.authorize(authorization);
       recheck(snapshot);
       if (annotations) {
         if (!Array.isArray(annotations) || annotations.length > 10)
@@ -1189,11 +1261,13 @@ export function createEditorAgentTools(context: EditorAgentContext) {
           if (op.type !== "project.production") throw new Error("审批协调器只能补充制作状态");
         operations.push(...annotations);
       }
+      context.assertStillAuthorized?.(authorization);
       const result = await snapshot.session.dispatchDurable(
         operations,
         snapshot.identity,
         args.label,
         "agent",
+        context.requestSignal?.(authorization),
       );
       const addedClipIds = result.sequences.flatMap((seq) =>
         seq.clips
@@ -1215,6 +1289,7 @@ export function createEditorAgentTools(context: EditorAgentContext) {
       };
     },
     async render_editor_sequence(value: unknown) {
+      rejectGrant(value);
       const args = object(json(value), [
           "identity",
           "sequenceId",
@@ -1310,21 +1385,4 @@ export function createEditorAgentTools(context: EditorAgentContext) {
     },
   };
   return tools;
-}
-export function registerEditorAgentTools(
-  panel: Pick<PanelBridge, "registerTool">,
-  context: EditorAgentContext,
-): () => void {
-  const tools = createEditorAgentTools(context),
-    disposers: Array<() => void> = [];
-  try {
-    for (const [name, handler] of Object.entries(tools))
-      disposers.push(panel.registerTool(name, handler));
-  } catch (error) {
-    for (const dispose of disposers.reverse()) dispose();
-    throw error;
-  }
-  return () => {
-    for (const dispose of disposers.splice(0).reverse()) dispose();
-  };
 }

@@ -78,6 +78,19 @@
   margin-bottom: 16px;
   border-bottom: 1px solid var(--ei-line);
 }
+.editor-inspector .ei-voiceover {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ei-line);
+}
+.editor-inspector .ei-speech-script {
+  margin: 8px 0 10px;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ei-text);
+}
 .editor-inspector .ei-section-title {
   font-size: 13px;
   font-weight: 650;
@@ -108,6 +121,24 @@
   background: var(--ei-input);
   color: var(--ei-text);
   outline: none;
+}
+/* Typed color plus a native picker; the picker keeps the row at the usual width. */
+.editor-inspector .ei-color-field .ei-input {
+  width: calc(48% - 38px);
+}
+.editor-inspector .ei-color-picker {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--ei-line);
+  border-radius: 6px;
+  background: var(--ei-input);
+  cursor: pointer;
+}
+.editor-inspector .ei-color-picker:focus-visible {
+  outline: 2px solid var(--ei-accent);
+  outline-offset: 1px;
 }
 .editor-inspector .ei-input::placeholder {
   color: #73839a;

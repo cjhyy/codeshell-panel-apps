@@ -57,10 +57,18 @@ button:hover {
   border-color: #555e65;
   color: #f5f8fa;
 }
-button:disabled {
+button:disabled,
+button[aria-disabled="true"] {
   opacity: 0.34;
   cursor: not-allowed;
 }
+/* Unavailable but focusable actions keep their resting look on hover. */
+button[aria-disabled="true"]:hover {
+  background: #25282c;
+  border-color: #373b3f;
+  color: #c5cbd0;
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -80,6 +88,11 @@ button.primary {
 }
 button.primary:hover {
   background: #d0f6db;
+}
+button.primary[aria-disabled="true"]:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #183c29;
 }
 button.quiet {
   border-color: transparent;
@@ -313,6 +326,23 @@ h3 {
   align-items: center;
   gap: 14px;
 }
+/* 新建工程 reads as a rail item: same size, label and hover as the tabs above. */
+.rail-bottom > .rail-new {
+  align-self: stretch;
+}
+.rail-new:hover {
+  color: #d9e6de;
+  background: #b7eec80d;
+}
+.new-project-risks {
+  margin: 4px 0 14px;
+  padding-left: 20px;
+  color: #dbe7df;
+  line-height: 1.7;
+}
+.new-project-risks li + li {
+  margin-top: 4px;
+}
 .rail-bottom > span {
   font:
     9px ui-monospace,
@@ -490,9 +520,9 @@ h3 {
 }
 .demo-thumb-kicker {
   font:
-    6px ui-monospace,
+    8px ui-monospace,
     monospace;
-  letter-spacing: 1.5px;
+  letter-spacing: 0.5px;
   color: #adceb8;
 }
 .demo-thumb strong {
@@ -875,8 +905,8 @@ h3 {
   gap: 11px;
 }
 .eyebrow {
-  font-size: 8px;
-  letter-spacing: 1.65px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
   color: #7c9a8a;
   display: block;
   font-weight: 600;
@@ -1148,7 +1178,7 @@ h3 {
   gap: 9px;
 }
 .tiny-badge {
-  font-size: 8px;
+  font-size: 10px;
   color: #9db5a6;
   padding: 3px 5px;
   border: 1px solid #3c5144;
@@ -1355,28 +1385,6 @@ h3 {
   border-radius: 2px;
   background: #d3f6d7;
 }
-.caption-track {
-  position: relative;
-  height: 49px;
-  background: #181a20;
-}
-.timeline-caption {
-  position: absolute;
-  top: 10px;
-  height: 27px;
-  min-height: 27px;
-  display: block;
-  min-width: 1px;
-  overflow: hidden;
-  padding: 4px 7px;
-  background: #383647;
-  border-color: #5b5270;
-  border-radius: 4px;
-  color: #c8bfdc;
-  text-overflow: ellipsis;
-  font-size: 9px;
-  text-align: left;
-}
 .playhead {
   position: absolute;
   top: 0;
@@ -1449,41 +1457,6 @@ h3 {
   font-size: 10px;
   line-height: 1.9;
   margin: 10px 0 18px;
-}
-.transcript-list {
-  margin: 2px -4px 0;
-}
-.transcript-item {
-  position: relative;
-  border-bottom: 1px solid #2d3730;
-  padding: 12px 4px 6px;
-}
-.caption-seek {
-  width: 100%;
-  display: block;
-  background: none;
-  border: none;
-  text-align: left;
-  padding: 0;
-  white-space: normal;
-}
-.caption-seek:hover {
-  background: #273a2d;
-}
-.caption-seek time {
-  color: #7caa8b;
-  font-size: 10px;
-  font-family: ui-monospace, monospace;
-}
-.caption-seek p {
-  font-size: 12px;
-  line-height: 1.8;
-  margin-top: 8px;
-  color: #c0cec3;
-}
-.transcript-item .text-button {
-  margin-left: auto;
-  display: block;
 }
 .prompt-chips {
   display: flex;
@@ -1615,6 +1588,17 @@ h3 {
   background: #a9904920;
   color: #ccc09b;
 }
+.narration-approval-issue {
+  padding: 9px 10px;
+  margin: 12px 0 10px;
+  border-left: 2px solid #c08a5a;
+  border-radius: 0 4px 4px 0;
+  background: #c08a5a20;
+  color: #e0c2a4;
+  font-size: 10px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
 .narration-panel textarea {
   width: 100%;
   min-width: 0;
@@ -1731,6 +1715,25 @@ h3 {
 .proposal-duration strong {
   color: #d0e7c5;
   font-size: 17px;
+}
+.proposal-card ul.proposal-tracks {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+  color: #9cac99;
+  font-size: 10px;
+}
+.proposal-card ul.proposal-tracks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+}
+.proposal-card ul.proposal-tracks li span:last-child {
+  color: #d0e7c5;
+  font-family: ui-monospace, monospace;
 }
 .proposal-card ol {
   padding: 0 0 0 16px;
@@ -1974,8 +1977,17 @@ dialog .range-inputs {
   .topbar {
     height: 58px;
   }
+  /* Narrow panels keep the project name, truncated, instead of dropping it. */
   .project-breadcrumb {
+    gap: 0;
+  }
+  .project-breadcrumb > :not(input) {
     display: none;
+  }
+  .project-breadcrumb input {
+    width: 100%;
+    min-width: 0;
+    text-overflow: ellipsis;
   }
   .header-actions {
     margin-left: auto;
@@ -1996,6 +2008,11 @@ dialog .range-inputs {
   }
   .property-section {
     padding-top: 12px;
+  }
+}
+@media (max-width: 480px) {
+  .brand strong {
+    display: none;
   }
 }
 @media (max-width: 620px) {
@@ -2173,10 +2190,23 @@ dialog .range-inputs {
   color: #b9a47c;
   background: #29251c;
 }
+.capability-grid .capability-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: #b9a47c;
+  font-size: 11px;
+  line-height: 1.7;
+}
 .job-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.export-jobs-title {
+  margin: 20px 0 12px;
+}
+.export-job-list {
+  margin-bottom: 20px;
 }
 .job-card {
   padding: 14px;
@@ -3017,6 +3047,149 @@ dialog .range-inputs {
 .folder-import p {
   line-height: 1.6;
   margin: 8px 0;
+}
+.folder-import .folder-status:empty {
+  display: none;
+}
+/* The notes open from a small toggle (touch has no tooltips) as a popover over the list. */
+.folder-import > .folder-actions {
+  position: relative;
+}
+.folder-help {
+  flex: none;
+  align-self: center;
+}
+.folder-help > summary {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  list-style: none;
+  cursor: pointer;
+}
+.folder-help > summary::-webkit-details-marker {
+  display: none;
+}
+.folder-help > summary:hover,
+.folder-help[open] > summary {
+  color: var(--accent);
+  background: #b8edc81a;
+}
+.folder-help-body {
+  position: absolute;
+  z-index: 6;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  padding: 2px 10px;
+  border: 1px solid #373b3f;
+  border-radius: 8px;
+  background: #1c1f22;
+  box-shadow: 0 8px 24px #0007;
+}
+
+/* The media library keeps secondary tools in compact rows so the first cards show without scrolling. */
+.workspace.editor-mode > .library-panel {
+  padding-top: 14px;
+}
+.library-panel .section-title {
+  margin-bottom: 10px;
+}
+.library-panel .library-actions {
+  margin-bottom: 8px;
+}
+.library-actions > .library-voiceover {
+  flex: none;
+  padding-inline: 10px;
+}
+.library-panel .folder-import {
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+}
+.library-panel .folder-import > .folder-actions {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+.library-panel .folder-import > .folder-actions > [data-action="import-folder"] {
+  flex: none;
+}
+.library-panel .folder-import > .folder-actions > button {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.library-panel .folder-import > .folder-actions > button,
+.library-secondary > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.library-panel .folder-connection {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+.library-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.library-secondary > button {
+  flex-basis: 0;
+  white-space: nowrap;
+}
+.library-secondary > button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-find {
+  display: flex;
+  gap: 6px;
+}
+.library-find .search-field {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+}
+.library-find .media-view-switch {
+  flex: none;
+}
+.library-find .media-view-switch button {
+  min-height: 28px;
+  padding: 4px 7px;
+}
+.library-panel .media-library-toolbar {
+  align-items: center;
+  gap: 6px 8px;
+  margin: 8px 0 10px;
+}
+.section-title > .media-select-all {
+  margin-left: auto;
+  min-height: 22px;
+  padding: 2px 8px;
+  font-size: 10px;
+}
+.media-selection-count {
+  color: #929b9f;
+  font-size: 10px;
+}
+.library-panel .media-library-toolbar > label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.library-panel .media-library-toolbar select {
+  margin-top: 0;
+  padding: 4px 6px;
 }
 
 /* Direct timeline editing and navigation. */

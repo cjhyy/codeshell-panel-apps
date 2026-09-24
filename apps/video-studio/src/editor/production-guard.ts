@@ -1,10 +1,16 @@
 import type { EditorOperation } from "./operations";
+import { isSubtitleClip } from "./lookup";
 import type { EditorDocument, EditorClip, JsonData } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
+/** Code-unit order: the hashed dependencies must not depend on the runtime's locale. */
+const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const record = (value: JsonData | undefined): Record<string, JsonData> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
-function dependencies(document: EditorDocument, known = document): string {
+function dependencies(
+  document: EditorDocument,
+  known: EditorDocument | null = document,
+): string {
   const seen = new Set<string>(),
     assets = new Set<string>();
   const clip = (item: EditorClip) => {
@@ -37,7 +43,7 @@ function dependencies(document: EditorDocument, known = document): string {
         audio: item.audio,
       };
     }
-    if (item.kind === "text" && item.role === "subtitle")
+    if (isSubtitleClip(item))
       return {
         ...base,
         text: item.text,
@@ -72,18 +78,17 @@ function dependencies(document: EditorDocument, known = document): string {
           volume: track.volume,
           pan: track.pan,
         })),
-      clips: value.clips
-        .slice()
-        .sort((a, b) => a.id.localeCompare(b.id))
-        .map(clip)
-        .filter(Boolean)
-        .sort((a: any, b: any) => a.id.localeCompare(b.id)),
-      transitions: value.transitions,
+      clips: value.clips.slice().sort(byId).map(clip).filter(Boolean),
+      transitions: value.transitions.slice().sort(byId),
     };
   };
   const timeline = sequence(document.activeSequenceId);
+  const active = document.sequences.find((item) => item.id === document.activeSequenceId)!;
   return JSON.stringify({
     script: document.production?.script ?? "",
+    // The recorded narration was approved against this picture size and arrangement,
+    // as the old view's approval snapshot also records.
+    canvas: { width: active.width, height: active.height, timelineMode: active.timelineMode },
     timeline,
     assets: document.assets
       .filter((item) => assets.has(item.id))
@@ -94,12 +99,22 @@ function dependencies(document: EditorDocument, known = document): string {
         resourceId: item.resourceId,
         // A newly computed fingerprint records an existing source; only a change to an
         // already known fingerprint establishes changed bytes. Proxies/analysis are preparation.
-        fingerprint: known.assets.find((asset) => asset.id === item.id)?.fingerprint
+        fingerprint: known?.assets.find((asset) => asset.id === item.id)?.fingerprint
           ? item.fingerprint
           : undefined,
       }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
+      .sort(byId),
   });
+}
+
+/**
+ * What a confirmed narration draft (and a recorded take's alignment) depends on, in a
+ * deterministic order: the script, the canvas, every audible/visible clip's timing, subtitles
+ * and the sources' identity. Source fingerprints are left out, so computing one later (a
+ * preparation step) never changes a stored approval.
+ */
+export function narrationDependencies(document: EditorDocument): string {
+  return dependencies(validateEditorDocument(document), null);
 }
 
 /** Shared by generic manual/AI editing. Dedicated user approval and verified alignment use their own coordinator.

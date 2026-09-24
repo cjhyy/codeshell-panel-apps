@@ -6,6 +6,31 @@ import {
 } from "../sdk/panel-runtime";
 
 let nextExportJobsId = 0;
+/** Remembered export titles; the newest are kept when the bound is reached. */
+const MAX_EXPORT_TITLES = 200;
+
+/** Where the panel keeps the titles people saw when they submitted each export. */
+export interface ExportTitleStore {
+  read(): Promise<unknown>;
+  write(titles: Record<string, string>): Promise<void>;
+}
+/** One export as the 任务 page lists it. */
+export interface ExportJobSummary {
+  id: string;
+  title: string;
+  status: RuntimeJob["status"];
+  /** What the export record shows: progress text, failure reason or completion. */
+  message: string;
+  /** 0–1 while running when the Host reports it. */
+  fraction?: number;
+}
+/** A readable name for an export found in Host history without a remembered title. */
+function historyTitle(request: { profile?: { name?: unknown } }): string {
+  const preset = request.profile?.name;
+  return typeof preset === "string" && preset.trim()
+    ? `视频导出 · ${preset.trim().slice(0, 200)}`
+    : "视频导出";
+}
 
 /** A view of Host-owned durable exports. Reloads discover the original jobs rather than submitting new work. */
 export class EditorExportJobs {
@@ -17,12 +42,26 @@ export class EditorExportJobs {
   private readonly pending = new Set<string>();
   private readonly watching = new Map<string, AbortController>();
   private readonly observationErrors = new Set<string>();
+  /** Exports whose completion was already reported through onFinished. */
+  private readonly finished = new Set<string>();
+  /** Job id → the title shown when it was submitted (project name · preset). */
+  private titles = new Map<string, string>();
+  private titlesLoaded?: Promise<void>;
+  private titleWrite: Promise<void> = Promise.resolve();
   private offset = 0;
   private loading = false;
   private disposed = false;
   constructor(
     private readonly bridge: RuntimeBridge,
     private readonly onError: (error: unknown) => void,
+    private readonly options: {
+      /** Called once when an export this view saw running reaches a final state. */
+      onFinished?(job: RuntimeJob): void;
+      /** Keeps submitted titles across reloads; history otherwise names only the preset. */
+      titles?: ExportTitleStore;
+      /** Called after any export row appears or changes, e.g. to refresh the 任务 page. */
+      onChanged?(): void;
+    } = {},
   ) {
     this.sdk = createPanelRuntime(bridge);
     this.root.className = "editor-export-jobs";
@@ -57,15 +96,44 @@ export class EditorExportJobs {
     document.addEventListener("pointerdown", this.outsideClick);
     this.updateSummary();
   }
+  /** Exports still queued or running in the Host. */
+  get activeCount(): number {
+    return [...this.latest.values()].filter((job) => ["queued", "running"].includes(job.status))
+      .length;
+  }
   /** Keep task history beside the editor's export action instead of covering the timeline. */
   mountTrigger(container: HTMLElement, before: ChildNode | null = null): void {
     if (!this.disposed) container.insertBefore(this.trigger, before);
   }
-  show(): void {
+  show(jobId?: string): void {
     if (this.disposed) return;
     this.root.hidden = false;
     this.trigger.setAttribute("aria-expanded", "true");
     this.root.querySelector<HTMLButtonElement>("[data-close]")!.focus();
+    if (jobId) this.rows.get(jobId)?.scrollIntoView({ block: "nearest" });
+  }
+  /** Every export this view knows, newest first, as shown in its rows. */
+  summaries(): ExportJobSummary[] {
+    return [...this.rows.values()]
+      .filter((row) => this.latest.has(row.dataset.jobId!))
+      .sort(
+        (a, b) =>
+          Number(b.dataset.createdAt) - Number(a.dataset.createdAt) ||
+          a.dataset.jobId!.localeCompare(b.dataset.jobId!),
+      )
+      .map((row) => {
+        const job = this.latest.get(row.dataset.jobId!)!,
+          bar = row.querySelector("progress")!;
+        return {
+          id: job.id,
+          title: row.querySelector("strong")!.textContent ?? "视频导出",
+          status: job.status,
+          message: row.querySelector("output")!.textContent ?? "",
+          ...(["queued", "running"].includes(job.status) && bar.hasAttribute("value")
+            ? { fraction: bar.value }
+            : {}),
+        };
+      });
   }
   hide(restoreFocus = true): void {
     const focusedInside = this.root.contains(document.activeElement);
@@ -101,6 +169,31 @@ export class EditorExportJobs {
         : "";
     this.root.querySelector<HTMLElement>(".editor-export-jobs-empty")!.hidden = this.rows.size > 0;
   }
+  private loadTitles(): Promise<void> {
+    this.titlesLoaded ??= (async () => {
+      const saved = await this.options.titles?.read().catch(() => null);
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+      for (const [id, title] of Object.entries(saved))
+        if (typeof title === "string" && title && !this.titles.has(id))
+          this.titles.set(id, title.slice(0, 400));
+    })();
+    return this.titlesLoaded;
+  }
+  private rememberTitle(id: string, title: string): void {
+    const store = this.options.titles;
+    if (!store || this.titles.get(id) === title) return;
+    this.titleWrite = this.titleWrite
+      .then(() => this.loadTitles())
+      .then(async () => {
+        this.titles.delete(id);
+        this.titles.set(id, title);
+        while (this.titles.size > MAX_EXPORT_TITLES)
+          this.titles.delete(this.titles.keys().next().value!);
+        await store.write(Object.fromEntries(this.titles));
+      })
+      // A title is a convenience; losing one only falls back to the preset name.
+      .catch(() => {});
+  }
   async loadMore(): Promise<void> {
     if (this.loading || this.disposed) return;
     this.loading = true;
@@ -108,6 +201,7 @@ export class EditorExportJobs {
     more.disabled = true;
     try {
       await this.sdk.requireMethods(["tasks.list", "tasks.get"]);
+      await this.loadTitles();
       // Preparation may create many small jobs. Each click reads a bounded page, never skips unknown pages.
       const page = await this.sdk.call("tasks.list", { offset: this.offset, limit: 50 });
       if (!Array.isArray(page) || page.length > 50) throw new Error("导出任务列表返回无效数据");
@@ -117,7 +211,7 @@ export class EditorExportJobs {
         const job = taskValue(await this.sdk.call("tasks.get", { id: entry.id }));
         const request = (job.input as any)?.request;
         if (request?.action === "render")
-          this.track(job, `视频导出 · ${request.sequenceId ?? "序列"}`, false);
+          this.track(job, this.titles.get(job.id) ?? historyTitle(request), false);
       }
       this.offset += page.length;
       more.hidden = page.length < 50;
@@ -129,6 +223,8 @@ export class EditorExportJobs {
   }
   track(job: RuntimeJob, name: string, reveal = true): void {
     if (this.disposed) return;
+    // A submission names its project and preset; history rows reuse that title after a reload.
+    if (reveal) this.rememberTitle(job.id, name);
     if (!this.rows.has(job.id)) {
       const row = document.createElement("section");
       row.dataset.jobId = job.id;
@@ -155,8 +251,12 @@ export class EditorExportJobs {
     ))
       list.append(row);
     if (reveal) this.show();
+    const firstSight = !this.latest.has(job.id);
     this.update(job);
     const accepted = this.latest.get(job.id)!;
+    // A submitted or refreshed export can already be done when first seen; history pages are not.
+    if (firstSight && reveal && !["queued", "running"].includes(accepted.status))
+      this.reportFinished(accepted);
     if (["queued", "running"].includes(accepted.status) && !this.watching.has(job.id)) {
       const controller = new AbortController();
       this.watching.set(job.id, controller);
@@ -173,6 +273,13 @@ export class EditorExportJobs {
           if (this.watching.get(job.id) === controller) this.watching.delete(job.id);
         });
     }
+  }
+  private reportFinished(job: RuntimeJob): void {
+    // A retried export finishes again as a new attempt.
+    const key = `${job.id}:${job.attempt}`;
+    if (this.finished.has(key)) return;
+    this.finished.add(key);
+    this.options.onFinished?.(job);
   }
   private update(job: RuntimeJob): void {
     if (this.disposed) return;
@@ -196,6 +303,7 @@ export class EditorExportJobs {
     if (terminal(job)) {
       this.watching.get(job.id)?.abort();
       this.observationErrors.delete(job.id);
+      if (previous && !terminal(previous)) this.reportFinished(job);
     }
     row.dataset.status = job.status;
     row.querySelector("output")!.textContent = this.observationErrors.has(job.id)
@@ -217,6 +325,9 @@ export class EditorExportJobs {
     else bar.removeAttribute("value");
     bar.hidden =
       job.status === "failed" || job.status === "cancelled" || this.observationErrors.has(job.id);
+    queueMicrotask(() => {
+      if (!this.disposed) this.options.onChanged?.();
+    });
     const actions = row.querySelector("div")!;
     const focusedAction = actions.contains(document.activeElement)
       ? document.activeElement?.textContent

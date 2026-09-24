@@ -1,6 +1,8 @@
 import { escapeHtml as esc, html } from "./icons";
 import { button } from "./views";
-import type { Asset, AudioClip } from "./model";
+import type { Asset } from "./model";
+import type { VoiceoverReplaceTarget } from "./editor/voiceover-publication";
+import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./editor/legacy-time";
 import type { ProductionController, VoiceCatalog, VoiceModel, VoicePreparation } from "./production";
 
 type Voice = { id: string; name: string; language: string };
@@ -56,7 +58,7 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
   let catalog: VoiceCatalog | undefined;
   let browserVoices: SpeechSynthesisVoice[] = [];
   let textBeforeImport: string | undefined;
-  let replacement: { projectId: string; clip: AudioClip } | undefined;
+  let replacement: { projectId: string; target: VoiceoverReplaceTarget } | undefined;
   let utterance: SpeechSynthesisUtterance | undefined;
   let previewing = false,
     previewMessage = "",
@@ -283,10 +285,17 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
   browserVoices = browserSpeech()?.getVoices() ?? [];
   browserSpeech()?.addEventListener("voiceschanged", refreshBrowserVoices);
 
-  async function load(asset?: Asset, clip?: AudioClip): Promise<void> {
-    if (asset?.speech) {
+  /** `target` is the editor clip the regenerated voice replaces in place. */
+  async function load(
+    recipe?: Asset["speech"],
+    target?: VoiceoverReplaceTarget,
+  ): Promise<void> {
+    if (recipe) {
       stopPreview();
-      const speech = asset.speech as Asset["speech"] & { modelId?: string; instructions?: string };
+      const speech = recipe as NonNullable<Asset["speech"]> & {
+        modelId?: string;
+        instructions?: string;
+      };
       text = speech.text;
       voiceId = speech.voiceId;
       rate = speech.rate;
@@ -295,15 +304,15 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
       instructions = speech.instructions ?? "";
       referenceProjectId = context.projectId();
       referenceAssetId =
-        (context.assets?.() ?? []).find((item) => item.mediaId === asset.speech?.referenceAssetId)
-          ?.id ?? "";
-      referenceText = asset.speech.referenceText ?? "";
+        (context.assets?.() ?? []).find((item) => item.mediaId === speech.referenceAssetId)?.id ??
+        "";
+      referenceText = speech.referenceText ?? "";
       language = "";
       textBeforeImport = undefined;
-      replacement = clip
-        ? { projectId: context.projectId(), clip: structuredClone(clip) }
+      replacement = target
+        ? { projectId: context.projectId(), target: structuredClone(target) }
         : undefined;
-      notice = clip
+      notice = target
         ? "正在修改这条配音。新音频完成后安全替换，旧源音频仍保留。"
         : "已载入生成文案，可以调整后重新配音。";
     }
@@ -529,9 +538,12 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
     stopPreview();
     const projectId = context.projectId();
     const placement = {
-      startFrame: replacement?.clip.startFrame ?? context.frame(),
+      // Replacement keeps the original clip's exact ticks; the frame is only a record.
+      startFrame: replacement
+        ? Math.min(MAX_LEGACY_FRAME, Math.floor(replacement.target.start / LEGACY_FRAME_TICKS))
+        : context.frame(),
       attach: true,
-      ...(replacement ? { replaceClip: structuredClone(replacement.clip) } : {}),
+      ...(replacement ? { replaceTarget: structuredClone(replacement.target) } : {}),
     };
     const params = {
       text,
@@ -576,7 +588,7 @@ export function createVoiceoverUI(production: ProductionController, context: Voi
     );
     return html`<div class="section-title">
         <h2>文字配音</h2>
-        <span class="tiny-badge">VOICEOVER</span>
+        <span class="tiny-badge">配音</span>
       </div>
       <p class="section-description voiceover-intro">
         选择模型，先生成短音频听效果。<br />满意后生成完整配音，加入独立音轨。

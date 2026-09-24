@@ -1,6 +1,7 @@
 import type { PanelBridge, Proposal } from "./host";
 import type { Project } from "./model";
 import type { ProductionController } from "./production";
+import type { LegacyProjectView } from "./editor/legacy-adapter";
 
 interface ProductionTools {
   project(): Project;
@@ -29,6 +30,28 @@ const page = (value: unknown, fallback: number, max: number): number => {
     throw new Error("分页范围无效");
   return value;
 };
+const LEGACY_RESTRICTION_LIMIT = 50;
+/** What the old 30 fps view of the editor document leaves out, bounded for agent reads.
+ * timelineComplete=false means old-format edits cannot see every clip. */
+export function legacyViewSummary(
+  view: Pick<LegacyProjectView, "sequenceId" | "timelineComplete" | "renderSafe" | "restrictions">,
+) {
+  return {
+    sequenceId: view.sequenceId,
+    timelineComplete: view.timelineComplete,
+    renderSafe: view.renderSafe,
+    restrictions: view.restrictions
+      .slice(0, LEGACY_RESTRICTION_LIMIT)
+      .map(({ code, clipId, assetId, field, excluded }) => ({
+        code,
+        ...(clipId ? { clipId } : {}),
+        ...(assetId ? { assetId } : {}),
+        ...(field ? { field } : {}),
+        excluded,
+      })),
+    restrictionCount: view.restrictions.length,
+  };
+}
 export function registerProjectReadTool(
   panel: PanelBridge | undefined,
   production: ProductionController,

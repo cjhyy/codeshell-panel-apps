@@ -3,14 +3,22 @@ import type { Project } from "./model";
 import type { PanelBridge, PanelTask } from "./host";
 import {
   ProductionController,
+  transcriptionSetupMessage,
   validateVoicePreparation,
   type AutoProduction,
   type VoicePreparation,
 } from "./production";
-import { hasNarrationApproval, narrationSnapshot } from "./narration";
+import type { EditorDocument } from "./editor/types";
+import { migrateLegacyProject } from "./editor/migration";
+import { hasEditorNarrationApproval, readNarration } from "./editor/narration-edits";
+import { narrationDependencies } from "./editor/production-guard";
 
 interface AutomaticCallbacks {
   getProject(): Project;
+  /** The authoritative editor document; defaults to migrating the current old-view project. */
+  getDocument?(): EditorDocument;
+  /** Whether the confirmed draft still covers `document`; defaults to the editor check. */
+  hasApproval?(document: EditorDocument): Promise<boolean>;
   assertEditable(): void;
   state(task: PanelTask | null, starting: boolean, message: string, token: string): void;
 }
@@ -22,6 +30,7 @@ export class AutomaticProducer {
   private task: PanelTask | null = null;
   private starting = false;
   private handling = new Map<string, Promise<void>>();
+  private signals = new Map<string, AbortController>();
   constructor(
     private bridge: PanelBridge | undefined,
     private production: ProductionController,
@@ -33,9 +42,24 @@ export class AutomaticProducer {
       ? (auto.requestToken ?? "")
       : "";
   }
+  private document(): EditorDocument {
+    return this.callbacks.getDocument?.() ?? migrateLegacyProject(this.callbacks.getProject());
+  }
+  private narration() {
+    const document = this.document(),
+      state = readNarration(document);
+    return {
+      document,
+      state,
+      script: typeof document.production?.script === "string" ? document.production.script : "",
+    };
+  }
   get mode(): NonNullable<AutoProduction["mode"]> {
     return this.production.auto?.mode ?? "produce";
   }
+  /** `apply_editor_edit` is an editor-branch edit carrying this run's request as its grant:
+   * open while producing and drafting, never while initializing, and for a recorded narration
+   * only when the edit keeps the confirmed draft and recording valid (checked by the caller). */
   assertToolAllowed(name: string): void {
     if (
       this.mode === "initialize" &&
@@ -53,23 +77,25 @@ export class AutomaticProducer {
       ![
         "prepare_video_assets",
         "apply_video_edit",
+        "apply_editor_edit",
         "set_video_script",
         "create_video_scene",
       ].includes(name)
     )
       throw new Error("当前先制作待确认草稿，本人录音前不生成配音或正式成片");
     if (this.mode === "narration") {
-      const narration = this.callbacks.getProject().narration;
+      const { state: narration, script } = this.narration();
       if (
         !narration ||
         !["recorded", "aligned"].includes(narration.phase) ||
-        narration.approvedScript !== this.callbacks.getProject().script
+        narration.approvedScript !== script
       )
         throw new Error("文稿或剪辑已改变，请重新确认草稿与本次录音");
       if (
         ![
           "prepare_video_assets",
           "apply_video_edit",
+          "apply_editor_edit",
           "create_video_scene",
           "render_video_project",
         ].includes(name)
@@ -80,6 +106,30 @@ export class AutomaticProducer {
         (narration.phase !== "aligned" || narration.captionBasis !== "recording")
       )
         throw new Error("请先完整编排本人录音并按真实转写完成字幕对齐");
+    }
+  }
+  /** Aborted as soon as `token` stops being this run's current request (the round ends,
+   * fails, is cancelled or replaced), so an edit still saving for it is not committed. */
+  requestSignal(token: string): AbortSignal {
+    this.releaseSignals();
+    if (!token || token !== this.requestToken)
+      return AbortSignal.abort(new Error("自动制作请求已结束，未保存这次编辑"));
+    let controller = this.signals.get(token);
+    if (!controller) this.signals.set(token, (controller = new AbortController()));
+    return controller.signal;
+  }
+  private releaseSignals(): void {
+    for (const [token, controller] of this.signals)
+      if (token !== this.requestToken) {
+        controller.abort(new Error("自动制作请求已结束，未保存这次编辑"));
+        this.signals.delete(token);
+      }
+  }
+  private async setAuto(value: AutoProduction | null): Promise<void> {
+    try {
+      await this.production.setAuto(value);
+    } finally {
+      this.releaseSignals();
     }
   }
   isCurrentRequest(args: Record<string, unknown>): boolean {
@@ -110,29 +160,31 @@ export class AutomaticProducer {
   private async verifyNarrationRun(expected?: AutoProduction): Promise<boolean> {
     if (expected && (expected.mode !== "narration" || !this.currentRun(expected)))
       return expected.mode !== "narration";
-    const project = structuredClone(this.callbacks.getProject());
-    const state = project.narration;
-    const source = project.assets.find((asset) => asset.id === state?.recordingAssetId);
+    const document = structuredClone(this.document());
+    const state = readNarration(document);
+    const source = document.assets.find((asset) => asset.id === state?.recordingAssetId);
     if (
       !state ||
       !["recorded", "aligned"].includes(state.phase) ||
       !source ||
       !["audio", "video"].includes(source.kind) ||
-      source.speech ||
-      !(await hasNarrationApproval(project))
+      source.metadata?.speech ||
+      !(await (this.callbacks.hasApproval ?? hasEditorNarrationApproval)(document))
     )
       throw new Error("文稿、剪辑或本次录音已改变，请重新确认草稿与本人录音");
     if (expected && !this.currentRun(expected)) return false;
-    const current = this.callbacks.getProject();
+    const current = this.document();
     if (
-      current.id !== project.id ||
-      narrationSnapshot(current) !== narrationSnapshot(project) ||
-      JSON.stringify(current.narration) !== JSON.stringify(state)
+      current.id !== document.id ||
+      narrationDependencies(current) !== narrationDependencies(document) ||
+      JSON.stringify(current.production?.narration) !==
+        JSON.stringify(document.production?.narration)
     )
       throw new Error("检查期间工程已改变，请重新确认当前草稿与本人录音");
     return true;
   }
   private publish(message?: string): void {
+    this.releaseSignals();
     if (this.production.auto?.projectId !== this.callbacks.getProject().id) {
       this.callbacks.state(null, false, "", "");
       return;
@@ -170,20 +222,26 @@ export class AutomaticProducer {
     // callbacks and double clicks cannot submit another owner during approval checks.
     this.busy = true;
     try {
+      const narration = options.mode === "narration" ? this.narration().state : undefined;
       if (options.mode === "narration") {
-        if (project.narration?.phase !== "recorded")
+        if (narration?.phase !== "recorded")
           throw new Error("请先确认当前草稿，并选择或保存本次口播录音");
         await this.verifyNarrationRun();
         if (!this.production.status.transcription.available)
-          throw new Error("本人录音对齐需要本地 Whisper 转写；录音和草稿已保留，可配置转写后继续");
+          throw new Error(
+            transcriptionSetupMessage(
+              this.production.status.transcription.reason,
+              "再重试本人录音对齐；录音和草稿已保留",
+            ),
+          );
       }
-      await this.production.setAuto(run);
+      await this.setAuto(run);
       this.task = null;
       this.publish();
       if (!this.currentRun(run)) return;
       const ids =
         options.mode === "narration"
-          ? [project.narration!.recordingAssetId!]
+          ? [narration!.recordingAssetId!]
           : project.assets.filter((asset) => asset.mediaId).map((asset) => asset.id);
       const prepared =
         ids.length &&
@@ -192,7 +250,7 @@ export class AutomaticProducer {
           ? await this.production.prepare(ids, this.production.status.transcription.available)
           : { jobs: [] };
       if (!this.currentRun(run)) return;
-      await this.production.setAuto({
+      await this.setAuto({
         ...this.production.auto!,
         preparationJobIds: prepared.jobs.map((job) => job.id),
       });
@@ -247,7 +305,7 @@ export class AutomaticProducer {
         )
       ) {
         if (auto.mode === "narration") this.assertToolAllowed("render_video_project");
-        await this.production.setAuto({
+        await this.setAuto({
           ...this.production.auto!,
           phase: "done",
           message: "MP4 已完成，可在制作任务中播放与保存。",
@@ -300,7 +358,7 @@ export class AutomaticProducer {
     this.starting = true;
     this.task = null;
     try {
-      await this.production.setAuto({
+      await this.setAuto({
         ...auto,
         phase: "agent",
         attempts: auto.attempts + 1,
@@ -324,6 +382,7 @@ export class AutomaticProducer {
           "video-production",
           "tts-setup",
           "narration-workflow",
+          "editor-v2",
         ]
           .filter((name) => name !== skill)
           .map((name) => `video-studio:${name}`),
@@ -334,7 +393,7 @@ export class AutomaticProducer {
           `先使用 Skill 工具加载 video-studio:${skill}，然后调用 Panel 完成用户指定范围的工作。${auto.mode === "draft" ? "当前是草稿阶段：根据素材与用户输入写文案、剪草稿、配明确估时的草稿字幕。保存完成后必须停下等用户确认再本人录音，不调用TTS或导出。" : auto.mode === "narration" ? "用户已确认草稿并保存本人录音。使用 project.narration.recordingAssetId，以真实录音时长/转写调整画面与字幕，保留全部说话，不得用TTS替换。完成真实字幕对齐后再导出。" : initialization ? "当前是初始化模式：检查实际能力、按需准备素材、保存 stage 为 initialized 的 workflow 制作单后结束。只可用专用工具准备所选声音的短试听；不能修改时间轴、生成完整配音或场景、导出视频。素材不足也能保存包含具体 blockers 的制作单，不冒充已经就绪。" : "要求视频时应用修改并导出 MP4；明确只要方案、润色文稿或安装配音引擎时，仅完成所选工作并停止。用户已授权自动制作，正常保存版本、素材预处理、文字配音、场景制作和导出不需要再次确认。"}`,
           "仅使用 Skill 与 Panel 工具。先 read_video_project 获取最新素材、修订号和能力。通过 inspect_video_frame 查看关键帧、get_video_transcript 读取真实文稿；不要把文件名当画面理解。",
           narrated
-            ? "本人后录音路线：不要生成TTS。草稿文案用set_video_script finish:false；临时字幕ID以draft-narration-开头。本人录音阶段不能修改确认稿，audio-add显式完整outFrame，先延长或重排可用画面再加入音频，不使用默认截尾。"
+            ? "本人后录音路线：不要生成TTS。草稿文案用set_video_script finish:false保存，面板会按文稿在当前序列自动生成估时的临时字幕，可再调整。本人录音阶段不能修改确认稿；先延长或重排可用画面，再放入完整长度的本人录音（旧格式audio-add显式完整outFrame，或editor分支在音频轨加入完整片段），不使用默认截尾。"
             : initialization
               ? "初始化保留已有原声。用户已选择声音准备时，加载 tts-setup，检查并按需安装所选引擎；有用户选定的参考区间先 extract_video_reference，等待真实音频入库，再用 prepare_video_voice 生成最多120字的短试听，只保存素材。缺录音或逐字稿时保留已完成安装，在 blockers 写明录制或选择参考的下一步，不伪造本人音色。没有声音选择则仅盘点声音条件。"
               : "需要讲解而素材没有合适原声时，若 tts.available 为真，使用 create_video_voiceover 生成真实旁白。先取得实际音频时长再编排足够长的画面，用 audio-add 加入完整语音；禁止无提示截断句尾。用户明确要求静音或仅音乐时遵守。已有 asset.speech 可复用，不重复生成。",
@@ -344,6 +403,9 @@ export class AutomaticProducer {
             : initialization
               ? "完成或明确记录所选声音准备的缺项，等已排队素材、安装、参考提取和试听任务结束后，以 apply_video_edit 的单个 workflow 操作保存完整制作单，stage:initialized；工作台会自动结束本次初始化。失败的准备在 blockers 说明，不能伪造观察。"
               : "全流程制作将目标、素材选段与来源证据、叙事结构、下一步、实际缺项写入 project.workflow，并随粗剪、声音、字幕和验收阶段更新；后续轮次读取后继续。若导出已排队，工作台会跟踪真实完成。",
+          initialization
+            ? ""
+            : `read_video_project 的 legacyView.timelineComplete 为 false（旧视图缺少片段），或需要多轨、画中画、标题、转场、精确字幕时，加载 video-studio:editor-v2，用 read_video_project({editor:{view:'project'}}) 取得 identity，再用 apply_video_edit 的 editor 分支编辑，并附 editor.grant:{projectId:'${auto.projectId}',requestToken:'${token}'}（grant 放在 editor 对象内）；不带 grant 的新版编辑在自动制作中会被锁定。声音分离、降噪、同步、工程包、机位对齐和 editor 导出在自动制作中不可用。${auto.mode === "draft" ? "草稿阶段 editor 分支用于画面剪辑，也可用 captions 的 add 步骤补充临时字幕，面板会记为待录音对齐的草稿字幕。" : auto.mode === "narration" ? "本人录音阶段 editor 分支可以编排画面和本人录音（在音频轨加入完整录音、延长或重排画面等），面板会记录为录音编排进度；改写文稿、改变画幅或替换本人录音素材的编辑会被拒绝，也不要自行写 project.narration。完成后用 apply_video_edit 保存 stage:review 的 workflow，面板按真实转写生成字幕并标记已对齐。需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。" : "需要导出时统一调用 render_video_project 的旧参数（projectId/baseRevision/requestToken），它会导出完整的新版当前序列，工作台据此跟踪完成。"}`,
           continuation
             ? "这是同一个目标的后续轮次。先读工程和制作任务，沿用已生成的场景、已应用的修改与结果，不重复提交相同任务。"
             : "",
@@ -361,7 +423,7 @@ export class AutomaticProducer {
         return;
       }
       this.task = task;
-      await this.production.setAuto({ ...this.production.auto!, taskId: task.id });
+      await this.setAuto({ ...this.production.auto!, taskId: task.id });
       this.publish();
       await this.handleTask(task);
     } finally {
@@ -433,7 +495,7 @@ export class AutomaticProducer {
           return;
         }
       }
-      await this.production.setAuto({
+      await this.setAuto({
         ...this.production.auto!,
         phase: "done",
         message: "MP4 已完成，可在制作任务中播放与保存。",
@@ -461,12 +523,12 @@ export class AutomaticProducer {
     if (
       auto.mode === "narration" &&
       !pending &&
-      this.callbacks.getProject().narration?.phase !== "aligned"
+      this.narration().state?.phase !== "aligned"
     ) {
       await this.failed("本人录音尚未完成对齐，请查看任务中的待核对内容；草稿和录音已保留。", auto);
       return;
     }
-    await this.production.setAuto({
+    await this.setAuto({
       ...this.production.auto!,
       phase: "waiting",
       message: pending ? "后台制作进行中，完成后继续…" : "正在检查制作结果并继续收尾…",
@@ -477,7 +539,7 @@ export class AutomaticProducer {
   async finishForReview(message = "方案已准备好，等待你审阅后再应用。"): Promise<void> {
     const auto = this.production.auto;
     if (!auto || auto.phase !== "agent" || !this.currentRun(auto)) return;
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "done",
       message,
@@ -490,7 +552,7 @@ export class AutomaticProducer {
     const auto = this.production.auto;
     if (!auto) return;
     if (auto.requestToken) this.production.cancelRenderSubmissions(auto.requestToken);
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "failed",
       message: "自动制作已停止，后台素材任务可在任务列表单独取消。",
@@ -503,7 +565,7 @@ export class AutomaticProducer {
     if (!this.sameRun(expected)) return;
     const auto = this.production.auto!;
     if (!working(auto)) return;
-    await this.production.setAuto({
+    await this.setAuto({
       ...auto,
       phase: "failed",
       message: (error instanceof Error ? error.message : String(error)).slice(0, 4000),

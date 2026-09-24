@@ -9,11 +9,14 @@ import {
   type Project,
 } from "../model";
 import { evaluateAnimatedNumber } from "./animation";
+import { captionTemplate, sameJson } from "./caption-presets";
 import { splitClip, trimClip } from "./clip-edits";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
-import { migrateLegacyProject } from "./migration";
+import { legacyClipId, type LegacyCollection } from "./legacy-aliases";
+import { LEGACY_FRAME_TICKS } from "./legacy-time";
+import { isSubtitleClip, sequenceOf as findSequence } from "./lookup";
 import { applyEditorOperations, type EditorOperation } from "./operations";
-import { freezeTimeMap } from "./time";
+import { freezeTimeMap, type Tick } from "./time";
 import type {
   EditorAsset,
   EditorClip,
@@ -26,8 +29,8 @@ import type {
 import { validateEditorDocument } from "./validation";
 
 /** Legacy frames describe 1/30 second regardless of the v2 sequence's frame rate. */
-export const LEGACY_FRAME_TICKS = 8000;
-type Collection = "clips" | "audioClips" | "captions";
+export { LEGACY_FRAME_TICKS };
+type Collection = LegacyCollection;
 export interface LegacyViewOptions {
   primaryVideoTrackId?: string;
   primaryAudioTrackId?: string;
@@ -73,7 +76,7 @@ const metadataKeys = [
   "speech",
 ] as const;
 const annotationKeys = ["script", "workflow", "narration", "roughCuts"] as const;
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = sameJson;
 const frames = (tick: number) => tick / LEGACY_FRAME_TICKS;
 const ticks = (frame: number) => frame * LEGACY_FRAME_TICKS;
 function frozen<T>(value: T): T {
@@ -83,11 +86,8 @@ function frozen<T>(value: T): T {
   }
   return value;
 }
-function sequenceOf(document: EditorDocument, id: string): EditorSequence {
-  const sequence = document.sequences.find((sequence) => sequence.id === id);
-  if (!sequence) throw new Error("旧流程对应的序列不存在");
-  return sequence;
-}
+const sequenceOf = (document: EditorDocument, id: string) =>
+  findSequence(document, id, "旧流程对应的序列不存在");
 function allocate(used: Set<string>, preferred: string): string {
   let id = preferred,
     suffix = 0;
@@ -95,55 +95,23 @@ function allocate(used: Set<string>, preferred: string): string {
   used.add(id);
   return id;
 }
-function legacyAlias(
+/** Subtitle clips whose old caption ID is listed, e.g. the narration workflow's temporary captions. */
+export function captionClipIdsForLegacyIds(
   document: EditorDocument,
   sequenceId: string,
-  clip: EditorClip,
-  collection: Collection,
-): string {
-  const aliases = document.production?.legacyAliases;
-  if (Array.isArray(aliases)) {
-    const found = aliases.find(
-      (value) =>
-        value &&
-        typeof value === "object" &&
-        !Array.isArray(value) &&
-        value.sequenceId === sequenceId &&
-        value.clipId === clip.id &&
-        value.collection === collection,
-    );
+  legacyIds: Iterable<string>,
+): Set<string> {
+  const wanted = new Set(legacyIds),
+    result = new Set<string>();
+  if (!wanted.size) return result;
+  for (const clip of document.sequences.find((item) => item.id === sequenceId)?.clips ?? [])
     if (
-      found &&
-      typeof found === "object" &&
-      !Array.isArray(found) &&
-      typeof found.legacyId === "string"
+      clip.kind === "text" &&
+      clip.role === "subtitle" &&
+      wanted.has(legacyClipId(document, sequenceId, clip, "captions"))
     )
-      return found.legacyId;
-  }
-  const migration = document.production?.migration;
-  if (
-    migration &&
-    typeof migration === "object" &&
-    !Array.isArray(migration) &&
-    Array.isArray(migration.remapped)
-  ) {
-    const found = migration.remapped.find(
-      (value) =>
-        value &&
-        typeof value === "object" &&
-        !Array.isArray(value) &&
-        value.id === clip.id &&
-        value.trackId === clip.trackId,
-    );
-    if (
-      found &&
-      typeof found === "object" &&
-      !Array.isArray(found) &&
-      typeof found.original === "string"
-    )
-      return found.original;
-  }
-  return clip.id;
+      result.add(clip.id);
+  return result;
 }
 function baseProject(document: EditorDocument, sequence: EditorSequence): Project {
   return {
@@ -161,13 +129,24 @@ function baseProject(document: EditorDocument, sequence: EditorSequence): Projec
     timelineMode: "free",
   };
 }
-function assetFromLegacy(asset: Asset): EditorAsset {
+/**
+ * An old-format asset as an editor asset. `exact` is the decoded source length in ticks; it
+ * replaces the whole-frame length for sound and picture when it rounds to the same frame count,
+ * so an import keeps its real tail instead of a 30 fps approximation.
+ */
+function assetFromLegacy(asset: Asset, exact?: Tick): EditorAsset {
   const { id, name, kind, durationFrames, width, height, mediaId, ...metadata } = asset;
+  const usable =
+    exact !== undefined &&
+    kind !== "image" &&
+    Number.isSafeInteger(exact) &&
+    exact > 0 &&
+    Math.abs(exact - ticks(durationFrames)) < LEGACY_FRAME_TICKS;
   return {
     id,
     name,
     kind,
-    duration: ticks(durationFrames),
+    duration: usable ? exact : ticks(durationFrames),
     ...(width === undefined ? {} : { width }),
     ...(height === undefined ? {} : { height }),
     ...(mediaId === undefined ? {} : { resourceId: mediaId }),
@@ -175,31 +154,6 @@ function assetFromLegacy(asset: Asset): EditorAsset {
       ? { metadata: structuredClone(metadata) as Record<string, JsonData> }
       : {}),
   };
-}
-const captionTemplates = new Map<string, TextClip>();
-function captionTemplate(project: Pick<Project, "width" | "height" | "captionStyle">): TextClip {
-  const key = `${project.width}:${project.height}:${project.captionStyle ?? "classic"}`;
-  const cached = captionTemplates.get(key);
-  if (cached) return structuredClone(cached);
-  const document = migrateLegacyProject({
-    schemaVersion: 1,
-    id: "legacy-caption-template",
-    name: "字幕",
-    revision: 0,
-    fps: 30,
-    width: project.width,
-    height: project.height,
-    captionStyle: project.captionStyle ?? "classic",
-    assets: [{ id: "template-source", name: "字幕画布", kind: "demo", durationFrames: 1 }],
-    clips: [
-      { id: "template-picture", assetId: "template-source", inFrame: 0, outFrame: 1, volume: 1 },
-    ],
-    captions: [{ id: "template-text", text: "字幕", startFrame: 0, endFrame: 1 }],
-  });
-  const result = document.sequences[0]!.clips.find((clip) => clip.kind === "text") as TextClip;
-  if (captionTemplates.size >= 24) captionTemplates.clear();
-  captionTemplates.set(key, result);
-  return structuredClone(result);
 }
 function legacyPreset(clip: TextClip, sequence: EditorSequence): CaptionStyle | undefined {
   return (["classic", "bold", "minimal"] as const).find((captionStyle) =>
@@ -270,6 +224,9 @@ export function projectLegacyView(
           item.sequenceId === sequenceId,
       )
     : undefined;
+  // The projection's primary tracks are a stable mapping into the old frame view, not the editing
+  // target of mainPictureTrack (placement.ts): a saved or explicit mapping wins, and locking or
+  // switching the timeline mode must not move old clips to another track in the projection.
   for (const [key, kind, preferred] of [
     ["primaryVideoTrackId", "video", "track-video-main"],
     ["primaryAudioTrackId", "audio", "track-audio-main"],
@@ -413,7 +370,7 @@ export function projectLegacyView(
         false,
       );
     const volume = Math.max(0, Math.min(2, evaluateAnimatedNumber(clip.audio.volume, 0)));
-    const id = allocate(used[collection], legacyAlias(document, sequenceId, clip, collection));
+    const id = allocate(used[collection], legacyClipId(document, sequenceId, clip, collection));
     const row: AudioClip = {
       id,
       assetId: clip.assetId,
@@ -464,7 +421,7 @@ export function projectLegacyView(
   for (const clip of sequence.clips.filter((clip) => !primary.includes(clip))) {
     const track = sequence.tracks.find((track) => track.id === clip.trackId)!;
     if (clip.kind === "media" && track.kind === "audio") addMedia(clip, "audioClips");
-    else if (clip.kind === "text" && clip.role === "subtitle") {
+    else if (isSubtitleClip(clip)) {
       const end = Math.max(
         0,
         ...project.clips.map((clip) => clip.startFrame! + clip.outFrame - clip.inFrame),
@@ -482,7 +439,7 @@ export function projectLegacyView(
         );
         continue;
       }
-      const id = allocate(used.captions, legacyAlias(document, sequenceId, clip, "captions"));
+      const id = allocate(used.captions, legacyClipId(document, sequenceId, clip, "captions"));
       project.captions.push({
         id,
         startFrame: frames(clip.start),
@@ -594,6 +551,10 @@ export function applyLegacyProjectChange(
   beforeValue: Project,
   afterValue: Project,
   baseRevision: number,
+  options: {
+    /** Decoded lengths (ticks) of newly added assets, e.g. from the media library. */
+    assetDurations?: ReadonlyMap<string, Tick>;
+  } = {},
 ): EditorOperation[] {
   const document = validateEditorDocument(value);
   if (baseRevision !== document.revision || view.revision !== document.revision)
@@ -672,7 +633,9 @@ export function applyLegacyProjectChange(
     if (!old) {
       if (document.assets.some((item) => item.id === asset.id))
         throw new Error("旧流程新增素材与不可见的现有素材 ID 冲突");
-      append([{ type: "asset.add", asset: assetFromLegacy(asset) }]);
+      append([
+        { type: "asset.add", asset: assetFromLegacy(asset, options.assetDurations?.get(asset.id)) },
+      ]);
       continue;
     }
     const current = document.assets.find((item) => item.id === asset.id)!;
@@ -1084,7 +1047,7 @@ export function applyLegacyProjectChange(
       throw new Error("自定义或未完整投影的字幕不能套用旧版全局样式，请使用新版文字面板");
     const style = captionTemplate(after).style;
     for (const clip of sequence().clips.filter(
-      (clip) => clip.kind === "text" && clip.role === "subtitle",
+      isSubtitleClip,
     ))
       append([{ type: "clip.update", sequenceId, clipId: clip.id, patch: { style } }]);
     production.legacyCaptionStyle = after.captionStyle ?? "classic";
@@ -1123,4 +1086,12 @@ export function applyLegacyProjectChange(
   append(lateAssets);
   applyEditorOperations(document, operations, baseRevision);
   return structuredClone(operations);
+}
+/** The editor clip behind an old independent-audio row the user selected in the frame view. */
+export function editorClipIdForLegacyAudio(
+  view: Pick<LegacyProjectView, "clips">,
+  legacyId: string,
+): string | undefined {
+  return view.clips.find((item) => item.collection === "audioClips" && item.legacyId === legacyId)
+    ?.clipId;
 }

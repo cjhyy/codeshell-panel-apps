@@ -99,6 +99,12 @@
   border-bottom: 1px solid #303b4c;
   align-items: center;
 }
+.editor-captions .ec-note {
+  width: 100%;
+  margin: 0;
+  color: #f0c987;
+  overflow-wrap: anywhere;
+}
 .editor-captions details {
   width: 100%;
 }
@@ -125,20 +131,74 @@
   width: 90px;
 }
 .editor-captions .ec-row {
-  display: grid;
-  grid-template-columns: 22px minmax(130px, auto) minmax(160px, 1fr) auto;
-  gap: 9px;
-  align-items: start;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
   padding: 12px 0;
   border-bottom: 1px solid #303b4c;
 }
-.editor-captions .ec-row textarea {
+.editor-captions .ec-row-head,
+.editor-captions .ec-row-actions,
+.editor-captions .ec-row-time,
+.editor-captions .ec-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.editor-captions .ec-row-actions {
+  justify-content: flex-end;
+}
+.editor-captions .ec-row-time label,
+.editor-captions .ec-preset {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: #b7c4d6;
+}
+.editor-captions .ec-row-time input {
+  width: 96px;
+}
+.editor-captions .ec-remove {
+  border-color: #8a4b4b;
+  color: #ffc9c3;
+}
+.editor-captions .ec-badge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #5b4a1f;
+  color: #f4d98f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.editor-captions .ec-row textarea,
+.editor-captions .ec-add textarea {
   width: 100%;
   resize: vertical;
 }
 .editor-captions .ec-row small {
-  grid-column: 3/-1;
   color: #99a8bd;
+}
+.editor-captions .ec-add,
+.editor-captions .ec-preset {
+  padding: 10px 0;
+  border-bottom: 1px solid #303b4c;
+}
+.editor-captions .ec-preset select {
+  flex: 1;
+  min-width: 0;
+}
+.editor-captions .ec-narration {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 2px solid #b9974b;
+  background: #a9904920;
+  color: #e3d3a4;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .editor-captions .ec-preview {
   margin-top: 16px;
@@ -175,20 +235,6 @@
   .editor-captions .ec-body {
     padding: 0 10px 10px;
   }
-  .editor-captions .ec-row {
-    grid-template-columns: 22px 1fr auto;
-  }
-  .editor-captions .ec-row textarea {
-    grid-column: 2/-1;
-    grid-row: 2;
-  }
-  .editor-captions .ec-row small {
-    grid-column: 2/-1;
-  }
-  .editor-captions .ec-row > button:last-of-type {
-    grid-column: 3;
-    grid-row: 1;
-  }
   .editor-captions header,
   .editor-captions footer {
     padding: 10px;
@@ -204,4 +250,51 @@
     width: 120px;
     flex: 1;
   }
+}
+/* Inline: the left 字幕 panel hosts the same workbench, sized by the surrounding library panel. */
+.editor-captions.is-inline {
+  display: flex;
+  flex-direction: column;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  font-size: 12px;
+}
+.editor-captions.is-inline header,
+.editor-captions.is-inline footer {
+  padding: 4px 0 8px;
+}
+.editor-captions.is-inline header {
+  border-bottom: 0;
+}
+.editor-captions.is-inline h2 {
+  font-size: 15px;
+}
+.editor-captions.is-inline .ec-status {
+  padding: 4px 0 6px;
+}
+.editor-captions.is-inline .ec-body {
+  padding: 0;
+  overflow: visible;
+}
+.editor-captions.is-inline .ec-tools > button,
+.editor-captions.is-inline .ec-add > button {
+  flex: 1 1 auto;
+}
+.editor-captions.is-inline .ec-style input,
+.editor-captions.is-inline .ec-translate input {
+  width: auto;
+  flex: 1 1 110px;
+  min-width: 0;
+}
+.editor-captions.is-inline .ec-row-time input {
+  width: 84px;
+}
+.editor-captions.is-inline select {
+  max-width: 100%;
+  min-width: 0;
 }

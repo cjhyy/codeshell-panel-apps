@@ -5,7 +5,6 @@ import { createFolderImport, validateFolderDocument } from "../apps/video-studio
 import type { CapturedFolderAsset, FolderEntry } from "../apps/video-studio/src/folder-source";
 import { FolderCaptureTimeoutError } from "../apps/video-studio/src/folder-source";
 import type { ImportMode } from "../apps/video-studio/src/external-media";
-import { removeAssets } from "../apps/video-studio/src/asset-management";
 import { createProject, type Asset, type Project } from "../apps/video-studio/src/model";
 
 const controllers = new Set<ReturnType<typeof createFolderImport>>();
@@ -22,6 +21,12 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+/** The library deletion as the folder watcher sees it: the asset leaves the next revision. */
+const removeAssets = (project: Project, ids: readonly string[]): Project => ({
+  ...project,
+  revision: project.revision + 1,
+  assets: project.assets.filter((asset) => !ids.includes(asset.id)),
+});
 const pause = (ms = 1) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean, message = "condition did not settle") {
   const deadline = Date.now() + 1500;

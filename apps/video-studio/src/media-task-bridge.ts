@@ -72,6 +72,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
   let statusCache: { at: number; value: any } | undefined,
     voicesCache: { at: number; value: any } | undefined;
   let statusPending: Promise<any> | undefined, voicesPending: Promise<any> | undefined;
+  let statusPendingFresh = false;
   let writes = Promise.resolve();
   let analysisCache: { scopeKey: string; assetId: string; value: Promise<any> } | undefined;
   const processed = new Set<string>(),
@@ -457,6 +458,11 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       void sdk.discover(true).catch(() => {});
     }),
   ];
+  /** Older Hosts kept media jobs themselves; ask only a Host that still lists that method. */
+  const advertised = async (method: string) => {
+    const context = await sdk.discover().catch(() => undefined);
+    return Array.isArray(context?.availableMethods) && context.availableMethods.includes(method);
+  };
   const bridge: PanelBridge = {
     getContext: () => raw.getContext(),
     registerTool: (name, handler) => raw.registerTool(name, handler),
@@ -469,7 +475,9 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
       const params = (rawParams ?? {}) as any;
       if (method === "media.status") {
         await sdk.requireMethods(REQUIRED);
-        if (statusCache && Date.now() - statusCache.at < 30000) return clone(statusCache.value);
+        // “重新检测” asks for a fresh probe after the user installs local tools.
+        if (params.fresh !== true && statusCache && Date.now() - statusCache.at < 30000)
+          return clone(statusCache.value);
         // Restoring the editor discovers Host support without running local tools.
         if (params.probe === false)
           return {
@@ -479,14 +487,23 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
             transcription: { available: false },
             hyperframes: { available: false },
           };
-        statusPending ??= completed("status")
-          .then((value) => {
-            statusCache = { at: Date.now(), value };
-            return value;
-          })
-          .finally(() => {
-            statusPending = undefined;
-          });
+        // A fresh request runs after, not instead of, a probe that may predate the user's fix.
+        if (!statusPending || (params.fresh === true && !statusPendingFresh)) {
+          const previous = statusPending;
+          const current: Promise<any> = (previous?.catch(() => undefined) ?? Promise.resolve())
+            .then(() => completed("status"))
+            .then((value) => {
+              statusCache = { at: Date.now(), value };
+              return value;
+            })
+            .finally(() => {
+              if (statusPending !== current) return;
+              statusPending = undefined;
+              statusPendingFresh = false;
+            });
+          statusPending = current;
+          statusPendingFresh = params.fresh === true;
+        }
         return clone(await statusPending);
       }
       if (method === "media.tts.voices") return catalog();
@@ -566,9 +583,9 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
             continue;
           jobs.push(await normalize(job, scope, false));
         }
-        const legacy = (await sdk
-          .call("media.jobs.list", params)
-          .catch(() => ({ jobs: [] }))) as any;
+        const legacy = ((await advertised("media.jobs.list"))
+          ? await sdk.call("media.jobs.list", params).catch(() => ({ jobs: [] }))
+          : { jobs: [] }) as any;
         jobs.push(...(legacy.jobs ?? []));
         return {
           total: jobs.length,
@@ -580,8 +597,12 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         let native: any;
         try {
           native = await sdk.call("tasks.get", { id: params.id });
-        } catch {
-          if (method !== "media.jobs.retry") return sdk.call(method, params);
+        } catch (error) {
+          if (method !== "media.jobs.retry") {
+            if (!(await advertised(method))) throw error;
+            return sdk.call(method, params);
+          }
+          if (!(await advertised("media.jobs.recipe"))) throw error;
           const recipe = (await sdk.call("media.jobs.recipe", { id: params.id })) as any;
           if (
             !recipe ||

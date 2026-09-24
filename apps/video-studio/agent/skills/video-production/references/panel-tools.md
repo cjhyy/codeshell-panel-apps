@@ -13,7 +13,7 @@
 | `create_video_scene`   | `{projectId: string, requestToken: string, title: string, subtitle?: string, durationSeconds?: number, background?: string, accent?: string}` | 创建并真实渲染 HyperFrames 场景，返回制作任务。颜色使用 `#RRGGBB`，长度以用户目标为准。                        |
 | `apply_video_edit`     | `{projectId: string, requestToken: string, baseRevision: number, title: string, operations: EditOperation[]}`                                 | 自动制作模式下保存版本并原子应用修改。身份、令牌和修订号都必须来自本次工程读取。                               |
 | `render_video_project` | `{projectId: string, requestToken: string, baseRevision: number}`                                                                             | 导出当前版本的 MP4。结果通过制作任务返回。                                                                     |
-| `propose_video_edit`   | 与 `apply_video_edit` 相同，可含 `explanation: string`                                                                                        | 仅提交待审阅方案，适用于用户要求先确认或当前只开放提案能力。                                                   |
+| `propose_video_edit`   | 与 `apply_video_edit` 相同，可含 `explanation: string`；或 `{projectId, requestToken, title, explanation?, editor:{identity, steps}}`         | 仅提交待审阅方案，适用于用户要求先确认或当前只开放提案能力。`editor.steps` 与新版 `apply_video_edit` 相同；实拍、多轨、标题或转场须用此格式。 |
 
 `read_video_project({})` 默认读取工程快照；`view:"project"` 与省略 `view` 等价。工程中的 `jobs` 是摘要，完整任务结果通过 `read_video_project({view:"jobs",jobIds})` 读取，返回 `{jobs}`。`jobIds` 可省略，提供时为本次实际任务的 1–50 个 ID；单次有界等待约 8 秒。任务状态为 `queued`、`running`、`succeeded`、`failed` 或 `cancelled`。只有 `succeeded` 才读取 `result` 作为产物；失败看 `error`，取消不能报告成功。一次任务查询可以包含多个 ID。先完成独立的内容准备，再间隔查询；不要把等待写成数百次快速重复调用。
 

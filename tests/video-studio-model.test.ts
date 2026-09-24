@@ -4,9 +4,7 @@ import {
   applyOperations,
   createDemoProject,
   createProject,
-  exportSrt,
   formatTime,
-  parseSrt,
   timelineClips,
   timelineDuration,
   validateProject,
@@ -311,35 +309,6 @@ test("runtime operations reject nonfinite values, unknown fields and invalid pos
     assert.throws(() => applyOperations(project, [operation as EditOperation], 0));
   }
   assert.throws(() => applyOperations(project, Array(1_001).fill({ type: "settings" }), 0));
-});
-
-test("SRT parses BOM, Windows newlines and multiline text with nearest frame rounding", () => {
-  const captions = parseSrt(
-    "\uFEFF1\r\n00:00:00,033 --> 00:00:01,067\r\n第一行\r\n第二行\r\n\r\n2\r\n00:00:02.000 --> 00:00:03.000\r\n第三行\r\n",
-  );
-  assert.deepEqual(captions, [
-    { id: "caption-1", startFrame: 1, endFrame: 32, text: "第一行\n第二行" },
-    { id: "caption-2", startFrame: 60, endFrame: 90, text: "第三行" },
-  ]);
-  const project = fixture();
-  project.captions = captions;
-  assert.deepEqual(parseSrt(exportSrt(project)), captions);
-  assert.equal(exportSrt(createProject()), "");
-  assert.deepEqual(parseSrt("   "), []);
-  assert.equal(parseSrt("00:00:00,000 --> 00:00:01,000\n无序号字幕").length, 1);
-});
-
-test("SRT rejects malformed timestamps, empty text and ranges that collapse after snapping", () => {
-  for (const source of [
-    "not subtitles",
-    "1\n00:61:00,000 --> 01:02:00,000\n坏时间",
-    "1\n00:00:02,000 --> 00:00:01,000\n倒序",
-    "1\n00:00:00,000 --> 00:00:00,001\n不足一帧",
-    "1\n00:00:00,000 --> 00:00:01,000\n",
-    "1\n00:00:00,000 --> 25:00:00,000\n过长",
-  ])
-    assert.throws(() => parseSrt(source));
-  assert.throws(() => parseSrt("x".repeat(4_000_001)));
 });
 
 test("timecodes preserve frame precision and hour rollover", () => {

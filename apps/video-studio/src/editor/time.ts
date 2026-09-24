@@ -13,6 +13,20 @@ export interface TimeRange {
   start: Tick;
   end: Tick;
 }
+/**
+ * Sorted union of the non-empty ranges; ranges at most `gap` apart join. Returns new objects and
+ * leaves the input untouched.
+ */
+export function mergeTimeRanges(ranges: readonly TimeRange[], gap = 0): TimeRange[] {
+  const result: TimeRange[] = [];
+  for (const range of [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (range.end <= range.start) continue;
+    const last = result.at(-1);
+    if (last && range.start <= last.end + gap) last.end = Math.max(last.end, range.end);
+    else result.push({ ...range });
+  }
+  return result;
+}
 
 const MAX_TICK = BigInt(Number.MAX_SAFE_INTEGER);
 const SUPPORTED_RATES = new Set([
@@ -56,6 +70,11 @@ export function validateFrameRate(value: unknown): FrameRate {
   denominator /= a;
   if (!SUPPORTED_RATES.has(`${numerator}/${denominator}`)) throw new Error("不支持此工程帧率");
   return { numerator, denominator };
+}
+
+/** A frame rate as people write it: 30, 25, 29.97, 23.976. */
+export function formatFrameRate(rate: FrameRate): string {
+  return String(Number((rate.numerator / rate.denominator).toFixed(3)));
 }
 
 export function secondsToTicks(seconds: number): Tick {

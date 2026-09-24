@@ -1,4 +1,4 @@
-import { timelineDuration, type Asset, type Project } from "./model";
+import type { Project } from "./model";
 
 /** User approval is written by the panel, never by an Agent edit operation. */
 export interface NarrationState {
@@ -10,6 +10,9 @@ export interface NarrationState {
   /** Coordinator-owned work checkpoint; it never replaces the user's draft approval. */
   alignmentFingerprint?: string;
   recordingAssetId?: string;
+  /** "editor": the fingerprints hash the editor document's narration dependencies. Absent on
+   * approvals saved by older versions, which hashed the 30 fps compatibility view. */
+  fingerprintBasis?: "editor";
 }
 
 const approvedPhases = new Set<NarrationState["phase"]>(["approved", "recorded", "aligned"]);
@@ -18,6 +21,11 @@ const idPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 function identifier(value: unknown, label: string): string {
   if (typeof value !== "string" || !idPattern.test(value)) throw new Error(`${label}格式不正确`);
   return value;
+}
+
+/** Validated, normalized narration script text (the panel's editable copy). */
+export function normalizeNarrationScript(value: unknown): string {
+  return script(value).replace(/\r\n?/g, "\n").trim();
 }
 
 function script(value: unknown): string {
@@ -32,7 +40,10 @@ function script(value: unknown): string {
 }
 
 /** Strict portable data validation; removed temporary caption IDs remain useful provenance. */
-export function validateNarration(value: unknown, assets: readonly Asset[]): NarrationState {
+export function validateNarration(
+  value: unknown,
+  assets: readonly { id: string; kind: string }[],
+): NarrationState {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("口播制作状态必须是对象");
   const prototype = Object.getPrototypeOf(value);
@@ -47,6 +58,7 @@ export function validateNarration(value: unknown, assets: readonly Asset[]): Nar
     "approvedFingerprint",
     "alignmentFingerprint",
     "recordingAssetId",
+    "fingerprintBasis",
   ];
   for (const key of Reflect.ownKeys(data))
     if (typeof key !== "string" || !allowed.includes(key))
@@ -98,6 +110,10 @@ export function validateNarration(value: unknown, assets: readonly Asset[]): Nar
   }
   if (["recorded", "aligned"].includes(result.phase) && !result.recordingAssetId)
     throw new Error("此阶段需要已保存的本人录音素材");
+  if (Object.hasOwn(data, "fingerprintBasis")) {
+    if (data.fingerprintBasis !== "editor") throw new Error("口播确认指纹依据不受支持");
+    result.fingerprintBasis = "editor";
+  }
   return result;
 }
 
@@ -139,78 +155,6 @@ export async function narrationFingerprint(project: Project): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function hasNarrationApproval(project: Project): Promise<boolean> {
-  const state = project.narration;
-  if (
-    !state ||
-    !approvedPhases.has(state.phase) ||
-    !state.approvedScript ||
-    state.approvedScript !== project.script ||
-    !state.approvedFingerprint
-  )
-    return false;
-  return (
-    ((state.phase === "recorded" || state.phase === "aligned") && state.alignmentFingerprint
-      ? state.alignmentFingerprint
-      : state.approvedFingerprint) === (await narrationFingerprint(project))
-  );
-}
-
-function nextRevision(project: Project): number {
-  if (!Number.isSafeInteger(project.revision) || project.revision >= Number.MAX_SAFE_INTEGER - 1)
-    throw new Error("工程修订号已超出可保存范围");
-  return project.revision + 1;
-}
-
-export async function approveNarration(project: Project): Promise<Project> {
-  const next = structuredClone(project);
-  const state = validateNarration(next.narration, next.assets);
-  if (state.phase !== "review") throw new Error("请先完成草稿并进入审阅，再确认口播");
-  const approvedScript = script(next.script);
-  if (!next.clips.length) throw new Error("请先安排草稿画面，再确认口播");
-  const approvedFingerprint = await narrationFingerprint(next);
-  next.narration = {
-    ...state,
-    phase: "approved",
-    captionBasis: "draft",
-    approvedScript,
-    approvedFingerprint,
-  };
-  next.revision = nextRevision(next);
-  return next;
-}
-
-export async function bindNarrationRecording(project: Project, assetId: string): Promise<Project> {
-  const next = structuredClone(project);
-  if (!(await hasNarrationApproval(next))) throw new Error("文案或草稿已改变，请先重新确认");
-  const asset = next.assets.find((item) => item.id === assetId);
-  if (!asset || (asset.kind !== "audio" && asset.kind !== "video"))
-    throw new Error("请选择当前工程中的本人录音或视频");
-  if (asset.speech) throw new Error("合成配音不能作为本人录音");
-  const previousAssetId = next.narration!.recordingAssetId;
-  const replacing = Boolean(previousAssetId && previousAssetId !== assetId);
-  if (replacing) {
-    next.audioClips = (next.audioClips ?? []).filter((clip) => clip.assetId !== previousAssetId);
-    next.captions = next.captions.filter(
-      (caption) => !caption.id.startsWith("recorded-narration-"),
-    );
-  }
-  next.narration = validateNarration(
-    {
-      ...next.narration!,
-      phase: "recorded",
-      captionBasis: "draft",
-      recordingAssetId: assetId,
-    },
-    next.assets,
-  );
-  // Selecting a replacement is an explicit user action. Keep the original draft
-  // approval and checkpoint only the controlled removal of the prior narration.
-  if (replacing) next.narration.alignmentFingerprint = await narrationFingerprint(next);
-  next.revision = nextRevision(next);
-  return next;
-}
-
 function safeTextCut(value: string, position: number): number {
   if (/^[\uDC00-\uDFFF]$/.test(value[position] ?? "")) return position - 1;
   return position;
@@ -245,7 +189,8 @@ function reflowDraftText(value: string, count: number): string[] {
   return result;
 }
 
-function draftTextSegments(value: string, duration: number): string[] {
+/** Estimated draft subtitle lines: sentences, reflowed into at most `duration` (≤ 1000) slots. */
+export function draftTextSegments(value: string, duration: number): string[] {
   const normalized = value.replace(/[^\S\n]+/g, " ").trim();
   const result: string[] = [];
   for (const sentence of normalized.split(/(?<=[。！？!?；;])|(?<=\.)[ \t]+|\n+/u)) {
@@ -259,81 +204,4 @@ function draftTextSegments(value: string, duration: number): string[] {
   }
   const limit = Math.min(1000, duration);
   return result.length > limit ? reflowDraftText(normalized, limit) : result;
-}
-
-/** Manual copy edits regenerate only this workflow's estimated subtitles, never ASR evidence. */
-export function updateNarrationScript(project: Project, text: string): Project {
-  const updatedScript = script(text).replace(/\r\n?/g, "\n").trim();
-  const next = structuredClone(project);
-  const previous = next.narration;
-  const owned = new Set(previous?.draftCaptionIds ?? []);
-  const kept = next.captions.filter(
-    (caption) =>
-      !owned.has(caption.id) && !(previous && caption.id.startsWith("recorded-narration-")),
-  );
-  const duration = timelineDuration(next);
-  const segments = duration > 0 ? draftTextSegments(updatedScript, duration) : [];
-  if (kept.length + segments.length > 10000) throw new Error("字幕数量已达上限，请先整理已有字幕");
-  const weights = segments.map((segment) => [...segment.replace(/\s/g, "")].length || 1);
-  const totalWeight = weights.reduce((total, weight) => total + weight, 0);
-  const spareFrames = duration - segments.length;
-  const shares = weights.map((weight) => (spareFrames * weight) / totalWeight);
-  const lengths = shares.map((share) => Math.floor(share) + 1);
-  const spare = duration - lengths.reduce((total, length) => total + length, 0);
-  const allocation = shares
-    .map((share, index) => ({ index, fraction: share - Math.floor(share) }))
-    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
-  for (const { index } of allocation.slice(0, spare)) lengths[index]!++;
-  const usedIds = new Set(kept.map((caption) => caption.id));
-  const draftCaptionIds: string[] = [];
-  let cursor = 0;
-  let serial = 1;
-  const captions = segments.map((segment, index) => {
-    let id: string;
-    do {
-      id = `draft-narration-${serial++}`;
-    } while (usedIds.has(id));
-    usedIds.add(id);
-    draftCaptionIds.push(id);
-    const startFrame = cursor;
-    cursor += lengths[index]!;
-    return { id, startFrame, endFrame: cursor, text: segment };
-  });
-  next.script = updatedScript;
-  next.captions = [...kept, ...captions].sort(
-    (a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame,
-  );
-  next.narration = {
-    phase: !duration || previous?.phase === "draft" ? "draft" : "review",
-    captionBasis: "draft",
-    draftCaptionIds,
-    ...(previous?.recordingAssetId ? { recordingAssetId: previous.recordingAssetId } : {}),
-  };
-  next.revision = nextRevision(next);
-  return next;
-}
-
-/** Content edits revoke approval; preparation and recording imports do not change the draft. */
-export function reconcileNarrationEdit(
-  before: Project,
-  next: Project,
-  allowAlignment = false,
-): Project {
-  const result = structuredClone(next);
-  if (
-    before.id !== next.id ||
-    !before.narration ||
-    !approvedPhases.has(before.narration.phase) ||
-    allowAlignment ||
-    narrationSnapshot(before) === narrationSnapshot(next)
-  )
-    return result;
-  const state = next.narration ?? before.narration;
-  result.narration = {
-    phase: "review",
-    captionBasis: "draft",
-    draftCaptionIds: [...state.draftCaptionIds],
-    ...(state.recordingAssetId ? { recordingAssetId: state.recordingAssetId } : {}),
-  };
-  return result;
 }

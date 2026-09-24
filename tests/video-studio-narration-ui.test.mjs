@@ -444,6 +444,11 @@ test(
       assert.deepEqual(await hostCalls(page, ["agent.task.start", "media.prepare"]), []);
       await page.locator("#narration-script").fill(script + "\n这是用户补充的新意思。");
       assert.equal(await page.locator('[data-action="record-narration"]').isDisabled(), true);
+      assert.equal(
+        await page.locator('[data-action="record-narration"]').getAttribute("title"),
+        "先保存文案",
+        "A disabled narration step says what it needs",
+      );
       await page.locator('[data-action="save-narration-script"]').click();
       await page
         .waitForFunction(
@@ -755,7 +760,9 @@ test(
       const before = (await readState(page)).project;
       await page.locator('[data-action="align-narration"]').click();
       await page.waitForFunction(() =>
-        document.body.textContent.includes("本人录音对齐需要本地 Whisper 转写"),
+        document.body.textContent.includes(
+          "点“重新检测”，再重试本人录音对齐；录音和草稿已保留。",
+        ) && document.body.textContent.includes("本机语音转写未就绪"),
       );
       const after = (await readState(page)).project;
       assert.deepEqual(after, before);

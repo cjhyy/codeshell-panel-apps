@@ -10,7 +10,8 @@ type LayoutStore = {
   save(sizes: WorkspaceLayoutSizes): Promise<void>;
 };
 
-const defaults: WorkspaceLayoutSizes = { library: 260, inspector: 270, timeline: 308 };
+// The default timeline fits five compact tracks below its toolbar and ruler.
+const defaults: WorkspaceLayoutSizes = { library: 260, inspector: 270, timeline: 340 };
 const paneOf = (target: EventTarget | null): Pane | undefined => {
   if (!(target instanceof Element)) return;
   const value = target.closest<HTMLElement>("[data-resize-pane]")?.dataset.resizePane;

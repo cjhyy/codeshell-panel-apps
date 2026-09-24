@@ -1,17 +1,10 @@
-import {
-  applyOperations,
-  formatTime,
-  timelineClips,
-  timelineDuration,
-  type Project,
-  type EditOperation,
-  type Asset,
-} from "./model";
+import { formatTime, timelineClips, timelineDuration, type Project, type Asset } from "./model";
 import { icon, html, escapeHtml as esc } from "./icons";
-import { renderCaptionControls } from "./caption-controls";
+import { announcedDisabled } from "./disabled-reason";
 import { renderWorkflowSummary } from "./workflow";
 import { renderNarrationPanel } from "./narration-ui";
-import type { Proposal, PanelTask } from "./host";
+import type { PanelTask } from "./host";
+import type { EditorProposalReview } from "./editor/proposal";
 import { renderProductionJobs, type ProductionViewState } from "./production-views";
 import { version as panelVersion } from "../.codeshell-panel/panel.json";
 import { demoSceneIndex } from "./demo";
@@ -39,7 +32,8 @@ export interface ViewState {
   readonly search: string;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
-  readonly proposal: Readonly<Proposal> | null;
+  /** The reviewed plan, computed on the editor document. */
+  readonly proposal: Readonly<EditorProposalReview> | null;
   readonly task: Readonly<PanelTask> | null;
   readonly taskStarting: boolean;
   readonly playing: boolean;
@@ -52,6 +46,12 @@ export interface ViewState {
   readonly connected: boolean;
   readonly persistentStorage?: boolean;
   readonly editorClipCount?: number;
+  /** Status bar clips of the active editor sequence, without the subtitles counted beside them. */
+  readonly statusClipCount?: number;
+  /** Clips on the main picture track of the active editor sequence. */
+  readonly mainTrackClipCount?: number;
+  /** Subtitles on every text track of the shown sequence. */
+  readonly captionCount?: number;
   readonly voiceoverMarkup?: string;
   readonly folderMarkup?: string;
   readonly voicePreparationActive?: boolean;
@@ -72,14 +72,53 @@ export interface ViewState {
   readonly recordingMarkup?: string;
   readonly spokenMarkup?: string;
   readonly narrationScriptDraft?: string | null;
+  readonly narrationHasPicture?: boolean;
+  readonly narrationApprovalIssue?: string | null;
   readonly production?: ProductionViewState;
+  /** The active sequence's frame rate as people write it, e.g. 29.97. */
+  readonly frameRateLabel?: string;
+  /** What the frame-based inspector cannot do with the selected clip. */
+  readonly inspectorIssue?: { readonly reason?: string; readonly volume?: string };
+  /** The one side panel shown beside the timeline in the narrow (≤640px) layout. */
+  readonly narrowPanel?: NarrowPanel;
 }
+export type NarrowPanel = "viewer" | "library" | "inspector";
+const railTabs = [
+  ["media", "素材", "folder"],
+  ["roughcut", "粗剪", "cut"],
+  ["recording", "录制", "film"],
+  ["spoken", "口播", "text"],
+  ["transcript", "字幕", "text"],
+  ["voiceover", "配音", "volume"],
+  ["ai", "AI 制作", "spark"],
+  ["jobs", "任务", "film"],
+] as const;
 
-export const button = (action: string, text: string, glyph?: string, cls = "", disabled = false) =>
-  `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
+/**
+ * A disabled control may carry the plain reason as its tooltip, so people know what it needs.
+ * Important actions pass `announce`: they stay focusable with aria-disabled and a described reason.
+ */
+export const button = (
+  action: string,
+  text: string,
+  glyph?: string,
+  cls = "",
+  disabled = false,
+  reason?: string,
+  announce = false,
+) => {
+  if (announce && disabled && reason) {
+    const soft = announcedDisabled(`${action}-reason`, true, reason);
+    return `<button type="button" data-action="${action}" class="${cls}"${soft.attributes}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>${soft.note}`;
+  }
+  return `<button type="button" data-action="${action}" class="${cls}" ${disabled ? "disabled" : ""}${disabled && reason ? ` title="${esc(reason)}"` : ""}>${glyph ? icon(glyph) : ""}<span>${text}</span></button>`;
+};
 export const tool = (action: string, title: string, glyph: string, disabled = false) =>
   `<button type="button" data-action="${action}" class="icon-button" title="${title}" aria-label="${title}" ${disabled ? "disabled" : ""}>${icon(glyph)}</button>`;
 export const seconds = (value: number) => (value / 30).toFixed(2);
+/** The media kind people read on cards and clip placeholders. */
+const kindLabel = (kind: string) =>
+  ({ video: "视频", audio: "音频", image: "图片", demo: "示例" })[kind] ?? kind;
 
 /** Quote a URL as CSS before escaping the surrounding HTML attribute. */
 function cssUrl(value: string): string {
@@ -120,15 +159,24 @@ export function createViews(state: ViewState) {
   const previewWidth = source?.width ?? project.width;
   const previewHeight = source?.height ?? project.height;
   const persistent = Boolean(state.production?.status.persistent);
+  const narrowPanel = state.narrowPanel ?? "viewer";
   const autoActive =
     state.production?.auto &&
     state.production.auto.projectId === project.id &&
     ["preparing", "agent", "waiting"].includes(state.production.auto.phase);
+  const taskRunning = Boolean(task && ["running", "queued", "cancelling"].includes(task.status));
   const narrationBusy =
     Boolean(autoActive) ||
     taskStarting ||
     mediaImporting ||
     Boolean(task && ["running", "queued", "cancelling"].includes(task.status));
+  /** Plain reasons for the production actions that need the desktop media service or a free queue. */
+  const needsDesktop = "需要在 CodeShell 桌面面板中打开，并连接持久媒体服务";
+  const busyReason = mediaImporting
+    ? "素材正在导入，完成后再试"
+    : autoActive
+      ? "自动制作正在进行，完成或取消后再试"
+      : "任务正在进行，完成或取消后再试";
 
   function shell(): string {
     return html`<header class="topbar">
@@ -147,7 +195,7 @@ export function createViews(state: ViewState) {
         <div class="header-actions">
           <span class="save-indicator"
             ><i></i><span id="save-state" title="${esc(projectError)}">${saveText}</span></span
-          >${state.persistentStorage ? tool("versions", "工程历史版本", "undo") : ""}${tool(
+          >${state.persistentStorage ? tool("versions", "工程历史版本", "history") : ""}${tool(
             "projects",
             "最近工程 / 打开工程",
             "folder",
@@ -157,40 +205,57 @@ export function createViews(state: ViewState) {
             "upload",
             "primary",
             !(state.editorClipCount ?? project.clips.length),
+            "时间轴上还没有片段，先加入素材再导出",
+            true,
           )}
         </div>
       </header>
-      <main class="workspace ${source ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}">
+      <main
+        class="workspace ${source ? "source-mode" : tab === "voiceover" ? "voice-mode" : ""}"
+        data-narrow-panel="${narrowPanel}"
+      >
+        <div class="narrow-switch" role="group" aria-label="切换面板">
+          ${(
+            [
+              ["viewer", "画面"],
+              ["library", railTabs.find(([id]) => id === tab)?.[1] ?? "素材"],
+              ["inspector", "属性"],
+            ] as const
+          )
+            .map(
+              ([id, label]) =>
+                `<button type="button" data-narrow-panel="${id}" aria-pressed="${narrowPanel === id}">${label}</button>`,
+            )
+            .join("")}
+        </div>
         <nav class="rail" aria-label="工作台导航">
-          ${[
-            ["media", "素材", "folder"],
-            ["roughcut", "粗剪", "cut"],
-            ["recording", "录制", "film"],
-            ["spoken", "口播", "text"],
-            ["transcript", "字幕", "text"],
-            ["voiceover", "配音", "volume"],
-            ["ai", "AI 制作", "spark"],
-            ["jobs", "任务", "film"],
-          ]
+          ${railTabs
             .map(
               ([id, label, glyph]) =>
-                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph!, 22)}<span>${label}</span></button>`,
+                `<button data-tab="${id}" class="rail-item ${tab === id ? "active" : ""}" aria-pressed="${tab === id}">${icon(glyph, 22)}<span>${label}</span></button>`,
             )
             .join("")}
           <div class="rail-bottom">
-            ${tool("new", "新建工程", "plus")}<span>v${panelVersion}</span>
+            <button
+              type="button"
+              data-action="new"
+              class="rail-item rail-new"
+              title="新建工程：先保存并归档当前工程，再打开一个空白工程"
+            >
+              ${icon("plus", 20)}<span>新建工程</span></button
+            ><span>v${panelVersion}</span>
           </div>
         </nav>
         <aside class="library-panel">${renderLibrary()}</aside>
         <section class="viewer-panel" aria-label="${source ? "原素材预览" : "视频预览"}">
           <div class="panel-heading">
             <div>
-              <span class="eyebrow">${source ? "SOURCE" : "PREVIEW"}</span
+              <span class="eyebrow">${source ? "原片" : "预览"}</span
               ><span>${source ? esc(source.name) : "画面预览"}</span>
             </div>
             <span class="muted"
               >${source ? "原片时间" : `${project.width} × ${project.height}`}
-              <span class="dot">·</span> 30 fps</span
+              <span class="dot">·</span> ${state.frameRateLabel ?? "30"} fps</span
             >
           </div>
           <div class="preview-stage">
@@ -267,15 +332,15 @@ export function createViews(state: ViewState) {
         </section>
         <aside class="inspector">${renderInspector()}</aside>
         <section class="timeline-panel" aria-label="剪辑时间轴">${renderTimeline()}</section>
-        <div class="studio-resize-library workspace-resizer" data-resize-pane="library" role="separator" tabindex="0" aria-label="调整素材面板宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="500" aria-valuenow="260"></div>
-        <div class="studio-resize-inspector workspace-resizer" data-resize-pane="inspector" role="separator" tabindex="0" aria-label="调整属性面板宽度" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="500" aria-valuenow="270"></div>
-        <div class="studio-resize-timeline workspace-resizer" data-resize-pane="timeline" role="separator" tabindex="0" aria-label="调整多轨时间线高度" aria-orientation="horizontal" aria-valuemin="200" aria-valuemax="720" aria-valuenow="308"></div>
+        <div class="studio-resize-library workspace-resizer" data-resize-pane="library" role="separator" tabindex="0" aria-label="调整素材面板宽度" title="拖动调整素材面板宽度 · 双击恢复默认 · 方向键微调" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="500" aria-valuenow="260"></div>
+        <div class="studio-resize-inspector workspace-resizer" data-resize-pane="inspector" role="separator" tabindex="0" aria-label="调整属性面板宽度" title="拖动调整属性面板宽度 · 双击恢复默认 · 方向键微调" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="500" aria-valuenow="270"></div>
+        <div class="studio-resize-timeline workspace-resizer" data-resize-pane="timeline" role="separator" tabindex="0" aria-label="调整多轨时间线高度" title="拖动调整时间线高度 · 双击恢复默认 · 方向键微调" aria-orientation="horizontal" aria-valuemin="200" aria-valuemax="720" aria-valuenow="340"></div>
       </main>
       <footer class="statusbar">
         <span><i class="status-dot"></i> ${connected ? "CodeShell 已连接" : "本地编辑模式"}</span
         ><span
-          ><span data-studio-clip-count>${state.editorClipCount ?? project.clips.length}</span>
-          个片段 <span class="dot">·</span> ${project.captions.length} 条字幕
+          ><span data-studio-clip-count>${state.statusClipCount ?? state.editorClipCount ?? project.clips.length}</span>
+          个片段 <span class="dot">·</span> <span data-studio-caption-count>${state.captionCount ?? project.captions.length}</span> 条字幕
           <span class="dot">·</span> <span id="revision">rev ${project.revision}</span></span
         ><span
           >${tab === "roughcut"
@@ -286,7 +351,6 @@ export function createViews(state: ViewState) {
         >
       </footer>
       <dialog id="export-dialog"></dialog>
-      <dialog id="caption-dialog"></dialog>
       <dialog id="plan-dialog"></dialog>
       <dialog id="media-delete-dialog" aria-labelledby="media-delete-heading"></dialog>`;
   }
@@ -304,46 +368,12 @@ export function createViews(state: ViewState) {
           : (state.voiceoverMarkup ?? ""))
       );
     if (libraryTab === "jobs" && state.production) return renderProductionJobs(state.production);
-    if (libraryTab === "transcript")
-      return html`<div class="section-title">
-          <h2>文稿与字幕</h2>
-          ${tool("import-srt", "导入 SRT 字幕", "upload")}
-        </div>
-        <p class="section-description">点击句子定位画面。字幕随片段剪辑移动。</p>
-        ${project.narration?.captionBasis === "draft"
-          ? '<p class="narration-caption-basis is-draft">当前含文案估时的临时字幕。确认草稿、录完本人声音后，会按真实口播重排正式字幕。</p>'
-          : ""}
-        ${persistent
-          ? `<div class="library-actions">${button("transcribe", "语音转写", "spark", "", state.production?.status.runtimeChecked !== false && !state.production?.status.transcription.available)}${button("captions-from-transcript", "从文稿生成字幕", "text")}</div>`
-          : ""}
-        <div class="library-actions">
-          ${button("add-caption", "添加字幕", "plus")}${button(
-            "save-srt",
-            "导出 SRT",
-            "download",
-            "",
-            !project.captions.length,
-          )}
-        </div>
-        ${renderCaptionControls(project)}
-        <div class="transcript-list">
-          ${project.captions.length
-            ? project.captions
-                .map(
-                  (caption) =>
-                    `<article class="transcript-item" data-caption="${esc(caption.id)}"><button class="caption-seek" data-seek="${caption.startFrame}"><time>${formatTime(caption.startFrame).slice(3, 8)}</time><p>${esc(caption.text)}</p></button><button class="text-button" data-edit-caption="${esc(caption.id)}">编辑</button></article>`,
-                )
-                .join("")
-            : '<div class="empty-state">' +
-              icon("text", 32) +
-              "<h3>把声音变成看得见的故事</h3><p>导入带时间的 SRT 或手动添加字幕。在 CodeShell 中可先转写，再按当前剪辑生成字幕。</p>" +
-              button("import-srt", "导入 SRT", "upload") +
-              "</div>"}
-        </div>`;
+    // The caption workbench is one persistent section that main mounts into this host.
+    if (libraryTab === "transcript") return '<div id="caption-panel-host"></div>';
     if (libraryTab === "ai")
       return html`<div class="section-title">
           <h2>AI 自动制作</h2>
-          <span class="tiny-badge">PRODUCTION</span>
+          <span class="tiny-badge">制作</span>
         </div>
         <p class="section-description">
           导入拍好的素材，说说你想表达什么。<br />先看文案、剪辑和字幕草稿，确认后再录自己的口播。
@@ -380,12 +410,18 @@ ${esc(aiPrompt)}</textarea
           "spark",
           "primary full",
           !persistent || narrationBusy,
+          !persistent ? needsDesktop : busyReason,
+          true,
         )}
         <p class="capability-note">先出可审阅的草稿。等你确认、录好口播，再用真实声音完成视频。</p>
         ${renderNarrationPanel(project, {
           busy: narrationBusy,
           persistent,
           scriptDraft: state.narrationScriptDraft,
+          ...(state.narrationHasPicture === undefined
+            ? {}
+            : { hasPicture: state.narrationHasPicture }),
+          approvalIssue: state.narrationApprovalIssue ?? null,
         })}
         ${button(
           "initialize-video",
@@ -396,45 +432,44 @@ ${esc(aiPrompt)}</textarea
             Boolean(autoActive) ||
             taskStarting ||
             Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
+          !persistent ? needsDesktop : busyReason,
         )}
         <p class="capability-note">
           检查环境、盘点素材并保存目标与制作步骤。若选择本人声音，会准备引擎、参考与短句试听；初始化保留当前剪辑。
         </p>
         ${state.voicePreparationMarkup ?? ""}
-        ${button(
-          "ask-ai",
-          persistent && taskStarting
-            ? "正在创建任务…"
-            : persistent &&
-                (autoActive || (task && ["running", "queued", "cancelling"].includes(task.status)))
-              ? "正在自动制作…"
-              : project.workflow
-                ? "按制作单继续制作"
-                : "开始全流程制作",
-          "spark",
-          "quiet full",
-          !persistent ||
-            Boolean(autoActive) ||
-            taskStarting ||
-            Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
-        )}
-        ${!persistent
-          ? `<p class="host-required" role="status">${esc(state.production?.error || "请在 CodeShell 面板中打开，启用自动制作和后台 MP4。")}</p>`
-          : ""}
         ${connected && !persistent
-          ? button(
+          ? // Connected without persistent media storage: one request, a reviewable plan.
+            button(
               "ask-ai",
               taskStarting
                 ? "正在创建任务…"
-                : task && ["running", "queued", "cancelling"].includes(task.status)
+                : taskRunning
                   ? "正在生成方案…"
                   : "生成剪辑方案",
               "spark",
               "quiet full",
-              !project.clips.length ||
-                taskStarting ||
-                Boolean(task && ["running", "queued", "cancelling"].includes(task.status)),
+              !(state.editorClipCount ?? project.clips.length) || taskStarting || taskRunning,
+              !(state.editorClipCount ?? project.clips.length)
+                ? "时间轴上还没有片段，先加入素材"
+                : busyReason,
             )
+          : button(
+              "ask-ai",
+              persistent && taskStarting
+                ? "正在创建任务…"
+                : persistent && (autoActive || taskRunning)
+                  ? "正在自动制作…"
+                  : project.workflow
+                    ? "按制作单继续制作"
+                    : "开始全流程制作",
+              "spark",
+              "quiet full",
+              !persistent || Boolean(autoActive) || taskStarting || taskRunning,
+              !persistent ? needsDesktop : busyReason,
+            )}
+        ${!persistent
+          ? `<p class="host-required" role="status">${esc(state.production?.error || "请在 CodeShell 面板中打开，启用自动制作和后台 MP4。")}</p>`
           : ""}
         ${autoActive || (task && ["running", "queued", "cancelling"].includes(task.status))
           ? button("cancel-ai", "取消任务", "close", "quiet full")
@@ -444,17 +479,24 @@ ${esc(aiPrompt)}</textarea
             ? persistent
               ? "真实关键帧与文稿分析；自动修改前保留历史版本。后台导出完成后可播放与保存。"
               : "使用 CodeShell 当前模型。只读取工程与已有字幕，不声称识别未分析的画面或声音。"
-            : "浏览器可体验时间轴、字幕和规则草案；自动制作需要真实 Host 能力。"}
+            : "浏览器可体验时间轴、字幕和规则草案；自动制作需要在 CodeShell 桌面面板中使用。"}
         </p>
         <div class="ai-task-status" role="status">
           ${esc(aiMessage || task?.activity?.at(-1)?.message || "")}
         </div>
         ${renderWorkflowSummary(project.workflow, project.assets)}
         <div class="local-plan">
-          <span class="eyebrow">BROWSER DEMO</span>
+          ${connected ? "" : '<span class="eyebrow">浏览器演示</span>'}
           <h3>先试一版 15 秒粗剪</h3>
           <p>按现有顺序保留前 15 秒，生成草案供你审阅。</p>
-          ${button("quick-plan", "创建规则草案", "cut", "full", !project.clips.length)}<span
+          ${button(
+            "quick-plan",
+            "创建规则草案",
+            "cut",
+            "full",
+            !(state.mainTrackClipCount ?? project.clips.length),
+            "主画面轨上还没有片段，先把素材加入时间轴",
+          )}<span
             class="muted small"
             >本地规则 · 无需模型</span
           >
@@ -467,7 +509,8 @@ ${esc(aiPrompt)}</textarea
               "quiet full",
               state.production?.status.runtimeChecked !== false &&
                 !state.production?.status.hyperframes.available,
-            ) + button("versions", "查看历史版本", "undo", "quiet full")
+              "场景制作工具未就绪，可在“任务”页查看环境检测",
+            ) + button("versions", "查看历史版本", "history", "quiet full")
           : ""}
         ${button("voiceover", "文字配音", "volume", "quiet full")}
         ${button("paste-plan", "导入剪辑方案 JSON", "text", "quiet full")}`;
@@ -484,7 +527,17 @@ ${esc(aiPrompt)}</textarea
     );
     return html`<div class="section-title">
         <h2>项目素材</h2>
-        <span class="count-badge">${project.assets.length}</span>
+        ${project.assets.length
+          ? button(
+              "select-media",
+              search || preferences.filter !== "all" ? "全选当前结果" : "全选",
+              undefined,
+              "quiet media-select-all",
+              !assets.length,
+            )
+          : ""}<span class="count-badge" title="${filteringMedia ? `显示 ${assets.length} 份，共 ${project.assets.length} 份` : `共 ${project.assets.length} 份`}"
+          >${filteringMedia ? `${assets.length}/${project.assets.length}` : project.assets.length}</span
+        >
       </div>
       <div class="library-actions">
         ${button(
@@ -493,27 +546,27 @@ ${esc(aiPrompt)}</textarea
           "plus",
           "primary full",
           mediaImporting,
-        )}
+        )}${button("voiceover", "文字配音", "volume", "library-voiceover")}
       </div>
-      ${state.folderMarkup ?? ""} ${button("voiceover", "文字配音", "volume", "full")}
-      <label class="search-field"
-        >${icon("search", 15)}<input
-          id="asset-search"
-          value="${esc(search)}"
-          placeholder="搜索素材"
-          aria-label="搜索素材"
-      /></label>
+      ${state.folderMarkup ?? ""}
       ${persistent
-        ? button(
+        ? `<div class="library-secondary">${button(
             "make-scene",
             "生成章节 / 解释场景",
             "spark",
-            "quiet full",
+            "quiet",
             state.production?.status.runtimeChecked !== false &&
               !state.production?.status.hyperframes.available,
-          )
+          )}</div>`
         : ""}
-      <div class="media-library-toolbar">
+      <div class="library-find">
+        <label class="search-field"
+          >${icon("search", 15)}<input
+            id="asset-search"
+            value="${esc(search)}"
+            placeholder="搜索素材"
+            aria-label="搜索素材"
+        /></label>
         <div class="media-view-switch" role="group" aria-label="素材视图">
           ${(
             [
@@ -528,6 +581,8 @@ ${esc(aiPrompt)}</textarea
             )
             .join("")}
         </div>
+      </div>
+      <div class="media-library-toolbar">
         <label
           >类型<select data-media-filter aria-label="素材类型">
             ${(
@@ -563,15 +618,9 @@ ${esc(aiPrompt)}</textarea
           </select></label
         >
       </div>
-      <div class="library-label">
-        <span>点击预览 · 右键管理</span
-        ><span
-          >${assets.length}
-          份${selectedAssets.length ? ` · 已选 ${selectedAssets.length}` : ""}</span
-        >
-      </div>
-      ${project.assets.length
-        ? `<div class="media-selection-bar"><div>${button("select-media", search || preferences.filter !== "all" ? "全选当前结果" : "全选", undefined, "quiet", !assets.length)}${button("clear-media-selection", "清空选择", undefined, "quiet", !selectedAssets.length)}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "quiet", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger", !selectedAssets.length)}</div></div>`
+      ${selectedAssets.length
+        ? // Batch actions only take room while something is selected.
+          `<div class="media-selection-bar"><div><span class="media-selection-count">已选 ${selectedAssets.length}</span>${button("clear-media-selection", "清空选择", undefined, "quiet")}</div><div>${button("batch-roughcut", `批量粗剪${roughCutSelected.length ? `（${roughCutSelected.length}）` : ""}`, "cut", "quiet", !roughCutSelected.length)}${button("delete-media", "删除所选", "trash", "quiet danger")}</div></div>`
         : ""}
       <div class="asset-list" data-view="${preferences.view}">
         ${assets
@@ -589,6 +638,7 @@ ${esc(aiPrompt)}</textarea
               data-asset="${esc(asset.id)}"
               data-preview-asset="${esc(asset.id)}"
               tabindex="0"
+              title="点击预览 · 右键管理"
               aria-label="素材 ${esc(asset.name)}"
             >
               <button
@@ -601,7 +651,7 @@ ${esc(aiPrompt)}</textarea
                 ${item?.thumbnail
                   ? `<img src="${item.thumbnail}" alt="${esc(asset.name)}" />`
                   : asset.kind === "demo"
-                    ? '<span class="demo-thumb-kicker">MIMI ORIGINAL</span><strong>' +
+                    ? '<span class="demo-thumb-kicker">MIMI 示例</span><strong>' +
                       [
                         "从想法，<br>到成片。",
                         "让每一帧，<br>恰到好处。",
@@ -644,7 +694,7 @@ ${esc(aiPrompt)}</textarea
                       ? "素材待重连"
                       : asset.kind === "demo"
                         ? "示例画面"
-                        : `${isExternalMedia(asset.mediaId) ? "引用 · " : ""}${asset.kind.toUpperCase()}`}
+                        : `${isExternalMedia(asset.mediaId) ? "引用 · " : ""}${kindLabel(asset.kind)}`}
                     ${asset.width ? " · " + asset.width + "×" + asset.height : ""}</span
                   >
                 </div>
@@ -713,9 +763,11 @@ ${esc(aiPrompt)}</textarea
       !audioClip && project.timelineMode === "free"
         ? timelineClips(project).find((item) => item.id === selected)
         : undefined;
+    const clipIssue = clip ? undefined : state.inspectorIssue?.reason;
+    const volumeIssue = clip ? state.inspectorIssue?.volume : undefined;
     return html`<div class="section-title">
         <h2>片段属性</h2>
-        <span class="muted">${clip ? "已选中" : "未选择"}</span>
+        <span class="muted">${clip || clipIssue ? "已选中" : "未选择"}</span>
       </div>
       ${audioClip
         ? `<div class="property-section"><label class="input-label">音轨在时间轴的位置（秒）<input id="audio-start" type="number" step="0.033333" min="0" value="${seconds(audioClip.startFrame)}" /></label></div>`
@@ -724,10 +776,12 @@ ${esc(aiPrompt)}</textarea
         ? `<div class="property-section"><label class="input-label">画面在时间轴的位置（秒）<input id="video-start" type="number" step="0.033333" min="0" max="86400" value="${seconds(freeClip.startFrame)}" /></label><p class="small muted">可自由拖动并保留空隙；空隙显示黑场，音乐与配音继续播放。</p></div>`
         : ""}
       ${clip && asset
-        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">${audioClip ? "音轨音量" : "原声音量"} <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}" /></div><p class="small muted">${audioClip ? "独立调整这条音轨，不改变画面；可在时间轴拖动定位或裁剪。" : "画面与原声同步裁剪、同步移动。"}</p></div><div class="reorder-actions">${button("move-left", freeClip ? "前移 1 秒" : "前移", "back", "", audioClip ? audioClip.startFrame === 0 : freeClip ? freeClip.startFrame === 0 : project.clips[0]?.id === selected)}${button("move-right", freeClip ? "后移 1 秒" : "后移", "next", "", audioClip ? audioClip.startFrame + audioClip.outFrame - audioClip.inFrame >= duration() : freeClip ? freeClip.endFrame >= 86400 * project.fps : project.clips.at(-1)?.id === selected)}</div>`
-        : '<div class="empty-inspector">' +
-          icon("film", 30) +
-          "<p>选择时间轴上的片段<br>调整时长与音量</p></div>"}
+        ? `<div class="selected-title">${icon(asset.kind === "audio" ? "volume" : "film", 18)}<strong>${esc(asset.name)}</strong></div><div class="property-section"><label class="input-label">源素材裁剪 <span>秒</span></label><div class="range-inputs"><label>入点<input id="trim-in" type="number" min="0" step="0.033333" value="${seconds(clip.inFrame)}" /></label><label>出点<input id="trim-out" type="number" min="0.033333" step="0.033333" max="${seconds(asset.durationFrames)}" value="${seconds(clip.outFrame)}" /></label></div>${button("trim", "应用裁剪", "cut", "full")}<div class="property-line"><span>片段时长</span><strong>${seconds(clip.outFrame - clip.inFrame)} s</strong></div><div class="property-line"><span>源素材时长</span><span>${seconds(asset.durationFrames)} s</span></div></div><div class="property-section"><label class="input-label" for="clip-volume">${audioClip ? "音轨音量" : "原声音量"} <span>${Math.round(clip.volume * 100)}%</span></label><div class="volume-slider">${icon("volume", 16)}<input id="clip-volume" type="range" min="0" max="200" value="${Math.round(clip.volume * 100)}"${volumeIssue ? ` disabled aria-describedby="clip-volume-issue"` : ""} /></div>${volumeIssue ? `<p class="small muted" id="clip-volume-issue" data-volume-issue>这个片段${esc(volumeIssue)}，请在属性面板中调整音量。</p>` : `<p class="small muted">${audioClip ? "独立调整这条音轨，不改变画面；可在时间轴拖动定位或裁剪。" : "画面与原声同步裁剪、同步移动。"}</p>`}</div><div class="reorder-actions">${button("move-left", freeClip ? "前移 1 秒" : "前移", "back", "", audioClip ? audioClip.startFrame === 0 : freeClip ? freeClip.startFrame === 0 : project.clips[0]?.id === selected)}${button("move-right", freeClip ? "后移 1 秒" : "后移", "next", "", audioClip ? audioClip.startFrame + audioClip.outFrame - audioClip.inFrame >= duration() : freeClip ? freeClip.endFrame >= 86400 * project.fps : project.clips.at(-1)?.id === selected)}</div>`
+        : clipIssue
+          ? `<div class="empty-inspector" data-inspector-issue role="status">${icon("film", 30)}<p>这个片段${esc(clipIssue)}，无法在这里调整。<br>点左侧“素材”，在属性面板中修改。</p></div>`
+          : '<div class="empty-inspector">' +
+            icon("film", 30) +
+            "<p>选择时间轴上的片段<br>调整时长与音量</p></div>"}
       ${asset?.speech
         ? `<div class="property-section"><label class="input-label">配音文案</label><p class="speech-script">${esc(asset.speech.text)}</p><p class="small muted">${esc(asset.speech.voiceId)} · ${asset.speech.rate}×</p>${button("edit-voiceover", "修改文案 / 重新配音", "volume", "full")}</div>`
         : ""}
@@ -738,38 +792,41 @@ ${esc(aiPrompt)}</textarea
     if (!proposal)
       return html`<div class="assistant-card">
         <span class="assistant-icon">${icon("spark", 22)}</span
-        ><span class="eyebrow">A LITTLE HELP</span>
+        ><span class="eyebrow">小帮手</span>
         <h3>从一个目标，<br />到一条成片。</h3>
         <p>分析素材、剪辑与场景制作，<br />在同一份工程里继续完成。</p>
         ${button("show-ai", "打开 AI 制作", "chevron", "quiet full")}
       </div>`;
-    const stale = proposal.baseRevision !== project.revision;
-    let after = 0;
-    try {
-      after = timelineDuration(
-        applyOperations(project, proposal.operations, proposal.baseRevision),
-      );
-    } catch {
-      /* Conflict is rendered and never silently rebased. */
-    }
+    const { stale, after } = proposal;
+    const changedTracks = proposal.tracks.filter(
+      (track) => track.after !== null && track.after !== track.before,
+    );
     return html`<div class="proposal-card">
       <div class="proposal-heading">
         ${icon("spark", 18)}<strong>待审阅的方案</strong
-        ><span class="count-badge">${proposal.operations.length}</span>
+        ><span class="count-badge">${proposal.labels.length}</span>
       </div>
       <h3>${esc(proposal.title)}</h3>
       <p>${esc(proposal.explanation)}</p>
       <div class="proposal-duration">
-        <span>${seconds(duration())}s</span>${icon("chevron", 14)}<strong
-          >${stale ? "需重新生成" : seconds(after) + "s"}</strong
+        <span>${proposal.before.toFixed(2)}s</span>${icon("chevron", 14)}<strong
+          >${stale || after === null ? "需重新生成" : after.toFixed(2) + "s"}</strong
         >
       </div>
+      ${changedTracks.length
+        ? `<ul class="proposal-tracks" aria-label="各轨道片段数">${changedTracks
+            .map(
+              (track) =>
+                `<li><span>${esc(track.name)}</span> <span>${track.before} → ${track.after}</span></li>`,
+            )
+            .join("")}</ul>`
+        : ""}
       <ol>
-        ${proposal.operations
+        ${proposal.labels
           .slice(0, 8)
-          .map((op) => `<li>${esc(operationLabel(op))}</li>`)
-          .join("")}${proposal.operations.length > 8
-          ? `<li>另有 ${proposal.operations.length - 8} 项修改</li>`
+          .map((label) => `<li>${esc(label)}</li>`)
+          .join("")}${proposal.labels.length > 8
+          ? `<li>另有 ${proposal.labels.length - 8} 项修改</li>`
           : ""}
       </ol>
       ${stale
@@ -781,57 +838,6 @@ ${esc(aiPrompt)}</textarea
         "quiet full",
       )}
     </div>`;
-  }
-
-  function operationLabel(op: EditOperation): string {
-    const named =
-      "clipId" in op
-        ? project.assets.find(
-            (asset) =>
-              asset.id ===
-              [...project.clips, ...(project.audioClips ?? [])].find(
-                (clip) => clip.id === op.clipId,
-              )?.assetId,
-          )?.name || "片段"
-        : "";
-    switch (op.type) {
-      case "trim":
-        return `裁剪 ${named} → ${seconds(op.inFrame)}–${seconds(op.outFrame)}s`;
-      case "remove":
-        return `移除 ${named}`;
-      case "split":
-        return `切分 ${named} @ ${seconds(op.atFrame)}s`;
-      case "move":
-        return `移动 ${named} 到第 ${op.toIndex + 1} 位`;
-      case "video-move":
-        return `移动 ${named} 到 ${seconds(op.startFrame)}s`;
-      case "volume":
-        return `设置 ${named} 音量 ${Math.round(op.volume * 100)}%`;
-      case "caption":
-        return `字幕：${op.caption.text}`;
-      case "remove-caption":
-        return "删除一条字幕";
-      case "settings":
-        return "更新工程设置";
-      case "add":
-        return "添加素材到序列";
-      case "rough-cuts":
-        return `更新素材粗剪清单（${op.cuts.length} 段）`;
-      case "audio-add":
-        return "添加独立音乐 / 配音轨";
-      case "audio-split":
-        return `切分音轨 ${named} @ 源素材 ${seconds(op.atFrame)}s`;
-      case "audio-trim":
-        return `裁剪音轨 ${named} → ${seconds(op.inFrame)}–${seconds(op.outFrame)}s`;
-      case "audio-move":
-        return `移动音轨 ${named} 到 ${seconds(op.startFrame)}s`;
-      case "audio-volume":
-        return `设置音轨 ${named} 音量 ${Math.round(op.volume * 100)}%`;
-      case "audio-remove":
-        return `删除音轨 ${named}`;
-      default:
-        return "剪辑操作";
-    }
   }
 
   function renderTimeline(): string {
@@ -904,7 +910,6 @@ ${esc(aiPrompt)}</textarea
         <div class="track-labels">
           <div class="ruler-label">时间轴</div>
           <div>${icon("film", 17)}<span>画面 / 原声</span></div>
-          <div>${icon("text", 17)}<span>字幕</span></div>
           <div>${icon("volume", 17)}<span>音乐 / 配音</span></div>
         </div>
         <div class="timeline-scroll" id="timeline-scroll">
@@ -943,7 +948,7 @@ ${esc(aiPrompt)}</textarea
                     >
                       ${item?.thumbnail
                         ? `<img src="${esc(item.thumbnail)}" alt="" draggable="false"/>`
-                        : `<span>${asset.kind === "demo" ? "MIMI" : asset.kind.toUpperCase()}</span>`.repeat(
+                        : `<span>${asset.kind === "demo" ? "MIMI" : kindLabel(asset.kind)}</span>`.repeat(
                             12,
                           )}
                     </div>
@@ -960,14 +965,6 @@ ${esc(aiPrompt)}</textarea
                 .join("")}${!clips.length
                 ? '<div class="timeline-empty">将素材拖到这里，或点击素材上的 ＋</div>'
                 : ""}
-            </div>
-            <div class="caption-track">
-              ${project.captions
-                .map(
-                  (caption) =>
-                    `<button class="timeline-caption" data-edit-caption="${esc(caption.id)}" title="${esc(caption.text)}" style="left:${(caption.startFrame / 30) * zoom}px;width:${((caption.endFrame - caption.startFrame) / 30) * zoom}px">${esc(caption.text)}</button>`,
-                )
-                .join("")}
             </div>
             <div class="audio-track">
               ${(project.audioClips ?? [])
@@ -993,5 +990,5 @@ ${esc(aiPrompt)}</textarea
       </div>`;
   }
 
-  return { shell, renderLibrary, renderInspector, renderProposal, renderTimeline, operationLabel };
+  return { shell, renderLibrary, renderInspector, renderProposal, renderTimeline };
 }

@@ -1,12 +1,15 @@
-import type { EditorSession, SessionIdentity } from "./session";
+import { sameIdentity, type EditorSession, type SessionIdentity } from "./session";
 import type { EditorDocument, TextStyle } from "./types";
 import type { EditorOperation } from "./operations";
 import { applyEditorOperations } from "./operations";
 import {
   captionTranslationItems,
   compileCaptionSources,
+  planAddCaption,
   planCaptionStyle,
+  planCaptionTiming,
   planDetachCaptions,
+  planRemoveCaptions,
   planCaptionText,
   planCaptionTranslation,
   planSrtImport,
@@ -15,6 +18,16 @@ import {
   type CaptionPlan,
   type CaptionTranscriptSegment,
 } from "./captions";
+import { planCaptionPreset, type CaptionPreset } from "./caption-presets";
+import { narrationDraftClipIds, recordedNarrationClipIds } from "./narration-edits";
+
+/** Temporary narration captions: the narration workflow replaces them, so they never block. */
+function workflowCaptions(doc: EditorDocument, sequenceId: string): Set<string> {
+  return new Set([
+    ...narrationDraftClipIds(doc, sequenceId),
+    ...recordedNarrationClipIds(doc, sequenceId),
+  ]);
+}
 
 export interface CaptionControllerContext {
   session(): EditorSession;
@@ -74,11 +87,6 @@ export interface CaptionControllerState {
   canTranscribe: boolean;
   canTranslate: boolean;
 }
-function equal(a: SessionIdentity, b: SessionIdentity): boolean {
-  return (
-    a.documentId === b.documentId && a.generation === b.generation && a.revision === b.revision
-  );
-}
 export function createCaptionController(context: CaptionControllerContext) {
   let state: CaptionControllerState = {
     phase: "idle",
@@ -113,7 +121,7 @@ export function createCaptionController(context: CaptionControllerContext) {
       throw new DOMException("字幕操作已取消", "AbortError");
     if (
       context.session() !== snapshot.session ||
-      !equal(context.session().getState().identity, snapshot.identity)
+      !sameIdentity(context.session().getState().identity, snapshot.identity)
     )
       throw new Error("生成期间工程已变化，请重新读取后生成字幕");
   };
@@ -126,7 +134,7 @@ export function createCaptionController(context: CaptionControllerContext) {
     pendingSession = snapshot.session;
     unwatch?.();
     unwatch = snapshot.session.subscribe((current) => {
-      if (disposed || state.phase === "applying" || equal(current.identity, snapshot.identity))
+      if (disposed || state.phase === "applying" || sameIdentity(current.identity, snapshot.identity))
         return;
       serial++;
       work?.abort();
@@ -270,69 +278,87 @@ export function createCaptionController(context: CaptionControllerContext) {
           await context.prepare({ assetIds: [...assetIds], signal: controller.signal });
         check(snapshot, token, controller.signal);
         const transcripts = new Map<string, CaptionTranscriptSegment[]>();
+        const names = new Map(
+          snapshot.document.assets.map((asset) => [asset.id, asset.name] as const),
+        );
         let transcriptCharacters = 0;
         for (const assetId of assetIds) {
-          set({
-            phase: "transcribing",
-            message: `读取转写 ${transcripts.size + 1}/${assetIds.length}`,
-          });
-          const segments: CaptionTranscriptSegment[] = [];
-          let offset = 0,
-            total: number | undefined,
-            revision: string | undefined;
-          const seen = new Set<string>();
-          do {
-            const page = await context.transcript!({
-              assetId,
-              offset,
-              limit: 100,
-              signal: controller.signal,
+          try {
+            set({
+              phase: "transcribing",
+              message: `读取转写 ${transcripts.size + 1}/${assetIds.length}`,
             });
-            check(snapshot, token, controller.signal);
+            const segments: CaptionTranscriptSegment[] = [];
+            let offset = 0,
+              total: number | undefined,
+              revision: string | undefined;
+            const seen = new Set<string>();
+            do {
+              const page = await context.transcript!({
+                assetId,
+                offset,
+                limit: 100,
+                signal: controller.signal,
+              });
+              check(snapshot, token, controller.signal);
+              if (
+                !page ||
+                page.assetId !== assetId ||
+                page.offset !== offset ||
+                !Number.isSafeInteger(page.total) ||
+                page.total < 0 ||
+                page.total > 100000 ||
+                (total !== undefined && page.total !== total) ||
+                !Array.isArray(page.segments) ||
+                page.segments.length > 100 ||
+                offset + page.segments.length > page.total ||
+                (!page.segments.length && offset < page.total)
+              )
+                throw new Error("转写分页不完整或身份变化，未写入字幕");
+              if (
+                page.revision !== undefined &&
+                (typeof page.revision !== "string" || !page.revision || page.revision.length > 256)
+              )
+                throw new Error("转写版本无效");
+              if (offset === 0) revision = page.revision;
+              else if (page.revision !== revision)
+                throw new Error("转写版本在分页期间变化，未写入字幕");
+              const validated = validateCaptionTranscript(page.segments);
+              for (const segment of validated) {
+                const key = JSON.stringify([segment.start, segment.end, segment.text]);
+                if (seen.has(key)) throw new Error("转写分页重复段落，未写入字幕");
+                seen.add(key);
+                transcriptCharacters +=
+                  segment.text.length +
+                  (segment.words ?? []).reduce((sum, word) => sum + word.text.length, 0);
+                if (transcriptCharacters > 16 * 1024 * 1024)
+                  throw new Error("此次转写超过16 MiB，请缩小素材选择");
+              }
+              total = page.total;
+              segments.push(...validated);
+              offset += page.segments.length;
+            } while (offset < total!);
+            transcripts.set(assetId, segments);
+            set({ completed: transcripts.size });
+          } catch (error) {
+            // Cancellation and project changes are not this source's fault.
             if (
-              !page ||
-              page.assetId !== assetId ||
-              page.offset !== offset ||
-              !Number.isSafeInteger(page.total) ||
-              page.total < 0 ||
-              page.total > 100000 ||
-              (total !== undefined && page.total !== total) ||
-              !Array.isArray(page.segments) ||
-              page.segments.length > 100 ||
-              offset + page.segments.length > page.total ||
-              (!page.segments.length && offset < page.total)
+              (error as Error)?.name === "AbortError" ||
+              /工程已变化/.test(String((error as Error)?.message ?? error))
             )
-              throw new Error("转写分页不完整或身份变化，未写入字幕");
-            if (
-              page.revision !== undefined &&
-              (typeof page.revision !== "string" || !page.revision || page.revision.length > 256)
-            )
-              throw new Error("转写版本无效");
-            if (offset === 0) revision = page.revision;
-            else if (page.revision !== revision)
-              throw new Error("转写版本在分页期间变化，未写入字幕");
-            const validated = validateCaptionTranscript(page.segments);
-            for (const segment of validated) {
-              const key = JSON.stringify([segment.start, segment.end, segment.text]);
-              if (seen.has(key)) throw new Error("转写分页重复段落，未写入字幕");
-              seen.add(key);
-              transcriptCharacters +=
-                segment.text.length +
-                (segment.words ?? []).reduce((sum, word) => sum + word.text.length, 0);
-              if (transcriptCharacters > 16 * 1024 * 1024)
-                throw new Error("此次转写超过16 MiB，请缩小素材选择");
-            }
-            total = page.total;
-            segments.push(...validated);
-            offset += page.segments.length;
-          } while (offset < total!);
-          transcripts.set(assetId, segments);
-          set({ completed: transcripts.size });
+              throw error;
+            const message = (error as Error)?.message ?? String(error);
+            throw new Error(
+              `声音来源「${names.get(assetId) ?? assetId}」：${message}。可取消勾选这个来源后重试。`,
+            );
+          }
         }
         check(snapshot, token, controller.signal);
         const plan = planTranscriptCaptions(snapshot.document, options.sequenceId, transcripts, {
           ...options,
           idFactory: context.idFactory,
+          avoidOverlaps: true,
+          overlapExempt: workflowCaptions(snapshot.document, options.sequenceId),
         });
         if ([...transcripts.values()].every((segments) => !segments.length))
           plan.notices.push("所选素材没有识别到语音，未生成虚构字幕");
@@ -347,6 +373,8 @@ export function createCaptionController(context: CaptionControllerContext) {
           planSrtImport(running.snapshot.document, options.sequenceId, options.text, {
             trackId: options.trackId,
             idFactory: context.idFactory,
+            avoidOverlaps: true,
+            overlapExempt: workflowCaptions(running.snapshot.document, options.sequenceId),
           }),
           "导入 SRT 字幕",
         );
@@ -434,7 +462,7 @@ export function createCaptionController(context: CaptionControllerContext) {
       if (!candidate) throw new Error("没有待应用的字幕");
       const snapshot = read(),
         token = ++serial;
-      if (snapshot.session !== pendingSession || !equal(snapshot.identity, candidate.identity)) {
+      if (snapshot.session !== pendingSession || !sameIdentity(snapshot.identity, candidate.identity)) {
         set({ phase: "stale", message: "工程已变化，请重新生成预览", candidate: undefined });
         throw new Error(state.message);
       }
@@ -462,6 +490,42 @@ export function createCaptionController(context: CaptionControllerContext) {
         snapshot.identity,
         "修改字幕文字",
       );
+    },
+    /** Adds one plain subtitle and returns its clip ID. */
+    async add(
+      sequenceId: string,
+      options: { start: number; duration?: number; text: string; trackId?: string },
+    ): Promise<string> {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planAddCaption(snapshot.document, sequenceId, {
+        ...options,
+        ...(context.idFactory ? { idFactory: context.idFactory } : {}),
+      });
+      const added = operations.find((op) => op.type === "clip.add");
+      await context.apply(operations, snapshot.identity, "添加字幕");
+      return added?.type === "clip.add" ? added.clip.id : "";
+    },
+    async updateTiming(sequenceId: string, clipId: string, timing: { start: number; end: number }) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planCaptionTiming(snapshot.document, sequenceId, clipId, timing);
+      if (operations.length) await context.apply(operations, snapshot.identity, "调整字幕时间");
+    },
+    async remove(sequenceId: string, clipIds: string[]) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      await context.apply(
+        planRemoveCaptions(snapshot.document, sequenceId, clipIds),
+        snapshot.identity,
+        "删除字幕",
+      );
+    },
+    async applyPreset(sequenceId: string, preset: CaptionPreset) {
+      const snapshot = read();
+      if (work || state.phase === "applying") throw new Error("请先完成或取消当前字幕任务");
+      const operations = planCaptionPreset(snapshot.document, sequenceId, preset);
+      if (operations.length) await context.apply(operations, snapshot.identity, "套用字幕样式");
     },
     async updateStyle(sequenceId: string, clipIds: string[], patch: Partial<TextStyle>) {
       const snapshot = read();

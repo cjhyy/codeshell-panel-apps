@@ -334,11 +334,13 @@ test(
       const audio = (await state(page)).project.assets.find(
         (asset) => asset.name === "Library-Alpha.wav",
       );
-      await page.locator(`[data-add-asset="${audio.id}"]`).click();
+      // "+" would append after the narration, past what the old view shows; insert at 0 instead.
+      await (await menu(page, audio.id)).locator('[data-action="insert-media-playhead"]').click();
       await saved(page);
       const before = (await state(page)).project;
       const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
       assert.ok(audioClip);
+      assert.equal(audioClip.startFrame, 0, "插入到播放头 keeps the playhead position");
       const target = page.locator(`[data-et-clip="${audioClip.id}"]`);
       const context = page.locator("#timeline-context-menu");
       await page.locator(`[data-et-clip="${before.clips[0].id}"]`).focus();
@@ -396,7 +398,12 @@ async function backgroundChangesWhileDeleting(page, assetId) {
   const before = await canonical(page);
   // Exercise the real edit/commit callback while the modal is mounted, as a
   // background publication would; no production implementation is replaced.
-  await page.locator(`[data-add-asset="${assetId}"]`).evaluate((element) => element.click());
+  // Find and click in one page task so a background render cannot detach the button in between.
+  await page.locator(`[data-add-asset="${assetId}"]`).waitFor({ state: "attached" });
+  await page.evaluate(
+    (id) => document.querySelector(`[data-add-asset="${CSS.escape(id)}"]`).click(),
+    assetId,
+  );
   await page.waitForFunction(
     (count) =>
       window.__libraryTools.read_video_project({
@@ -909,7 +916,15 @@ async function checkContextMenu(viewport, artifact) {
       "A pointer-opened menu stays inside the viewport",
     );
     assert.equal(
-      await page.locator("[data-ew-canvas]").isVisible(),
+      await page.locator("#studio .workspace.editor-source-mode").count(),
+      0,
+      "Right-clicking must not switch or start the source preview",
+    );
+    // Narrow (≤900px) panels show the library in place of the preview; the menu must not swap it away.
+    assert.equal(
+      await page
+        .locator(viewport.width > 900 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .isVisible(),
       true,
       "Right-clicking must not switch or start the source preview",
     );
@@ -926,7 +941,13 @@ async function checkContextMenu(viewport, artifact) {
     await menu(page, asset.id);
     await page.locator(".section-title h2").first().click();
     assert.equal(await popup.isVisible(), false);
-    assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
+    assert.equal(
+      await page
+        .locator(viewport.width > 900 ? "[data-ew-canvas]" : "#studio .library-panel")
+        .isVisible(),
+      true,
+    );
+    assert.equal(await page.locator("#studio .workspace.editor-source-mode").count(), 0);
     assert.deepEqual((await state(page)).project, before.project);
   } finally {
     await page.close();

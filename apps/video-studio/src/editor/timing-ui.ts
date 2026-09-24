@@ -549,6 +549,8 @@ export class EditorTiming {
       controls.disabled = [pair.from, pair.to].some(
         (clip) => scope.sequence.tracks.find((track) => track.id === clip.trackId)?.locked,
       );
+      if (controls.disabled)
+        body.append(element("p", "etime-note", "相邻片段所在轨道已锁定，请先解锁。"));
       controls.append(element("legend", "etime-sr", "转场设置"));
       body.append(controls);
       const kind = select("转场效果", kinds, existing?.kind ?? "dissolve"),
@@ -672,6 +674,7 @@ export class EditorTiming {
       ),
     );
     button.disabled = !tracks.length;
+    if (button.disabled) button.title = "序列里还没有画面轨";
     controls.append(button);
   }
 }

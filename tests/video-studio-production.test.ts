@@ -8,18 +8,17 @@ import {
 } from "../apps/video-studio/src/model.ts";
 import {
   ProductionController,
-  transcriptCaptions,
   type ManagedAsset,
   type MediaJob,
   type PreparedMedia,
   type AutoProduction,
   validateVoicePreparation,
   type AssetPublication,
+  TRANSCRIPTION_SETUP_MESSAGE,
+  transcriptionSetupMessage,
 } from "../apps/video-studio/src/production.ts";
 import { AutomaticProducer } from "../apps/video-studio/src/automatic.ts";
 import {
-  approveNarration,
-  bindNarrationRecording,
   narrationFingerprint,
 } from "../apps/video-studio/src/narration.ts";
 import type { PanelBridge, PanelTask } from "../apps/video-studio/src/host.ts";
@@ -84,6 +83,78 @@ test("project restoration defers native checks until an explicit production requ
     host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
     [{ probe: false }, { probe: true }],
   );
+});
+
+test("transcription readiness keeps the missing piece and 重新检测 asks for a fresh probe", async () => {
+  const host = new FakeHost();
+  let transcription: unknown = { available: false, reason: "model-missing" };
+  host.handlers.set("media.status", ({ probe }) => ({
+    persistent: true,
+    runtimeChecked: probe,
+    ffmpeg: { available: true },
+    transcription,
+    hyperframes: { available: true },
+  }));
+  const f = await fixture(host);
+  await assert.rejects(f.controller.transcribe(["source"]), (error: Error) => {
+    assert.equal(error.message, transcriptionSetupMessage("model-missing"));
+    assert.match(error.message, /缺少 base 模型 ~\/\.cache\/whisper\/base\.pt/);
+    assert.match(error.message, /重新检测/);
+    return true;
+  });
+  assert.equal(f.controller.status.transcription.reason, "model-missing");
+  assert.match(transcriptionSetupMessage("executable-missing"), /未找到 whisper 命令/);
+  assert.match(transcriptionSetupMessage("executable-failed"), /whisper 无法运行/);
+  assert.equal(transcriptionSetupMessage(undefined), TRANSCRIPTION_SETUP_MESSAGE);
+  assert.equal(
+    TRANSCRIPTION_SETUP_MESSAGE,
+    "本机语音转写未就绪：需要安装 openai-whisper（whisper 命令）并准备 base 模型 ~/.cache/whisper/base.pt。安装后点“重新检测”，或先导入 SRT。",
+  );
+  transcription = { available: false, reason: "not-a-known-reason" };
+  await f.controller.refreshStatus({ fresh: true });
+  assert.equal(f.controller.status.transcription.reason, undefined);
+  transcription = { available: true };
+  await f.controller.refreshStatus({ fresh: true });
+  assert.equal(f.controller.status.transcription.available, true);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }, { probe: true }, { probe: true, fresh: true }, { probe: true, fresh: true }],
+  );
+});
+
+test("setup copy fits each blocked flow and a fresh probe never joins an older pending one", async () => {
+  assert.equal(
+    transcriptionSetupMessage("model-missing", "再重试本人录音对齐；录音和草稿已保留"),
+    "本机语音转写未就绪：缺少 base 模型 ~/.cache/whisper/base.pt。准备好模型后点“重新检测”，再重试本人录音对齐；录音和草稿已保留。",
+  );
+  assert.doesNotMatch(transcriptionSetupMessage(undefined, "再重试音频粗剪"), /SRT/);
+  assert.match(
+    transcriptionSetupMessage(undefined, "再重试音频粗剪"),
+    /openai-whisper.*base 模型.*重新检测/,
+  );
+  const host = new FakeHost();
+  const first = deferred<void>();
+  let calls = 0;
+  host.handlers.set("media.status", async ({ probe }) => {
+    calls++;
+    if (probe && calls === 2) await first.promise;
+    return {
+      persistent: true,
+      ffmpeg: { available: true },
+      transcription: { available: calls > 2 },
+      hyperframes: { available: true },
+    };
+  });
+  const f = await fixture(host);
+  const stale = f.controller.refreshStatus();
+  const fresh = f.controller.refreshStatus({ fresh: true });
+  first.resolve();
+  await Promise.all([stale, fresh]);
+  assert.deepEqual(
+    host.calls.filter((call) => call.method === "media.status").map((call) => call.params),
+    [{ probe: false }, { probe: true }, { probe: true, fresh: true }],
+  );
+  assert.equal(f.controller.status.transcription.available, true);
 });
 
 test("render admission returns before storage or staging, deduplicates, and exposes only the eventual real job", async () => {
@@ -1004,7 +1075,7 @@ function automatic(f: Awaited<ReturnType<typeof fixture>>) {
 const starts = (host: FakeHost) => host.calls.filter((call) => call.method === "agent.task.start");
 
 async function narratedProject(): Promise<Project> {
-  const current = project();
+  let current = project();
   current.script = "先从海边出发，然后走进老街。";
   current.assets.push({
     id: "own-take",
@@ -1013,8 +1084,17 @@ async function narratedProject(): Promise<Project> {
     kind: "audio",
     durationFrames: 150,
   });
-  current.narration = { phase: "review", captionBasis: "draft", draftCaptionIds: [] };
-  return bindNarrationRecording(await approveNarration(current), "own-take");
+  // A confirmed draft and chosen take, as older versions saved them (30 fps view digest).
+  current = validateProject(current);
+  current.narration = {
+    phase: "recorded",
+    captionBasis: "draft",
+    draftCaptionIds: [],
+    approvedScript: current.script,
+    approvedFingerprint: await narrationFingerprint(current),
+    recordingAssetId: "own-take",
+  };
+  return validateProject(current);
 }
 
 function narrationRun(current: Project, phase: AutoProduction["phase"] = "agent"): AutoProduction {
@@ -1041,9 +1121,17 @@ test("draft uses its owning skill and rejects proposal, voice and export shortcu
   assert.equal(starts(f.host)[0]!.params.key, "narration-workflow-draft");
   assert.match(starts(f.host)[0]!.params.prompt, /停下等用户确认/);
   assert.match(starts(f.host)[0]!.params.prompt, /不调用TTS或导出/);
+  assert.ok(starts(f.host)[0]!.params.skills.includes("video-studio:editor-v2"));
+  assert.match(starts(f.host)[0]!.params.prompt, /editor\.grant/);
+  assert.match(starts(f.host)[0]!.params.prompt, /captions 的 add 步骤补充临时字幕/);
+  assert.match(starts(f.host)[0]!.params.prompt, /set_video_script[^。]*自动生成估时的临时字幕/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /旧 caption 操作|draft-narration-/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /需要导出时统一调用/);
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /只接受不改变本人录音依赖/);
   for (const name of [
     "prepare_video_assets",
     "apply_video_edit",
+    "apply_editor_edit",
     "set_video_script",
     "create_video_scene",
   ])
@@ -1093,6 +1181,12 @@ test("narration locks before digest validation so double starts prepare only the
   await Promise.all([first, duplicate]);
   assert.equal(starts(f.host).length, 1);
   assert.equal(starts(f.host)[0]!.params.key, "narration-workflow-narration");
+  const narrationPrompt = starts(f.host)[0]!.params.prompt;
+  assert.match(narrationPrompt, /editor 分支可以编排画面和本人录音/);
+  assert.match(narrationPrompt, /改写文稿、改变画幅或替换本人录音素材的编辑会被拒绝/);
+  assert.doesNotMatch(narrationPrompt, /录音编排与字幕对齐沿用旧 apply_video_edit/);
+  assert.match(narrationPrompt, /需要导出时统一调用 render_video_project/);
+  assert.doesNotMatch(narrationPrompt, /临时字幕仍用旧 caption 操作/);
   const preparation = f.host.calls.filter(({ method }) => method === "media.prepare");
   assert.equal(preparation.length, 1);
   assert.deepEqual(preparation[0]!.params.assetIds, [`asset-${"b".repeat(64)}`]);
@@ -1106,7 +1200,12 @@ test("narration locks before digest validation so double starts prepare only the
     "render_video_project",
   ])
     assert.throws(() => producer.assertToolAllowed(name));
-  for (const name of ["apply_video_edit", "prepare_video_assets", "create_video_scene"])
+  for (const name of [
+    "apply_video_edit",
+    "apply_editor_edit",
+    "prepare_video_assets",
+    "create_video_scene",
+  ])
     assert.doesNotThrow(() => producer.assertToolAllowed(name));
 });
 
@@ -1358,14 +1457,25 @@ test("initialization only permits preparation and saving its production sheet", 
     "create_video_voiceover",
     "create_video_scene",
     "render_video_project",
+    "apply_editor_edit",
     "unknown_write_tool",
   ])
     assert.throws(() => producer.assertToolAllowed(name));
+  assert.doesNotMatch(starts(f.host)[0]!.params.prompt, /editor\.grant/);
   assert.equal(f.controller.currentJobs.length, 0);
   assert.equal(f.current.revision, 0);
   await producer.finishForReview();
   await producer.start("按制作单生成视频", { mode: "workflow" });
-  for (const name of ["enhance_video_audio", "create_video_voiceover", "render_video_project"])
+  const workflowPrompt = starts(f.host).at(-1)!.params.prompt;
+  assert.match(workflowPrompt, /editor\.grant/);
+  assert.match(workflowPrompt, /需要导出时统一调用 render_video_project/);
+  assert.doesNotMatch(workflowPrompt, /只接受不改变本人录音依赖|临时字幕仍用旧 caption 操作/);
+  for (const name of [
+    "enhance_video_audio",
+    "create_video_voiceover",
+    "render_video_project",
+    "apply_editor_edit",
+  ])
     assert.doesNotThrow(() => producer.assertToolAllowed(name));
 });
 
@@ -1676,46 +1786,6 @@ test("terminal failure is acknowledged and unchanged successful results are reus
   await f.controller.refresh();
   assert.equal(f.host.writes, terminalWrites);
   assert.equal(f.controller.currentJobs.find((job) => job.id === failed.id)?.status, "failed");
-});
-
-test("Chinese word timings form readable captions and preserve source mapping across repeated trims", () => {
-  const value = project();
-  value.assets[0]!.durationFrames = 600;
-  value.clips = [
-    { id: "a", assetId: "source", inFrame: 90, outFrame: 300, volume: 1 },
-    { id: "b", assetId: "source", inFrame: 0, outFrame: 150, volume: 1 },
-  ];
-  const words = Array.from({ length: 44 }, (_, index) => ({
-    start: (index * 13.82) / 44,
-    end: ((index + 1) * 13.82) / 44,
-    text: "画面",
-    probability: 0.99,
-  }));
-  const captions = transcriptCaptions(value, "source", [
-    { start: 0, end: 13.82, text: words.map((word) => word.text).join(""), words },
-  ]);
-  assert.ok(captions.length >= 5);
-  assert.ok(captions.every((caption) => [...caption.text].length <= 22));
-  assert.ok(
-    captions.every(
-      (caption) =>
-        caption.endFrame > caption.startFrame && caption.endFrame - caption.startFrame <= 120,
-    ),
-  );
-  assert.equal(captions[0]!.startFrame, 0);
-  assert.ok(captions.some((caption) => caption.startFrame === 210));
-  const starts = new Set(words.map((word) => Math.round(word.start * 30)));
-  for (const caption of captions.filter(
-    (caption) => caption.startFrame > 0 && caption.startFrame < 210,
-  ))
-    assert.ok(starts.has(caption.startFrame + 90));
-  const fallback = transcriptCaptions(project(), "source", [
-    { start: 1, end: 8, text: "没有逐字时间就保留真实整段范围" },
-  ]);
-  assert.deepEqual(
-    fallback.map(({ startFrame, endFrame, text }) => ({ startFrame, endFrame, text })),
-    [{ startFrame: 30, endFrame: 240, text: "没有逐字时间就保留真实整段范围" }],
-  );
 });
 
 test("initialization saves the selected Audio8 configuration and only samples its extracted reference, including after reopening", async () => {
@@ -2073,4 +2143,103 @@ test("retrying a legacy job preserves project publication under its new durable 
   assert.equal(reopened.published.length, 1);
   assert.equal(reopened.published[0]!.projectId, "project-a");
   assert.equal(binding(f.host, nextId).consumed, true);
+});
+
+test("a request signal aborts when its automatic round ends, is replaced or is cancelled", async () => {
+  const f = await fixture();
+  const { producer } = automatic(f);
+  await producer.start("按制作单生成视频", { mode: "workflow" });
+  const token = producer.requestToken;
+  assert.ok(token);
+  assert.equal(producer.requestSignal("an-old-request").aborted, true);
+  const signal = producer.requestSignal(token);
+  assert.equal(signal.aborted, false);
+  assert.equal(producer.requestSignal(token), signal, "One signal per request");
+  await producer.finishForReview("方案已完成");
+  assert.equal(signal.aborted, true);
+  await producer.start("再做一版", { mode: "workflow" });
+  const next = producer.requestSignal(producer.requestToken);
+  assert.equal(next.aborted, false);
+  await producer.cancel();
+  assert.equal(next.aborted, true);
+});
+
+test("preparing a non-whole-frame source keeps its exact decoded length in the editor document", async () => {
+  const { preparedAsset } = await import("../apps/video-studio/src/production.ts");
+  const { projectLegacyView, applyLegacyProjectChange } = await import(
+    "../apps/video-studio/src/editor/legacy-adapter.ts"
+  );
+  const { publishProductionAssets } = await import("../apps/video-studio/src/voiceover.ts");
+  const { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } = await import(
+    "../apps/video-studio/src/editor/defaults.ts"
+  );
+  const { validateEditorDocument } = await import(
+    "../apps/video-studio/src/editor/validation.ts"
+  );
+  const exact = 2_469_605; // 10.29 s — not a whole 30 fps frame
+  const doc = validateEditorDocument({
+    schemaVersion: 2,
+    timebase: 240000,
+    id: "exact-length",
+    name: "精确长度",
+    revision: 3,
+    activeSequenceId: "main",
+    exportProfiles: [],
+    assets: [
+      { id: "talk", name: "口播.mp4", kind: "video", duration: exact, resourceId: mediaId, width: 1280, height: 720 },
+    ],
+    sequences: [
+      {
+        id: "main",
+        name: "主序列",
+        width: 1280,
+        height: 720,
+        frameRate: { numerator: 30, denominator: 1 },
+        background: "#000000",
+        timelineMode: "magnetic",
+        tracks: [createTrack("v1", "video", "主画面")],
+        clips: [
+          {
+            id: "a",
+            kind: "media",
+            label: "口播",
+            trackId: "v1",
+            start: 0,
+            duration: 8000 * 240,
+            assetId: "talk",
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 8000 * 240, source: 8000 * 240 }] },
+            audio: defaultAudioMix(),
+            transform: defaultTransform(),
+            color: defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        ],
+        transitions: [],
+        markers: [],
+      },
+    ],
+  });
+  const view = projectLegacyView(doc);
+  const asset = preparedAsset(
+    { id: mediaId, name: "口播.mp4", mimeType: "video/mp4", bytes: 10, createdAt: 1 },
+    {
+      assetId: mediaId,
+      inspection: {
+        kind: "video",
+        durationSeconds: exact / 240000,
+        video: { displayWidth: 1280, displayHeight: 720, width: 1280, height: 720 },
+      },
+      proxy: { asset: { id: `asset-${"b".repeat(64)}`, name: "p", mimeType: "video/mp4", bytes: 1, createdAt: 1 } },
+    },
+    view.project,
+  );
+  assert.equal(asset.durationFrames, view.project.assets[0]!.durationFrames);
+  const published = publishProductionAssets(view.project, [asset]).project!;
+  const operations = applyLegacyProjectChange(doc, view, view.project, published, doc.revision);
+  assert.ok(
+    operations.every(
+      (operation) => operation.type !== "asset.update" || operation.patch.duration === undefined,
+    ),
+    "preparation must not rewrite the probed duration",
+  );
 });

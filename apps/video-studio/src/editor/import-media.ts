@@ -8,7 +8,7 @@ import {
 import { createEditorTaskBridge } from "./task-bridge";
 import { isResourceId } from "../external-media";
 import type { EditorAsset, JsonData } from "./types";
-import type { SessionIdentity } from "./session";
+import { sameIdentity, type SessionIdentity } from "./session";
 
 export interface EditorSourceInspection {
   resourceId: string;
@@ -127,9 +127,7 @@ export function createEditorMediaImporter(panel: RuntimeBridge, options: EditorI
       if (
         disposed ||
         controller.signal.aborted ||
-        !now ||
-        now.documentId !== identity.documentId ||
-        now.generation !== identity.generation
+        !sameIdentity(now, identity, false)
       ) {
         controller.abort();
         throw runtimeCancelled();

@@ -13,12 +13,20 @@ import {
   defaultTransform,
 } from "./defaults";
 import { createExportPresets, validateExportProfile, type ExportProfile } from "./export-settings";
-import { constantTimeMap, freezeTimeMap, secondsToTicks, ticksToSeconds, type Tick } from "./time";
+import {
+  constantTimeMap,
+  formatFrameRate,
+  freezeTimeMap,
+  secondsToTicks,
+  ticksToSeconds,
+  type Tick,
+} from "./time";
 import type { EditorMediaPoolOptions } from "./media-pool";
 import { applyEditorOperations, type EditorOperation } from "./operations";
 import { reconcileEditorProduction } from "./production-guard";
 import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./types";
-import { sequenceDuration } from "./validation";
+import { MAX_EDITOR_TICK, sequenceDuration } from "./validation";
+import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./placement";
 import { EditorExportBatch } from "./export-batch";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";
@@ -57,6 +65,8 @@ export interface EditorWorkspaceOptions {
   showCaptions?(sequenceId: string): void | Promise<void>;
   showSeparation?(sequenceId: string, clipId: string): void | Promise<void>;
   showAudioEnhancement?(sequenceId: string, clipId: string): void | Promise<void>;
+  /** Regenerate a generated voice clip's script and replace that clip in place. */
+  editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
   showProduction(tab: string): void | Promise<void>;
   onError(error: unknown): void;
 }
@@ -100,6 +110,8 @@ export class EditorWorkspace {
   private sequenceId: string;
   private revision = "";
   private playhead = 0;
+  /** The playhead sits on an exact clip start (not a frame boundary) that re-seeks keep. */
+  private exactPlayhead = false;
   private search = "";
   private visible = true;
   private sourcePreview = false;
@@ -166,12 +178,22 @@ export class EditorWorkspace {
     const apply = (operations: EditorOperation[], label: string) => {
       this.apply(operations, label);
     };
+    const editVoiceover = options.editVoiceover;
     this.inspector = new EditorInspector(this.get("[data-ew-inspector]"), {
       read,
       selection,
       apply,
       time: () => this.playhead,
       onError: options.onError,
+      ...(editVoiceover
+        ? {
+            editVoiceover: async (sequenceId: string, clipId: string) => {
+              this.preview.pause();
+              this.cancelPreparation();
+              await editVoiceover(sequenceId, clipId);
+            },
+          }
+        : {}),
     });
     this.timing = new EditorTiming(this.get("[data-ew-timing]"), {
       read,
@@ -226,11 +248,13 @@ export class EditorWorkspace {
       },
       media: options.timelineMedia,
       addAsset: (assetId, placement) => this.addAsset(assetId, placement),
+      addText: () => this.addText(),
       onError: options.onError,
     });
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
       resolveAsset: options.resolveAsset,
       onFrame: (time) => {
+        if (time !== this.playhead) this.exactPlayhead = false;
         this.playhead = time;
         this.updateTime();
         this.timeline.updatePlayhead();
@@ -284,7 +308,9 @@ export class EditorWorkspace {
       pause: () => this.cancelPreparation(),
       apply,
       draft: (document) =>
-        document ? this.preview.previewDraft(document) : this.preview.seek(this.playhead),
+        document
+          ? this.preview.previewDraft(document)
+          : this.preview.seek(this.playhead, { exact: this.exactPlayhead }),
       onError: options.onError,
     });
     container.addEventListener("click", this.click);
@@ -334,10 +360,16 @@ export class EditorWorkspace {
       } as const
     )[state.saveState];
     save.title = state.error?.message ?? "";
-    this.get<HTMLButtonElement>('[data-ew-action="undo"]').disabled =
-      !state.canUndo || state.phase !== "ready";
-    this.get<HTMLButtonElement>('[data-ew-action="redo"]').disabled =
-      !state.canRedo || state.phase !== "ready";
+    for (const [name, label, available, shortcut] of [
+      ["undo", "撤销", state.canUndo, "⌘/Ctrl Z"],
+      ["redo", "重做", state.canRedo, "⇧ ⌘/Ctrl Z"],
+    ] as const) {
+      const control = this.get<HTMLButtonElement>(`[data-ew-action="${name}"]`);
+      control.disabled = !available || state.phase !== "ready";
+      control.title = control.disabled
+        ? `${label}（${state.phase !== "ready" ? "工程正在保存或切换，请稍候" : `没有可${label}的操作`}）`
+        : `${label} · ${shortcut}`;
+    }
     if (state.error?.stage === "commit") save.textContent = "候选保存失败，请重试原操作";
     this.get('[data-ew-action="retry-save"]').hidden =
       state.saveState !== "failed" || state.error?.stage === "commit";
@@ -366,8 +398,7 @@ export class EditorWorkspace {
     this.get<HTMLInputElement>("[data-ew-seek]").max = String(
       Math.max(0, sequenceDuration(sequence) - 1),
     );
-    this.get("[data-ew-fps]").textContent =
-      `${Number((sequence.frameRate.numerator / sequence.frameRate.denominator).toFixed(3))} fps`;
+    this.get("[data-ew-fps]").textContent = `${formatFrameRate(sequence.frameRate)} fps`;
     this.renderAssets();
     this.inspector.render();
     this.timing.render();
@@ -444,14 +475,26 @@ export class EditorWorkspace {
     output.textContent = "";
     output.hidden = true;
   }
-  async seek(time: Tick): Promise<void> {
+  get playing(): boolean {
+    return this.preview.playing;
+  }
+  /** Current playhead of the shown sequence, in exact ticks. */
+  currentTime(): Tick {
+    return this.playhead;
+  }
+  /**
+   * `exact` keeps a tick between frames (a new clip's start) instead of showing the frame that
+   * contains it, which would still be the previous clip. Re-seeking the same spot keeps it.
+   */
+  async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
     if (this.disposed) return;
     this.canvasEditor?.cancel();
     this.cancelPreparation();
     this.playhead = time;
+    this.exactPlayhead = exact;
     this.updateTime();
     try {
-      await this.preview.seek(time);
+      await this.preview.seek(time, { exact });
       if (!this.disposed && !this.preparing) this.get("[data-ew-preview-error]").hidden = true;
     } catch (error) {
       this.previewError(error);
@@ -493,7 +536,7 @@ export class EditorWorkspace {
       this.preparationStatus(controller, "正在载入画面并同步声音…");
       // Resource preparation may replace an incompatible source with a verified preview proxy.
       this.preview.setDocument(doc, sequenceId);
-      await this.preview.seek(this.playhead);
+      await this.preview.seek(this.playhead, { exact: this.exactPlayhead });
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -569,10 +612,7 @@ export class EditorWorkspace {
   }
   revealSelection(): void {
     const id = this.selected[0];
-    if (id)
-      this.container
-        .querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(id)}"]`)
-        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (id) this.timeline.reveal(id);
   }
 
   private track(
@@ -580,31 +620,35 @@ export class EditorWorkspace {
     start: Tick,
     duration: Tick,
   ): { id: string; operations: EditorOperation[] } {
-    const sequence = this.sequence();
-    const track = sequence.tracks.find(
-      (t) =>
-        t.kind === kind &&
-        !t.locked &&
-        !sequence.clips.some(
-          (c) => c.trackId === t.id && c.start < start + duration && c.start + c.duration > start,
-        ),
-    );
-    if (track) return { id: track.id, operations: [] };
-    const created = createTrack(uid("track"), kind);
-    return {
-      id: created.id,
-      operations: [{ type: "track.add", sequenceId: sequence.id, track: created }],
-    };
+    const { trackId, operations } = findFreeTrack(this.sequence(), kind, start, duration, uid);
+    return { id: trackId, operations };
   }
-  addAsset(assetId: string, placement: { at?: Tick; trackId?: string } = {}): void {
+  /**
+   * Adds material to the shown sequence. Without an explicit time or track (the material "+"),
+   * picture continues the main picture track and sound the first audio track; `anchor:
+   * "playhead"` inserts at the playhead on a free track instead. Drops pass their exact spot.
+   */
+  addAsset(
+    assetId: string,
+    placement: { at?: Tick; trackId?: string; anchor?: "end" | "playhead" } = {},
+  ): void {
     const asset = this.options.session.read().assets.find((a) => a.id === assetId);
     if (!asset) throw new Error("素材已移除，请刷新后重试");
-    const at = placement.at ?? this.playhead;
-    if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
     const duration = asset.kind === "image" ? secondsToTicks(5) : asset.duration;
     if (!duration) throw new Error("素材长度尚未确认，请先完成素材准备");
-    if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
     let kind: "video" | "audio" = asset.kind === "audio" ? "audio" : "video";
+    const append =
+      placement.at === undefined &&
+      placement.trackId === undefined &&
+      placement.anchor !== "playhead"
+        ? planAppendPlacement(this.sequence(), kind, uid)
+        : undefined;
+    const at = append?.start ?? placement.at ?? this.playhead;
+    if (!Number.isSafeInteger(at) || at < 0) throw new Error("片段落点必须是有效时间");
+    if (!Number.isSafeInteger(at + duration)) throw new Error("片段落点超出时间范围");
+    // Appending past the editor's time range would only fail later with a technical message.
+    if (append && at + duration > MAX_EDITOR_TICK)
+      throw new Error("加入素材后超出时长上限（24 小时）");
     if (placement.trackId !== undefined) {
       const sequence = this.sequence();
       const track = sequence.tracks.find((track) => track.id === placement.trackId);
@@ -641,17 +685,42 @@ export class EditorWorkspace {
         label: asset.name,
       },
       kind,
-      { ...placement, at },
+      append
+        ? { at, trackId: append.trackId, operations: append.operations }
+        : { at, ...(placement.trackId === undefined ? {} : { trackId: placement.trackId }) },
     );
+  }
+  /**
+   * Adds a 3-second title at the playhead on a text track above every picture, then opens its
+   * wording in the inspector.
+   */
+  addText(): void {
+    const at = this.playhead,
+      duration = secondsToTicks(3);
+    const { trackId, operations } = planTextPlacement(this.sequence(), at, duration, uid);
+    this.addClip(
+      {
+        kind: "text",
+        role: "title",
+        text: "输入文字",
+        words: [],
+        style: defaultTextStyle(),
+        duration,
+        label: "文字",
+      },
+      "text",
+      { at, trackId, operations },
+    );
+    this.inspector.editText();
   }
   private addClip(
     value: Partial<EditorClip> & { duration: Tick; label: string },
     kind: "video" | "audio" | "text",
-    placement: { at?: Tick; trackId?: string } = {},
+    placement: { at?: Tick; trackId?: string; operations?: EditorOperation[] } = {},
   ): void {
     const at = placement.at ?? this.playhead;
     const track = placement.trackId
-      ? { id: placement.trackId, operations: [] }
+      ? { id: placement.trackId, operations: placement.operations ?? [] }
       : this.track(kind, at, value.duration);
     const clip = {
       id: uid("clip"),
@@ -671,7 +740,7 @@ export class EditorWorkspace {
     this.inspector.render();
     this.timing.render();
     this.activateComposition();
-    this.run(() => this.seek(at));
+    this.run(() => this.seek(at, true));
     this.revealSelection();
   }
   private click = (event: MouseEvent) => {
@@ -860,18 +929,7 @@ export class EditorWorkspace {
       return;
     }
     if (action === "title") {
-      this.addClip(
-        {
-          kind: "text",
-          role: "title",
-          text: "输入文字",
-          words: [],
-          style: defaultTextStyle(),
-          duration: secondsToTicks(5),
-          label: "文字",
-        },
-        "text",
-      );
+      this.addText();
       return;
     }
     if (action === "rectangle" || action === "ellipse") {
@@ -916,7 +974,8 @@ export class EditorWorkspace {
     this.dialogAbort = controller;
     const dialog = document.createElement("dialog");
     dialog.className = "ew-dialog";
-    dialog.innerHTML = `<form><h2>${esc(title)}</h2>${content}<p class="ew-form-error" role="alert"></p><footer><button type="button" data-ew-close>取消</button><button class="ew-primary" type="submit">${submitLabel}</button></footer></form>`;
+    dialog.setAttribute("aria-labelledby", "ew-dialog-title");
+    dialog.innerHTML = `<form><h2 id="ew-dialog-title">${esc(title)}</h2>${content}<p class="ew-form-error" role="alert"></p><footer><button type="button" data-ew-close>取消</button><button class="ew-primary" type="submit">${submitLabel}</button></footer></form>`;
     const form = dialog.querySelector<HTMLFormElement>("form")!;
     const identity = this.options.session.getState().identity;
     let pending = false;

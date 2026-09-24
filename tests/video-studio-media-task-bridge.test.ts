@@ -21,7 +21,7 @@ const inspection = {
   format: "wav",
   audio: { sampleRate: 48000, channels: 1, codec: "pcm_s16le" },
 };
-function fixture() {
+function fixture(legacyMethods: string[] = []) {
   const calls: any[] = [],
     documents = new Map<string, any>(),
     jobs = new Map<string, any>(),
@@ -37,6 +37,7 @@ function fixture() {
     "resources.get",
     "resources.read",
     "credentials.connections.list",
+    ...legacyMethods,
   ];
   const connection = {
     id: "voice",
@@ -167,7 +168,10 @@ function fixture() {
         job.status = "cancelling";
         return structuredClone(job);
       }
-      if (method === "media.jobs.list") return { jobs: [] };
+      if (method === "media.jobs.list")
+        return {
+          jobs: [{ id: "legacy-job", type: "tts", status: "succeeded", attempt: 1, createdAt: 5, updatedAt: 5 }],
+        };
       if (method === "media.jobs.recipe")
         return {
           id: params.id,
@@ -220,6 +224,41 @@ test("restoring capabilities and managed assets does not start a native process"
         .filter((call) => call.method === "tasks.start")
         .map((call) => call.params.input.request.action),
       ["status"],
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
+test("a fresh status request bypasses the short status cache", async () => {
+  const f = fixture();
+  try {
+    await f.bridge.call("media.status", { probe: true });
+    await f.bridge.call("media.status", { probe: true });
+    await f.bridge.call("media.status", { probe: true, fresh: true });
+    assert.equal(
+      f.calls.filter(
+        (call) => call.method === "tasks.start" && call.params.input.request.action === "status",
+      ).length,
+      2,
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
+test("a fresh status request chains after a pending ordinary probe instead of joining it", async () => {
+  const f = fixture();
+  try {
+    const stale = f.bridge.call("media.status", { probe: true });
+    const fresh = f.bridge.call("media.status", { probe: true, fresh: true });
+    const joined = f.bridge.call("media.status", { probe: true, fresh: true });
+    await Promise.all([stale, fresh, joined]);
+    assert.equal(
+      f.calls.filter(
+        (call) => call.method === "tasks.start" && call.params.input.request.action === "status",
+      ).length,
+      2,
     );
   } finally {
     f.dispose();
@@ -300,7 +339,7 @@ test("online tasks authorize exactly the selected connection and require manual 
   }
 });
 test("legacy task retry rebuilds panel task and never invokes old Host processing", async () => {
-  const f = fixture();
+  const f = fixture(["media.jobs.recipe"]);
   try {
     const job = (await f.bridge.call("media.jobs.retry", { id: "job-old" })) as any;
     assert.notEqual(job.id, "job-old");
@@ -408,6 +447,24 @@ test("SDK explains stale installed tasks in Chinese and preserves structured and
     } finally {
       sdk.dispose();
     }
+  }
+});
+
+test("SDK names the Host methods that are missing instead of a generic upgrade notice", async () => {
+  const sdk = createPanelRuntime({
+    getContext: async () => ({ availableMethods: ["tasks.start", "tasks.get", "resources.get"] }),
+    on: () => () => {},
+    call: async () => undefined,
+  });
+  try {
+    await assert.rejects(sdk.requireMethods(["resources.get", "media.export"]), (error: any) => {
+      assert.match(error.message, /缺少通用本地任务或资源接口/);
+      assert.match(error.message, /media\.export/);
+      assert.doesNotMatch(error.message, /resources\.get/);
+      return true;
+    });
+  } finally {
+    sdk.dispose();
   }
 });
 
@@ -696,5 +753,31 @@ test("generic task ownership rejects foreign operations and discovers only revie
     assert.equal(observed[0].result.video.asset.id, outputId);
   } finally {
     f.dispose();
+  }
+});
+
+test("task lists ask the Host for old media jobs only when it advertises them", async () => {
+  const modern = fixture();
+  try {
+    for (let round = 0; round < 3; round++) {
+      const page = (await modern.bridge.call("media.jobs.list", { limit: 50 })) as any;
+      assert.equal(page.jobs.some((job: any) => job.id === "legacy-job"), false);
+    }
+    assert.equal(
+      modern.calls.some((call) => call.method.startsWith("media.jobs.")),
+      false,
+      "No unadvertised media.jobs.* request reaches the Host",
+    );
+    await assert.rejects(modern.bridge.call("media.jobs.get", { id: "legacy-job" }), /not found/);
+    assert.equal(modern.calls.some((call) => call.method === "media.jobs.get"), false);
+  } finally {
+    modern.dispose();
+  }
+  const legacy = fixture(["media.jobs.list"]);
+  try {
+    const page = (await legacy.bridge.call("media.jobs.list", { limit: 50 })) as any;
+    assert.equal(page.jobs.some((job: any) => job.id === "legacy-job"), true);
+  } finally {
+    legacy.dispose();
   }
 });

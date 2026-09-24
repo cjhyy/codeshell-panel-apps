@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  legacyViewSummary,
   registerProductionTools,
   registerProjectReadTool,
 } from "../apps/video-studio/src/production-tools";
@@ -450,4 +451,43 @@ test("Audio8 setup, bounded sample and reference extraction are actual registere
     /配音参数/,
   );
   assert.equal(received.length, 3);
+});
+
+test("the old-view summary reports completeness with a bounded restriction list", () => {
+  const restrictions = Array.from({ length: 120 }, (_, index) => ({
+    code: index % 3 ? "excluded-track" : "unsupported-field",
+    message: "旧视图无法表示这个片段".repeat(40),
+    ...(index % 2 ? { clipId: `clip-${index}` } : {}),
+    ...(index % 5 ? {} : { assetId: `asset-${index}` }),
+    field: "transform",
+    excluded: index % 2 === 1,
+  }));
+  const summary = legacyViewSummary({
+    sequenceId: "main",
+    timelineComplete: false,
+    renderSafe: false,
+    restrictions,
+  });
+  assert.equal(summary.sequenceId, "main");
+  assert.equal(summary.timelineComplete, false);
+  assert.equal(summary.renderSafe, false);
+  assert.equal(summary.restrictionCount, 120);
+  assert.equal(summary.restrictions.length, 50);
+  assert.deepEqual(summary.restrictions[0], {
+    code: "unsupported-field",
+    assetId: "asset-0",
+    field: "transform",
+    excluded: false,
+  });
+  assert.deepEqual(summary.restrictions[1], {
+    code: "excluded-track",
+    clipId: "clip-1",
+    field: "transform",
+    excluded: true,
+  });
+  assert.ok(JSON.stringify(summary).length < 6000, "Messages and fields are not repeated");
+  assert.deepEqual(
+    legacyViewSummary({ sequenceId: "s", timelineComplete: true, renderSafe: true, restrictions: [] }),
+    { sequenceId: "s", timelineComplete: true, renderSafe: true, restrictions: [], restrictionCount: 0 },
+  );
 });

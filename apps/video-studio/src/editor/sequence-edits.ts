@@ -680,3 +680,22 @@ export function planUnpackCompound(
   operations.push({ type: "clip.remove", sequenceId, clipIds: [clipId] });
   return finish(doc, { operations, sequenceId, clipIds: copied.map((clip) => clip.id) });
 }
+
+/**
+ * A new project starts with one empty sequence named after it. Until that sequence holds clips or
+ * gets its own name, renaming the project renames it too; existing sequences always keep their name.
+ */
+export function planProjectRename(document: EditorDocument, name: string): EditorOperation[] {
+  const operations: EditorOperation[] = [{ type: "project.rename", name }];
+  const [only] = document.sequences;
+  if (
+    document.sequences.length === 1 &&
+    only &&
+    only.name === document.name &&
+    only.name !== name &&
+    !only.clips.length &&
+    !only.markers.length
+  )
+    operations.push({ type: "sequence.rename", sequenceId: only.id, name });
+  return operations;
+}

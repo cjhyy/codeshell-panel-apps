@@ -102,12 +102,13 @@ export function createPanelRuntime(bridge: RuntimeBridge) {
   }
   async function requireMethods(methods: string[]) {
     const current = await discover();
-    if (
-      !Array.isArray(current.availableMethods) ||
-      methods.some((method) => !current.availableMethods.includes(method))
-    )
+    const available: unknown[] = Array.isArray(current.availableMethods)
+      ? current.availableMethods
+      : [];
+    const missing = methods.filter((method) => !available.includes(method));
+    if (missing.length)
       throw new Error(
-        "当前 CodeShell 缺少通用本地任务或资源接口，请更新主程序后重新打开面板；媒体引擎由视频面板管理",
+        `当前 CodeShell 缺少通用本地任务或资源接口（${missing.join("、")}），请更新主程序后重新打开面板；媒体引擎由视频面板管理`,
       );
     return current;
   }

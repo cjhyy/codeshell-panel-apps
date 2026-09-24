@@ -4,6 +4,7 @@ import {
   readSavedLegacyProject,
   legacyProjectFromDocument,
   pristineLegacyDemoProject,
+  waitForProjectSwitch,
 } from "./helpers/video-studio-editor-fixture.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import assert from "node:assert/strict";
@@ -181,8 +182,10 @@ async function saved(page) {
   );
 }
 async function demo(page) {
-  await page.locator('[data-action="demo"]:visible').first().click();
   await saved(page);
+  const previous = await readProject(page);
+  await page.locator('[data-action="demo"]:visible').first().click();
+  await waitForProjectSwitch(page, previous?.id, readProject);
   // These older tests exercise the production page's frame-based controls.
   // Canonical Material editing is covered by editor-main/workspace/timeline suites.
   await page.locator('[data-tab="ai"]').click();
@@ -290,7 +293,14 @@ test("timeline activation without pointer coordinates stays inside the selected 
     const original = await readProject(page);
     let start = 0;
     for (const clip of original.clips) {
-      await page.locator(`[data-clip="${clip.id}"]`).evaluate((element) => element.click());
+      // Find and activate the clip in one page task. A locator evaluate resolves the element and
+      // runs the callback in two round trips, so a background render in between would click a
+      // detached, already replaced clip.
+      await page.locator(`#studio [data-clip="${clip.id}"]`).waitFor({ state: "attached" });
+      await page.evaluate(
+        (id) => document.querySelector(`#studio [data-clip="${CSS.escape(id)}"]`).click(),
+        clip.id,
+      );
       const state = await page.evaluate(() => window.__panelTools.read_video_project());
       assert.equal(state.selectedClipId, clip.id);
       assert.equal(state.playheadFrame, start);
@@ -303,6 +313,45 @@ test("timeline activation without pointer coordinates stays inside the selected 
       "Selecting a clip does not edit the project",
     );
     assert.doesNotMatch(await page.locator("#toast").textContent(), /时间码/);
+  } finally {
+    await page.close();
+  }
+});
+
+test("a background render keeps keyboard focus on a timeline clip, so Enter still selects it", async () => {
+  const page = await pageWithBridge(true);
+  try {
+    await demo(page);
+    const project = await readProject(page);
+    const targets = [
+      ["data-clip", project.clips[1].id],
+      ["data-audio-clip", project.audioClips[0].id],
+    ];
+    for (const [attribute, id] of targets) {
+      const selector = `#studio [${attribute}="${id}"]`;
+      await page.locator(selector).waitFor({ state: "attached" });
+      await page.evaluate((selector) => {
+        const element = document.querySelector(selector);
+        element.dataset.beforeRender = "true";
+        element.focus();
+      }, selector);
+      // A background refresh (here: the panel becoming visible again) re-renders the timeline.
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      assert.equal(
+        await page.evaluate(
+          ({ selector }) => {
+            const active = document.activeElement;
+            return active?.matches(selector) && !active.dataset.beforeRender;
+          },
+          { selector },
+        ),
+        true,
+        `${attribute} focus moves to the re-rendered clip`,
+      );
+      await page.keyboard.press("Enter");
+      const state = await page.evaluate(() => window.__panelTools.read_video_project());
+      assert.equal(state.selectedClipId, id);
+    }
   } finally {
     await page.close();
   }
@@ -379,6 +428,13 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   );
   await page.getByRole("button", { name: "创建规则草案", exact: true }).click();
   assert.equal((await readProject(page)).clips.length, 3, "Review does not mutate the project");
+  const review = await page.locator(".proposal-card").innerText();
+  assert.match(review, /15 秒精简版/);
+  assert.match(review, /主画面\s*3\s*→\s*2/, "The review counts clips per track");
+  assert.match(review, /保留「.+」到 15\.00 秒/);
+  assert.match(review, /删除主画面轨 15\.00 秒之后的 1 个片段/);
+  assert.match(review, /截断其他轨道 15\.00 秒之后的 \d+ 个片段/, "Narration and captions end too");
+  assert.match(review, /\n15\.00s\n/, "The whole video becomes 15 seconds");
   await page.screenshot({ path: resolve(screenshots, "studio-ai-review.png"), fullPage: true });
   await page.getByRole("button", { name: "应用方案", exact: true }).click();
   await saved(page);
@@ -404,26 +460,33 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await saved(page);
 
   await page.locator('[data-tab="transcript"]').click();
+  const captionPanel = page.locator(".library-panel #caption-panel-host > .editor-captions");
   const originalCaptions = (await readProject(page)).captions.length;
-  await page.locator("#srt-input").setInputFiles({
+  assert.equal(await captionPanel.locator(".ec-row").count(), originalCaptions);
+  await captionPanel.locator("[data-caption-srt-input]").setInputFiles({
     name: "test.srt",
     mimeType: "text/plain",
-    buffer: Buffer.from("1\n00:00:01,000 --> 00:00:02,000\n新增字幕 <script>alert(1)</script>\n"),
+    // Between the demo's first two captions: a cue over an existing one would be skipped.
+    buffer: Buffer.from("1\n00:00:05,500 --> 00:00:06,500\n新增字幕 <script>alert(1)</script>\n"),
   });
-  await saved(page);
+  await captionPanel.getByRole("button", { name: "应用预览", exact: true }).click();
   await page.waitForFunction(
-    (n) => document.querySelectorAll(".transcript-item").length === n + 1,
+    (n) => document.querySelectorAll(".library-panel .ec-row").length === n + 1,
     originalCaptions,
   );
+  await saved(page);
   assert.equal(
     (await readProject(page)).captions.length,
     originalCaptions + 1,
     "SRT import appends unique captions",
   );
+  await captionPanel.getByRole("button", { name: "全选字幕", exact: true }).click();
   const srtDownload = page.waitForEvent("download");
-  await page.getByRole("button", { name: "导出 SRT", exact: true }).click();
+  await captionPanel.getByRole("button", { name: "导出所选 SRT", exact: true }).click();
   const srt = await srtDownload;
-  assert.match(await readFile(await srt.path(), "utf8"), /新增字幕/);
+  const srtText = await readFile(await srt.path(), "utf8");
+  assert.match(srtText, /00:00:05,500 --> 00:00:06,500\n新增字幕 <script>alert\(1\)<\/script>/);
+  assert.equal(srtText.match(/-->/g).length, originalCaptions + 1);
 
   const jsonDownload = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载工程 JSON", exact: true }).click();
@@ -434,10 +497,11 @@ test("editing, transcript ripple, undo, proposal review, portable downloads and 
   await page.reload();
   await enterLegacyProduction(page);
   await page.locator("#revision").waitFor();
-  assert.equal((await readProject(page)).revision, revision);
+  const reopened = await readProject(page);
+  assert.equal(reopened.revision, revision);
 
   await page.getByRole("button", { name: "新建工程", exact: true }).click();
-  await saved(page);
+  await waitForProjectSwitch(page, reopened.id, readProject);
   assert.equal((await readProject(page)).clips.length, 0);
   await page.getByRole("button", { name: "最近工程 / 打开工程", exact: true }).click();
   await page.locator(".recent-project").filter({ hasText: "从想法，到成片。" }).click();
@@ -589,6 +653,58 @@ test("import is undoable and original media automatically reconnects after reope
         ...canvas.getContext("2d").getImageData(canvas.width / 2, canvas.height / 2, 1, 1).data,
       ]);
     assert.ok(pixel[0] > 200 && pixel[1] < 100, "Reconnected image is actually painted in preview");
+  } finally {
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+/** Visible text nodes written only in Latin capitals (eyebrows, badges, media types). */
+const latinLabels = (page) =>
+  page.evaluate(() => {
+    const allowed = new Set(["MP4", "SRT", "WAV", "MP3", "MOV", "PNG", "JPG", "AAC", "MIMI", "AI", "FPS"]);
+    const found = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent.replace(/\s+/g, " ").trim();
+      const parent = node.parentElement;
+      if (!text || !parent || parent.closest("script,style,kbd,code,[hidden]")) continue;
+      if (!parent.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+      if (/[\u3400-\u9fff]/.test(text)) continue;
+      const words = text.match(/\b[A-Z]{3,}\b/g) ?? [];
+      if (words.some((word) => !allowed.has(word))) found.push(text);
+    }
+    return found;
+  });
+
+test("main pages and media cards label everything in Chinese, keeping only format names in Latin", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "video-studio-ui-"));
+  const fixture = resolve(directory, "still.png");
+  const page = await pageWithBridge();
+  try {
+    const png = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 80;
+      canvas.height = 40;
+      canvas.getContext("2d").fillRect(0, 0, 80, 40);
+      return canvas.toDataURL("image/png").split(",")[1];
+    });
+    await writeFile(fixture, Buffer.from(png, "base64"));
+    await page.locator('[data-tab="media"]').click();
+    await page.locator("#media-input").setInputFiles(fixture);
+    await page.waitForFunction(() => document.querySelectorAll(".asset-card").length === 1);
+    await saved(page);
+    await page.locator('[data-tab="media"]').click();
+    const card = page.locator(".asset-card").first();
+    assert.match(await card.textContent(), /图片\s*·\s*80×40/);
+    const seen = {};
+    for (const tab of ["media", "roughcut", "recording", "spoken", "transcript", "voiceover", "ai", "jobs"]) {
+      await page.locator(`[data-tab="${tab}"]`).click();
+      await page.waitForTimeout(150);
+      const labels = await latinLabels(page);
+      if (labels.length) seen[tab] = labels;
+    }
+    assert.deepEqual(seen, {});
   } finally {
     await page.close();
     await rm(directory, { recursive: true, force: true });
@@ -1327,7 +1443,8 @@ test("actual preview button sends narrated demo audio to speakers, including reo
     });
     window.__panelTools = {};
     window.codeshellPanel = {
-      getContext: async () => ({ cwd: "/test/delayed-restore" }),
+      // An older Host that still keeps its own media job list.
+      getContext: async () => ({ cwd: "/test/delayed-restore", availableMethods: ["media.jobs.list"] }),
       registerTool: (name, handler) => {
         window.__panelTools[name] = handler;
         return () => {};
@@ -1674,7 +1791,22 @@ test("voiceover form selects actual model voices, preserves editing, previews ex
   const binding = await page.evaluate(
     () => Object.values(window.__documents["video-studio-production"].data.bindings)[0],
   );
-  assert.deepEqual(binding.replaceClip, initial.audioClips[0]);
+  // The job remembers the exact editor clip, in ticks, rather than an old frame snapshot.
+  assert.equal(binding.replaceClip, undefined);
+  const { sequenceId, trackId, ...target } = binding.replaceTarget;
+  assert.ok(sequenceId && trackId);
+  assert.deepEqual(target, {
+    clipId: "old-voice-clip",
+    assetId: "saved-voice",
+    start: 30 * 8000,
+    duration: 120 * 8000,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: 120 * 8000, source: 120 * 8000 },
+      ],
+    },
+  });
   assert.equal(
     (await readProject(page)).audioClips.length,
     1,
@@ -1996,12 +2128,19 @@ test("local voice cloning validates its own recording, uses real model preview, 
     );
     const replacementBinding = await page.evaluate(() =>
       Object.values(window.__documents["video-studio-production"].data.bindings).find(
-        (binding) => binding.replaceClip,
+        (binding) => binding.replaceTarget,
       ),
     );
     assert.equal(replacementBinding.attachAudio, true);
-    assert.deepEqual(replacementBinding.replaceClip, initial.audioClips[0]);
+    assert.equal(replacementBinding.replaceClip, undefined);
+    assert.equal(replacementBinding.replaceTarget.clipId, "saved-clone-clip");
+    assert.equal(replacementBinding.replaceTarget.assetId, "saved-clone");
+    assert.equal(replacementBinding.replaceTarget.duration, 240 * 8000);
     await page.locator('[data-action="new"]').click();
+    // The voice job is still running, so the page asks before switching projects.
+    const confirmNew = page.locator("#plan-dialog[open]");
+    assert.match(await confirmNew.textContent(), /制作任务/);
+    await confirmNew.getByRole("button", { name: "仍然新建", exact: true }).click();
     await page.waitForFunction(
       (oldId) => window.__panelTools.read_video_project().project.id !== oldId,
       initial.id,
@@ -2158,9 +2297,12 @@ test("fine timeline editing moves and trims audio as single undo steps and Escap
     await undoAndRedo(beforeOut, trimmedOut);
 
     // Keep a video selected and place the playhead away from the audio start before cancelling.
-    await page
-      .locator(`[data-clip="${prepared.clips[0].id}"]`)
-      .evaluate((element) => element.click());
+    // Find and click in one page task so a background render cannot detach the clip in between.
+    await page.locator(`[data-clip="${prepared.clips[0].id}"]`).waitFor({ state: "attached" });
+    await page.evaluate(
+      (id) => document.querySelector(`[data-clip="${CSS.escape(id)}"]`).click(),
+      prepared.clips[0].id,
+    );
     await page.keyboard.press("Shift+ArrowRight");
     await page.waitForFunction(
       () => window.__panelTools.read_video_project().playheadFrame === 150,

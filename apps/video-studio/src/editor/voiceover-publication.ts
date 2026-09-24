@@ -2,9 +2,11 @@ import { randomId } from "../ids.js";
 import type { AudioClip } from "../model";
 import { isResourceId } from "../external-media";
 import { createTrack, defaultAudioMix, defaultColorAdjustment, defaultTransform } from "./defaults";
-import { projectLegacyView } from "./legacy-adapter";
+import { resolveLegacyClipId } from "./legacy-aliases";
+import { findFreeTrack } from "./placement";
+import { LEGACY_FRAME_TICKS, MAX_LEGACY_FRAME } from "./legacy-time";
 import { applyEditorOperations, type EditorOperation } from "./operations";
-import { TICKS_PER_SECOND } from "./time";
+import { TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorAsset, EditorDocument, JsonData, MediaClip } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 
@@ -15,10 +17,136 @@ export interface VoiceoverOrigin {
   sequenceId: string;
   revision: number;
 }
+/** The exact editor clip a regenerated voice replaces, captured when the user chose it. */
+export interface VoiceoverReplaceTarget {
+  sequenceId: string;
+  clipId: string;
+  trackId: string;
+  assetId: string;
+  start: Tick;
+  duration: Tick;
+  timeMap: TimeMap;
+}
 export interface VoiceoverPublication {
   jobId: string;
   origin?: VoiceoverOrigin;
-  placement?: { startFrame: number; replaceClip?: AudioClip };
+  placement?: {
+    startFrame: number;
+    replaceTarget?: VoiceoverReplaceTarget;
+    /**
+     * Read-only compatibility for bindings persisted by earlier versions (new ones use
+     * replaceTarget); resolved through the old clip ID alias, never written.
+     */
+    replaceClip?: AudioClip;
+  };
+}
+function audioClipOnTrack(
+  doc: EditorDocument,
+  sequenceId: string,
+  clipId: string | undefined,
+): MediaClip | undefined {
+  const sequence = doc.sequences.find((s) => s.id === sequenceId),
+    clip = sequence?.clips.find((c) => c.id === clipId);
+  if (clip?.kind !== "media") return undefined;
+  if (sequence!.tracks.find((t) => t.id === clip.trackId)?.kind !== "audio") return undefined;
+  if (doc.assets.find((a) => a.id === clip.assetId)?.kind !== "audio") return undefined;
+  return clip;
+}
+/** A sound clip on any audio track of the sequence, as the user selected it in the editor. */
+export function captureReplaceTarget(
+  doc: EditorDocument,
+  sequenceId: string,
+  clipId: string,
+): VoiceoverReplaceTarget {
+  const clip = audioClipOnTrack(doc, sequenceId, clipId);
+  if (!clip) throw new Error("请选择音轨上的配音片段");
+  assertTrackUnlocked(doc, sequenceId, clip);
+  return {
+    sequenceId,
+    clipId: clip.id,
+    trackId: clip.trackId,
+    assetId: clip.assetId,
+    start: clip.start,
+    duration: clip.duration,
+    timeMap: structuredClone(clip.timeMap),
+  };
+}
+function assertTrackUnlocked(doc: EditorDocument, sequenceId: string, clip: MediaClip): void {
+  if (
+    doc.sequences
+      .find((s) => s.id === sequenceId)
+      ?.tracks.find((t) => t.id === clip.trackId)?.locked
+  )
+    throw new Error("配音所在轨道已锁定，请先解锁轨道再重新配音");
+}
+const isNativeTarget = (
+  target: VoiceoverReplaceTarget | AudioClip,
+): target is VoiceoverReplaceTarget => "clipId" in target;
+/** The clip a target names, whether or not it was edited since. */
+function targetClip(
+  doc: EditorDocument,
+  target: VoiceoverReplaceTarget | AudioClip,
+  sequenceId: string,
+): MediaClip | undefined {
+  if (isNativeTarget(target))
+    return target.sequenceId === sequenceId
+      ? audioClipOnTrack(doc, sequenceId, target.clipId)
+      : undefined;
+  return audioClipOnTrack(
+    doc,
+    sequenceId,
+    resolveLegacyClipId(doc, sequenceId, "audioClips", target.id),
+  );
+}
+/**
+ * The unchanged original clip, or nothing when it was moved, trimmed, re-timed or deleted.
+ * Frame snapshots could only be captured from whole-frame, constant-speed clips, so their
+ * tick comparison is exact.
+ */
+export function resolveReplaceTarget(
+  doc: EditorDocument,
+  target: VoiceoverReplaceTarget | AudioClip,
+  sequenceId: string,
+): MediaClip | undefined {
+  const clip = targetClip(doc, target, sequenceId);
+  if (!clip) return undefined;
+  if (isNativeTarget(target))
+    return clip.trackId === target.trackId &&
+      clip.assetId === target.assetId &&
+      clip.start === target.start &&
+      clip.duration === target.duration &&
+      clip.timeMap.points.length === target.timeMap.points.length &&
+      clip.timeMap.points.every(
+        (point, index) =>
+          point.time === target.timeMap.points[index]!.time &&
+          point.source === target.timeMap.points[index]!.source,
+      )
+      ? clip
+      : undefined;
+  const source = target.inFrame * LEGACY_FRAME_TICKS,
+    duration = (target.outFrame - target.inFrame) * LEGACY_FRAME_TICKS,
+    points = clip.timeMap.points;
+  return clip.assetId === target.assetId &&
+    clip.start === target.startFrame * LEGACY_FRAME_TICKS &&
+    clip.duration === duration &&
+    points.length === 2 &&
+    points[0]!.time === 0 &&
+    points[0]!.source === source &&
+    points[1]!.time === duration &&
+    points[1]!.source === source + duration
+    ? clip
+    : undefined;
+}
+/**
+ * Checked before synthesis is queued: the clip is still exactly where the user chose it in
+ * the active sequence. A locked track is reported instead of silently falling back later.
+ */
+export function verifyReplaceTarget(doc: EditorDocument, target: VoiceoverReplaceTarget): boolean {
+  if (target.sequenceId !== doc.activeSequenceId) return false;
+  const clip = resolveReplaceTarget(doc, target, target.sequenceId);
+  if (!clip) return false;
+  assertTrackUnlocked(doc, target.sequenceId, clip);
+  return true;
 }
 /** Native source duration stays in ticks; the old 30 fps view never determines asset length. */
 export function canonicalVoiceoverReceipt(raw: unknown): CanonicalVoiceoverResult {
@@ -106,7 +234,7 @@ export function planPublishVoiceover(
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/.test(context.jobId) ||
     !Number.isSafeInteger(context.placement.startFrame) ||
     context.placement.startFrame < 0 ||
-    context.placement.startFrame > 2592000
+    context.placement.startFrame > MAX_LEGACY_FRAME
   )
     throw new Error("配音任务的原始放置记录无效");
   const origin = context.origin,
@@ -119,25 +247,14 @@ export function planPublishVoiceover(
   if (published) return finish("此配音已加入工程，后续剪辑保持完整。", true);
   if (!origin || !Number.isSafeInteger(origin.revision) || origin.revision < 0 || !sequence)
     return library("原始目标序列记录缺失");
-  const original = context.placement.replaceClip;
+  const original = context.placement.replaceTarget ?? context.placement.replaceClip;
   if (original) {
-    const view = projectLegacyView(doc, sequence.id),
-      mapped = view.clips.find((c) => c.collection === "audioClips" && c.legacyId === original.id),
-      target = sequence.clips.find((c) => c.id === mapped?.clipId);
     // A successful same-ID replacement is recognizable even after later user edits.
-    if (target?.kind === "media" && target.assetId === asset.id)
+    if (targetClip(doc, original, sequence.id)?.assetId === asset.id)
       return finish("此配音已替换，后续剪辑保持完整。", true);
     if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未替换原配音");
-    const projected = view.project.audioClips?.find((c) => c.id === original.id);
-    if (
-      !target ||
-      target.kind !== "media" ||
-      !projected ||
-      !["id", "assetId", "inFrame", "outFrame", "startFrame", "volume"].every(
-        (key) => (projected as any)[key] === (original as any)[key],
-      )
-    )
-      return library("原配音已移动、裁剪或删除，未自动替换");
+    const target = resolveReplaceTarget(doc, original, sequence.id);
+    if (!target) return library("原配音已移动、裁剪或删除，未自动替换");
     const oldAsset = doc.assets.find((a) => a.id === target.assetId)!;
     if (oldAsset.duration !== asset.duration)
       return library("新配音与原素材时长不同，需重新安排内容");
@@ -168,7 +285,7 @@ export function planPublishVoiceover(
     );
   }
   if (doc.revision !== origin.revision) return library("工程在生成期间已修改，未自动放置配音");
-  const start = context.placement.startFrame * 8000,
+  const start = context.placement.startFrame * LEGACY_FRAME_TICKS,
     available = Math.max(0, sequenceDuration(sequence) - start);
   if (!available) return library("原放置位置没有可用的画面时长");
   const duration = Math.min(available, asset.duration),
@@ -204,4 +321,69 @@ export function planPublishVoiceover(
       : "配音已加入原目标序列，完整素材与文稿已保存，可整体撤销。",
     true,
   );
+}
+
+/**
+ * A published audio result's placement at an old 30 fps frame, on the editor document: the
+ * real sequence length decides how much fits (the 30 fps view may show none of real footage).
+ * The job-specific clip ID makes a replayed completion a no-op, keeping later edits.
+ */
+export function planPublishedAudioPlacement(
+  value: EditorDocument,
+  sequenceId: string,
+  placement: { clipId: string; assetId: string; startFrame: number; volume: number },
+  idFactory: (kind: "track") => string = () => `track-${randomId()}`,
+): { operations: EditorOperation[]; notice?: string } {
+  const doc = validateEditorDocument(value),
+    sequence = doc.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) throw new Error("配音目标序列不存在");
+  const asset = doc.assets.find((item) => item.id === placement.assetId);
+  if (!asset || asset.kind !== "audio") throw new Error("配音素材无效");
+  const { startFrame, volume } = placement;
+  if (!Number.isSafeInteger(startFrame) || startFrame < 0 || startFrame > MAX_LEGACY_FRAME)
+    throw new Error("配音位置无效");
+  if (!Number.isFinite(volume) || volume < 0 || volume > 2) throw new Error("配音音量无效");
+  if (doc.sequences.some((item) => item.clips.some((clip) => clip.id === placement.clipId)))
+    return { operations: [] };
+  const start = startFrame * LEGACY_FRAME_TICKS,
+    available = Math.max(0, sequenceDuration(sequence) - start);
+  if (!available)
+    return {
+      operations: [],
+      notice: "完整配音已保存到素材库。请先添加或延长画面，再将配音加入时间轴。",
+    };
+  const duration = Math.min(asset.duration, available),
+    track = findFreeTrack(sequence, "audio", start, duration, idFactory);
+  const clip: MediaClip = {
+    id: placement.clipId,
+    kind: "media",
+    assetId: asset.id,
+    trackId: track.trackId,
+    label: asset.name,
+    start,
+    duration,
+    timeMap: {
+      points: [
+        { time: 0, source: 0 },
+        { time: duration, source: duration },
+      ],
+    },
+    audio: { ...defaultAudioMix(), volume },
+    transform: defaultTransform(),
+    color: defaultColorAdjustment(),
+    blendMode: "normal",
+  };
+  const operations: EditorOperation[] = [
+    ...track.operations,
+    { type: "clip.add", sequenceId, clip },
+  ];
+  applyEditorOperations(doc, operations, doc.revision);
+  const seconds = (tick: number) => (tick / TICKS_PER_SECOND).toFixed(1);
+  return {
+    operations,
+    notice:
+      duration < asset.duration
+        ? `完整配音 ${seconds(asset.duration)} 秒已保留在素材库；画面只剩 ${seconds(available)} 秒，当前音轨到画面结尾。请延长画面并调整配音出点，避免漏掉句尾。`
+        : "配音已加入当前播放位置，完整文案和音频已保存",
+  };
 }

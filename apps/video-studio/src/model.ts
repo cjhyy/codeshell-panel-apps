@@ -159,7 +159,6 @@ const MAX_AUDIO_CLIPS = 64;
 const MAX_CAPTIONS = 10_000;
 const MAX_OPERATIONS = 1_000;
 const MAX_CAPTION_TEXT = 4_000;
-const MAX_SRT_LENGTH = 4_000_000;
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -991,78 +990,4 @@ export function formatTime(frame: number): string {
   return [Math.floor(seconds / 3_600), Math.floor(seconds / 60) % 60, seconds % 60, frame % FPS]
     .map((part) => String(part).padStart(2, "0"))
     .join(":");
-}
-
-function srtTime(frame: number): string {
-  const millis = Math.round((frame * 1_000) / FPS);
-  const seconds = Math.floor(millis / 1_000);
-  const clock = [Math.floor(seconds / 3_600), Math.floor(seconds / 60) % 60, seconds % 60]
-    .map((part) => String(part).padStart(2, "0"))
-    .join(":");
-  return `${clock},${String(millis % 1_000).padStart(3, "0")}`;
-}
-
-export function exportSrt(project: Project): string {
-  const validated = validateProject(project);
-  return validated.captions
-    .map(
-      (caption, index) =>
-        `${index + 1}\n${srtTime(caption.startFrame)} --> ${srtTime(caption.endFrame)}\n${caption.text}\n`,
-    )
-    .join("\n");
-}
-
-function parseSrtTime(value: string): number {
-  const match = /^(\d{2,3}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(value);
-  if (!match) throw new Error(`SRT 时间格式不正确：${value}`);
-  const [, hours, minutes, seconds, millis] = match;
-  if (Number(minutes) >= 60 || Number(seconds) >= 60) {
-    throw new Error(`SRT 时间超出范围：${value}`);
-  }
-  return integer(
-    Math.round(
-      ((Number(hours) * 3_600_000 +
-        Number(minutes) * 60_000 +
-        Number(seconds) * 1_000 +
-        Number(millis)) *
-        FPS) /
-        1_000,
-    ),
-    0,
-    MAX_FRAMES,
-    "SRT 时间",
-  );
-}
-
-/** Import SRT as plain text. Times snap to the nearest frame; overlap is allowed. */
-export function parseSrt(source: string): Caption[] {
-  if (typeof source !== "string" || source.length > MAX_SRT_LENGTH) {
-    throw new Error(`SRT 必须是文本，最多 ${MAX_SRT_LENGTH} 个字符`);
-  }
-  const normalized = source
-    .replace(/^\uFEFF/, "")
-    .replace(/\r\n?/g, "\n")
-    .trim();
-  if (!normalized) return [];
-  const blocks = normalized.split(/\n[ \t]*\n+/);
-  if (blocks.length > MAX_CAPTIONS) throw new Error(`SRT 最多 ${MAX_CAPTIONS} 条字幕`);
-  const captions = blocks.map((block, index) => {
-    const lines = block.split("\n");
-    if (/^\d+$/.test(lines[0]!.trim())) lines.shift();
-    const times =
-      /^\s*(\d{2,3}:\d{2}:\d{2}[,.]\d{3})\s+-->\s+(\d{2,3}:\d{2}:\d{2}[,.]\d{3})\s*$/.exec(
-        lines.shift() ?? "",
-      );
-    if (!times) throw new Error(`第 ${index + 1} 条 SRT 缺少有效时间范围`);
-    return readCaption(
-      {
-        id: `caption-${index + 1}`,
-        startFrame: parseSrtTime(times[1]!),
-        endFrame: parseSrtTime(times[2]!),
-        text: lines.join("\n").trim(),
-      },
-      MAX_FRAMES,
-    );
-  });
-  return captions.sort((a, b) => a.startFrame - b.startFrame || a.endFrame - b.endFrame);
 }

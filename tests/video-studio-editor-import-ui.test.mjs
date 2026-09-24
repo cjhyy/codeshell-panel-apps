@@ -146,6 +146,8 @@ test("cancelled native import leaves project content unchanged", async (t) => {
   );
   assert.deepEqual(await page.evaluate(() => fixture.read()), before);
   assert.equal(await page.evaluate(() => fixture.writes), 0);
+  await page.getByRole("button", { name: "关闭导入提示" }).click();
+  assert.equal(await page.locator(".editor-import-status").isVisible(), false);
 });
 test("late import results cannot enter a different document, and disposal removes controls", async (t) => {
   const page = await fixture(t);
@@ -164,4 +166,27 @@ test("late import results cannot enter a different document, and disposal remove
   await page.evaluate(() => fixture.dispose());
   assert.equal(await page.locator(".editor-import-status").count(), 0);
   assert.equal(await page.evaluate(() => fixture.disposed), true);
+});
+test("a clean import notice clears itself while partial failures stay until closed", async (t) => {
+  const page = await fixture(t);
+  // Controllable timers: the 3 s auto-hide is fast-forwarded instead of waited for.
+  await page.clock.install();
+  await choose(page);
+  await page.evaluate(() => fixture.finish());
+  await page.waitForFunction(() => fixture.read().assets.some((a) => a.id === "new-source"));
+  await page.clock.runFor(3000);
+  await page.locator(".editor-import-status").waitFor({ state: "hidden" });
+
+  await page.evaluate(() => {
+    fixture.uploads = 0;
+  });
+  await choose(page);
+  await page.evaluate(() => fixture.finish([{ name: "bad.mkv", message: "没有可读流" }]));
+  await page.waitForFunction(() =>
+    document.querySelector(".editor-import-status p").textContent.includes("已导入"),
+  );
+  await page.clock.runFor(3500);
+  assert.equal(await page.locator(".editor-import-status").isVisible(), true);
+  await page.getByRole("button", { name: "关闭导入提示" }).click();
+  assert.equal(await page.locator(".editor-import-status").isVisible(), false);
 });

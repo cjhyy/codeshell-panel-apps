@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import { validateToolArgsStrict } from "@cjhyy/code-shell-core";
 import {
   createEditorAgentTools,
-  registerEditorAgentTools,
   EDITOR_AGENT_LIMITS,
   type EditorAgentContext,
 } from "../apps/video-studio/src/editor/agent-tools";
@@ -480,6 +479,44 @@ test("narration guard preserves visual edits, invalidates caption/audio/timing c
   assert.equal(reconcileEditorProduction(doc, audioChanged).length, 1);
 });
 
+test("narration guard treats the active sequence size and timeline mode as recording dependencies", () => {
+  const doc = fixture();
+  doc.production = {
+    ...doc.production,
+    script: "真实口播",
+    narration: {
+      phase: "recorded",
+      captionBasis: "draft",
+      draftCaptionIds: ["caption"],
+      recordingAssetId: "voice",
+      approvedScript: "真实口播",
+      approvedFingerprint: "a".repeat(64),
+    },
+  };
+  const update = (patch: Record<string, unknown>, target = sequenceId) =>
+    applyEditorOperations(doc, [{ type: "sequence.update", sequenceId: target, patch } as any], doc.revision);
+  for (const patch of [{ width: 1080, height: 1920 }, { width: 1280 }, { timelineMode: "magnetic" }])
+    assert.equal(reconcileEditorProduction(doc, update(patch)).length, 1, JSON.stringify(patch));
+  assert.deepEqual(reconcileEditorProduction(doc, update({ name: "只改名字" })), []);
+  // Another sequence's canvas is not what the recording was approved against.
+  const other = applyEditorOperations(
+    doc,
+    [
+      {
+        type: "sequence.add",
+        sequence: { ...structuredClone(doc.sequences[0]!), id: "sequence-other", name: "备用" },
+      } as any,
+    ],
+    doc.revision,
+  );
+  const resized = applyEditorOperations(
+    other,
+    [{ type: "sequence.update", sequenceId: "sequence-other", patch: { width: 640 } } as any],
+    other.revision,
+  );
+  assert.deepEqual(reconcileEditorProduction(other, resized), []);
+});
+
 test("export flushes the exact v2 snapshot, returns promptly and later exposes the actual background job", async (t) => {
   let calls = 0,
     exported: any;
@@ -670,46 +707,218 @@ test("native task reading is delegated once and exposes large actual results thr
   );
 });
 
-test("core handler registration remains complete and removes partial registrations on failure", async (t) => {
-  const h = await harness(t),
-    names: string[] = [],
-    disposed: string[] = [];
-  const context: EditorAgentContext = { session: () => h.session, authorize: () => {} };
-  const dispose = registerEditorAgentTools(
-    {
-      registerTool: (name) => {
-        names.push(name);
-        return () => disposed.push(name);
-      },
-    },
-    context,
-  );
-  assert.deepEqual(names, [
+test("the tool set exposes exactly the four editor handlers and requires a domain guard", async (t) => {
+  const h = await harness(t);
+  assert.deepEqual(Object.keys(h.tools), [
     "read_editor_project",
     "apply_editor_edit",
     "render_editor_sequence",
     "read_editor_jobs",
   ]);
-  dispose();
-  dispose();
-  assert.equal(disposed.length, 4);
-  let count = 0;
   assert.throws(
-    () =>
-      registerEditorAgentTools(
-        {
-          registerTool: () => {
-            if (++count === 2) throw new Error("bridge failed");
-            return () => {
-              count--;
-            };
-          },
-        },
-        context,
-      ),
-    /bridge failed/,
+    () => createEditorAgentTools({ session: () => h.session } as unknown as EditorAgentContext),
+    /权限检查/,
   );
-  assert.equal(count, 1);
+});
+
+test("an automatic-production grant reaches the guard unchanged and is rechecked right before saving", async (t) => {
+  const seen: any[] = [];
+  let revoked = false,
+    rechecks = 0;
+  const h = await harness(t, fixture(), {
+    authorize: (request) => {
+      seen.push(request);
+      return request.after ? reconcileEditorProduction(request.before, request.after) : undefined;
+    },
+    assertStillAuthorized: (request) => {
+      rechecks++;
+      assert.equal(request, seen.at(-1), "The same frozen request is rechecked");
+      if (revoked) throw new Error("自动制作已结束");
+    },
+  });
+  const grant = { projectId: "project", requestToken: "auto-request" },
+    rename = (name: string, extra: Record<string, unknown> = {}) =>
+      h.tools.apply_editor_edit({
+        identity: h.session.getState().identity,
+        label: "自动改名",
+        steps: [raw({ type: "project.rename", name })],
+        grant,
+        ...extra,
+      });
+  const result = await rename("自动制作的名字");
+  assert.deepEqual(seen[0].grant, grant);
+  assert.ok(Object.isFrozen(seen[0].grant));
+  assert.equal(rechecks, 1);
+  assert.equal(result.applied, true);
+  assert.equal(h.session.read().name, "自动制作的名字");
+  // Calls without a grant carry none, so the host applies its general lock.
+  await h.edit([raw({ type: "project.rename", name: "普通编辑" })]);
+  assert.equal(seen[1].grant, undefined);
+  for (const bad of [
+    { ...grant, extra: 1 },
+    { projectId: "project" },
+    { projectId: "project", requestToken: 7 },
+    "auto-request",
+  ])
+    await assert.rejects(
+      h.tools.apply_editor_edit({
+        identity: h.session.getState().identity,
+        label: "坏授权",
+        steps: [raw({ type: "project.rename", name: "不应保存" })],
+        grant: bad,
+      }),
+      /授权|未知字段|对象/,
+    );
+  assert.equal(seen.length, 2, "Malformed grants never reach the guard");
+  // Revocation between authorization and save leaves the revision unchanged.
+  revoked = true;
+  const before = h.session.getState().identity,
+    writes = h.state.writes.length;
+  await assert.rejects(rename("撤销后的名字"), /自动制作已结束/);
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.equal(h.state.writes.length, writes);
+  assert.equal(h.session.read().name, "普通编辑");
+  // The clipboard carries the same grant and recheck.
+  revoked = false;
+  const copied = (await h.tools.apply_editor_edit({
+    identity: h.session.getState().identity,
+    clipboard: { action: "copy", sequenceId, clipIds: ["a"] },
+    grant,
+  })) as any;
+  revoked = true;
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: h.session.getState().identity,
+      clipboard: { action: "paste", sequenceId, clipboardId: copied.clipboard.clipboardId, at: 10 * T },
+      grant,
+    }),
+    /自动制作已结束/,
+  );
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.deepEqual(seen.at(-1).grant, grant);
+  assert.equal(h.state.writes.length, writes);
+});
+
+test("an automatic request signal reaches the durable save, so an ended run commits nothing", async (t) => {
+  const controller = new AbortController(),
+    signals: unknown[] = [];
+  const h = await harness(t, fixture(), {
+    requestSignal: (request) => {
+      signals.push(request.grant);
+      return request.grant ? controller.signal : undefined;
+    },
+  });
+  const grant = { projectId: "project", requestToken: "auto-request" };
+  await h.tools.apply_editor_edit({
+    identity: h.session.getState().identity,
+    label: "自动",
+    steps: [raw({ type: "project.rename", name: "自动制作的名字" })],
+    grant,
+  });
+  assert.deepEqual(signals, [grant]);
+  const before = h.session.getState().identity,
+    writes = h.state.writes.length;
+  controller.abort(new Error("自动制作已停止"));
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: before,
+      label: "停止后",
+      steps: [raw({ type: "project.rename", name: "不应保存" })],
+      grant,
+    }),
+  );
+  const copied = (await h.tools.apply_editor_edit({
+    identity: before,
+    clipboard: { action: "copy", sequenceId, clipIds: ["a"] },
+    grant,
+  })) as any;
+  await assert.rejects(
+    h.tools.apply_editor_edit({
+      identity: before,
+      clipboard: { action: "paste", sequenceId, clipboardId: copied.clipboard.clipboardId, at: 10 * T },
+      grant,
+    }),
+  );
+  assert.deepEqual(h.session.getState().identity, before);
+  assert.equal(h.state.writes.length, writes);
+  assert.equal(h.session.read().name, "自动制作的名字");
+});
+
+test("automatic grants never open sound processing, sync, packages, alignment or editor export", async (t) => {
+  let authorized = 0;
+  const h = await harness(t, fixture(), {
+    authorize: () => {
+      authorized++;
+    },
+    sync: { getState: () => ({}), execute: () => ({}), inspectConflict: async () => ({}) } as any,
+    portable: { getState: () => ({}), execute: () => ({}), readCandidate: () => ({}) } as any,
+    exportSequence: async () => ({ jobId: "never" }),
+    alignMulticam: (async () => ({ jobId: "never" })) as any,
+  });
+  const identity = h.session.getState().identity,
+    grant = { projectId: "project", requestToken: "auto-request" };
+  for (const request of [
+    { separation: { action: "status" } },
+    { enhancement: { action: "status" } },
+    { sync: { action: "status" } },
+    { portable: { action: "status" } },
+    { alignment: { action: "cancel", jobId: "job" } },
+  ])
+    await assert.rejects(
+      h.tools.apply_editor_edit({ identity, ...request, grant }),
+      /自动制作中不可用/,
+      JSON.stringify(request),
+    );
+  await assert.rejects(
+    h.tools.render_editor_sequence({
+      identity,
+      sequenceId,
+      profileId: h.session.read().exportProfiles[0]!.id,
+      grant,
+    }),
+    /自动制作中不可用/,
+  );
+  assert.equal(authorized, 0);
+  assert.equal(h.state.writes.length, 0);
+  const manifest = JSON.parse(
+      await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8"),
+    ),
+    schemas = Object.fromEntries(
+      manifest.agent.tools.map((tool: any) => [tool.name, tool.inputSchema]),
+    );
+  for (const editor of [
+    { identity, label: "自动", steps: [raw({ type: "project.rename", name: "x" })], grant },
+    { identity, clipboard: { action: "copy", sequenceId, clipIds: ["a"] }, grant },
+  ])
+    assert.equal(
+      validateToolArgsStrict("apply_video_edit", { editor }, schemas.apply_video_edit),
+      null,
+      JSON.stringify(editor),
+    );
+  for (const editor of [
+    {
+      identity,
+      label: "自动",
+      steps: [raw({ type: "project.rename", name: "x" })],
+      grant: { ...grant, extra: 1 },
+    },
+    { identity, label: "自动", steps: [raw({ type: "project.rename", name: "x" })], grant: {} },
+    { identity, sync: { action: "status" }, grant },
+    { identity, separation: { action: "status" }, grant },
+  ])
+    assert.notEqual(
+      validateToolArgsStrict("apply_video_edit", { editor }, schemas.apply_video_edit),
+      null,
+      JSON.stringify(editor),
+    );
+  assert.notEqual(
+    validateToolArgsStrict(
+      "render_video_project",
+      { editor: { identity, sequenceId, profileId: "mp4", grant } },
+      schemas.render_video_project,
+    ),
+    null,
+  );
 });
 
 test("oversized metadata keys remain fully readable through bounded serialized pages", async (t) => {
@@ -962,6 +1171,31 @@ test("agent captions use source seconds, preserve source bindings and original w
   assert.deepEqual(caption(), translated);
 });
 
+test("agent captions add a plain subtitle at exact ticks inside the picture, one undo", async (t) => {
+  const h = await harness(t);
+  const before = h.session.read();
+  const result = await h.edit([
+    { kind: "captions", sequenceId, action: { kind: "add", text: "新加的字幕", start: T / 2, end: T + 7 } },
+  ]);
+  assert.equal(result.addedClipCount, 1);
+  const clip = h.session
+    .read()
+    .sequences[0]!.clips.find((item) => item.id === result.addedClipIds[0]!.clipId) as TextClip;
+  assert.equal(clip.kind, "text");
+  assert.equal(clip.role, "subtitle");
+  assert.equal(clip.text, "新加的字幕");
+  assert.equal(clip.start, T / 2);
+  assert.equal(clip.duration, T / 2 + 7);
+  await assert.rejects(
+    h.edit([
+      { kind: "captions", sequenceId, action: { kind: "add", text: "画面之外", start: 3600 * T, end: 3601 * T } },
+    ]),
+    /画面/,
+  );
+  h.session.undo();
+  assert.deepEqual({ ...h.session.read(), revision: before.revision }, before);
+});
+
 test("sequence and caption AI schemas match supported planners and invalid or locked edits never write", async (t) => {
   const h = await harness(t),
     manifest = JSON.parse(await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8")),
@@ -1011,6 +1245,7 @@ test("sequence and caption AI schemas match supported planners and invalid or lo
         transcripts: [{ assetId: "voice", segments: [{ text: "真实识别", start: 0, end: 1 }] }],
       },
     },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "新字幕", start: 0, end: T } },
   ];
   for (const step of good) assert.equal(validate(step), null, JSON.stringify(step));
   const bad = [
@@ -1032,6 +1267,8 @@ test("sequence and caption AI schemas match supported planners and invalid or lo
         ],
       },
     },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "负数", start: -1, end: T } },
+    { kind: "captions", sequenceId, action: { kind: "add", text: "多余", start: 0, end: T, id: "x" } },
   ];
   for (const step of bad) {
     assert.notEqual(validate(step), null);
@@ -1692,5 +1929,47 @@ test("AI text edits cannot leave stale timed words or translation, including fre
   assert.deepEqual(
     (h.session.read().sequences[0]!.clips.find((item) => item.id === clip.id) as TextClip).words,
     clip.words,
+  );
+});
+
+test("agent caption preset restyles every subtitle like the 字幕 page and its schema accepts only named presets", async (t) => {
+  const h = await harness(t),
+    schema = JSON.parse(
+      await readFile("apps/video-studio/.codeshell-panel/panel.json", "utf8"),
+    ).agent.tools.find((tool: any) => tool.name === "apply_video_edit").inputSchema,
+    validate = (action: unknown) =>
+      validateToolArgsStrict(
+        "apply_video_edit",
+        {
+          editor: {
+            identity: h.session.getState().identity,
+            label: "字幕样式",
+            steps: [{ kind: "captions", sequenceId, action }],
+          },
+        },
+        schema,
+      );
+  assert.equal(validate({ kind: "preset", preset: "bold" }), null);
+  for (const bad of [
+    { kind: "preset", preset: "yellow" },
+    { kind: "preset" },
+    { kind: "preset", preset: "bold", clipIds: ["caption"] },
+  ]) {
+    assert.notEqual(validate(bad), null, JSON.stringify(bad));
+    await assert.rejects(h.edit([{ kind: "captions", sequenceId, action: bad }]));
+  }
+  assert.equal(h.state.writes.length, 0);
+  await h.edit([{ kind: "captions", sequenceId, action: { kind: "preset", preset: "bold" } }]);
+  const caption = h.session
+    .read()
+    .sequences[0]!.clips.find((clip) => clip.id === "caption") as TextClip;
+  assert.equal(caption.style.color, "#ffe46b");
+  assert.equal(caption.text, "真实字幕");
+  assert.equal(h.session.read().production?.legacyCaptionStyle, "bold");
+  h.session.undo();
+  assert.equal(
+    (h.session.read().sequences[0]!.clips.find((clip) => clip.id === "caption") as TextClip).style
+      .color,
+    "#ffffff",
   );
 });

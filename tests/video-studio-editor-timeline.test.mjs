@@ -699,6 +699,122 @@ test("Escape, lost pointer capture and disposal stop automatic scrolling without
   }
 });
 
+/** Rebuilds of the timeline DOM over a quiet period; an idle timeline must not rebuild at all. */
+async function idleRenders(page, milliseconds = 300) {
+  return page.evaluate(
+    (milliseconds) =>
+      new Promise((resolve) => {
+        let count = 0;
+        const observer = new MutationObserver((records) => {
+          count += records.filter((record) => record.target.id === "timeline").length;
+        });
+        observer.observe(document.querySelector("#timeline"), { childList: true });
+        setTimeout(() => {
+          observer.disconnect();
+          resolve(count);
+        }, milliseconds);
+      }),
+    milliseconds,
+  );
+}
+
+test("selecting a clip at the right edge or releasing an edge drag leaves a scrolled timeline idle and clickable", async (t) => {
+  const clips = [
+    { id: "a", trackId: "v1", start: 1, duration: 2 },
+    { id: "edge", trackId: "v2", start: 14.5, duration: 1.2 },
+    { id: "far", trackId: "v1", start: 100, duration: 3 },
+  ];
+  const page = await fixture(t, { clips });
+  const view = await page.locator(".et-scroll").boundingBox(),
+    edge = await clip(page, "edge").boundingBox();
+  assert.ok(
+    edge.x < view.x + view.width && edge.x + edge.width > view.x + view.width,
+    "The fixture clip must straddle the right edge of the viewport",
+  );
+  // Playwright reveals the clip like browser focus does, then clicks it without moving.
+  await clip(page, "edge").click();
+  await settle(page);
+  const scrolled = await scrollSnapshot(page);
+  assert.ok(scrolled.left > 0, "Revealing the straddling clip scrolls the timeline");
+  assert.deepEqual((await state(page)).selected, ["edge"]);
+  assert.equal(
+    await idleRenders(page),
+    0,
+    "A finished click must not keep rebuilding the timeline",
+  );
+  await assertScrollStopped(page);
+  assert.equal((await scrollSnapshot(page)).left, scrolled.left);
+  await clickClip(page, "a");
+  assert.deepEqual((await state(page)).selected, ["a"], "A later click still selects");
+  assert.equal((await state(page)).applied.length, 0, "Selection alone never edits");
+
+  // Two rebuilds in one task at a non-zero scroll position must also settle.
+  await page.evaluate(() => {
+    fixture.replaceGeneration();
+    fixture.replaceGeneration();
+  });
+  await settle(page);
+  assert.equal(await idleRenders(page), 0, "Back-to-back renders must not feed each other");
+
+  const dragged = await fixture(t, { clips });
+  await startEdgeDrag(dragged);
+  await dragged.mouse.up();
+  await settle(dragged);
+  assert.equal((await state(dragged)).applied.length, 1);
+  assert.equal(
+    await idleRenders(dragged),
+    0,
+    "Releasing an auto-scrolled drag must leave the timeline idle",
+  );
+  await assertScrollStopped(dragged);
+  await clickClip(dragged, "edge");
+  assert.deepEqual((await state(dragged)).selected, ["edge"], "A later click still selects");
+  assert.deepEqual((await state(dragged)).errors, []);
+});
+
+test("window blur and a hidden document stop automatic scrolling and orphaned moves never resume a drag", async (t) => {
+  for (const ending of ["blur", "hidden", "orphaned"]) {
+    const page = await fixture(t, {
+        clips: [
+          { id: "a", trackId: "v1", start: 1, duration: 2 },
+          { id: "far", trackId: "v1", start: 100, duration: 3 },
+        ],
+      }),
+      before = (await state(page)).document;
+    await startEdgeDrag(page);
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else if (ending === "hidden")
+      await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    else
+      // A release the page never saw: later moves arrive with no button held.
+      await page.evaluate(() => {
+        const timeline = document.querySelector("#timeline"),
+          view = document.querySelector(".et-scroll").getBoundingClientRect();
+        timeline.dispatchEvent(
+          new PointerEvent("pointermove", {
+            bubbles: true,
+            pointerId: 1,
+            buttons: 0,
+            clientX: view.right - 2,
+            clientY: view.top + 60,
+          }),
+        );
+      });
+    await settle(page);
+    await assertScrollStopped(page);
+    await page.mouse.up();
+    await settle(page);
+    await assertScrollStopped(page);
+    assert.deepEqual((await state(page)).document, before, `${ending} must not commit`);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await idleRenders(page), 0);
+    assert.deepEqual((await state(page)).errors, []);
+  }
+});
+
 test("an external revision during automatic scrolling cancels the gesture before applying old coordinates", async (t) => {
   const page = await fixture(t, {
     clips: [
@@ -813,7 +929,8 @@ test("vertical edge scrolling exposes more tracks and still moves the source in 
 
 test("time ruler and markers remain aligned, seekable and clear of lower-track gestures after two-axis scrolling", async (t) => {
   const page = await fixture(t, {
-    tracks: Array.from({ length: 12 }, (_, index) => `v${index + 1}`),
+    // Enough compact tracks that the 300px body scrolls well past 400px.
+    tracks: Array.from({ length: 16 }, (_, index) => `v${index + 1}`),
     clips: [
       { id: "a", trackId: "v5", start: 8, duration: 2 },
       { id: "far", trackId: "v1", start: 100, duration: 3 },
@@ -1495,4 +1612,121 @@ test("migrated overlay trim preserves the source offset without rippling a later
   assert.equal(findStateClip(after, "b").start, 480000);
   assert.deepEqual(after.errors, []);
   await undo(page, before);
+});
+
+test("dragging the last main-track clip right in magnetic mode explains why nothing moved", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: magneticClips });
+  const notice = page.locator(".et-notice");
+  // One persistent live region: screen readers hear its text change.
+  assert.equal(await notice.count(), 1);
+  assert.equal(await notice.getAttribute("role"), "status");
+  assert.equal(await notice.textContent(), "");
+  await notice.evaluate((node) => (window.__noticeNode = node));
+  const before = (await state(page)).document;
+  await drag(page, "c", 200);
+  const after = await state(page);
+  assert.deepEqual(after.errors, []);
+  assert.deepEqual(content(after.document), content(before));
+  assert.equal(after.applied.length, 0);
+  assert.match(await notice.textContent(), /磁吸/);
+  assert.match(await notice.textContent(), /自由/);
+  assert.equal(await notice.evaluate((node) => node === window.__noticeNode), true);
+  // A later real edit clears the explanation.
+  await drag(page, "a", 256);
+  assert.equal(await notice.textContent(), "");
+  assert.equal(await notice.evaluate((node) => node === window.__noticeNode), true);
+});
+
+test("the magnetic layout toggle says why it is unavailable without a picture track", async (t) => {
+  const page = await fixture(t, { tracks: ["audio", "text"], clips: [] });
+  const magnetic = page
+    .getByRole("group", { name: "时间线模式", exact: true })
+    .getByRole("button", { name: "磁吸", exact: true });
+  assert.equal(await magnetic.isDisabled(), true);
+  assert.match(await magnetic.getAttribute("title"), /还没有画面轨/);
+});
+
+test("the timeline toolbar switches between magnetic and free layout with the shared planner", async (t) => {
+  const page = await fixture(t);
+  const group = page.getByRole("group", { name: "时间线模式", exact: true });
+  const magnetic = group.getByRole("button", { name: "磁吸", exact: true }),
+    free = group.getByRole("button", { name: "自由", exact: true });
+  assert.equal(await free.getAttribute("aria-pressed"), "true");
+  assert.equal(await magnetic.getAttribute("aria-pressed"), "false");
+  assert.match(await magnetic.getAttribute("title"), /首尾相接/);
+  assert.match(await free.getAttribute("title"), /任意位置/);
+  const before = (await state(page)).document;
+  await magnetic.click();
+  await settle(page);
+  let after = await state(page);
+  assert.deepEqual(after.errors, []);
+  assert.equal(after.document.sequences[0].timelineMode, "magnetic");
+  // The main picture track closes its gaps in the same undoable step.
+  assert.equal(findStateClip(after, "a").start, 0);
+  assert.equal(findStateClip(after, "c").start, 480000);
+  assert.equal(findStateClip(after, "b").start, 480000);
+  assert.equal(after.applied.length, 1);
+  assert.equal(after.applied[0].label, "切换时间线排列");
+  assert.equal(await magnetic.getAttribute("aria-pressed"), "true");
+  await undo(page, before);
+  await free.click();
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 1, "Choosing the current mode is a no-op");
+  await magnetic.click();
+  await settle(page);
+  await free.click();
+  await settle(page);
+  after = await state(page);
+  assert.equal(after.document.sequences[0].timelineMode, "free");
+  assert.equal(findStateClip(after, "c").start, 480000, "Free mode keeps positions");
+});
+
+test("disabled timeline tools say what they need, also to keyboard and screen-reader users", async (t) => {
+  const page = await fixture(t);
+  const describe = (name) =>
+    page.locator(`[data-et-action="${name}"]`).evaluate((node) => ({
+      disabled: node.disabled,
+      ariaDisabled: node.getAttribute("aria-disabled"),
+      title: node.title,
+      reason: node.getAttribute("aria-describedby")
+        ? document.getElementById(node.getAttribute("aria-describedby"))?.textContent
+        : undefined,
+    }));
+  // Split and delete stay focusable so their reason is announced.
+  assert.deepEqual(await describe("split"), {
+    disabled: false,
+    ariaDisabled: "true",
+    title: "切分 · S（先选择一个片段）",
+    reason: "先选择一个片段",
+  });
+  assert.deepEqual(await describe("delete"), {
+    disabled: false,
+    ariaDisabled: "true",
+    title: "删除 · ⌫（先选择片段）",
+    reason: "先选择片段",
+  });
+  await page.locator('[data-et-action="split"]').focus();
+  await page.keyboard.press("Enter");
+  await page.locator('[data-et-action="split"]').dispatchEvent("click");
+  await settle(page);
+  assert.deepEqual((await state(page)).errors, [], "An unavailable action does nothing");
+  assert.equal((await state(page)).applied.length, 0);
+  assert.match((await describe("paste")).title, /先复制片段/);
+  assert.match((await describe("group")).title, /至少选择两个片段/);
+  await clickClip(page, "a");
+  await clickClip(page, "b", "Shift");
+  const split = await describe("split");
+  assert.equal(split.ariaDisabled, "true");
+  assert.equal(split.reason, "一次只能切分一个片段");
+  assert.equal((await describe("delete")).ariaDisabled, null);
+  assert.equal((await describe("group")).disabled, false);
+  assert.equal((await describe("group")).title, "分组 · ⌘/Ctrl G");
+});
+
+test("track creation buttons are named the same way", async (t) => {
+  const page = await fixture(t);
+  assert.deepEqual(
+    await page.getByRole("group", { name: "添加轨道", exact: true }).locator("button").allTextContents(),
+    ["新建画面轨", "新建声音轨", "新建文字轨"],
+  );
 });

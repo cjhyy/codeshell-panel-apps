@@ -616,3 +616,101 @@ test("playhead-only refreshes preserve an unfinished focused text draft", async 
   await input.dispatchEvent("change");
   assert.equal((await read("t")).text, "尚未提交的中文\n第二行");
 });
+
+test("color fields offer a color picker synced with the typed value, keeping any transparency", async () => {
+  await page.evaluate(() => select(["t"]));
+  await tab("文字");
+  const text = page.getByLabel("文字颜色", { exact: true }),
+    picker = page.getByLabel("选择文字颜色", { exact: true });
+  assert.equal(await picker.getAttribute("type"), "color");
+  assert.equal(await picker.inputValue(), (await text.inputValue()).slice(0, 7).toLowerCase());
+  await picker.fill("#336699");
+  await picker.dispatchEvent("change");
+  await page.waitForFunction(() => clip("t").style.color === "#336699");
+  assert.equal(await page.getByLabel("文字颜色", { exact: true }).inputValue(), "#336699");
+  // Picking keeps the alpha of an #RRGGBBAA background.
+  await change("文字背景颜色", "#22446680");
+  await page.getByLabel("选择文字背景颜色", { exact: true }).fill("#aabbcc");
+  await page.getByLabel("选择文字背景颜色", { exact: true }).dispatchEvent("change");
+  await page.waitForFunction(() => clip("t").style.background === "#aabbcc80");
+  // Typing a color moves the picker too.
+  await page.getByLabel("文字描边颜色", { exact: true }).fill("#102030");
+  assert.equal(await page.getByLabel("选择文字描边颜色", { exact: true }).inputValue(), "#102030");
+  await change("文字描边颜色", "#102030");
+  assert.equal((await read("t")).style.strokeColor, "#102030");
+  for (const label of ["逐词高亮颜色", "阴影颜色"])
+    assert.equal(await page.getByLabel(`选择${label}`, { exact: true }).count(), 1, label);
+  await page.evaluate(() => select(["s"]));
+  await tab("画面");
+  for (const label of ["图形填充颜色", "图形描边颜色"])
+    assert.equal(await page.getByLabel(`选择${label}`, { exact: true }).count(), 1, label);
+});
+
+test("a cancelled color picker leaves the typed value matching the document, and keyword colors keep alpha", async () => {
+  await page.evaluate(() => select(["t"]));
+  await tab("文字");
+  const text = page.getByLabel("文字颜色", { exact: true }),
+    picker = page.getByLabel("选择文字颜色", { exact: true });
+  const original = await text.inputValue();
+  // Browsing colors updates the preview text; closing the picker without choosing restores it.
+  await picker.evaluate((node) => {
+    node.focus();
+    node.value = "#ff0000";
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  assert.equal(await text.inputValue(), "#ff0000");
+  await picker.evaluate((node) => node.blur());
+  assert.equal(await text.inputValue(), original);
+  assert.equal(await picker.inputValue(), original.slice(0, 7).toLowerCase());
+  assert.equal((await read("t")).style.color, original);
+  await details("关键词列表");
+  const keyword = page.getByLabel("新关键词颜色", { exact: true });
+  await keyword.fill("#11223380");
+  await page.getByLabel("选择新关键词颜色", { exact: true }).fill("#aabbcc");
+  assert.equal(await keyword.inputValue(), "#aabbcc80");
+});
+
+test("selecting another kind of clip switches away from a tab that does not apply to it", async () => {
+  await page.evaluate(() => {
+    const T = 240000;
+    editorHistory.apply(
+      [
+        { type: "asset.add", asset: { id: "voice", name: "旁白", kind: "audio", duration: 10 * T } },
+        {
+          type: "clip.add",
+          sequenceId: "main",
+          clip: {
+            id: "m",
+            kind: "media",
+            label: "旁白",
+            trackId: "music",
+            start: 0,
+            duration: 4 * T,
+            assetId: "voice",
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 4 * T, source: 4 * T }] },
+            audio: api.defaultAudioMix(),
+            transform: api.defaultTransform(),
+            color: api.defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        },
+      ],
+      editorHistory.revision,
+      "加入旁白",
+    );
+    select(["t"]);
+  });
+  const selectedTab = () =>
+    page.locator('[role="tab"][aria-selected="true"]').textContent();
+  await tab("文字");
+  await page.evaluate(() => select(["m"]));
+  assert.equal(await selectedTab(), "音频", "an audio clip opens its sound settings");
+  await page.evaluate(() => select(["t"]));
+  assert.equal(await selectedTab(), "文字");
+  await page.evaluate(() => select(["a"]));
+  assert.equal(await selectedTab(), "画面", "a video clip has no wording to edit");
+  // A tab that applies to the new clip stays as chosen.
+  await tab("调色");
+  await page.evaluate(() => select(["b"]));
+  assert.equal(await selectedTab(), "调色");
+});

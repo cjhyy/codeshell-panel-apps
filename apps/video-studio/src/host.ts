@@ -371,10 +371,6 @@ export function parseTaskResultJson(text: string): unknown {
   return JSON.parse(fenced ? fenced[1]! : text.trim());
 }
 
-export function parseTaskProposal(text: string): Proposal {
-  return parseProposal(parseTaskResultJson(text));
-}
-
 export function download(blob: Blob, filename: string): void {
   if (!blob.size) throw new Error("没有可下载的内容");
   const url = URL.createObjectURL(blob);

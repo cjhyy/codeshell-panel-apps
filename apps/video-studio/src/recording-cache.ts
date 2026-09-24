@@ -97,7 +97,3 @@ export async function cachedMediaFile(id: string): Promise<File | null> {
     db?.close();
   }
 }
-
-/** Compatibility exports for recordings saved by earlier Panel versions. */
-export const cacheRecording = cacheMediaFile;
-export const cachedRecording = cachedMediaFile;

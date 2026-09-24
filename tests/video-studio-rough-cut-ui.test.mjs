@@ -950,15 +950,27 @@ async function expectPreviewFrame(page, assetId, sourceFrame) {
   );
 }
 
-async function expectTimelinePreview(page, clip, frame) {
+/** 加入成片 keeps 粗剪 open; its notice's 查看成片 shows the composition. */
+async function viewProgram(page) {
+  await page.locator(".roughcut-placed").getByRole("button", { name: "查看成片", exact: true }).click();
+}
+/** Rough-cut placement leaves the playhead after the placed run; single adds leave it at the start. */
+async function expectTimelinePreview(page, clip, frame, playheadFrame = frame) {
   assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
   assert.equal(await page.locator("[data-source-scrub],[data-roughcut-scrub]").count(), 0);
   const current = await state(page);
-  assert.equal(
-    current.playheadFrame,
-    frame,
-    "The new clip's beginning becomes the composition playhead",
-  );
+  if (playheadFrame === frame)
+    assert.equal(
+      current.playheadFrame,
+      frame,
+      "The new clip's beginning becomes the composition playhead",
+    );
+  // At the program end a later save may park the playhead on the last tick (rounding down).
+  else
+    assert.ok(
+      Math.abs(current.playheadFrame - playheadFrame) <= 1,
+      `The playhead continues after the placed run: ${current.playheadFrame}`,
+    );
   assert.equal(current.selectedClipId, clip.id, "The inserted clip is selected for editing");
   const timelineClip = page.locator(`[data-et-clip="${clip.id}"]`);
   assert.equal(await page.locator("[data-ew-timeline]").isVisible(), true);
@@ -975,6 +987,7 @@ async function expectTimelinePreview(page, clip, frame) {
     return bytes.some((value, index) => index % 4 !== 3 && value > 0);
   });
   assert.equal(pixels, true, "The source strip contains actual decoded video pixels");
+  if (playheadFrame !== frame) await page.locator("[data-ew-seek]").fill(String(frame * 8000));
   await expectPreviewFrame(page, clip.assetId, clip.inFrame);
 }
 
@@ -996,10 +1009,20 @@ test(
       const audio = imported.find((item) => item.kind === "audio");
       await page.locator("[data-et-zoom]").fill("2");
       assert.equal(await page.locator("[data-et-zoom]").inputValue(), "2");
-      for (const insertion of ["first", "append", "menu", "drop"]) {
+      for (const insertion of ["first", "append", "menu", "playhead", "drop"]) {
         const document = await readSavedEditorDocument(page);
         const sequence = document.sequences.find((item) => item.id === document.activeSequenceId);
         const end = Math.max(0, ...sequence.clips.map((clip) => clip.start + clip.duration));
+        const mainTrack =
+          (sequence.timelineMode === "magnetic" &&
+            sequence.tracks.find((track) => track.id === sequence.magneticTrackId)) ||
+          sequence.tracks.find((track) => track.kind === "video" && !track.locked);
+        const mainEnd = Math.max(
+          0,
+          ...sequence.clips
+            .filter((clip) => clip.trackId === mainTrack?.id)
+            .map((clip) => clip.start + clip.duration),
+        );
         const insertionTime = Math.max(0, end - 8000);
         await page.locator("[data-ew-seek]").fill(String(insertionTime));
         let dropTrack;
@@ -1037,9 +1060,13 @@ test(
             .dragTo(page.locator(`[data-et-lane="${dropTrack}"]`), {
               targetPosition: { x: 60, y: 30 },
             });
-        } else if (insertion === "menu") {
+        } else if (insertion === "menu" || insertion === "playhead") {
           await page.locator(`[data-action="media-menu"][data-id="${asset.id}"]`).click();
-          await page.locator('#media-context-menu [data-action="add-media"]').click();
+          await page
+            .locator(
+              `#media-context-menu [data-action="${insertion === "menu" ? "add-media" : "insert-media-playhead"}"]`,
+            )
+            .click();
         } else await page.locator(`[data-add-asset="${asset.id}"]`).click();
         await saved(page);
         const canonical = await readSavedEditorDocument(page);
@@ -1061,7 +1088,12 @@ test(
             144000,
             "A real drop at 60px and 100px/second uses the visible target time",
           );
-        } else assert.equal(clip.start, insertionTime);
+        } else if (insertion === "playhead")
+          assert.equal(clip.start, insertionTime, "插入到播放头 keeps the playhead position");
+        else {
+          assert.equal(clip.start, mainEnd, "+ and 加入时间轴 continue the main picture track");
+          if (mainTrack) assert.equal(clip.trackId, mainTrack.id);
+        }
         assert.equal(await page.locator("[data-source-audio]").count(), 0);
         await expectTimelinePreview(
           page,
@@ -1402,8 +1434,17 @@ test(
       assert.equal(sequenceAfter.clips.length, sequenceBefore.clips.length + 1);
       assert.deepEqual(sequenceAfter.clips.slice(0, -1), sequenceBefore.clips);
       assert.equal(sequenceAfter.clips.at(-1).assetId, video.id);
-      assert.equal(sequenceAfter.clips.at(-1).start, before.playheadFrame * 8000);
-      assert.notEqual(sequenceAfter.clips.at(-1).trackId, sequenceBefore.clips[0].trackId);
+      const mainTrackId = sequenceBefore.clips[0].trackId;
+      assert.equal(sequenceAfter.clips.at(-1).trackId, mainTrackId);
+      assert.equal(
+        sequenceAfter.clips.at(-1).start,
+        Math.max(
+          ...sequenceBefore.clips
+            .filter((clip) => clip.trackId === mainTrackId)
+            .map((clip) => clip.start + clip.duration),
+        ),
+        "+ continues the main picture track",
+      );
       assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
       assert.equal(
         await page.locator("[data-source-scrub]").count(),
@@ -1561,6 +1602,14 @@ test(
         fullPage: true,
       });
       await page.setViewportSize({ width: 1440, height: 1000 });
+      for (const selector of [".roughcut-batch", "[data-roughcut-queue-summary]"])
+        assert.equal(
+          await page
+            .locator(`${selector} [data-roughcut-field="append-anchor"]`)
+            .inputValue(),
+          "end",
+          "Both entry points append to the end by default",
+        );
       await page.locator('[data-action="roughcut-queue-append"]').click();
       await saved(page);
       const joined = (await state(page)).project;
@@ -1576,7 +1625,8 @@ test(
         ],
       );
       assert.deepEqual(joined.roughCuts, marked.roughCuts);
-      await expectTimelinePreview(page, joined.clips[before.project.clips.length], 180);
+      await viewProgram(page);
+      await expectTimelinePreview(page, joined.clips[before.project.clips.length], 180, 240);
       // Return from rough cutting to the visible timeline, then verify that
       // selecting a different clip changes real composition pixels.
       await page.locator(`[data-rough-source="${video.id}"]`).click();
@@ -1771,7 +1821,8 @@ test(
         "Joining uses list order and exact source ranges",
       );
       assert.deepEqual(assembled.roughCuts, ordered.roughCuts);
-      await expectTimelinePreview(page, assembled.clips[1], 180);
+      await viewProgram(page);
+      await expectTimelinePreview(page, assembled.clips[1], 180, 240);
 
       const json = await download(page, '[data-action="save-project"]');
       assert.deepEqual(
@@ -1839,6 +1890,63 @@ test(
 );
 
 test(
+  "播放头 inserts at the nearest magnetic boundary and consecutive inserts keep their order",
+  { timeout: 45_000 },
+  async () => {
+    const { page, video } = await importedPage();
+    try {
+      const before = (await state(page)).project;
+      await page.locator(`[data-rough-source="${video.id}"]`).click();
+      await markRange(page, 90, 120, "插入段");
+      const anchor = page.locator('.roughcut-batch [data-roughcut-field="append-anchor"]');
+      assert.equal(await anchor.inputValue(), "end");
+      await anchor.selectOption("playhead");
+      await page.locator('[data-action="roughcut-append"]').click();
+      await saved(page);
+      const first = (await state(page)).project;
+      // The composition playhead (frame 30) is nearest the start of the magnetic picture track:
+      // the cut opens a gap there and the existing clip moves after it.
+      assert.deepEqual(
+        first.clips.map(({ assetId, inFrame, outFrame }) => [assetId, inFrame, outFrame]),
+        [
+          [video.id, 90, 120],
+          [video.id, 0, 180],
+        ],
+      );
+      assert.equal(first.clips[1].id, before.clips[0].id);
+      assert.equal((await state(page)).playheadFrame, 30, "The playhead continues after the insert");
+      assert.equal((await state(page)).selectedClipId, first.clips[0].id);
+      // 粗剪 stays open with the same source, ready for the next cut.
+      assert.equal(await page.locator("#roughcut-source").inputValue(), video.id);
+      assert.equal(await anchor.inputValue(), "playhead", "The chosen position is remembered");
+      await page.locator('[data-action="roughcut-append"]').click();
+      await saved(page);
+      const second = (await state(page)).project;
+      assert.equal(second.revision, first.revision + 1);
+      assert.deepEqual(
+        second.clips.map(({ id, inFrame, outFrame }) => [id, inFrame, outFrame]),
+        [
+          [first.clips[0].id, 90, 120],
+          [second.clips[1].id, 90, 120],
+          [before.clips[0].id, 0, 180],
+        ],
+        "A second insert continues after the first instead of reversing the order",
+      );
+      assert.equal((await state(page)).playheadFrame, 60);
+      await viewProgram(page);
+      await page
+        .locator('[data-action="undo"]:visible,[data-ew-action="undo"]:visible')
+        .first()
+        .click();
+      await saved(page);
+      assert.deepEqual((await state(page)).project.clips, first.clips, "One undo per insert");
+    } finally {
+      await page.close();
+    }
+  },
+);
+
+test(
   "audio source marks append to independent audio without changing the retained video",
   { timeout: 45_000 },
   async () => {
@@ -1860,8 +1968,13 @@ test(
         ]),
         [[audio.id, 0, audio.durationFrames, 0]],
       );
+      await viewProgram(page);
       assert.equal(await page.locator("[data-ew-canvas]").isVisible(), true);
-      assert.equal((await state(page)).playheadFrame, 0);
+      const after = (await state(page)).playheadFrame;
+      assert.ok(
+        after >= audio.durationFrames && after <= audio.durationFrames + 1,
+        "The playhead continues after the placed sound",
+      );
       assert.equal((await state(page)).selectedClipId, project.audioClips[0].id);
       const video = before.assets.find((asset) => asset.kind === "video");
       await page.locator(`[data-rough-source="${video.id}"]`).click();
