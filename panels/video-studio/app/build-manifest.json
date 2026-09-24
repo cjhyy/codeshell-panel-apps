@@ -28,18 +28,18 @@
     "app/editor-workspace.css": "9e1d1cd870df35c48263595f65d230f397f884d44037b4c846194fedbc942ab9",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "4c8153f27495d5bff0cb2b223701f4eaf8a9e7482d48dc84d68daee05d6e8b7d",
+    "app/main.mjs": "fff11591024b4b7749e431f1301fc71e785b0003709fa4cf3a738ede2aa05ffb",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
     "app/runtimes/editor-renderer.mjs": "e4a351b60cbeb22aed990de000475e83f16ab10451574d1aa1966ae3330a1781",
-    "app/style.css": "12a354e23a2fd2dd880ff8ac122ded074b0d4fdb36d1020ea1ed25e9ab085d44",
+    "app/style.css": "a7340d86c0c5425e41ad0c3535a146dadca9657450d39c3881fafbc71bda8179",
     "app/tools/audio-separation.mjs": "51fb44215a63a716d3d630874c7e19e2966f32b7d4067457d257f8f3141f0c6f",
     "app/tools/editor-runtime.mjs": "e11c84ee5730ac0c23e4a44f6951b2a3d287a6bd6ae8b37fd6d5d07df29dd46d",
     "app/tools/editor-sync.mjs": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "8f3295284e267cb963d0f2d39cb19cbc7c8d91ffa00f1bb8f312cdc3e663c6b5"
+    "README.md": "195a08abc5cc84a91d90f348d8344051f78ff719b9b2d48dc1a4ebd814185a64"
   }
 }

@@ -1247,6 +1247,16 @@ const { sceneDialog, versionsDialog, handleJobAction } = createProductionUI(
       if (!editorStorage) return Promise.reject(new Error("工程存储尚未恢复"));
       return editorStorage.readVersion(revision);
     },
+    upgradeBackups: () => editorStorage?.upgradeBackups() ?? Promise.resolve([]),
+    readUpgradeBackup: (digest) => {
+      if (!editorStorage) return Promise.reject(new Error("工程存储尚未恢复"));
+      return editorStorage.readUpgradeBackup(digest);
+    },
+    exportUpgradeBackup: (value, name) =>
+      download(
+        new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }),
+        `${name}.before-upgrade.video-project.json`,
+      ),
   },
 );
 // Preview, timeline thumbnails and legacy restoration can request the same cached

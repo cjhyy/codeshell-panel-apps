@@ -3443,3 +3443,104 @@ test("新建工程 waits for an import in progress and offers only 知道了", a
     window.__releaseContext();
   });
 });
+
+test("main exposes persistent upgrade backups, exports exact old JSON and restores after normal history expires", async (t) => {
+  const page = await openPage(t);
+  await clickEditorAction(page, "rectangle");
+  const edited = await waitSaved(page);
+  await page.evaluate(async () => {
+    const host = window.__mainHost;
+    for (let i = 0; i < 23; i++) {
+      const latest = host.records()["video-studio-current"][0];
+      await window.codeshellPanel.call("media.document.set", {
+        key: "video-studio-current",
+        data: latest.data,
+        baseRevision: latest.revision,
+        label: "后续持久保存",
+      });
+    }
+  });
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await production(page);
+  await oldAction(page, "versions").first().click();
+  assert.equal(await page.locator('[data-version="1"]').count(), 0);
+  if (process.env.VIDEO_STUDIO_BACKUP_SCREENSHOT)
+    await page.locator("#plan-dialog").screenshot({ path: process.env.VIDEO_STUDIO_BACKUP_SCREENSHOT });
+  const exportButton = page.getByRole("button", { name: "导出原格式", exact: true });
+  const downloading = page.waitForEvent("download");
+  await exportButton.click();
+  const exported = await downloading;
+  assert.deepEqual(JSON.parse(await readFile(await exported.path(), "utf8")), seed);
+  assert.match(exported.suggestedFilename(), /before-upgrade\.video-project\.json$/);
+  assert.deepEqual(await saved(page), edited);
+  await page.getByRole("button", { name: "恢复为当前工程", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector("#toast").textContent.includes("已从升级前备份恢复工程"),
+  );
+  const restored = await saved(page);
+  assert.equal(restored.schemaVersion, 2);
+  assert.equal(restored.id, seed.id);
+  assert.equal(
+    restored.sequences.flatMap((sequence) => sequence.clips).some((clip) => clip.kind === "shape"),
+    false,
+  );
+  const archived = await page.evaluate(() => {
+    const records = window.__mainHost.records(),
+      index = records["video-studio-recent-v2"][0].data;
+    return records[index.entries[0].snapshotKey][0].data.data;
+  });
+  assert.deepEqual(archived, edited, "current edits are archived before old data is restored");
+  await page.reload();
+  await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  assert.deepEqual(await saved(page), restored);
+});
+
+test("main backup restore write failure retains current edits and permits an explicit retry", async (t) => {
+  const page = await openPage(t);
+  await clickEditorAction(page, "ellipse");
+  const edited = await waitSaved(page);
+  await production(page);
+  await oldAction(page, "versions").first().click();
+  await page.evaluate(() => window.__mainHost.fail(true));
+  await page.getByRole("button", { name: "恢复为当前工程", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector("#toast").textContent.includes("模拟磁盘保存失败"),
+  );
+  assert.deepEqual(await saved(page), edited);
+  await page.evaluate(() => window.__mainHost.fail(false));
+  await page.getByRole("button", { name: "恢复为当前工程", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector("#toast").textContent.includes("已从升级前备份恢复工程"),
+  );
+  assert.equal(
+    (await saved(page)).sequences
+      .flatMap((sequence) => sequence.clips)
+      .some((clip) => clip.kind === "shape"),
+    false,
+  );
+});
+
+test("closing the history dialog while backup bytes are loading prevents a late restore", async (t) => {
+  const page = await openPage(t);
+  await clickEditorAction(page, "rectangle");
+  const edited = await waitSaved(page);
+  await production(page);
+  await oldAction(page, "versions").first().click();
+  await page.evaluate(() => {
+    const call = window.codeshellPanel.call;
+    window.codeshellPanel.call = async (method, args) => {
+      if (method === "media.document.get" && args.key.startsWith("video-studio-legacy-"))
+        await new Promise((resolve) => (window.__releaseBackup = resolve));
+      return call(method, args);
+    };
+  });
+  await page.getByRole("button", { name: "恢复为当前工程", exact: true }).click();
+  await page.waitForFunction(() => !!window.__releaseBackup);
+  await page.locator('#plan-dialog [data-action="close-dialog"]').click();
+  await page.evaluate(() => window.__releaseBackup());
+  await page.waitForFunction(() =>
+    document.querySelector("#toast").textContent.includes("窗口已变化"),
+  );
+  assert.deepEqual(await saved(page), edited);
+});
