@@ -2432,6 +2432,15 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
     // Saving finishes before original-media recovery; the input clears only after replacement completes.
     await page.waitForFunction(() => document.querySelector("#project-input").value === "");
     const imported = await readProject(page);
+    // Fitting rebuilds the controls. Exercise a real layout change during that render,
+    // so fitting against the detached, wider viewport cannot pass by timing luck.
+    await page.addStyleTag({
+      content: 'body:has(#timeline-zoom[value^="0."]) #timeline-scroll { max-width: 900px; }',
+    });
+    const beforeFitWidth = await page
+      .locator("#timeline-scroll")
+      .evaluate((scroll) => scroll.clientWidth);
+    assert.ok(beforeFitWidth > 900);
     await page.locator('[data-action="fit-timeline"]').click();
     const fitted = await page.locator("#timeline-scroll").evaluate((scroll) => ({
       width: scroll.clientWidth,
@@ -2439,8 +2448,9 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
       zoom: Number(document.querySelector("#timeline-zoom").value),
       labels: document.querySelectorAll("#ruler > span").length,
     }));
+    assert.equal(fitted.width, 900);
     assert.ok(fitted.zoom < 12);
-    assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1);
+    assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1, JSON.stringify(fitted));
     assert.equal(fitted.left, 0);
     assert.ok(fitted.labels > 0 && fitted.labels < 100);
 

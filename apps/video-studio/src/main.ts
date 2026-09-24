@@ -2730,6 +2730,15 @@ function setTimelineZoom(value: number, fit = false): void {
   const anchorFrame = visible ? frame : ((scroll.scrollLeft + anchorX) / zoom) * project.fps;
   zoom = Math.max(MIN_TIMELINE_SCALE, Math.min(MAX_TIMELINE_SCALE, value));
   render();
+  // Rendering replaces the viewport. A narrower resulting layout must not retain
+  // a scale calculated from the detached element's width.
+  if (fit) {
+    const fitted = fitTimelineScale(duration(), project.fps, $("#timeline-scroll").clientWidth);
+    if (fitted < zoom) {
+      zoom = fitted;
+      render();
+    }
+  }
   $("#timeline-scroll").scrollLeft = fit
     ? 0
     : Math.max(0, (anchorFrame / project.fps) * zoom - anchorX);
