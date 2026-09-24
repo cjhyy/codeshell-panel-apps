@@ -947,6 +947,25 @@ test("playback preparation stays visible while task start waits, cancels locally
   await action(page, "play").click();
 });
 
+test("a long playback preparation keeps showing how long it has been waiting", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.clock.install();
+  const status = page.locator("[data-ew-preview-error]");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.audioProgress(0, "正在把原始素材交给本地任务…"));
+  assert.doesNotMatch(await status.textContent(), /已等待/);
+  // The Host may copy large originals inside tasks.start without any progress events.
+  await page.clock.fastForward(65_000);
+  assert.match(await status.textContent(), /正在把原始素材交给本地任务…（已等待 1 分 05 秒）/);
+  assert.match(await status.textContent(), /再次点击播放按钮可取消等待/);
+  await action(page, "play").click();
+  assert.equal(await status.isVisible(), false);
+  await page.clock.fastForward(5_000);
+  assert.equal(await status.isVisible(), false);
+  await page.evaluate(() => fixture.resolveAudio(0));
+});
+
 test("failed playback preparation clears busy state and explains an outdated panel without changing edits", async (t) => {
   const page = await fixture(t, { audio: true });
   await page.evaluate(() => fixture.externalEdit());

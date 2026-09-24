@@ -309,6 +309,29 @@ test("high-level preview exposes resource audio and shares frozen snapshot with 
   await assert.rejects(bridge.prepareAudio(audio.snapshot), { name: "AbortError" });
   bridge.dispose();
 });
+test("preview staging says originals are being copied before the Host copy, and only the video job is the preview task", async () => {
+  const m = mock(),
+    bridge = createEditorTaskBridge(m.raw),
+    d = document(2),
+    tasks: string[] = [],
+    progress: unknown[] = [];
+  const actions = () =>
+    m.calls.filter((c) => c.method === "tasks.start").map((c) => c.params.input.request.action);
+  await bridge.prepareVideoForPreview(d, "main", {
+    onTask: (job) => tasks.push(actions()[Number(job.id.slice(4)) - 1]),
+    // The Host copies each original inside tasks.start, before it returns any job.
+    onProgress: (value) =>
+      progress.push({ ...value, copyStarted: actions().includes("stage-resources") }),
+  });
+  assert.deepEqual(tasks, ["prepare-video"]);
+  assert.deepEqual(progress[0], {
+    phase: "resources",
+    completed: 0,
+    total: 2,
+    copyStarted: false,
+  });
+  bridge.dispose();
+});
 test("changed committed transfer, cancellation and unavailable Host methods fail clearly", async () => {
   const m = mock(),
     bridge = createEditorTaskBridge(m.raw);

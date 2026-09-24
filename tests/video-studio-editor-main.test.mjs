@@ -200,6 +200,23 @@ async function openPage(t, options = {}) {
             return [];
           if (method === "tasks.start" && options.holdNativeStart)
             return new Promise(() => {});
+          // The real Host copies each original inside tasks.start(stage-resources) and only
+          // then returns a job; model a copy that is still running after a fresh status read.
+          if (options.holdNativeCopy && method === "tasks.start") {
+            if (args.input.request.action !== "stage-status") return new Promise(() => {});
+            const job = {
+              id: `status-${calls.length}`,
+              status: "succeeded",
+              attempt: 1,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              result: { result: { resourceIds: [], chunks: [] } },
+            };
+            (window.__nativeJobs ??= {})[job.id] = job;
+            return structuredClone(job);
+          }
+          if (options.holdNativeCopy && method === "tasks.get")
+            return structuredClone(window.__nativeJobs[args.id]);
           if (method === "media.jobs.list" && options.fullNativeAccess) return { jobs: [] };
           if (method === "resources.get" && options.fullNativeAccess)
             return { asset: structuredClone(options.mediaMetadata[args.id ?? args.assetId]) };
@@ -813,6 +830,66 @@ test("saved video and audio reopen without starting native proxies, waveforms or
   assert.deepEqual(await saved(page), restored, "Starting preview never changes the saved edit");
 });
 
+test("Play explains the Host's copy of new originals instead of claiming preview frames are being made", async (t) => {
+  const videoPath = resolve(directory, "copy-wait.mp4");
+  await promisify(execFile)("ffmpeg", [
+    ...["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"],
+    ...["-i", "color=c=green:s=160x90:r=30:d=1", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p"],
+    videoPath,
+  ]);
+  const video = await readFile(videoPath),
+    videoId = `asset-${createHash("sha256").update(video).digest("hex")}`;
+  const page = await openPage(t, {
+    seed: {
+      ...seed,
+      id: "copy-wait",
+      assets: [
+        {
+          id: "copied-video",
+          name: "大原片.mp4",
+          kind: "video",
+          durationFrames: 30,
+          width: 160,
+          height: 90,
+          mediaId: videoId,
+          mimeType: "video/mp4",
+          size: video.length,
+        },
+      ],
+      clips: [
+        { id: "copied", assetId: "copied-video", inFrame: 0, outFrame: 30, startFrame: 0, volume: 1 },
+      ],
+      captions: [],
+    },
+    fullNativeAccess: true,
+    holdNativeCopy: true,
+    mediaMetadata: {
+      [videoId]: {
+        id: videoId,
+        sha256: videoId.slice(6),
+        bytes: video.length,
+        mimeType: "video/mp4",
+        name: "大原片.mp4",
+        createdAt: 1,
+      },
+    },
+    mediaResources: { [videoId]: { mimeType: "video/mp4", bytes: video } },
+  });
+  await page.locator('[data-ew-action="play"]').click();
+  await page.waitForFunction(() =>
+    window.__mainHost.calls.some(
+      (call) =>
+        call.method === "tasks.start" && call.args.input.request.action === "stage-resources",
+    ),
+  );
+  await settle(page);
+  const status = await page.locator("[data-ew-preview-error]").textContent();
+  assert.match(status, /正在把原始素材交给本地任务 · 已就绪 0\/1/);
+  assert.match(status, /首次使用的素材需要完整复制一次原片/);
+  assert.doesNotMatch(status, /快速预览/);
+  await page.locator('[data-ew-action="play"]').click();
+  assert.equal(await page.locator("[data-ew-preview-error]").isVisible(), false);
+});
 test("main restores 0.5.16 multitrack without the optional old demo upgrade blocking task setup", async (t) => {
   const original = JSON.parse(
     await readFile(new URL("./fixtures/video-studio/project-0.5.16.json", import.meta.url), "utf8"),

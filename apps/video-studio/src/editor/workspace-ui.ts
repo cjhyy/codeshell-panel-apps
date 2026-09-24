@@ -116,6 +116,12 @@ export class EditorWorkspace {
   private sourcePreview = false;
   private disposed = false;
   private preparing?: AbortController;
+  /** Task start can wait minutes without progress while the Host copies originals. */
+  private preparationClock?: {
+    started: number;
+    message: string;
+    timer: ReturnType<typeof setInterval>;
+  };
   private audio?: PreviewAudio;
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
@@ -461,13 +467,26 @@ export class EditorWorkspace {
   }
   private preparationStatus(controller: AbortController, message: string): void {
     if (this.disposed || this.preparing !== controller || controller.signal.aborted) return;
+    const clock = (this.preparationClock ??= {
+      started: Date.now(),
+      message,
+      timer: setInterval(() => this.preparationStatus(controller, clock.message), 1000),
+    });
+    clock.message = message;
+    const seconds = Math.floor((Date.now() - clock.started) / 1000),
+      waited =
+        seconds < 5
+          ? ""
+          : `（已等待 ${seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, "0")} 秒`}）`;
     const output = this.get("[data-ew-preview-error]");
     delete output.dataset.audioBuffering;
     output.dataset.previewPreparing = "true";
-    output.textContent = `${message} 再次点击播放按钮可取消等待；已开始的素材复制可能仍会完成。`;
+    output.textContent = `${message}${waited} 再次点击播放按钮可取消等待；已开始的素材复制可能仍会完成。`;
     output.hidden = false;
   }
   private clearPreparationStatus(): void {
+    clearInterval(this.preparationClock?.timer);
+    this.preparationClock = undefined;
     const output = this.get("[data-ew-preview-error]");
     if (!output?.dataset.previewPreparing) return;
     delete output.dataset.previewPreparing;

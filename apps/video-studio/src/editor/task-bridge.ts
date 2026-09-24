@@ -404,6 +404,13 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         throw new Error("工程数据块状态无效");
       chunks = status.chunks;
       const missing = batch.filter((id) => !status.resourceIds.includes(id));
+      // The Host copies every missing original inside tasks.start, before any job exists.
+      if (missing.length)
+        options.onProgress?.({
+          phase: "resources",
+          completed: startIndex + batch.length - missing.length,
+          total: snapshot.resourceIds.length,
+        });
       if (missing.length)
         await complete(
           { action: "stage-resources", transferId: snapshot.transferId, resourceIds: missing },
@@ -1265,7 +1272,12 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       sequenceId: string,
       options: EditorPrepareOptions = {},
     ): Promise<{ snapshot: EditorTaskSnapshot; sources: EditorVideoSource[] }> {
-      const snapshot = await selectedSnapshot(value, sequenceId, options);
+      // onTask/onJobChanged describe the video jobs; staging reports through onProgress.
+      const snapshot = await selectedSnapshot(value, sequenceId, {
+        ...options,
+        onTask: undefined,
+        onJobChanged: undefined,
+      });
       const ids = editorTaskDocument(value, sequenceId)
           .document.assets.filter((asset) => asset.kind === "video")
           .map((asset) => asset.id),
