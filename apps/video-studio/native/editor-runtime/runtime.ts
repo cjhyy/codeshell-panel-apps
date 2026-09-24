@@ -1,6 +1,6 @@
-import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, link as hardLink, lstat, readdir, rename, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   EDITOR_TASK_LIMITS,
   EDITOR_DEMO_NARRATION_SHA,
@@ -159,6 +159,51 @@ export async function runEditorRequest(
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
   };
+  // Each edit starts a new snapshot. Without this scope-level copy, every snapshot asked the
+  // Host to copy all original media again, which takes minutes for large 4K sources.
+  const link = async (source: string, target: string) => {
+    const temporary = join(dirname(target), `${basename(target)}.${randomUUID()}.tmp`);
+    try {
+      await hardLink(source, temporary).catch(() => copyFile(source, temporary));
+      await rename(temporary, target);
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  };
+  const remember = async (binding: Binding, path: string) => {
+    const library = await directory(scope, ["resources"]),
+      id = resourceId(binding.resourceId);
+    try {
+      await link(path, join(library, `${id}.bin`));
+      await atomic(join(library, `${id}.json`), Buffer.from(JSON.stringify(binding)));
+    } catch (error) {
+      // Only a later snapshot loses the shortcut; this one is already staged.
+      if (context.signal.aborted) throw error;
+    }
+  };
+  const reuse = async (id: string): Promise<Binding | undefined> => {
+    const library = await directory(scope, ["resources"]);
+    try {
+      const binding = (await optionalJson(library, [`${id}.json`])) as Binding | undefined;
+      if (!binding) return undefined;
+      const path = await regular(library, [`${id}.bin`]);
+      if (
+        binding.resourceId !== id ||
+        (id.startsWith("asset-") && id !== `asset-${binding.sha256}`) ||
+        (await stat(path)).size !== binding.bytes ||
+        (await fileHash(path, context.signal)) !== hash(binding.sha256)
+      )
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材校验失败");
+      await link(path, join(resources, `${id}.bin`));
+      await atomic(join(resources, `${id}.json`), Buffer.from(JSON.stringify(binding)));
+      return binding;
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      for (const name of [`${id}.json`, `${id}.bin`])
+        await rm(join(library, name), { force: true });
+      return undefined;
+    }
+  };
   const builtin = async () => {
     const id = `asset-${EDITOR_DEMO_NARRATION_SHA}`;
     let binding = (await optionalJson(resources, [`${id}.json`])) as Binding | undefined;
@@ -304,10 +349,8 @@ export async function runEditorRequest(
       const present: string[] = [];
       for (const id of request.resourceIds!) {
         const binding = await optionalJson(resources, [`${id}.json`]);
-        if (binding) {
-          await material(binding);
-          present.push(id);
-        }
+        if (binding) await material(binding);
+        if (binding || (await reuse(id))) present.push(id);
       }
       const chunks: number[] = [],
         documentDir = await directory(transfer, ["documents", request.documentHash!]);
@@ -373,6 +416,7 @@ export async function runEditorRequest(
             await rm(temporary, { force: true });
           }
         }
+        await remember(binding, join(resources, `${id}.bin`));
         staged.push(binding);
         await progress((index + 1) / request.resourceIds!.length, "stage-resources");
       }
@@ -667,12 +711,18 @@ export async function runEditorRequest(
       assetId: string,
       requireGeometry: boolean,
       purpose: "export" | "preview" = "export",
+      onProgress?: (fraction: number) => void,
     ) => {
       const asset = selected.document.assets.find((item) => item.id === assetId);
       if (asset?.kind !== "video")
         throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
       const input = original(assetId),
-        proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext, purpose);
+        proxy = await prepareEditorProxy(
+          input.path,
+          input.binding.sha256,
+          { ...proxyContext, onProgress },
+          purpose,
+        );
       if (requireGeometry && (asset.width !== proxy.width || asset.height !== proxy.height))
         throw new EditorTaskError(
           "SOURCE_GEOMETRY_MISMATCH",
@@ -682,14 +732,18 @@ export async function runEditorRequest(
       return proxy;
     };
     if (request.action === "prepare-video") {
-      const sources: any[] = [];
-      for (let index = 0; index < request.assetIds!.length; index++) {
+      const sources: any[] = [],
+        count = request.assetIds!.length;
+      for (let index = 0; index < count; index++) {
         const assetId = request.assetIds![index]!,
-          proxy = await video(assetId, false, "preview"),
+          proxy = await video(assetId, false, "preview", (fraction) => {
+            // A first 4K conversion takes minutes; show movement within each source.
+            progress((index + fraction) / count, "prepare-video").catch(() => {});
+          }),
           { path: _path, ...recipe } = proxy;
         const asset = await add(proxy.path, "mp4", "video/mp4", "editor-video-source");
         sources.push({ assetId, proxy: asset, recipe });
-        await progress((index + 1) / request.assetIds!.length, "prepare-video");
+        await progress((index + 1) / count, "prepare-video");
       }
       succeeded = true;
       return {

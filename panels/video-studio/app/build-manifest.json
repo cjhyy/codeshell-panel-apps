@@ -3,7 +3,7 @@
   "builder": "esbuild@0.28.2",
   "entry": "src/main.ts",
   "files": {
-    ".codeshell-panel/panel.json": "0e66752e32c625fc07836bde0a70d6964750d82e801398f8f2ab0ea88ab7dcef",
+    ".codeshell-panel/panel.json": "a04d526a06579b0755c5fa85dc886818974ef73a3e47983b6f18a1cc3c371d4b",
     "agent/skills/editor-v2/SKILL.md": "21812b375d4994d18162ba4087ec0c8a00b1c01f191285ca09aeabf056fac7fa",
     "agent/skills/narration-workflow/SKILL.md": "23c63ea09d8055246608601cb068d4489e03e91a74924ab541288760b66c4b78",
     "agent/skills/tts-setup/SKILL.md": "8ab87da83a5b38641e6f2f5422f2dff7bfd5ac0d1a4f6f7b2c3a06f8484a1038",
@@ -35,7 +35,7 @@
     "app/runtimes/editor-renderer.mjs": "e4a351b60cbeb22aed990de000475e83f16ab10451574d1aa1966ae3330a1781",
     "app/style.css": "12a354e23a2fd2dd880ff8ac122ded074b0d4fdb36d1020ea1ed25e9ab085d44",
     "app/tools/audio-separation.mjs": "51fb44215a63a716d3d630874c7e19e2966f32b7d4067457d257f8f3141f0c6f",
-    "app/tools/editor-runtime.mjs": "e11c84ee5730ac0c23e4a44f6951b2a3d287a6bd6ae8b37fd6d5d07df29dd46d",
+    "app/tools/editor-runtime.mjs": "39236429d6907292b4949c1f6f04352aa0503d6948065ceafe6d7a510ede225b",
     "app/tools/editor-sync.mjs": "26d6dc166a69b87865d919716154853d57af3a5d1d5017c7f872ea3b5869e2e1",
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",

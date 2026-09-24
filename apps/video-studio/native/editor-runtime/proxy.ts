@@ -46,6 +46,8 @@ export interface ProxyContext {
   workDir: string;
   signal: AbortSignal;
   ffmpegVersion: string;
+  /** Overall fraction of one source, from the first frame scan to the verified preview. */
+  onProgress?(fraction: number): void;
 }
 
 /** Hash every decoded frame's time on the editor tick clock; do not replace VFR with a fixed rate. */
@@ -54,6 +56,7 @@ async function timeline(
   streamIndex: number,
   origin: number,
   context: ProxyContext,
+  onFrame?: (count: number) => void,
 ): Promise<{ hash: string; count: number; firstTick: number; endTick: number }> {
   let pending = "",
     count = 0,
@@ -93,6 +96,7 @@ async function timeline(
       previous = tick;
       count++;
       hash.update(`${tick}\n`);
+      onFrame?.(count);
     }
   };
   await runMediaProcess(
@@ -258,11 +262,32 @@ export async function prepareEditorProxy(
   const receipt = await optionalJson(cache, ["receipt.json"]);
   if (receipt?.recipeHash === recipeHash && receipt.sourceHash === sourceHash) {
     const saved = await regular(cache, ["video.mp4"]);
-    if ((await fileHash(saved, context.signal)) === receipt.sha256)
+    if ((await fileHash(saved, context.signal)) === receipt.sha256) {
+      context.onProgress?.(1);
       return { ...receipt, path: saved };
+    }
     throw new EditorTaskError("CACHE_CHANGED", "已准备视频内容发生变化，请清理该任务缓存后重试");
   }
-  const original = await timeline(path, stream.index, sourceOriginSeconds, context);
+  // Scanning every source frame dominates on 4K originals, so it carries most of the weight.
+  let reported = -1;
+  const report = (fraction: number) => {
+    if (fraction >= 1 || fraction - reported >= 0.01) {
+      reported = fraction;
+      context.onProgress?.(fraction);
+    }
+  };
+  const durationSeconds = Number(stream.duration) || Number(probe.format?.duration) || 0,
+    [rateNumerator, rateDenominator] = String(stream.avg_frame_rate || stream.r_frame_rate)
+      .split("/")
+      .map(Number),
+    expectedFrames =
+      Number(stream.nb_frames) ||
+      Math.round((durationSeconds * rateNumerator!) / (rateDenominator || 1)) ||
+      0;
+  const scanned = (start: number, span: number) => (count: number) => {
+    if (expectedFrames > 0) report(start + span * Math.min(1, count / expectedFrames));
+  };
+  const original = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.6));
   if (original.firstTick !== 0)
     throw new EditorTaskError(
       "UNSUPPORTED_TIMESTAMPS",
@@ -314,11 +339,20 @@ export async function prepareEditorProxy(
         "-movflags",
         "+faststart",
         "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
         output,
       ],
-      { signal: context.signal },
+      {
+        signal: context.signal,
+        durationSeconds,
+        onStdout: () => {},
+        onProgress: ({ fraction }) => report(0.6 + 0.25 * (fraction ?? 0)),
+      },
     );
-    const actual = await timeline(output, 0, 0, context);
+    report(0.85);
+    const actual = await timeline(output, 0, 0, context, scanned(0.85, 0.149));
     if (
       actual.hash !== original.hash ||
       actual.count !== original.count ||
@@ -351,6 +385,7 @@ export async function prepareEditorProxy(
     };
     const { path: _path, ...publicReceipt } = result;
     await atomic(join(cache, "receipt.json"), Buffer.from(JSON.stringify(publicReceipt)));
+    report(1);
     return result;
   } finally {
     await rm(output, { force: true });

@@ -403,6 +403,94 @@ test(
     assert.equal(rendered.result.verified, true);
   },
 );
+test(
+  "a new snapshot of an edited project reuses verified originals instead of another Host copy",
+  { timeout: 120000 },
+  async () => {
+    // Its own footage, so no earlier test has already cached this preview.
+    const footage = join(temp, "reused-original.mp4");
+    ff([
+      ...["-f", "lavfi", "-i", "color=yellow:s=64x48:r=30:d=1"],
+      ...["-c:v", "libx264", "-pix_fmt", "yuv420p", footage],
+    ]);
+    const d = document(),
+      resourceId = `asset-${sha(await readFile(footage))}`;
+    d.assets = [
+      { id: "source", name: "Footage", kind: "video", duration: 240000, width: 64, height: 48, resourceId },
+    ];
+    d.sequences[0].clips = [clip("source", "video", 240000)];
+    await stage(d, new Map([[resourceId, footage]]));
+    // Any edit makes a new snapshot. Its status must find the original already verified in
+    // this scope, so the panel skips stage-resources and the Host's full re-copy of the file.
+    d.revision++;
+    d.name = "Edited";
+    const selected = api.editorTaskDocument(d, "main"),
+      bytes = Buffer.from(JSON.stringify(selected.document)),
+      snapshot = { transferId: `editor-${randomUUID()}`, documentHash: sha(bytes), sequenceId: "main" };
+    const status = await call({
+      action: "stage-status",
+      transferId: snapshot.transferId,
+      documentHash: snapshot.documentHash,
+      resourceIds: [resourceId],
+    });
+    assert.deepEqual(status.result.resourceIds, [resourceId]);
+    await call({
+      action: "stage-document",
+      transferId: snapshot.transferId,
+      documentHash: snapshot.documentHash,
+      chunkIndex: 0,
+      chunkCount: 1,
+      dataBase64: bytes.toString("base64"),
+    });
+    await call({ action: "commit", ...snapshot, chunkCount: 1, byteLength: bytes.length });
+    const prepared = await call({ action: "prepare-video", ...snapshot, assetIds: ["source"] });
+    assert.equal(prepared.result.sources[0].recipe.frameCount, 30);
+    assert.ok(
+      prepared.messages.some(
+        (m) => m.type === "progress" && m.progress.stage === "prepare-video" && m.progress.fraction < 1,
+      ),
+      "The preview task reports progress before its source is finished",
+    );
+    // A damaged saved original is never offered again; the panel re-stages it from the Host.
+    const saved = join(runtimeDir, "scopes", scope, "resources", `${resourceId}.bin`);
+    await writeFile(saved, "damaged");
+    const damaged = await call({
+      action: "stage-status",
+      transferId: `editor-${randomUUID()}`,
+      documentHash: snapshot.documentHash,
+      resourceIds: [resourceId],
+    });
+    assert.deepEqual(damaged.result.resourceIds, []);
+  },
+);
+test("fast preview preparation reports progress while it scans, encodes and verifies a video", async () => {
+  const source = join(temp, "progress-source.mp4");
+  ff([
+    ...["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:d=4"],
+    ...["-c:v", "libx264", "-pix_fmt", "yuv420p", source],
+  ]);
+  const fractions = [],
+    context = {
+      ffmpegPath: "ffmpeg",
+      ffprobePath: "ffprobe",
+      ffmpegVersion: "progress-test",
+      cacheDir: await mkdtemp(join(temp, "proxy-cache-")),
+      workDir: await mkdtemp(join(temp, "proxy-work-")),
+      signal: new AbortController().signal,
+      onProgress: (fraction) => fractions.push(fraction),
+    };
+  const proxy = await api.prepareEditorProxy(source, sha(await readFile(source)), context, "preview");
+  assert.equal(proxy.frameCount, 120);
+  // A 4K original can take minutes; the panel needs movement long before the final receipt.
+  assert.ok(fractions.some((f) => f > 0 && f < 0.6), `source scan: ${fractions}`);
+  assert.ok(fractions.some((f) => f >= 0.6 && f < 0.85), `encode: ${fractions}`);
+  assert.ok(fractions.some((f) => f >= 0.85 && f < 1), `verification: ${fractions}`);
+  assert.equal(fractions.at(-1), 1);
+  assert.deepEqual([...fractions].sort((a, b) => a - b), fractions);
+  fractions.length = 0;
+  await api.prepareEditorProxy(source, sha(await readFile(source)), context, "preview");
+  assert.deepEqual(fractions, [1], "A cached preview finishes at once");
+});
 test("staging rejects changed material, invalid directories, unsupported JSON fields and corrupt documents", async () => {
   const transferId = `editor-${randomUUID()}`,
     bytes = Buffer.from("material"),
