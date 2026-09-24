@@ -10,6 +10,8 @@ import {
   rm,
   symlink,
   realpath,
+  chmod,
+  utimes,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -193,7 +195,9 @@ async function call(request, inputs = [], extra = {}) {
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
   });
-  child.stdin.end(JSON.stringify({ ...request, scopeKey: scope, jobId: `job-${randomUUID()}` }));
+  child.stdin.end(
+    JSON.stringify({ ...request, scopeKey: extra.scopeKey ?? scope, jobId: `job-${randomUUID()}` }),
+  );
   const timer = setTimeout(() => child.kill("SIGKILL"), 60000);
   const code = await new Promise((resolve, reject) => {
     child.on("error", reject);
@@ -463,6 +467,169 @@ test(
     assert.deepEqual(damaged.result.resourceIds, []);
   },
 );
+test(
+  "saved originals are reused only when verified, Host-confirmed and in the same scope",
+  { timeout: 120000 },
+  async () => {
+    const saved = (id, key = scope) => join(runtimeDir, "scopes", key, "resources", id);
+    const status = (resourceIds, extra = {}, options = {}) =>
+      call(
+        {
+          action: "stage-status",
+          transferId: `editor-${randomUUID()}`,
+          documentHash: "d".repeat(64),
+          resourceIds,
+          ...extra,
+        },
+        [],
+        options,
+      );
+    const original = async (label) => {
+      const path = join(temp, `saved-${label}.bin`),
+        bytes = Buffer.from(`original ${label} ${randomUUID()}`);
+      await writeFile(path, bytes);
+      return { path, bytes, sha256: sha(bytes) };
+    };
+    const stageOne = async (id, path, options = {}) =>
+      call({ action: "stage-resources", transferId: `editor-${randomUUID()}`, resourceIds: [id] }, [path], options);
+
+    // External references can go missing or change on disk; only the Host knows.
+    const external = await original("external"),
+      externalId = `external-${"e".repeat(64)}`;
+    await stageOne(externalId, external.path);
+    assert.deepEqual((await status([externalId])).result.resourceIds, []);
+    assert.deepEqual(
+      (await status([externalId], { confirmedReferences: [{ resourceId: externalId, bytes: 1 }] }))
+        .result.resourceIds,
+      [],
+      "A reference whose size changed is staged from the Host again",
+    );
+    const confirmed = await status([externalId], {
+      confirmedReferences: [{ resourceId: externalId, bytes: external.bytes.length }],
+    });
+    assert.deepEqual(confirmed.result.resourceIds, [externalId]);
+    assert.ok(
+      confirmed.messages.some((m) => m.type === "progress" && m.progress.stage === "stage-status"),
+      "Hashing a large saved original reports progress",
+    );
+    const invalid = await status(
+      [externalId],
+      { confirmedReferences: [{ resourceId: `external-${"f".repeat(64)}`, bytes: 1 }] },
+      { fail: true },
+    );
+    assert.equal(invalid.error.code, "INVALID_REQUEST");
+
+    // Other scopes (projects) never see this scope's originals.
+    const asset = await original("asset"),
+      assetId = `asset-${asset.sha256}`;
+    await stageOne(assetId, asset.path);
+    assert.deepEqual(
+      (await status([assetId], {}, { scopeKey: "b".repeat(64) })).result.resourceIds,
+      [],
+    );
+    // Two snapshots checking at the same time both get the original.
+    const [first, second] = await Promise.all([status([assetId]), status([assetId])]);
+    assert.deepEqual([first.result.resourceIds, second.result.resourceIds], [[assetId], [assetId]]);
+
+    // A transfer that cannot take the link falls back to normal staging and keeps the entry.
+    if (process.getuid?.() !== 0) {
+      const transferId = `editor-${randomUUID()}`,
+        locked = join(runtimeDir, "scopes", scope, "transfers", transferId, "resources");
+      await mkdir(locked, { recursive: true });
+      await chmod(locked, 0o500);
+      const blocked = await call({
+        action: "stage-status",
+        transferId,
+        documentHash: "d".repeat(64),
+        resourceIds: [assetId],
+      });
+      await chmod(locked, 0o700);
+      assert.deepEqual(blocked.result.resourceIds, []);
+      assert.deepEqual((await status([assetId])).result.resourceIds, [assetId]);
+      // Staging still succeeds when the scope library cannot be written.
+      const other = await original("unsaved"),
+        otherId = `asset-${other.sha256}`,
+        library = join(runtimeDir, "scopes", scope, "resources");
+      await chmod(library, 0o500);
+      const staged = await stageOne(otherId, other.path);
+      await chmod(library, 0o700);
+      assert.equal(staged.result.resources[0].resourceId, otherId);
+      assert.deepEqual((await status([otherId])).result.resourceIds, []);
+    }
+
+    // A saved binding must describe its own content-addressed id.
+    const wrong = await original("wrong"),
+      wrongId = `asset-${"9".repeat(64)}`;
+    await writeFile(saved(`${wrongId}.bin`), wrong.bytes);
+    await writeFile(
+      saved(`${wrongId}.json`),
+      JSON.stringify({ resourceId: wrongId, sha256: wrong.sha256, bytes: wrong.bytes.length }),
+    );
+    assert.deepEqual((await status([wrongId])).result.resourceIds, []);
+    await assert.rejects(readFile(saved(`${wrongId}.json`)), { code: "ENOENT" });
+    // Unknown binding fields are refused as well.
+    const extraField = await original("extra"),
+      extraId = `asset-${extraField.sha256}`;
+    await writeFile(saved(`${extraId}.bin`), extraField.bytes);
+    await writeFile(
+      saved(`${extraId}.json`),
+      JSON.stringify({ resourceId: extraId, sha256: extraField.sha256, bytes: extraField.bytes.length, path: "/tmp/x" }),
+    );
+    assert.deepEqual((await status([extraId])).result.resourceIds, []);
+    // A symbolic link in the library is never followed.
+    const linked = await original("linked"),
+      linkedId = `asset-${linked.sha256}`;
+    await symlink(linked.path, saved(`${linkedId}.bin`));
+    await writeFile(
+      saved(`${linkedId}.json`),
+      JSON.stringify({ resourceId: linkedId, sha256: linked.sha256, bytes: linked.bytes.length }),
+    );
+    assert.deepEqual((await status([linkedId])).result.resourceIds, []);
+  },
+);
+test("committing a snapshot prunes saved originals unused for two weeks", { timeout: 60000 }, async () => {
+  const key = "a".repeat(64),
+    library = join(runtimeDir, "scopes", key, "resources");
+  const keep = Buffer.from(`kept ${randomUUID()}`),
+    stale = Buffer.from(`stale ${randomUUID()}`),
+    recent = Buffer.from(`recent ${randomUUID()}`);
+  const ids = [keep, stale, recent].map((bytes) => `asset-${sha(bytes)}`);
+  for (const [index, bytes] of [keep, stale, recent].entries()) {
+    const path = join(temp, `prune-${index}.bin`);
+    await writeFile(path, bytes);
+    await call(
+      { action: "stage-resources", transferId: `editor-${randomUUID()}`, resourceIds: [ids[index]] },
+      [path],
+      { scopeKey: key },
+    );
+  }
+  const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  for (const id of [ids[0], ids[1]]) await utimes(join(library, `${id}.json`), old, old);
+  // The committed document uses only the first original.
+  const d = document();
+  d.assets = [{ id: "kept", name: "Kept", kind: "audio", duration: 240000, resourceId: ids[0] }];
+  d.sequences[0].clips = [clip("kept", "audio", 240000)];
+  const selected = api.editorTaskDocument(d, "main"),
+    bytes = Buffer.from(JSON.stringify(selected.document)),
+    transferId = `editor-${randomUUID()}`,
+    documentHash = sha(bytes);
+  await call({ action: "stage-resources", transferId, resourceIds: [ids[0]] }, [join(temp, "prune-0.bin")], { scopeKey: key });
+  await call(
+    { action: "stage-document", transferId, documentHash, chunkIndex: 0, chunkCount: 1, dataBase64: bytes.toString("base64") },
+    [],
+    { scopeKey: key },
+  );
+  await call(
+    { action: "commit", transferId, documentHash, sequenceId: "main", chunkCount: 1, byteLength: bytes.length },
+    [],
+    { scopeKey: key },
+  );
+  const names = (await readdir(library)).sort();
+  assert.deepEqual(
+    names,
+    [`${ids[0]}.bin`, `${ids[0]}.json`, `${ids[2]}.bin`, `${ids[2]}.json`].sort(),
+  );
+});
 test("fast preview preparation reports progress while it scans, encodes and verifies a video", async () => {
   const source = join(temp, "progress-source.mp4");
   ff([

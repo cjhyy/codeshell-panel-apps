@@ -206,10 +206,13 @@ async function openPage(t, options = {}) {
             if (args.input.request.action !== "stage-status") return new Promise(() => {});
             const job = {
               id: `status-${calls.length}`,
-              status: "succeeded",
+              // "status" keeps the fresh status read running, as a slow hash of saved originals.
+              status: options.holdNativeCopy === "status" ? "running" : "succeeded",
               attempt: 1,
               createdAt: Date.now(),
               updatedAt: Date.now(),
+              // A staging job's progress must never be shown as the preview percentage.
+              progress: { stage: "prepare-video", fraction: 0.42 },
               result: { result: { resourceIds: [], chunks: [] } },
             };
             (window.__nativeJobs ??= {})[job.id] = job;
@@ -830,7 +833,7 @@ test("saved video and audio reopen without starting native proxies, waveforms or
   assert.deepEqual(await saved(page), restored, "Starting preview never changes the saved edit");
 });
 
-test("Play explains the Host's copy of new originals instead of claiming preview frames are being made", async (t) => {
+async function openCopyWait(t, holdNativeCopy) {
   const videoPath = resolve(directory, "copy-wait.mp4");
   await promisify(execFile)("ffmpeg", [
     ...["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi"],
@@ -862,7 +865,7 @@ test("Play explains the Host's copy of new originals instead of claiming preview
       captions: [],
     },
     fullNativeAccess: true,
-    holdNativeCopy: true,
+    holdNativeCopy,
     mediaMetadata: {
       [videoId]: {
         id: videoId,
@@ -876,6 +879,20 @@ test("Play explains the Host's copy of new originals instead of claiming preview
     mediaResources: { [videoId]: { mimeType: "video/mp4", bytes: video } },
   });
   await page.locator('[data-ew-action="play"]').click();
+  return page;
+}
+test("a running staging job's progress is never shown as the fast-preview percentage", async (t) => {
+  const page = await openCopyWait(t, "status");
+  await page.waitForFunction(() =>
+    window.__mainHost.calls.filter((call) => call.method === "tasks.get").length >= 2,
+  );
+  const status = await page.locator("[data-ew-preview-error]").textContent();
+  assert.match(status, /正在读取和校验视频素材/);
+  assert.doesNotMatch(status, /快速预览|42%/);
+  await page.locator('[data-ew-action="play"]').click();
+});
+test("Play explains the Host's copy of new originals instead of claiming preview frames are being made", async (t) => {
+  const page = await openCopyWait(t, true);
   await page.waitForFunction(() =>
     window.__mainHost.calls.some(
       (call) =>
@@ -886,7 +903,7 @@ test("Play explains the Host's copy of new originals instead of claiming preview
   const status = await page.locator("[data-ew-preview-error]").textContent();
   assert.match(status, /正在把原始素材交给本地任务 · 已就绪 0\/1/);
   assert.match(status, /首次使用的素材需要完整复制一次原片/);
-  assert.doesNotMatch(status, /快速预览/);
+  assert.doesNotMatch(status, /快速预览|42%/);
   await page.locator('[data-ew-action="play"]').click();
   assert.equal(await page.locator("[data-ew-preview-error]").isVisible(), false);
 });

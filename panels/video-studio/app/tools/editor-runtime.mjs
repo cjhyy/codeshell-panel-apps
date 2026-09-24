@@ -2335,9 +2335,9 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute as isAbsolute6 } from "node:path";
 
 // native/editor-runtime/runtime.ts
-import { copyFile as copyFile3, link as hardLink, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10 } from "node:fs/promises";
+import { copyFile as copyFile3, link as hardLink, lstat as lstat4, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10, utimes } from "node:fs/promises";
 import { randomUUID as randomUUID7 } from "node:crypto";
-import { basename as basename3, dirname as dirname6, join as join12 } from "node:path";
+import { join as join12 } from "node:path";
 
 // src/external-media.ts
 var isResourceId = (id3) => typeof id3 === "string" && /^(?:asset|external)-[a-f0-9]{64}$/.test(id3);
@@ -5477,6 +5477,7 @@ function validateEditorRequest(value) {
       "documentHash",
       "sequenceId",
       "resourceIds",
+      "confirmedReferences",
       "assetIds",
       "chunkIndex",
       "chunkCount",
@@ -5497,7 +5498,7 @@ function validateEditorRequest(value) {
     "align-multicam": ["resourceIds", "alignment"],
     "analyze-asset-waveform": ["documentHash", "sequenceId", "assetIds"],
     "prepare-source-video": ["resourceIds", "sourceDuration"],
-    "stage-status": ["documentHash", "resourceIds"],
+    "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
     commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
@@ -5595,6 +5596,19 @@ function validateEditorRequest(value) {
         assets
       };
     }
+  }
+  if (action === "stage-status" && input.confirmedReferences !== void 0) {
+    if (!Array.isArray(input.confirmedReferences) || input.confirmedReferences.length > result.resourceIds.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认列表无效");
+    result.confirmedReferences = input.confirmedReferences.map((raw) => {
+      const value2 = record(raw, ["resourceId", "bytes"], "外部素材确认");
+      const id3 = resourceId(value2.resourceId);
+      if (!id3.startsWith("external-") || !result.resourceIds.includes(id3))
+        throw new EditorTaskError("INVALID_REQUEST", "外部素材确认不属于本批资源");
+      return { resourceId: id3, bytes: integer3(value2.bytes, 1, 20 * 1024 ** 3) };
+    });
+    if (new Set(result.confirmedReferences.map((item) => item.resourceId)).size !== result.confirmedReferences.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认存在重复项");
   }
   if (action === "stage-resources" && !result.resourceIds.length)
     throw new EditorTaskError("INVALID_REQUEST", "请提供本批素材资源");
@@ -6534,10 +6548,10 @@ async function analyzeEditorWaveform(options2) {
     const origin = Number(probe.format?.start_time ?? 0), end = Number(audio2.start_time ?? origin) - origin + Number(audio2.duration);
     if (Number.isFinite(end) && end > WAVEFORM_LIMITS.seconds)
       throw new EditorTaskError("LIMIT_EXCEEDED", "波形分析最多支持 24 小时音频");
-    const basename4 = `${editorSourcePcmCacheKey(sourceHash, options2.sourceDuration, version)}.f32`;
+    const basename3 = `${editorSourcePcmCacheKey(sourceHash, options2.sourceDuration, version)}.f32`;
     let pcm;
     try {
-      const candidate = await regular(options2.pcmCacheDir, [basename4]), size = (await lstat3(candidate)).size;
+      const candidate = await regular(options2.pcmCacheDir, [basename3]), size = (await lstat3(candidate)).size;
       if (Number.isFinite(end) && end > 0 && size % 8 === 0 && size / 8 >= Math.ceil(end * RATE2) - 1 && options2.sourceDuration / 24e4 + 1 > end && size / 8 <= MAX_SAMPLES)
         pcm = candidate;
     } catch (error) {
@@ -7543,40 +7557,78 @@ async function runEditorRequest(raw, context) {
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
   };
-  const link4 = async (source2, target) => {
-    const temporary = join12(dirname6(target), `${basename3(target)}.${randomUUID7()}.tmp`);
-    try {
-      await hardLink(source2, temporary).catch(() => copyFile3(source2, temporary));
-      await rename4(temporary, target);
-    } finally {
-      await rm9(temporary, { force: true });
-    }
+  const LIBRARY_DAYS = 14;
+  const verificationFailure = (error) => error instanceof EditorTaskError && ["SOURCE_CHANGED", "INVALID_FILE", "INVALID_REQUEST"].includes(error.code) || error instanceof SyntaxError || error?.code === "ENOENT";
+  const forget = async (library, id3) => {
+    for (const name of [`${id3}.json`, `${id3}.bin`])
+      await rm9(join12(library, name), { force: true }).catch(() => {
+      });
   };
   const remember = async (binding, path) => {
-    const library = await directory(scope, ["resources"]), id3 = resourceId(binding.resourceId);
     try {
-      await link4(path, join12(library, `${id3}.bin`));
-      await atomic(join12(library, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+      const library = await directory(scope, ["resources"]), id3 = resourceId(binding.resourceId), temporary = join12(library, `${id3}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(path, temporary);
+        await rename4(temporary, join12(library, `${id3}.bin`));
+        await atomic(join12(library, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+      } finally {
+        await rm9(temporary, { force: true });
+      }
     } catch (error) {
       if (context.signal.aborted) throw error;
     }
   };
-  const reuse = async (id3) => {
+  const reuse = async (id3, confirmed) => {
+    if (id3.startsWith("external-") && !confirmed.has(id3)) return void 0;
     const library = await directory(scope, ["resources"]);
+    let binding, temporary;
     try {
-      const binding = await optionalJson(library, [`${id3}.json`]);
-      if (!binding) return void 0;
-      const path = await regular(library, [`${id3}.bin`]);
-      if (binding.resourceId !== id3 || id3.startsWith("asset-") && id3 !== `asset-${binding.sha256}` || (await stat10(path)).size !== binding.bytes || await fileHash(path, context.signal) !== hash(binding.sha256))
+      const raw2 = await optionalJson(library, [`${id3}.json`]);
+      if (!raw2) return void 0;
+      const value = record(raw2, ["resourceId", "sha256", "bytes"], "已保存的原始素材");
+      binding = { resourceId: value.resourceId, sha256: hash(value.sha256), bytes: value.bytes };
+      if (binding.resourceId !== id3 || !Number.isSafeInteger(binding.bytes) || binding.bytes < 1 || id3.startsWith("asset-") && id3 !== `asset-${binding.sha256}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材回执无效");
+      if (id3.startsWith("external-") && confirmed.get(id3) !== binding.bytes) return void 0;
+      const source2 = await regular(library, [`${id3}.bin`]);
+      temporary = join12(resources, `${id3}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(source2, temporary);
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        return void 0;
+      }
+      if ((await lstat4(temporary)).size !== binding.bytes || await fileHash(temporary, context.signal) !== binding.sha256)
         throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材校验失败");
-      await link4(path, join12(resources, `${id3}.bin`));
+      await rename4(temporary, join12(resources, `${id3}.bin`));
+      temporary = void 0;
       await atomic(join12(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+      const now = /* @__PURE__ */ new Date();
+      await utimes(join12(library, `${id3}.json`), now, now).catch(() => {
+      });
       return binding;
     } catch (error) {
       if (context.signal.aborted) throw error;
-      for (const name of [`${id3}.json`, `${id3}.bin`])
-        await rm9(join12(library, name), { force: true });
+      if (verificationFailure(error)) await forget(library, id3);
       return void 0;
+    } finally {
+      if (temporary) await rm9(temporary, { force: true });
+    }
+  };
+  const prune = async (keep) => {
+    try {
+      const library = await directory(scope, ["resources"]), cutoff = Date.now() - LIBRARY_DAYS * 24 * 60 * 60 * 1e3, names = await readdir2(library), used = /* @__PURE__ */ new Map();
+      for (const name of names)
+        if (name.endsWith(".json"))
+          used.set(name.slice(0, -5), (await lstat4(join12(library, name))).mtimeMs);
+      for (const name of names) {
+        const id3 = name.split(".")[0];
+        if (keep.has(id3)) continue;
+        const last = used.get(id3) ?? (await lstat4(join12(library, name))).mtimeMs;
+        if (last < cutoff) await rm9(join12(library, name), { force: true });
+      }
+    } catch (error) {
+      if (context.signal.aborted) throw error;
     }
   };
   const builtin = async () => {
@@ -7705,10 +7757,14 @@ async function runEditorRequest(raw, context) {
       throw new EditorTaskError("TRANSFER_DISCARDED", "此快照已释放，请创建新的准备任务");
     if (request.action === "stage-status") {
       const present = [];
-      for (const id3 of request.resourceIds) {
+      const confirmed = new Map(
+        (request.confirmedReferences ?? []).map((item) => [item.resourceId, item.bytes])
+      );
+      for (const [index, id3] of request.resourceIds.entries()) {
         const binding = await optionalJson(resources, [`${id3}.json`]);
         if (binding) await material(binding);
-        if (binding || await reuse(id3)) present.push(id3);
+        if (binding || await reuse(id3, confirmed)) present.push(id3);
+        await progress2((index + 1) / request.resourceIds.length, "stage-status");
       }
       const chunks = [], documentDir = await directory(transfer, ["documents", request.documentHash]);
       for (const name of await readdir2(documentDir))
@@ -7851,6 +7907,7 @@ async function runEditorRequest(raw, context) {
         bindings
       };
       await atomic(join12(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest2)));
+      await prune(new Set(bindings.map((binding) => binding.resourceId)));
       succeeded = true;
       return {
         result: {
@@ -8276,6 +8333,7 @@ async function runEditorCli(runtime) {
         "documentHash",
         "sequenceId",
         "resourceIds",
+        "confirmedReferences",
         "assetIds",
         "chunkIndex",
         "chunkCount",

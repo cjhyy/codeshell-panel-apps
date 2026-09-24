@@ -334,6 +334,28 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       if (cancelling) await cancelling;
     }
   }
+  /** Saved originals of external references are reused only while the Host still has them unchanged. */
+  async function confirmReferences(ids: string[], signal?: AbortSignal) {
+    const confirmed: Array<{ resourceId: string; bytes: number }> = [];
+    for (const id of ids.filter((item) => item.startsWith("external-"))) {
+      if (signal?.aborted) throw runtimeCancelled();
+      try {
+        const value: any = await sdk.call("resources.get", { id }, signal),
+          reference = value?.asset ?? value;
+        if (
+          reference?.id === id &&
+          reference.state === "available" &&
+          Number.isSafeInteger(reference.bytes) &&
+          reference.bytes > 0
+        )
+          confirmed.push({ resourceId: id, bytes: reference.bytes });
+      } catch {
+        // Unconfirmed references are staged by the Host, which reports a missing file clearly.
+        if (signal?.aborted) throw runtimeCancelled();
+      }
+    }
+    return confirmed;
+  }
   async function stage(
     value: unknown,
     sequenceId: string,
@@ -369,12 +391,14 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         startIndex,
         startIndex + EDITOR_TASK_LIMITS.resourcesPerTask,
       );
+      const confirmedReferences = await confirmReferences(batch, options.signal);
       const status = await complete(
         {
           action: "stage-status",
           transferId: snapshot.transferId,
           documentHash: snapshot.documentHash,
           resourceIds: batch,
+          ...(confirmedReferences.length ? { confirmedReferences } : {}),
         },
         [],
         key,
