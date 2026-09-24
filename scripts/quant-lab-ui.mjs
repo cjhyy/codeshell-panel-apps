@@ -5033,6 +5033,57 @@ const failingSeed = [
   await scenarioContext.close();
 }
 
+// Long-term watch uses the same conflict/recovery contract on a phone-sized page.
+{
+  const initial = { version: 2, custom: { keep: true }, stocks: [{ symbol: "SH600519", name: "贵州茅台", note: "keep-stock" }], sectors: [{ id: "new_energy", name: "电力设备", color: "keep-sector" }] };
+  const { scenarioContext, scenarioPage } = await openScenario([[selectionWatchKey, initial]], { versionedStorage: true });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  await scenarioPage.click('[data-module-tab="watch"]');
+  await scenarioPage.waitForFunction(() => !document.querySelector("#selection-watch-stock-add").disabled);
+  await scenarioPage.evaluate((key) => {
+    const record = structuredClone(window.__storage.get(key));
+    record.stocks.push({ symbol: "SH600036", name: "另一设备", note: "remote-note" });
+    window.__storage.set(key, record);
+  }, selectionWatchKey);
+  await scenarioPage.locator('[data-selection-priority-stock="SH600519"]').click();
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-storage-state").textContent.includes("其他页面或设备"));
+  assert.equal(await scenarioPage.locator("#selection-watch-stock-add").isDisabled(), true);
+  assert.equal(await scenarioPage.evaluate((key) => window.__storage.get(key).stocks[0].priority, selectionWatchKey), undefined);
+  const downloading = scenarioPage.waitForEvent("download");
+  await scenarioPage.click("#selection-watch-storage-backup");
+  const backup = JSON.parse(await readFile(await (await downloading).path(), "utf8"));
+  assert.equal(backup.stocks.length, 1);
+  assert.equal(backup.stocks[0].priority, "focus");
+  assert.equal(backup.stocks[0].note, "keep-stock");
+  assert.equal(backup.sectors[0].color, "keep-sector");
+  assert.deepEqual(backup.custom, { keep: true });
+  const bounds = await scenarioPage.locator("#selection-watch-storage-recovery").evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, width: innerWidth, heights: [...element.querySelectorAll("button")].map(button => button.getBoundingClientRect().height) };
+  });
+  assert(bounds.left >= 0 && bounds.right <= bounds.width);
+  assert(bounds.heights.every(height => height >= 44));
+  await scenarioPage.evaluate((key) => window.__rejectStorageReads.add(key), selectionWatchKey);
+  await scenarioPage.click("#selection-watch-storage-reload");
+  await scenarioPage.waitForFunction(() => document.querySelector("#selection-watch-storage-state").textContent.includes("读取失败"));
+  assert.match(await scenarioPage.locator("#selection-watch-count").textContent(), /1 重点/);
+  assert.equal(await scenarioPage.locator("#selection-watch-stock-add").isDisabled(), true);
+  await scenarioPage.evaluate(() => window.__rejectStorageReads.clear());
+  await scenarioPage.click("#selection-watch-storage-reload");
+  await scenarioPage.waitForFunction(() => !document.querySelector("#selection-watch-stock-add").disabled);
+  assert.match(await scenarioPage.locator("#selection-watch-list").textContent(), /另一设备/);
+  await scenarioPage.locator('[data-selection-priority-stock="SH600519"]').click();
+  await scenarioPage.waitForFunction((key) => window.__storage.get(key).stocks[0].priority === "focus", selectionWatchKey);
+  const saved = await scenarioPage.evaluate((key) => window.__storage.get(key), selectionWatchKey);
+  assert.equal(saved.stocks[1].note, "remote-note");
+  assert.equal(saved.stocks[0].note, "keep-stock");
+  assert.equal(saved.sectors[0].color, "keep-sector");
+  assert.deepEqual(saved.custom, { keep: true });
+  assert.equal(await scenarioPage.evaluate((key) => window.__hostCalls.some(call => call.method === "storage.set" && call.params.key === key), selectionWatchKey), false);
+  assert(await scenarioPage.evaluate((key) => window.__hostCalls.some(call => call.method === "storage.compareAndSet" && call.params.key === key), selectionWatchKey));
+  await scenarioContext.close();
+}
+
 // Modern Host: stale device edits remain drafts and cannot alter reminders.
 {
   const initial = { items: [{ id: "original", symbol: "AAPL", rule: { type: "rsi-oversold", period: 14, threshold: 30 }, last: null }], watchlistMigrationVersion: 1 };

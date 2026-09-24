@@ -475,6 +475,10 @@ const elements = {
   selectionReviewSummary: document.querySelector("#selection-review-summary"),
   selectionReviewList: document.querySelector("#selection-review-list"),
   selectionLabDisclosure: document.querySelector("#selection-lab-disclosure"),
+  selectionWatchStorageState: document.querySelector("#selection-watch-storage-state"),
+  selectionWatchStorageRecovery: document.querySelector("#selection-watch-storage-recovery"),
+  selectionWatchStorageReload: document.querySelector("#selection-watch-storage-reload"),
+  selectionWatchStorageBackup: document.querySelector("#selection-watch-storage-backup"),
   selectionWatchCount: document.querySelector("#selection-watch-count"),
   selectionWatchTitle: document.querySelector("#selection-watch-title"),
   selectionWatchSummary: document.querySelector("#selection-watch-summary"),
@@ -2140,6 +2144,7 @@ liveMarketController = createLiveMarketController({
 
 aShareSelectionController = createAShareSelectionController({
   hostCall,
+  getContext: () => context,
   dataSources: () => dataSourcesController?.config ?? null,
   onHostEvent: typeof window.codeshellPanel?.on === "function"
     ? (event, listener) => window.codeshellPanel.on(event, listener)
@@ -2258,6 +2263,10 @@ aShareSelectionController = createAShareSelectionController({
     reviewSummary: elements.selectionReviewSummary,
     reviewList: elements.selectionReviewList,
     labDisclosure: elements.selectionLabDisclosure,
+    watchStorageState: elements.selectionWatchStorageState,
+    watchStorageRecovery: elements.selectionWatchStorageRecovery,
+    watchStorageReload: elements.selectionWatchStorageReload,
+    watchStorageBackup: elements.selectionWatchStorageBackup,
     watchCount: elements.selectionWatchCount,
     watchTitle: elements.selectionWatchTitle,
     watchSummary: elements.selectionWatchSummary,
@@ -2590,7 +2599,7 @@ holdingsController = createHoldingsController({
       const { ledger, holdings } = holdingsController.noteContext();
       void aShareSelectionController.syncPortfolio(ledger, holdings).then(({ skipped }) => {
         if (epoch === workspaceEpoch && skipped.length) {
-          notify(`关注列表已达 20 只上限，${skipped.length} 只持仓暂未加入，请整理关注列表后重新读取持仓`, "error");
+          notify(`关注列表已达容量上限，${skipped.length} 只持仓暂未加入，请整理关注列表后重新读取持仓`, "error");
         }
       }).catch(() => {
         if (epoch === workspaceEpoch) notify("持仓已读取，但自动关注保存失败；请重新读取持仓重试", "error");
