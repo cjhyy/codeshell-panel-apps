@@ -2271,14 +2271,11 @@
   }
   function seekVideo(video, seconds, signal, timeoutMs, assetId) {
     return new Promise((resolve, reject) => {
-      let settled = false, sought = false, decoded = false;
-      let callback;
-      const supportsCallback = typeof video.requestVideoFrameCallback === "function";
+      let settled = false, sought = false;
       const finish = (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (callback !== void 0) video.cancelVideoFrameCallback(callback);
         video.removeEventListener("seeked", onSeeked);
         video.removeEventListener("loadeddata", inspect);
         video.removeEventListener("canplay", inspect);
@@ -2287,12 +2284,11 @@
         error ? reject(error) : resolve();
       };
       const inspect = () => {
-        if (sought && decoded && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
+        if (sought && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
           finish();
       };
       const onSeeked = () => {
         sought = true;
-        if (!supportsCallback) decoded = true;
         inspect();
       };
       const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
@@ -2311,12 +2307,6 @@
         return;
       }
       try {
-        if (supportsCallback)
-          callback = video.requestVideoFrameCallback(() => {
-            callback = void 0;
-            decoded = true;
-            inspect();
-          });
         video.currentTime = seconds;
       } catch (cause) {
         finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));

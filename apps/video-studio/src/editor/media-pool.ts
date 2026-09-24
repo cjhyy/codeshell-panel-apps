@@ -173,15 +173,11 @@ function seekVideo(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false,
-      sought = false,
-      decoded = false;
-    let callback: number | undefined;
-    const supportsCallback = typeof video.requestVideoFrameCallback === "function";
+      sought = false;
     const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (callback !== undefined) video.cancelVideoFrameCallback(callback);
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("loadeddata", inspect);
       video.removeEventListener("canplay", inspect);
@@ -192,15 +188,19 @@ function seekVideo(
     const inspect = () => {
       if (
         sought &&
-        decoded &&
         videoReady(video) &&
         Math.abs(video.currentTime - seconds) < 0.000_01
       )
         finish();
     };
     const onSeeked = () => {
+      // The seek algorithm completes decoding before dispatching seeked. Combined
+      // with current data at the requested time, this is sufficient for drawImage.
+      // requestVideoFrameCallback instead observes *presentation*: a paused or
+      // offscreen decoder (including repeated seeks within one frame) may never
+      // present another frame, and would otherwise time out despite decoded data.
+      // https://html.spec.whatwg.org/multipage/media.html#seeking
       sought = true;
-      if (!supportsCallback) decoded = true;
       inspect();
     };
     const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
@@ -219,14 +219,8 @@ function seekVideo(
       return;
     }
     try {
-      // Register before the seek, including zero, so initial stale/blank surfaces
-      // cannot complete preparation merely because the media clock changed.
-      if (supportsCallback)
-        callback = video.requestVideoFrameCallback(() => {
-          callback = undefined;
-          decoded = true;
-          inspect();
-        });
+      // Always await this seek's completion, including zero. A changed media
+      // clock or metadata alone must never authorize a stale/blank surface.
       video.currentTime = seconds;
     } catch (cause) {
       finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));

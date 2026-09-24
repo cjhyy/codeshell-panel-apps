@@ -262,6 +262,50 @@ test(
     );
 
     await t.test(
+      "paused decoded frames remain drawable when compositor callbacks do not arrive",
+      async () => {
+        const result = await pageTest((page) =>
+          page.evaluate(async () => {
+            const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+            const prototype = HTMLVideoElement.prototype;
+            const request = prototype.requestVideoFrameCallback;
+            const cancel = prototype.cancelVideoFrameCallback;
+            let callbackId = 0;
+            // A compositor callback is not a seek-completion event. Paused/offscreen
+            // decoders may have no newly presented frame, even after decoding succeeds.
+            // Keep real Chromium seeking, readyState, and canvas pixel reads intact.
+            prototype.requestVideoFrameCallback = () => ++callbackId;
+            prototype.cancelVideoFrameCallback = () => {};
+            const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 1000 });
+            try {
+              const samples = [];
+              for (const time of [0, 0.001, 0.002, 2.25, 2.251, 1.25, 0]) {
+                const surface = (await pool.prepare(frame([layer("paused", time)]))).get("paused");
+                samples.push({
+                  pixel: sample(surface), time: surface.currentTime, paused: surface.paused,
+                });
+              }
+              return samples;
+            } finally {
+              pool.dispose();
+              prototype.requestVideoFrameCallback = request;
+              prototype.cancelVideoFrameCallback = cancel;
+            }
+          }),
+        );
+        const channels = [
+          [255, 0, 0], [255, 0, 0], [255, 0, 0], [0, 0, 255],
+          [0, 0, 255], [0, 255, 0], [255, 0, 0],
+        ];
+        result.forEach((value, index) => {
+          color(value.pixel, channels[index]);
+          assert.equal(value.paused, true);
+          assert.ok(Math.abs(value.time - [0, 0.001, 0.002, 2.25, 2.251, 1.25, 0][index]) < 0.00001);
+        });
+      },
+    );
+
+    await t.test(
       "nested groups and transition endpoints include images and both video surfaces",
       async () => {
         const result = await pageTest((page) =>
@@ -588,7 +632,6 @@ test(
           page.evaluate(async () => {
             const { EditorMediaPool, layer, frame } = window.poolTest;
             let sought = false,
-              cancelledCallback = false,
               element;
             const original = document.createElement.bind(document);
             document.createElement = (...args) => {
@@ -597,11 +640,13 @@ test(
                 element = created;
                 created.addEventListener("seeked", () => {
                   sought = true;
+                  // Model an unavailable current frame, not a missing presentation
+                  // callback: decoding readiness and presentation are distinct.
+                  Object.defineProperty(created, "readyState", {
+                    configurable: true,
+                    get: () => HTMLMediaElement.HAVE_METADATA,
+                  });
                 });
-                created.requestVideoFrameCallback = () => 123;
-                created.cancelVideoFrameCallback = (id) => {
-                  cancelledCallback ||= id === 123;
-                };
               }
               return created;
             };
@@ -611,13 +656,12 @@ test(
               (error) => error.code,
             );
             pool.dispose();
-            return { code, sought, cancelledCallback, released: !element.hasAttribute("src") };
+            return { code, sought, released: !element.hasAttribute("src") };
           }),
         );
         assert.deepEqual(result, {
           code: "timeout",
           sought: true,
-          cancelledCallback: true,
           released: true,
         });
       },
