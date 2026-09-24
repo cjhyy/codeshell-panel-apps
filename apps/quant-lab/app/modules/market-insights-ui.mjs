@@ -1,5 +1,9 @@
 import { createProjectOperations } from "./project-operation.mjs";
-import { mutateAutomation } from "./automation-mutation.mjs";
+import {
+  createAutomation,
+  mutateAutomation,
+  supportsUniqueAutomation,
+} from "./automation-mutation.mjs";
 
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
@@ -850,13 +854,18 @@ export function createMarketPulseAutomationController({
       ? "处理中…"
       : loading
         ? "读取中"
-        : drift
-          ? "更新"
-          : state.task
-            ? "关闭"
-            : state.error
-              ? "重试"
-              : "开启";
+        : state.error && state.retryIntent === "read"
+          ? "重新读取"
+          : drift
+            ? "更新"
+            : state.task
+              ? "关闭"
+              : state.error
+                ? "重试"
+                : "开启";
+    if (!state.error && !loading && !supportsUniqueAutomation(getContext)) {
+      elements.status.textContent += " · 当前 Host 不能保证多个页面同时开启时不重复，请只在一个页面开启";
+    }
     elements.action.setAttribute("aria-pressed", String(Boolean(state.task)));
     elements.action.disabled = state.disabled || state.inFlight || loading;
   }
@@ -874,27 +883,38 @@ export function createMarketPulseAutomationController({
   async function ensure(operation) {
     const current = await readState(operation);
     operation.check();
-    if (current) {
-      if (!pulseTaskMatches(current, plan)) {
-        await mutateAutomation(operation.call, getContext, "update", current, {
+    let creationAttempted = false;
+    try {
+      if (current) {
+        if (!pulseTaskMatches(current, plan)) {
+          await mutateAutomation(operation.call, getContext, "update", current, {
+            name: plan.name,
+            schedule: plan.schedule,
+            prompt: plan.prompt,
+            timezone: plan.timezone,
+          });
+        }
+      } else {
+        creationAttempted = true;
+        await createAutomation(operation.call, getContext, "market-pulse.daily", {
           name: plan.name,
           schedule: plan.schedule,
           prompt: plan.prompt,
           timezone: plan.timezone,
         });
       }
-    } else {
-      await operation.call("automations.create", {
-        name: plan.name,
-        schedule: plan.schedule,
-        prompt: plan.prompt,
-        timezone: plan.timezone,
-      });
+      const verified = await operation.call("automations.list", {});
+      operation.check();
+      state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
+      if (!pulseTaskMatches(state.task, plan)) throw new Error("创建后任务配置验证不一致");
+    } catch (error) {
+      if (creationAttempted) {
+        const uncertain = new Error(error instanceof Error ? error.message : "未确认任务是否创建，请重新读取核对");
+        uncertain.code = "AUTOMATION_CREATE_UNCERTAIN";
+        throw uncertain;
+      }
+      throw error;
     }
-    const verified = await operation.call("automations.list", {});
-    operation.check();
-    state.task = automationList(verified).find((task) => task?.name === plan.name) ?? null;
-    if (!pulseTaskMatches(state.task, plan)) throw new Error("创建后任务配置验证不一致");
   }
 
   async function remove(operation) {
@@ -938,7 +958,7 @@ export function createMarketPulseAutomationController({
     } catch (error) {
       if (!operation.isCurrent()) return;
       state.error = error instanceof Error ? error.message : "任务操作失败";
-      state.retryIntent = error?.code === "AUTOMATION_CONFLICT" ? "read" : action ?? "read";
+      state.retryIntent = ["AUTOMATION_CONFLICT", "AUTOMATION_CREATE_UNCERTAIN"].includes(error?.code) ? "read" : action ?? "read";
       notify(state.error, "error");
     } finally {
       if (operation.isCurrent()) {

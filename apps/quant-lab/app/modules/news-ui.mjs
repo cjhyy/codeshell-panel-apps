@@ -1,5 +1,9 @@
 import { createProjectOperations } from "./project-operation.mjs";
-import { mutateAutomation } from "./automation-mutation.mjs";
+import {
+  createAutomation,
+  mutateAutomation,
+  supportsUniqueAutomation,
+} from "./automation-mutation.mjs";
 
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
@@ -267,6 +271,9 @@ export function createNewsController({
     } else {
       row.status.textContent = "市场为空，不创建任务";
       row.action.textContent = "无需开启";
+    }
+    if (!error && plan && !supportsUniqueAutomation(getContext)) {
+      row.status.textContent += " · 当前 Host 不能保证多个页面同时开启时不重复，请只在一个页面开启";
     }
     row.action.disabled = state.inFlight || (!task && !plan);
   }
@@ -596,6 +603,7 @@ export function createNewsController({
       renderAutomation(market);
       return false;
     }
+    let creationAttempted = false;
     try {
       await readTasks(operation);
       operation.check();
@@ -603,7 +611,8 @@ export function createNewsController({
       if (task && !newsAutomationMatches(task, plan)) {
         await mutateAutomation(operation.call, getContext, "update", task, { name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
       } else if (!task) {
-        await operation.call("automations.create", { name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
+        creationAttempted = true;
+        await createAutomation(operation.call, getContext, `news-sync.${market}`, { name: plan.name, schedule: plan.schedule, prompt: plan.prompt, timezone: plan.timezone });
       }
       await readTasks(operation);
       operation.check();
@@ -614,7 +623,7 @@ export function createNewsController({
     } catch (error) {
       if (!operation.isCurrent()) return;
       state.taskErrors[market] = error instanceof Error ? error.message : "automation 操作失败";
-      state.taskRetryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "ensure";
+      state.taskRetryIntent[market] = (creationAttempted || error?.code === "AUTOMATION_CONFLICT") ? "read" : "ensure";
       renderAutomation(market);
       return false;
     }

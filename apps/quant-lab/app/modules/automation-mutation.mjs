@@ -1,3 +1,25 @@
+export function supportsUniqueAutomation(getContext) {
+  return getContext().availableMethods?.includes("automations.createUnique") === true;
+}
+
+export async function createAutomation(hostCall, getContext, key, definition) {
+  const unique = supportsUniqueAutomation(getContext);
+  try {
+    return await hostCall(unique ? "automations.createUnique" : "automations.create", {
+      ...definition,
+      ...(unique ? { key } : {}),
+    });
+  } catch (cause) {
+    // A rejected response does not tell us whether the Host already committed.
+    // Never downgrade or repeat; the controller must offer a read-only retry.
+    const error = new Error(
+      `未确认任务是否创建，请重新读取核对。${cause instanceof Error ? cause.message : ""}`,
+    );
+    error.code = "AUTOMATION_CREATE_UNCERTAIN";
+    throw error;
+  }
+}
+
 /** Conditional changes never fall back after a rejected or uncertain request. */
 export async function mutateAutomation(hostCall, getContext, action, task, patch = {}) {
   if (!["update", "delete"].includes(action) || !task?.id) throw new Error("提醒操作无效");

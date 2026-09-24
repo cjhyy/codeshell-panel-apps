@@ -63,7 +63,7 @@ test("lost creation response is reconciled by reads, and manual retry neither de
   await p.controller.toggleMarket("us");
   assert.equal(tasks.length, 1);
   assert.match(p.controller.state.errors.us, /未确认.*response lost/);
-  assert.equal(p.controller.state.retryIntent.us, "ensure");
+  assert.equal(p.controller.state.retryIntent.us, "read");
   assert.equal(p.elements.master.disabled, true);
   await p.controller.toggleAll();
   assert.equal(calls.filter((method) => method !== "automations.list").length, 1);

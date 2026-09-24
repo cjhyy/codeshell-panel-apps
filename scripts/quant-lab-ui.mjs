@@ -5397,10 +5397,18 @@ const dualMarketWatchSeed = [
   assert.match(await scenarioPage.locator("#watch-automation-us-status").textContent(), /失败/u);
   assert.equal(await scenarioPage.locator("#watch-legacy-remove").isDisabled(), true);
 
-  // Retry only the failed market. A-share remains one task (no duplicate).
+  // The first retry only reconciles the uncertain outcome. The next explicit
+  // click creates the absent US task; A-share remains one task throughout.
   await scenarioPage.evaluate(() =>
     window.__rejectAutomationNames.delete("投资工作台 · 美股开盘后"),
   );
+  const beforeRetryCreates = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")).length);
+  await scenarioPage.click("#watch-automation-us-action");
+  await scenarioPage.waitForFunction(() =>
+    document.querySelector("#watch-automation-us")?.dataset.state === "off",
+  );
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method.startsWith("automations.create")).length), beforeRetryCreates);
+  assert.equal(await scenarioPage.locator("#watch-legacy-remove").isDisabled(), true);
   await scenarioPage.click("#watch-automation-us-action");
   await scenarioPage.waitForFunction(() =>
     document.querySelector("#watch-automation-us")?.dataset.state === "active",
@@ -5862,6 +5870,47 @@ const newsFiles = {
   assert.match(cnPrompt, /full permission.*session.*外部网络/u);
   assert.equal(cnPrompt.includes("Investment Desk contact@example.com"), false);
   assert.match(await scenarioPage.locator("#news-live-status").textContent(), /部分市场的后台任务失败/u);
+  await scenarioContext.close();
+}
+
+// Modern Hosts must use retained unique creation for each news market and pulse.
+// A lost reply followed by another device's edit is resolved by a read-only click.
+{
+  const { scenarioContext, scenarioPage } = await openScenario(seededStorage, {
+    workspaceFiles: { ...rawFiles, ...newsFiles },
+    versionedStorage: true,
+  });
+  await scenarioPage.setViewportSize({ width: 390, height: 844 });
+  for (const spec of [
+    { key: "news-sync.cn", action: "#news-automation-cn-action", status: "#news-automation-cn-status", tab: "news" },
+    { key: "news-sync.us", action: "#news-automation-us-action", status: "#news-automation-us-status", tab: "news" },
+    { key: "market-pulse.daily", action: "#market-pulse-automation-action", status: "#market-pulse-automation-status", tab: "today" },
+  ]) {
+    await scenarioPage.click(`[data-module-tab="${spec.tab}"]`);
+    if (spec.tab === "today") await scenarioPage.click('button[data-home-section="research"]');
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.disabled, spec.action);
+    await scenarioPage.evaluate(() => { window.__loseUniqueResponse = true; });
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((selector) => document.querySelector(selector)?.textContent.includes("未确认"), spec.status);
+    await scenarioPage.evaluate((key) => {
+      const task = window.__automations.find(task => task.key === key);
+      if (!task) throw Error("unique task was not retained");
+      task.prompt = "Other device definition";
+      task.revision = window.__nextAutomationRevision();
+    }, spec.key);
+    const writes = await scenarioPage.evaluate(() => window.__hostCalls.filter(call => /^automations\.(create|createUnique|update|delete|updateIfRevision|deleteIfRevision)$/.test(call.method)).length);
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.disabled, spec.action);
+    assert.match(await scenarioPage.locator(spec.action).textContent(), /读取/u);
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((selector) => !document.querySelector(selector)?.textContent.includes("未确认"), spec.status);
+    assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => /^automations\.(create|createUnique|update|delete|updateIfRevision|deleteIfRevision)$/.test(call.method)).length), writes);
+    assert.equal(await scenarioPage.evaluate((key) => window.__automations.find(task => task.key === key)?.prompt, spec.key), "Other device definition");
+    await scenarioPage.click(spec.action);
+    await scenarioPage.waitForFunction((key) => window.__automations.find(task => task.key === key)?.prompt !== "Other device definition", spec.key);
+    assert.equal(await scenarioPage.evaluate((key) => window.__automations.filter(task => task.key === key).length, spec.key), 1);
+    assert.equal(await scenarioPage.evaluate((key) => window.__hostCalls.filter(call => call.method === "automations.createUnique" && call.params.key === key).length, spec.key), 1);
+  }
+  assert.equal(await scenarioPage.evaluate(() => window.__hostCalls.filter(call => call.method === "automations.create" || call.method === "automations.update").length), 0);
   await scenarioContext.close();
 }
 

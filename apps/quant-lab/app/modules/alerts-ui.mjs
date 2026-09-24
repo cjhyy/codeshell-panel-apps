@@ -1,4 +1,8 @@
-import { mutateAutomation } from "./automation-mutation.mjs";
+import {
+  createAutomation,
+  mutateAutomation,
+  supportsUniqueAutomation,
+} from "./automation-mutation.mjs";
 
 import { projectRuntimePrompt } from "./project-runtime-prompt.mjs";
 
@@ -174,7 +178,7 @@ export function createAlertsController({
   }
 
   function supportsUniqueCreation() {
-    return getContext().availableMethods?.includes("automations.createUnique") === true;
+    return supportsUniqueAutomation(getContext);
   }
 
   function planFor(market) {
@@ -327,6 +331,7 @@ export function createAlertsController({
       render();
       return null;
     }
+    let creationAttempted = false;
     try {
       const tasks = await readState(operation);
       await verifyChange(operation);
@@ -341,22 +346,13 @@ export function createAlertsController({
           });
         }
       } else {
-        const unique = supportsUniqueCreation();
-        try {
-          await hostCall(unique ? "automations.createUnique" : "automations.create", {
-            ...(unique ? { key: `market-alert.${market}` } : {}),
-            name: plan.name,
-            schedule: plan.schedule,
-            prompt: plan.prompt,
-            timezone: plan.timezone,
-          });
-        } catch (error) {
-          // A transport error may occur after persistence. Never downgrade to
-          // ordinary create or automatically replay an uncertain mutation.
-          throw new Error(
-            `未确认提醒是否创建，请重试读取核对。${error instanceof Error ? error.message : ""}`,
-          );
-        }
+        creationAttempted = true;
+        await createAutomation(hostCall, getContext, `market-alert.${market}`, {
+          name: plan.name,
+          schedule: plan.schedule,
+          prompt: plan.prompt,
+          timezone: plan.timezone,
+        });
       }
       assertCurrent(operation);
       const verified = await hostCall("automations.list", {});
@@ -371,7 +367,7 @@ export function createAlertsController({
     } catch (error) {
       if (!current(operation)) return null;
       state.errors[market] = error instanceof Error ? error.message : "任务操作失败";
-      state.retryIntent[market] = error?.code === "AUTOMATION_CONFLICT" ? "read" : "ensure";
+      state.retryIntent[market] = (creationAttempted || error?.code === "AUTOMATION_CONFLICT") ? "read" : "ensure";
       return null;
     } finally {
       if (current(operation)) render();
