@@ -947,6 +947,42 @@ test("playback preparation stays visible while task start waits, cancels locally
   await action(page, "play").click();
 });
 
+test("a long playback preparation keeps showing how long it has been waiting", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.clock.install();
+  const status = page.locator("[data-ew-preview-error]");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.audioProgress(0, "正在把原始素材交给本地任务…"));
+  assert.doesNotMatch(await status.textContent(), /已等待/);
+  // The Host may copy large originals inside tasks.start without any progress events.
+  await page.clock.fastForward(65_000);
+  assert.match(await status.textContent(), /正在把原始素材交给本地任务…（已等待 1 分 05 秒）/);
+  assert.match(await status.textContent(), /再次点击播放按钮可取消等待/);
+  // The live status sentence is announced once; only a hidden counter ticks.
+  assert.equal(
+    await status.locator("[data-ew-preview-elapsed]").getAttribute("aria-hidden"),
+    "true",
+  );
+  await page.evaluate(() => {
+    const output = document.querySelector("[data-ew-preview-error]");
+    window.__statusMutations = [];
+    new MutationObserver((records) =>
+      window.__statusMutations.push(
+        ...records.filter((r) => !r.target.closest?.("[data-ew-preview-elapsed]") && !r.target.parentElement?.closest("[data-ew-preview-elapsed]")),
+      ),
+    ).observe(output, { childList: true, characterData: true, subtree: true });
+  });
+  await page.clock.fastForward(3_000);
+  assert.match(await status.textContent(), /已等待 1 分 08 秒/);
+  assert.equal(await page.evaluate(() => window.__statusMutations.length), 0);
+  await action(page, "play").click();
+  assert.equal(await status.isVisible(), false);
+  await page.clock.fastForward(5_000);
+  assert.equal(await status.isVisible(), false);
+  await page.evaluate(() => fixture.resolveAudio(0));
+});
+
 test("failed playback preparation clears busy state and explains an outdated panel without changing edits", async (t) => {
   const page = await fixture(t, { audio: true });
   await page.evaluate(() => fixture.externalEdit());

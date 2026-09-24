@@ -53,6 +53,8 @@ export interface EditorRequest {
   documentHash?: string;
   sequenceId?: string;
   resourceIds?: string[];
+  /** External references the panel just confirmed with the Host as available, with their size. */
+  confirmedReferences?: Array<{ resourceId: string; bytes: number }>;
   assetIds?: string[];
   chunkIndex?: number;
   chunkCount?: number;
@@ -113,6 +115,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
       "documentHash",
       "sequenceId",
       "resourceIds",
+      "confirmedReferences",
       "assetIds",
       "chunkIndex",
       "chunkCount",
@@ -133,7 +136,7 @@ export function validateEditorRequest(value: unknown): EditorRequest {
     "align-multicam": ["resourceIds", "alignment"],
     "analyze-asset-waveform": ["documentHash", "sequenceId", "assetIds"],
     "prepare-source-video": ["resourceIds", "sourceDuration"],
-    "stage-status": ["documentHash", "resourceIds"],
+    "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
     commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
@@ -248,6 +251,25 @@ export function validateEditorRequest(value: unknown): EditorRequest {
         assets,
       };
     }
+  }
+  if (action === "stage-status" && input.confirmedReferences !== undefined) {
+    if (
+      !Array.isArray(input.confirmedReferences) ||
+      input.confirmedReferences.length > result.resourceIds!.length
+    )
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认列表无效");
+    result.confirmedReferences = input.confirmedReferences.map((raw: unknown) => {
+      const value = record(raw, ["resourceId", "bytes"], "外部素材确认");
+      const id = resourceId(value.resourceId);
+      if (!id.startsWith("external-") || !result.resourceIds!.includes(id))
+        throw new EditorTaskError("INVALID_REQUEST", "外部素材确认不属于本批资源");
+      return { resourceId: id, bytes: integer(value.bytes, 1, 20 * 1024 ** 3) };
+    });
+    if (
+      new Set(result.confirmedReferences.map((item) => item.resourceId)).size !==
+      result.confirmedReferences.length
+    )
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认存在重复项");
   }
   if (action === "stage-resources" && !result.resourceIds!.length)
     throw new EditorTaskError("INVALID_REQUEST", "请提供本批素材资源");

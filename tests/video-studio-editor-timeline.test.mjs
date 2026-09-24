@@ -1730,3 +1730,52 @@ test("track creation buttons are named the same way", async (t) => {
     ["新建画面轨", "新建声音轨", "新建文字轨"],
   );
 });
+
+test("tracks can be deleted from their header: empty at once, occupied after confirming, locked never", async (t) => {
+  const page = await fixture(t);
+  const trackIds = async () =>
+    (await state(page)).document.sequences[0].tracks.map((track) => track.id);
+  const before = (await state(page)).document;
+  // v3 holds no clips: one click removes it as a single undoable step.
+  await page.locator('[data-et-delete-track="v3"]').click();
+  await settle(page);
+  assert.deepEqual(await trackIds(), ["v1", "v2", "audio", "text"]);
+  await undo(page, before);
+  assert.deepEqual(await trackIds(), ["v1", "v2", "v3", "audio", "text"]);
+
+  // v2 holds clip b: the header asks first and names how many clips go with it.
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await settle(page);
+  assert.deepEqual(await trackIds(), ["v1", "v2", "v3", "audio", "text"]);
+  const confirm = page.locator('[data-track-head="v2"] [data-et-delete-confirm="v2"]');
+  await confirm.waitFor();
+  assert.match(await page.locator('[data-track-head="v2"]').innerText(), /1 个片段/);
+  await page.locator('[data-track-head="v2"] [data-et-delete-cancel]').click();
+  await settle(page);
+  assert.equal(await confirm.count(), 0);
+  assert.deepEqual(await trackIds(), ["v1", "v2", "v3", "audio", "text"]);
+
+  await page.locator('[data-et-delete-track="v2"]').click();
+  await page.locator('[data-track-head="v2"] [data-et-delete-confirm="v2"]').click();
+  await settle(page);
+  const after = (await state(page)).document.sequences[0];
+  assert.deepEqual(after.tracks.map((track) => track.id), ["v1", "v3", "audio", "text"]);
+  assert.equal(after.clips.some((clip) => clip.id === "b"), false);
+  await undo(page, before);
+  assert.equal((await state(page)).document.sequences[0].clips.some((clip) => clip.id === "b"), true);
+
+  // A locked track explains why it cannot be deleted.
+  await page.locator('[data-et-track="v3"][data-et-toggle="locked"]').click();
+  await settle(page);
+  const locked = page.locator('[data-et-delete-track="v3"]');
+  assert.equal(await locked.isDisabled(), true);
+  assert.match(await locked.getAttribute("title"), /锁定/);
+});
+
+test("the magnetic main track keeps its delete button disabled with a reason", async (t) => {
+  const page = await fixture(t, { magnetic: true, magneticTrackId: "v1" });
+  const button = page.locator('[data-et-delete-track="v1"]');
+  assert.equal(await button.isDisabled(), true);
+  assert.match(await button.getAttribute("title"), /磁吸主轨/);
+  assert.equal(await page.locator('[data-et-delete-track="v3"]').isDisabled(), false);
+});

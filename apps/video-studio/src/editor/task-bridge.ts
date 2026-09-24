@@ -335,6 +335,28 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       if (cancelling) await cancelling;
     }
   }
+  /** Saved originals of external references are reused only while the Host still has them unchanged. */
+  async function confirmReferences(ids: string[], signal?: AbortSignal) {
+    const confirmed: Array<{ resourceId: string; bytes: number }> = [];
+    for (const id of ids.filter((item) => item.startsWith("external-"))) {
+      if (signal?.aborted) throw runtimeCancelled();
+      try {
+        const value: any = await sdk.call("resources.get", { id }, signal),
+          reference = value?.asset ?? value;
+        if (
+          reference?.id === id &&
+          reference.state === "available" &&
+          Number.isSafeInteger(reference.bytes) &&
+          reference.bytes > 0
+        )
+          confirmed.push({ resourceId: id, bytes: reference.bytes });
+      } catch {
+        // Unconfirmed references are staged by the Host, which reports a missing file clearly.
+        if (signal?.aborted) throw runtimeCancelled();
+      }
+    }
+    return confirmed;
+  }
   async function stage(
     value: unknown,
     sequenceId: string,
@@ -370,12 +392,14 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         startIndex,
         startIndex + EDITOR_TASK_LIMITS.resourcesPerTask,
       );
+      const confirmedReferences = await confirmReferences(batch, options.signal);
       const status = await complete(
         {
           action: "stage-status",
           transferId: snapshot.transferId,
           documentHash: snapshot.documentHash,
           resourceIds: batch,
+          ...(confirmedReferences.length ? { confirmedReferences } : {}),
         },
         [],
         key,
@@ -405,6 +429,13 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         throw new Error("工程数据块状态无效");
       chunks = status.chunks;
       const missing = batch.filter((id) => !status.resourceIds.includes(id));
+      // The Host copies every missing original inside tasks.start, before any job exists.
+      if (missing.length)
+        options.onProgress?.({
+          phase: "resources",
+          completed: startIndex + batch.length - missing.length,
+          total: snapshot.resourceIds.length,
+        });
       if (missing.length)
         await complete(
           { action: "stage-resources", transferId: snapshot.transferId, resourceIds: missing },
@@ -1266,7 +1297,12 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
       sequenceId: string,
       options: EditorPrepareOptions = {},
     ): Promise<{ snapshot: EditorTaskSnapshot; sources: EditorVideoSource[] }> {
-      const snapshot = await selectedSnapshot(value, sequenceId, options);
+      // onTask/onJobChanged describe the video jobs; staging reports through onProgress.
+      const snapshot = await selectedSnapshot(value, sequenceId, {
+        ...options,
+        onTask: undefined,
+        onJobChanged: undefined,
+      });
       const ids = editorTaskDocument(value, sequenceId)
           .document.assets.filter((asset) => asset.kind === "video")
           .map((asset) => asset.id),

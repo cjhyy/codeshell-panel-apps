@@ -5701,7 +5701,12 @@ function mountEditorWorkspace(): void {
       let snapshot = preparedNative?.key === key ? preparedNative.snapshot : undefined;
       const progress = (item: { phase: string; completed: number; total: number }) => {
         if (signal.aborted) return;
-        const message = `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`;
+        // Unfinished resources mean the Host is copying originals inside task start,
+        // which reports no progress until every file of the batch is copied.
+        const message =
+          item.phase === "resources" && item.completed < item.total
+            ? `正在把原始素材交给本地任务 · 已就绪 ${item.completed}/${item.total}；首次使用的素材需要完整复制一次原片，较大的视频可能需要几分钟…`
+            : `正在准备预览 · ${item.phase === "resources" ? "素材" : item.phase === "document" ? "工程" : "校验"} ${item.completed}/${item.total}`;
         onProgress?.(message);
       };
       if (video) {

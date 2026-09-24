@@ -2335,7 +2335,7 @@ import { fileURLToPath } from "node:url";
 import { isAbsolute as isAbsolute6 } from "node:path";
 
 // native/editor-runtime/runtime.ts
-import { copyFile as copyFile3, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10 } from "node:fs/promises";
+import { copyFile as copyFile3, link as hardLink, lstat as lstat4, readdir as readdir2, rename as rename4, rm as rm9, stat as stat10, utimes } from "node:fs/promises";
 import { randomUUID as randomUUID7 } from "node:crypto";
 import { join as join12 } from "node:path";
 
@@ -5477,6 +5477,7 @@ function validateEditorRequest(value) {
       "documentHash",
       "sequenceId",
       "resourceIds",
+      "confirmedReferences",
       "assetIds",
       "chunkIndex",
       "chunkCount",
@@ -5497,7 +5498,7 @@ function validateEditorRequest(value) {
     "align-multicam": ["resourceIds", "alignment"],
     "analyze-asset-waveform": ["documentHash", "sequenceId", "assetIds"],
     "prepare-source-video": ["resourceIds", "sourceDuration"],
-    "stage-status": ["documentHash", "resourceIds"],
+    "stage-status": ["documentHash", "resourceIds", "confirmedReferences"],
     "stage-resources": ["resourceIds"],
     "stage-document": ["documentHash", "chunkIndex", "chunkCount", "dataBase64"],
     commit: ["documentHash", "sequenceId", "chunkCount", "byteLength"],
@@ -5595,6 +5596,19 @@ function validateEditorRequest(value) {
         assets
       };
     }
+  }
+  if (action === "stage-status" && input.confirmedReferences !== void 0) {
+    if (!Array.isArray(input.confirmedReferences) || input.confirmedReferences.length > result.resourceIds.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认列表无效");
+    result.confirmedReferences = input.confirmedReferences.map((raw) => {
+      const value2 = record(raw, ["resourceId", "bytes"], "外部素材确认");
+      const id3 = resourceId(value2.resourceId);
+      if (!id3.startsWith("external-") || !result.resourceIds.includes(id3))
+        throw new EditorTaskError("INVALID_REQUEST", "外部素材确认不属于本批资源");
+      return { resourceId: id3, bytes: integer3(value2.bytes, 1, 20 * 1024 ** 3) };
+    });
+    if (new Set(result.confirmedReferences.map((item) => item.resourceId)).size !== result.confirmedReferences.length)
+      throw new EditorTaskError("INVALID_REQUEST", "外部素材确认存在重复项");
   }
   if (action === "stage-resources" && !result.resourceIds.length)
     throw new EditorTaskError("INVALID_REQUEST", "请提供本批素材资源");
@@ -6911,7 +6925,7 @@ function ratio(value) {
   const [a, b] = value.split(/[:/]/).map(Number);
   return a > 0 && b > 0 ? a / b : 1;
 }
-async function timeline(path, streamIndex, origin, context) {
+async function timeline(path, streamIndex, origin, context, onFrame) {
   let pending = "", count = 0, previous = -1, firstTick2 = -1, endTick = -1;
   const hash2 = createHash4("sha256");
   const consume = (chunk) => {
@@ -6943,6 +6957,7 @@ async function timeline(path, streamIndex, origin, context) {
       count++;
       hash2.update(`${tick2}
 `);
+      onFrame?.(count);
     }
   };
   await runMediaProcess(
@@ -7066,11 +7081,24 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
   const receipt = await optionalJson(cache, ["receipt.json"]);
   if (receipt?.recipeHash === recipeHash && receipt.sourceHash === sourceHash) {
     const saved = await regular(cache, ["video.mp4"]);
-    if (await fileHash(saved, context.signal) === receipt.sha256)
+    if (await fileHash(saved, context.signal) === receipt.sha256) {
+      context.onProgress?.(1);
       return { ...receipt, path: saved };
+    }
     throw new EditorTaskError("CACHE_CHANGED", "已准备视频内容发生变化，请清理该任务缓存后重试");
   }
-  const original = await timeline(path, stream.index, sourceOriginSeconds, context);
+  let reported = -1;
+  const report = (fraction) => {
+    if (fraction >= 1 || fraction - reported >= 0.01) {
+      reported = fraction;
+      context.onProgress?.(fraction);
+    }
+  };
+  const durationSeconds = Number(stream.duration) || Number(probe.format?.duration) || 0, [rateNumerator, rateDenominator] = String(stream.avg_frame_rate || stream.r_frame_rate).split("/").map(Number), expectedFrames = Number(stream.nb_frames) || Math.round(durationSeconds * rateNumerator / (rateDenominator || 1)) || 0;
+  const scanned = (start, span) => (count) => {
+    if (expectedFrames > 0) report(start + span * Math.min(1, count / expectedFrames));
+  };
+  const original = await timeline(path, stream.index, sourceOriginSeconds, context, scanned(0, 0.6));
   if (original.firstTick !== 0)
     throw new EditorTaskError(
       "UNSUPPORTED_TIMESTAMPS",
@@ -7128,11 +7156,21 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
         "-movflags",
         "+faststart",
         "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
         output
       ],
-      { signal: context.signal }
+      {
+        signal: context.signal,
+        durationSeconds,
+        onStdout: () => {
+        },
+        onProgress: ({ fraction }) => report(0.6 + 0.25 * (fraction ?? 0))
+      }
     );
-    const actual = await timeline(output, 0, 0, context);
+    report(0.85);
+    const actual = await timeline(output, 0, 0, context, scanned(0.85, 0.149));
     if (actual.hash !== original.hash || actual.count !== original.count || actual.endTick !== original.endTick)
       throw new EditorTaskError(
         "PROXY_TIMING_MISMATCH",
@@ -7161,6 +7199,7 @@ async function prepareEditorProxy(path, sourceHash, context, purpose = "export")
     };
     const { path: _path, ...publicReceipt } = result;
     await atomic(join11(cache, "receipt.json"), Buffer.from(JSON.stringify(publicReceipt)));
+    report(1);
     return result;
   } finally {
     await rm8(output, { force: true });
@@ -7518,6 +7557,80 @@ async function runEditorRequest(raw, context) {
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
   };
+  const LIBRARY_DAYS = 14;
+  const verificationFailure = (error) => error instanceof EditorTaskError && ["SOURCE_CHANGED", "INVALID_FILE", "INVALID_REQUEST"].includes(error.code) || error instanceof SyntaxError || error?.code === "ENOENT";
+  const forget = async (library, id3) => {
+    for (const name of [`${id3}.json`, `${id3}.bin`])
+      await rm9(join12(library, name), { force: true }).catch(() => {
+      });
+  };
+  const remember = async (binding, path) => {
+    try {
+      const library = await directory(scope, ["resources"]), id3 = resourceId(binding.resourceId), temporary = join12(library, `${id3}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(path, temporary);
+        await rename4(temporary, join12(library, `${id3}.bin`));
+        await atomic(join12(library, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+      } finally {
+        await rm9(temporary, { force: true });
+      }
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+    }
+  };
+  const reuse = async (id3, confirmed) => {
+    if (id3.startsWith("external-") && !confirmed.has(id3)) return void 0;
+    const library = await directory(scope, ["resources"]);
+    let binding, temporary;
+    try {
+      const raw2 = await optionalJson(library, [`${id3}.json`]);
+      if (!raw2) return void 0;
+      const value = record(raw2, ["resourceId", "sha256", "bytes"], "已保存的原始素材");
+      binding = { resourceId: value.resourceId, sha256: hash(value.sha256), bytes: value.bytes };
+      if (binding.resourceId !== id3 || !Number.isSafeInteger(binding.bytes) || binding.bytes < 1 || id3.startsWith("asset-") && id3 !== `asset-${binding.sha256}`)
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材回执无效");
+      if (id3.startsWith("external-") && confirmed.get(id3) !== binding.bytes) return void 0;
+      const source2 = await regular(library, [`${id3}.bin`]);
+      temporary = join12(resources, `${id3}.bin.${randomUUID7()}.tmp`);
+      try {
+        await hardLink(source2, temporary);
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        return void 0;
+      }
+      if ((await lstat4(temporary)).size !== binding.bytes || await fileHash(temporary, context.signal) !== binding.sha256)
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材校验失败");
+      await rename4(temporary, join12(resources, `${id3}.bin`));
+      temporary = void 0;
+      await atomic(join12(resources, `${id3}.json`), Buffer.from(JSON.stringify(binding)));
+      const now = /* @__PURE__ */ new Date();
+      await utimes(join12(library, `${id3}.json`), now, now).catch(() => {
+      });
+      return binding;
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      if (verificationFailure(error)) await forget(library, id3);
+      return void 0;
+    } finally {
+      if (temporary) await rm9(temporary, { force: true });
+    }
+  };
+  const prune = async (keep) => {
+    try {
+      const library = await directory(scope, ["resources"]), cutoff = Date.now() - LIBRARY_DAYS * 24 * 60 * 60 * 1e3, names = await readdir2(library), used = /* @__PURE__ */ new Map();
+      for (const name of names)
+        if (name.endsWith(".json"))
+          used.set(name.slice(0, -5), (await lstat4(join12(library, name))).mtimeMs);
+      for (const name of names) {
+        const id3 = name.split(".")[0];
+        if (keep.has(id3)) continue;
+        const last = used.get(id3) ?? (await lstat4(join12(library, name))).mtimeMs;
+        if (last < cutoff) await rm9(join12(library, name), { force: true });
+      }
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+    }
+  };
   const builtin = async () => {
     const id3 = `asset-${EDITOR_DEMO_NARRATION_SHA}`;
     let binding = await optionalJson(resources, [`${id3}.json`]);
@@ -7644,12 +7757,14 @@ async function runEditorRequest(raw, context) {
       throw new EditorTaskError("TRANSFER_DISCARDED", "此快照已释放，请创建新的准备任务");
     if (request.action === "stage-status") {
       const present = [];
-      for (const id3 of request.resourceIds) {
+      const confirmed = new Map(
+        (request.confirmedReferences ?? []).map((item) => [item.resourceId, item.bytes])
+      );
+      for (const [index, id3] of request.resourceIds.entries()) {
         const binding = await optionalJson(resources, [`${id3}.json`]);
-        if (binding) {
-          await material(binding);
-          present.push(id3);
-        }
+        if (binding) await material(binding);
+        if (binding || await reuse(id3, confirmed)) present.push(id3);
+        await progress2((index + 1) / request.resourceIds.length, "stage-status");
       }
       const chunks = [], documentDir = await directory(transfer, ["documents", request.documentHash]);
       for (const name of await readdir2(documentDir))
@@ -7712,6 +7827,7 @@ async function runEditorRequest(raw, context) {
             await rm9(temporary, { force: true });
           }
         }
+        await remember(binding, join12(resources, `${id3}.bin`));
         staged.push(binding);
         await progress2((index + 1) / request.resourceIds.length, "stage-resources");
       }
@@ -7791,6 +7907,7 @@ async function runEditorRequest(raw, context) {
         bindings
       };
       await atomic(join12(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest2)));
+      await prune(new Set(bindings.map((binding) => binding.resourceId)));
       succeeded = true;
       return {
         result: {
@@ -7955,11 +8072,16 @@ async function runEditorRequest(raw, context) {
       signal: context.signal
     };
     const videos = /* @__PURE__ */ new Map();
-    const video = async (assetId, requireGeometry, purpose = "export") => {
+    const video = async (assetId, requireGeometry, purpose = "export", onProgress) => {
       const asset2 = selected.document.assets.find((item) => item.id === assetId);
       if (asset2?.kind !== "video")
         throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
-      const input = original(assetId), proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext, purpose);
+      const input = original(assetId), proxy = await prepareEditorProxy(
+        input.path,
+        input.binding.sha256,
+        { ...proxyContext, onProgress },
+        purpose
+      );
       if (requireGeometry && (asset2.width !== proxy.width || asset2.height !== proxy.height))
         throw new EditorTaskError(
           "SOURCE_GEOMETRY_MISMATCH",
@@ -7969,12 +8091,15 @@ async function runEditorRequest(raw, context) {
       return proxy;
     };
     if (request.action === "prepare-video") {
-      const sources = [];
-      for (let index = 0; index < request.assetIds.length; index++) {
-        const assetId = request.assetIds[index], proxy = await video(assetId, false, "preview"), { path: _path, ...recipe } = proxy;
+      const sources = [], count = request.assetIds.length;
+      for (let index = 0; index < count; index++) {
+        const assetId = request.assetIds[index], proxy = await video(assetId, false, "preview", (fraction) => {
+          progress2((index + fraction) / count, "prepare-video").catch(() => {
+          });
+        }), { path: _path, ...recipe } = proxy;
         const asset2 = await add2(proxy.path, "mp4", "video/mp4", "editor-video-source");
         sources.push({ assetId, proxy: asset2, recipe });
-        await progress2((index + 1) / request.assetIds.length, "prepare-video");
+        await progress2((index + 1) / count, "prepare-video");
       }
       succeeded = true;
       return {
@@ -8208,6 +8333,7 @@ async function runEditorCli(runtime) {
         "documentHash",
         "sequenceId",
         "resourceIds",
+        "confirmedReferences",
         "assetIds",
         "chunkIndex",
         "chunkCount",

@@ -555,6 +555,32 @@
   margin-top: 3px;
   color: #747a83;
 }
+.et-track-confirm {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  margin-top: 3px;
+  font-size: 10px;
+  color: #f2c6c0;
+  white-space: nowrap;
+}
+.et-track-confirm span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.et-track-confirm button {
+  height: 18px;
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
+}
+.et-track-confirm button.danger {
+  background: #8f3a33;
+  color: #fff;
+}
 .et-track-mix button {
   height: 18px;
   min-height: 18px;

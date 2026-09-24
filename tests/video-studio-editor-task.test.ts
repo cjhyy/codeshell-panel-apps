@@ -70,7 +70,7 @@ function document(count = 1): EditorDocument {
     ],
   };
 }
-function mock() {
+function mock(references = new Map<string, unknown>()) {
   let cwd = "/project",
     counter = 0;
   const calls: any[] = [],
@@ -161,6 +161,11 @@ function mock() {
         return { job };
       }
       if (method === "tasks.get") return { job: jobs.get(params.id) };
+      if (method === "resources.get") {
+        const reference = references.get(params.id);
+        if (!reference) throw new Error("Resource not found");
+        return { asset: reference };
+      }
       if (method === "tasks.cancel")
         return { job: { ...jobs.get(params.id), status: "cancelled" } };
       throw new Error(method);
@@ -307,6 +312,56 @@ test("high-level preview exposes resource audio and shares frozen snapshot with 
   );
   m.setCwd("/elsewhere");
   await assert.rejects(bridge.prepareAudio(audio.snapshot), { name: "AbortError" });
+  bridge.dispose();
+});
+test("preview staging says originals are being copied before the Host copy, and only the video job is the preview task", async () => {
+  const m = mock(),
+    bridge = createEditorTaskBridge(m.raw),
+    d = document(2),
+    tasks: string[] = [],
+    changed: string[] = [],
+    progress: unknown[] = [];
+  const actions = () =>
+    m.calls.filter((c) => c.method === "tasks.start").map((c) => c.params.input.request.action);
+  await bridge.prepareVideoForPreview(d, "main", {
+    onTask: (job) => tasks.push(actions()[Number(job.id.slice(4)) - 1]),
+    // A staging job's progress must never drive the fast-preview percentage.
+    onJobChanged: (job) => changed.push(actions()[Number(job.id.slice(4)) - 1]),
+    // The Host copies each original inside tasks.start, before it returns any job.
+    onProgress: (value) =>
+      progress.push({ ...value, copyStarted: actions().includes("stage-resources") }),
+  });
+  assert.deepEqual(tasks, ["prepare-video"]);
+  assert.deepEqual(changed, ["prepare-video"]);
+  assert.deepEqual(progress[0], {
+    phase: "resources",
+    completed: 0,
+    total: 2,
+    copyStarted: false,
+  });
+  bridge.dispose();
+});
+test("a saved external original is offered for reuse only after the Host confirms the reference", async () => {
+  const external = (index: number) => `external-${index.toString(16).padStart(64, "0")}`;
+  const references = new Map<string, unknown>([
+    [external(1), { id: external(1), kind: "external", bytes: 10, state: "available" }],
+    [external(2), { id: external(2), kind: "external", bytes: 20, state: "changed" }],
+    [external(4), { id: external(4), kind: "external", bytes: 40, state: "missing" }],
+  ]);
+  const m = mock(references),
+    bridge = createEditorTaskBridge(m.raw),
+    d = document(5);
+  // external(3) was forgotten by the Host; asset ids are content-addressed and need no check.
+  for (const index of [1, 2, 3, 4]) d.assets[index]!.resourceId = external(index);
+  await bridge.stage(d, "main");
+  const status = m.calls.find((c) => c.params?.input?.request?.action === "stage-status")!.params
+    .input.request;
+  assert.deepEqual(status.confirmedReferences, [{ resourceId: external(1), bytes: 10 }]);
+  assert.deepEqual(validateEditorRequest(status).confirmedReferences, status.confirmedReferences);
+  assert.deepEqual(
+    m.calls.filter((c) => c.method === "resources.get").map((c) => c.params.id),
+    [external(1), external(2), external(3), external(4)],
+  );
   bridge.dispose();
 });
 test("changed committed transfer, cancellation and unavailable Host methods fail clearly", async () => {

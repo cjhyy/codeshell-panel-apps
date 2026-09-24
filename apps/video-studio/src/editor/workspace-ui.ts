@@ -117,6 +117,8 @@ export class EditorWorkspace {
   private sourcePreview = false;
   private disposed = false;
   private preparing?: AbortController;
+  /** Task start can wait minutes without progress while the Host copies originals. */
+  private preparationClock?: { started: number; timer: ReturnType<typeof setInterval> };
   private audio?: PreviewAudio;
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
@@ -462,13 +464,40 @@ export class EditorWorkspace {
   }
   private preparationStatus(controller: AbortController, message: string): void {
     if (this.disposed || this.preparing !== controller || controller.signal.aborted) return;
+    this.preparationClock ??= {
+      started: Date.now(),
+      timer: setInterval(() => this.preparationElapsed(), 1000),
+    };
     const output = this.get("[data-ew-preview-error]");
     delete output.dataset.audioBuffering;
-    output.dataset.previewPreparing = "true";
-    output.textContent = `${message} 再次点击播放按钮可取消等待；已开始的素材复制可能仍会完成。`;
     output.hidden = false;
+    if (output.dataset.previewPreparing && output.firstChild?.textContent === message) return;
+    output.dataset.previewPreparing = "true";
+    // The status sentence is announced when it changes; the ticking wait time stays silent.
+    const elapsed = document.createElement("span");
+    elapsed.dataset.ewPreviewElapsed = "";
+    elapsed.setAttribute("aria-hidden", "true");
+    output.replaceChildren(
+      message,
+      elapsed,
+      " 再次点击播放按钮可取消等待；已开始的素材复制可能仍会完成。",
+    );
+    this.preparationElapsed();
+  }
+  private preparationElapsed(): void {
+    const clock = this.preparationClock,
+      elapsed = this.container.querySelector("[data-ew-preview-elapsed]");
+    if (!clock || !elapsed) return;
+    const seconds = Math.floor((Date.now() - clock.started) / 1000),
+      text =
+        seconds < 5
+          ? ""
+          : `（已等待 ${seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, "0")} 秒`}）`;
+    if (elapsed.textContent !== text) elapsed.textContent = text;
   }
   private clearPreparationStatus(): void {
+    clearInterval(this.preparationClock?.timer);
+    this.preparationClock = undefined;
     const output = this.get("[data-ew-preview-error]");
     if (!output?.dataset.previewPreparing) return;
     delete output.dataset.previewPreparing;

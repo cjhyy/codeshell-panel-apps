@@ -1,4 +1,4 @@
-import { copyFile, lstat, readdir, rename, rm, stat } from "node:fs/promises";
+import { copyFile, link as hardLink, lstat, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -159,6 +159,106 @@ export async function runEditorRequest(
       throw new EditorTaskError("SOURCE_CHANGED", "已准备素材内容发生变化，请重新建立快照");
     return path;
   };
+  // Each edit starts a new snapshot. Without this scope-level library, every snapshot asked the
+  // Host to copy all original media again, which takes minutes for large 4K sources.
+  // Library, transfer and job copies of an original share one inode (hard links), so nothing
+  // may ever write these files in place: that would change every snapshot linking them.
+  const LIBRARY_DAYS = 14;
+  const verificationFailure = (error: unknown) =>
+    (error instanceof EditorTaskError &&
+      ["SOURCE_CHANGED", "INVALID_FILE", "INVALID_REQUEST"].includes(error.code)) ||
+    error instanceof SyntaxError ||
+    (error as NodeJS.ErrnoException)?.code === "ENOENT";
+  const forget = async (library: string, id: string) => {
+    for (const name of [`${id}.json`, `${id}.bin`])
+      await rm(join(library, name), { force: true }).catch(() => {});
+  };
+  const remember = async (binding: Binding, path: string) => {
+    try {
+      const library = await directory(scope, ["resources"]),
+        id = resourceId(binding.resourceId),
+        temporary = join(library, `${id}.bin.${randomUUID()}.tmp`);
+      try {
+        // Link only: a cross-device copy of a 20 GiB original is not worth a later shortcut.
+        await hardLink(path, temporary);
+        await rename(temporary, join(library, `${id}.bin`));
+        await atomic(join(library, `${id}.json`), Buffer.from(JSON.stringify(binding)));
+      } finally {
+        await rm(temporary, { force: true });
+      }
+    } catch (error) {
+      // Only a later snapshot loses the shortcut; this one is already staged.
+      if (context.signal.aborted) throw error;
+    }
+  };
+  /** External references must be confirmed by the Host (available, same size) for this request. */
+  const reuse = async (id: string, confirmed: Map<string, number>) => {
+    if (id.startsWith("external-") && !confirmed.has(id)) return undefined;
+    const library = await directory(scope, ["resources"]);
+    let binding: Binding,
+      temporary: string | undefined;
+    try {
+      const raw = await optionalJson(library, [`${id}.json`]);
+      if (!raw) return undefined;
+      const value = record(raw, ["resourceId", "sha256", "bytes"], "已保存的原始素材");
+      binding = { resourceId: value.resourceId, sha256: hash(value.sha256), bytes: value.bytes };
+      if (
+        binding.resourceId !== id ||
+        !Number.isSafeInteger(binding.bytes) ||
+        binding.bytes < 1 ||
+        (id.startsWith("asset-") && id !== `asset-${binding.sha256}`)
+      )
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材回执无效");
+      // The Host reports a different size: stage the reference again, which replaces this copy.
+      if (id.startsWith("external-") && confirmed.get(id) !== binding.bytes) return undefined;
+      const source = await regular(library, [`${id}.bin`]);
+      temporary = join(resources, `${id}.bin.${randomUUID()}.tmp`);
+      try {
+        await hardLink(source, temporary);
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        return undefined; // Normal Host staging still works; keep the saved original.
+      }
+      // Verify the inode actually placed in this snapshot, then publish it.
+      if (
+        (await lstat(temporary)).size !== binding.bytes ||
+        (await fileHash(temporary, context.signal)) !== binding.sha256
+      )
+        throw new EditorTaskError("SOURCE_CHANGED", "已保存的原始素材校验失败");
+      await rename(temporary, join(resources, `${id}.bin`));
+      temporary = undefined;
+      await atomic(join(resources, `${id}.json`), Buffer.from(JSON.stringify(binding)));
+      const now = new Date();
+      await utimes(join(library, `${id}.json`), now, now).catch(() => {});
+      return binding;
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      if (verificationFailure(error)) await forget(library, id);
+      return undefined;
+    } finally {
+      if (temporary) await rm(temporary, { force: true });
+    }
+  };
+  /** Bounded library: drop originals the committed document does not use and nobody used lately. */
+  const prune = async (keep: Set<string>) => {
+    try {
+      const library = await directory(scope, ["resources"]),
+        cutoff = Date.now() - LIBRARY_DAYS * 24 * 60 * 60 * 1000,
+        names = await readdir(library),
+        used = new Map<string, number>();
+      for (const name of names)
+        if (name.endsWith(".json"))
+          used.set(name.slice(0, -5), (await lstat(join(library, name))).mtimeMs);
+      for (const name of names) {
+        const id = name.split(".")[0]!;
+        if (keep.has(id)) continue;
+        const last = used.get(id) ?? (await lstat(join(library, name))).mtimeMs;
+        if (last < cutoff) await rm(join(library, name), { force: true });
+      }
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+    }
+  };
   const builtin = async () => {
     const id = `asset-${EDITOR_DEMO_NARRATION_SHA}`;
     let binding = (await optionalJson(resources, [`${id}.json`])) as Binding | undefined;
@@ -302,12 +402,15 @@ export async function runEditorRequest(
       throw new EditorTaskError("TRANSFER_DISCARDED", "此快照已释放，请创建新的准备任务");
     if (request.action === "stage-status") {
       const present: string[] = [];
-      for (const id of request.resourceIds!) {
+      const confirmed = new Map(
+        (request.confirmedReferences ?? []).map((item) => [item.resourceId, item.bytes]),
+      );
+      for (const [index, id] of request.resourceIds!.entries()) {
         const binding = await optionalJson(resources, [`${id}.json`]);
-        if (binding) {
-          await material(binding);
-          present.push(id);
-        }
+        if (binding) await material(binding);
+        if (binding || (await reuse(id, confirmed))) present.push(id);
+        // Hashing large saved originals takes a while; show it moving.
+        await progress((index + 1) / request.resourceIds!.length, "stage-status");
       }
       const chunks: number[] = [],
         documentDir = await directory(transfer, ["documents", request.documentHash!]);
@@ -373,6 +476,7 @@ export async function runEditorRequest(
             await rm(temporary, { force: true });
           }
         }
+        await remember(binding, join(resources, `${id}.bin`));
         staged.push(binding);
         await progress((index + 1) / request.resourceIds!.length, "stage-resources");
       }
@@ -466,6 +570,7 @@ export async function runEditorRequest(
         bindings,
       };
       await atomic(join(transfer, "manifest.json"), Buffer.from(JSON.stringify(manifest)));
+      await prune(new Set(bindings.map((binding) => binding.resourceId)));
       succeeded = true;
       return {
         result: {
@@ -667,12 +772,18 @@ export async function runEditorRequest(
       assetId: string,
       requireGeometry: boolean,
       purpose: "export" | "preview" = "export",
+      onProgress?: (fraction: number) => void,
     ) => {
       const asset = selected.document.assets.find((item) => item.id === assetId);
       if (asset?.kind !== "video")
         throw new EditorTaskError("INVALID_REQUEST", "请仅选择视频素材准备兼容画面");
       const input = original(assetId),
-        proxy = await prepareEditorProxy(input.path, input.binding.sha256, proxyContext, purpose);
+        proxy = await prepareEditorProxy(
+          input.path,
+          input.binding.sha256,
+          { ...proxyContext, onProgress },
+          purpose,
+        );
       if (requireGeometry && (asset.width !== proxy.width || asset.height !== proxy.height))
         throw new EditorTaskError(
           "SOURCE_GEOMETRY_MISMATCH",
@@ -682,14 +793,18 @@ export async function runEditorRequest(
       return proxy;
     };
     if (request.action === "prepare-video") {
-      const sources: any[] = [];
-      for (let index = 0; index < request.assetIds!.length; index++) {
+      const sources: any[] = [],
+        count = request.assetIds!.length;
+      for (let index = 0; index < count; index++) {
         const assetId = request.assetIds![index]!,
-          proxy = await video(assetId, false, "preview"),
+          proxy = await video(assetId, false, "preview", (fraction) => {
+            // A first 4K conversion takes minutes; show movement within each source.
+            progress((index + fraction) / count, "prepare-video").catch(() => {});
+          }),
           { path: _path, ...recipe } = proxy;
         const asset = await add(proxy.path, "mp4", "video/mp4", "editor-video-source");
         sources.push({ assetId, proxy: asset, recipe });
-        await progress((index + 1) / request.assetIds!.length, "prepare-video");
+        await progress((index + 1) / count, "prepare-video");
       }
       succeeded = true;
       return {

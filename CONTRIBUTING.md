@@ -29,7 +29,7 @@ and passes through `npm run build` unchanged.
 
 ## Source-built Video Studio
 
-Video Studio 0.7.0 is the source-built app in this release. Edit
+Video Studio 0.7.1 is the source-built app in this release. Edit
 `apps/video-studio/`; install and publish **`panels/video-studio/`**. Its GitHub
 installation subdirectory is `panels/video-studio`, not `apps/video-studio`.
 

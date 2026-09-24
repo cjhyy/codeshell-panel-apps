@@ -56,6 +56,7 @@ export async function runEditorCli(
         "documentHash",
         "sequenceId",
         "resourceIds",
+        "confirmedReferences",
         "assetIds",
         "chunkIndex",
         "chunkCount",
