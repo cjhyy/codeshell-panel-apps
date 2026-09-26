@@ -1018,8 +1018,7 @@ export class EditorWorkspace {
       dialog.remove();
       if (this.dialog === dialog) this.dialog = undefined;
     });
-    form.addEventListener("submit", (event) => {
-      event.preventDefault();
+    const submitForm = () => {
       if (pending || !form.reportValidity()) return;
       pending = true;
       form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = true;
@@ -1039,6 +1038,16 @@ export class EditorWorkspace {
             form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = false;
         }
       });
+    };
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitForm();
+    });
+    // An opaque Host iframe deliberately forbids native form submission. Handle
+    // the activation before its default action, keeping validity and busy guards.
+    form.querySelector('[type="submit"]')!.addEventListener("click", (event) => {
+      event.preventDefault();
+      submitForm();
     });
     this.container.append(dialog);
     this.dialog = dialog;

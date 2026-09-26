@@ -48,12 +48,13 @@ after(async () => {
 });
 
 async function fixture(t, options = {}) {
-  const page = await browser.newPage({ viewport: { width: options.width ?? 1240, height: 900 } });
+  let page = await browser.newPage({ viewport: { width: options.width ?? 1240, height: 900 } });
+  const ownerPage = page;
   const uncaught = [];
   page.setDefaultTimeout(4000);
   page.on("pageerror", (error) => uncaught.push(String(error)));
   t.after(async () => {
-    await page.close();
+    await ownerPage.close();
     assert.deepEqual(uncaught, [], "The real workspace must not emit uncaught errors");
   });
   await page.route("http://127.0.0.1:41789/**", (route) =>
@@ -63,6 +64,17 @@ async function fixture(t, options = {}) {
     }),
   );
   await page.goto("http://127.0.0.1:41789/workspace");
+  if (options.sandbox) {
+    await page.setContent(
+      '<iframe sandbox="allow-scripts allow-downloads" style="width:1200px;height:880px"></iframe>',
+    );
+    await page.locator("iframe").evaluate((frame) => {
+      frame.srcdoc =
+        '<!doctype html><meta http-equiv="Content-Security-Policy" content="form-action \'none\'"><main id="workspace"></main>';
+    });
+    page = await (await page.locator("iframe").elementHandle()).contentFrame();
+    await page.locator("#workspace").waitFor({ state: "attached" });
+  }
   if (options.layout === "embedded")
     await page.evaluate(() => {
       const host = document.createElement("section");
@@ -537,7 +549,15 @@ test("material + on a clip end between frames puts the playhead on the new clip,
           type: "clip.update",
           sequenceId: "main",
           clipId: "a",
-          patch: { duration: end, timeMap: { points: [{ time: 0, source: 0 }, { time: end, source: end }] } },
+          patch: {
+            duration: end,
+            timeMap: {
+              points: [
+                { time: 0, source: 0 },
+                { time: end, source: end },
+              ],
+            },
+          },
         },
       ],
       "缩短画面",
@@ -549,7 +569,11 @@ test("material + on a clip end between frames puts the playhead on the new clip,
   assert.equal(added.start, end);
   await page.waitForFunction((end) => fixture.playhead() === end, end);
   await settle(page);
-  assert.equal(await page.evaluate(() => fixture.playhead()), end, "The playhead stays on the new clip");
+  assert.equal(
+    await page.evaluate(() => fixture.playhead()),
+    end,
+    "The playhead stays on the new clip",
+  );
   await page.getByRole("button", { name: "添加文字", exact: true }).click();
   const title = (await documentState(page)).sequences[0].clips.at(-1);
   assert.equal(title.kind, "text");
@@ -938,8 +962,8 @@ test("playback preparation stays visible while task start waits, cancels locally
   await settle(page);
   assert.match(await status.textContent(), /正在准备声音/);
   await page.evaluate(() => fixture.resolveAudio(1));
-  await page.waitForFunction(() =>
-    document.querySelector('[data-ew-action="play"]').getAttribute("aria-label") === "暂停",
+  await page.waitForFunction(
+    () => document.querySelector('[data-ew-action="play"]').getAttribute("aria-label") === "暂停",
   );
   assert.equal(await status.isVisible(), false);
   assert.equal(await status.getAttribute("data-preview-preparing"), null);
@@ -969,7 +993,11 @@ test("a long playback preparation keeps showing how long it has been waiting", a
     window.__statusMutations = [];
     new MutationObserver((records) =>
       window.__statusMutations.push(
-        ...records.filter((r) => !r.target.closest?.("[data-ew-preview-elapsed]") && !r.target.parentElement?.closest("[data-ew-preview-elapsed]")),
+        ...records.filter(
+          (r) =>
+            !r.target.closest?.("[data-ew-preview-elapsed]") &&
+            !r.target.parentElement?.closest("[data-ew-preview-elapsed]"),
+        ),
       ),
     ).observe(output, { childList: true, characterData: true, subtree: true });
   });
@@ -1116,6 +1144,27 @@ test("hiding and disposing the workspace cancels native audio and ignores late c
   assert.equal(await page.evaluate(() => fixture.audio()[1].aborted), true);
   assert.equal(await page.locator("#workspace").innerHTML(), "");
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("sandboxed export forms submit once without permitting native form navigation", async (t) => {
+  const page = await fixture(t, { sandbox: true });
+  await action(page, "export").click();
+  await page.locator("dialog button[type=submit]").click();
+  await page.locator("dialog").waitFor({ state: "detached", timeout: 4000 });
+  assert.equal(await page.evaluate(() => fixture.exports.length), 1);
+  assert.equal(page.url(), "about:srcdoc");
+  await action(page, "export").click();
+  await page.locator('dialog [name="width"]').fill("15");
+  await page.locator("dialog button[type=submit]").click();
+  assert.equal(
+    await page.evaluate(() => fixture.exports.length),
+    1,
+    "Invalid dimensions cannot submit",
+  );
+  await page.locator('dialog [name="width"]').fill("320");
+  await page.locator('dialog [name="width"]').press("Enter");
+  await page.locator("dialog").waitFor({ state: "detached", timeout: 4000 });
+  assert.equal(await page.evaluate(() => fixture.exports.length), 2, "Keyboard submits once");
 });
 
 test("export dialog passes its real profile and a durably saved current sequence to the adapter", async (t) => {
@@ -1493,9 +1542,15 @@ test("cancel remaining submissions keeps a late accepted receipt and starts no f
   await page.locator("dialog button[type=submit]").click();
   await page.waitForFunction(() => fixture.exportAttempts().length === 1);
   assert.equal(await page.locator("[data-ew-close]").textContent(), "取消剩余提交");
-  assert.match(await page.locator("[data-export-progress]").textContent(), /正在准备导出素材并提交任务/);
+  assert.match(
+    await page.locator("[data-export-progress]").textContent(),
+    /正在准备导出素材并提交任务/,
+  );
   assert.match(await page.locator("[data-export-progress]").textContent(), /素材复制可能仍会完成/);
-  assert.equal(await page.locator("[data-export-progress]").getAttribute("data-submitting"), "true");
+  assert.equal(
+    await page.locator("[data-export-progress]").getAttribute("data-submitting"),
+    "true",
+  );
   await page.locator("[data-ew-close]").click();
   await page.locator("dialog").waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => fixture.exportAttempts()[0].aborted), true);

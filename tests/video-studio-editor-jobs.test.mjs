@@ -74,8 +74,7 @@ async function fixture(t, specifications = [], options = {}) {
             "tasks.get",
             "tasks.cancel",
             "tasks.retry",
-            "media.export",
-            "media.reveal",
+            ...(options.deliveryMethods ?? ["media.export", "media.reveal"]),
           ],
           capabilities: {
             bridge: {
@@ -124,6 +123,7 @@ async function fixture(t, specifications = [], options = {}) {
             return structuredClone(value);
           }
           if (["media.export", "media.reveal"].includes(method)) return { saved: true };
+          if (method === "resources.open") return { opened: true };
           throw Error(`Unexpected host mutation ${method}`);
         },
       };
@@ -195,6 +195,41 @@ async function open(page) {
 }
 const calls = (page, method) =>
   page.evaluate((method) => fixture.calls.filter((call) => call.method === method), method);
+
+test("cloud completed exports open the authorized preview for saving on this device", async (t) => {
+  const page = await fixture(t, [job("cloud", 1)], { deliveryMethods: ["resources.open"] });
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  await row(page, "cloud").getByRole("button", { name: "预览与保存", exact: true }).click();
+  assert.deepEqual(await calls(page, "resources.open"), [
+    { method: "resources.open", args: { assetId } },
+  ]);
+  assert.equal(await page.getByRole("button", { name: "在文件夹中显示", exact: true }).count(), 0);
+  assert.equal((await calls(page, "media.export")).length, 0);
+  assert.equal((await calls(page, "media.reveal")).length, 0);
+});
+
+test("exports without delivery capabilities do not offer unusable desktop actions", async (t) => {
+  const page = await fixture(t, [job("limited", 1)], { deliveryMethods: [] });
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.equal(await row(page, "limited").getByRole("button").count(), 0);
+  assert.match(await row(page, "limited").textContent(), /导出完成/);
+});
+
+test("desktop exports retain direct saving when browser preview is also available", async (t) => {
+  const page = await fixture(t, [job("desktop", 1)], {
+    deliveryMethods: ["media.export", "media.reveal", "resources.open"],
+  });
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  await row(page, "desktop").getByRole("button", { name: "保存视频", exact: true }).click();
+  assert.deepEqual(await calls(page, "media.export"), [
+    { method: "media.export", args: { assetId } },
+  ]);
+  assert.equal((await calls(page, "resources.open")).length, 0);
+  assert.equal(await page.getByRole("button", { name: "预览与保存", exact: true }).count(), 0);
+});
 
 test("empty exports and completed history stay out of the editing area until requested", async (t) => {
   const page = await fixture(t, [job("done", 1)]);
@@ -742,6 +777,9 @@ test("export titles stay readable after a reload instead of showing the internal
     "未命名项目 · 自定义导出",
   );
   // Without a remembered title the preset still names it; the internal id never shows.
-  assert.equal(await row(page, "export-b").locator("strong").textContent(), "视频导出 · 1080p 横屏");
+  assert.equal(
+    await row(page, "export-b").locator("strong").textContent(),
+    "视频导出 · 1080p 横屏",
+  );
   assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
 });

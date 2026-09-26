@@ -67,6 +67,10 @@ export interface ProductionStatus {
   hyperframes: { available: boolean; version?: string };
   tts?: { available: boolean; engine?: string; defaultVoiceId?: string; reason?: string };
 }
+export interface ProductionDelivery {
+  save: "native" | "preview" | null;
+  reveal: boolean;
+}
 export interface VoiceCatalog {
   available: boolean;
   engine?: string;
@@ -704,6 +708,7 @@ export class ProductionController {
   jobs: MediaJob[] = [];
   preparations = new Map<string, PreparedMedia>();
   error = "";
+  delivery: ProductionDelivery = { save: null, reveal: false };
   private document: ProductionDocument = { schemaVersion: 1, bindings: {}, auto: null };
   private documentRevision = 0;
   private writeQueue = Promise.resolve();
@@ -772,6 +777,7 @@ export class ProductionController {
         this.error = "当前 CodeShell 尚未提供持久媒体服务。请更新桌面应用后重新打开视频工作台。";
         return;
       }
+      await this.refreshDelivery(this.bridge);
       this.status = { ...status, transcription: transcriptionStatus(status.transcription) };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1459,10 +1465,29 @@ export class ProductionController {
     return retried;
   }
   async exportAsset(id: string): Promise<unknown> {
-    return this.requireHost().call("media.export", { assetId: id });
+    await this.refreshDelivery();
+    if (!this.delivery.save) throw new Error("当前环境未提供成品保存入口");
+    return this.requireHost().call(
+      this.delivery.save === "native" ? "media.export" : "resources.open",
+      { assetId: id },
+    );
   }
   async revealAsset(id: string): Promise<unknown> {
+    await this.refreshDelivery();
+    if (!this.delivery.reveal) throw new Error("当前环境不支持显示本地目录");
     return this.requireHost().call("media.reveal", { assetId: id });
+  }
+  private async refreshDelivery(bridge = this.requireHost()): Promise<void> {
+    const context = await bridge.getContext();
+    const methods = new Set(context.availableMethods ?? []);
+    this.delivery = {
+      save: methods.has("media.export")
+        ? "native"
+        : methods.has("resources.open")
+          ? "preview"
+          : null,
+      reveal: methods.has("media.reveal"),
+    };
   }
   async transcript(
     assetId: string,
