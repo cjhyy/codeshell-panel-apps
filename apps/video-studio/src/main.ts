@@ -5404,7 +5404,7 @@ async function previewEditorAudioResource(resourceId: string, signal: AbortSigna
   const runtime = createPanelRuntime(panel);
   try {
     if (signal.aborted) throw new DOMException("已取消试听", "AbortError");
-    const result = (await runtime.call("resources.get", { assetId: resourceId }, signal)) as {
+    const result = (await runtime.call("resources.get", { id: resourceId }, signal)) as {
       asset?: { id: string; bytes: number };
     } | null;
     if (signal.aborted) throw new DOMException("已取消试听", "AbortError");
