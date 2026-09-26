@@ -85,6 +85,20 @@ Never edit, truncate, delete, or invent shard files manually; use
 `get_job_search_context` and the Panel write tools. A missing or mismatched shard
 is a hard read failure, not an empty question bank.
 
+Root schema-v1 upgrades and requested storage migrations first persist a full
+snapshot archive under `career-data/panel-backups/g-<random-id>/`. The final
+`manifest.json` records SHA-256, UTF-8 byte length and part count; `part-NNNN.txt`
+files contain contiguous original bundle text. Archives retain the exact root
+text and every referenced shard, including unknown legacy fields. Completion is
+published only after all parts succeed. Missing, altered or incomplete parts,
+invalid shard references and project changes prevent reconstruction or migration.
+The serialized archive is limited to 128 MiB. This is a structured-snapshot
+archive, not a copy of JD originals, photos, external source files or browser
+drafts. Do not delete incomplete or historical generations during task execution.
+`readSnapshotBackup` validates and reconstructs without changing project files;
+there is no automatic restore or downgrade. A recovery-selection/confirmation
+interface is still pending.
+
 `discoveryPreferences` stores the current project's last user-confirmed job
 search criteria: keyword, location, seniority, count, provider IDs, freshness
 window, work mode, exclusions, and last run time. Treat the Panel-submitted

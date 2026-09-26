@@ -35,7 +35,7 @@ async function fixture(t, options = {}) {
   await page.addInitScript(options => {
     const projects = { a: { storage: {}, files: {} }, b: { storage: {}, files: {} } };
     for (const [id, project] of Object.entries(projects)) {
-      project.files['job-hunt-panel.json'] = { schemaVersion: 2, updatedAt: '2026-01-01T00:00:00Z',
+      project.files['job-hunt-panel.json'] = { schemaVersion: options.schemaVersion ?? 2, updatedAt: '2026-01-01T00:00:00Z',
         jobs: [], versions: [], profile: { name: id },
         resume: { versionId: 'resume-' + id, kind: 'base', title: 'Resume ' + id,
           markdown: '# Resume ' + id, updatedAt: '2026-01-01T00:00:00Z' },
@@ -54,7 +54,7 @@ async function fixture(t, options = {}) {
       return { exists: true, value, revision: 'sha256:' + [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, '0')).join('') };
     };
     window.__fixture = { projects, calls, tools, switch(id) { current = id; listeners.forEach(fn => fn(ctx())); },
-      failRead: options.failRead, hold: null, release: null };
+      failRead: options.failRead, failSnapshotBackup: options.failSnapshotBackup, hold: null, release: null };
     window.codeshellPanel = {
       getContext: async () => ctx(), on(event, callback) { if (event === 'context.changed') listeners.push(callback); },
       registerTool(name, handler) { tools[name] = handler; },
@@ -77,11 +77,12 @@ async function fixture(t, options = {}) {
         if (method === 'workspace.readText') {
           if (!(params.path in project.files)) throw new Error('ENOENT');
           const record = await snapshot(project.files, params.path);
-          return { content: JSON.stringify(record.value), revision: record.revision, modifiedAt: 1 };
+          return { content: typeof record.value === 'string' ? record.value : JSON.stringify(record.value), revision: record.revision, modifiedAt: 1 };
         }
         if (method === 'workspace.writeText') {
           if (window.__fixture.failWrites) throw new Error('write unavailable');
-          project.files[params.path] = JSON.parse(params.content);
+          if (window.__fixture.failSnapshotBackup && params.path.startsWith('career-data/panel-backups/')) throw new Error('backup unavailable');
+          project.files[params.path] = params.path.endsWith('.txt') ? params.content : JSON.parse(params.content);
           const record = await snapshot(project.files, params.path);
           return { revision: record.revision, modifiedAt: 2 };
         }
@@ -297,7 +298,7 @@ test('explicit reread preserves damaged browser bytes and reopens the valid Host
   assert.ok(saved.stored.records.some(r => r.raw.includes('rawBackup') && r.raw.includes('bad browser bytes')));
 });
 
-test('two real pages save independent shard generations, reject a stale root and reopen the winner', { timeout: 45_000 }, async t => {
+test('two real pages save independent shard generations, reject a stale root and reopen the winner', { timeout: 90_000 }, async t => {
   const initial = prepareProjectSnapshotDocuments({
     schemaVersion: 2, updatedAt: '2026-01-01T00:00:00Z',
     resume: { versionId: 'large-resume', kind: 'base', title: 'Large project', markdown: '# Original', updatedAt: '2026-01-01T00:00:00Z' },
@@ -349,28 +350,55 @@ test('two real pages save independent shard generations, reject a stale root and
   await edit(loser, '# Losing edit');
   await Promise.race([loserCaptured, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('loser never read root')), 5_000); timer.unref(); })]);
   await edit(winner, '# Winning edit');
-  // Only the Host's successful root write releases the other writer.
-  await Promise.race([winnerCommitted, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('winner never committed')), 5_000); timer.unref(); })]).catch(async error => {
+  // Backup reads/writes use the production 12-call/10.1s pacing; allow
+  // both backup passes while keeping the actual successful root write as
+  // the only event that releases the competing writer.
+  await Promise.race([winnerCommitted, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('winner never committed')), 30_000); timer.unref(); })]).catch(async error => {
     console.error({ writes: writes.map(w => ({ label: w.label, path: w.path })), status: await winner.locator('#project-snapshot-state').textContent(), error: await winner.locator('#project-snapshot-error').textContent(), calls: await winner.evaluate(() => window.__fixture.calls.slice(-8).map(c => ({ method: c.method, path: c.params.path }))) });
     throw error;
   });
   const committed = read('job-hunt-panel.json').content;
   releaseLoser();
-  await loser.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'), null, { timeout: 5_000 }).catch(async error => {
+  await loser.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'), null, { timeout: 30_000 }).catch(async error => {
     console.error({ writes: writes.map(w => ({ label: w.label, path: w.path })), status: await loser.locator('#project-snapshot-state').textContent(), error: await loser.locator('#project-snapshot-error').textContent(), calls: await loser.evaluate(() => window.__fixture.calls.slice(-8)) });
     throw error;
   });
   assert.equal(read('job-hunt-panel.json').content, committed);
   const winningGeneration = JSON.parse(committed).artifactStorage.generation;
   assert.match(winningGeneration, /^g-[0-9a-f]{32}$/);
-  const losingShards = writes.filter(write => write.label === 'loser' && !write.path.endsWith('previous-root.json'));
+  const losingShards = writes.filter(write => write.label === 'loser' && write.path.startsWith('career-data/panel-shards/') && !write.path.endsWith('previous-root.json'));
   assert.ok(losingShards.length > 0);
   assert.ok(losingShards.every(write => !write.path.includes(winningGeneration) && write.expectedModifiedAt === null));
   assert.ok(writes.some(write => write.path.endsWith('/previous-root.json') && write.content === initial.rootContent));
-  const original = hydrateProjectSnapshotDocuments(initial.root, new Map([...files].map(([path, content]) => [path, JSON.parse(content)])));
+  const original = hydrateProjectSnapshotDocuments(initial.root, new Map([...files].filter(([path]) => !path.endsWith('.txt')).map(([path, content]) => [path, JSON.parse(content)])));
   assert.equal(original.questionBank.length, 150);
   assert.equal(original.resume.markdown, '# Original');
   const reopened = await fixture(t, { workspace: workspace('reopened') }); await ready(reopened);
   assert.equal(await reopened.locator('#resume-editor').inputValue(), '# Winning edit');
   assert.equal(writes.some(write => write.label === 'reopened'), false, 'reopening a valid generation does not rewrite it');
+});
+
+
+test('opening a v1 root completes migration even without a user edit', async t => {
+  const page = await fixture(t, { schemaVersion: 1 }); await ready(page);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].schemaVersion), 2);
+  const recovered = await page.evaluate(async () => {
+    const files = window.__fixture.projects.a.files;
+    const path = Object.keys(files).find(path => path.startsWith('career-data/panel-backups/') && path.endsWith('/manifest.json'));
+    const { readSnapshotBackup } = await import('./snapshot-backup.mjs');
+    return readSnapshotBackup(path, { scope: { check() {}, call: (...args) => window.codeshellPanel.call(...args) } });
+  });
+  assert.equal(recovered.root.schemaVersion, 1);
+  assert.equal(recovered.root.resume.markdown, '# Resume a');
+  assert.equal(recovered.root.profile.name, 'a');
+});
+
+
+test('failed migration backup preserves v1 and explicit retry still completes migration', async t => {
+  const page = await fixture(t, { schemaVersion: 1, failSnapshotBackup: true }); await ready(page);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].schemaVersion), 1);
+  assert.match(await page.locator('#project-snapshot-error').textContent(), /backup unavailable/);
+  await page.evaluate(() => { window.__fixture.failSnapshotBackup = false; document.querySelector('#save-project-snapshot').click(); });
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].schemaVersion === 2);
+  assert.ok(await page.evaluate(() => Object.keys(window.__fixture.projects.a.files).some(path => path.endsWith('/manifest.json'))));
 });

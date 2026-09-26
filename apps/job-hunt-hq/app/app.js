@@ -3718,6 +3718,7 @@ async function writeProjectSnapshotNow(scope = currentProject()) {
       const result = await writeProjectSnapshotDocuments(prepared, {
         scope,
         previousSnapshot,
+        backupRequired: projectContext.snapshotStorageMigrationPending,
         beforeShard: async (index) => {
           if (index > 0 && index % PROJECT_SHARD_HOST_CALL_BATCH === 0) {
             await new Promise((resolve) => setTimeout(resolve, PROJECT_SHARD_HOST_CALL_PAUSE_MS));
@@ -3968,7 +3969,7 @@ async function syncProjectContext({
       projectContext.snapshotDirty = false;
       projectContext.snapshotError = "";
       projectContext.snapshotUnreadable = false;
-      projectContext.snapshotStorageMigrationPending = projectStorageNeedsMigration;
+      projectContext.snapshotStorageMigrationPending = projectSnapshotNeedsMigration || projectStorageNeedsMigration;
       clearProjectSnapshotConflict();
       const resumeDraftRecovery = recoverResumeEditorDraft();
       if (resumeDraftRecovery.cleared) persist();

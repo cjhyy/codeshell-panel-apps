@@ -73,6 +73,7 @@ function host(initial) {
   const scope = {
     check() {},
     async call(method, params) {
+      if (method === "workspace.readText") return read(params.path);
       assert.equal(method, "workspace.writeText");
       if (params.expectedModifiedAt === null && files.has(params.path))
         throw new Error("already exists");
@@ -91,7 +92,11 @@ function host(initial) {
     hydrate: (root = JSON.parse(read().content)) =>
       hydrateProjectSnapshotDocuments(
         root,
-        new Map([...files].map(([path, content]) => [path, JSON.parse(content)])),
+        new Map(
+          [...files]
+            .filter(([path]) => !path.endsWith(".txt"))
+            .map(([path, content]) => [path, JSON.parse(content)]),
+        ),
       ),
   };
 }
@@ -165,7 +170,7 @@ for (const legacyGeneration of ["a", "b"]) {
         ? prepareProjectSnapshotDocuments({ schemaVersion: 2, questionBank: [] })
         : prepare("update");
       await writeProjectSnapshotDocuments(next, { scope: store.scope, previousSnapshot });
-      const backup = store.writes[0];
+      const backup = store.writes.find((write) => write.path.endsWith("/previous-root.json"));
       assert.match(backup.path, /^career-data\/panel-shards\/g-[0-9a-f]{32}\/previous-root.json$/);
       assert.equal(backup.content, previousSnapshot.content);
       assert.equal(backup.expectedModifiedAt, null);
