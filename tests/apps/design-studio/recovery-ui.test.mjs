@@ -799,3 +799,23 @@ test("unchanged designs still save, submit their PRD and export SVG", { timeout:
   assert.match(f.files.get("/project/A:designs/design.svg"), /<svg/);
   assert.equal((await page.evaluate(() => window.tools.get_design_metadata())).dirty, false);
 });
+
+
+test("frontend receipts identify the exported snapshot when editing continues during the write", { timeout: 10000 }, async t => {
+  const f = await fixture(t), page = await f.page();
+  const initial = await page.evaluate(() => window.tools.get_design_metadata());
+  const hold = f.pauseResponse("/project/A", "workspace.writeText");
+  await page.evaluate(async () => {
+    const metadata = await window.tools.get_design_metadata();
+    window.pendingExport = window.tools.generate_frontend({ path: "designs/snapshot.html", expected_state_revision: metadata.stateRevision });
+  });
+  await hold.entered;
+  await page.locator("#add-page").click();
+  hold.release();
+  const result = await page.evaluate(() => window.pendingExport);
+  const current = await page.evaluate(() => window.tools.get_design_metadata());
+  assert.notEqual(current.stateRevision, initial.stateRevision);
+  assert.equal(result.stateRevision, initial.stateRevision, "receipt must describe the exported source, not the newer canvas");
+  assert.equal(result.pageId, initial.activePageId);
+  assert.match(f.files.get("/project/A:designs/snapshot.html"), /<!doctype html>/i);
+});

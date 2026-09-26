@@ -4096,7 +4096,7 @@ async function generateFrontendFile({
     pageName: sourceDocument.pages.find((page) => page.id === pageId)?.name,
     bytes: new TextEncoder().encode(html).length,
     revision: result.revision ?? null,
-    stateRevision: currentDesignStateRevision(),
+    stateRevision: operationStateRevision,
     nodeCount: allDesignNodes(
       normalizeDesignDocument({
         ...sourceDocument,
