@@ -2346,14 +2346,19 @@
         return;
       }
       try {
-        if (typeof video.requestVideoFrameCallback === "function") {
+        const seekStartedAt = performance.now();
+        const unchangedPosition = videoReady(video) && video.currentTime === seekTime;
+        const requestPresentation = () => {
+          if (settled || typeof video.requestVideoFrameCallback !== "function") return;
           callback = video.requestVideoFrameCallback((_now, metadata) => {
             callback = void 0;
-            if (videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
+            if (unchangedPosition || metadata.presentationTime >= seekStartedAt)
               presentedTime = metadata.mediaTime * 1e6;
             inspect();
+            requestPresentation();
           });
-        }
+        };
+        requestPresentation();
         video.currentTime = seekTime;
       } catch (cause) {
         finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
