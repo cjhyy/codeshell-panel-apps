@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "job-hunt-hq",
+    label: "Job Hunt HQ project draft persistence",
+    commands: [["--test", "tests/apps/job-hunt-hq/draft-storage.test.mjs", "tests/apps/job-hunt-hq/draft-ui.test.mjs"]],
+  },
+  {
     id: "panel-ui",
     label: "Shared Panel App controls",
     commands: [["--test", "tests/panel-select-ui.test.mjs"]],

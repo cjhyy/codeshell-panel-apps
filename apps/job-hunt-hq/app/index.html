@@ -17,6 +17,11 @@
     <script defer src="./panel-select.js"></script>
   </head>
   <body>
+    <aside class="draft-storage-bar" aria-label="草稿恢复">
+      <span id="draft-storage-status" role="status">正在连接草稿存储…</span>
+      <button id="download-draft-backup" type="button">下载草稿备份</button>
+      <button id="reload-draft-storage" type="button">重新读取</button>
+    </aside>
     <main class="app-shell">
       <header class="topbar">
         <button class="brand" type="button" data-view-target="today" aria-label="回到今日工作台">

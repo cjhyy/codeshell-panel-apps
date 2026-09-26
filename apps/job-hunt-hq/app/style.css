@@ -10720,3 +10720,6 @@ body.panel-interview-focus-active .toast {
     line-height: 1.4;
   }
 }
+
+.draft-storage-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; font-size: 12px; }
+.draft-storage-bar > span { flex: 1; min-width: 200px; }
