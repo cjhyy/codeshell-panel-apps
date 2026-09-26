@@ -10,6 +10,50 @@ permissions:
 # Keep independent gates runnable even when another app fails. The previous
 # sequential video-media gate prevented UI and design regressions from running.
 jobs:
+  job-hunt-pdf:
+    name: Job Hunt PDF rendering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Install PDF inspection tools and Chinese fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y poppler-utils fonts-noto-cjk
+      # Ubuntu restricts user namespaces for downloaded browser builds. Allow
+      # only this exact executable in the disposable runner; retain Chromium's
+      # sandbox and the machine-wide AppArmor user namespace restriction.
+      # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
+      - name: Allow the test browser to create its sandbox
+        run: |
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { writeFileSync } from 'node:fs';
+          writeFileSync('/tmp/codeshell-pdf-chromium.apparmor', `abi <abi/4.0>,\ninclude <tunables/global>\nprofile codeshell-pdf-ci "${chromium.executablePath()}" flags=(unconfined) {\n  userns,\n}\n`);
+          NODE
+          sudo apparmor_parser -r /tmp/codeshell-pdf-chromium.apparmor
+      - name: Diagnose sandboxed Chromium startup
+        run: |
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { spawnSync } from 'node:child_process';
+          import { mkdtempSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const profile = mkdtempSync(join(tmpdir(), 'pdf-sandbox-probe-'));
+          try {
+            const result = spawnSync(chromium.executablePath(), ['--headless=new', '--no-first-run', '--disable-background-networking', '--user-data-dir=' + profile, '--dump-dom', 'about:blank'], { encoding: 'utf8', timeout: 15000 });
+            console.log(JSON.stringify({ status: result.status, signal: result.signal, stderr: result.stderr?.slice(-8192) }));
+            if (result.status !== 0) process.exitCode = 1;
+          } finally { rmSync(profile, { recursive: true, force: true }); }
+          NODE
+      - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
+
   validate:
     name: Package and offline checks
     runs-on: ubuntu-latest

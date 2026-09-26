@@ -836,6 +836,9 @@
                 "pattern": "\\.[pP][dD][fF]$"
               },
               "exportedAt": { "type": "string", "maxLength": 80 },
+              "assetId": { "type": "string", "pattern": "^asset-[a-f0-9]{64}$" },
+              "taskId": { "type": "string", "maxLength": 100 },
+              "sourceUpdatedAt": { "type": "string", "maxLength": 80 },
               "size": { "type": "integer", "minimum": 0 }
             },
             "additionalProperties": false

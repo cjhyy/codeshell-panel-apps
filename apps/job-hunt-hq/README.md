@@ -245,3 +245,26 @@ company、title、location、salary、source、source_id、url、published_at、
 页面关闭或浏览器重启。页面会显示这一区别，并在 Host 确认最新输入后才显示保存
 完成。请等待保存完成后关闭。原有可用浏览器存储继续使用项目隔离的持久副本，
 损坏记录或其他读取错误仍会阻止覆盖，不会当成空草稿。
+
+### 待发布：云端 PDF 导出
+
+桌面继续使用主程序的打印接口。支持持久任务和项目资源的云端项目使用求职 Panel
+自己的 `resume-pdf` 原生入口，新增 `process`、`resources` 权限，需要在更新时审阅。
+执行环境需安装 Chrome、Chromium 或 Edge；Linux 需安装中文字体（如
+`fonts-noto-cjk`）。入口直接读取同一安装包的 `app/style.css`，不依赖开发仓库、
+外部网页或浏览器登录状态，也不关闭浏览器沙箱。
+
+导出先通过原有公开简历核验。只提交公开打印内容，去除内部证据和操作按钮；
+页面脚本、网络读取和导航被禁用。照片须为已保存的 PNG/JPEG/WebP，损坏照片
+会明确失败。请求最多 2 MiB、PDF 最多 24 MiB，生成限时 60 秒。
+
+投递文件页提供任务历史、取消、明确重试及项目 PDF 打开／下载。关闭页面不会取消
+已接收任务；重开从 Host 读取记录，失败或中断不会自动重跑。相同内容和来源版本
+使用相同提交键，回复丢失后只查询原任务；编辑后的内容产生新的请求。
+结果保留来源版本，生成期间继续编辑不会把旧 PDF 标为最新。PDF 存在项目资源库，
+不是浏览器电脑上的 `career-data` 路径；整个项目备份需要包含资源存储。
+
+验证：`npm test -- --suite job-hunt-hq` 覆盖界面、来源和任务恢复；
+`node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs` 需要 Playwright
+Chromium、Poppler（`pdftotext`、`pdfinfo`、`pdfimages`）和中文字体，检查实际 PDF、
+分页、照片、取消及进程入口。目标 Linux 项目容器和正式部署仍需独立验收。

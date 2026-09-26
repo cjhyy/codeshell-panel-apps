@@ -1,5 +1,9 @@
 import { parseDraftBackup, MAX_DRAFT_BACKUP_BYTES } from "./draft-backup.mjs";
 import { createDraftStorage, LEGACY_DRAFT_KEY } from "./draft-storage.mjs";
+import { prepareResumePdfTask, supportsResumePdfTasks } from "./resume-pdf-tasks.mjs";
+import { createResumePdfUI } from "./resume-pdf-ui.mjs";
+let resumePdfUI = null;
+let resumePdfExportSequence = 0;
 import {
   assessJobOpportunity,
   JD_COMPLETENESS_LABELS,
@@ -7229,7 +7233,7 @@ function renderResumeWorkspace() {
   ]
     .filter((file, index, records) => {
       if (!file.path) return false;
-      return records.findIndex((candidate) => candidate.path === file.path) === index;
+      return records.findIndex((candidate) => (candidate.assetId || candidate.path) === (file.assetId || file.path)) === index;
     })
     .sort((left, right) => String(right.exportedAt).localeCompare(String(left.exportedAt)));
   if (!files.length) {
@@ -7250,10 +7254,15 @@ function renderResumeWorkspace() {
     const openButton = makeTextElement("button", "card-session-action", "打开文件");
     openButton.type = "button";
     openButton.dataset.openResumeFilePath = file.path;
+    if (file.assetId) {
+      openButton.textContent = "打开／下载 PDF";
+      openButton.dataset.resumeAssetId = file.assetId;
+    }
     const revealButton = makeTextElement("button", "card-session-action", "打开所在文件夹");
     revealButton.type = "button";
     revealButton.dataset.revealResumeFilePath = file.path;
-    actions.append(openButton, revealButton);
+    actions.append(openButton);
+    if (!file.assetId) actions.append(revealButton);
     card.append(
       makeTextElement("span", "resume-file-icon", file.format === "pdf" ? "PDF" : "MD"),
       makeTextElement("strong", "", file.title),
@@ -7262,7 +7271,7 @@ function renderResumeWorkspace() {
         "",
         `${file.kind === "base" ? "Base" : "岗位版"} · ${file.format === "pdf" ? "PDF" : "Markdown"} · ${formatDate(file.exportedAt)}${file.size ? ` · ${Math.max(1, Math.round(file.size / 1024))} KB` : ""}`,
       ),
-      makeTextElement("code", "", file.path || "文件路径待确认"),
+      makeTextElement("code", "", file.assetId ? `项目文件 · ${file.path}` : file.path || "文件路径待确认"),
       actions,
     );
     elements.resumeFileList.append(card);
@@ -12004,11 +12013,13 @@ function preparePublicResumePrintView() {
     .filter(Boolean)
     .join(" - ")
     .slice(0, 120);
-  elements.resumePrintRoot.replaceChildren(buildPublicResumePrintClone());
+  const printClone = buildPublicResumePrintClone();
+  elements.resumePrintRoot.replaceChildren(printClone);
   elements.resumePrintRoot.setAttribute("aria-hidden", "false");
   document.body.classList.add("printing-resume");
   document.title = filename || "Resume";
   const cleanup = () => {
+    if (elements.resumePrintRoot.firstChild !== printClone) return;
     clearTimeout(resumePrintCleanupTimer);
     document.body.classList.remove("printing-resume");
     elements.resumePrintRoot.replaceChildren();
@@ -12044,25 +12055,45 @@ async function exportResumeToPdf() {
   if (!ensureResumePublicationReady()) return;
   const cleanup = preparePublicResumePrintView();
   if (!cleanup) return;
-  const originalLabel = elements.printResume.textContent;
+  const originalLabel = "保存 PDF";
+  const exportSequence = ++resumePdfExportSequence;
   elements.printResume.disabled = true;
   elements.printResume.textContent = "正在生成";
+  const scope = currentProject();
+  const source = { resumeId: resumeRecordId(state.resume), updatedAt: state.resume.updatedAt || "" };
+  const html = elements.resumePrintRoot.innerHTML;
   try {
     await waitForResumePrintLayout();
+    scope.check();
+    const methods = context.availableMethods;
+    if (Array.isArray(methods) && !methods.includes("workspace.exportPdf")) {
+      if (!supportsResumePdfTasks(context) || !resumePdfUI) throw new Error("当前项目还不支持云端 PDF 导出，请更新主程序并确认求职 Panel 的执行与文件权限。");
+      const prepared = await prepareResumePdfTask({ html, ...source });
+      scope.check();
+      const job = await resumePdfUI.submit(prepared);
+      scope.check();
+      state.resumeWorkspaceMode = "files";
+      renderResumeWorkspace();
+      notify(job?.status === "succeeded" ? "PDF 已保存到项目，可在投递文件中打开或下载。" : "PDF 任务已提交，可在投递文件中查看、取消或重试。", "success");
+      cleanup();
+      return;
+    }
     if (!window.codeshellPanel?.call || Number(context.apiVersion || 0) < 3) {
       openSystemPdfFallback(cleanup);
       return;
     }
     const path = resumePdfExportPath();
-    const saved = await hostCall("workspace.exportPdf", {
+    const saved = await scope.call("workspace.exportPdf", {
       path,
       expectedModifiedAt: null,
     });
     const exportedAt = new Date().toISOString();
-    state.resume.pdfExports = [
-      { path, exportedAt, size: Number(saved?.size || 0) },
-      ...(Array.isArray(state.resume.pdfExports) ? state.resume.pdfExports : []),
-    ].slice(0, 12);
+    // The desktop print request belongs to the frozen source, even if the user
+    // selects another resume while the Host is generating the PDF.
+    for (const record of [state.resume, ...state.versions]) {
+      if (resumeRecordId(record) !== source.resumeId) continue;
+      record.pdfExports = [{ path, exportedAt, sourceUpdatedAt: source.updatedAt, size: Number(saved?.size || 0) }, ...(record.pdfExports || [])].slice(0, 12);
+    }
     state.resumeWorkspaceMode = "files";
     persist();
     renderResume();
@@ -12077,6 +12108,7 @@ async function exportResumeToPdf() {
     );
     cleanup();
   } catch (error) {
+    if (!scope.active()) { cleanup(); return; }
     const message = error instanceof Error ? error.message : "PDF 生成失败";
     if (/unknown Panel App method|unknown.*workspace\.exportPdf/i.test(message)) {
       openSystemPdfFallback(cleanup);
@@ -12085,8 +12117,10 @@ async function exportResumeToPdf() {
     cleanup();
     notify(message, "error");
   } finally {
-    elements.printResume.textContent = originalLabel;
-    elements.printResume.disabled = !state.resume.markdown;
+    if (exportSequence === resumePdfExportSequence) {
+      elements.printResume.textContent = originalLabel;
+      elements.printResume.disabled = !state.resume.markdown;
+    }
   }
 }
 
@@ -16278,6 +16312,11 @@ function bindEvents() {
   elements.resumeFileList?.addEventListener("click", (event) => {
     const open = event.target.closest("[data-open-resume-file-path]");
     if (open) {
+      if (open.dataset.resumeAssetId) {
+        void currentProject().call("resources.open", { assetId: open.dataset.resumeAssetId })
+          .catch(error => notify(error.message, "error"));
+        return;
+      }
       void runResumeFileAction(open.dataset.openResumeFilePath, "open");
       return;
     }
@@ -16965,6 +17004,8 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
     detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
   }
   projectEpoch++;
+  resumePdfUI?.close();
+  resumePdfUI = null;
   if (!keepSnapshotRecovery) snapshotRecoveryUI.contextChanged();
   draftImportPending = null;
   draftImportBusy = false;
@@ -17025,6 +17066,33 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
     document.querySelector(".app-shell").inert = false;
     renderAll();
     startProjectSnapshotWatch();
+    if (supportsResumePdfTasks(context)) {
+      let pdfReceiptsDirty = false;
+      resumePdfUI = createResumePdfUI({
+        root: elements.resumeFilesWorkspace, scope, notify,
+        saveReceipts: async (receipts) => {
+          scope.check();
+          let changed = false;
+          for (const { resumeId, ...receipt } of receipts) {
+            for (const record of [state.resume, ...state.versions]) {
+              if (resumeRecordId(record) !== resumeId || (record.pdfExports || []).some(item => item.assetId === receipt.assetId)) continue;
+              record.pdfExports = [receipt, ...(record.pdfExports || [])]
+                .sort((a, b) => b.exportedAt.localeCompare(a.exportedAt)).slice(0, 12);
+              changed = true;
+            }
+          }
+          if (!changed && !pdfReceiptsDirty) return;
+          pdfReceiptsDirty = true;
+          if (changed) { persist(); renderResume(); renderResumeWorkspace(); }
+          const saved = await writeProjectSnapshot();
+          scope.check();
+          if (!saved) throw new Error("PDF 已生成，但投递记录尚未同步；请在材料库重试保存，任务文件仍可下载");
+          pdfReceiptsDirty = false;
+          renderMaterials();
+        },
+      });
+      void resumePdfUI.refresh();
+    }
   } catch (error) {
     if (!scope.active()) return;
     projectReady = false;
