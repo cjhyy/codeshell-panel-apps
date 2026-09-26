@@ -165,7 +165,8 @@ function loadVideo(
   });
 }
 
-function seekVideo(
+/** Freeze a verified frame from a paused decoder; the caller owns and closes it. */
+export function seekVideo(
   video: HTMLVideoElement,
   seconds: number,
   signal: AbortSignal,

@@ -9,6 +9,7 @@ import {
   type CaptionStyle,
 } from "./model";
 import { isDemoNarration, demoSceneIndex } from "./demo";
+import { seekVideo } from "./editor/media-pool";
 
 export interface LocalMedia {
   file?: File;
@@ -22,6 +23,8 @@ export interface LocalMedia {
   duration?: number;
   width?: number;
   height?: number;
+  videoFrame?: VideoFrame;
+  videoFrameTime?: number;
 }
 
 function cancelled(): Error {
@@ -256,6 +259,9 @@ export class MediaLibrary {
 
   private unloadVideo(item: LocalMedia): void {
     if (!(item.element instanceof HTMLVideoElement)) return;
+    item.videoFrame?.close();
+    item.videoFrame = undefined;
+    item.videoFrameTime = undefined;
     item.element.pause();
     item.source?.disconnect();
     item.gain?.disconnect();
@@ -769,7 +775,24 @@ export class MediaLibrary {
         if (request !== this.seekRequest) return;
         if (this.items.get(clip.assetId) !== item) throw cancelled();
         await this.activateVideo(item, signal);
-        await seekMedia(item.element as HTMLVideoElement, target, signal);
+        if (signal.aborted || request !== this.seekRequest || this.items.get(clip.assetId) !== item)
+          return;
+        const element = item.element as HTMLVideoElement;
+        element.pause();
+        item.videoFrame?.close();
+        item.videoFrame = undefined;
+        item.videoFrameTime = undefined;
+        const captured = await seekVideo(element, target, signal, 15000, clip.assetId);
+        if (
+          signal.aborted ||
+          request !== this.seekRequest ||
+          this.items.get(clip.assetId) !== item
+        ) {
+          captured.close();
+          return;
+        }
+        item.videoFrame = captured;
+        item.videoFrameTime = element.currentTime;
       });
     } else await seekMedia(item.element, target);
   }
@@ -777,12 +800,22 @@ export class MediaLibrary {
 
 function contain(
   ctx: CanvasRenderingContext2D,
-  image: HTMLVideoElement | HTMLImageElement,
+  image: HTMLVideoElement | HTMLImageElement | VideoFrame,
   w: number,
   h: number,
 ): void {
-  const iw = image instanceof HTMLVideoElement ? image.videoWidth : image.naturalWidth;
-  const ih = image instanceof HTMLVideoElement ? image.videoHeight : image.naturalHeight;
+  const iw =
+    image instanceof HTMLVideoElement
+      ? image.videoWidth
+      : image instanceof HTMLImageElement
+        ? image.naturalWidth
+        : image.displayWidth;
+  const ih =
+    image instanceof HTMLVideoElement
+      ? image.videoHeight
+      : image instanceof HTMLImageElement
+        ? image.naturalHeight
+        : image.displayHeight;
   if (!iw || !ih) return;
   const scale = Math.min(w / iw, h / ih);
   ctx.drawImage(image, (w - iw * scale) / 2, (h - ih * scale) / 2, iw * scale, ih * scale);
@@ -883,9 +916,17 @@ export function renderFrame(
   if (asset?.kind === "demo") drawDemo(ctx, w, h, demoSceneIndex(asset), frame);
   else if (asset) {
     const item = library.items.get(asset.id);
-    if (item?.element instanceof HTMLVideoElement || item?.element instanceof HTMLImageElement)
-      contain(ctx, item.element, w, h);
-    else if (!item) {
+    if (item?.element instanceof HTMLVideoElement || item?.element instanceof HTMLImageElement) {
+      // A paused source preview must draw the exact verified frame, not a mutable
+      // compositor surface. Playback and a later pause must not reuse an old seek.
+      const frozen =
+        item.element instanceof HTMLVideoElement &&
+        item.element.paused &&
+        item.element.currentTime === item.videoFrameTime
+          ? item.videoFrame
+          : undefined;
+      contain(ctx, frozen ?? item.element, w, h);
+    } else if (!item) {
       ctx.textAlign = "center";
       ctx.fillStyle = "#8ca69f";
       ctx.font = `${w * 0.026}px system-ui`;
