@@ -1,5 +1,21 @@
 # Design Studio Panel App
 
+## 待发布：项目恢复草稿的并发保护
+
+支持版本校验的主程序上，自动恢复草稿按读取到的版本保存和删除。另一窗口修改后，
+当前画布保留、自动覆盖停止，可下载带项目身份的草稿备份，再明确读取最新恢复记录。
+保存响应丢失时先核对记录，不重复提交；读取失败或损坏记录不会被当作空记录覆盖或删除。
+切换项目会停止旧操作，未确认的旧草稿暂存在当前页面供下载，不写入新项目。
+这些页面内草稿不是持久备份，请在关闭前下载；备份保留操作记录及原项目／文件版本，
+引用资源仍属于原项目，不是可独立迁移的完整设计包。旧主程序显示并发保护限制。
+设计文件本身仍使用原来的文件版本校验和保存／另存流程。未发布新版本。
+
+开发验收：`node scripts/design-studio-host-storage.mjs /absolute/path/to/built/server-package`
+可将当前恢复模块连接到已构建的兼容 `@cjhyy/code-shell-server`，验证真实磁盘上的
+并发、重启、项目隔离、撤销和条件删除；只创建并清理自己的临时项目，不启动服务。
+该检查需要支持版本存储接口的 Host，不以旧公开包或内存模拟代替实际验收。
+
+
 Design Studio 0.18 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
 surface: thirteen declared design/delivery tools plus a repository-design Skill.

@@ -1937,3 +1937,20 @@ dialog::backdrop {
     background: rgba(255, 255, 255, 0.9);
   }
 }
+
+.recovery-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.recovery-status[hidden] { display: none; }
+.recovery-status span { flex: 1 1 240px; }
+.app-shell:has(> .recovery-status:not([hidden])) {
+  grid-template-rows: var(--topbar-height) auto minmax(0, 1fr);
+}
