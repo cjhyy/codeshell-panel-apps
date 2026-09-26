@@ -40,6 +40,7 @@ const job = (id: string, type: string, status: MediaJob["status"] = "queued"): M
 function fixture(
   referenceContext: {
     assetUrl?(assetId: string): string | undefined;
+    resolveSampleUrl?(asset: Asset): Promise<string>;
     showAsset?(assetId: string): void | Promise<void>;
     ensureReference?(value: VoiceLibraryReference): Promise<Asset>;
     listVoices?(): Promise<LibraryVoiceRecipe[]>;
@@ -1254,4 +1255,93 @@ test("explicit refresh discovers voices from another workspace while preserving 
   assert.deepEqual(await f.ui.initialization(), draft);
   assert.deepEqual(f.requests, []);
   assert.deepEqual(f.reconnected, []);
+});
+
+test("generated voice sample uses the connected scoped URL and preserves its result while disconnected", async () => {
+  const urls = new Map<string, string>([
+    [reference.id, "https://host.test/p/project/media/reference"],
+  ]);
+  const f = fixture({ assetUrl: (id) => urls.get(id) });
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-sample");
+  const asset = f.completeSample();
+  await f.ui.refresh();
+  const before = structuredClone(f.project());
+  assert.doesNotMatch(f.ui.render(), new RegExp(`/media/${asset.mediaId}`));
+  assert.match(f.ui.render(), /试听素材尚未连接/);
+  const address = 'https://host.test/p/project/assets/grant/_codeshell_resources/sample?test="<&';
+  urls.set(asset.id, address);
+  const markup = f.ui.render();
+  assert.match(
+    markup,
+    /src="https:\/\/host.test\/p\/project\/assets\/grant\/_codeshell_resources\/sample\?test=&quot;&lt;&amp;"/,
+  );
+  assert.match(markup, /crossorigin="anonymous"/);
+  assert.match(markup, /aria-label="本人声音真实试听"/);
+  urls.delete(asset.id);
+  assert.doesNotMatch(f.ui.render(), /aria-label="本人声音真实试听"/);
+  assert.match(f.ui.render(), /试听素材尚未连接/);
+  assert.deepEqual(f.project(), before);
+  f.changeProject();
+  await f.ui.load();
+  assert.doesNotMatch(f.ui.render(), /_codeshell_resources\/sample/);
+});
+
+test("sample authorization failures retain proof and late replies cannot enter another project", async () => {
+  let fail = true;
+  let release: ((url: string) => void) | undefined;
+  const f = fixture({
+    resolveSampleUrl: async () => {
+      if (fail) throw new Error("播放授权已失效，请刷新");
+      return new Promise<string>((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-sample");
+  const asset = f.completeSample();
+  await f.ui.refresh();
+  assert.match(f.ui.render(), /播放授权已失效，请刷新/);
+  assert.doesNotMatch(f.ui.render(), /aria-label="本人声音真实试听"/);
+  assert.ok(f.project().assets.some((item) => item.id === asset.id));
+  fail = false;
+  const oldLoad = f.ui.load();
+  for (let i = 0; i < 20 && !release; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(release);
+  f.changeProject();
+  await f.ui.load();
+  const changes = f.changes();
+  release!("https://host.test/old-grant.wav");
+  await oldLoad;
+  assert.equal(f.changes(), changes);
+  assert.doesNotMatch(f.ui.render(), /old-grant/);
+});
+
+test("explicit refresh retries failed sample authorization without generating speech again", async () => {
+  let attempts = 0;
+  const f = fixture({
+    resolveSampleUrl: async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("临时播放授权失败");
+      return "https://host.test/fresh-sample.wav";
+    },
+  });
+  f.installed();
+  await f.ui.load();
+  await f.select();
+  await f.ui.action("voice-prep-sample");
+  f.completeSample();
+  await f.ui.refresh();
+  await f.ui.refresh();
+  assert.equal(attempts, 1, "Background polling must not retry failures indefinitely");
+  assert.match(f.ui.render(), /临时播放授权失败/);
+  await f.ui.action("voice-prep-retry");
+  assert.equal(attempts, 2);
+  assert.match(f.ui.render(), /src="https:\/\/host.test\/fresh-sample.wav"/);
+  assert.equal(f.requests.length, 1);
 });

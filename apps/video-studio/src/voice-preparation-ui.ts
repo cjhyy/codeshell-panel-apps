@@ -37,6 +37,7 @@ interface Context {
   changed(): void;
   assertEditable(): void;
   assetUrl?(assetId: string): string | undefined;
+  resolveSampleUrl?(asset: Asset): Promise<string>;
   showAsset?(assetId: string): void | Promise<void>;
   ensureReference?(value: VoiceLibraryReference): Promise<Asset>;
   listVoices?(): Promise<LibraryVoiceRecipe[]>;
@@ -127,6 +128,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
     locked = false,
     busy = false;
   let refreshingVersion: number | undefined;
+  let samplePreview: { id: string; url?: string; error?: string } | undefined;
   let runtimeActive = true;
   let error = "",
     message = "",
@@ -221,6 +223,39 @@ export function createVoicePreparationUI(production: ProductionController, conte
           asset.speech.referenceText === selection.referenceText?.trim() &&
           asset.speech.text === sampleText().trim(),
       );
+  }
+  async function refreshSamplePreview(): Promise<void> {
+    if (!context.resolveSampleUrl) return;
+    const asset = sample();
+    if (!asset) {
+      samplePreview = undefined;
+      return;
+    }
+    if (samplePreview?.id === asset.mediaId) return;
+    const ownVersion = version;
+    const pending = { id: asset.mediaId! } as NonNullable<typeof samplePreview>;
+    samplePreview = pending;
+    try {
+      const url = await context.resolveSampleUrl(asset);
+      if (
+        ownVersion !== version ||
+        !current() ||
+        sample()?.mediaId !== pending.id ||
+        samplePreview !== pending
+      )
+        return;
+      pending.url = url;
+    } catch (reason) {
+      if (
+        ownVersion !== version ||
+        !current() ||
+        sample()?.mediaId !== pending.id ||
+        samplePreview !== pending
+      )
+        return;
+      pending.error = reason instanceof Error ? reason.message : String(reason);
+    }
+    context.changed();
   }
   function referenceError(): string {
     if (!selected()) return "未选择声音准备，初始化将保留现有原声。";
@@ -368,6 +403,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
     catalog = [];
     catalogLoaded = false;
     catalogReason = "";
+    samplePreview = undefined;
     verifiedJobs.clear();
     observedJobs.clear();
     document = empty(scope, projectId);
@@ -571,6 +607,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
     } catch (reason) {
       if (ownVersion === version) report(reason);
     } finally {
+      if (ownVersion === version && current()) await refreshSamplePreview();
       if (refreshingVersion === ownVersion) refreshingVersion = undefined;
     }
   }
@@ -707,6 +744,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
       const ownVersion = version,
         value = selected();
       if (name === "voice-prep-retry") {
+        if (samplePreview?.error) samplePreview = undefined;
         await Promise.all([refreshCatalog(), refreshLibrary()]);
         if (ownVersion === version) await refresh();
       } else if (name === "voice-prep-cancel") {
@@ -914,6 +952,17 @@ export function createVoicePreparationUI(production: ProductionController, conte
         ? context.assetUrl(source.id)
         : `/media/${source.mediaId!}`
       : undefined;
+    const sampleUrl = preview
+      ? context.resolveSampleUrl
+        ? samplePreview?.id === preview.mediaId
+          ? samplePreview?.url
+          : undefined
+        : context.assetUrl
+          ? context.assetUrl(preview.id)
+          : `/media/${preview.mediaId!}`
+      : undefined;
+    const mediaOrigin = (url: string) =>
+      /^https?:\/\//.test(url) ? ' crossorigin="anonymous"' : "";
     const unavailable = !production.enabled || !loaded || locked || busy;
     const controlsLocked = unavailable || working();
     const models = engines.map(
@@ -1038,7 +1087,7 @@ export function createVoicePreparationUI(production: ProductionController, conte
                     <p class="small muted">原录音 · 可直接试听，无需安装声音模型。</p>
                     ${
                       referenceUrl
-                        ? `<audio id="voice-prep-reference-audio" class="voice-preparation-reference-audio" controls preload="none" src="${esc(referenceUrl)}" data-reference-asset="${esc(source.id)}" aria-label="本人参考原录音"></audio>`
+                        ? `<audio id="voice-prep-reference-audio" class="voice-preparation-reference-audio" controls preload="none" src="${esc(referenceUrl)}"${mediaOrigin(referenceUrl)} data-reference-asset="${esc(source.id)}" aria-label="本人参考原录音"></audio>`
                         : '<p class="capability-note" data-voice-reference-unavailable role="status">原录音尚未连接，请在素材库重新连接后试听。</p>'
                     }
                     ${context.showAsset ? '<button class="quiet full" data-action="voice-prep-show-reference">在素材库查看</button>' : ""}
@@ -1117,7 +1166,7 @@ ${esc(sampleText())}</textarea
                   生成真实试听 · 不加入成片
                 </button>
                 ${preview
-                  ? `<audio class="voice-preparation-audio" controls preload="none" src="/media/${esc(preview.mediaId!)}" aria-label="本人声音真实试听"></audio><label class="voice-preparation-confirm"><input type="checkbox" id="voice-prep-confirmed" ${confirmed ? "checked" : ""} ${controlsLocked ? "disabled" : ""}>我已听过，确认音色和发音可以复用</label><label class="input-label">声音名称<input id="voice-prep-name" maxlength="80" value="${esc(recipeName)}" ${controlsLocked ? "disabled" : ""}></label><button class="full" data-action="voice-prep-save" ${controlsLocked || !confirmed ? "disabled" : ""}>保存并用于配音</button>`
+                  ? `${sampleUrl ? `<audio class="voice-preparation-audio" controls preload="none" src="${esc(sampleUrl)}"${mediaOrigin(sampleUrl)} aria-label="本人声音真实试听"></audio>` : `<p class="capability-note" data-voice-sample-unavailable role="status">${esc(samplePreview?.id === preview.mediaId && samplePreview?.error ? samplePreview.error : "试听素材尚未连接，结果仍保留。请恢复连接后刷新状态，再试听。")}</p>`}<label class="voice-preparation-confirm"><input type="checkbox" id="voice-prep-confirmed" ${confirmed ? "checked" : ""} ${controlsLocked || !sampleUrl ? "disabled" : ""}>我已听过，确认音色和发音可以复用</label><label class="input-label">声音名称<input id="voice-prep-name" maxlength="80" value="${esc(recipeName)}" ${controlsLocked ? "disabled" : ""}></label><button class="full" data-action="voice-prep-save" ${controlsLocked || !confirmed || !sampleUrl ? "disabled" : ""}>保存并用于配音</button>`
                   : ""}
               </section>
             `
