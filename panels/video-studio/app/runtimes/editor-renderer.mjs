@@ -2235,21 +2235,42 @@
   function videoReady(video) {
     return !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.videoHeight > 0;
   }
-  function loadVideo(video, url, signal, timeoutMs, assetId) {
+  var initialVideoFrames = /* @__PURE__ */ new WeakMap();
+  function loadDecodedVideo(video, url, signal, timeoutMs, assetId) {
     return new Promise((resolve, reject) => {
       let settled = false;
       const events = ["loadedmetadata", "loadeddata", "canplay"];
+      let framePoll;
+      initialVideoFrames.delete(video);
       const finish = (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearTimeout(framePoll);
         for (const event of events) video.removeEventListener(event, inspect);
         video.removeEventListener("error", failed);
         signal.removeEventListener("abort", cancel);
         error ? reject(error) : resolve();
       };
       const inspect = () => {
-        if (videoReady(video)) finish();
+        clearTimeout(framePoll);
+        if (settled || !videoReady(video)) return;
+        if (video.currentTime === 0) {
+          let frame;
+          try {
+            frame = new VideoFrame(video);
+          } catch (cause) {
+            if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+              framePoll = setTimeout(inspect, 16);
+              return;
+            }
+            finish(new MediaPoolError("decode", `无法读取视频首帧：${assetId}`, { cause }));
+            return;
+          }
+          initialVideoFrames.set(video, { source: video.currentSrc, timestamp: frame.timestamp });
+          frame.close();
+        }
+        finish();
       };
       const failed = () => finish(new MediaPoolError("decode", `无法解码视频素材：${assetId}`));
       const cancel = () => finish(aborted());
@@ -2310,10 +2331,14 @@
           }
           decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
           const time = Math.floor(video.currentTime * 1e6 + 1e-4);
+          const initial = initialVideoFrames.get(video);
           if (
             // An exact timestamp is already the requested picture, even when a
             // MediaRecorder frame reports duration 0 and no new presentation fires.
-            Math.abs(frame.timestamp - time) <= 1 || frame.timestamp <= time && frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || // Audio may begin before the first video frame. In that leading gap
+            Math.abs(frame.timestamp - time) <= 1 || // Before the first picture begins, use only the frame captured from
+            // this source's fresh decoder. A random later/stale surface cannot
+            // authorize a leading gap even when no compositor callback arrives.
+            initial?.source === video.currentSrc && time >= 0 && time <= initial.timestamp && frame.timestamp === initial.timestamp || frame.timestamp <= time && frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || // Audio may begin before the first video frame. In that leading gap
             // Chromium presents the first picture, whose timestamp is after the
             // requested clock. A validated receipt confirms that exact surface.
             presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1
@@ -2507,7 +2532,7 @@
           element2.defaultMuted = true;
           element2.playsInline = true;
           element2.preload = "auto";
-          await loadVideo(element2, resource.url, signal, this.timeoutMs, layer.assetId);
+          await loadDecodedVideo(element2, resource.url, signal, this.timeoutMs, layer.assetId);
         } else {
           element2.src = resource.url;
           try {
