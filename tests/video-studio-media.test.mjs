@@ -867,63 +867,44 @@ test(
     );
 
     await mediaTest(
-      "a seeked source is not published until its real frame notification arrives",
+      "a source cover is not published until its decoded frame can be frozen",
       async () => {
-        const result = await withMediaPage((page) =>
-          page.evaluate(async () => {
-            const { MediaLibrary } = window.videoMedia;
-            const prototype = HTMLVideoElement.prototype;
-            const request = prototype.requestVideoFrameCallback;
-            const library = new MediaLibrary();
-            let decoder, deliver, notify;
-            const notified = new Promise((resolve) => {
-              notify = resolve;
-            });
-            prototype.requestVideoFrameCallback = function (callback) {
-              decoder = this;
-              return request.call(this, (...args) => {
-                // Keep the real decoded frame, but deliver its notification late.
-                deliver = () => callback(...args);
-                notify();
-              });
-            };
-            try {
-              const pending = library.import(document.querySelector("#fixture").files[0]);
-              await notified;
-              if (decoder.seeking)
-                await new Promise((resolve) =>
-                  decoder.addEventListener("seeked", resolve, { once: true }),
-                );
-              const before = {
-                published: library.items.size,
-                connected: decoder.isConnected,
-                paused: decoder.paused,
-                time: decoder.currentTime,
-              };
-              deliver();
-              const asset = await pending;
-              const item = library.items.get(asset.id);
-              return {
-                before,
-                jpeg: item.thumbnail?.startsWith("data:image/jpeg;base64,"),
-                paused: item.element.paused,
-                time: item.element.currentTime,
-              };
-            } finally {
-              prototype.requestVideoFrameCallback = request;
-              library.clear();
+        const result = await withMediaPage(page => page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const NativeFrame = window.VideoFrame, frames = [];
+          let decoder, notify, attempts = 0, blocked = true;
+          const waiting = new Promise(resolve => { notify = resolve; });
+          window.VideoFrame = new Proxy(NativeFrame, { construct(target, args) {
+            if (args[0] instanceof HTMLVideoElement) {
+              decoder = args[0]; attempts++;
+              // The loader's initial probe succeeds. Only the cover's own frame
+              // is temporarily unavailable; it must not publish a mutable surface.
+              if (attempts > 1 && blocked) {
+                notify(); throw new DOMException("frame not ready", "InvalidStateError");
+              }
             }
-          }),
-        );
+            const frame = Reflect.construct(target, args); frames.push(frame); return frame;
+          } });
+          const library = new MediaLibrary();
+          try {
+            const pending = library.import(document.querySelector("#fixture").files[0]);
+            await waiting;
+            const before = { published: library.items.size, connected: decoder.isConnected, paused: decoder.paused, time: decoder.currentTime };
+            blocked = false;
+            const asset = await pending, item = library.items.get(asset.id);
+            return { before, jpeg: item.thumbnail?.startsWith("data:image/jpeg;base64,"), paused: item.element.paused, time: item.element.currentTime, released: frames.every(frame => frame.displayWidth === 0) };
+          } finally { window.VideoFrame = NativeFrame; library.clear(); }
+        }));
         assert.deepEqual(result.before, { published: 0, connected: false, paused: true, time: 0 });
         assert.equal(result.jpeg, true);
         assert.equal(result.paused, true);
         assert.equal(result.time, 0);
+        assert.equal(result.released, true);
       },
     );
 
     await mediaTest(
-      "optional frame waits fall back without the API and clean up errors, timeout and cancellation",
+      "optional covers freeze without notifications and clean up decoder errors and cancellation",
       async () => {
         const results = await withMediaPage((page) =>
           page.evaluate(async () => {
@@ -1000,7 +981,7 @@ test(
           } else {
             assert.equal(result.error, undefined, result.mode);
             assert.equal(result.count, 1, result.mode);
-            assert.equal(result.thumbnail, result.mode === "absent", result.mode);
+            assert.equal(result.thumbnail, ["absent", "timeout"].includes(result.mode), result.mode);
             assert.equal(result.paused, true, result.mode);
             assert.equal(result.time, 0, result.mode);
             assert.equal(result.ready, 0, "import releases its decoder after retaining the cover");
@@ -1011,6 +992,41 @@ test(
             result.mode,
           );
         }
+      },
+    );
+
+    await mediaTest(
+      "a paused source cover freezes real pixels even when presentation callbacks never arrive",
+      async () => {
+        const result = await withMediaPage(page => page.evaluate(async () => {
+          const { MediaLibrary } = window.videoMedia;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const draw = CanvasRenderingContext2D.prototype.drawImage;
+          let mutableReads = 0;
+          prototype.requestVideoFrameCallback = function (callback) {
+            return request.call(this, () => {});
+          };
+          CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+            if (source instanceof HTMLVideoElement) { mutableReads++; return; }
+            return draw.call(this, source, ...args);
+          };
+          const library = new MediaLibrary();
+          try {
+            const asset = await library.import(document.querySelector("#fixture").files[0]);
+            const item = library.items.get(asset.id);
+            if (!item.thumbnail) return { missing: true, mutableReads };
+            const image = new Image(); image.src = item.thumbnail; await image.decode();
+            const canvas = document.createElement("canvas"); canvas.width = 320; canvas.height = 180;
+            const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
+            const pixels = ctx.getImageData(0, 0, 320, 180).data;
+            return { missing: false, mutableReads, picture: pixels.some((v, i) => i % 4 !== 3 && v > 40), paused: item.element.paused, time: item.element.currentTime };
+          } finally {
+            library.clear(); prototype.requestVideoFrameCallback = request;
+            CanvasRenderingContext2D.prototype.drawImage = draw;
+          }
+        }));
+        assert.deepEqual(result, { missing: false, mutableReads: 0, picture: true, paused: true, time: 0 });
       },
     );
 
@@ -1049,6 +1065,8 @@ test(
               );
               const item = library.items.get(asset.id);
               const image = new Image();
+              if (typeof item.thumbnail !== "string" || !item.thumbnail.startsWith("data:image/jpeg;base64,"))
+                throw new Error(`Invalid black cover: ${JSON.stringify({ thumbnail: item.thumbnail, duration: asset.durationFrames, ready: item.element.readyState, time: item.element.currentTime })}`);
               image.src = item.thumbnail;
               await image.decode();
               ctx.drawImage(image, 0, 0, 160, 90);
