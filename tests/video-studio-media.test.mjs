@@ -437,6 +437,86 @@ test(
     );
 
     await mediaTest(
+      "paused source previews use verified frozen frames and release them after replacement or suspension",
+      async () => {
+        const result = await withMediaPage((page) =>
+          page.evaluate(async () => {
+            const { MediaLibrary, createProject, renderFrame } = window.videoMedia;
+            const library = new MediaLibrary();
+            const project = createProject();
+            project.width = 160;
+            project.height = 90;
+            const asset = {
+              id: "source",
+              kind: "video",
+              name: "source",
+              mediaId: "managed-source",
+              durationFrames: 120,
+              width: 160,
+              height: 90,
+            };
+            project.assets = [asset];
+            project.clips = [
+              { id: "clip", assetId: asset.id, inFrame: 0, outFrame: 120, volume: 1 },
+            ];
+            const canvas = document.querySelector("#preview");
+            const draw = CanvasRenderingContext2D.prototype.drawImage;
+            let mutableReads = 0;
+            // A decoded paused video's mutable surface can lag behind seeking.
+            // Keep real decode/seek and all VideoFrame reads; make direct preview
+            // reads black so the legacy path cannot pass by compositor timing luck.
+            CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+              if (this.canvas === canvas && source instanceof HTMLVideoElement) {
+                mutableReads++;
+                this.fillStyle = "black";
+                this.fillRect(0, 0, canvas.width, canvas.height);
+                return;
+              }
+              return draw.call(this, source, ...args);
+            };
+            try {
+              await library.connectManaged(asset);
+              await library.seek(project, 30);
+              const first = library.items.get(asset.id).videoFrame;
+              renderFrame(canvas, project, library, 30);
+              const pixels = canvas
+                .getContext("2d")
+                .getImageData(0, 0, canvas.width, canvas.height).data;
+              const colors = new Set();
+              for (let i = 0; i < pixels.length; i += 400)
+                colors.add(`${pixels[i]},${pixels[i + 1]},${pixels[i + 2]}`);
+              await library.seek(project, 60);
+              const second = library.items.get(asset.id).videoFrame;
+              const replaced = Boolean(
+                first && first.displayWidth === 0 && second?.displayWidth > 0,
+              );
+              library.suspend();
+              return {
+                mutableReads,
+                colors: colors.size,
+                replaced,
+                released: Boolean(second && second.displayWidth === 0),
+              };
+            } finally {
+              library.clear();
+              CanvasRenderingContext2D.prototype.drawImage = draw;
+            }
+          }),
+        );
+        assert.ok(result.colors > 20, JSON.stringify(result));
+        assert.deepEqual(
+          { ...result, colors: undefined },
+          {
+            mutableReads: 0,
+            colors: undefined,
+            replaced: true,
+            released: true,
+          },
+        );
+      },
+    );
+
+    await mediaTest(
       "playback reconnects video audio and follows both trimmed sources after eviction",
       async () => {
         const result = await withMediaPage((page) =>
@@ -484,7 +564,9 @@ test(
                       const deadline = performance.now() + 1000;
                       while (library.audio.currentTime <= beforeAudioTime) {
                         if (performance.now() >= deadline)
-                          throw new Error(`Audio rendering clock did not advance: ${library.audio.state}`);
+                          throw new Error(
+                            `Audio rendering clock did not advance: ${library.audio.state}`,
+                          );
                         await new Promise((resolve) => setTimeout(resolve, 5));
                       }
                       const active = [...library.items].filter(([, item]) =>
