@@ -1954,3 +1954,7 @@ dialog::backdrop {
 .app-shell:has(> .recovery-status:not([hidden])) {
   grid-template-rows: var(--topbar-height) auto minmax(0, 1fr);
 }
+
+#portable-backup-dialog { width: min(640px, 94vw); }
+.portable-backup-field { display: grid; gap: 8px; margin: 16px 0; }
+.portable-backup-preview, #portable-backup-status { white-space: pre-wrap; overflow-wrap: anywhere; }

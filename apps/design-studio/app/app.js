@@ -70,6 +70,7 @@ import {
   createDesignOperationRecord,
   isEmptyDesignOperationRecord,
 } from "./operation-log.mjs";
+import { mountPortableBackup } from "./portable-backup-ui.mjs";
 import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
@@ -350,6 +351,7 @@ let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
 let workspaceLoading = true;
+let portableBackupUI = null;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
 let recoverySession = null;
@@ -5600,6 +5602,7 @@ function updateContext(next) {
     fileDiscoveryCachedAt = 0;
     savedSnapshot = "";
     workspaceEpoch += 1;
+    portableBackupUI?.contextChanged();
     recoverySession = null;
     recoveryIssue = "";
     recoveryStoredValue = null;
@@ -7761,6 +7764,39 @@ async function initialize() {
   await refreshRepoFilesPanel({ force: true });
   startExternalSync();
 }
+
+portableBackupUI = mountPortableBackup({
+  getScope: () => ({ epoch: workspaceEpoch, source: {
+    workspaceRoot: context.cwd ?? null, sessionId: context.sessionId ?? null,
+    path: currentSourcePath ?? elements.path.value.trim(),
+  } }),
+  checkScope: (scope) => {
+    assertWorkspaceEpoch(scope.epoch);
+    if (workspaceLoading || context.trusted !== true) throw new Error("当前项目尚未准备好，请稍后重试");
+  },
+  capture: async (scope) => {
+    assertWorkspaceEpoch(scope.epoch);
+    syncLoadedPageRecords();
+    const basis = currentDesignStateRevision();
+    let snapshot = clone(design);
+    const cache = currentPageCache;
+    if (cache) {
+      await cache.ensure(snapshot.pages.map(page => page.id));
+      assertWorkspaceEpoch(scope.epoch);
+      const records = new Map(cache.loadedPageIds().map(id => [id, clone(cache.get(id))]));
+      snapshot = materializeIndexedDesignState({ manifest: cache.manifest, records,
+        activePageId: snapshot.activePageId, metadata: snapshot });
+    }
+    assertWorkspaceEpoch(scope.epoch);
+    if (currentDesignStateRevision() !== basis) throw new Error("设计在备份期间发生变化，请重新下载");
+    return snapshot;
+  },
+  call: hostCall, sha256: sha256Text, sha256Bytes,
+  restored: () => {
+    fileDiscoveryCache = null;
+    void refreshRepoFilesPanel({ force: true });
+  },
+});
 
 const initialization = initialize();
 registerAgentTools(initialization);

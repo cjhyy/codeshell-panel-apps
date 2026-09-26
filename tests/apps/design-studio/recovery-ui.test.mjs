@@ -6,11 +6,14 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { resolve, sep, extname } from "node:path";
 import { chromium } from "playwright";
+import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
+import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const hash = (value) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 async function fixture(t) {
+  const files = new Map();
   const records = new Map(),
     calls = [],
     contexts = [];
@@ -51,7 +54,8 @@ async function fixture(t) {
     await new Promise((resolve) => server.close(resolve));
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false } = {}) {
+  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false, initialPath = null } = {}) {
+    const initialScope = scope;
     const context = await browser.newContext({ acceptDownloads: true });
     contexts.push(context);
     const page = await context.newPage();
@@ -78,16 +82,27 @@ async function fixture(t) {
         else records.set(key, structuredClone(params.value));
         return deliver(scope, method, { updated: true, snapshot: snapshot() });
       }
-      if (method === "storage.get") return records.get(key) ?? null;
+      if (method === "storage.get") {
+        if (initialPath && scope === initialScope && params.key.startsWith("lastPath.")) return { workspaceRoot: cwd, path: initialPath };
+        return records.get(key) ?? null;
+      }
       if (method === "storage.set") {
         records.set(key, structuredClone(params.value));
         return null;
       }
       if (method === "workspace.info") return { name: scope.split("/").at(-1), cwd: scope };
       if (method === "workspace.list") return { entries: [], truncated: false };
-      if (method === "workspace.readText") throw Error("file missing");
-      if (method === "workspace.writeText")
-        return { modifiedAt: Date.now(), revision: hash(params.content) };
+      if (method === "workspace.readText") {
+        const content = files.get(`${scope}:${params.path}`);
+        if (content === undefined) throw Error("file missing");
+        return { content, modifiedAt: 1, revision: hash(content) };
+      }
+      if (method === "workspace.writeText") {
+        const path = `${scope}:${params.path}`;
+        if (params.expectedModifiedAt === null && files.has(path)) throw Error("file exists");
+        files.set(path, params.content);
+        return { modifiedAt: 1, revision: hash(params.content) };
+      }
       throw Error(`Unsupported ${method}`);
     });
     await page.addInitScript(({ cwd, scope, sessionId, deferContext }) => {
@@ -125,13 +140,14 @@ async function fixture(t) {
     }, { cwd, scope, sessionId, deferContext });
     await page.goto(`${origin}/index.html`);
     if (!deferContext) await page.waitForFunction(() =>
-      document.querySelector("#repo-link-state")?.textContent.includes("新设计"),
+      /新设计|已打开/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
     );
     return page;
   }
   return {
     page,
     records,
+    files,
     calls,
     pauseResponse(scope, method) {
       let enter, release;
@@ -325,4 +341,79 @@ test("editing stays unavailable while the new same-path project is loading and b
   hold.release();
   await page.waitForFunction(() => !document.querySelector(".topbar").inert);
   assert.equal(await page.locator("#active-page option").count(), 1);
+});
+
+
+async function downloadComplete(page) {
+  await page.locator("#portable-backup-open").click();
+  const pending = page.waitForEvent("download");
+  await page.locator("#portable-backup-export").click();
+  const result = await readFile(await (await pending).path());
+  await page.locator("#portable-backup-close").click();
+  return result;
+}
+async function selectComplete(page, buffer) {
+  await page.locator("#portable-backup-open").click();
+  await page.locator("#portable-backup-file").setInputFiles({ name: "complete.json", mimeType: "application/json", buffer });
+  await page.waitForFunction(() => !document.querySelector("#portable-backup-restore").disabled);
+}
+
+test("complete backup moves all canvas pages to a new project file without replacing its current canvas", async t => {
+  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  await page.locator("#add-page").click();
+  const buffer = await downloadComplete(page);
+  assert.equal(JSON.parse(buffer).document.pages.length, 2);
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await page.waitForFunction(() => !document.querySelector(".topbar").inert);
+  await selectComplete(page, buffer);
+  assert.match(await page.locator("#portable-backup-preview").textContent(), /cloud-A[\s\S]*cloud-B/);
+  await page.locator("#portable-backup-path").fill("designs/imported.codesign.json");
+  await page.locator("#portable-backup-restore").click();
+  await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
+  assert.equal(await page.locator("#active-page option").count(), 1);
+  assert.equal(JSON.parse(f.files.get("cloud-B:designs/imported.codesign.json")).pages.length, 2);
+  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+});
+
+test("complete backup preview is invalidated by project changes and cancel writes nothing", async t => {
+  const f = await fixture(t), page = await f.page();
+  const buffer = await downloadComplete(page);
+  await selectComplete(page, buffer);
+  await page.evaluate(() => window.switchProject("/project/B"));
+  await page.locator("#portable-backup-status").filter({ hasText: "项目已切换" }).waitFor();
+  assert.equal(await page.locator("#portable-backup-restore").isDisabled(), true);
+  await page.locator("#portable-backup-close").click();
+  assert.equal(f.calls.some(c => c.method === "workspace.writeText"), false);
+});
+
+test("complete backup restoration preserves an existing destination and permits retry to a new path", async t => {
+  const f = await fixture(t), page = await f.page();
+  const buffer = await downloadComplete(page);
+  f.files.set("/project/A:designs/existing.codesign.json", "original bytes");
+  await selectComplete(page, buffer);
+  await page.locator("#portable-backup-path").fill("designs/existing.codesign.json");
+  await page.locator("#portable-backup-restore").click();
+  await page.locator("#portable-backup-status").filter({ hasText: "冲突" }).waitFor();
+  assert.equal(f.files.get("/project/A:designs/existing.codesign.json"), "original bytes");
+  await page.locator("#portable-backup-path").fill("designs/new.codesign.json");
+  await page.locator("#portable-backup-restore").click();
+  await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
+  assert.equal(f.files.has("/project/A:designs/new.codesign.json"), true);
+});
+
+
+test("complete backup materializes twelve indexed pages including pages not yet viewed", async t => {
+  const f = await fixture(t);
+  const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Indexed fixture", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i + 1}`, name: `Page ${i + 1}`, children: [] })) });
+  const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+  const initialPath = "designs/indexed.codesign.json";
+  f.files.set(`/project/A:${initialPath}`, plan.primarySource);
+  for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
+  const page = await f.page({ initialPath });
+  const initialReads = f.calls.filter(c => c.method === "workspace.readText").length;
+  const buffer = await downloadComplete(page), backup = JSON.parse(buffer);
+  assert.equal(backup.document.pages.length, 12);
+  assert.deepEqual(backup.document.pages.map(p => p.name), document.pages.map(p => p.name));
+  assert.ok(f.calls.filter(c => c.method === "workspace.readText").length > initialReads);
+  assert.equal(await page.locator("#active-page option").count(), 12);
 });

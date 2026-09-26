@@ -80,6 +80,7 @@
           >
             交付
           </button>
+          <button id="portable-backup-open" class="button" type="button" title="下载或恢复完整设计备份">备份</button>
           <button id="export-svg" class="button" type="button" title="导出 SVG">SVG</button>
           <button
             id="toggle-inspector"
@@ -1197,5 +1198,17 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script type="module" src="./app.js"></script>
+  <dialog id="portable-backup-dialog" aria-labelledby="portable-backup-title">
+      <section class="dialog-card">
+        <header><h2 id="portable-backup-title">完整设计备份</h2><button id="portable-backup-close" class="button" type="button">关闭</button></header>
+        <p class="dialog-description">包含全部页面、项目图片和字体。恢复会创建独立文件，保留当前画布和已有文件。</p>
+        <button id="portable-backup-export" class="button" type="button">下载完整备份</button>
+        <label class="portable-backup-field">选择完整备份<input id="portable-backup-file" type="file" accept="application/json,.json" /></label>
+        <p id="portable-backup-preview" class="portable-backup-preview"></p>
+        <label class="portable-backup-field">恢复文件路径<input id="portable-backup-path" type="text" spellcheck="false" /></label>
+        <p id="portable-backup-status" role="status"></p>
+        <footer><button id="portable-backup-restore" class="primary-button" type="button" disabled>确认恢复到新文件</button></footer>
+      </section>
+    </dialog>
   </body>
 </html>
