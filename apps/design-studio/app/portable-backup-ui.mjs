@@ -1,12 +1,16 @@
-import { createPortableDesign, planPortableDesign, restorePortableDesign, MAX_PORTABLE_DESIGN_BYTES } from "./portable-backup.mjs";
+import { createPortableDesign, restorePortableDesign, MAX_PORTABLE_DESIGN_BYTES } from "./portable-backup.mjs";
+import { designBackupCandidates, planDesignBackup } from "./legacy-backup.mjs";
 
 export function mountPortableBackup({ getScope, checkScope, capture, call, sha256, sha256Bytes, restored }) {
   const el = id => document.getElementById(id);
   const dialog = el("portable-backup-dialog"), status = el("portable-backup-status");
-  let generation = 0, selected = null, busy = false;
+  let generation = 0, selected = null, busy = false, candidates = [], candidateScope = null;
+  const chooser = el("portable-backup-candidate");
+  const clearCandidates = () => { el("portable-backup-file").value = ""; candidates = []; candidateScope = null; chooser.replaceChildren(); chooser.hidden = true; };
   const reset = () => { selected = null; el("portable-backup-restore").disabled = true; };
   const state = value => {
     busy = value;
+    chooser.disabled = value;
     el("portable-backup-export").disabled = value;
     el("portable-backup-file").disabled = value;
     el("portable-backup-path").disabled = value;
@@ -30,7 +34,7 @@ export function mountPortableBackup({ getScope, checkScope, capture, call, sha25
     if ((!operation || generation === operation.ticket) && dialog.open) status.textContent = error.message;
   };
   el("portable-backup-open").addEventListener("click", () => {
-    generation++; reset(); state(false);
+    generation++; reset(); clearCandidates(); state(false);
     el("portable-backup-file").value = "";
     el("portable-backup-preview").textContent = "";
     el("portable-backup-path").value = `designs/restored-${Date.now()}.codesign.json`;
@@ -38,11 +42,11 @@ export function mountPortableBackup({ getScope, checkScope, capture, call, sha25
     dialog.showModal();
   });
   el("portable-backup-close").addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => { generation++; reset(); state(false); });
+  dialog.addEventListener("close", () => { generation++; reset(); clearCandidates(); state(false); });
   el("portable-backup-export").addEventListener("click", async () => {
     if (busy) return;
     let operation;
-    reset(); state(true);
+    reset(); clearCandidates(); state(true);
     try {
       operation = start();
       status.textContent = "正在读取全部页面并校验图片和字体…";
@@ -59,23 +63,47 @@ export function mountPortableBackup({ getScope, checkScope, capture, call, sha25
     } catch (error) { failed(operation, error); }
     finally { if (!operation || generation === operation.ticket) state(false); }
   });
+  async function prepareCandidate(operation) {
+    const candidate = candidates[Number(chooser.value)];
+    if (!candidate) throw Error("请选择要恢复的草稿");
+    const plan = await planDesignBackup(candidate, { sha256, sha256Bytes,
+      readText: path => scopedCall(operation)("workspace.readText", { path }) });
+    operation.check();
+    selected = { plan, scope: operation.scope };
+    el("portable-backup-preview").textContent = `${plan.legacy ? "草稿日志恢复 · " : ""}${plan.name} · ${plan.pageCount} 页 · ${plan.resourceCount} 个资源\n来源：${plan.source.workspaceRoot ?? "未知"} / ${plan.source.path ?? "未保存"}\n来源会话：${plan.source.sessionId ?? "未记录"}\n恢复到：${operation.scope.source.workspaceRoot ?? "当前项目"}（${operation.scope.source.sessionId ?? "当前会话"}）`;
+    status.textContent = "校验通过。确认后创建独立设计文件，保留当前画布和原始日志。";
+  }
   el("portable-backup-file").addEventListener("change", async event => {
     const file = event.target.files?.[0];
     if (!file || busy) return;
     let operation;
-    reset(); state(true);
+    reset(); clearCandidates(); state(true);
     el("portable-backup-preview").textContent = "";
     try {
       operation = start();
-      if (file.size > MAX_PORTABLE_DESIGN_BYTES) throw Error("完整设计备份不能超过 128 MiB");
-      status.textContent = "正在校验备份，尚未写入项目…";
+      if (file.size > MAX_PORTABLE_DESIGN_BYTES) throw Error("设计备份不能超过 128 MiB");
+      status.textContent = "正在校验备份及所需基础文件，尚未写入项目…";
       const text = await file.text();
       operation.check();
-      const plan = await planPortableDesign(text, { sha256, sha256Bytes });
-      operation.check();
-      selected = { plan, scope: operation.scope };
-      el("portable-backup-preview").textContent = `${plan.name} · ${plan.pageCount} 页 · ${plan.resourceCount} 个资源\n来源：${plan.source.workspaceRoot ?? "未知"} / ${plan.source.path ?? "未保存"}\n来源会话：${plan.source.sessionId ?? "未记录"}\n恢复到：${operation.scope.source.workspaceRoot ?? "当前项目"}（${operation.scope.source.sessionId ?? "当前会话"}）`;
-      status.textContent = "校验通过。确认后创建独立设计文件，保留当前画布。";
+      candidates = designBackupCandidates(text); candidateScope = operation.scope;
+      chooser.replaceChildren(...candidates.map((candidate, index) => {
+        const option = document.createElement("option"); option.value = String(index);
+        option.textContent = candidate.label; return option;
+      }));
+      chooser.hidden = candidates.length === 1;
+      chooser.value = "0";
+      await prepareCandidate(operation);
+    } catch (error) { failed(operation, error); }
+    finally { if (!operation || generation === operation.ticket) state(false); }
+  });
+  chooser.addEventListener("change", async () => {
+    if (busy || !candidateScope) return;
+    let operation;
+    reset(); state(true); el("portable-backup-preview").textContent = "";
+    try {
+      operation = start(candidateScope);
+      status.textContent = "正在核对所选草稿的基础版本和资源…";
+      await prepareCandidate(operation);
     } catch (error) { failed(operation, error); }
     finally { if (!operation || generation === operation.ticket) state(false); }
   });
@@ -97,7 +125,7 @@ export function mountPortableBackup({ getScope, checkScope, capture, call, sha25
     finally { if (!operation || generation === operation.ticket) state(false); }
   });
   return { contextChanged() {
-    generation++; reset(); state(false);
+    generation++; reset(); clearCandidates(); state(false);
     el("portable-backup-preview").textContent = "";
     if (dialog.open) status.textContent = "项目已切换，旧操作已停止。请重新选择备份并确认目标项目。";
   } };

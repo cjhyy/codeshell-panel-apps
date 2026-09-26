@@ -5,7 +5,9 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createPortableDesign, planPortableDesign, restorePortableDesign } from "../apps/design-studio/app/portable-backup.mjs";
-import { normalizeDesignDocument } from "../apps/design-studio/app/document.mjs";
+import { planDesignBackup } from "../apps/design-studio/app/legacy-backup.mjs";
+import { captureDesignOperationState, createDesignOperationRecord } from "../apps/design-studio/app/operation-log.mjs";
+import { normalizeDesignDocument, serializeDesignDocument } from "../apps/design-studio/app/document.mjs";
 import { createDesignResourcePersistencePlan } from "../apps/design-studio/app/resource-store.mjs";
 if (process.argv.length !== 3) throw Error("Usage: node scripts/design-studio-portable-host.mjs <built-server-package-directory>");
 const serverRoot = resolve(process.argv[2]);
@@ -29,10 +31,22 @@ try {
   const plan = await planPortableDesign(text, { sha256: hash, sha256Bytes: hash });
   const path = "designs/restored.codesign.json";
   await restorePortableDesign({ plan, path, call: (method, params) => runtime.call(scope(target), method, params), check() {} });
+  const originalPath = "designs/original.codesign.json";
+  await runtime.call(scope(source), "workspace.writeText", { path: originalPath, content: serializeDesignDocument(document), expectedModifiedAt: null });
+  const original = await runtime.call(scope(source), "workspace.readText", { path: originalPath });
+  const changed = structuredClone(document); changed.name = "Recovered journal title";
+  const legacy = { format: "codeshell.design.recovery", version: 1, workspaceRoot: source,
+    path: originalPath, baseDocument: null, baseRevision: original.revision, baseModifiedAt: original.modifiedAt,
+    record: createDesignOperationRecord(captureDesignOperationState(document), captureDesignOperationState(changed)) };
+  const legacyPlan = await planDesignBackup({ kind: "legacy", value: legacy }, { sha256: hash, sha256Bytes: hash,
+    readText: path => runtime.call(scope(source), "workspace.readText", { path }) });
+  assert.equal(legacyPlan.name, changed.name);
+  await restorePortableDesign({ plan: legacyPlan, path: "designs/legacy.codesign.json", call: (method, params) => runtime.call(scope(target), method, params), check() {} });
   // Remove the original project to prove the restored file has no source dependency.
   await rm(source, { recursive: true });
   const reopened = new PanelRuntimeServices({ dataDir });
   const read = path => reopened.call(scope(target), "workspace.readText", { path });
+  assert.equal((await read("designs/legacy.codesign.json")).content, legacyPlan.primarySource);
   assert.equal((await read(path)).content, plan.primarySource);
   for (const part of plan.parts) assert.equal((await read(part.path)).content, part.content);
   await restorePortableDesign({ plan, path, call: (method, params) => reopened.call(scope(target), method, params), check() {} });
@@ -40,5 +54,5 @@ try {
   assert.equal((await read(path)).content, plan.primarySource);
   authorized = false;
   await assert.rejects(restorePortableDesign({ plan, path: "designs/revoked.codesign.json", call: (method, params) => reopened.call(scope(target), method, params), check() {} }));
-  console.log("PASS: actual Node Host complete design backup, independent target resources, source removal, restart, safe retry, collision preservation and revoked access");
+  console.log("PASS: actual Node Host complete and legacy design backups, exact baseline revision, independent target resources, source removal, restart, safe retry, collision preservation and revoked access");
 } finally { await rm(root, { recursive: true, force: true }); }

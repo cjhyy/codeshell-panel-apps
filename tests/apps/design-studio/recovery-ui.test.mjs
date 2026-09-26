@@ -417,3 +417,27 @@ test("complete backup materializes twelve indexed pages including pages not yet 
   assert.ok(f.calls.filter(c => c.method === "workspace.readText").length > initialReads);
   assert.equal(await page.locator("#active-page option").count(), 12);
 });
+
+
+test("a legacy backup lets the user choose a valid draft after a damaged entry and restores only a new file", async t => {
+  const f = await fixture(t), page = await f.page();
+  await page.locator("#add-page").click();
+  await page.evaluate(() => window.switchProject("/project/B"));
+  await page.locator("#recovery-message").filter({ hasText: "切换前项目" }).waitFor();
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path()));
+  backup.drafts.unshift({ format: "damaged", retained: "keep original" });
+  await page.locator("#portable-backup-open").click();
+  await page.locator("#portable-backup-file").setInputFiles({ name: "old-drafts.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+  await page.locator("#portable-backup-status").filter({ hasText: "草稿格式" }).waitFor();
+  assert.equal(await page.locator("#portable-backup-restore").isDisabled(), true);
+  await page.locator("#portable-backup-candidate").selectOption("1");
+  await page.waitForFunction(() => !document.querySelector("#portable-backup-restore").disabled);
+  await page.locator("#portable-backup-path").fill("designs/legacy-copy.codesign.json");
+  await page.locator("#portable-backup-restore").click();
+  await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
+  assert.equal(JSON.parse(f.files.get("/project/B:designs/legacy-copy.codesign.json")).pages.length, 2);
+  assert.equal(await page.locator("#active-page option").count(), 1);
+  assert.equal(f.calls.some(c => c.scope === "/project/B" && c.method === "storage.compareAndSet"), false);
+});
