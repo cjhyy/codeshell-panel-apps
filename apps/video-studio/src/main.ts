@@ -6049,7 +6049,9 @@ async function boot(): Promise<void> {
     await production.restorePreparation(project);
     await production.refresh().catch(fail);
     await automatic.resume().catch(fail);
-    if (!playback) render();
+    // The editor is usable before slow project/task restoration finishes. Keep
+    // any history or other review dialog the user has already opened mounted.
+    if (!playback && !document.querySelector("dialog[open]")) render();
   }
 }
 window.addEventListener(
