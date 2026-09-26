@@ -129,6 +129,7 @@ test(
         : asset?.body.length - 1;
       const body = asset ? asset.body.subarray(start, end + 1) : Buffer.from("Not found");
       response.writeHead(asset ? (range ? 206 : 200) : 404, {
+        "Access-Control-Allow-Origin": "*",
         "Accept-Ranges": "bytes",
         "Content-Length": body.length,
         ...(range ? { "Content-Range": `bytes ${start}-${end}/${asset.body.length}` } : {}),
@@ -225,6 +226,49 @@ test(
         await page.close();
       }
     }
+
+    routes.set("/preview/managed-source", routes.get("/media/managed-source"));
+    routes.set("/preview/managed-image", routes.get("/media/managed-image"));
+    await mediaTest("managed resource resolution draws real images and video in an opaque frame and discards late old-project URLs", async () => {
+      const result = await withMediaPage(async (page) => {
+        await page.evaluate(() => {
+          const frame = document.createElement("iframe"); frame.sandbox = "allow-scripts";
+          frame.src = "/"; document.body.append(frame);
+        });
+        const frame = await (await page.locator("iframe").elementHandle()).contentFrame();
+        await frame.waitForFunction(() => Boolean(window.videoMedia));
+        return frame.evaluate(async () => {
+          const { MediaLibrary, captureAssetFrame } = window.videoMedia;
+          const calls = [];
+          const library = new MediaLibrary({ resolveManagedUrl: async (id) => {
+            calls.push(id); return new URL(`/preview/${id}`, location.href).href;
+          } });
+          const frames = [];
+          try {
+            for (const kind of ["image", "video"]) {
+              const asset = { id: kind, kind, name: kind, durationFrames: 120,
+                mediaId: kind === "image" ? "managed-image" : "managed-source", width: 160, height: 90 };
+              await library.connectManaged(asset);
+              const captured = await captureAssetFrame(library, asset.id, kind === "video" ? 0.5 : 0);
+              frames.push({ width: captured.width, height: captured.height, bytes: captured.data.length });
+            }
+          } finally { library.clear(); }
+          let release;
+          const pendingLibrary = new MediaLibrary({ resolveManagedUrl: () => new Promise((done) => { release = done; }) });
+          const pending = pendingLibrary.connectManaged({ id: "late", name: "late", kind: "image", durationFrames: 30, mediaId: "managed-image" });
+          pendingLibrary.clear();
+          release(new URL("/preview/managed-image", location.href).href);
+          let rejected = false;
+          try { await pending; } catch { rejected = true; }
+          const empty = pendingLibrary.items.size === 0; pendingLibrary.clear();
+          return { opaque: window.origin === "null", frames, calls, rejected, empty };
+        });
+      });
+      assert.equal(result.opaque, true);
+      assert.deepEqual(result.calls, ["managed-image", "managed-source"]);
+      for (const frame of result.frames) { assert.equal(frame.width, 160); assert.equal(frame.height, 90); assert.ok(frame.bytes > 100); }
+      assert.equal(result.rejected, true); assert.equal(result.empty, true);
+    });
 
     await mediaTest(
       "bounds decoder sources while restoring 118 videos, sampling and importing concurrently",

@@ -1,3 +1,4 @@
+import { resourcePreviewUrl } from "./sdk/resource-preview";
 import { randomId } from "./ids.js";
 import {
   applyOperations,
@@ -240,7 +241,7 @@ const workspaceLayout = createWorkspaceLayout(studio, {
   },
 });
 window.addEventListener("pagehide", () => workspaceLayout.dispose(), { once: true });
-const library = new MediaLibrary();
+const library = new MediaLibrary({ resolveManagedUrl: (id) => resourcePreviewUrl(panel, id) });
 let panelVisible = true;
 let thumbnailObserver: IntersectionObserver | undefined;
 const visibleThumbnailCards = new Set<HTMLElement>();
@@ -5415,7 +5416,7 @@ async function previewEditorAudioResource(resourceId: string, signal: AbortSigna
       result.asset.bytes < 1
     )
       throw new Error("声音资源已不可用，请重新打开任务结果");
-    return { url: new URL(`/media/${resourceId}`, location.href).href, release() {} };
+    return { url: await resourcePreviewUrl(panel, resourceId, signal), release() {} };
   } finally {
     runtime.dispose();
   }
@@ -5593,7 +5594,7 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
   const source = editorSession!.read().assets.find((asset) => asset.id === assetId);
   const proxy = editorProxyResources.get(assetId);
   if (source && proxy?.sourceKey === editorSourceKey(source))
-    return { url: new URL(`/media/${proxy.resourceId}`, location.href).href, owned: false };
+    return { url: await resourcePreviewUrl(panel, proxy.resourceId, signal), owned: false };
   if (signal.aborted) throw new DOMException("取消预览", "AbortError");
   if (
     editorNativePreviewsActive &&
@@ -5633,10 +5634,10 @@ async function resolveEditorAsset(assetId: string, signal: AbortSignal) {
       );
       if (signal.aborted) throw new DOMException("画面尺寸已校正", "AbortError");
     }
-    return { url: new URL(`/media/${prepared.proxy.id}`, location.href).href, owned: false };
+    return { url: await resourcePreviewUrl(panel, prepared.proxy.id, signal), owned: false };
   }
   if (source?.resourceId)
-    return { url: new URL(`/media/${source.resourceId}`, location.href).href, owned: false };
+    return { url: await resourcePreviewUrl(panel, source.resourceId, signal), owned: false };
   let item = library.items.get(assetId);
   if (!item) {
     const asset = project.assets.find((asset) => asset.id === assetId);

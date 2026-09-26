@@ -1,3 +1,4 @@
+import { resourcePreviewUrl } from "./sdk/resource-preview";
 import { randomId } from "./ids.js";
 import { validateProject, type Asset, type AudioClip, type Project } from "./model";
 import type { PanelBridge } from "./host";
@@ -308,6 +309,7 @@ export interface ProductionCallbacks {
 export async function inspectImportedAsset(
   asset: ManagedAsset,
   isCurrent: () => boolean = () => true,
+  sourceUrl = `/media/${encodeURIComponent(asset.id)}`,
 ): Promise<PreparedMedia["inspection"]> {
   if (!/^(?:asset|external)-[a-f0-9]{64}$/.test(asset.id)) throw new Error("导入素材编号无效");
   const kind = asset.mimeType.startsWith("image/")
@@ -319,6 +321,7 @@ export async function inspectImportedAsset(
         : undefined;
   if (!kind || typeof document === "undefined") throw new Error("浏览器无法直接预览此原片");
   const element = kind === "image" ? new Image() : document.createElement(kind);
+  if (/^https?:$/.test(new URL(sourceUrl, location.href).protocol)) element.crossOrigin = "anonymous";
   const media = element instanceof HTMLMediaElement ? element : undefined;
   if (media) media.preload = "auto";
   try {
@@ -396,7 +399,7 @@ export async function inspectImportedAsset(
       for (const event of listeners) element.addEventListener(event, inspect);
       element.addEventListener("error", failed, { once: true });
       try {
-        element.src = `/media/${encodeURIComponent(asset.id)}`;
+        element.src = sourceUrl;
       } catch {
         failed();
       }
@@ -1672,7 +1675,7 @@ export class ProductionController {
           try {
             inspection = await (this.callbacks.inspectImportedAsset
               ? this.callbacks.inspectImportedAsset(asset)
-              : inspectImportedAsset(asset, current));
+              : inspectImportedAsset(asset, current, await resourcePreviewUrl(this.bridge, asset.id)));
           } catch {
             // Formats the browser cannot decode can still use the existing native proxy path.
             continue;
