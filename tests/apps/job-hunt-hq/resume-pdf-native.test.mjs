@@ -93,6 +93,7 @@ test("cancelling an active browser removes its profile and leaves no PDF", async
   const task = renderResumePdf({ action: "resume-pdf", html: "<main>cancel me</main>" }, { directory, signal: controller.signal });
   // Attach rejection immediately while waiting for the actual process profile.
   const checked = assert.rejects(task, /取消/);
+  void checked.catch(() => {});
   let active = false;
   for (let attempt = 0; attempt < 100; attempt++) {
     const profiles = (await readdir(directory)).filter((name) => name.startsWith(".pdf-browser-"));

@@ -68,6 +68,7 @@ export async function renderResumePdf(input, { directory, signal } = {}) {
   let browser;
   let browserClosed;
   let outputWritten = false;
+  let browserDiagnostics = "";
   let session;
   let sequence = 0;
   let buffer = Buffer.alloc(0);
@@ -102,7 +103,11 @@ export async function renderResumePdf(input, { directory, signal } = {}) {
     browserClosed = new Promise((resolve) => browser.once("close", resolve));
     browser.stdio[3].on("error", () => rejectAll(new Error("PDF 浏览器连接已关闭。")));
     browser.stdio[4].on("error", () => rejectAll(new Error("PDF 浏览器连接已关闭。")));
-    browser.stderr.resume();
+    browser.stderr.on("data", (chunk) => {
+      // Keep bounded diagnostics private. Only classify known setup failures for
+      // the user; raw browser logs may contain document or local path details.
+      browserDiagnostics = (browserDiagnostics + chunk.toString("utf8")).slice(-8192);
+    });
     browser.on("error", () => rejectAll(new Error("PDF 浏览器无法启动。")));
     browser.on("exit", () => rejectAll(new Error("PDF 浏览器已退出，请检查浏览器安装与沙箱配置。")));
     browser.stdio[4].on("data", (chunk) => {
@@ -176,6 +181,8 @@ export async function renderResumePdf(input, { directory, signal } = {}) {
     return { artifacts: [{ file: "resume.pdf", role: "pdf", mimeType: "application/pdf", bytes: pdf.length, sha256, assetId: `asset-${sha256}` }] };
   } catch (error) {
     if (outputWritten) await rm(join(root, "resume.pdf"), { force: true });
+    if (!deadline.aborted && /No usable sandbox|Failed to move to new namespace|Operation not permitted|Running as root without --no-sandbox|AppArmor/i.test(browserDiagnostics))
+      throw new Error("PDF 浏览器沙箱无法启动，请由管理员检查非 root 运行、用户命名空间及容器安全策略；不会自动关闭浏览器沙箱。");
     throw error;
   } finally {
     deadline.removeEventListener("abort", abort);

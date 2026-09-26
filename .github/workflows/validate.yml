@@ -25,6 +25,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y poppler-utils fonts-noto-cjk
+      - name: Diagnose sandboxed Chromium startup
+        run: |
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { spawnSync } from 'node:child_process';
+          import { mkdtempSync, rmSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join } from 'node:path';
+          const profile = mkdtempSync(join(tmpdir(), 'pdf-sandbox-probe-'));
+          try {
+            const result = spawnSync(chromium.executablePath(), ['--headless=new', '--no-first-run', '--disable-background-networking', '--user-data-dir=' + profile, '--dump-dom', 'about:blank'], { encoding: 'utf8', timeout: 15000 });
+            console.log(JSON.stringify({ status: result.status, signal: result.signal, stderr: result.stderr?.slice(-8192) }));
+            if (result.status !== 0) process.exitCode = 1;
+          } finally { rmSync(profile, { recursive: true, force: true }); }
+          NODE
       - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
 
   validate:
