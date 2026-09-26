@@ -891,13 +891,13 @@ function serializeDesign() {
   return serializeDocument(design);
 }
 
-function serializeEditorState() {
-  const state = captureDesignOperationState(design);
-  if (currentPageCache) {
+function serializeEditorState(value = design, pageCache = currentPageCache) {
+  const state = captureDesignOperationState(value);
+  if (pageCache) {
     const descriptors = new Map(
-      currentPageCache.manifest.pages.map((page) => [page.id, page]),
+      pageCache.manifest.pages.map((page) => [page.id, page]),
     );
-    const dirtyPageIds = new Set(currentPageCache.dirtyPageIds());
+    const dirtyPageIds = new Set(pageCache.dirtyPageIds());
     for (const page of state.pages) {
       if (dirtyPageIds.has(page.id)) continue;
       page.nodes = null;
@@ -3360,6 +3360,7 @@ function captureSaveDocument({ quiet = false } = {}) {
     workspaceIdentity: operationWorkspaceIdentity,
     workspaceRoot: operationWorkspaceRoot,
     recoverySession,
+    documentEpoch,
     path,
     content,
     savedDesign,
@@ -3440,7 +3441,7 @@ async function performSaveDocument(request) {
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     fileDiscoveryCache = null;
     recoveryFailureWarned = false;
-    const stillTargetsSavedPath = elements.path.value.trim() === path;
+    const stillTargetsSavedPath = elements.path.value.trim() === path && documentEpoch === request.documentEpoch;
     if (stillTargetsSavedPath) {
       currentModifiedAt = result.modifiedAt;
       currentRevision = result.revision;
@@ -3449,13 +3450,49 @@ async function performSaveDocument(request) {
       currentSourceModifiedAt = result.modifiedAt;
       currentSourceRevision = result.revision;
       currentDesignIndexManifest =
-        persistence.mode === "indexed" ? persistence.manifest : null;
+        persistence.mode === "indexed" ? clone(persistence.manifest) : null;
+      const nextSavedOperationState = captureDesignOperationState(savedDesign);
+      // Pages loaded after capture may now have a known baseline. Preserve that
+      // baseline, not their newer edited contents, for the recovery delta.
+      for (const page of nextSavedOperationState.pages) {
+        if (page.nodes !== null) continue;
+        const previousBase = savedOperationState?.pages.find((entry) => entry.id === page.id);
+        if (Array.isArray(previousBase?.nodes)) {
+          page.nodes = clone(previousBase.nodes);
+          page.nodeCount = previousBase.nodeCount;
+        }
+      }
       if (currentPageCache && persistence.mode === "indexed") {
-        currentPageCache.updateManifest(persistence.manifest);
+        syncLoadedPageRecords();
+        const liveRecords = new Map(currentPageCache.loadedPageIds().map((id) =>
+          [id, clone(currentPageCache.get(id))]));
+        currentPageCache.updateManifest(clone(persistence.manifest));
+        const liveIds = new Set(design.pages.map((page) => page.id));
+        for (const descriptor of [...currentPageCache.manifest.pages]) {
+          if (!liveIds.has(descriptor.id)) currentPageCache.remove(descriptor.id);
+        }
+        const liveStates = new Map(captureDesignOperationState(design).pages.map((page) => [page.id, page]));
+        const savedStates = new Map(nextSavedOperationState.pages.map((page) => [page.id, page]));
+        for (const [index, page] of design.pages.entries()) {
+          const record = liveRecords.get(page.id);
+          if (!record) continue;
+          if (!currentPageCache.descriptor(page.id)) currentPageCache.register(record, index);
+          else {
+            const savedRecord = pageRecords?.get(page.id);
+            const changed = savedRecord
+              ? JSON.stringify(savedRecord) !== JSON.stringify(record)
+              : JSON.stringify(savedStates.get(page.id)?.nodes)
+                !== JSON.stringify(liveStates.get(page.id)?.nodes);
+            currentPageCache.set(page.id, record, { dirty: changed });
+          }
+        }
+        const order = new Map(design.pages.map((page, index) => [page.id, index]));
+        currentPageCache.manifest.pages.sort((a, b) => order.get(a.id) - order.get(b.id));
       }
       currentPersistenceMode = persistence.mode;
-      savedSnapshot = serializeEditorState();
-      savedOperationState = captureDesignOperationState(design);
+      savedSnapshot = serializeEditorState(savedDesign, currentPageCache
+        ? { manifest: persistence.manifest, dirtyPageIds: () => [] } : null);
+      savedOperationState = nextSavedOperationState;
       recoveryBaseDocument = null;
       updateDirtyState();
       setRepoLinkState("Repo · 已保存", "linked");
