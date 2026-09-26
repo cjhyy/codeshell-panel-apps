@@ -16947,7 +16947,7 @@ function bindEvents() {
   });
 }
 
-async function activateProject(next) {
+async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
   if (draftStorage) {
     saveCriticalDraftRecovery();
     detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
@@ -16981,7 +16981,7 @@ async function activateProject(next) {
     draftStorage = store;
     const { saved, recovery } = await store.load();
     scope.check();
-    const recoveredLocalState = loadCriticalDraftRecovery(saved, recovery);
+    const recoveredLocalState = restoreBrowserDrafts ? loadCriticalDraftRecovery(saved, recovery) : saved;
     state = mergeState(recoveredLocalState);
     projectReady = true;
     await syncProjectContext({
@@ -16990,6 +16990,7 @@ async function activateProject(next) {
       allowLegacyMigration: Boolean(saved && saved.localStateVersion !== 2),
     });
     scope.check();
+    if (!restoreBrowserDrafts) store.retain(criticalDraftRecoverySnapshot());
     draftStatus(store.backup().legacyRaw
       ? "发现旧版未标明项目的草稿，未自动导入；可下载备份。"
       : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前 Host 不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
@@ -17039,7 +17040,7 @@ function downloadDraftBackup() {
 
 document.querySelector("#download-draft-backup").addEventListener("click", downloadDraftBackup);
 document.querySelector("#reload-draft-storage").addEventListener("click", () => {
-  if (window.confirm("重新读取会替换当前输入。请先下载草稿备份；确认继续？")) void activateProject(context);
+  if (window.confirm("重新读取会替换当前输入。请先下载草稿备份；确认继续？")) void activateProject(context, { restoreBrowserDrafts: false });
 });
 
 bindEvents();

@@ -101,3 +101,22 @@ test('unsupported Host uses its scoped cache without global browser fallback', a
   assert.equal(storage.length, 1); assert.equal(h.data.get(STATE).answer, 'new');
   assert.equal(h.data.has(OWNER), false);
 });
+
+test('an uncertain unsuccessful save and malformed acknowledgement block subsequent writes', async () => {
+  for (const malformed of [false, true]) {
+    const h = host();
+    const store = make(h, browserStore(), { async call(method, params) {
+      if (method === 'storage.compareAndSet' && params.key === STATE) {
+        h.calls.push({ method, params });
+        if (malformed) return { updated: true, snapshot: { value: null } };
+        throw new Error('lost request');
+      }
+      return h.call(method, params);
+    } });
+    await store.load();
+    await assert.rejects(store.save({ answer: 'first' }));
+    await assert.rejects(store.save({ answer: 'second' }));
+    assert.equal(h.calls.filter(c => c.method === 'storage.compareAndSet' && c.params.key === STATE).length, 1);
+    assert.equal(h.data.has(STATE), false);
+  }
+});

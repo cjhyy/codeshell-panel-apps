@@ -178,3 +178,19 @@ test('an in-flight old-project cache acknowledgement cannot mark the new project
   assert.equal(result.current.drafts.interviewDraft.answer, 'draft-b');
   assert.equal(await page.evaluate(() => window.__fixture.projects.b.storage['job-hunt-state-v1'].resumeDraft?.markdown ?? ''), '');
 });
+
+test('explicit reread keeps the old draft in backup but does not replay it over the latest project', async t => {
+  const page = await fixture(t); await ready(page);
+  await edit(page, '# Discarded local draft');
+  await page.evaluate(() => {
+    window.__fixture.projects.a.storage['job-hunt-state-v1'] = {
+      localStateVersion: 2, interviewDraft: { answer: 'latest remote answer', updatedAt: '2026-02-01T00:00:00Z' },
+    };
+  });
+  page.once('dialog', dialog => dialog.accept()); await page.locator('#reload-draft-storage').click(); await ready(page);
+  const result = await backup(page);
+  assert.equal(result.current.drafts.resumeDraft.markdown, '');
+  assert.equal(result.current.drafts.interviewDraft.answer, 'latest remote answer');
+  assert.ok(result.detached.some(draft => draft.drafts.resumeDraft.markdown === '# Discarded local draft'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+});
