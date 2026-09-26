@@ -133,3 +133,38 @@ test('explicit reread archives corrupt browser bytes without deleting them or ig
   storage.setItem(key, '{changed corrupt bytes');
   await assert.rejects(make(h, storage).load(), /无法读取/);
 });
+
+test('replacement archive must succeed before cache CAS and observes the last successful value', async () => {
+  const h = host(), storage = browserStore();
+  h.data.set(STATE, { snapshotRestoreId: '', answer: 'before restore' });
+  let fail = true;
+  const archived = [];
+  const store = make(h, storage, { async beforeReplace(previous, next) {
+    if (previous?.snapshotRestoreId === next.snapshotRestoreId) return;
+    if (fail) throw new Error('archive unavailable');
+    archived.push(structuredClone(previous));
+  } });
+  await store.load();
+  const restored = { snapshotRestoreId: 'g-' + 'a'.repeat(32), answer: 'after restore' };
+  await assert.rejects(store.save(restored), /archive unavailable/);
+  assert.equal(h.data.get(STATE).answer, 'before restore');
+  assert.equal(h.calls.filter(c => c.method === 'storage.compareAndSet' && c.params.key === STATE).length, 0);
+  fail = false;
+  await store.save(restored);
+  await store.save({ ...restored, answer: 'next edit' });
+  await store.flush();
+  assert.deepEqual(archived, [{ snapshotRestoreId: '', answer: 'before restore' }]);
+  assert.equal(store.backup().hostState.answer, 'next edit');
+});
+
+test('another cache writer during archival is preserved by the subsequent CAS', async () => {
+  const h = host(); h.data.set(STATE, { answer: 'original' });
+  const archived = [];
+  const store = make(h, browserStore(), { async beforeReplace(previous) {
+    archived.push(previous); h.data.set(STATE, { answer: 'concurrent winner' });
+  } });
+  await store.load();
+  await assert.rejects(store.save({ answer: 'replacement' }), /其他窗口/);
+  assert.deepEqual(archived, [{ answer: 'original' }]);
+  assert.equal(h.data.get(STATE).answer, 'concurrent winner');
+});

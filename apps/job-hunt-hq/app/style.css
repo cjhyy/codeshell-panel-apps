@@ -10728,3 +10728,16 @@ body.panel-interview-focus-active .toast {
 #draft-import-dialog textarea, #draft-import-dialog select { width: 100%; margin: 8px 0 16px; }
 #draft-import-dialog footer { display: flex; justify-content: flex-end; gap: 12px; }
 #draft-import-error, #draft-import-issues { color: var(--danger, #b32f2f); }
+
+#snapshot-recovery-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 24px; }
+#snapshot-recovery-dialog select, #snapshot-recovery-dialog input { width: 100%; margin: 8px 0 16px; }
+#snapshot-recovery-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 35vh; overflow: auto; }
+#snapshot-recovery-dialog footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; }
+
+#snapshot-recovery-dialog { border: 1px solid var(--line, #d8deea); border-radius: 18px; box-shadow: 0 24px 80px #14233d33; color: var(--text, #17213b); font: inherit; }
+#snapshot-recovery-dialog::backdrop { background: #17213b66; }
+#snapshot-recovery-dialog h2 { margin: 0 0 12px; font-size: 21px; }
+#snapshot-recovery-dialog p { line-height: 1.65; }
+#snapshot-recovery-dialog > label, #snapshot-recovery-dialog details { display: block; margin-top: 16px; }
+#snapshot-recovery-preview:not(:empty) { padding: 16px; border: 1px solid #d8deea; border-radius: 10px; background: #f6f8fc; line-height: 1.65; }
+#snapshot-recovery-dialog footer { border-top: 1px solid #d8deea; padding-top: 16px; gap: 8px; }

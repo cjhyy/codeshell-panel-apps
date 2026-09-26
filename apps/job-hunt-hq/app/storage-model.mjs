@@ -1,6 +1,7 @@
 export const PANEL_LOCAL_STORAGE_TARGET_BYTES = 220 * 1024;
 
 const LOCAL_FIELDS = [
+  "snapshotRestoreId",
   "selectedJobId",
   "selectedInterviewSetId",
   "selectedBaseResumeId",

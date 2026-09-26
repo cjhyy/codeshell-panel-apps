@@ -14,7 +14,7 @@ function snapshot(record) {
 
 // The opaque owner lives in project-scoped Host storage. Paths alone cannot
 // distinguish cloud projects that all mount their files at /workspace.
-export function createDraftStorage({ call, methods = [], storage, check, randomId }) {
+export function createDraftStorage({ call, methods = [], storage, check, randomId, beforeReplace = async () => {} }) {
   const versioned = ["storage.getSnapshot", "storage.compareAndSet"].every(m => methods.includes(m));
   let revision = null, owner = null, loaded = false, blocked = null, observedState = null, browserBlocked = false;
   let tail = Promise.resolve();
@@ -77,6 +77,7 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
       loaded = true;
       blocked = null;
       let recovery = null;
+      let recoveries = [];
       try {
         const rawRecords = browserRecords();
         const quarantined = rawRecords.flatMap(record => {
@@ -108,12 +109,13 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
         records.sort((a, b) => b.savedAt - a.savedAt);
         browserBlocked = false;
         recovery = records[0]?.drafts ?? null;
+        recoveries = records.map(record => record.drafts);
       } catch {
         browserBlocked = true;
         blocked = failure("当前项目的浏览器草稿无法读取，已保留原始记录，请下载备份后处理。");
         throw blocked;
       }
-      return { saved, recovery };
+      return { saved, recovery, recoveries };
     },
     retain(drafts) {
       check();
@@ -131,14 +133,18 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
       if (!loaded || !owner || blocked) throw blocked || failure("当前项目草稿尚未就绪，请先重新读取。");
       storage.setItem(browserPrefix() + "backup-" + randomId(), JSON.stringify({ version: 2, owner, savedAt: Date.now(), archived: true, drafts }));
     },
+    flush() { return tail; },
     save(value) {
       const copy = structuredClone(value);
       const action = tail.catch(() => {}).then(async () => {
         check();
         if (!loaded || blocked) throw blocked || failure("草稿尚未成功读取，已阻止覆盖。");
+        await beforeReplace(structuredClone(observedState), copy);
+        check();
         if (!versioned) {
           try { await invoke("storage.set", { key: STATE_KEY, value: copy }); }
           catch (error) { blocked = error; throw error; }
+          observedState = structuredClone(copy);
           return;
         }
         const matches = (record) => record.exists && JSON.stringify(record.value) === JSON.stringify(copy);
@@ -149,7 +155,7 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
           check();
           const observed = await read(STATE_KEY).catch(() => null);
           check();
-          if (observed && matches(observed)) { revision = observed.revision; return; }
+          if (observed && matches(observed)) { revision = observed.revision; observedState = structuredClone(copy); return; }
           blocked = failure("无法确认草稿是否保存，已停止重发。请下载备份后重新读取。");
           throw blocked;
         }
@@ -160,6 +166,7 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
           throw blocked;
         }
         revision = record.revision;
+        observedState = structuredClone(copy);
       });
       tail = action;
       return action;

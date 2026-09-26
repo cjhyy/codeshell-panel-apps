@@ -21,6 +21,7 @@
       <span id="draft-storage-status" role="status">正在连接草稿存储…</span>
       <button id="download-draft-backup" type="button">下载草稿备份</button>
       <button id="import-draft-backup" type="button">恢复草稿备份</button>
+      <button id="snapshot-recovery-open" type="button">项目快照与恢复</button>
       <input id="draft-import-file" type="file" accept="application/json,.json" hidden />
       <button id="reload-draft-storage" type="button">重新读取</button>
     </aside>
@@ -38,6 +39,18 @@
       <label>当前项目的题目 <select id="draft-import-question"></select></label>
       <p id="draft-import-error" role="alert"></p>
       <footer><button id="draft-import-cancel" type="button">关闭</button><button id="draft-import-apply" type="button">确认恢复到当前项目</button></footer>
+    </dialog>
+    <dialog id="snapshot-recovery-dialog" aria-labelledby="snapshot-recovery-title">
+      <h2 id="snapshot-recovery-title">项目快照与恢复</h2>
+      <p>先预览，再确认恢复。当前文件和未保存草稿会先保留备份；照片、JD 原件和外部资料不包含在结构化快照中。</p>
+      <label>项目内的备份<select id="snapshot-recovery-source"></select></label>
+      <button id="snapshot-recovery-refresh" class="button button-quiet" type="button">刷新备份列表</button>
+      <label>或选择下载过的完整备份<input id="snapshot-recovery-file" type="file" accept="application/json,.json" /></label>
+      <details><summary>使用备份位置</summary><label>项目内的备份位置<input id="snapshot-recovery-path" type="text" autocomplete="off" /></label></details>
+      <button id="snapshot-recovery-review" class="button button-quiet" type="button">预览所选备份</button>
+      <pre id="snapshot-recovery-preview"></pre>
+      <p id="snapshot-recovery-status" role="status"></p>
+      <footer><button id="snapshot-recovery-drafts" class="button button-quiet" type="button" disabled>下载保留的草稿</button><button id="snapshot-recovery-download" class="button button-quiet" type="button" disabled>下载所选备份</button><button id="snapshot-recovery-close" class="button button-quiet" type="button">关闭</button><button id="snapshot-recovery-apply" class="button button-primary" type="button" disabled>确认恢复到当前项目</button></footer>
     </dialog>
     <main class="app-shell">
       <header class="topbar">

@@ -5,6 +5,7 @@ import {
 } from "./snapshot-sharding-model.mjs";
 
 const FORMAT = "codeshell.job-hunt.snapshot-backup";
+const RAW_FORMAT = "codeshell.job-hunt.raw-snapshot-backup";
 const PREFIX = "career-data/panel-backups/";
 const GENERATION = /^g-[0-9a-f]{32}$/;
 const CHUNK_CHARACTERS = 48 * 1024;
@@ -43,9 +44,9 @@ function validateBundle(bundle) {
 }
 
 /** Capture original file text, including fields unknown to this Panel version. */
-export async function createSnapshotBackup(
+export async function captureSnapshotBundle(
   previousSnapshot,
-  { scope, beforeOperation = async () => {}, reason = "migration" },
+  { scope, beforeOperation = async () => {}, clientState },
 ) {
   scope.check();
   const root = JSON.parse(previousSnapshot.content);
@@ -66,8 +67,23 @@ export async function createSnapshotBackup(
     if (sourceBytes > MAX_SNAPSHOT_BACKUP_BYTES) throw new Error("快照备份超过 128 MiB 上限");
     shards.push({ path: descriptor.path, content: result.content });
   }
-  const bundle = { format: FORMAT, version: 1, root: previousSnapshot.content, shards };
+  const bundle = { format: FORMAT, version: 1, root: previousSnapshot.content, shards,
+    ...(clientState === undefined ? {} : { clientState: structuredClone(clientState) }) };
   validateBundle(bundle);
+  return bundle;
+}
+
+export async function persistSnapshotBundle(bundle, { scope, beforeOperation = async () => {}, reason = "migration" }) {
+  scope.check();
+  validateArchive(bundle);
+  let operation = 0;
+  const call = async (method, params) => {
+    await beforeOperation(operation++);
+    scope.check();
+    const result = await scope.call(method, params);
+    scope.check();
+    return result;
+  };
   const source = JSON.stringify(bundle);
   const size = bytes(source);
   if (size > MAX_SNAPSHOT_BACKUP_BYTES) throw new Error("快照备份超过 128 MiB 上限");
@@ -94,6 +110,7 @@ export async function createSnapshotBackup(
     generation,
     createdAt: new Date().toISOString(),
     reason,
+    kind: bundle.format === RAW_FORMAT ? "raw" : "snapshot",
     sha256,
     bytes: size,
     parts: part,
@@ -107,6 +124,28 @@ export async function createSnapshotBackup(
     expectedModifiedAt: null,
   });
   return { path, manifest };
+}
+
+function validateArchive(bundle) {
+  if (bundle?.format === RAW_FORMAT) {
+    if (bundle.version !== 1 || typeof bundle.root !== "string" || !Array.isArray(bundle.shards) || bundle.shards.length)
+      throw new Error("原文备份格式无效");
+    return { root: null, hydrated: null, raw: true };
+  }
+  return { ...validateBundle(bundle), raw: false };
+}
+
+export async function createSnapshotBackup(previousSnapshot, options) {
+  let operation = 0;
+  const beforeOperation = () => options.beforeOperation?.(operation++);
+  const bundle = await captureSnapshotBundle(previousSnapshot, { ...options, beforeOperation });
+  return persistSnapshotBundle(bundle, { ...options, beforeOperation });
+}
+
+export function rawSnapshotBundle(content, clientState) {
+  if (typeof content !== "string") throw new Error("主文件原文不可用，已停止恢复");
+  return { format: RAW_FORMAT, version: 1, root: content, shards: [],
+    ...(clientState === undefined ? {} : { clientState: structuredClone(clientState) }) };
 }
 
 /** Reconstruct and verify every byte without changing any project file. */
@@ -151,5 +190,21 @@ export async function readSnapshotBackup(path, { scope, beforeOperation = async 
     throw new Error("快照备份内容校验失败");
   scope.check();
   const bundle = JSON.parse(source);
-  return { manifest, bundle, ...validateBundle(bundle) };
+  return { manifest, bundle, ...validateArchive(bundle) };
+}
+
+export async function readPortableSnapshotBackup(text) {
+  if (typeof text !== "string" || bytes(text) > MAX_SNAPSHOT_BACKUP_BYTES * 2)
+    throw new Error("备份文件过大或格式无效");
+  const parsed = JSON.parse(text);
+  const { manifest, bundle } = parsed || {};
+  if (manifest?.format !== FORMAT || manifest.version !== 1 ||
+      typeof manifest.generation !== "string" || !GENERATION.test(manifest.generation) ||
+      !Number.isSafeInteger(manifest.bytes) || manifest.bytes < 1 || manifest.bytes > MAX_SNAPSHOT_BACKUP_BYTES ||
+      typeof manifest.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(manifest.sha256))
+    throw new Error("请选择由项目快照导出的完整备份文件；原文文件不能直接恢复");
+  const source = JSON.stringify(bundle);
+  if (typeof source !== "string" || bytes(source) !== manifest.bytes || await digest(source) !== manifest.sha256)
+    throw new Error("备份文件内容校验失败");
+  return { manifest, bundle, ...validateArchive(bundle) };
 }
