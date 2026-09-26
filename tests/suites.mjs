@@ -17,6 +17,11 @@ export const suites = [
     commands: [["--test", "tests/panel-build.test.mjs"]],
   },
   {
+    id: "design-studio",
+    label: "Design Studio project recovery",
+    commands: [["--test", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs"]],
+  },
+  {
     id: "quant-lab",
     label: "Quant Lab data, portfolio and market workflows",
     commands: [["scripts/test-quant-lab.mjs"]],
