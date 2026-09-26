@@ -7,6 +7,7 @@ import {
   type AutoProduction,
   type ProductionStatus,
   type PreparedMedia,
+  type ProductionDelivery,
 } from "./production";
 export interface ProductionViewState {
   connected?: boolean;
@@ -17,6 +18,7 @@ export interface ProductionViewState {
   preparations: ReadonlyMap<string, PreparedMedia>;
   /** Video exports from the export record (Host editor tasks), newest first. */
   exports?: readonly ExportJobSummary[];
+  delivery?: ProductionDelivery;
 }
 function renderExportJobs(exports: readonly ExportJobSummary[], statuses: Record<string, string>) {
   if (!exports.length) return "";
@@ -24,7 +26,9 @@ function renderExportJobs(exports: readonly ExportJobSummary[], statuses: Record
     .slice(0, 30)
     .map((job) => {
       const progress =
-        job.fraction === undefined ? undefined : Math.round(Math.max(0, Math.min(1, job.fraction)) * 100);
+        job.fraction === undefined
+          ? undefined
+          : Math.round(Math.max(0, Math.min(1, job.fraction)) * 100);
       return `<article class="job-card ${esc(job.status)}" data-export-job-id="${esc(job.id)}"><div class="job-heading"><strong>${esc(job.title)}</strong><span>${statuses[job.status] ?? ""}</span></div><p>${esc(job.message)}</p>${["queued", "running"].includes(job.status) ? (progress === undefined ? `<progress max="100"></progress>` : `<progress max="100" value="${progress}"></progress>`) : ""}<div class="job-footer">${progress === undefined ? "<span></span>" : `<span>${progress}%</span>`}<button type="button" class="text-button" data-action="open-export-jobs" data-id="${esc(job.id)}">在导出记录中查看</button></div></article>`;
     })
     .join("")}</div>`;
@@ -93,7 +97,13 @@ export function renderProductionJobs(state: ProductionViewState): string {
               ? result?.asset
               : undefined);
           const progress = Math.round(Math.max(0, Math.min(1, job.progress?.fraction ?? 0)) * 100);
-          return `<article class="job-card ${job.status}"><div class="job-heading"><strong>${labels[job.type] ?? esc(job.type)}</strong><span>${statuses[job.status]}</span></div><p>${esc(job.error?.message ?? job.progress?.message ?? "")}</p>${["queued", "running"].includes(job.status) ? `<progress max="100" value="${progress}"></progress><div class="job-footer"><span>${progress}%</span><button class="text-button" data-job-action="cancel" data-job-id="${esc(job.id)}">取消</button></div>` : ""}${job.status === "failed" && job.error?.retryable ? `<button class="full" data-job-action="retry" data-job-id="${esc(job.id)}">重试任务</button>` : ""}${artifact ? `<div class="job-result"><button data-job-action="play" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("play")}播放</button><button class="primary" data-job-action="save" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("download")}保存${["tts", "tts-online", "tts-managed", "tts-clone", "audio-enhance"].includes(job.type) ? "音频" : " MP4"}</button></div>` : ""}</article>`;
+          const resultActions =
+            artifact && job.status === "succeeded" && state.delivery?.save
+              ? state.delivery.save === "preview"
+                ? `<div class="job-result"><button class="primary" data-job-action="save" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("download")}预览与保存</button></div>`
+                : `<div class="job-result"><button data-job-action="play" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("play")}播放</button><button class="primary" data-job-action="save" data-job-id="${esc(job.id)}" data-asset-id="${esc(artifact.id)}">${icon("download")}保存${["tts", "tts-online", "tts-managed", "tts-clone", "audio-enhance"].includes(job.type) ? "音频" : " MP4"}</button></div>`
+              : "";
+          return `<article class="job-card ${job.status}"><div class="job-heading"><strong>${labels[job.type] ?? esc(job.type)}</strong><span>${statuses[job.status]}</span></div><p>${esc(job.error?.message ?? job.progress?.message ?? "")}</p>${["queued", "running"].includes(job.status) ? `<progress max="100" value="${progress}"></progress><div class="job-footer"><span>${progress}%</span><button class="text-button" data-job-action="cancel" data-job-id="${esc(job.id)}">取消</button></div>` : ""}${job.status === "failed" && job.error?.retryable ? `<button class="full" data-job-action="retry" data-job-id="${esc(job.id)}">重试任务</button>` : ""}${resultActions}</article>`;
         })
         .join("") ||
       (exports.length
