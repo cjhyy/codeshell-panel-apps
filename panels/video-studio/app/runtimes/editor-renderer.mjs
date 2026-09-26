@@ -2270,35 +2270,72 @@
     });
   }
   function seekVideo(video, seconds, signal, timeoutMs, assetId) {
+    const seekTime = Math.ceil(seconds * 1e6) / 1e6;
     return new Promise((resolve, reject) => {
-      let settled = false, sought = false, decoded = false;
+      let settled = false, sought = false;
+      let poll;
       let callback;
-      const supportsCallback = typeof video.requestVideoFrameCallback === "function";
-      const finish = (error) => {
-        if (settled) return;
+      let presentedTime;
+      let decodedTiming;
+      const finish = (error, frame) => {
+        if (settled) {
+          frame?.close();
+          return;
+        }
         settled = true;
         clearTimeout(timer);
+        clearTimeout(poll);
         if (callback !== void 0) video.cancelVideoFrameCallback(callback);
         video.removeEventListener("seeked", onSeeked);
         video.removeEventListener("loadeddata", inspect);
         video.removeEventListener("canplay", inspect);
         video.removeEventListener("error", failed);
         signal.removeEventListener("abort", cancel);
-        error ? reject(error) : resolve();
+        error ? reject(error) : resolve(frame);
       };
       const inspect = () => {
-        if (sought && decoded && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
-          finish();
+        clearTimeout(poll);
+        if (settled) return;
+        if (sought && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5) {
+          let frame;
+          try {
+            frame = new VideoFrame(video);
+          } catch (cause) {
+            if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+              poll = setTimeout(inspect, 16);
+              return;
+            }
+            finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
+            return;
+          }
+          decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
+          const time = Math.floor(video.currentTime * 1e6 + 1e-4);
+          if (frame.timestamp <= time + 1 && // An exact timestamp is already the requested picture, even when a
+          // MediaRecorder frame reports duration 0 and no new presentation fires.
+          (Math.abs(frame.timestamp - time) <= 1 || frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1)) {
+            finish(void 0, frame);
+            return;
+          }
+          frame.close();
+        }
+        poll = setTimeout(inspect, 16);
       };
       const onSeeked = () => {
         sought = true;
-        if (!supportsCallback) decoded = true;
         inspect();
       };
       const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
       const cancel = () => finish(aborted());
       const timer = setTimeout(
-        () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId}`)),
+        () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId} ${JSON.stringify({
+          target: seconds,
+          current: video.currentTime,
+          sought,
+          seeking: video.seeking,
+          readyState: video.readyState,
+          decodedTiming,
+          presentedTime
+        })}`)),
         timeoutMs
       );
       video.addEventListener("seeked", onSeeked);
@@ -2311,13 +2348,20 @@
         return;
       }
       try {
-        if (supportsCallback)
-          callback = video.requestVideoFrameCallback(() => {
+        const seekStartedAt = performance.now();
+        const unchangedPosition = videoReady(video) && video.currentTime === seekTime;
+        const requestPresentation = () => {
+          if (settled || typeof video.requestVideoFrameCallback !== "function") return;
+          callback = video.requestVideoFrameCallback((_now, metadata) => {
             callback = void 0;
-            decoded = true;
+            if (unchangedPosition || metadata.presentationTime >= seekStartedAt)
+              presentedTime = metadata.mediaTime * 1e6;
             inspect();
+            requestPresentation();
           });
-        video.currentTime = seconds;
+        };
+        requestPresentation();
+        video.currentTime = seekTime;
       } catch (cause) {
         finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
       }
@@ -2344,6 +2388,7 @@
       if (!instance) return;
       this.instances.delete(instanceId);
       instance.bitmap?.close();
+      instance.videoFrame?.close();
       if (instance.element instanceof HTMLVideoElement) instance.element.pause();
       instance.element.removeAttribute("src");
       if (instance.element instanceof HTMLVideoElement) instance.element.load();
@@ -2494,12 +2539,19 @@
         const seconds = ticksToSeconds(layer.sourceTime);
         if (Number.isFinite(element.duration) && seconds >= element.duration)
           throw new MediaPoolError("decode", `请求画面已超出视频源时长：${layer.assetId}`);
-        if (instance.preparedSource !== layer.sourceTime || !videoReady(element) || Math.abs(element.currentTime - seconds) >= 1e-5)
-          await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+        if (instance.preparedSource !== layer.sourceTime || !videoReady(element) || Math.abs(element.currentTime - seconds) >= 1e-5) {
+          const decoded = await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+          if (signal.aborted || request.generation !== this.generation) {
+            decoded.close();
+            throw aborted();
+          }
+          instance.videoFrame?.close();
+          instance.videoFrame = decoded;
+        }
         assertActive(signal);
         instance.preparedSource = layer.sourceTime;
       }
-      return instance.bitmap ?? element;
+      return instance.videoFrame ?? instance.bitmap ?? element;
     }
     async prepare(frame, signal) {
       if (this.disposed) throw new MediaPoolError("disposed", "媒体解码池已释放");
