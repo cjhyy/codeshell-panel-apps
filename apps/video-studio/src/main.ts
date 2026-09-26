@@ -696,6 +696,7 @@ const voiceover = createVoiceoverUI(production, {
 const voicePreparation = createVoicePreparationUI(production, {
   project: () => project,
   assetUrl: (id) => library.items.get(id)?.url,
+  resolveSampleUrl: (asset) => resourcePreviewUrl(panel, asset.mediaId!),
   showAsset: async (id) => {
     search = "";
     mediaPreferences.filter = "all";

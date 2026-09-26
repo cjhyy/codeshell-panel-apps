@@ -38,25 +38,28 @@ before(async () => {
   await mkdir(artifacts, { recursive: true });
   server = createServer(async (request, response) => {
     const pathname = new URL(request.url, "http://localhost").pathname;
-    const path = pathname.startsWith("/media/")
-      ? resolve(output, "demo-narration.mp3")
-      : resolve(output, "." + pathname.replace(/\/$/, "/index.html"));
+    const scoped = pathname.startsWith("/scoped-media/");
+    const sampleRequest =
+      pathname === `/media/${sampleId}` || pathname === `/scoped-media/${sampleId}`;
+    const path =
+      pathname.startsWith("/media/") || scoped
+        ? resolve(output, "demo-narration.mp3")
+        : resolve(output, "." + pathname.replace(/\/$/, "/index.html"));
     if (!path.startsWith(output + sep)) return response.writeHead(403).end();
     try {
       response.writeHead(200, {
-        "Content-Type":
-          pathname === `/media/${sampleId}`
-            ? "audio/wav"
-            : {
-                ".html": "text/html",
-                ".mjs": "text/javascript",
-                ".css": "text/css",
-                ".mp3": "audio/mpeg",
-              }[extname(path)] || "application/octet-stream",
+        "Content-Type": sampleRequest
+          ? "audio/wav"
+          : {
+              ".html": "text/html",
+              ".mjs": "text/javascript",
+              ".css": "text/css",
+              ".mp3": "audio/mpeg",
+            }[extname(path)] || "application/octet-stream",
         "Content-Security-Policy":
           "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'",
       });
-      response.end(pathname === `/media/${sampleId}` ? sample.bytes : await readFile(path));
+      response.end(sampleRequest ? sample.bytes : await readFile(path));
     } catch {
       response.writeHead(404).end();
     }
@@ -80,7 +83,7 @@ after(async () => {
   assert.deepEqual(errors, [], "No app runtime or CSP errors");
 });
 
-async function pageWithHost({ width = 1440, installed = false } = {}) {
+async function pageWithHost({ width = 1440, installed = false, scopedMedia = false } = {}) {
   const page = await browser.newPage({ viewport: { width, height: 960 } });
   page.setDefaultTimeout(10_000);
   page.on("pageerror", (error) => errors.push(error.message));
@@ -116,7 +119,7 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
   // the full controller/UI run unchanged and audio playback decodes actual MP3 originals and a WAV result.
   // This suite checks integration, not the naturalness of model-generated speech.
   await page.addInitScript(
-    ({ sourceId, sampleId, extractedId, sampleReceipt }) => {
+    ({ sourceId, sampleId, extractedId, sampleReceipt, scopedMedia }) => {
       const initial = {
         schemaVersion: 1,
         id: "voice-preparation-project",
@@ -251,7 +254,11 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         window.__events["media.job.changed"]?.(structuredClone(task));
       };
       window.codeshellPanel = {
-        getContext: async () => ({ cwd: "/isolated/audio8-ui", theme: "dark", availableMethods: ["media.export"] }),
+        getContext: async () => ({
+          cwd: "/isolated/audio8-ui",
+          theme: "dark",
+          availableMethods: ["media.export", ...(scopedMedia ? ["resources.preview"] : [])],
+        }),
         registerTool(name, fn) {
           window.__panelTools[name] = fn;
           return () => {};
@@ -262,6 +269,11 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (method === "resources.preview" && scopedMedia)
+            return {
+              asset: asset(args.assetId),
+              url: new URL(`/scoped-media/${args.assetId}`, location.href).href,
+            };
           if (method === "media.export") return { saved: true, name: "试听.wav" };
           if (method === "media.status")
             return {
@@ -352,6 +364,7 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
       sampleId,
       extractedId,
       sampleReceipt: { asset: sample.asset, inspection: sample.inspection },
+      scopedMedia,
     },
   );
   await page.goto(`${url}/?legacyWorkspace=1`);
@@ -1250,3 +1263,49 @@ test(
     }
   },
 );
+
+test("generated voice audition decodes through the Host preview URL and recovers after reload", async () => {
+  const page = await pageWithHost({ scopedMedia: true });
+  try {
+    await page.locator('[data-tab="ai"]').click();
+    await page.locator("#voice-prep-model").selectOption("audio8-tts");
+    await page.locator("#voice-prep-reference").selectOption("reference-project-asset");
+    await page.locator("#voice-prep-transcript").fill("这是我本人录下的参考声音。");
+    await page.locator('[data-action="voice-prep-setup"]').click();
+    await page.waitForFunction(() =>
+      window.__voiceRuntimeRequests.some((request) => request.action === "setup"),
+    );
+    await page.evaluate(() => window.__completeLocalVoice("setup"));
+    await page.locator('[data-action="voice-prep-sample"]').click();
+    await page
+      .waitForFunction(() =>
+        window.__voiceRuntimeRequests.some((request) => request.action === "generate"),
+      )
+      .catch(async (cause) => {
+        throw new Error(await page.locator(".voice-preparation").innerText(), { cause });
+      });
+    await page.evaluate(() => window.__completeLocalVoice("generate"));
+    const verify = async () => {
+      const audio = page.locator('audio[aria-label="本人声音真实试听"]');
+      await audio.waitFor();
+      assert.equal(new URL(await audio.getAttribute("src")).pathname, `/scoped-media/${sampleId}`);
+      assert.equal(await audio.getAttribute("crossorigin"), "anonymous");
+      await audio.evaluate((element) => element.play());
+      await page.waitForFunction(() => {
+        const audio = document.querySelector('audio[aria-label="本人声音真实试听"]');
+        return audio?.readyState >= 2 && audio.currentTime > 0 && !audio.error;
+      });
+      await audio.evaluate((element) => element.pause());
+      assert.ok(
+        (await call(page, "resources.preview")).some((item) => item.args.assetId === sampleId),
+      );
+    };
+    await verify();
+    await page.reload();
+    await enterLegacyProduction(page);
+    await page.locator('[data-tab="ai"]').click();
+    await verify();
+  } finally {
+    await page.close();
+  }
+});
