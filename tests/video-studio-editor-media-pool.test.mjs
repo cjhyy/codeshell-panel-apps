@@ -57,6 +57,13 @@ test(
       "-c:v", "libvpx-vp9", "-y", webm,
     ], { timeout: 15000, encoding: "utf8" });
     assert.equal(webmGenerated.status, 0, webmGenerated.stderr || String(webmGenerated.error));
+    const alternating = join(directory, "alternating.mp4");
+    const alternatingGenerated = spawnSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=red:s=96x64:r=30:d=1",
+      "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:enable='mod(n,2)'",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", alternating,
+    ], { timeout:15000, encoding:"utf8" });
+    assert.equal(alternatingGenerated.status,0,alternatingGenerated.stderr || String(alternatingGenerated.error));
     const gif = join(directory, "animated.gif");
     const animation = spawnSync(
       "ffmpeg",
@@ -108,6 +115,7 @@ test(
       ],
       ["/video", { type: "video/mp4", body: await readFile(source) }],
       ["/webm", { type: "video/webm", body: await readFile(webm) }],
+      ["/alternating", { type: "video/mp4", body: await readFile(alternating) }],
       ["/image", { type: "image/png", body: PNG.sync.write(image) }],
       ["/animated", { type: "image/gif", body: await readFile(gif) }],
       ["/bad", { type: "video/mp4", body: Buffer.from("invalid video bytes") }],
@@ -427,6 +435,44 @@ test(
           } finally { saved?.close(); pool.dispose(); window.VideoFrame = NativeFrame; }
         }));
         assert.deepEqual(result, {code:"timeout", closed:true, stopped:true, retried:true, released:true});
+      },
+    );
+
+    await t.test(
+      "fractional microsecond frame boundaries select the intended 30 fps picture without callbacks",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const {EditorMediaPool,layer,frame,sample} = window.poolTest;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = () => 1;
+          HTMLVideoElement.prototype.cancelVideoFrameCallback = () => {};
+          const pool = new EditorMediaPool({resolveAsset:()=>"/alternating",timeoutMs:1000});
+          try {
+            const pixels=[];
+            for(const index of [0,1,2,25,26,27,29])
+              pixels.push(sample((await pool.prepare(frame([layer("clip",index/30)]))).get("clip")));
+            return pixels;
+          } finally {pool.dispose();}
+        }));
+        [0,1,2,25,26,27,29].forEach((index,i)=>color(result[i],index%2 ? [0,0,255]:[255,0,0]));
+      },
+    );
+
+    await t.test(
+      "temporarily unavailable frame objects retry within the same deadline",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const {EditorMediaPool,layer,frame,sample}=window.poolTest;
+          const NativeFrame=window.VideoFrame;
+          let attempts=0;
+          window.VideoFrame=function(source){
+            if(++attempts<=3)throw new DOMException("Current frame not yet available","InvalidStateError");
+            return new NativeFrame(source);
+          };
+          const pool=new EditorMediaPool({resolveAsset:()=>"/video",timeoutMs:1000});
+          try {return {pixel:sample((await pool.prepare(frame([layer("clip",2.25)]))).get("clip")),attempts};}
+          finally {pool.dispose();window.VideoFrame=NativeFrame;}
+        }));
+        color(result.pixel,[0,0,255]);assert.equal(result.attempts,4);
       },
     );
 

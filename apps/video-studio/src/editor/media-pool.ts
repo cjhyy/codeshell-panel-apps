@@ -172,6 +172,10 @@ function seekVideo(
   timeoutMs: number,
   assetId: string,
 ): Promise<VideoFrame> {
+  // Media clocks have microsecond precision. Rounding a rational frame boundary
+  // down can select the preceding picture forever (for example 26/30 seconds).
+  // Choose the first representable instant at/after the requested source tick.
+  const seekTime = Math.ceil(seconds * 1_000_000) / 1_000_000;
   return new Promise((resolve, reject) => {
     let settled = false,
       sought = false;
@@ -207,6 +211,12 @@ function seekVideo(
         try {
           frame = new VideoFrame(video);
         } catch (cause) {
+          // HAVE_CURRENT_DATA may precede an accessible frame object in Chromium.
+          // Only its transient no-frame state is retried, under the same deadline.
+          if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+            poll = setTimeout(inspect, 16);
+            return;
+          }
           finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
           return;
         }
@@ -267,7 +277,7 @@ function seekVideo(
           inspect();
         });
       }
-      video.currentTime = seconds;
+      video.currentTime = seekTime;
     } catch (cause) {
       finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
     }

@@ -2270,6 +2270,7 @@
     });
   }
   function seekVideo(video, seconds, signal, timeoutMs, assetId) {
+    const seekTime = Math.ceil(seconds * 1e6) / 1e6;
     return new Promise((resolve, reject) => {
       let settled = false, sought = false;
       let poll;
@@ -2300,6 +2301,10 @@
           try {
             frame = new VideoFrame(video);
           } catch (cause) {
+            if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+              poll = setTimeout(inspect, 16);
+              return;
+            }
             finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
             return;
           }
@@ -2349,7 +2354,7 @@
             inspect();
           });
         }
-        video.currentTime = seconds;
+        video.currentTime = seekTime;
       } catch (cause) {
         finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
       }
