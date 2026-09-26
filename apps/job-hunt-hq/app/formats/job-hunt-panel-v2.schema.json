@@ -28,12 +28,12 @@
       "type": "string"
     },
     "artifactStorage": {
-      "description": "Optional A/B shard index used when the complete project snapshot exceeds the Host's safe single-file size. Root fields remain schema-valid placeholders and are hydrated from every listed shard before use.",
+      "description": "Optional immutable-generation shard index (v2); legacy A/B indices (v1) remain readable. Root fields remain schema-valid placeholders and are hydrated from every listed shard before use.",
       "type": "object",
       "required": ["schemaVersion", "generation", "shards"],
       "properties": {
-        "schemaVersion": { "const": 1 },
-        "generation": { "type": "string", "enum": ["a", "b"] },
+        "schemaVersion": { "enum": [1, 2] },
+        "generation": { "type": "string", "pattern": "^(?:[ab]|g-[0-9a-f]{32})$" },
         "shards": {
           "type": "array",
           "minItems": 1,
@@ -44,7 +44,7 @@
             "properties": {
               "path": {
                 "type": "string",
-                "pattern": "^career-data/panel-shards/[ab]/[A-Za-z]+-[0-9]{3}\\.json$",
+                "pattern": "^career-data/panel-shards/(?:[ab]|g-[0-9a-f]{32})/[A-Za-z]+-[0-9]{3}\\.json$",
                 "maxLength": 200
               },
               "field": {
@@ -83,6 +83,13 @@
           }
         }
       },
+      "allOf": [
+        {
+          "if": { "properties": { "schemaVersion": { "const": 1 } } },
+          "then": { "properties": { "generation": { "enum": ["a", "b"] } } },
+          "else": { "properties": { "generation": { "pattern": "^g-[0-9a-f]{32}$" } } }
+        }
+      ],
       "additionalProperties": false
     },
     "selectedJobId": {

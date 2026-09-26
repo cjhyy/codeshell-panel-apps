@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
 import { chromium } from 'playwright';
+import { createHash } from 'node:crypto';
+import { prepareProjectSnapshotDocuments, hydrateProjectSnapshotDocuments } from '../../../apps/job-hunt-hq/app/snapshot-sharding-model.mjs';
 const root = fileURLToPath(new URL('../../../apps/job-hunt-hq/app/', import.meta.url));
 let browser, server, url;
 before(async () => {
@@ -26,6 +28,8 @@ async function fixture(t, options = {}) {
   const context = await browser.newContext({ acceptDownloads: true });
   t.after(() => context.close());
   const page = await context.newPage();
+  const { workspace, ...browserOptions } = options;
+  if (workspace) await page.exposeFunction("__workspace", workspace);
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   t.after(() => assert.deepEqual(errors, []));
   await page.addInitScript(options => {
@@ -67,6 +71,7 @@ async function fixture(t, options = {}) {
           if (updated) project.storage[params.key] = structuredClone(params.value);
           return { updated, snapshot: await snapshot(project.storage, params.key) };
         }
+        if (method.startsWith('workspace.') && window.__workspace) return window.__workspace(method, params);
         if (method === 'workspace.info') return { name: id, cwd: '/workspace' };
         if (method === 'workspace.list') return { entries: [] };
         if (method === 'workspace.readText') {
@@ -87,7 +92,7 @@ async function fixture(t, options = {}) {
     if (options.legacy) localStorage.setItem('job-hunt-critical-drafts-v1', JSON.stringify({
       interviewDraft: { answer: 'foreign-draft', updatedAt: '2099-01-01T00:00:00Z' },
     }));
-  }, options);
+  }, browserOptions);
   await page.goto(url);
   return page;
 }
@@ -290,4 +295,82 @@ test('explicit reread preserves damaged browser bytes and reopens the valid Host
   assert.equal(await page.evaluate(() => localStorage.getItem(window.__badDraftKey)), '{bad browser bytes');
   const saved = await backup(page);
   assert.ok(saved.stored.records.some(r => r.raw.includes('rawBackup') && r.raw.includes('bad browser bytes')));
+});
+
+test('two real pages save independent shard generations, reject a stale root and reopen the winner', { timeout: 45_000 }, async t => {
+  const initial = prepareProjectSnapshotDocuments({
+    schemaVersion: 2, updatedAt: '2026-01-01T00:00:00Z',
+    resume: { versionId: 'large-resume', kind: 'base', title: 'Large project', markdown: '# Original', updatedAt: '2026-01-01T00:00:00Z' },
+    questionBank: Array.from({ length: 150 }, (_, i) => ({
+      id: `q-${i}`, question: `Explain recovery case ${i}`, notes: 'x'.repeat(3000),
+      status: 'inbox', origin: 'manual', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
+    })),
+  }, {}, { generation: 'a' });
+  assert.ok(initial.shards.length > 1);
+  const files = new Map(initial.shards.map(shard => [shard.path, shard.content]));
+  files.set('job-hunt-panel.json', initial.rootContent);
+  const writes = [];
+  const read = path => {
+    if (!files.has(path)) throw new Error('ENOENT');
+    const content = files.get(path);
+    return { content, modifiedAt: 1, revision: createHash('sha256').update(content).digest('hex') };
+  };
+  let holdLoser = false, releaseLoser, sawLoser, winnerSaved;
+  const winnerCommitted = new Promise(resolve => { winnerSaved = resolve; });
+  t.after(() => releaseLoser?.());
+  const loserCaptured = new Promise(resolve => { sawLoser = resolve; });
+  const workspace = label => async (method, params) => {
+    if (method === 'workspace.info') return { name: 'shared-large-project', cwd: '/workspace' };
+    if (method === 'workspace.list') return { entries: [] };
+    if (method === 'workspace.readText') {
+      const captured = read(params.path);
+      if (label === 'loser' && holdLoser && params.path === 'job-hunt-panel.json') {
+        holdLoser = false;
+        sawLoser();
+        await new Promise(resolve => { releaseLoser = resolve; });
+      }
+      return captured;
+    }
+    if (method === 'workspace.writeText') {
+      if (params.expectedModifiedAt === null && files.has(params.path)) throw new Error('already exists');
+      if (params.expectedRevision && read(params.path).revision !== params.expectedRevision) throw new Error('revision conflict');
+      files.set(params.path, params.content);
+      writes.push({ label, ...params });
+      if (label === 'winner' && params.path === 'job-hunt-panel.json') winnerSaved();
+      return read(params.path);
+    }
+    throw new Error(`unexpected workspace method ${method}`);
+  };
+  const winner = await fixture(t, { workspace: workspace('winner') }); await ready(winner);
+  await winner.waitForFunction(() => document.querySelector('#resume-editor').value === '# Original');
+  const loser = await fixture(t, { workspace: workspace('loser') }); await ready(loser);
+  await loser.waitForFunction(() => document.querySelector('#resume-editor').value === '# Original');
+  holdLoser = true;
+  await edit(loser, '# Losing edit');
+  await Promise.race([loserCaptured, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('loser never read root')), 5_000); timer.unref(); })]);
+  await edit(winner, '# Winning edit');
+  // Only the Host's successful root write releases the other writer.
+  await Promise.race([winnerCommitted, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('winner never committed')), 5_000); timer.unref(); })]).catch(async error => {
+    console.error({ writes: writes.map(w => ({ label: w.label, path: w.path })), status: await winner.locator('#project-snapshot-state').textContent(), error: await winner.locator('#project-snapshot-error').textContent(), calls: await winner.evaluate(() => window.__fixture.calls.slice(-8).map(c => ({ method: c.method, path: c.params.path }))) });
+    throw error;
+  });
+  const committed = read('job-hunt-panel.json').content;
+  releaseLoser();
+  await loser.waitForFunction(() => document.querySelector('#project-snapshot-state').textContent.includes('发现外部更新'), null, { timeout: 5_000 }).catch(async error => {
+    console.error({ writes: writes.map(w => ({ label: w.label, path: w.path })), status: await loser.locator('#project-snapshot-state').textContent(), error: await loser.locator('#project-snapshot-error').textContent(), calls: await loser.evaluate(() => window.__fixture.calls.slice(-8)) });
+    throw error;
+  });
+  assert.equal(read('job-hunt-panel.json').content, committed);
+  const winningGeneration = JSON.parse(committed).artifactStorage.generation;
+  assert.match(winningGeneration, /^g-[0-9a-f]{32}$/);
+  const losingShards = writes.filter(write => write.label === 'loser' && !write.path.endsWith('previous-root.json'));
+  assert.ok(losingShards.length > 0);
+  assert.ok(losingShards.every(write => !write.path.includes(winningGeneration) && write.expectedModifiedAt === null));
+  assert.ok(writes.some(write => write.path.endsWith('/previous-root.json') && write.content === initial.rootContent));
+  const original = hydrateProjectSnapshotDocuments(initial.root, new Map([...files].map(([path, content]) => [path, JSON.parse(content)])));
+  assert.equal(original.questionBank.length, 150);
+  assert.equal(original.resume.markdown, '# Original');
+  const reopened = await fixture(t, { workspace: workspace('reopened') }); await ready(reopened);
+  assert.equal(await reopened.locator('#resume-editor').inputValue(), '# Winning edit');
+  assert.equal(writes.some(write => write.label === 'reopened'), false, 'reopening a valid generation does not rewrite it');
 });

@@ -1318,7 +1318,7 @@ async function validatePackage(packagePath) {
     );
     assert.deepEqual(hydratedLegacySnapshot.questionBank, oversizedLegacySnapshot.questionBank);
     assert.deepEqual(hydratedLegacySnapshot.interviewSets, oversizedLegacySnapshot.interviewSets);
-    assert.equal(nextSnapshotShardGeneration("a"), "b");
+    assert.match(nextSnapshotShardGeneration("a"), /^g-[0-9a-f]{32}$/);
     const nextLegacySnapshot = structuredClone(oversizedLegacySnapshot);
     nextLegacySnapshot.questionBank[0].notes = "New generation only";
     const shardedNextLegacySnapshot = prepareProjectSnapshotDocuments(
@@ -2898,7 +2898,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /snapshotSemanticKey === nextSemanticKey[\s\S]*?clearSyncedResumeEditorDraft\(nextPayload\.resume\)[\s\S]*?workspace\.writeText[\s\S]*?clearSyncedResumeEditorDraft\(nextPayload\.resume\)/,
+      /snapshotSemanticKey === nextSemanticKey[\s\S]*?clearSyncedResumeEditorDraft\(nextPayload\.resume\)[\s\S]*?await writeProjectSnapshotDocuments[\s\S]*?clearSyncedResumeEditorDraft\(nextPayload\.resume\)/,
       `${packagePath}: resume recovery drafts must clear only after a successful or semantic-no-op project save`,
     );
     assert.match(
@@ -3678,9 +3678,18 @@ async function validatePackage(packagePath) {
       /dataset\.sessionRoadmapIndex/,
       `${packagePath}: roadmap stages must continue in the current Session`,
     );
+    const immutableShardSchema = JSON.parse(
+      await readFile(join(root, "app", "formats", "job-hunt-panel-shard-v2.schema.json"), "utf8"),
+    );
+    assert.equal(immutableShardSchema.properties.schemaVersion.const, 2);
+    assert.equal(immutableShardSchema.properties.generation.pattern, "^g-[0-9a-f]{32}$");
+    assert.equal(
+      snapshotSchema.properties.artifactStorage.allOf[0].else.properties.generation.pattern,
+      immutableShardSchema.properties.generation.pattern,
+    );
     assert.equal(snapshotSchema.properties.schemaVersion.const, 2);
-    assert.equal(snapshotSchema.properties.artifactStorage.properties.schemaVersion.const, 1);
-    assert.deepEqual(snapshotSchema.properties.artifactStorage.properties.generation.enum, [
+    assert.deepEqual(snapshotSchema.properties.artifactStorage.properties.schemaVersion.enum, [1, 2]);
+    assert.deepEqual(snapshotSchema.properties.artifactStorage.allOf[0].then.properties.generation.enum, [
       "a",
       "b",
     ]);
@@ -3690,8 +3699,8 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /prepareProjectSnapshotDocuments\([\s\S]*?writeProjectSnapshotShards\(prepared\.shards, scope\)[\s\S]*?path: PROJECT_STATE_PATH/,
-      `${packagePath}: large snapshots must write the inactive shard generation before switching the root index`,
+      /prepareProjectSnapshotDocuments\([\s\S]*?writeProjectSnapshotDocuments\(prepared, \{[\s\S]*?scope,[\s\S]*?previousSnapshot,/,
+      `${packagePath}: large snapshots must use the create-only shard writer with the captured root revision`,
     );
     assert.match(
       appScript,

@@ -4,7 +4,7 @@ export const suites = [
   {
     id: "job-hunt-hq",
     label: "Job Hunt HQ project draft persistence",
-    commands: [["--test", "tests/apps/job-hunt-hq/draft-storage.test.mjs", "tests/apps/job-hunt-hq/draft-backup.test.mjs", "tests/apps/job-hunt-hq/draft-ui.test.mjs"]],
+    commands: [["--test", "tests/apps/job-hunt-hq/snapshot-generations.test.mjs", "tests/apps/job-hunt-hq/draft-storage.test.mjs", "tests/apps/job-hunt-hq/draft-backup.test.mjs", "tests/apps/job-hunt-hq/draft-ui.test.mjs"]],
   },
   {
     id: "panel-ui",

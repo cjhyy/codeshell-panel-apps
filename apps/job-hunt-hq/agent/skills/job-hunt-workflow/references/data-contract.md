@@ -65,14 +65,25 @@ outcome remains Panel-local telemetry; do not duplicate it into
 When this complete object fits the Host's safe single-file budget,
 `job-hunt-panel.json` contains it directly. For a larger project, the root
 remains schema-valid but may replace one or more large fields with empty
-placeholders and add `artifactStorage`: an A/B generation plus an exact list of
-bounded JSON shards under `career-data/panel-shards/<generation>/`. The Panel
-hydrates every listed shard before exposing context. It writes the inactive
-generation first and switches the root index last, so an interrupted update
-continues to read the previous complete generation. Never edit, truncate, or
-invent shard files manually; use `get_job_search_context` and the Panel write
-tools. A missing or mismatched shard is a hard read failure, not an empty
-question bank.
+placeholders and add `artifactStorage`: schema version 2 with a fresh
+`g-<32 lowercase hex digits>` generation and an exact list of bounded JSON
+shards under `career-data/panel-shards/<generation>/`. The Panel hydrates every
+listed shard before exposing context. Every save creates independent files with
+create-only writes, then compares and replaces the root last. A losing or
+interrupted writer cannot modify another root's data. Legacy storage version 1
+(A/B) remains readable, but must never be overwritten by a new writer.
+
+Before replacing a legacy sharded root, the Panel preserves its exact bytes in
+`career-data/panel-shards/<new-generation>/previous-root.json`; a failed backup
+blocks the save. The original A/B files remain intact. Old Panel versions cannot
+read v2 shard indices: recovery to an old Panel requires stopping writers,
+backing up the current project, then restoring the legacy root and referenced
+shards together. That restores pre-migration data, not later edits. There is no
+automatic downgrade or garbage collection; retained and orphaned generations
+consume disk space and may still be referenced by another reader or backup.
+Never edit, truncate, delete, or invent shard files manually; use
+`get_job_search_context` and the Panel write tools. A missing or mismatched shard
+is a hard read failure, not an empty question bank.
 
 `discoveryPreferences` stores the current project's last user-confirmed job
 search criteria: keyword, location, seniority, count, provider IDs, freshness
