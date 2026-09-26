@@ -135,8 +135,9 @@ export async function exportEditorSequence(
         "bt709",
         "-color_range",
         "tv",
-        "-frames:v",
-        String(frameCount),
+        // The producer writes exactly frameCount images and closes stdin; the
+        // audio filter also has a finite sample count. Do not use -frames:v:
+        // FFmpeg 5 can stop the entire mux before draining the audio input.
         temporary,
       ],
       {
