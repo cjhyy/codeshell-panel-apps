@@ -101,7 +101,7 @@ async function fixture(t) {
         const path = `${scope}:${params.path}`;
         if (params.expectedModifiedAt === null && files.has(path)) throw Error("file exists");
         files.set(path, params.content);
-        return { modifiedAt: 1, revision: hash(params.content) };
+        return deliver(scope, method, { modifiedAt: 1, revision: hash(params.content) });
       }
       throw Error(`Unsupported ${method}`);
     });
@@ -509,3 +509,67 @@ test("an unsaved draft keeps its embedded baseline through repeated recovery and
   assert.ok(saved.baseDocument);
   assert.equal(saved.baseRevision, null);
 });
+
+
+test("late agent save failure cannot roll the new project back to the old canvas", async t => {
+  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  await page.locator("#add-page").click();
+  const hold = f.pauseResponse("cloud-A", "workspace.writeText");
+  await page.evaluate(async () => {
+    const metadata = await window.tools.get_design_metadata();
+    window.pendingAgent = window.tools.use_design({
+      expected_state_revision: metadata.stateRevision,
+      operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }],
+      save: true,
+    }).then(value => ({ value }), error => ({ error: error.message }));
+  });
+  await hold.entered;
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await page.waitForFunction(() => !document.querySelector(".topbar").inert);
+  assert.equal(await page.locator("#active-page option").count(), 1);
+  hold.release();
+  const outcome = await page.evaluate(() => window.pendingAgent);
+  assert.match(outcome.error, /工作区.*切换/);
+  const metadata = await page.evaluate(() => window.tools.get_design_metadata());
+  assert.equal(metadata.pages.length, 1, "old transaction must not replace new project's canvas");
+  assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "workspace.writeText"), false);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "storage.compareAndSet"), false);
+});
+
+
+for (const action of ["resource", "html", "rollback"]) {
+  test(`late ${action} transaction cannot change the next project or probe its files`, async t => {
+    const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+    await page.locator("#add-page").click();
+    f.files.set("cloud-A:designs/import.html", '<html><body><div style="width:100px;height:100px;background:red">Imported</div></body></html>');
+    if (action === "rollback") await page.evaluate(async () => {
+      const metadata = await window.tools.get_design_metadata();
+      window.transaction = await window.tools.use_design({ expected_state_revision: metadata.stateRevision,
+        operations: [{ op: "create_page", id: "agent-page", name: "Agent page" }], save: false });
+    });
+    const hold = f.pauseResponse("cloud-A", "workspace.writeText");
+    await page.evaluate(async action => {
+      const metadata = await window.tools.get_design_metadata();
+      const operation = action === "resource"
+        ? window.tools.put_design_resource({ expected_state_revision: metadata.stateRevision,
+            id: "pixel", kind: "image", mime: "image/png", save: true,
+            base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" })
+        : action === "html"
+          ? window.tools.import_html({ expected_state_revision: metadata.stateRevision, path: "designs/import.html", save: true })
+          : window.tools.rollback_design({ transaction_id: window.transaction.transactionId, save: true });
+      window.pendingAgent = operation.then(value => ({ value }), error => ({ error: error.message }));
+    }, action);
+    await hold.entered;
+    await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+    await page.waitForFunction(() => !document.querySelector(".topbar").inert);
+    const readsBeforeRelease = f.calls.filter(call => call.scope === "cloud-B" && call.method === "workspace.readText").length;
+    hold.release();
+    assert.match((await page.evaluate(() => window.pendingAgent)).error, /工作区.*切换/);
+    const metadata = await page.evaluate(() => window.tools.get_design_metadata());
+    assert.equal(metadata.pages.length, 1);
+    assert.deepEqual(metadata.resources, []);
+    assert.equal(f.calls.filter(call => call.scope === "cloud-B" && call.method === "workspace.readText").length, readsBeforeRelease);
+    assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "workspace.writeText"), false);
+  });
+}

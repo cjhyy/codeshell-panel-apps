@@ -3417,10 +3417,11 @@ async function performSaveDocument(request) {
             path: part.path,
             content: part.content,
             expectedModifiedAt: null,
-          });
+          }, operationWorkspaceEpoch);
           assertWorkspaceEpoch(operationWorkspaceEpoch);
         } catch {
-          const existing = await bundleHostCall("workspace.readText", { path: part.path });
+          assertWorkspaceEpoch(operationWorkspaceEpoch);
+          const existing = await bundleHostCall("workspace.readText", { path: part.path }, operationWorkspaceEpoch);
           assertWorkspaceEpoch(operationWorkspaceEpoch);
           if (existing.content !== part.content) {
             throw new Error(`设计分片写入冲突：${part.path}`);
@@ -3428,13 +3429,14 @@ async function performSaveDocument(request) {
         }
       }
     }
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
     const replacesCurrentSource = path === currentSourcePath;
     const result = await bundleHostCall("workspace.writeText", {
       path,
       content: persistence.primarySource,
       expectedModifiedAt: replacesCurrentSource ? currentModifiedAt : null,
       ...(replacesCurrentSource && currentRevision ? { expectedRevision: currentRevision } : {}),
-    });
+    }, operationWorkspaceEpoch);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     fileDiscoveryCache = null;
     recoveryFailureWarned = false;
@@ -4273,7 +4275,9 @@ async function replaceDesignWithHtmlImport(
   imported,
   { save = false, recordAgentTransaction = false, sourcePath } = {},
 ) {
+  const operationWorkspaceEpoch = workspaceEpoch;
   await ensureAllDesignPagesLoaded();
+  assertWorkspaceEpoch(operationWorkspaceEpoch);
   const nextDesign = normalizeDocument(imported);
   const previous = clone(design);
   const previousSnapshot = serializeDesign();
@@ -4282,6 +4286,7 @@ async function replaceDesignWithHtmlImport(
   if (nextSnapshot === previousSnapshot) {
     let savedResult = null;
     if (save) savedResult = await saveDocument({ quiet: true });
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
     return {
       path: elements.path.value.trim(),
       sourcePath,
@@ -4336,7 +4341,9 @@ async function replaceDesignWithHtmlImport(
   if (save) {
     try {
       savedResult = await saveDocument({ quiet: true });
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
     } catch (error) {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       design = normalizeDesignState(previous);
       history = previousHistory;
       historyIndex = previousHistoryIndex;
@@ -4424,6 +4431,7 @@ async function importHtmlFromWorkspace({
     sourcePath,
     html: source.content,
     readText: async (path) => {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       const result = await hostCall("workspace.readText", { path });
       assertWorkspaceEpoch(operationWorkspaceEpoch);
       return result;
@@ -6417,6 +6425,7 @@ function moveAgentNode(nodeId, parentId, beforeId) {
 }
 
 async function applyAgentDesignOperations(args) {
+  const operationWorkspaceEpoch = workspaceEpoch;
   if (args.expected_state_revision !== currentDesignStateRevision()) {
     throw new Error("设计状态已变化；请重新读取元数据后再创建事务");
   }
@@ -6446,6 +6455,7 @@ async function applyAgentDesignOperations(args) {
     )
   ) {
     await ensureAllDesignPagesLoaded();
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
   }
   const previous = clone(design);
   const previousSnapshot = serializeEditorState();
@@ -6702,8 +6712,10 @@ async function applyAgentDesignOperations(args) {
         page.name = operation.name;
       } else if (operation.op === "set_active_page") {
         await activateDesignPage(operation.page_id);
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
       } else if (operation.op === "delete_page") {
         await ensureAllDesignPagesLoaded();
+        assertWorkspaceEpoch(operationWorkspaceEpoch);
         if (design.pages.length === 1) throw new Error("不能删除设计文件中的最后一页");
         const pageIndex = design.pages.findIndex((page) => page.id === operation.page_id);
         if (pageIndex < 0) throw new Error(`页面不存在：${operation.page_id}`);
@@ -6732,6 +6744,7 @@ async function applyAgentDesignOperations(args) {
     applyAutoLayouts(design.nodes, layoutContainerIds);
     design = normalizeCurrentDesignState(design);
   } catch (error) {
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
     design = currentPageCache ? previous : normalizeDesignState(previous);
     selectedId = previousSelectedId;
     selectedIds = previousSelectedIds;
@@ -6745,6 +6758,7 @@ async function applyAgentDesignOperations(args) {
     lastAgentTransaction = previousAgentTransaction;
     let result = null;
     if (args.save !== false) result = await saveDocument({ quiet: true });
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
     const noOpResult = {
       path: elements.path.value.trim(),
       saved: args.save !== false,
@@ -6775,7 +6789,9 @@ async function applyAgentDesignOperations(args) {
   if (args.save !== false) {
     try {
       await saveDocument({ quiet: true });
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
     } catch (error) {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       design = currentPageCache ? previous : normalizeDesignState(previous);
       history = previousHistory;
       historyIndex = previousHistoryIndex;
@@ -6880,7 +6896,9 @@ function boundedAgentContextResult(result) {
 }
 
 function enqueueAgentMutation(operation) {
+  const operationWorkspaceEpoch = workspaceEpoch;
   const run = async () => {
+    assertWorkspaceEpoch(operationWorkspaceEpoch);
     agentMutationActive = true;
     const activeEditor = document.activeElement;
     if (
@@ -6895,8 +6913,12 @@ function enqueueAgentMutation(operation) {
     elements.appShell.setAttribute("aria-busy", "true");
     try {
       await settleWorkspaceTransition();
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       await settlePendingSaves();
-      return await operation();
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      const result = await operation();
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      return result;
     } finally {
       agentMutationActive = false;
       document.body.inert = previouslyInert;
@@ -6918,6 +6940,7 @@ async function settleAgentReadState() {
 }
 
 async function rollbackAgentDesign(args) {
+  const operationWorkspaceEpoch = workspaceEpoch;
   assertAgentToolArguments(args, new Set(["transaction_id", "save"]), "rollback_design");
   if (typeof args.transaction_id !== "string" || !args.transaction_id) {
     throw new Error("rollback_design.transaction_id 必须是非空字符串");
@@ -6965,7 +6988,9 @@ async function rollbackAgentDesign(args) {
   if (args.save !== false) {
     try {
       result = await saveDocument({ quiet: true });
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
     } catch (error) {
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       restoreHistory(transactionHistoryIndex);
       designStateSequence = transactionDesignStateSequence;
       selectedId = transactionSelectedId;
@@ -7042,6 +7067,7 @@ function registerAgentTools(ready) {
       throw new Error("put_design_resource.save 必须是布尔值");
     }
     return enqueueAgentMutation(async () => {
+      const operationWorkspaceEpoch = workspaceEpoch;
       if (args.expected_state_revision !== currentDesignStateRevision()) {
         throw new Error("设计状态已变化；请重新读取元数据后再写入资源");
       }
@@ -7050,7 +7076,7 @@ function registerAgentTools(ready) {
         : (
             await Promise.all(
               args.source_paths.map(async (path) => {
-                const result = await bundleHostCall("workspace.readText", { path });
+                const result = await bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch);
                 return result.content;
               }),
             )
@@ -7068,6 +7094,9 @@ function registerAgentTools(ready) {
         style: args.style,
         sha256Bytes,
       });
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
+      if (args.expected_state_revision !== currentDesignStateRevision())
+        throw new Error("设计状态已变化；资源写入已取消");
       const existing = (design.resources ?? []).find(
         (resource) => resource.id === plan.descriptor.id,
       );
@@ -7088,22 +7117,24 @@ function registerAgentTools(ready) {
             path: part.path,
             content: part.content,
             expectedModifiedAt: null,
-          });
+          }, operationWorkspaceEpoch);
         } catch {
+          assertWorkspaceEpoch(operationWorkspaceEpoch);
           const stored = await bundleHostCall("workspace.readText", {
             path: part.path,
-          });
+          }, operationWorkspaceEpoch);
           if (stored.content !== part.content) {
             throw new Error(`资源分片写入冲突：${part.path}`);
           }
         }
       }
+      assertWorkspaceEpoch(operationWorkspaceEpoch);
       const previousHistoryIndex = historyIndex;
       design.resources ??= [];
       design.resources.push(plan.descriptor);
       currentResourceCache = new DesignResourceCache({
         resources: design.resources,
-        readText: (path) => bundleHostCall("workspace.readText", { path }),
+        readText: (path) => bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch),
         sha256Bytes,
       });
       commitHistory();
@@ -7113,10 +7144,11 @@ function registerAgentTools(ready) {
         try {
           savedResult = await saveDocument({ quiet: true });
         } catch (error) {
+          assertWorkspaceEpoch(operationWorkspaceEpoch);
           restoreHistory(previousHistoryIndex);
           currentResourceCache = new DesignResourceCache({
             resources: design.resources ?? [],
-            readText: (path) => bundleHostCall("workspace.readText", { path }),
+            readText: (path) => bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch),
             sha256Bytes,
           });
           throw error;
