@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { resolve, sep, extname } from "node:path";
 import { chromium } from "playwright";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
+import { createDesignResourcePersistencePlan } from "../../../apps/design-studio/app/resource-store.mjs";
 import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
@@ -54,7 +55,7 @@ async function fixture(t) {
     await new Promise((resolve) => server.close(resolve));
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false, initialPath = null } = {}) {
+  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false, initialPath = null, sharedInitialPath = false } = {}) {
     const initialScope = scope;
     const context = await browser.newContext({ acceptDownloads: true });
     contexts.push(context);
@@ -83,7 +84,7 @@ async function fixture(t) {
         return deliver(scope, method, { updated: true, snapshot: snapshot() });
       }
       if (method === "storage.get") {
-        if (initialPath && scope === initialScope && params.key.startsWith("lastPath.")) return { workspaceRoot: cwd, path: initialPath };
+        if (initialPath && (sharedInitialPath || scope === initialScope) && params.key.startsWith("lastPath.")) return { workspaceRoot: cwd, path: initialPath };
         return records.get(key) ?? null;
       }
       if (method === "storage.set") {
@@ -639,3 +640,80 @@ test("a page loaded and renamed during an indexed save survives recovery and the
   const final = await f.page({ initialPath });
   assert.equal(await final.locator('#active-page option[value="page-12"]').textContent(), "Changed while saving");
 });
+
+
+
+for (const stage of ["page", "image", "font", "same-project-document"]) {
+  test(`late ${stage} loading cannot change the replacement canvas`, async t => {
+    const f = await fixture(t), initialPath = "designs/pages.codesign.json";
+    const font = stage === "font";
+    const resource = await createDesignResourcePersistencePlan({
+      id: "asset", kind: font ? "font" : "image", mime: font ? "font/woff2" : "image/png",
+      ...(font ? { family: "Deferred font" } : {}),
+      base64: font ? Buffer.from("controlled decoder fixture").toString("base64") : "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      sha256Bytes: async value => createHash("sha256").update(value).digest("hex"),
+    });
+    const node = { id: "asset-node", type: font ? "text" : "image", name: "Asset", x: 0, y: 0, width: 20, height: 20,
+      strokeWidth: 0, opacity: 1, rotation: 0, cornerRadius: 0, fill: "#000000", stroke: "transparent", visible: true, locked: false,
+      ...(font ? { text: "Hello", fontSize: 16, fontWeight: 400, lineHeight: 1, textAlign: "left", fontRef: "asset" }
+        : { imageRef: "asset", objectFit: "contain" }),
+    };
+    for (const part of resource.parts) f.files.set(`cloud-A:${part.path}`, part.content);
+    for (const scope of ["cloud-A", "cloud-B"]) {
+      const doc = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: scope,
+        canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] },
+        resources: scope === "cloud-A" ? [resource.descriptor] : [], activePageId: "page-1",
+        pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i+1}`, name: `${scope} ${i+1}`,
+          children: scope === "cloud-A" && i === 11 ? [node] : [] })),
+      });
+      const plan = await createDesignIndexPersistencePlan({ document: doc, sha256: async value => createHash("sha256").update(value).digest("hex") });
+      f.files.set(`${scope}:${initialPath}`, plan.primarySource);
+      for (const part of plan.parts) f.files.set(`${scope}:${part.path}`, part.content);
+    }
+    const page = await f.page({ cwd: "/workspace", scope: "cloud-A", initialPath, sharedInitialPath: true });
+    await page.evaluate(stage => {
+      const hold = async () => {
+        window.loadEntered = true;
+        await new Promise(resolve => { window.releaseLoad = resolve; });
+      };
+      window.installedDeferredFonts = [];
+      if (stage === "font") {
+        // Exercise the asynchronous decoder boundary; this is not a font fidelity test.
+        window.FontFace = class {
+          constructor(family) { this.family = family; }
+          async load() { await hold(); return this; }
+        };
+        document.fonts.add = face => { window.installedDeferredFonts.push(face.family); };
+      } else {
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        let calls = 0;
+        crypto.subtle.digest = async (...args) => {
+          const result = await digest(...args);
+          if (++calls === (stage === "page" ? 1 : 2)) await hold();
+          return result;
+        };
+      }
+    }, stage);
+    await page.locator("#active-page").selectOption("page-12");
+    await page.waitForFunction(() => window.loadEntered);
+    if (stage === "same-project-document") {
+      await page.locator("#open-files").click();
+      await page.locator("#new-document").click();
+    }
+    else await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+    await page.waitForFunction(() => !document.querySelector(".topbar").inert);
+    const scope = stage === "same-project-document" ? "cloud-A" : "cloud-B";
+    const before = await page.evaluate(() => window.tools.get_design_metadata());
+    const writesBefore = f.calls.filter(call => call.scope === scope && call.method === "storage.compareAndSet").length;
+    await page.evaluate(() => window.releaseLoad());
+    await page.waitForTimeout(650);
+    const result = await page.evaluate(() => window.tools.get_design_metadata());
+    assert.equal(result.name, before.name);
+    assert.equal(result.activePageId, before.activePageId);
+    assert.equal(result.dirty, before.dirty);
+    assert.equal(result.runtime.loadedResourceCount, 0);
+    assert.deepEqual(await page.evaluate(() => window.installedDeferredFonts), []);
+    if (stage !== "same-project-document")
+      assert.equal(f.calls.filter(call => call.scope === scope && call.method === "storage.compareAndSet").length, writesBefore);
+  });
+}
