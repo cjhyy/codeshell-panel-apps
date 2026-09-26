@@ -70,6 +70,7 @@ import {
   createDesignOperationRecord,
   isEmptyDesignOperationRecord,
 } from "./operation-log.mjs";
+import { createRecoverySession } from "./recovery-session.mjs";
 import { chooseRepoDesignFile, DEFAULT_DESIGN_PATH } from "./repository.mjs";
 import { auditDesignPages, auditMarkdown, summarizeAudit } from "./audit.mjs";
 import { captureWorkspaceHtml, isSafeHtmlImportPath } from "./html-import.mjs";
@@ -349,6 +350,10 @@ let workspaceEpoch = 0;
 let contextInitialized = false;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
+let recoverySession = null;
+let recoveryIssue = "";
+let recoveryStoredValue = null;
+const detachedRecoveryDrafts = new Map();
 let externalSyncTimer = null;
 let workspaceInfo = null;
 const collapsedLayerIds = new Set();
@@ -1027,44 +1032,85 @@ function recoverySnapshot(workspaceRoot) {
   };
 }
 
-function storeRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspaceRoot)) {
-  return hostCall("storage.set", {
-    key: scopedStorageKey("recovery", workspaceRoot ?? "preview"),
-    value: recoveryValue,
-  });
+function renderRecoveryStatus() {
+  const message =
+    recoveryIssue ||
+    (detachedRecoveryDrafts.size
+      ? "已保留切换前项目的未确认草稿，可下载备份；不会写入当前项目。"
+      : recoverySession && !recoverySession.versioned
+        ? "当前主程序不支持恢复草稿的并发校验；请避免多个窗口同时编辑同一项目。"
+        : "");
+  document.querySelector("#recovery-status").hidden = !message;
+  document.querySelector("#recovery-message").textContent = message;
+}
+
+function reportRecoveryFailure(error) {
+  recoveryIssue = error instanceof Error ? error.message : "恢复草稿保存失败，请先下载备份。";
+  renderRecoveryStatus();
+}
+
+async function clearRecovery(expectedEpoch = workspaceEpoch, session = recoverySession) {
+  assertWorkspaceEpoch(expectedEpoch);
+  if (!session || session !== recoverySession) return;
+  try {
+    await session.clear();
+  } catch (error) {
+    assertWorkspaceEpoch(expectedEpoch);
+    reportRecoveryFailure(error);
+  }
+  assertWorkspaceEpoch(expectedEpoch);
 }
 
 async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspaceRoot)) {
+  const expectedEpoch = workspaceEpoch;
+  const session = recoverySession;
   try {
+    if (!session || workspaceRoot !== (context.cwd ?? null)) return false;
+    if (session.blocked) throw session.blocked;
     const plan = await createRecoveryPersistencePlan({
       snapshot: recoveryValue,
       sha256: sha256Text,
     });
+    assertWorkspaceEpoch(expectedEpoch);
     if (plan.mode === "external") {
       for (const part of plan.parts) {
         try {
-          await bundleHostCall("workspace.writeText", {
-            path: part.path,
-            content: part.content,
-            expectedModifiedAt: null,
-          });
+          await bundleHostCall(
+            "workspace.writeText",
+            {
+              path: part.path,
+              content: part.content,
+              expectedModifiedAt: null,
+            },
+            expectedEpoch,
+          );
         } catch {
-          const existing = await bundleHostCall("workspace.readText", {
-            path: part.path,
-          });
-          if (existing.content !== part.content) {
+          assertWorkspaceEpoch(expectedEpoch);
+          const existing = await bundleHostCall(
+            "workspace.readText",
+            { path: part.path },
+            expectedEpoch,
+          );
+          if (existing.content !== part.content)
             throw new Error(`恢复日志分片写入冲突：${part.path}`);
-          }
         }
       }
     }
-    await storeRecovery(workspaceRoot, plan.value);
-    if ((context.cwd ?? null) === workspaceRoot) recoveryFailureWarned = false;
+    assertWorkspaceEpoch(expectedEpoch);
+    await session.save(plan.value);
+    assertWorkspaceEpoch(expectedEpoch);
+    recoveryFailureWarned = false;
+    recoveryIssue = "";
+    renderRecoveryStatus();
     return true;
-  } catch {
-    if ((context.cwd ?? null) === workspaceRoot && !recoveryFailureWarned) {
-      recoveryFailureWarned = true;
-      notify("本地恢复快照写入失败（可能空间不足）；请尽快保存设计到仓库", "error");
+  } catch (error) {
+    if (expectedEpoch === workspaceEpoch && recoverySession === session) {
+      session?.block(error);
+      reportRecoveryFailure(error);
+      if (!recoveryFailureWarned) {
+        recoveryFailureWarned = true;
+        notify("恢复草稿尚未确认保存；当前画布保留，请下载备份或另存设计文件。", "error");
+      }
     }
     return false;
   }
@@ -3146,11 +3192,15 @@ function hostCall(method, params) {
   return mockHostCall(method, params);
 }
 
-async function bundleHostCall(method, params) {
+async function bundleHostCall(method, params, expectedEpoch = workspaceEpoch) {
   for (let attempt = 0; attempt < 12; attempt += 1) {
     try {
-      return await hostCall(method, params);
+      assertWorkspaceEpoch(expectedEpoch);
+      const result = await hostCall(method, params);
+      assertWorkspaceEpoch(expectedEpoch);
+      return result;
     } catch (error) {
+      assertWorkspaceEpoch(expectedEpoch);
       if (
         attempt === 11 ||
         !(error instanceof Error) ||
@@ -3298,6 +3348,7 @@ function captureSaveDocument({ quiet = false } = {}) {
     workspaceEpoch: operationWorkspaceEpoch,
     workspaceIdentity: operationWorkspaceIdentity,
     workspaceRoot: operationWorkspaceRoot,
+    recoverySession,
     path,
     content,
     savedDesign,
@@ -3315,6 +3366,7 @@ async function performSaveDocument(request) {
     workspaceEpoch: operationWorkspaceEpoch,
     workspaceIdentity: operationWorkspaceIdentity,
     workspaceRoot: operationWorkspaceRoot,
+    recoverySession: operationRecoverySession,
     path,
     content,
     savedDesign,
@@ -3400,10 +3452,7 @@ async function performSaveDocument(request) {
       }).catch(() => undefined);
       assertWorkspaceEpoch(operationWorkspaceEpoch);
       if (dirty) queueRecovery();
-      else
-        await hostCall("storage.delete", {
-          key: scopedStorageKey("recovery", operationWorkspaceRoot),
-        }).catch(() => undefined);
+      else await clearRecovery(operationWorkspaceEpoch, operationRecoverySession);
       assertWorkspaceEpoch(operationWorkspaceEpoch);
     } else {
       updateDirtyState();
@@ -3490,6 +3539,7 @@ async function settlePendingSaves() {
 
 async function openDocument(path, { discardChanges = false } = {}) {
   const operationWorkspaceEpoch = workspaceEpoch;
+  const operationRecoverySession = recoverySession;
   await settlePendingSaves().catch(() => undefined);
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   const operationWorkspaceIdentity = context.cwd ?? null;
@@ -3543,9 +3593,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
       value: { workspaceRoot: operationWorkspaceIdentity, path },
     }).catch(() => undefined);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    await hostCall("storage.delete", {
-      key: scopedStorageKey("recovery", operationWorkspaceRoot),
-    }).catch(() => undefined);
+    await clearRecovery(operationWorkspaceEpoch, operationRecoverySession);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
     notify(`已打开 ${path}`);
     void refreshRepoFilesPanel();
@@ -5526,7 +5574,7 @@ function updateContext(next) {
     clearTimeout(recoveryTimer);
     const previousRecovery = dirty ? recoverySnapshot(previousWorkspaceRoot) : null;
     if (previousRecovery) {
-      void storeRecovery(previousWorkspaceRoot, previousRecovery).catch(() => undefined);
+      detachedRecoveryDrafts.set(previousWorkspaceRoot, structuredClone(previousRecovery));
     }
     currentModifiedAt = null;
     currentRevision = null;
@@ -5544,11 +5592,15 @@ function updateContext(next) {
     fileDiscoveryCachedAt = 0;
     savedSnapshot = "";
     workspaceEpoch += 1;
+    recoverySession = null;
+    recoveryIssue = "";
+    recoveryStoredValue = null;
     recoveryFailureWarned = false;
     elements.path.disabled = false;
   }
   context = nextContext;
   contextInitialized = true;
+  renderRecoveryStatus();
   applyContextTheme(context.theme);
   updateRepoLinkState();
   const workspaceUnavailable = context.trusted !== true;
@@ -5599,6 +5651,7 @@ async function restoreRecovery(
   expectedWorkspaceEpoch = workspaceEpoch,
   workspaceRoot = context.cwd ?? null,
 ) {
+  const session = recoverySession;
   const recovery = await resolveRecoverySnapshot(recoveryInput);
   if (
     !recovery ||
@@ -5745,9 +5798,7 @@ async function restoreRecovery(
     savedSnapshot = serializeEditorState();
     savedOperationState = captureDesignOperationState(design);
     updateDirtyState();
-    await hostCall("storage.delete", {
-      key: scopedStorageKey("recovery", workspaceRoot ?? "preview"),
-    }).catch(() => undefined);
+    await clearRecovery(expectedWorkspaceEpoch, session);
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
   }
   await compactIndexedPageRuntime();
@@ -5782,63 +5833,125 @@ function resetToRepoBlankDocument() {
 }
 
 async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpoch) {
-  const initializationWorkspaceIdentity = context.cwd ?? null;
-  const workspaceRoot = initializationWorkspaceIdentity ?? "preview";
-  if (context.trusted !== true) {
-    resetToRepoBlankDocument();
-    updateRepoLinkState();
-    return;
-  }
-  const [nextWorkspaceInfo, recovery, lastPath] = await Promise.all([
-    hostCall("workspace.info", {}).catch(() => null),
-    hostCall("storage.get", {
-      key: scopedStorageKey("recovery", workspaceRoot),
-    }).catch(() => null),
-    hostCall("storage.get", {
-      key: scopedStorageKey("lastPath", workspaceRoot),
-    }).catch(() => null),
-  ]);
-  assertWorkspaceEpoch(expectedWorkspaceEpoch);
-  workspaceInfo = nextWorkspaceInfo;
-  updateRepoLinkState();
+  document.querySelector("#recovery-reload").disabled = true;
   try {
-    if (await restoreRecovery(recovery, expectedWorkspaceEpoch, initializationWorkspaceIdentity)) {
-      setRepoLinkState("Repo · 已恢复", "linked");
+    const initializationWorkspaceIdentity = context.cwd ?? null;
+    const workspaceRoot = initializationWorkspaceIdentity ?? "preview";
+    if (context.trusted !== true) {
+      resetToRepoBlankDocument();
+      updateRepoLinkState();
       return;
     }
-  } catch {
-    assertWorkspaceEpoch(expectedWorkspaceEpoch);
-    await hostCall("storage.delete", {
+    const session = createRecoverySession({
+      call: hostCall,
       key: scopedStorageKey("recovery", workspaceRoot),
-    }).catch(() => undefined);
-  }
-  if (
-    lastPath &&
-    typeof lastPath === "object" &&
-    lastPath.workspaceRoot === initializationWorkspaceIdentity &&
-    typeof lastPath.path === "string" &&
-    safeDesignPath(lastPath.path)
-  ) {
+      epoch: expectedWorkspaceEpoch,
+      currentEpoch: () => (recoverySession === session ? workspaceEpoch : -1),
+      getContext: () => context,
+    });
+    recoverySession = session;
+    renderRecoveryStatus();
+    const [nextWorkspaceInfo, recovery, lastPath] = await Promise.all([
+      hostCall("workspace.info", {}).catch(() => null),
+      session.load().catch((error) => {
+        if (expectedWorkspaceEpoch === workspaceEpoch) reportRecoveryFailure(error);
+        return null;
+      }),
+      hostCall("storage.get", {
+        key: scopedStorageKey("lastPath", workspaceRoot),
+      }).catch(() => null),
+    ]);
+    assertWorkspaceEpoch(expectedWorkspaceEpoch);
+    if (session !== recoverySession) return;
+    recoveryStoredValue = structuredClone(recovery);
+    workspaceInfo = nextWorkspaceInfo;
+    updateRepoLinkState();
     try {
-      await openDocument(lastPath.path, { discardChanges: true });
-      setRepoLinkState("Repo · 已打开", "linked");
-      return;
-    } catch {
-      if (expectedWorkspaceEpoch !== workspaceEpoch) return;
+      if (
+        await restoreRecovery(recovery, expectedWorkspaceEpoch, initializationWorkspaceIdentity)
+      ) {
+        setRepoLinkState("Repo · 已恢复", "linked");
+        return;
+      }
+      if (recovery !== null && recovery !== undefined)
+        throw new Error("恢复记录格式或项目不匹配；原记录已保留，请先备份核对。");
+    } catch (error) {
+      assertWorkspaceEpoch(expectedWorkspaceEpoch);
+      session.block(error);
+      reportRecoveryFailure(error);
     }
+    if (
+      lastPath &&
+      typeof lastPath === "object" &&
+      lastPath.workspaceRoot === initializationWorkspaceIdentity &&
+      typeof lastPath.path === "string" &&
+      safeDesignPath(lastPath.path)
+    ) {
+      try {
+        await openDocument(lastPath.path, { discardChanges: true });
+        setRepoLinkState("Repo · 已打开", "linked");
+        return;
+      } catch {
+        if (expectedWorkspaceEpoch !== workspaceEpoch) return;
+      }
+    }
+    const discovery = await discoverDesignFiles();
+    assertWorkspaceEpoch(expectedWorkspaceEpoch);
+    const initialFile = chooseRepoDesignFile(discovery.files);
+    if (initialFile) {
+      await openDocument(initialFile.path, { discardChanges: true });
+      setRepoLinkState("Repo · 自动打开", "linked");
+      return;
+    }
+    resetToRepoBlankDocument();
+    setRepoLinkState("Repo · 新设计", "linked");
+    notify("当前 Repo 还没有设计文件；保存后会创建 designs/design.codesign.json");
+  } finally {
+    if (expectedWorkspaceEpoch === workspaceEpoch)
+      document.querySelector("#recovery-reload").disabled = false;
   }
-  const discovery = await discoverDesignFiles();
-  assertWorkspaceEpoch(expectedWorkspaceEpoch);
-  const initialFile = chooseRepoDesignFile(discovery.files);
-  if (initialFile) {
-    await openDocument(initialFile.path, { discardChanges: true });
-    setRepoLinkState("Repo · 自动打开", "linked");
-    return;
-  }
-  resetToRepoBlankDocument();
-  setRepoLinkState("Repo · 新设计", "linked");
-  notify("当前 Repo 还没有设计文件；保存后会创建 designs/design.codesign.json");
 }
+
+document.querySelector("#recovery-backup").addEventListener("click", () => {
+  const drafts = new Map(detachedRecoveryDrafts);
+  drafts.set(context.cwd ?? null, recoverySnapshot(context.cwd ?? null));
+  const url = URL.createObjectURL(
+    new Blob(
+      [
+        JSON.stringify(
+          {
+            format: "codeshell.design.recovery-backup",
+            version: 1,
+            drafts: [...drafts.values()],
+            storedRecovery: { workspaceRoot: context.cwd ?? null, value: recoveryStoredValue },
+          },
+          null,
+          2,
+        ),
+      ],
+      { type: "application/json" },
+    ),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "design-recovery-backup.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+document.querySelector("#recovery-reload").addEventListener("click", async () => {
+  if (dirty && !window.confirm("读取最新记录会替换当前画布。请先下载草稿备份，确定继续吗？"))
+    return;
+  const expectedEpoch = workspaceEpoch;
+  clearTimeout(recoveryTimer);
+  recoveryIssue = "";
+  try {
+    await initializeWorkspaceDocument(expectedEpoch);
+  } catch (error) {
+    if (expectedEpoch === workspaceEpoch) reportRecoveryFailure(error);
+  }
+  if (expectedEpoch === workspaceEpoch) renderRecoveryStatus();
+});
 
 function startExternalSync() {
   if (externalSyncTimer) window.clearInterval(externalSyncTimer);
