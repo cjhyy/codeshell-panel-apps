@@ -1781,6 +1781,16 @@
         </div>
       </section>
 
+      <section class="backtest-storage" aria-label="回测参数保存">
+        <p id="backtest-storage-status" role="status" aria-live="polite">正在读取项目回测参数…</p>
+        <div>
+          <button id="backtest-storage-backup" type="button" disabled>备份当前参数</button>
+          <button id="backtest-storage-import" type="button" disabled>载入参数备份</button>
+          <input id="backtest-storage-file" type="file" accept="application/json,.json" hidden>
+          <button id="backtest-storage-reload" type="button" disabled>备份草稿并读取最新</button>
+        </div>
+      </section>
+
       <details id="backtest-saved-plans" class="backtest-saved-plans">
         <summary>
           <span><b>已保存回测方案</b><small>展开后查看 · 一键载入复测</small></span>
