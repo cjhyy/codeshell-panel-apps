@@ -9,7 +9,7 @@ import {
   type CaptionStyle,
 } from "./model";
 import { isDemoNarration, demoSceneIndex } from "./demo";
-import { seekVideo } from "./editor/media-pool";
+import { loadDecodedVideo, seekVideo } from "./editor/media-pool";
 
 export interface LocalMedia {
   file?: File;
@@ -296,15 +296,8 @@ export class MediaLibrary {
     signal: AbortSignal,
   ): Promise<void> {
     this.videoElements.add(element);
-    await eventOnce(
-      element,
-      "loadeddata",
-      () => {
-        element.preload = "auto";
-        element.src = url;
-      },
-      signal,
-    );
+    element.preload = "auto";
+    await loadDecodedVideo(element, url, signal, 15000, "source");
   }
 
   /** Populate a visible card without waking the rest of the library or seeking the player. */
@@ -441,14 +434,16 @@ export class MediaLibrary {
     }
     const abort = () => ticket.abort();
     signal?.addEventListener("abort", abort, { once: true });
-    const ready = eventOnce(
+    const ready = element instanceof HTMLVideoElement
+      ? loadDecodedVideo(element, url, ticket.signal, 15000, assetId)
+      : eventOnce(
       element,
       kind === "image" ? "load" : "loadeddata",
       undefined,
       ticket.signal,
     );
     if (element instanceof HTMLVideoElement) this.videoElements.add(element);
-    element.src = url;
+    if (!(element instanceof HTMLVideoElement)) element.src = url;
     try {
       await ready;
       // Capture the initial frame before a metadata-less WebM duration probe
@@ -636,7 +631,8 @@ export class MediaLibrary {
     signal?.addEventListener("abort", abort, { once: true });
     if (element instanceof HTMLVideoElement) this.videoElements.add(element);
     try {
-      await eventOnce(
+      if (element instanceof HTMLVideoElement) await loadDecodedVideo(element, url, ticket.signal, 15000, asset.id);
+      else await eventOnce(
         element,
         asset.kind === "image" ? "load" : "loadeddata",
         () => {
@@ -1211,9 +1207,10 @@ async function captureAssetFrameNow(
       element.muted = true;
       element.playsInline = true;
     }
-    await eventOnce(
+    if (element instanceof HTMLVideoElement) await loadDecodedVideo(element, item.url, signal, 15000, assetId);
+    else await eventOnce(
       element,
-      element instanceof HTMLImageElement ? "load" : "loadeddata",
+      "load",
       () => {
         element.src = item.url;
       },
