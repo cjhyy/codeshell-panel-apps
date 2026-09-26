@@ -418,6 +418,57 @@ test(
       color(result.pixel, [255, 0, 0]);
     });
 
+    await t.test("delayed initial WebM frame works with zero duration and no compositor callback", async () => {
+      const result = await pageTest((page) => page.evaluate(async () => {
+        const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+        const NativeFrame = window.VideoFrame;
+        const callback = HTMLVideoElement.prototype.requestVideoFrameCallback;
+        HTMLVideoElement.prototype.requestVideoFrameCallback = undefined;
+        window.VideoFrame = function(source) {
+          const captured = new NativeFrame(source);
+          Object.defineProperty(captured, "duration", { value: 0 });
+          return captured;
+        };
+        const pool = new EditorMediaPool({ resolveAsset: () => "/delayed-webm", timeoutMs: 1000 });
+        try {
+          const first = (await pool.prepare(frame([layer("clip", 0)]))).get("clip");
+          return { timestamp: first.timestamp, pixel: sample(first) };
+        } finally {
+          pool.dispose(); window.VideoFrame = NativeFrame;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = callback;
+        }
+      }));
+      assert.ok(result.timestamp > 0);
+      color(result.pixel, [255, 0, 0]);
+    });
+
+    await t.test("remembering the delayed first frame never accepts a later stale picture at zero", async () => {
+      const result = await pageTest((page) => page.evaluate(async () => {
+        const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+        const NativeFrame = window.VideoFrame;
+        const callback = HTMLVideoElement.prototype.requestVideoFrameCallback;
+        HTMLVideoElement.prototype.requestVideoFrameCallback = undefined;
+        const pool = new EditorMediaPool({ resolveAsset: () => "/delayed-webm", timeoutMs: 1000 });
+        let saved; const stale = [];
+        try {
+          saved = (await pool.prepare(frame([layer("clip", 2.25)]))).get("clip").clone();
+          window.VideoFrame = function(source) {
+            if (source.currentTime === 0 && stale.length < 3) {
+              const value = saved.clone(); stale.push(value); return value;
+            }
+            return new NativeFrame(source);
+          };
+          const picture = (await pool.prepare(frame([layer("clip", 0)]))).get("clip");
+          return { pixel: sample(picture), rejected: stale.length, released: stale.every(f => f.displayWidth === 0) };
+        } finally {
+          pool.dispose(); saved?.close(); window.VideoFrame = NativeFrame;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = callback;
+        }
+      }));
+      color(result.pixel, [255, 0, 0]);
+      assert.equal(result.rejected, 3); assert.equal(result.released, true);
+    });
+
     await t.test(
       "frames without a duration use a matching presentation receipt",
       async () => {
@@ -609,7 +660,7 @@ test(
           const NativeFrame=window.VideoFrame;
           let attempts=0;
           window.VideoFrame=function(source){
-            if(++attempts<=3)throw new DOMException("Current frame not yet available","InvalidStateError");
+            if(source.currentTime > 2 && ++attempts<=3)throw new DOMException("Current frame not yet available","InvalidStateError");
             return new NativeFrame(source);
           };
           const pool=new EditorMediaPool({resolveAsset:()=>"/video",timeoutMs:1000});
