@@ -51,6 +51,26 @@ test(
       { timeout: 15000, encoding: "utf8" },
     );
     assert.equal(generated.status, 0, generated.stderr || String(generated.error));
+    const webm = join(directory, "colors.webm");
+    const webmGenerated = spawnSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-i", source, "-r", "30000/1001",
+      "-c:v", "libvpx-vp9", "-y", webm,
+    ], { timeout: 15000, encoding: "utf8" });
+    assert.equal(webmGenerated.status, 0, webmGenerated.stderr || String(webmGenerated.error));
+    const delayedWebm = join(directory, "delayed-video.webm");
+    const delayedGenerated = spawnSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+      "-itsoffset", "0.08", "-i", source, "-map", "1:v", "-map", "0:a",
+      "-c:v", "libvpx-vp9", "-c:a", "libopus", "-t", "3", "-y", delayedWebm,
+    ], { timeout: 15000, encoding: "utf8" });
+    assert.equal(delayedGenerated.status, 0, delayedGenerated.stderr || String(delayedGenerated.error));
+    const alternating = join(directory, "alternating.mp4");
+    const alternatingGenerated = spawnSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=red:s=96x64:r=30:d=1",
+      "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=blue:t=fill:enable='mod(n,2)'",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y", alternating,
+    ], { timeout:15000, encoding:"utf8" });
+    assert.equal(alternatingGenerated.status,0,alternatingGenerated.stderr || String(alternatingGenerated.error));
     const gif = join(directory, "animated.gif");
     const animation = spawnSync(
       "ffmpeg",
@@ -68,7 +88,10 @@ test(
     const layer = (id, seconds, assetId="video", assetKind="video") => ({kind:"media",instanceId:id,sequenceId:"main",clipId:id,trackId:id,localTime:0,assetId,assetKind,sourceTime:Math.round(seconds*240000),naturalWidth:96,naturalHeight:64,transform:defaultTransform(),color:defaultColorAdjustment(),blendMode:"normal"});
     const frame = (layers) => ({sequenceId:"main",time:0,width:96,height:64,background:"#000000",layers,audio:[]});
     const sample = (surface) => {const canvas=document.createElement("canvas");canvas.width=96;canvas.height=64;const ctx=canvas.getContext("2d");ctx.drawImage(surface,0,0,96,64);return [...ctx.getImageData(48,32,1,1).data];};
-    window.poolTest={EditorMediaPool,layer,frame,sample};
+    const videos=[];
+    const create=document.createElement.bind(document);
+    document.createElement=(tag,...args)=>{const element=create(tag,...args);if(tag==="video")videos.push(element);return element;};
+    window.poolTest={EditorMediaPool,layer,frame,sample,videos};
   `,
       },
       bundle: true,
@@ -86,6 +109,7 @@ test(
       image.data[offset + 3] = 255;
     }
     const routes = new Map([
+      ["/delayed-webm", { type: "video/webm", body: await readFile(delayedWebm) }],
       [
         "/",
         {
@@ -98,6 +122,8 @@ test(
         { type: "text/javascript", body: Buffer.from(bundle.outputFiles[0].contents) },
       ],
       ["/video", { type: "video/mp4", body: await readFile(source) }],
+      ["/webm", { type: "video/webm", body: await readFile(webm) }],
+      ["/alternating", { type: "video/mp4", body: await readFile(alternating) }],
       ["/image", { type: "image/png", body: PNG.sync.write(image) }],
       ["/animated", { type: "image/gif", body: await readFile(gif) }],
       ["/bad", { type: "video/mp4", body: Buffer.from("invalid video bytes") }],
@@ -179,8 +205,8 @@ test(
                 first: sample(surfaces.get("one")),
                 second: sample(surfaces.get("two")),
                 distinct: surfaces.get("one") !== surfaces.get("two"),
-                times: [...surfaces.values()].map((video) => video.currentTime),
-                paused: [...surfaces.values()].every((video) => video.paused),
+                times: window.poolTest.videos.map((video) => video.currentTime),
+                paused: window.poolTest.videos.every((video) => video.paused),
                 resolves,
               };
             } finally {
@@ -216,8 +242,8 @@ test(
               }
               return {
                 pixels,
-                reused: elements.every((element) => element === elements[0]),
-                paused: elements[0].paused,
+                reused: window.poolTest.videos.length === 1 && elements[2] === elements[3],
+                paused: window.poolTest.videos[0].paused,
               };
             } finally {
               pool.dispose();
@@ -258,6 +284,339 @@ test(
           }),
         );
         result.forEach((pixel) => color(pixel, [255, 0, 0]));
+      },
+    );
+
+    await t.test(
+      "paused decoded frames remain drawable when compositor callbacks do not arrive",
+      async () => {
+        const result = await pageTest((page) =>
+          page.evaluate(async () => {
+            const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+            const prototype = HTMLVideoElement.prototype;
+            const request = prototype.requestVideoFrameCallback;
+            const cancel = prototype.cancelVideoFrameCallback;
+            let callbackId = 0;
+            // A compositor callback is not a seek-completion event. Paused/offscreen
+            // decoders may have no newly presented frame, even after decoding succeeds.
+            // Keep real Chromium seeking, readyState, and canvas pixel reads intact.
+            prototype.requestVideoFrameCallback = () => ++callbackId;
+            prototype.cancelVideoFrameCallback = () => {};
+            const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 1000 });
+            try {
+              const samples = [];
+              for (const time of [0, 0.001, 0.002, 2.25, 2.251, 1.25, 0]) {
+                const surface = (await pool.prepare(frame([layer("paused", time)]))).get("paused");
+                samples.push({
+                  pixel: sample(surface), time: window.poolTest.videos[0].currentTime, paused: window.poolTest.videos[0].paused,
+                });
+              }
+              return samples;
+            } finally {
+              pool.dispose();
+              prototype.requestVideoFrameCallback = request;
+              prototype.cancelVideoFrameCallback = cancel;
+            }
+          }),
+        );
+        const channels = [
+          [255, 0, 0], [255, 0, 0], [255, 0, 0], [0, 0, 255],
+          [0, 0, 255], [0, 255, 0], [255, 0, 0],
+        ];
+        result.forEach((value, index) => {
+          color(value.pixel, channels[index]);
+          assert.equal(value.paused, true);
+          assert.ok(Math.abs(value.time - [0, 0.001, 0.002, 2.25, 2.251, 1.25, 0][index]) < 0.00001);
+        });
+      },
+    );
+
+    await t.test(
+      "stale decoded surfaces are retried and frozen frames are closed on replacement",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
+          const cancel = HTMLVideoElement.prototype.cancelVideoFrameCallback;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = () => 1;
+          HTMLVideoElement.prototype.cancelVideoFrameCallback = () => {};
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 1000 });
+          let saved;
+          const stale = [];
+          try {
+            const first = (await pool.prepare(frame([layer("clip", 0.25)]))).get("clip");
+            saved = first.clone();
+            window.VideoFrame = function(source) {
+              if (source instanceof HTMLVideoElement && source.currentTime > 2 && stale.length < 3) {
+                const old = saved.clone();
+                stale.push(old);
+                return old;
+              }
+              return new NativeFrame(source);
+            };
+            const next = (await pool.prepare(frame([layer("clip", 2.25)]))).get("clip");
+            const pixel = sample(next);
+            const firstClosed = first.displayWidth === 0;
+            const staleClosed = stale.length === 3 && stale.every(value => value.displayWidth === 0);
+            pool.dispose();
+            return { pixel, firstClosed, staleClosed, finalClosed: next.displayWidth === 0 };
+          } finally {
+            pool.dispose();
+            saved?.close();
+            window.VideoFrame = NativeFrame;
+            HTMLVideoElement.prototype.requestVideoFrameCallback = request;
+            HTMLVideoElement.prototype.cancelVideoFrameCallback = cancel;
+          }
+        }));
+        color(result.pixel, [0, 0, 255]);
+        assert.equal(result.firstClosed, true);
+        assert.equal(result.staleClosed, true);
+        assert.equal(result.finalClosed, true);
+      },
+    );
+
+    await t.test(
+      "an exact frame timestamp remains usable with zero duration and no presentation callbacks",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = undefined;
+          window.VideoFrame = function(source) {
+            const captured = new NativeFrame(source);
+            Object.defineProperty(captured, "duration", { value: 0 });
+            return captured;
+          };
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 500 });
+          try {
+            const output = [];
+            for (const time of [0, 2, 1])
+              output.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return output;
+          } finally {
+            pool.dispose();
+            window.VideoFrame = NativeFrame;
+            HTMLVideoElement.prototype.requestVideoFrameCallback = request;
+          }
+        }));
+        [[255, 0, 0], [0, 0, 255], [0, 255, 0]].forEach((expected, i) => color(result[i], expected));
+      },
+    );
+
+    await t.test("WebM with audio before its first video frame can seek to the beginning", async () => {
+      const result = await pageTest((page) => page.evaluate(async () => {
+        const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+        const pool = new EditorMediaPool({ resolveAsset: () => "/delayed-webm", timeoutMs: 1000 });
+        try {
+          const first = (await pool.prepare(frame([layer("clip", 0)]))).get("clip");
+          return { timestamp: first.timestamp, pixel: sample(first) };
+        } finally { pool.dispose(); }
+      }));
+      assert.ok(result.timestamp > 0, "the fixture must retain the delayed video track");
+      color(result.pixel, [255, 0, 0]);
+    });
+
+    await t.test(
+      "frames without a duration use a matching presentation receipt",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          window.VideoFrame = function(source) {
+            const captured = new NativeFrame(source);
+            Object.defineProperty(captured, "duration", { value: null });
+            return captured;
+          };
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 2000 });
+          try {
+            const output = [];
+            for (const time of [0, 2.25, 1.25])
+              output.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return output;
+          } finally {
+            pool.dispose();
+            window.VideoFrame = NativeFrame;
+          }
+        }));
+        [[255, 0, 0], [0, 0, 255], [0, 255, 0]].forEach((expected, i) => color(result[i], expected));
+      },
+    );
+
+    await t.test(
+      "real NTSC WebM remains drawable across rounded-duration boundaries",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const pool = new EditorMediaPool({ resolveAsset: () => "/webm", timeoutMs: 2000 });
+          try {
+            const pixels = [];
+            for (const time of [0, 0.5, 0.5005, 2.5, 1.5])
+              pixels.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return pixels;
+          } finally { pool.dispose(); }
+        }));
+        [[255,0,0], [255,0,0], [255,0,0], [0,0,255], [0,255,0]]
+          .forEach((expected, i) => color(result[i], expected));
+      },
+    );
+
+    await t.test(
+      "a presentation receipt before seeked survives until the frozen WebM frame is ready",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const cancel = prototype.cancelVideoFrameCallback;
+          const pending = new Map();
+          let nextId = 0, earlyReceipts = 0;
+          // Deliver the real decoded timestamp just before the pool's seeked
+          // listener. Readiness and presentation are independent notifications;
+          // a receipt must not disappear merely because readiness arrives later.
+          prototype.requestVideoFrameCallback = function(callback) {
+            const video = this, id = ++nextId;
+            const receive = () => {
+              pending.delete(id);
+              const captured = new VideoFrame(video);
+              const mediaTime = captured.timestamp / 1_000_000;
+              captured.close();
+              Object.defineProperty(video, "seeking", { configurable: true, value: true });
+              try {
+                earlyReceipts++;
+                callback(performance.now(), { mediaTime, presentationTime: performance.now() });
+              }
+              finally { delete video.seeking; }
+            };
+            pending.set(id, { video, receive });
+            video.addEventListener("seeked", receive, { once: true });
+            return id;
+          };
+          prototype.cancelVideoFrameCallback = id => {
+            const entry = pending.get(id);
+            if (entry) entry.video.removeEventListener("seeked", entry.receive);
+            pending.delete(id);
+          };
+          const pool = new EditorMediaPool({ resolveAsset: () => "/webm", timeoutMs: 500 });
+          try {
+            const pixels = [];
+            for (const time of [0.5005, 2.502, 1.5015])
+              pixels.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return { pixels, earlyReceipts };
+          } finally {
+            pool.dispose();
+            prototype.requestVideoFrameCallback = request;
+            prototype.cancelVideoFrameCallback = cancel;
+          }
+        }));
+        [[255,0,0], [0,0,255], [0,255,0]].forEach((expected, i) => color(result.pixels[i], expected));
+        assert.equal(result.earlyReceipts, 3);
+      },
+    );
+
+    await t.test(
+      "a delayed pre-seek presentation receipt cannot authorize an old surface",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const cancel = prototype.cancelVideoFrameCallback;
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 200 });
+          let saved, receiptTimer, requests = 0;
+          const rejected = [];
+          try {
+            saved = (await pool.prepare(frame([layer("clip", 0.25)]))).get("clip").clone();
+            window.VideoFrame = function() {
+              const captured = saved.clone(); rejected.push(captured); return captured;
+            };
+            prototype.requestVideoFrameCallback = callback => {
+              const id = ++requests;
+              if (id === 1) receiptTimer = setTimeout(() => callback(performance.now(), {
+                mediaTime: saved.timestamp / 1_000_000, presentationTime: 0,
+              }), 20);
+              return id;
+            };
+            prototype.cancelVideoFrameCallback = () => clearTimeout(receiptTimer);
+            const code = await pool.prepare(frame([layer("clip", 2.25)])).then(
+              () => "unexpected", error => error.code,
+            );
+            return { code, listeningAgain: requests > 1,
+              closed: rejected.length > 0 && rejected.every(value => value.displayWidth === 0) };
+          } finally {
+            clearTimeout(receiptTimer); saved?.close(); pool.dispose();
+            window.VideoFrame = NativeFrame;
+            prototype.requestVideoFrameCallback = request;
+            prototype.cancelVideoFrameCallback = cancel;
+          }
+        }));
+        assert.deepEqual(result, { code: "timeout", listeningAgain: true, closed: true });
+      },
+    );
+
+    await t.test(
+      "a decoder stuck on an old frame reaches the deadline without publishing stale pixels",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 200 });
+          let saved;
+          const rejected = [];
+          try {
+            saved = (await pool.prepare(frame([layer("clip", 0.25)]))).get("clip").clone();
+            window.VideoFrame = function() { const value=saved.clone(); rejected.push(value); return value; };
+            const code = await pool.prepare(frame([layer("clip", 2.25)])).then(
+              () => "unexpected", error => error.code,
+            );
+            const count = rejected.length;
+            await new Promise(resolve => setTimeout(resolve, 40));
+            return { code, closed: rejected.every(value => value.displayWidth === 0),
+              stopped: rejected.length === count, retried: count > 1,
+              released: !window.poolTest.videos[0].hasAttribute("src") };
+          } finally { saved?.close(); pool.dispose(); window.VideoFrame = NativeFrame; }
+        }));
+        assert.deepEqual(result, {code:"timeout", closed:true, stopped:true, retried:true, released:true});
+      },
+    );
+
+    await t.test(
+      "fractional microsecond frame boundaries select the intended 30 fps picture without callbacks",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const {EditorMediaPool,layer,frame,sample} = window.poolTest;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = () => 1;
+          HTMLVideoElement.prototype.cancelVideoFrameCallback = () => {};
+          const pool = new EditorMediaPool({resolveAsset:()=>"/alternating",timeoutMs:1000});
+          try {
+            const pixels=[];
+            for(const index of [0,1,2,25,26,27,29])
+              pixels.push(sample((await pool.prepare(frame([layer("clip",index/30)]))).get("clip")));
+            return pixels;
+          } finally {pool.dispose();}
+        }));
+        [0,1,2,25,26,27,29].forEach((index,i)=>color(result[i],index%2 ? [0,0,255]:[255,0,0]));
+      },
+    );
+
+    await t.test(
+      "temporarily unavailable frame objects retry within the same deadline",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const {EditorMediaPool,layer,frame,sample}=window.poolTest;
+          const NativeFrame=window.VideoFrame;
+          let attempts=0;
+          window.VideoFrame=function(source){
+            if(++attempts<=3)throw new DOMException("Current frame not yet available","InvalidStateError");
+            return new NativeFrame(source);
+          };
+          const pool=new EditorMediaPool({resolveAsset:()=>"/video",timeoutMs:1000});
+          try {return {pixel:sample((await pool.prepare(frame([layer("clip",2.25)]))).get("clip")),attempts};}
+          finally {pool.dispose();window.VideoFrame=NativeFrame;}
+        }));
+        color(result.pixel,[0,0,255]);assert.equal(result.attempts,4);
       },
     );
 
@@ -398,13 +757,13 @@ test(
             try {
               const first = await pool.prepare(frame([layer("one", 0.25), layer("two", 1.25)]));
               await pool.prepare(frame([layer("two", 1.25)]));
-              const removed = !first.get("one").hasAttribute("src"),
-                kept = first.get("two").hasAttribute("src");
+              const removed = !window.poolTest.videos[0].hasAttribute("src") && first.get("one").displayWidth === 0,
+                kept = window.poolTest.videos[1].hasAttribute("src") && first.get("two").displayWidth > 0;
               pool.reset();
               return {
                 removed,
                 kept,
-                reset: !first.get("two").hasAttribute("src"),
+                reset: !window.poolTest.videos[1].hasAttribute("src") && first.get("two").displayWidth === 0,
                 borrowedStillWorks: (await fetch(url)).ok,
               };
             } finally {
@@ -519,7 +878,7 @@ test(
             );
             controller.abort();
             const code = await pending,
-              released = !old.hasAttribute("src");
+              released = !window.poolTest.videos[0].hasAttribute("src") && old.displayWidth === 0;
             pool.reset();
             const pixel = sample((await pool.prepare(frame([layer("one", 1.25)]))).get("one"));
             pool.dispose();
@@ -588,7 +947,6 @@ test(
           page.evaluate(async () => {
             const { EditorMediaPool, layer, frame } = window.poolTest;
             let sought = false,
-              cancelledCallback = false,
               element;
             const original = document.createElement.bind(document);
             document.createElement = (...args) => {
@@ -597,11 +955,13 @@ test(
                 element = created;
                 created.addEventListener("seeked", () => {
                   sought = true;
+                  // Model an unavailable current frame, not a missing presentation
+                  // callback: decoding readiness and presentation are distinct.
+                  Object.defineProperty(created, "readyState", {
+                    configurable: true,
+                    get: () => HTMLMediaElement.HAVE_METADATA,
+                  });
                 });
-                created.requestVideoFrameCallback = () => 123;
-                created.cancelVideoFrameCallback = (id) => {
-                  cancelledCallback ||= id === 123;
-                };
               }
               return created;
             };
@@ -611,13 +971,12 @@ test(
               (error) => error.code,
             );
             pool.dispose();
-            return { code, sought, cancelledCallback, released: !element.hasAttribute("src") };
+            return { code, sought, released: !element.hasAttribute("src") };
           }),
         );
         assert.deepEqual(result, {
           code: "timeout",
           sought: true,
-          cancelledCallback: true,
           released: true,
         });
       },
