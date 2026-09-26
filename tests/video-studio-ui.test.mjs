@@ -2437,17 +2437,20 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
     await page.addStyleTag({
       content: 'body:has(#timeline-zoom[value^="0."]) #timeline-scroll { max-width: 900px; }',
     });
-    const beforeFitWidth = await page
-      .locator("#timeline-scroll")
-      .evaluate((scroll) => scroll.clientWidth);
+    const beforeFitWidth = await page.evaluate(() => document.querySelector("#timeline-scroll").clientWidth);
     assert.ok(beforeFitWidth > 900);
     await page.locator('[data-action="fit-timeline"]').click();
-    const fitted = await page.locator("#timeline-scroll").evaluate((scroll) => ({
-      width: scroll.clientWidth,
-      left: scroll.scrollLeft,
-      zoom: Number(document.querySelector("#timeline-zoom").value),
-      labels: document.querySelectorAll("#ruler > span").length,
-    }));
+    // Rendering replaces this node. Resolve and measure in one page evaluation,
+    // rather than carrying a locator's element handle across a background render.
+    const fitted = await page.evaluate(() => {
+      const scroll = document.querySelector("#timeline-scroll");
+      return {
+        width: scroll.clientWidth,
+        left: scroll.scrollLeft,
+        zoom: Number(document.querySelector("#timeline-zoom").value),
+        labels: document.querySelectorAll("#ruler > span").length,
+      };
+    });
     assert.equal(fitted.width, 900);
     assert.ok(fitted.zoom < 12);
     assert.ok(3600 * fitted.zoom + 40 <= fitted.width + 1, JSON.stringify(fitted));
@@ -2467,13 +2470,16 @@ test("fine timeline editing fits an hour-long project and limits ruler labels wh
       scroll.scrollLeft = scroll.scrollWidth - scroll.clientWidth;
       scroll.dispatchEvent(new Event("scroll"));
     });
-    const ruler = await page.locator("#timeline-scroll").evaluate((scroll) => ({
-      left: scroll.scrollLeft,
-      width: scroll.clientWidth,
-      positions: [...document.querySelectorAll("#ruler > span")].map((label) =>
-        parseFloat(label.style.left),
-      ),
-    }));
+    const ruler = await page.evaluate(() => {
+      const scroll = document.querySelector("#timeline-scroll");
+      return {
+        left: scroll.scrollLeft,
+        width: scroll.clientWidth,
+        positions: [...document.querySelectorAll("#ruler > span")].map((label) =>
+          parseFloat(label.style.left),
+        ),
+      };
+    });
     assert.ok(
       ruler.left > 800000,
       `Full-zoom ruler should reach the hour-long sequence end: ${JSON.stringify(ruler)}`,
