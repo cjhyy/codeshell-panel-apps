@@ -10,6 +10,23 @@ permissions:
 # Keep independent gates runnable even when another app fails. The previous
 # sequential video-media gate prevented UI and design regressions from running.
 jobs:
+  job-hunt-pdf:
+    name: Job Hunt PDF rendering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Install PDF inspection tools and Chinese fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y poppler-utils fonts-noto-cjk
+      - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
+
   validate:
     name: Package and offline checks
     runs-on: ubuntu-latest

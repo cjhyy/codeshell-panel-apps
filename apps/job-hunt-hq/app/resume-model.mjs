@@ -1016,6 +1016,9 @@ function normalizePdfExports(value) {
         path: boundedText(source.path, 512),
         exportedAt: boundedText(source.exportedAt, 80),
         size: Number.isSafeInteger(source.size) && source.size >= 0 ? source.size : 0,
+        ...(typeof source.assetId === "string" && /^asset-[a-f0-9]{64}$/.test(source.assetId)
+          ? { assetId: source.assetId, taskId: boundedText(source.taskId, 100) } : {}),
+        ...(typeof source.sourceUpdatedAt === "string" ? { sourceUpdatedAt: boundedText(source.sourceUpdatedAt, 80) } : {}),
       };
     })
     .filter((item) => item.path.toLowerCase().endsWith(".pdf"))
@@ -1176,6 +1179,7 @@ export function resumeExportStatus(record = {}) {
     latestExportAt,
     fresh: Boolean(
       latestExportAt &&
+      (exports[0]?.sourceUpdatedAt === undefined || exports[0].sourceUpdatedAt === updatedAt) &&
       (!updatedAt ||
         (exportedTime !== null && updatedTime !== null && exportedTime >= updatedTime)),
     ),

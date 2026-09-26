@@ -43,9 +43,16 @@ async function fixture(t, options = {}) {
       project.storage['job-hunt-state-v1'] = { localStateVersion: 2,
         interviewDraft: { answer: 'draft-' + id, updatedAt: '2026-01-01T00:00:00Z' },
       };
+      if (options.pdfTasks) {
+        project.tasks = {};
+        project.files['job-hunt-panel.json'].profile = { name: 'Example Candidate', role: 'Engineer', contact: 'example@example.com' };
+        project.files['job-hunt-panel.json'].resume.markdown = '# Example Candidate\n\nexample@example.com\n\n## 项目经验\n\n- 完成公开项目功能';
+        project.files['job-hunt-panel.json'].resume.claimEvidence = [{ claim: '完成公开项目功能', status: 'verified', importance: 'core', whyItMatters: '实际功能', sources: [{ kind: 'user', label: '本人确认', locator: '用户输入', evidence: 'PRIVATE EVIDENCE' }], interviewQuestions: [{ question: 'PRIVATE INTERVIEW QUESTION' }] }];
+      }
     }
     let current = 'a'; const listeners = [], calls = [], tools = {};
     const methods = ['storage.getSnapshot', 'storage.compareAndSet'];
+    if (options.pdfTasks) methods.push('tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'tasks.retry', 'resources.open');
     const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods });
     const snapshot = async (data, key) => {
       if (!(key in data)) return { exists: false, value: null, revision: null };
@@ -61,6 +68,17 @@ async function fixture(t, options = {}) {
       async call(method, params = {}) {
         const id = current, project = projects[id]; calls.push({ id, method, params: structuredClone(params) });
         if (window.__fixture.hold === method) await new Promise(resolve => { window.__fixture.release = resolve; });
+        if (method === 'tasks.list') return Object.values(project.tasks).slice(params.offset, params.offset + params.limit).map(({ input, result, ...summary }) => structuredClone(summary));
+        if (method === 'tasks.get') return structuredClone(project.tasks[params.id]);
+        if (method === 'tasks.find') return structuredClone(Object.values(project.tasks).find(job => job.requestKey === params.requestKey) || null);
+        if (method === 'tasks.start') {
+          const job = { id: id + '-pdf-' + Object.keys(project.tasks).length, entry: { name: params.entry }, input: structuredClone(params.input), requestKey: params.requestKey, status: 'queued', createdAt: Date.now() };
+          project.tasks[job.id] = job;
+          if (options.losePdfStart) throw new Error('start reply lost');
+          return structuredClone(job);
+        }
+        if (method === 'tasks.cancel' || method === 'tasks.retry') { project.tasks[params.id].status = method === 'tasks.cancel' ? 'cancelled' : 'queued'; return {}; }
+        if (method === 'resources.open') return params;
         if (method === 'storage.getSnapshot') {
           if (window.__fixture.failRead && params.key === 'job-hunt-state-v1') throw new Error('disk unavailable');
           return snapshot(project.storage, params.key);
@@ -121,10 +139,66 @@ async function fixture(t, options = {}) {
   return page;
 }
 const ready = page => page.waitForFunction(() => !document.querySelector('.app-shell').inert && document.querySelector('#draft-storage-status').textContent !== '正在连接草稿存储…');
+
+test('cloud PDF export keeps its source, recovers a lost reply, cancels and downloads the captured result', async t => {
+  const page = await fixture(t, { pdfTasks: true, losePdfStart: true }); await ready(page);
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('#print-resume').click();
+  await page.waitForFunction(() => Object.keys(window.__fixture.projects.a.tasks).length === 1);
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '取消导出' }).click();
+  await page.waitForFunction(() => Object.values(window.__fixture.projects.a.tasks)[0].status === 'cancelled');
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '重试本次导出' }).click();
+  await page.waitForFunction(() => Object.values(window.__fixture.projects.a.tasks)[0].status === 'queued');
+  const input = await page.evaluate(() => Object.values(window.__fixture.projects.a.tasks)[0].input.request);
+  assert.equal(input.source.resumeId, 'resume-a');
+  assert.match(input.html, /完成公开项目功能/);
+  assert.doesNotMatch(input.html, /PRIVATE EVIDENCE|PRIVATE INTERVIEW QUESTION/);
+  await page.evaluate(() => {
+    const job = Object.values(window.__fixture.projects.a.tasks)[0];
+    job.status = 'succeeded'; job.completedAt = Date.now();
+    const sha256 = 'a'.repeat(64), assetId = 'asset-' + sha256;
+    job.result = { artifacts: [{ role: 'pdf', bytes: 1234, sha256, assetId, mimeType: 'application/pdf', asset: { id: assetId } }] };
+  });
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '刷新任务' }).click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.pdfExports?.length === 1);
+  await page.locator('#resume-file-list').getByRole('button', { name: '打开／下载 PDF' }).click();
+  const calls = await page.evaluate(() => window.__fixture.calls);
+  assert.equal(calls.filter(call => call.method === 'tasks.start').length, 1);
+  assert.equal(calls.some(call => call.method === 'workspace.exportPdf'), false);
+  assert.equal(calls.find(call => call.method === 'resources.open').params.assetId, 'asset-' + 'a'.repeat(64));
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  assert.equal(await page.locator('.resume-pdf-tasks [data-pdf-task-id]').count(), 0);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.pdfExports?.length || 0), 0);
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  await page.waitForFunction(() => document.querySelector('.resume-pdf-tasks [data-pdf-task-id]'));
+  assert.equal(await page.evaluate(() => Object.keys(window.__fixture.projects.a.tasks).length), 1);
+});
 async function backup(page) {
   const download = page.waitForEvent('download'); await page.locator('#download-draft-backup').click();
   return JSON.parse(await readFile(await (await download).path(), 'utf8'));
 }
+
+test('a completed cloud PDF remains downloadable when its receipt save fails and refresh retries persistence', async t => {
+  const page = await fixture(t, { pdfTasks: true }); await ready(page);
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('#print-resume').click();
+  await page.waitForFunction(() => Object.keys(window.__fixture.projects.a.tasks).length === 1);
+  await page.evaluate(() => {
+    window.__fixture.failWrites = true;
+    const job = Object.values(window.__fixture.projects.a.tasks)[0];
+    job.status = 'succeeded'; job.completedAt = Date.now();
+    const sha256 = 'b'.repeat(64), assetId = 'asset-' + sha256;
+    job.result = { artifacts: [{ role: 'pdf', bytes: 100, sha256, assetId, mimeType: 'application/pdf', asset: { id: assetId } }] };
+  });
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '刷新任务' }).click();
+  await page.waitForFunction(() => document.querySelector('.resume-pdf-tasks [role="status"]').textContent.includes('失败'));
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '打开／下载 PDF' }).click();
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'resources.open').length), 1);
+  await page.evaluate(() => { window.__fixture.failWrites = false; });
+  await page.locator('.resume-pdf-tasks').getByRole('button', { name: '刷新任务' }).click();
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.pdfExports?.length === 1);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(call => call.method === 'tasks.start').length), 1);
+});
 
 test('same-path project switch reads its own draft and old unowned browser bytes remain exportable', async t => {
   const page = await fixture(t, { legacy: true }); await ready(page);

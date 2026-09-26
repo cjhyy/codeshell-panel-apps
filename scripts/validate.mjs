@@ -2789,7 +2789,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /async function exportResumeToPdf[\s\S]*?state\.resume\.pdfExports[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?导出记录还没有同步到项目/,
+      /async function exportResumeToPdf[\s\S]*?record\.pdfExports[\s\S]*?await writeProjectSnapshot\(\)[\s\S]*?导出记录还没有同步到项目/,
       `${packagePath}: PDF receipts must await project persistence and report partial success`,
     );
     assert.match(

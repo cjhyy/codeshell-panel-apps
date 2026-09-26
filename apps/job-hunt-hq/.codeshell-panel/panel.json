@@ -23,8 +23,16 @@
     "agent.submitPrompt",
     "audio.transcribe",
     "credentials.cookies",
-    "automations.manage"
+    "automations.manage",
+    "process",
+    "resources"
   ],
+  "nativeEntries": {
+    "resume-pdf": {
+      "entry": "app/tools/resume-pdf.mjs",
+      "sha256": "7f3ad47c2fa6e73c4efea218f04ade7bfc236c127ab36a86c3e7affb0946e0b5"
+    }
+  },
   "agent": {
     "tools": [
       {
