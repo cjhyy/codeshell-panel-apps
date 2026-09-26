@@ -269,14 +269,26 @@ function seekVideo(
       // Some containers round durations (WebM) or omit them. A presentation
       // receipt for this seek can also confirm the frozen frame, but is not
       // required when the frame's own interval already covers the target.
-      if (typeof video.requestVideoFrameCallback === "function") {
+      const seekStartedAt = performance.now();
+      // Seeking to the exact paused position can reuse its existing presentation
+      // (including the initially loaded frame). No new picture is needed then.
+      const unchangedPosition = videoReady(video) && video.currentTime === seekTime;
+      const requestPresentation = () => {
+        if (settled || typeof video.requestVideoFrameCallback !== "function") return;
         callback = video.requestVideoFrameCallback((_now, metadata) => {
           callback = undefined;
-          if (videoReady(video) && Math.abs(video.currentTime - seconds) < 0.000_01)
+          // A decoded frame may be presented before seeking/readyState settle.
+          // Keep that receipt; inspect still requires seek completion, the target
+          // clock and the exact same frozen frame before it can publish pixels.
+          // A queued callback for a picture presented before this seek is not
+          // confirmation of this request. Keep listening for its actual receipt.
+          if (unchangedPosition || metadata.presentationTime >= seekStartedAt)
             presentedTime = metadata.mediaTime * 1_000_000;
           inspect();
+          requestPresentation();
         });
-      }
+      };
+      requestPresentation();
       video.currentTime = seekTime;
     } catch (cause) {
       finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));

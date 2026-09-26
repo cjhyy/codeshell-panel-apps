@@ -413,6 +413,100 @@ test(
     );
 
     await t.test(
+      "a presentation receipt before seeked survives until the frozen WebM frame is ready",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const cancel = prototype.cancelVideoFrameCallback;
+          const pending = new Map();
+          let nextId = 0, earlyReceipts = 0;
+          // Deliver the real decoded timestamp just before the pool's seeked
+          // listener. Readiness and presentation are independent notifications;
+          // a receipt must not disappear merely because readiness arrives later.
+          prototype.requestVideoFrameCallback = function(callback) {
+            const video = this, id = ++nextId;
+            const receive = () => {
+              pending.delete(id);
+              const captured = new VideoFrame(video);
+              const mediaTime = captured.timestamp / 1_000_000;
+              captured.close();
+              Object.defineProperty(video, "seeking", { configurable: true, value: true });
+              try {
+                earlyReceipts++;
+                callback(performance.now(), { mediaTime, presentationTime: performance.now() });
+              }
+              finally { delete video.seeking; }
+            };
+            pending.set(id, { video, receive });
+            video.addEventListener("seeked", receive, { once: true });
+            return id;
+          };
+          prototype.cancelVideoFrameCallback = id => {
+            const entry = pending.get(id);
+            if (entry) entry.video.removeEventListener("seeked", entry.receive);
+            pending.delete(id);
+          };
+          const pool = new EditorMediaPool({ resolveAsset: () => "/webm", timeoutMs: 500 });
+          try {
+            const pixels = [];
+            for (const time of [0.5005, 2.502, 1.5015])
+              pixels.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return { pixels, earlyReceipts };
+          } finally {
+            pool.dispose();
+            prototype.requestVideoFrameCallback = request;
+            prototype.cancelVideoFrameCallback = cancel;
+          }
+        }));
+        [[255,0,0], [0,0,255], [0,255,0]].forEach((expected, i) => color(result.pixels[i], expected));
+        assert.equal(result.earlyReceipts, 3);
+      },
+    );
+
+    await t.test(
+      "a delayed pre-seek presentation receipt cannot authorize an old surface",
+      async () => {
+        const result = await pageTest(page => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const prototype = HTMLVideoElement.prototype;
+          const request = prototype.requestVideoFrameCallback;
+          const cancel = prototype.cancelVideoFrameCallback;
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 200 });
+          let saved, receiptTimer, requests = 0;
+          const rejected = [];
+          try {
+            saved = (await pool.prepare(frame([layer("clip", 0.25)]))).get("clip").clone();
+            window.VideoFrame = function() {
+              const captured = saved.clone(); rejected.push(captured); return captured;
+            };
+            prototype.requestVideoFrameCallback = callback => {
+              const id = ++requests;
+              if (id === 1) receiptTimer = setTimeout(() => callback(performance.now(), {
+                mediaTime: saved.timestamp / 1_000_000, presentationTime: 0,
+              }), 20);
+              return id;
+            };
+            prototype.cancelVideoFrameCallback = () => clearTimeout(receiptTimer);
+            const code = await pool.prepare(frame([layer("clip", 2.25)])).then(
+              () => "unexpected", error => error.code,
+            );
+            return { code, listeningAgain: requests > 1,
+              closed: rejected.length > 0 && rejected.every(value => value.displayWidth === 0) };
+          } finally {
+            clearTimeout(receiptTimer); saved?.close(); pool.dispose();
+            window.VideoFrame = NativeFrame;
+            prototype.requestVideoFrameCallback = request;
+            prototype.cancelVideoFrameCallback = cancel;
+          }
+        }));
+        assert.deepEqual(result, { code: "timeout", listeningAgain: true, closed: true });
+      },
+    );
+
+    await t.test(
       "a decoder stuck on an old frame reaches the deadline without publishing stale pixels",
       async () => {
         const result = await pageTest((page) => page.evaluate(async () => {
