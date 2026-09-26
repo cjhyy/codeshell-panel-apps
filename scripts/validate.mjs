@@ -2903,8 +2903,8 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /CRITICAL_DRAFT_STORAGE_KEY[\s\S]*?saveCriticalDraftRecovery\(\)[\s\S]*?loadCriticalDraftRecovery\(saved\)/,
-      `${packagePath}: critical interview and resume drafts must survive a host-rate-limited reload`,
+      /CRITICAL_DRAFT_STORAGE_KEY[\s\S]*?saveCriticalDraftRecovery\(\)[\s\S]*?loadCriticalDraftRecovery\(saved, recovery\)/,
+      `${packagePath}: critical interview and resume drafts must recover from the project-scoped store`,
     );
     assert.match(
       appScript,
@@ -3690,7 +3690,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /prepareProjectSnapshotDocuments\([\s\S]*?writeProjectSnapshotShards\(prepared\.shards\)[\s\S]*?path: PROJECT_STATE_PATH/,
+      /prepareProjectSnapshotDocuments\([\s\S]*?writeProjectSnapshotShards\(prepared\.shards, scope\)[\s\S]*?path: PROJECT_STATE_PATH/,
       `${packagePath}: large snapshots must write the inactive shard generation before switching the root index`,
     );
     assert.match(
@@ -3745,7 +3745,7 @@ async function validatePackage(packagePath) {
     );
     assert.match(
       appScript,
-      /const root = JSON\.parse\(snapshot\.content\);[\s\S]*?await readProjectSnapshotShards\(root\)[\s\S]*?mergeState/,
+      /const root = JSON\.parse\(snapshot\.content\);[\s\S]*?await readProjectSnapshotShards\(root, scope\)[\s\S]*?mergeState/,
       `${packagePath}: project state must hydrate every indexed shard before normalization`,
     );
     assert(snapshotSchema.properties.selectedBaseResumeId);
