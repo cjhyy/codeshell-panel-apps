@@ -470,7 +470,7 @@ export function createEditorSyncBridge(panel: RuntimeBridge, options: { guard?()
         await authorized(directory, signal);
       }
       if (status.state === "missing" || status.state === "incoming-invalid") {
-        const source = await runtime.call("resources.get", { assetId: bundle.id }, signal);
+        const source = await runtime.call("resources.get", { id: bundle.id }, signal);
         const saved = object(source) ? source.asset : undefined;
         if (
           !object(saved) ||

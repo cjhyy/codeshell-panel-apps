@@ -223,8 +223,11 @@ async function openPage(t, options = {}) {
           if (options.holdNativeCopy && method === "tasks.get")
             return structuredClone(window.__nativeJobs[args.id]);
           if (method === "media.jobs.list" && options.fullNativeAccess) return { jobs: [] };
-          if (method === "resources.get" && options.fullNativeAccess)
-            return { asset: structuredClone(options.mediaMetadata[args.id ?? args.assetId]) };
+          if (method === "resources.get" && options.fullNativeAccess) {
+            if (Object.keys(args).length !== 1 || typeof args.id !== "string")
+              throw new Error("resources.get requires only id");
+            return { asset: structuredClone(options.mediaMetadata[args.id]) };
+          }
           if (method === "agent.task.start" && options.translation) {
             const rows = JSON.parse(args.prompt.split("Subtitle data: ")[1]);
             return {
