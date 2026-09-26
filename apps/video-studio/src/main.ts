@@ -91,6 +91,7 @@ import {
   type LegacyProjectView,
 } from "./editor/legacy-adapter";
 import { createEditorHostStorage, type EditorHostStorage } from "./editor/host-storage";
+import { createWorkspaceDocumentBridge } from "./workspace-document-bridge";
 import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
@@ -198,7 +199,7 @@ if (
 }
 
 if (panel) {
-  const mediaBridge = createMediaTaskBridge(panel);
+  const mediaBridge = createMediaTaskBridge(createWorkspaceDocumentBridge(panel));
   setPanelBridge(mediaBridge.bridge);
   window.addEventListener("pagehide", () => mediaBridge.dispose(), { once: true });
 }
