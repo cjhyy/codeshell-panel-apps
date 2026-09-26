@@ -19,7 +19,7 @@ export const suites = [
   {
     id: "design-studio",
     label: "Design Studio project recovery",
-    commands: [["--test", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs"]],
+    commands: [["--test", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs"]],
   },
   {
     id: "quant-lab",
