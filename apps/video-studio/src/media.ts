@@ -138,63 +138,20 @@ async function mediaDuration(element: HTMLMediaElement, signal?: AbortSignal): P
 }
 
 /** Wait for the sought frame to reach composition, not just the media clock. */
-function firstVideoFrame(element: HTMLVideoElement, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    let settled = false,
-      sought = false,
-      presented = false,
-      videoCallback: number | undefined,
-      animation: number | undefined;
-    const frameCallbacks = typeof element.requestVideoFrameCallback === "function";
-    // Covers are optional. Hidden or stalled renderers must not hold up imports.
-    const timer = setTimeout(() => finish(false), 1000);
-    function finish(ready: boolean) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (videoCallback !== undefined) element.cancelVideoFrameCallback(videoCallback);
-      if (animation !== undefined) cancelAnimationFrame(animation);
-      element.removeEventListener("seeked", onSeeked);
-      element.removeEventListener("error", unavailable);
-      signal.removeEventListener("abort", unavailable);
-      resolve(ready);
-    }
-    const unavailable = () => finish(false);
-    const onSeeked = () => {
-      sought = true;
-      if (presented) finish(true);
-      else if (!frameCallbacks)
-        animation = requestAnimationFrame(() => {
-          animation = requestAnimationFrame(() => finish(true));
-        });
-    };
-    element.addEventListener("seeked", onSeeked);
-    element.addEventListener("error", unavailable);
-    signal.addEventListener("abort", unavailable, { once: true });
-    try {
-      if (frameCallbacks)
-        videoCallback = element.requestVideoFrameCallback(() => {
-          presented = true;
-          if (sought) finish(true);
-        });
-      // Register before seeking on a fresh decoder. It has not played or probed
-      // the end for duration, so an older frame cannot satisfy this callback.
-      element.currentTime = 0;
-    } catch {
-      finish(false);
-    }
-  });
-}
-
 /** Called only on a new decoder, before it becomes available to either player. */
 async function sourceThumbnail(
   element: HTMLVideoElement | HTMLAudioElement | HTMLImageElement,
   signal: AbortSignal,
 ): Promise<string | undefined> {
+  let captured: VideoFrame | undefined;
   if (element instanceof HTMLVideoElement) {
-    if (!(await firstVideoFrame(element, signal))) return;
-    if (!element.videoWidth || !element.videoHeight || element.readyState < 2) return;
+    try {
+      // Covers remain optional and bounded, but the paused decoder's verified
+      // picture is usable even when its compositor emits no new notification.
+      captured = await seekVideo(element, 0, signal, 1000, "source-cover");
+    } catch {
+      return;
+    }
   } else if (element instanceof HTMLImageElement) {
     await element.decode();
     if (!element.naturalWidth || !element.naturalHeight) return;
@@ -202,14 +159,16 @@ async function sourceThumbnail(
   const canvas = document.createElement("canvas");
   canvas.width = 320;
   canvas.height = 180;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
   try {
-    contain(ctx, element, canvas.width, canvas.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    contain(ctx, captured ?? element, canvas.width, canvas.height);
     return canvas.toDataURL("image/jpeg", 0.7);
   } catch {
     // An unavailable canvas must not make an otherwise playable source missing.
     return element instanceof HTMLImageElement ? element.src : undefined;
+  } finally {
+    captured?.close();
   }
 }
 
