@@ -349,6 +349,7 @@ let fileDiscoveryCachedAt = 0;
 let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
+let workspaceLoading = true;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
 let recoverySession = null;
@@ -1064,6 +1065,7 @@ async function clearRecovery(expectedEpoch = workspaceEpoch, session = recoveryS
 }
 
 async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspaceRoot)) {
+  if (workspaceLoading) return false;
   const expectedEpoch = workspaceEpoch;
   const session = recoverySession;
   try {
@@ -1128,6 +1130,7 @@ async function resolveRecoverySnapshot(recovery, expectedEpoch = workspaceEpoch)
 
 function queueRecovery() {
   clearTimeout(recoveryTimer);
+  if (workspaceLoading) return;
   const workspaceRoot = context.cwd ?? null;
   const recoveryValue = recoverySnapshot(workspaceRoot);
   recoveryTimer = setTimeout(() => {
@@ -5408,7 +5411,7 @@ elements.path.addEventListener("change", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
-  if (agentMutationActive) {
+  if (agentMutationActive || workspaceLoading) {
     event.preventDefault();
     return;
   }
@@ -5575,6 +5578,7 @@ function updateContext(next) {
     contextInitialized &&
     (previousWorkspaceRoot !== nextWorkspaceRoot || context.sessionId !== nextContext.sessionId);
   if (workspaceChanged) {
+    setWorkspaceLoading(true);
     clearTimeout(recoveryTimer);
     const previousRecovery = dirty ? recoverySnapshot(previousWorkspaceRoot) : null;
     if (previousRecovery) {
@@ -5837,7 +5841,15 @@ function resetToRepoBlankDocument() {
   requestAnimationFrame(fitCanvas);
 }
 
+function setWorkspaceLoading(loading) {
+  workspaceLoading = loading;
+  document.querySelector(".topbar").inert = loading;
+  elements.workspace.inert = loading;
+}
+
 async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpoch) {
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  setWorkspaceLoading(true);
   document.querySelector("#recovery-reload").disabled = true;
   try {
     const initializationWorkspaceIdentity = context.cwd ?? null;
@@ -5912,14 +5924,16 @@ async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpo
     setRepoLinkState("Repo · 新设计", "linked");
     notify("当前 Repo 还没有设计文件；保存后会创建 designs/design.codesign.json");
   } finally {
-    if (expectedWorkspaceEpoch === workspaceEpoch)
+    if (expectedWorkspaceEpoch === workspaceEpoch) {
+      setWorkspaceLoading(false);
       document.querySelector("#recovery-reload").disabled = false;
+    }
   }
 }
 
 document.querySelector("#recovery-backup").addEventListener("click", () => {
   const drafts = new Map(detachedRecoveryDrafts);
-  drafts.set(workspaceEpoch, recoverySnapshot(context.cwd ?? null));
+  if (!workspaceLoading) drafts.set(workspaceEpoch, recoverySnapshot(context.cwd ?? null));
   const url = URL.createObjectURL(
     new Blob(
       [
@@ -7707,6 +7721,7 @@ function registerAgentTools(ready) {
 }
 
 async function initialize() {
+  setWorkspaceLoading(true);
   resetHistory();
   renderAll();
   requestAnimationFrame(fitCanvas);

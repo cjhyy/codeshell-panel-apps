@@ -305,3 +305,24 @@ test("a saved old-project response cannot clear or overwrite the same-path new p
   }
   assert.equal([...f.records.keys()].filter(k => k.includes("recovery")).length, 2);
 });
+
+
+test("editing stays unavailable while the new same-path project is loading and backup never labels the old canvas as new", async t => {
+  const f = await fixture(t);
+  const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  await page.locator("#add-page").click();
+  const hold = f.pauseResponse("cloud-B", "storage.getSnapshot");
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await hold.entered;
+  assert.equal(await page.locator(".topbar").evaluate(element => element.inert), true);
+  assert.equal(await page.locator(".workspace").evaluate(element => element.inert), true);
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
+  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId), ["cloud-A"]);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+  hold.release();
+  await page.waitForFunction(() => !document.querySelector(".topbar").inert);
+  assert.equal(await page.locator("#active-page option").count(), 1);
+});
