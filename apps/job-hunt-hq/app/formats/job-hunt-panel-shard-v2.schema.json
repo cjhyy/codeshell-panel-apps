@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeshell.dev/schemas/job-hunt-panel-shard-v2.schema.json",
+  "title": "Job Hunt HQ project snapshot shard (immutable generation)",
+  "type": "object",
+  "required": ["schemaVersion", "generation", "field", "kind", "part", "total"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "generation": { "type": "string", "pattern": "^g-[0-9a-f]{32}$" },
+    "field": {
+      "type": "string",
+      "enum": [
+        "jdIntakeItems",
+        "jobLeads",
+        "jobs",
+        "repos",
+        "experiences",
+        "jobResearch",
+        "workflowRuns",
+        "resume",
+        "versions",
+        "questionBank",
+        "interviewSets",
+        "mockInterviewSessions",
+        "preparationPlans",
+        "interviewDebriefs"
+      ]
+    },
+    "kind": { "type": "string", "enum": ["array", "value"] },
+    "part": { "type": "integer", "minimum": 1, "maximum": 128 },
+    "total": { "type": "integer", "minimum": 1, "maximum": 128 },
+    "items": { "type": "array" },
+    "value": {}
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "array" } }, "required": ["kind"] },
+      "then": {
+        "required": ["items"],
+        "properties": { "items": { "type": "array" }, "value": false }
+      }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "value" } }, "required": ["kind"] },
+      "then": {
+        "required": ["value"],
+        "properties": { "value": {}, "items": false }
+      }
+    },
+    {
+      "if": { "properties": { "field": { "const": "resume" } }, "required": ["field"] },
+      "then": { "properties": { "kind": { "const": "value" } } },
+      "else": { "properties": { "kind": { "const": "array" } } }
+    }
+  ],
+  "additionalProperties": false
+}

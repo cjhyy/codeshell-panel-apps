@@ -131,8 +131,18 @@ function hasFieldData(field, value) {
   return Boolean(value && typeof value === "object" && String(value.markdown || "").trim());
 }
 
-export function nextSnapshotShardGeneration(current = "") {
-  return current === "a" ? "b" : "a";
+const IMMUTABLE_GENERATION = /^g-[0-9a-f]{32}$/;
+
+export function nextSnapshotShardGeneration() {
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  return `g-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function generationSchemaVersion(generation) {
+  if (generation === "a" || generation === "b") return 1;
+  if (typeof generation === "string" && IMMUTABLE_GENERATION.test(generation)) return 2;
+  throw new Error("项目快照分片代号无效");
 }
 
 function shardPath(generation, field, part) {
@@ -146,7 +156,7 @@ function arrayShardValues(field, values, generation, targetBytes) {
   for (const item of source) {
     const candidate = [...current, item];
     const envelope = {
-      schemaVersion: 1,
+      schemaVersion: generationSchemaVersion(generation),
       generation,
       field,
       kind: "array",
@@ -170,7 +180,7 @@ function fieldShardDocuments(field, value, generation, targetBytes) {
     const parts = arrayShardValues(field, value, generation, targetBytes);
     return parts.map((items, index) => {
       const payload = {
-        schemaVersion: 1,
+        schemaVersion: generationSchemaVersion(generation),
         generation,
         field,
         kind: "array",
@@ -187,7 +197,7 @@ function fieldShardDocuments(field, value, generation, targetBytes) {
     });
   }
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: generationSchemaVersion(generation),
     generation,
     field,
     kind: "value",
@@ -205,7 +215,7 @@ function fieldShardDocuments(field, value, generation, targetBytes) {
 
 /**
  * Keep small projects human-readable in one file. Large projects move only
- * the biggest requested fields into bounded A/B shard files until the root
+ * the biggest requested fields into bounded immutable shard files until the root
  * index is safely below the Host write ceiling.
  */
 export function prepareProjectSnapshotDocuments(payload, rootDefaults = {}, options = {}) {
@@ -217,7 +227,8 @@ export function prepareProjectSnapshotDocuments(payload, rootDefaults = {}, opti
     safeBytes - 1024,
     Math.max(16 * 1024, Number(options.shardTargetBytes) || PROJECT_SNAPSHOT_SHARD_TARGET_BYTES),
   );
-  const generation = options.generation === "b" ? "b" : "a";
+  const generation = options.generation ?? nextSnapshotShardGeneration();
+  generationSchemaVersion(generation);
   const directRoot = clone(payload) || {};
   delete directRoot.artifactStorage;
   const directContent = jsonDocument(directRoot, true);
@@ -265,7 +276,7 @@ export function prepareProjectSnapshotDocuments(payload, rootDefaults = {}, opti
       );
     }
     root.artifactStorage = {
-      schemaVersion: 1,
+      schemaVersion: generationSchemaVersion(generation),
       generation,
       shards: shards.map(({ content: _content, payload: _payload, ...descriptor }) => descriptor),
     };
@@ -288,7 +299,7 @@ export function prepareProjectSnapshotDocuments(payload, rootDefaults = {}, opti
 function validateShardPayload(descriptor, payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
   return (
-    payload.schemaVersion === 1 &&
+    payload.schemaVersion === descriptor.schemaVersion &&
     payload.generation === descriptor.generation &&
     payload.field === descriptor.field &&
     payload.kind === descriptor.kind &&
@@ -304,9 +315,14 @@ export function projectSnapshotShardDescriptors(rootInput) {
   const storage = rootInput?.artifactStorage;
   if (!storage) return [];
   if (
-    storage.schemaVersion !== 1 ||
-    !["a", "b"].includes(storage.generation) ||
+    !(
+      (storage.schemaVersion === 1 && ["a", "b"].includes(storage.generation)) ||
+      (storage.schemaVersion === 2 &&
+        typeof storage.generation === "string" &&
+        IMMUTABLE_GENERATION.test(storage.generation))
+    ) ||
     !Array.isArray(storage.shards) ||
+    storage.shards.length === 0 ||
     storage.shards.length > PROJECT_SNAPSHOT_MAX_SHARDS
   ) {
     throw new Error("项目快照分片索引无效");
@@ -345,7 +361,12 @@ export function hydrateProjectSnapshotDocuments(rootInput, documentsByPath = new
       documentsByPath instanceof Map
         ? documentsByPath.get(descriptor.path)
         : documentsByPath?.[descriptor.path];
-    if (!validateShardPayload({ ...descriptor, generation: storage.generation }, payload)) {
+    if (
+      !validateShardPayload(
+        { ...descriptor, generation: storage.generation, schemaVersion: storage.schemaVersion },
+        payload,
+      )
+    ) {
       throw new Error(`项目快照分片无效或缺失：${descriptor.path}`);
     }
     const items = grouped.get(descriptor.field) || [];

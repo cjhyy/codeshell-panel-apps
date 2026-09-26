@@ -55,12 +55,12 @@ import { compactPanelLocalState } from "./storage-model.mjs";
 import {
   compactProjectSnapshotPayload,
   hydrateProjectSnapshotDocuments,
-  nextSnapshotShardGeneration,
   prepareProjectSnapshotDocuments,
   projectSnapshotSemanticKey,
   projectSnapshotShardDescriptors,
   projectSnapshotStorageNeedsMigration,
 } from "./snapshot-sharding-model.mjs";
+import { writeProjectSnapshotDocuments } from "./snapshot-storage.mjs";
 import { buildProjectBootstrapTask, resolveProjectBootstrapStatus } from "./project-bootstrap.mjs";
 import {
   CHANNEL_VERIFICATION_STATE_IDS,
@@ -3587,28 +3587,6 @@ async function readProjectSnapshotShards(root, scope = currentProject()) {
   return hydrateProjectSnapshotDocuments(root, documents);
 }
 
-async function writeProjectSnapshotShards(shards, scope = currentProject()) {
-  if (!shards.length) return;
-  const generation = shards[0].payload.generation;
-  const directory = `career-data/panel-shards/${generation}`;
-  const listing = await scope.call("workspace.list", { path: directory });
-  const modifiedByPath = new Map(
-    (listing?.entries || [])
-      .filter((entry) => entry.kind === "file")
-      .map((entry) => [entry.path, entry.modifiedAt]),
-  );
-  for (const [index, shard] of shards.entries()) {
-    if (index > 0 && index % PROJECT_SHARD_HOST_CALL_BATCH === 0) {
-      await new Promise((resolve) => setTimeout(resolve, PROJECT_SHARD_HOST_CALL_PAUSE_MS));
-    }
-    await scope.call("workspace.writeText", {
-      path: shard.path,
-      content: shard.content,
-      expectedModifiedAt: modifiedByPath.get(shard.path) ?? null,
-    });
-  }
-}
-
 function hasLegacyProjectData(value) {
   if (!value || typeof value !== "object" || value.localStateVersion === 2) return false;
   return Boolean(
@@ -3684,7 +3662,7 @@ async function writeProjectSnapshotNow(scope = currentProject()) {
     if (!scope.active()) return false;
     let expectedModifiedAt = null;
     let expectedRevision;
-    let existingRoot = null;
+    let previousSnapshot = null;
     try {
       const existing = await scope.call("workspace.readText", { path: PROJECT_STATE_PATH });
       if (projectSnapshotChangedExternally(existing)) {
@@ -3694,7 +3672,8 @@ async function writeProjectSnapshotNow(scope = currentProject()) {
       }
       expectedModifiedAt = existing.modifiedAt;
       expectedRevision = projectContext.snapshotRevision || existing.revision;
-      existingRoot = JSON.parse(existing.content);
+      JSON.parse(existing.content);
+      previousSnapshot = { ...existing, revision: expectedRevision };
     } catch (error) {
       if (!scope.active()) return false;
       if (isRateLimit(error)) {
@@ -3735,16 +3714,15 @@ async function writeProjectSnapshotNow(scope = currentProject()) {
         setProjectSnapshotSaveProgress(false);
         return true;
       }
-      const prepared = prepareProjectSnapshotDocuments(nextPayload, emptyProjectState(), {
-        generation: nextSnapshotShardGeneration(existingRoot?.artifactStorage?.generation),
-      });
-      await writeProjectSnapshotShards(prepared.shards, scope);
-      scope.check();
-      const result = await scope.call("workspace.writeText", {
-        path: PROJECT_STATE_PATH,
-        content: prepared.rootContent,
-        expectedModifiedAt,
-        ...(expectedRevision ? { expectedRevision } : {}),
+      const prepared = prepareProjectSnapshotDocuments(nextPayload, emptyProjectState());
+      const result = await writeProjectSnapshotDocuments(prepared, {
+        scope,
+        previousSnapshot,
+        beforeShard: async (index) => {
+          if (index > 0 && index % PROJECT_SHARD_HOST_CALL_BATCH === 0) {
+            await new Promise((resolve) => setTimeout(resolve, PROJECT_SHARD_HOST_CALL_PAUSE_MS));
+          }
+        },
       });
       projectContext.hasSnapshot = true;
       projectContext.lastSyncedAt = new Date().toISOString();
