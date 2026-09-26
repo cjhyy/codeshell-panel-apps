@@ -1190,7 +1190,7 @@ async function captureAssetFrameNow(
   library: MediaLibrary,
   assetId: string,
   seconds = 0,
-  signal?: AbortSignal,
+  signal: AbortSignal = new AbortController().signal,
 ): Promise<{
   kind: "image";
   mediaType: "image/jpeg";
@@ -1204,6 +1204,7 @@ async function captureAssetFrameNow(
   if (!Number.isFinite(seconds) || seconds < 0) throw new Error("采样位置必须是有效秒数");
   const element =
     item.element instanceof HTMLImageElement ? new Image() : document.createElement("video");
+  let captured: VideoFrame | undefined;
   try {
     if (element instanceof HTMLVideoElement) {
       element.preload = "auto";
@@ -1221,9 +1222,7 @@ async function captureAssetFrameNow(
     if (element instanceof HTMLVideoElement) {
       const duration = await mediaDuration(element, signal);
       if (seconds >= duration) throw new Error("采样位置超出素材时长");
-      await seekMedia(element, seconds, signal);
-      if (Math.abs(element.currentTime - seconds) > 0.05)
-        throw new Error("素材无法精确定位到请求画面");
+      captured = await seekVideo(element, seconds, signal, 15000, assetId);
     }
     const width = element instanceof HTMLVideoElement ? element.videoWidth : element.naturalWidth;
     const height =
@@ -1237,7 +1236,7 @@ async function captureAssetFrameNow(
     let quality = 0.85,
       data = "";
     while (true) {
-      ctx.drawImage(element, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(captured ?? element, 0, 0, canvas.width, canvas.height);
       data = canvas.toDataURL("image/jpeg", quality).split(",")[1]!;
       if (data.length < 200000) break;
       if (quality > 0.4) quality -= 0.15;
@@ -1255,6 +1254,7 @@ async function captureAssetFrameNow(
       summary: `素材 ${assetId} 在 ${seconds.toFixed(3)} 秒的实际画面`,
     };
   } finally {
+    captured?.close();
     if (element instanceof HTMLVideoElement) element.pause();
     element.removeAttribute("src");
     if (element instanceof HTMLVideoElement) element.load();

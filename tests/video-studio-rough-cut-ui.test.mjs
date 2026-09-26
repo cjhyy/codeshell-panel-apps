@@ -947,7 +947,24 @@ async function expectPreviewFrame(page, assetId, sourceFrame) {
     },
     expected,
     { timeout: 10_000 },
-  );
+  ).catch(async (error) => {
+    console.error("Preview pixel mismatch", await page.evaluate(({ assetId, sourceFrame, expected }) => {
+      const monitor = document.querySelector(".workspace.editor-mode:not(.editor-source-mode) [data-ew-canvas]")
+        ?? document.querySelector("#preview");
+      const canvas = document.createElement("canvas");
+      canvas.width = 40; canvas.height = 23;
+      const ctx = canvas.getContext("2d");
+      if (monitor) ctx.drawImage(monitor, 0, 0, 40, 23);
+      const pixels = ctx.getImageData(0, 0, 40, 23).data;
+      const offset = (11 * 40 + 20) * 4;
+      const state = window.__roughCutTools.read_video_project();
+      return { assetId, sourceFrame, expectedCenter: expected.slice(offset, offset + 3),
+        actualCenter: Array.from(pixels.slice(offset, offset + 3)),
+        playheadFrame: state.playheadFrame, selectedClipId: state.selectedClipId,
+        monitor: monitor?.getAttribute("aria-label"), toast: document.querySelector("#toast")?.textContent };
+    }, { assetId, sourceFrame, expected }));
+    throw error;
+  });
 }
 
 /** 加入成片 keeps 粗剪 open; its notice's 查看成片 shows the composition. */
