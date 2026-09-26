@@ -10,6 +10,11 @@
 引用资源仍属于原项目，不是可独立迁移的完整设计包。旧主程序显示并发保护限制。
 设计文件本身仍使用原来的文件版本校验和保存／另存流程。未发布新版本。
 
+开发验收：`node scripts/design-studio-host-storage.mjs /absolute/path/to/built/server-package`
+可将当前恢复模块连接到已构建的兼容 `@cjhyy/code-shell-server`，验证真实磁盘上的
+并发、重启、项目隔离、撤销和条件删除；只创建并清理自己的临时项目，不启动服务。
+该检查需要支持版本存储接口的 Host，不以旧公开包或内存模拟代替实际验收。
+
 
 Design Studio 0.18 is an Agent-native CodeShell Desktop Panel App. One reviewed
 installation contributes both its sandboxed visual editor and a narrow Agent
