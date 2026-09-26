@@ -110,6 +110,9 @@ async function fixture(t, options = {}) {
         return null;
       },
     };
+    if (options.storageDenied) Object.defineProperty(window, 'localStorage', { get() {
+      throw new DOMException('The document is sandboxed and lacks allow-same-origin', 'SecurityError');
+    } });
     if (options.legacy) localStorage.setItem('job-hunt-critical-drafts-v1', JSON.stringify({
       interviewDraft: { answer: 'foreign-draft', updatedAt: '2099-01-01T00:00:00Z' },
     }));
@@ -582,4 +585,42 @@ test('late old-project restore cannot clear a new preview or write the new proje
   assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
   const writes = await page.evaluate(() => window.__fixture.calls.filter(c => c.method === 'workspace.writeText' && c.params.path === 'job-hunt-panel.json'));
   assert.deepEqual(writes.map(w => w.id), ['b']);
+});
+
+
+test('sandboxed browser storage denial still opens Host-backed drafts, keeps same-page pending input and exports it', async t => {
+  const page = await fixture(t, { storageDenied: true });
+  await page.waitForFunction(() => !document.querySelector('#draft-storage-status').textContent.startsWith('正在'));
+  assert.equal(await page.locator('.app-shell').evaluate(el => el.inert), false, await page.locator('#draft-storage-status').textContent());
+  assert.match(await page.locator('#draft-storage-status').textContent(), /当前页面|页面临时/);
+  assert.equal((await backup(page)).current.drafts.interviewDraft.answer, 'draft-a');
+  await page.evaluate(() => {
+    const editor = document.querySelector('#resume-editor');
+    editor.value = '# Pending sandbox A'; editor.dispatchEvent(new Event('input', { bubbles: true }));
+    window.__fixture.switch('b');
+  });
+  await ready(page);
+  assert.equal((await backup(page)).current.drafts.interviewDraft.answer, 'draft-b');
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown === '# Pending sandbox A');
+  const saved = await backup(page);
+  assert.equal(saved.browserPersistence, false);
+  assert.ok(saved.stored.records.some(record => record.raw.includes('Pending sandbox A')));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+});
+
+test('sandbox draft status waits for the latest Host acknowledgement', async t => {
+  const page = await fixture(t, { storageDenied: true }); await ready(page);
+  await page.evaluate(() => { window.__fixture.hold = 'storage.compareAndSet'; });
+  await edit(page, '# First pending');
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__fixture.firstRelease = window.__fixture.release; window.__fixture.release = null; });
+  await edit(page, '# Latest pending');
+  await page.waitForTimeout(30);
+  await page.evaluate(() => window.__fixture.firstRelease());
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  assert.match(await page.locator('#draft-storage-status').textContent(), /正在保存/);
+  await page.evaluate(() => { window.__fixture.hold = null; window.__fixture.release(); });
+  await page.waitForFunction(() => document.querySelector('#draft-storage-status').textContent.includes('草稿已保存到项目'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.storage['job-hunt-state-v1'].resumeDraft.markdown), '# Latest pending');
 });
