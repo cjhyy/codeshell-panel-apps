@@ -2275,6 +2275,7 @@
       let poll;
       let callback;
       let presentedTime;
+      let decodedTiming;
       const finish = (error, frame) => {
         if (settled) {
           frame?.close();
@@ -2302,6 +2303,7 @@
             finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
             return;
           }
+          decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
           const time = Math.floor(video.currentTime * 1e6 + 1e-4);
           if (frame.timestamp <= time + 1 && (frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1)) {
             finish(void 0, frame);
@@ -2318,7 +2320,15 @@
       const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
       const cancel = () => finish(aborted());
       const timer = setTimeout(
-        () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId}`)),
+        () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId} ${JSON.stringify({
+          target: seconds,
+          current: video.currentTime,
+          sought,
+          seeking: video.seeking,
+          readyState: video.readyState,
+          decodedTiming,
+          presentedTime
+        })}`)),
         timeoutMs
       );
       video.addEventListener("seeked", onSeeked);

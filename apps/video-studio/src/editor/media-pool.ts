@@ -178,6 +178,7 @@ function seekVideo(
     let poll: ReturnType<typeof setTimeout> | undefined;
     let callback: number | undefined;
     let presentedTime: number | undefined;
+    let decodedTiming: { timestamp: number; duration: number | null } | undefined;
     const finish = (error?: unknown, frame?: VideoFrame) => {
       if (settled) {
         frame?.close();
@@ -213,6 +214,7 @@ function seekVideo(
         // Validate the decoded frame's own interval, then retain that exact frame
         // rather than drawing the mutable video element later. Use the browser's
         // microsecond media clock: requested rational frame boundaries may truncate.
+        decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
         const time = Math.floor(video.currentTime * 1_000_000 + 0.000_1);
         if (
           frame.timestamp <= time + 1 &&
@@ -238,7 +240,10 @@ function seekVideo(
     const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
     const cancel = () => finish(aborted());
     const timer = setTimeout(
-      () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId}`)),
+      () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId} ${JSON.stringify({
+        target: seconds, current: video.currentTime, sought, seeking: video.seeking,
+        readyState: video.readyState, decodedTiming, presentedTime,
+      })}`)),
       timeoutMs,
     );
     video.addEventListener("seeked", onSeeked);
