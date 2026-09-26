@@ -325,6 +325,23 @@ test(
   async () => {
     const { page, context } = await isolatedPage();
     try {
+      await page.addInitScript(() => {
+        const NativeVideoFrame = window.VideoFrame;
+        window.__recordedFrameReads = [];
+        window.VideoFrame = class extends NativeVideoFrame {
+          constructor(source, options) {
+            super(source, options);
+            if (source instanceof HTMLVideoElement) {
+              window.__recordedFrameReads.push({
+                timestamp: this.timestamp, duration: this.duration,
+                currentTime: source.currentTime, seeking: source.seeking,
+                readyState: source.readyState,
+              });
+              if (window.__recordedFrameReads.length > 16) window.__recordedFrameReads.shift();
+            }
+          }
+        };
+      });
       assert.equal(await page.evaluate(() => window.__deviceRequests.length), 0);
       await page.locator('[data-tab="recording"]').click();
       await page.locator("#recording-mode").selectOption("camera");
@@ -419,6 +436,7 @@ test(
             toast: document.querySelector("#toast")?.textContent,
             export: document.querySelector("#export-dialog")?.textContent,
             save: document.querySelector("#save-state")?.textContent,
+            frameReads: window.__recordedFrameReads,
           })),
         );
         throw error;

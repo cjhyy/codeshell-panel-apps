@@ -57,6 +57,13 @@ test(
       "-c:v", "libvpx-vp9", "-y", webm,
     ], { timeout: 15000, encoding: "utf8" });
     assert.equal(webmGenerated.status, 0, webmGenerated.stderr || String(webmGenerated.error));
+    const delayedWebm = join(directory, "delayed-video.webm");
+    const delayedGenerated = spawnSync("ffmpeg", [
+      "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+      "-itsoffset", "0.08", "-i", source, "-map", "1:v", "-map", "0:a",
+      "-c:v", "libvpx-vp9", "-c:a", "libopus", "-t", "3", "-y", delayedWebm,
+    ], { timeout: 15000, encoding: "utf8" });
+    assert.equal(delayedGenerated.status, 0, delayedGenerated.stderr || String(delayedGenerated.error));
     const alternating = join(directory, "alternating.mp4");
     const alternatingGenerated = spawnSync("ffmpeg", [
       "-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=red:s=96x64:r=30:d=1",
@@ -102,6 +109,7 @@ test(
       image.data[offset + 3] = 255;
     }
     const routes = new Map([
+      ["/delayed-webm", { type: "video/webm", body: await readFile(delayedWebm) }],
       [
         "/",
         {
@@ -396,6 +404,19 @@ test(
         [[255, 0, 0], [0, 0, 255], [0, 255, 0]].forEach((expected, i) => color(result[i], expected));
       },
     );
+
+    await t.test("WebM with audio before its first video frame can seek to the beginning", async () => {
+      const result = await pageTest((page) => page.evaluate(async () => {
+        const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+        const pool = new EditorMediaPool({ resolveAsset: () => "/delayed-webm", timeoutMs: 1000 });
+        try {
+          const first = (await pool.prepare(frame([layer("clip", 0)]))).get("clip");
+          return { timestamp: first.timestamp, pixel: sample(first) };
+        } finally { pool.dispose(); }
+      }));
+      assert.ok(result.timestamp > 0, "the fixture must retain the delayed video track");
+      color(result.pixel, [255, 0, 0]);
+    });
 
     await t.test(
       "frames without a duration use a matching presentation receipt",
