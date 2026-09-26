@@ -348,6 +348,8 @@ let fileDiscoveryCache = null;
 let fileDiscoveryCachedAt = 0;
 let workspaceEpoch = 0;
 let contextInitialized = false;
+let initialContextPending = true;
+let workspaceLoading = true;
 let saveInFlight = null;
 let recoveryFailureWarned = false;
 let recoverySession = null;
@@ -1024,6 +1026,7 @@ function recoverySnapshot(workspaceRoot) {
     format: RECOVERY_FORMAT,
     version: 1,
     workspaceRoot,
+    sourceContext: { sessionId: context.sessionId ?? null },
     path: recoveryPath,
     record,
     baseDocument: tracksCurrentSource ? null : clone(recoveryBaseDocument ?? createBlankDocument()),
@@ -1062,6 +1065,7 @@ async function clearRecovery(expectedEpoch = workspaceEpoch, session = recoveryS
 }
 
 async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(workspaceRoot)) {
+  if (workspaceLoading) return false;
   const expectedEpoch = workspaceEpoch;
   const session = recoverySession;
   try {
@@ -1116,16 +1120,17 @@ async function persistRecovery(workspaceRoot, recoveryValue = recoverySnapshot(w
   }
 }
 
-async function resolveRecoverySnapshot(recovery) {
+async function resolveRecoverySnapshot(recovery, expectedEpoch = workspaceEpoch) {
   return resolveRecoveryPersistence({
     value: recovery,
-    readText: (path) => bundleHostCall("workspace.readText", { path }),
+    readText: (path) => bundleHostCall("workspace.readText", { path }, expectedEpoch),
     sha256: sha256Text,
   });
 }
 
 function queueRecovery() {
   clearTimeout(recoveryTimer);
+  if (workspaceLoading) return;
   const workspaceRoot = context.cwd ?? null;
   const recoveryValue = recoverySnapshot(workspaceRoot);
   recoveryTimer = setTimeout(() => {
@@ -3243,7 +3248,7 @@ async function resolveWorkspaceDesignSource(
   expectedWorkspaceEpoch = workspaceEpoch,
 ) {
   const readText = async (path) => {
-    const result = await bundleHostCall("workspace.readText", { path });
+    const result = await bundleHostCall("workspace.readText", { path }, expectedWorkspaceEpoch);
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
     return result;
   };
@@ -5406,7 +5411,7 @@ elements.path.addEventListener("change", () => {
 
 window.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) return;
-  if (agentMutationActive) {
+  if (agentMutationActive || workspaceLoading) {
     event.preventDefault();
     return;
   }
@@ -5569,12 +5574,15 @@ function updateContext(next) {
       ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
       : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
-  const workspaceChanged = contextInitialized && previousWorkspaceRoot !== nextWorkspaceRoot;
+  const workspaceChanged =
+    contextInitialized &&
+    (previousWorkspaceRoot !== nextWorkspaceRoot || context.sessionId !== nextContext.sessionId);
   if (workspaceChanged) {
+    setWorkspaceLoading(true);
     clearTimeout(recoveryTimer);
     const previousRecovery = dirty ? recoverySnapshot(previousWorkspaceRoot) : null;
     if (previousRecovery) {
-      detachedRecoveryDrafts.set(previousWorkspaceRoot, structuredClone(previousRecovery));
+      detachedRecoveryDrafts.set(workspaceEpoch, structuredClone(previousRecovery));
     }
     currentModifiedAt = null;
     currentRevision = null;
@@ -5623,7 +5631,7 @@ function updateContext(next) {
     : context.trusted === false
       ? "工作区尚未信任"
       : "会话可用";
-  if (workspaceChanged) {
+  if (workspaceChanged && !initialContextPending) {
     notify(
       dirty
         ? "工作区已切换；当前画布已保留为未保存副本，正在连接新 Repo"
@@ -5652,7 +5660,8 @@ async function restoreRecovery(
   workspaceRoot = context.cwd ?? null,
 ) {
   const session = recoverySession;
-  const recovery = await resolveRecoverySnapshot(recoveryInput);
+  const recovery = await resolveRecoverySnapshot(recoveryInput, expectedWorkspaceEpoch);
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
   if (
     !recovery ||
     typeof recovery !== "object" ||
@@ -5691,7 +5700,7 @@ async function restoreRecovery(
   let diskPersistenceMode = "single";
   let baseDesign = null;
   try {
-    const disk = await hostCall("workspace.readText", { path: recovery.path });
+    const disk = await bundleHostCall("workspace.readText", { path: recovery.path }, expectedWorkspaceEpoch);
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
     diskFound = true;
     diskModifiedAt = disk.modifiedAt;
@@ -5722,7 +5731,7 @@ async function restoreRecovery(
     diskResourceCache ??
     new DesignResourceCache({
       resources: baseDesign.resources ?? [],
-      readText: (path) => bundleHostCall("workspace.readText", { path }),
+      readText: (path) => bundleHostCall("workspace.readText", { path }, expectedWorkspaceEpoch),
       sha256Bytes,
     });
   resourceDataUrls.clear();
@@ -5832,7 +5841,15 @@ function resetToRepoBlankDocument() {
   requestAnimationFrame(fitCanvas);
 }
 
+function setWorkspaceLoading(loading) {
+  workspaceLoading = loading;
+  document.querySelector(".topbar").inert = loading;
+  elements.workspace.inert = loading;
+}
+
 async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpoch) {
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  setWorkspaceLoading(true);
   document.querySelector("#recovery-reload").disabled = true;
   try {
     const initializationWorkspaceIdentity = context.cwd ?? null;
@@ -5907,14 +5924,16 @@ async function initializeWorkspaceDocument(expectedWorkspaceEpoch = workspaceEpo
     setRepoLinkState("Repo · 新设计", "linked");
     notify("当前 Repo 还没有设计文件；保存后会创建 designs/design.codesign.json");
   } finally {
-    if (expectedWorkspaceEpoch === workspaceEpoch)
+    if (expectedWorkspaceEpoch === workspaceEpoch) {
+      setWorkspaceLoading(false);
       document.querySelector("#recovery-reload").disabled = false;
+    }
   }
 }
 
 document.querySelector("#recovery-backup").addEventListener("click", () => {
   const drafts = new Map(detachedRecoveryDrafts);
-  drafts.set(context.cwd ?? null, recoverySnapshot(context.cwd ?? null));
+  if (!workspaceLoading) drafts.set(workspaceEpoch, recoverySnapshot(context.cwd ?? null));
   const url = URL.createObjectURL(
     new Blob(
       [
@@ -7702,17 +7721,27 @@ function registerAgentTools(ready) {
 }
 
 async function initialize() {
+  setWorkspaceLoading(true);
   resetHistory();
   renderAll();
   requestAnimationFrame(fitCanvas);
+  // Subscribe before the asynchronous initial read. A newer event always wins
+  // over that read, including two cloud projects mounted at the same cwd.
+  let receivedContextEvent = false;
+  window.codeshellPanel?.on?.("context.changed", (next) => {
+    receivedContextEvent = true;
+    updateContext(next);
+  });
   try {
-    if (window.codeshellPanel?.getContext) updateContext(await window.codeshellPanel.getContext());
-    else updateContext({ trusted: true, busy: false, cwd: "/preview/codeshell" });
-    window.codeshellPanel?.on?.("context.changed", updateContext);
+    const initialContext = window.codeshellPanel?.getContext
+      ? await window.codeshellPanel.getContext()
+      : { trusted: true, busy: false, cwd: "/preview/codeshell" };
+    if (!receivedContextEvent) updateContext(initialContext);
   } catch {
-    updateContext({ trusted: false, busy: false });
+    if (!receivedContextEvent) updateContext({ trusted: false, busy: false });
   }
 
+  initialContextPending = false;
   const initializationWorkspaceEpoch = workspaceEpoch;
   const uiPreferences = await hostCall("storage.get", { key: "uiPreferences" }).catch(() => null);
   if (initializationWorkspaceEpoch !== workspaceEpoch) return;
