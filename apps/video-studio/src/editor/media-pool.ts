@@ -124,7 +124,11 @@ function videoReady(video: HTMLVideoElement): boolean {
   );
 }
 
-function loadVideo(
+// A fresh decoder establishes its first picture before any duration probes or
+// seeks can replace its surface. Keep timing only, never retain an extra frame.
+const initialVideoFrames = new WeakMap<HTMLVideoElement, { source: string; timestamp: number }>();
+
+export function loadDecodedVideo(
   video: HTMLVideoElement,
   url: string,
   signal: AbortSignal,
@@ -134,17 +138,37 @@ function loadVideo(
   return new Promise((resolve, reject) => {
     let settled = false;
     const events = ["loadedmetadata", "loadeddata", "canplay"];
+    let framePoll: ReturnType<typeof setTimeout> | undefined;
+    initialVideoFrames.delete(video);
     const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(framePoll);
       for (const event of events) video.removeEventListener(event, inspect);
       video.removeEventListener("error", failed);
       signal.removeEventListener("abort", cancel);
       error ? reject(error) : resolve();
     };
     const inspect = () => {
-      if (videoReady(video)) finish();
+      clearTimeout(framePoll);
+      if (settled || !videoReady(video)) return;
+      if (video.currentTime === 0) {
+        let frame: VideoFrame;
+        try {
+          frame = new VideoFrame(video);
+        } catch (cause) {
+          if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+            framePoll = setTimeout(inspect, 16);
+            return;
+          }
+          finish(new MediaPoolError("decode", `无法读取视频首帧：${assetId}`, { cause }));
+          return;
+        }
+        initialVideoFrames.set(video, { source: video.currentSrc, timestamp: frame.timestamp });
+        frame.close();
+      }
+      finish();
     };
     const failed = () => finish(new MediaPoolError("decode", `无法解码视频素材：${assetId}`));
     const cancel = () => finish(aborted());
@@ -227,10 +251,18 @@ export function seekVideo(
         // microsecond media clock: requested rational frame boundaries may truncate.
         decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
         const time = Math.floor(video.currentTime * 1_000_000 + 0.000_1);
+        const initial = initialVideoFrames.get(video);
         if (
           // An exact timestamp is already the requested picture, even when a
           // MediaRecorder frame reports duration 0 and no new presentation fires.
           Math.abs(frame.timestamp - time) <= 1 ||
+          // Before the first picture begins, use only the frame captured from
+          // this source's fresh decoder. A random later/stale surface cannot
+          // authorize a leading gap even when no compositor callback arrives.
+          (initial?.source === video.currentSrc &&
+            time >= 0 &&
+            time <= initial.timestamp &&
+            frame.timestamp === initial.timestamp) ||
           (frame.timestamp <= time &&
             frame.duration !== null &&
             frame.duration > 0 &&
@@ -468,7 +500,7 @@ export class EditorMediaPool {
         element.defaultMuted = true;
         element.playsInline = true;
         element.preload = "auto";
-        await loadVideo(element, resource.url, signal, this.timeoutMs, layer.assetId);
+        await loadDecodedVideo(element, resource.url, signal, this.timeoutMs, layer.assetId);
       } else {
         element.src = resource.url;
         try {
