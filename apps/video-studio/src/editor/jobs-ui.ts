@@ -51,6 +51,7 @@ export class EditorExportJobs {
   private offset = 0;
   private loading = false;
   private disposed = false;
+  private deliveryMethods = new Set<string>();
   constructor(
     private readonly bridge: RuntimeBridge,
     private readonly onError: (error: unknown) => void,
@@ -64,6 +65,18 @@ export class EditorExportJobs {
     } = {},
   ) {
     this.sdk = createPanelRuntime(bridge);
+    void this.sdk
+      .discover()
+      .then((context) => {
+        if (this.disposed) return;
+        this.deliveryMethods = new Set(
+          Array.isArray(context.availableMethods) ? context.availableMethods : [],
+        );
+        for (const job of this.latest.values()) this.update(job);
+      })
+      .catch((error) => {
+        if (!this.disposed) this.onError(error);
+      });
     this.root.className = "editor-export-jobs";
     this.root.id = `editor-export-jobs-${++nextExportJobsId}`;
     this.root.hidden = true;
@@ -382,8 +395,12 @@ export class EditorExportJobs {
       result?.verified === true &&
       /^asset-[a-f0-9]{64}$/.test(result.video?.id ?? "")
     ) {
-      button("保存视频", () => this.sdk.call("media.export", { assetId: result.video.id }));
-      button("在文件夹中显示", () => this.sdk.call("media.reveal", { assetId: result.video.id }));
+      if (this.deliveryMethods.has("media.export"))
+        button("保存视频", () => this.sdk.call("media.export", { assetId: result.video.id }));
+      else if (this.deliveryMethods.has("resources.open"))
+        button("预览与保存", () => this.sdk.call("resources.open", { assetId: result.video.id }));
+      if (this.deliveryMethods.has("media.reveal"))
+        button("在文件夹中显示", () => this.sdk.call("media.reveal", { assetId: result.video.id }));
     }
     if (focusedAction && !this.root.hidden) {
       const replacement = [...actions.querySelectorAll("button")].find(

@@ -986,7 +986,7 @@ test("persistent media, versioned automatic edits, real tool contract and reload
         return value.id;
       };
       window.codeshellPanel = {
-        getContext: async () => ({ cwd: "/test/persistent-video" }),
+        getContext: async () => ({ cwd: "/test/persistent-video", availableMethods: ["media.export"] }),
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
           return () => {};

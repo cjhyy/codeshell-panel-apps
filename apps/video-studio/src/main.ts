@@ -1418,6 +1418,7 @@ function views() {
     production: {
       connected: Boolean(panel),
       status: production.status,
+      delivery: production.delivery,
       jobs: production.currentJobs,
       auto: production.auto,
       error: production.error,
