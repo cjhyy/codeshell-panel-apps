@@ -79,7 +79,9 @@ export async function planDesignBackup(candidate, { readText, sha256, sha256Byte
   const input = structuredClone(candidate.value);
   if (input?.format === RECOVERY_POINTER_FORMAT && input.bytes > MAX_PORTABLE_DESIGN_BYTES) throw Error("草稿分片日志过大");
   const recovery = await resolveRecoveryPersistence({ value: input, readText: boundedRead, sha256 });
-  if (recovery?.format !== "codeshell.design.recovery" || recovery.version !== 1 || !isSafeDesignPath(recovery.path)) throw Error("草稿格式或设计路径无效");
+  if (recovery?.format !== "codeshell.design.recovery" || ![1, 2].includes(recovery.version) || !isSafeDesignPath(recovery.path)) throw Error("草稿格式或设计路径无效");
+  const baselinePath = recovery.version === 2 ? recovery.basePath : recovery.path;
+  if (!isSafeDesignPath(baselinePath)) throw Error("草稿基础设计路径无效");
   let baseline;
   if (recovery.baseDocument) {
     if (recovery.baseRevision !== null || recovery.baseModifiedAt !== null) throw Error("草稿内置基础设计与版本记录不一致");
@@ -88,7 +90,7 @@ export async function planDesignBackup(candidate, { readText, sha256, sha256Byte
   } else {
     if (typeof recovery.baseRevision !== "string" || !/^sha256:[0-9a-f]{64}$/.test(recovery.baseRevision))
       throw Error("旧草稿没有可校验的基础版本；请提供原版本设计的完整备份，原日志保持不变");
-    const primary = await boundedRead(recovery.path);
+    const primary = await boundedRead(baselinePath);
     if (`sha256:${await sha256(primary.content)}` !== recovery.baseRevision)
       throw Error("基础设计已变化或属于其他版本；请在保留原版本文件的项目中恢复");
     const indexed = await resolveDesignIndexDocument({ primarySource: primary.content, readText: boundedRead, sha256 });

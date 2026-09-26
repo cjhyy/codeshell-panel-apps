@@ -66,3 +66,13 @@ test("generated add, remove and reorder page journals keep every intended change
   const removedPlan = await planDesignBackup(candidate({ ...f.recovery, record: removed }), options);
   assert.deepEqual(JSON.parse(removedPlan.primarySource).pages.map(p => p.id), ["page-1"]);
 });
+
+
+test("save-as v2 logs read the original baseline and never use the destination as a baseline", async () => {
+  const f = fixture(), original = serializeDesignDocument(f.base), calls = [];
+  const recovery = { ...f.recovery, version: 2, path: "designs/destination.codesign.json", basePath: source.path, baseDocument: null, baseModifiedAt: 7, baseRevision: `sha256:${await hash(original)}` };
+  const plan = await planDesignBackup(candidate(recovery), { ...options, readText: async path => { calls.push(path); assert.equal(path, source.path); return { content: original }; } });
+  assert.equal(plan.name, f.next.name);
+  assert.deepEqual(calls, [source.path]);
+  await assert.rejects(planDesignBackup(candidate({ ...recovery, basePath: "../outside" }), options), /基础设计路径/);
+});

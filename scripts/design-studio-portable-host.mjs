@@ -41,6 +41,10 @@ try {
   const legacyPlan = await planDesignBackup({ kind: "legacy", value: legacy }, { sha256: hash, sha256Bytes: hash,
     readText: path => runtime.call(scope(source), "workspace.readText", { path }) });
   assert.equal(legacyPlan.name, changed.name);
+  const saveAsPlan = await planDesignBackup({ kind: "legacy", value: { ...legacy, version: 2,
+    path: "designs/not-created-yet.codesign.json", basePath: originalPath } }, { sha256: hash, sha256Bytes: hash,
+    readText: path => runtime.call(scope(source), "workspace.readText", { path }) });
+  assert.equal(saveAsPlan.primarySource, legacyPlan.primarySource);
   await restorePortableDesign({ plan: legacyPlan, path: "designs/legacy.codesign.json", call: (method, params) => runtime.call(scope(target), method, params), check() {} });
   // Remove the original project to prove the restored file has no source dependency.
   await rm(source, { recursive: true });
@@ -54,5 +58,5 @@ try {
   assert.equal((await read(path)).content, plan.primarySource);
   authorized = false;
   await assert.rejects(restorePortableDesign({ plan, path: "designs/revoked.codesign.json", call: (method, params) => reopened.call(scope(target), method, params), check() {} }));
-  console.log("PASS: actual Node Host complete and legacy design backups, exact baseline revision, independent target resources, source removal, restart, safe retry, collision preservation and revoked access");
+  console.log("PASS: actual Node Host complete and legacy design backups, exact baseline revision, save-as v2, independent target resources, source removal, restart, safe retry, collision preservation and revoked access");
 } finally { await rm(root, { recursive: true, force: true }); }
