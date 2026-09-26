@@ -2272,20 +2272,44 @@
   function seekVideo(video, seconds, signal, timeoutMs, assetId) {
     return new Promise((resolve, reject) => {
       let settled = false, sought = false;
-      const finish = (error) => {
-        if (settled) return;
+      let poll;
+      let callback;
+      let presentedTime;
+      const finish = (error, frame) => {
+        if (settled) {
+          frame?.close();
+          return;
+        }
         settled = true;
         clearTimeout(timer);
+        clearTimeout(poll);
+        if (callback !== void 0) video.cancelVideoFrameCallback(callback);
         video.removeEventListener("seeked", onSeeked);
         video.removeEventListener("loadeddata", inspect);
         video.removeEventListener("canplay", inspect);
         video.removeEventListener("error", failed);
         signal.removeEventListener("abort", cancel);
-        error ? reject(error) : resolve();
+        error ? reject(error) : resolve(frame);
       };
       const inspect = () => {
-        if (sought && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
-          finish();
+        clearTimeout(poll);
+        if (settled) return;
+        if (sought && videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5) {
+          let frame;
+          try {
+            frame = new VideoFrame(video);
+          } catch (cause) {
+            finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
+            return;
+          }
+          const time = Math.floor(video.currentTime * 1e6 + 1e-4);
+          if (frame.timestamp <= time + 1 && (frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1)) {
+            finish(void 0, frame);
+            return;
+          }
+          frame.close();
+        }
+        poll = setTimeout(inspect, 16);
       };
       const onSeeked = () => {
         sought = true;
@@ -2307,6 +2331,14 @@
         return;
       }
       try {
+        if (typeof video.requestVideoFrameCallback === "function") {
+          callback = video.requestVideoFrameCallback((_now, metadata) => {
+            callback = void 0;
+            if (videoReady(video) && Math.abs(video.currentTime - seconds) < 1e-5)
+              presentedTime = metadata.mediaTime * 1e6;
+            inspect();
+          });
+        }
         video.currentTime = seconds;
       } catch (cause) {
         finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
@@ -2334,6 +2366,7 @@
       if (!instance) return;
       this.instances.delete(instanceId);
       instance.bitmap?.close();
+      instance.videoFrame?.close();
       if (instance.element instanceof HTMLVideoElement) instance.element.pause();
       instance.element.removeAttribute("src");
       if (instance.element instanceof HTMLVideoElement) instance.element.load();
@@ -2484,12 +2517,19 @@
         const seconds = ticksToSeconds(layer.sourceTime);
         if (Number.isFinite(element.duration) && seconds >= element.duration)
           throw new MediaPoolError("decode", `请求画面已超出视频源时长：${layer.assetId}`);
-        if (instance.preparedSource !== layer.sourceTime || !videoReady(element) || Math.abs(element.currentTime - seconds) >= 1e-5)
-          await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+        if (instance.preparedSource !== layer.sourceTime || !videoReady(element) || Math.abs(element.currentTime - seconds) >= 1e-5) {
+          const decoded = await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+          if (signal.aborted || request.generation !== this.generation) {
+            decoded.close();
+            throw aborted();
+          }
+          instance.videoFrame?.close();
+          instance.videoFrame = decoded;
+        }
         assertActive(signal);
         instance.preparedSource = layer.sourceTime;
       }
-      return instance.bitmap ?? element;
+      return instance.videoFrame ?? instance.bitmap ?? element;
     }
     async prepare(frame, signal) {
       if (this.disposed) throw new MediaPoolError("disposed", "媒体解码池已释放");
