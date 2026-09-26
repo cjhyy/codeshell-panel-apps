@@ -30,7 +30,7 @@
   "nativeEntries": {
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",
-      "sha256": "0c5e974be855f55a15df6ef6779566d293f25f43e48d1ab097674374463fc4d5"
+      "sha256": "fa5277ab082278f3db128fadc08d5c9b40d56bdb163aa3ccfcc3d47b40999f7e"
     }
   },
   "agent": {

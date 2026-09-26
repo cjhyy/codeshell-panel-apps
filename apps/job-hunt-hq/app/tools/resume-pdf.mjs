@@ -67,7 +67,7 @@ export async function renderResumePdf(input, { directory, signal } = {}) {
   const profile = await mkdtemp(join(root, ".pdf-browser-"));
   let browser;
   let browserClosed;
-  let outputWritten = false;
+  let outputWritten;
   let browserDiagnostics = "";
   let session;
   let sequence = 0;
@@ -174,13 +174,22 @@ export async function renderResumePdf(input, { directory, signal } = {}) {
     const pdf = Buffer.concat(parts);
     if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-")) || pdf.length < 100)
       throw new Error("浏览器没有生成有效 PDF。");
-    await writeFile(join(root, "resume.pdf"), pdf, { flag: "wx", mode: 0o600 });
-    outputWritten = true;
-    if (deadline.aborted) throw new Error("PDF 生成已取消。");
     const sha256 = createHash("sha256").update(pdf).digest("hex");
-    return { artifacts: [{ file: "resume.pdf", role: "pdf", mimeType: "application/pdf", bytes: pdf.length, sha256, assetId: `asset-${sha256}` }] };
+    // A previous attempt may have written its PDF before the Host captured the
+    // result. Content-addressed outputs permit explicit retry without replacing
+    // an existing file or becoming permanently stuck on EEXIST after restart.
+    const file = `resume-${sha256}.pdf`;
+    const output = join(root, file);
+    try {
+      await writeFile(output, pdf, { flag: "wx", mode: 0o600 });
+      outputWritten = output;
+    } catch (error) {
+      if (error.code !== "EEXIST" || !(await readFile(output)).equals(pdf)) throw error;
+    }
+    if (deadline.aborted) throw new Error("PDF 生成已取消。");
+    return { artifacts: [{ file, name: "resume.pdf", role: "pdf", mimeType: "application/pdf", bytes: pdf.length, sha256, assetId: `asset-${sha256}` }] };
   } catch (error) {
-    if (outputWritten) await rm(join(root, "resume.pdf"), { force: true });
+    if (outputWritten) await rm(outputWritten, { force: true });
     if (!deadline.aborted && /No usable sandbox|Failed to move to new namespace|Operation not permitted|Running as root without --no-sandbox|AppArmor/i.test(browserDiagnostics))
       throw new Error("PDF 浏览器沙箱无法启动，请由管理员检查非 root 运行、用户命名空间及容器安全策略；不会自动关闭浏览器沙箱。");
     throw error;

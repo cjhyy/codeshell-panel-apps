@@ -25,19 +25,20 @@ test("reviewed PDF tool creates selectable Chinese A4 text without page scripts 
       action: "resume-pdf",
       html: `<main class="resume-paper resume-print-paper" data-template="technical"><h1>示例候选人 · Example Candidate</h1><h2>项目经验</h2><p>中文可选择文本，核验公开简历。</p><div class="resume-point-proof">PRIVATE EVIDENCE</div><button>PRIVATE CONTROL</button><iframe src="${address}/frame"></iframe><script>document.querySelector('h1').textContent='SCRIPT EXECUTED';fetch('${address}/script')</script><style>@import url('${address}/style');</style><meta http-equiv="refresh" content="0;url=${address}/navigate"><a href="javascript:alert(1)">Public link</a></main>`,
     }, { directory });
-    const bytes = await readFile(join(directory, "resume.pdf"));
+    const output = join(directory, result.artifacts[0].file);
+    const bytes = await readFile(output);
     assert.equal(result.artifacts[0].sha256, createHash("sha256").update(bytes).digest("hex"));
     assert.equal(result.artifacts[0].bytes, bytes.length);
     assert.equal(requests, 0);
-    const { stdout: text } = await exec("pdftotext", [join(directory, "resume.pdf"), "-"]);
+    const { stdout: text } = await exec("pdftotext", [output, "-"]);
     assert.match(text, /Example Candidate/);
     assert.match(text, /项目经验/);
     assert.doesNotMatch(text, /SCRIPT EXECUTED/);
     assert.doesNotMatch(text, /PRIVATE EVIDENCE|PRIVATE CONTROL/);
-    const { stdout: info } = await exec("pdfinfo", [join(directory, "resume.pdf")]);
+    const { stdout: info } = await exec("pdfinfo", [output]);
     assert.match(info, /Page size:.*A4/);
-    assert.deepEqual((await readdir(directory)).sort(), ["resume.pdf"]);
-    console.log(`PDF visual evidence: ${directory}/resume.pdf`);
+    assert.deepEqual((await readdir(directory)).sort(), [result.artifacts[0].file]);
+    console.log(`PDF visual evidence: ${output}`);
   } finally {
     if (previous === undefined) delete process.env.CODESHELL_PDF_BROWSER;
     else process.env.CODESHELL_PDF_BROWSER = previous;
@@ -77,8 +78,8 @@ test("unsupported or broken photos fail visibly without a misleading PDF", async
 test("packaged print layout paginates long Chinese resumes with an embedded photo", async () => withBrowser(async (directory) => {
   const photo = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
   const content = Array.from({ length: 100 }, (_, index) => `<li>项目经验 ${index + 1}：公开内容与中文排版核验。</li>`).join("");
-  await renderResumePdf({ action: "resume-pdf", html: `<main class="resume-paper resume-print-paper" data-template="classic"><div class="resume-photo-slot"><img src="${photo}" alt="示例照片"></div><h1>示例候选人</h1><h2>项目经验</h2><ul>${content}</ul><p>LAST PUBLIC LINE</p></main>` }, { directory });
-  const path = join(directory, "resume.pdf");
+  const rendered = await renderResumePdf({ action: "resume-pdf", html: `<main class="resume-paper resume-print-paper" data-template="classic"><div class="resume-photo-slot"><img src="${photo}" alt="示例照片"></div><h1>示例候选人</h1><h2>项目经验</h2><ul>${content}</ul><p>LAST PUBLIC LINE</p></main>` }, { directory });
+  const path = join(directory, rendered.artifacts[0].file);
   const { stdout: info } = await exec("pdfinfo", [path]);
   assert.ok(Number(info.match(/Pages:\s+(\d+)/)?.[1]) >= 2);
   const { stdout: text } = await exec("pdftotext", [path, "-"]);
@@ -106,11 +107,17 @@ test("cancelling an active browser removes its profile and leaves no PDF", async
   assert.deepEqual(await readdir(directory), []);
 }));
 
-test("an existing output is never replaced", async () => withBrowser(async (directory) => {
+test("an explicit retry after output-before-receipt interruption preserves existing files", async () => withBrowser(async (directory) => {
   await writeFile(join(directory, "resume.pdf"), "preserved original");
-  await assert.rejects(renderResumePdf({ action: "resume-pdf", html: "<main>replacement</main>" }, { directory }), /EEXIST/);
+  const input = { action: "resume-pdf", html: '<main class="resume-paper resume-print-paper">retry result</main>' };
+  const first = await renderResumePdf(input, { directory });
+  const original = await readFile(join(directory, first.artifacts[0].file));
+  const retried = await renderResumePdf(input, { directory });
+  assert.match(retried.artifacts[0].file, /^resume-[a-f0-9]{64}\.pdf$/);
+  assert.deepEqual(await readFile(join(directory, first.artifacts[0].file)), original);
+  assert.equal((await readFile(join(directory, retried.artifacts[0].file))).length, retried.artifacts[0].bytes);
   assert.equal(await readFile(join(directory, "resume.pdf"), "utf8"), "preserved original");
-  assert.deepEqual(await readdir(directory), ["resume.pdf"]);
+  assert.equal((await readdir(directory)).some(name => name.startsWith('.pdf-browser-')), false);
 }));
 
 test("installed entry accepts the Host stdin envelope and returns a capturable artifact", async () => withBrowser(async (directory) => {
