@@ -2310,7 +2310,9 @@
           }
           decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
           const time = Math.floor(video.currentTime * 1e6 + 1e-4);
-          if (frame.timestamp <= time + 1 && (frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1)) {
+          if (frame.timestamp <= time + 1 && // An exact timestamp is already the requested picture, even when a
+          // MediaRecorder frame reports duration 0 and no new presentation fires.
+          (Math.abs(frame.timestamp - time) <= 1 || frame.duration !== null && frame.duration > 0 && time < frame.timestamp + frame.duration || presentedTime !== void 0 && Math.abs(presentedTime - frame.timestamp) <= 1)) {
             finish(void 0, frame);
             return;
           }

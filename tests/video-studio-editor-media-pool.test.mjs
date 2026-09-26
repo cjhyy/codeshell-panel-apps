@@ -369,6 +369,35 @@ test(
     );
 
     await t.test(
+      "an exact frame timestamp remains usable with zero duration and no presentation callbacks",
+      async () => {
+        const result = await pageTest((page) => page.evaluate(async () => {
+          const { EditorMediaPool, layer, frame, sample } = window.poolTest;
+          const NativeFrame = window.VideoFrame;
+          const request = HTMLVideoElement.prototype.requestVideoFrameCallback;
+          HTMLVideoElement.prototype.requestVideoFrameCallback = undefined;
+          window.VideoFrame = function(source) {
+            const captured = new NativeFrame(source);
+            Object.defineProperty(captured, "duration", { value: 0 });
+            return captured;
+          };
+          const pool = new EditorMediaPool({ resolveAsset: () => "/video", timeoutMs: 500 });
+          try {
+            const output = [];
+            for (const time of [0, 2, 1])
+              output.push(sample((await pool.prepare(frame([layer("clip", time)]))).get("clip")));
+            return output;
+          } finally {
+            pool.dispose();
+            window.VideoFrame = NativeFrame;
+            HTMLVideoElement.prototype.requestVideoFrameCallback = request;
+          }
+        }));
+        [[255, 0, 0], [0, 0, 255], [0, 255, 0]].forEach((expected, i) => color(result[i], expected));
+      },
+    );
+
+    await t.test(
       "frames without a duration use a matching presentation receipt",
       async () => {
         const result = await pageTest((page) => page.evaluate(async () => {
