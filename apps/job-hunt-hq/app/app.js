@@ -61,6 +61,9 @@ import {
   projectSnapshotStorageNeedsMigration,
 } from "./snapshot-sharding-model.mjs";
 import { writeProjectSnapshotDocuments } from "./snapshot-storage.mjs";
+import { persistSnapshotBundle, rawSnapshotBundle } from "./snapshot-backup.mjs";
+import { mountSnapshotRecovery } from "./snapshot-recovery-ui.mjs";
+import { selectSnapshotLocalState, snapshotRestoreId } from "./snapshot-recovery-model.mjs";
 import { buildProjectBootstrapTask, resolveProjectBootstrapStatus } from "./project-bootstrap.mjs";
 import {
   CHANNEL_VERIFICATION_STATE_IDS,
@@ -365,6 +368,7 @@ const PANEL_VIEWS = new Set([
 ]);
 
 const seedState = {
+  snapshotRestoreId: "",
   selectedJobId: "job-aurora",
   selectedInterviewSetId: "iset-aurora",
   selectedBaseResumeId: "",
@@ -1451,6 +1455,7 @@ const projectContext = {
   snapshotSaveRetryAttempt: 0,
   snapshotError: "",
   snapshotUnreadable: false,
+  snapshotRestoreNotice: false,
   snapshotConflict: false,
   externalSnapshotRevision: "",
   snapshotSemanticKey: "",
@@ -1645,6 +1650,7 @@ function normalizeResumeEditorDraft(value = {}) {
 function mergeState(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return clone(seedState);
   const next = clone(seedState);
+  next.snapshotRestoreId = snapshotRestoreId(input) ?? "";
   if (input.profile && typeof input.profile === "object") {
     next.profile = { ...next.profile, ...input.profile };
   }
@@ -3491,6 +3497,7 @@ function syncActiveTraceLifecycle(wasBusy, isBusy) {
 
 function criticalDraftRecoverySnapshot(source = state) {
   return {
+    snapshotRestoreId: snapshotRestoreId(source) ?? "",
     interviewDraft: normalizeInterviewAnswerDraft(source?.interviewDraft),
     resumeDraft: normalizeResumeEditorDraft(source?.resumeDraft),
   };
@@ -3543,6 +3550,7 @@ function persist({ quiet = true } = {}) {
 
 function projectSnapshotPayload() {
   return compactProjectSnapshotPayload({
+    ...(state.snapshotRestoreId ? { snapshotRestoreId: state.snapshotRestoreId } : {}),
     schemaVersion: 2,
     updatedAt: new Date().toISOString(),
     selectedJobId: state.selectedJobId,
@@ -3928,9 +3936,10 @@ async function syncProjectContext({
   quiet = true,
   localStateSource = state,
   allowLegacyMigration = false,
+  browserRecoveries = [],
 } = {}) {
   const scope = currentProject();
-  const localState = compactPanelLocalState(localStateSource);
+  let localState = compactPanelLocalState(localStateSource);
   try {
     const [info, listing] = await Promise.all([
       hostCallWithRateLimitRetry("workspace.info", {}, 6, scope),
@@ -3955,6 +3964,15 @@ async function syncProjectContext({
       }
       const projectSnapshotNeedsMigration = parsed.schemaVersion === 1;
       const projectStorageNeedsMigration = projectSnapshotStorageNeedsMigration(root, parsed);
+      const selectedDrafts = selectSnapshotLocalState(parsed, localState, browserRecoveries);
+      localState = selectedDrafts.local;
+      for (const retired of selectedDrafts.retired) {
+        const drafts = criticalDraftRecoverySnapshot(retired);
+        const owner = draftStorage?.owner;
+        if (!detachedDrafts.some(record => record.owner === owner && JSON.stringify(record.drafts) === JSON.stringify(drafts)))
+          detachedDrafts.push({ cwd: context.cwd, owner, drafts });
+      }
+      projectContext.snapshotRestoreNotice = selectedDrafts.retired.length > 0;
       const migrated = mergeState({ ...parsed, ...localState });
       if (!Array.isArray(parsed.jobResearch)) migrated.jobResearch = [];
       if (!Array.isArray(parsed.workflowRuns)) migrated.workflowRuns = [];
@@ -16934,12 +16952,13 @@ function bindEvents() {
   });
 }
 
-async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
+async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshotRecovery = false } = {}) {
   if (draftStorage) {
     saveCriticalDraftRecovery();
     detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
   }
   projectEpoch++;
+  if (!keepSnapshotRecovery) snapshotRecoveryUI.contextChanged();
   draftImportPending = null;
   draftImportBusy = false;
   document.querySelector("#draft-import-dialog").close();
@@ -16967,21 +16986,31 @@ async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
     const store = createDraftStorage({
       call: scope.call, methods: context.availableMethods, storage: localStorage,
       check: scope.check, randomId: secureDraftId,
+      beforeReplace: async (previous, next) => {
+        if (!previous || snapshotRestoreId(previous) === snapshotRestoreId(next)) return;
+        const source = JSON.stringify({ format: "codeshell.job-hunt.draft-backup", version: 1,
+          stored: { hostState: previous } });
+        await persistSnapshotBundle(rawSnapshotBundle(source), { scope,
+          beforeOperation: pauseSnapshotRecoveryCalls, reason: "retired-drafts" });
+      },
     });
     draftStorage = store;
-    const { saved, recovery } = await store.load({ archiveDamagedBrowser: !restoreBrowserDrafts });
+    const { saved, recovery, recoveries } = await store.load({ archiveDamagedBrowser: !restoreBrowserDrafts });
     scope.check();
     const recoveredLocalState = restoreBrowserDrafts ? loadCriticalDraftRecovery(saved, recovery) : saved;
     state = mergeState(recoveredLocalState);
     projectReady = true;
     await syncProjectContext({
       quiet: true,
-      localStateSource: recoveredLocalState || compactPanelLocalState(state),
+      localStateSource: saved || compactPanelLocalState(state),
+      browserRecoveries: restoreBrowserDrafts ? recoveries || [recovery] : [],
       allowLegacyMigration: Boolean(saved && saved.localStateVersion !== 2),
     });
     scope.check();
     if (!restoreBrowserDrafts) store.retain(criticalDraftRecoverySnapshot());
-    draftStatus(store.backup().legacyRaw
+    draftStatus(projectContext.snapshotRestoreNotice
+      ? "项目已恢复；旧草稿未自动覆盖，仍可下载草稿备份。"
+      : store.backup().legacyRaw
       ? "发现旧版未标明项目的草稿，未自动导入；可下载备份。"
       : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前主程序不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
     document.querySelector(".app-shell").inert = false;
@@ -17177,6 +17206,40 @@ document.querySelector("#draft-import-source").addEventListener("change", render
 document.querySelector("#draft-import-cancel").addEventListener("click", closeDraftImport);
 document.querySelector("#draft-import-dialog").addEventListener("cancel", event => { event.preventDefault(); closeDraftImport(); });
 document.querySelector("#draft-import-apply").addEventListener("click", () => void applyDraftImport());
+
+async function pauseSnapshotRecoveryCalls(index) {
+  if (index > 0 && index % PROJECT_SHARD_HOST_CALL_BATCH === 0)
+    await new Promise(resolve => setTimeout(resolve, PROJECT_SHARD_HOST_CALL_PAUSE_MS));
+}
+const snapshotRecoveryUI = mountSnapshotRecovery({
+  getScope: currentProject,
+  getTarget: () => `${projectContext.name || "当前项目"}（${context.cwd || "项目工作区"}）`,
+  captureClient: () => ({ dirty: projectContext.snapshotDirty, local: compactPanelLocalState(state), drafts: criticalDraftRecoverySnapshot(),
+    unsavedProject: projectSnapshotPayload(), records: draftStorage?.backup().records || [] }),
+  basis: () => JSON.stringify({ project: projectSnapshotSemanticKey(projectSnapshotPayload()), local: compactPanelLocalState(state) }),
+  assertReady: () => {
+    if (!projectReady || !draftStorage?.versioned) throw new Error("请先连接支持安全保存的项目，再恢复快照");
+    if (context.busy || draftImportBusy || projectSnapshotSaveInFlight || scheduledReceiptImportPending ||
+        candidateProfileSavePending || candidateProfileHasUnsavedChanges() || questionBankSavePendingId || panelAudioState !== "idle")
+      throw new Error("请先完成当前任务、保存表单或结束录音，再确认恢复");
+  },
+  beginApply: async () => {
+    draftImportBusy = true;
+    clearTimeout(saveTimer); clearTimeout(projectSnapshotTimer);
+    document.querySelector(".app-shell").inert = true;
+    await draftStorage.flush();
+  },
+  endApply: scope => {
+    if (!scope.active()) return;
+    draftImportBusy = false;
+    document.querySelector(".app-shell").inert = !projectReady;
+  },
+  completed: async () => {
+    await activateProject(context, { keepSnapshotRecovery: true });
+    if (!projectReady) throw new Error("项目重新读取未完成，请关闭后重新读取");
+  },
+  pace: pauseSnapshotRecoveryCalls,
+});
 
 bindEvents();
 const ready = initialize();

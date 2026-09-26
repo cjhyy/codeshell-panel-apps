@@ -33,7 +33,7 @@ async function fixture(t, options = {}) {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   t.after(() => assert.deepEqual(errors, []));
   await page.addInitScript(options => {
-    const projects = { a: { storage: {}, files: {} }, b: { storage: {}, files: {} } };
+    const projects = { a: { storage: {}, files: {}, writtenText: {} }, b: { storage: {}, files: {}, writtenText: {} } };
     for (const [id, project] of Object.entries(projects)) {
       project.files['job-hunt-panel.json'] = { schemaVersion: options.schemaVersion ?? 2, updatedAt: '2026-01-01T00:00:00Z',
         jobs: [], versions: [], profile: { name: id },
@@ -73,16 +73,36 @@ async function fixture(t, options = {}) {
         }
         if (method.startsWith('workspace.') && window.__workspace) return window.__workspace(method, params);
         if (method === 'workspace.info') return { name: id, cwd: '/workspace' };
-        if (method === 'workspace.list') return { entries: [] };
+        if (method === 'workspace.list') {
+          const prefix = params.path === '.' ? '' : params.path + '/';
+          const children = new Map();
+          for (const path of Object.keys(project.files)) {
+            if (!path.startsWith(prefix)) continue;
+            const [name, ...rest] = path.slice(prefix.length).split('/');
+            children.set(name, { name, path: prefix + name, kind: rest.length ? 'directory' : 'file' });
+          }
+          return { entries: [...children.values()] };
+        }
         if (method === 'workspace.readText') {
           if (!(params.path in project.files)) throw new Error('ENOENT');
           const record = await snapshot(project.files, params.path);
-          return { content: typeof record.value === 'string' ? record.value : JSON.stringify(record.value), revision: record.revision, modifiedAt: 1 };
+          const written = project.writtenText[params.path];
+          const content = written?.value === JSON.stringify(record.value) ? written.content
+            : typeof record.value === 'string' ? record.value : JSON.stringify(record.value);
+          return { content, revision: record.revision, modifiedAt: 1 };
         }
         if (method === 'workspace.writeText') {
           if (window.__fixture.failWrites) throw new Error('write unavailable');
           if (window.__fixture.failSnapshotBackup && params.path.startsWith('career-data/panel-backups/')) throw new Error('backup unavailable');
+          const previous = await snapshot(project.files, params.path);
+          if (params.expectedModifiedAt === null && previous.exists) throw new Error('file already exists');
+          if (params.expectedRevision && params.expectedRevision !== previous.revision) throw new Error('revision conflict');
           project.files[params.path] = params.path.endsWith('.txt') ? params.content : JSON.parse(params.content);
+          project.writtenText[params.path] = { content: params.content, value: JSON.stringify(project.files[params.path]) };
+          if (params.path === 'job-hunt-panel.json' && window.__fixture.loseRootAck) {
+            window.__fixture.loseRootAck = false;
+            throw new Error('lost root acknowledgement');
+          }
           const record = await snapshot(project.files, params.path);
           return { revision: record.revision, modifiedAt: 2 };
         }
@@ -322,7 +342,16 @@ test('two real pages save independent shard generations, reject a stale root and
   const loserCaptured = new Promise(resolve => { sawLoser = resolve; });
   const workspace = label => async (method, params) => {
     if (method === 'workspace.info') return { name: 'shared-large-project', cwd: '/workspace' };
-    if (method === 'workspace.list') return { entries: [] };
+    if (method === 'workspace.list') {
+          const prefix = params.path === '.' ? '' : params.path + '/';
+          const children = new Map();
+          for (const path of files.keys()) {
+            if (!path.startsWith(prefix)) continue;
+            const [name, ...rest] = path.slice(prefix.length).split('/');
+            children.set(name, { name, path: prefix + name, kind: rest.length ? 'directory' : 'file' });
+          }
+          return { entries: [...children.values()] };
+        }
     if (method === 'workspace.readText') {
       const captured = read(params.path);
       if (label === 'loser' && holdLoser && params.path === 'job-hunt-panel.json') {
@@ -401,4 +430,156 @@ test('failed migration backup preserves v1 and explicit retry still completes mi
   await page.evaluate(() => { window.__fixture.failSnapshotBackup = false; document.querySelector('#save-project-snapshot').click(); });
   await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].schemaVersion === 2);
   assert.ok(await page.evaluate(() => Object.keys(window.__fixture.projects.a.files).some(path => path.endsWith('/manifest.json'))));
+});
+
+async function seedRecoveryBackup(page) {
+  return page.evaluate(async () => {
+    const { createSnapshotBackup } = await import('/snapshot-backup.mjs');
+    const scope = { check() {}, call: (...args) => window.codeshellPanel.call(...args) };
+    const result = await createSnapshotBackup({ content: JSON.stringify({ schemaVersion: 2,
+      jobs: [{ id: 'restored-job', company: 'Example' }], resume: { versionId: 'backup-resume', markdown: '# Restored backup', updatedAt: '2020-01-01T00:00:00Z' } }) }, { scope });
+    return result.path;
+  });
+}
+async function chooseRecovery(page, path) {
+  await page.locator('#snapshot-recovery-open').click();
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-source').disabled);
+  await page.locator('#snapshot-recovery-source').selectOption(path);
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-review').disabled);
+  assert.equal(await page.locator('#snapshot-recovery-apply').isEnabled(), true, await page.locator('#snapshot-recovery-status').textContent());
+}
+async function finishRecovery(page) {
+  await page.locator('#snapshot-recovery-apply').click();
+  await page.waitForFunction(() => document.querySelector('#snapshot-recovery-status').textContent.startsWith('项目快照已恢复。'));
+  await ready(page);
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-close').disabled);
+}
+
+test('actual restore UI previews, preserves current data, rejects stale drafts and accepts new edits after reopening', { timeout: 90000 }, async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await page.evaluate(() => {
+    const host = window.__fixture.projects.a;
+    host.storage['job-hunt-state-v1'].resumeDraft = { markdown: '# Stale future draft', updatedAt: '2099-01-01T00:00:00Z' };
+    const owner = host.storage['job-hunt-draft-owner-v1'].id;
+    localStorage.setItem('job-hunt-critical-drafts-v2:' + owner + '.foreign-writer', JSON.stringify({
+      version: 2, owner, savedAt: 9999999999999, drafts: { resumeDraft: { markdown: '# Stale browser future', updatedAt: '2099-01-01T00:00:00Z' } },
+    }));
+  });
+  await chooseRecovery(page, path);
+  assert.match(await page.locator('#snapshot-recovery-preview').textContent(), /Restored backup/);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  if (process.env.JOB_HUNT_RECOVERY_SCREENSHOT) await page.screenshot({ path: process.env.JOB_HUNT_RECOVERY_SCREENSHOT, fullPage: true });
+  await finishRecovery(page);
+  await page.locator('#snapshot-recovery-close').click();
+  const restored = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(restored.resume.markdown, '# Restored backup');
+  assert.match(restored.snapshotRestoreId, /^g-[a-f0-9]{32}$/);
+  assert.equal((await backup(page)).current.drafts.resumeDraft.markdown, '');
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  assert.equal(await page.locator('#resume-editor').inputValue(), '# Restored backup');
+  await edit(page, '# New post-restore edit');
+  await page.waitForFunction(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown === '# New post-restore edit');
+  await page.waitForFunction(() => window.__fixture.projects.a.storage['job-hunt-state-v1'].snapshotRestoreId === window.__fixture.projects.a.files['job-hunt-panel.json'].snapshotRestoreId);
+  const originals = await page.evaluate(() => Object.values(window.__fixture.projects.a.files).filter(v => v?.reason === 'retired-drafts'));
+  assert.equal(originals.length, 1, 'the old Host cache is archived before replacement');
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  assert.equal(await page.locator('#resume-editor').inputValue(), '# New post-restore edit');
+});
+
+test('recovery UI preserves a corrupt primary file verbatim and exports the archived drafts', { timeout: 90000 }, async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-panel.json'] = '{broken original 中🙂\n'; });
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#reload-draft-storage').click(); await ready(page);
+  assert.match(await page.locator('#project-snapshot-error').textContent(), /无法读取/);
+  await chooseRecovery(page, path);
+  assert.match(await page.locator('#snapshot-recovery-status').textContent(), /主文件损坏/);
+  await finishRecovery(page);
+  const preservedPath = await page.evaluate(() => Object.entries(window.__fixture.projects.a.files).find(([path, value]) => path.endsWith('manifest.json') && value.reason === 'before-restore')[0]);
+  await page.locator('#snapshot-recovery-refresh').click();
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-source').disabled);
+  await page.locator('#snapshot-recovery-source').selectOption(preservedPath);
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-download').disabled);
+  assert.equal(await page.locator('#snapshot-recovery-apply').isEnabled(), false);
+  const downloaded = page.waitForEvent('download'); await page.locator('#snapshot-recovery-download').click();
+  assert.equal(await readFile(await (await downloaded).path(), 'utf8'), '{broken original 中🙂\n');
+  const drafts = page.waitForEvent('download'); await page.locator('#snapshot-recovery-drafts').click();
+  const saved = JSON.parse(await readFile(await (await drafts).path(), 'utf8'));
+  assert.equal(saved.format, 'codeshell.job-hunt.draft-backup');
+  assert.equal(saved.current.drafts.interviewDraft.answer, 'draft-a');
+});
+
+test('recovery preview cannot authorize a changed project or survive a project switch', async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await chooseRecovery(page, path);
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown = '# Other writer'; });
+  await page.locator('#snapshot-recovery-apply').click();
+  await page.waitForFunction(() => document.querySelector('#snapshot-recovery-status').textContent.includes('项目已变化'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Other writer');
+  await page.locator('#snapshot-recovery-close').click();
+  await chooseRecovery(page, path);
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  assert.equal(await page.locator('#snapshot-recovery-apply').isEnabled(), false);
+  assert.match(await page.locator('#snapshot-recovery-status').textContent(), /项目已切换/);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+});
+
+test('failed preservation blocks UI restore; retry can verify a lost successful root acknowledgement', { timeout: 90000 }, async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await chooseRecovery(page, path);
+  await page.evaluate(() => { window.__fixture.failSnapshotBackup = true; });
+  await page.locator('#snapshot-recovery-apply').click();
+  await page.waitForFunction(() => document.querySelector('#snapshot-recovery-status').textContent.includes('backup unavailable'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  await page.evaluate(() => { window.__fixture.failSnapshotBackup = false; window.__fixture.loseRootAck = true; });
+  await page.locator('#snapshot-recovery-review').click();
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-apply').disabled);
+  await finishRecovery(page);
+  const rootWrites = await page.evaluate(() => window.__fixture.calls.filter(c => c.method === 'workspace.writeText' && c.params.path === 'job-hunt-panel.json'));
+  assert.equal(rootWrites.length, 1);
+});
+
+test('downloaded portable backup can be reviewed and restored through the file picker', { timeout: 90000 }, async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await chooseRecovery(page, path);
+  const downloaded = page.waitForEvent('download'); await page.locator('#snapshot-recovery-download').click();
+  const source = await readFile(await (await downloaded).path());
+  await page.locator('#snapshot-recovery-close').click();
+  await page.locator('#snapshot-recovery-open').click();
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-file').disabled);
+  await page.locator('#snapshot-recovery-file').setInputFiles({ name: 'backup.json', mimeType: 'application/json', buffer: source });
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-apply').disabled);
+  await finishRecovery(page);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Restored backup');
+});
+
+test('late old-project restore cannot clear a new preview or write the new project', { timeout: 90000 }, async t => {
+  const page = await fixture(t); await ready(page);
+  const path = await seedRecoveryBackup(page);
+  await chooseRecovery(page, path);
+  await page.evaluate(() => { window.__fixture.hold = 'workspace.writeText'; });
+  await page.locator('#snapshot-recovery-apply').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__fixture.hold = null; window.__fixture.switch('b'); });
+  await ready(page);
+  const pathB = await seedRecoveryBackup(page);
+  await page.locator('#snapshot-recovery-refresh').click();
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-source').disabled);
+  await page.locator('#snapshot-recovery-source').selectOption(pathB);
+  await page.waitForFunction(() => !document.querySelector('#snapshot-recovery-apply').disabled);
+  await page.evaluate(() => window.__fixture.release());
+  await page.waitForTimeout(100);
+  await finishRecovery(page);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Restored backup');
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  const writes = await page.evaluate(() => window.__fixture.calls.filter(c => c.method === 'workspace.writeText' && c.params.path === 'job-hunt-panel.json'));
+  assert.deepEqual(writes.map(w => w.id), ['b']);
 });

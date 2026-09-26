@@ -12,7 +12,7 @@ import {
  */
 export async function writeProjectSnapshotDocuments(
   prepared,
-  { scope, previousSnapshot = null, beforeShard = async () => {}, backupRequired = false },
+  { scope, previousSnapshot = null, beforeShard = async () => {}, backupRequired = false, previousSnapshotArchived = false },
 ) {
   if (prepared.shards.length && prepared.root.artifactStorage?.schemaVersion !== 2) {
     throw new Error("旧分片格式只允许读取，不能覆盖写入");
@@ -22,7 +22,7 @@ export async function writeProjectSnapshotDocuments(
     await beforeShard(operation++);
     scope.check();
   };
-  const previousRoot = previousSnapshot ? JSON.parse(previousSnapshot.content) : null;
+  const previousRoot = previousSnapshot && !previousSnapshotArchived ? JSON.parse(previousSnapshot.content) : null;
   if (
     previousRoot &&
     (backupRequired ||
