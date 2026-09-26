@@ -368,3 +368,24 @@ IDs use the same Panel-owned UUID helper. When a LAN HTTP browser lacks
 `crypto.getRandomValues`; it never falls back to time or `Math.random`. Existing
 saved IDs are preserved. This fixes identifier creation, not the remaining Host,
 recording, preview, background-task or mobile workflow adaptation requirements.
+
+
+### Cloud project document storage
+
+When the Host has no desktop document service, the editor uses its authorized
+`workspace.list`, `workspace.readText`, and conditional `workspace.writeText`
+capabilities. This requires the new `workspace.read` / `workspace.write` permissions
+to be reviewed when updating an installed Panel. Existing desktop document storage
+and standalone browser IndexedDB remain in their existing locations.
+
+Cloud editor documents, the last 20 versions, archived projects and original upgrade
+backups live under `video-studio-data/documents/` inside the project. Keep this entire
+directory in project backups. JSON data is split into checked immutable parts within
+the Cloud file limits; the current version is published with a content-revision
+condition. Conflicts, unreadable indexes or missing/corrupt parts stop the save or
+restore. A lost publication reply is read back before reporting success. Retained
+parts and upgrade archives are not automatically deleted.
+
+This covers the editor document and its recovery history. It does not copy local
+browser media into a cloud project or establish complete cloud rendering/provider
+acceptance. Media assets and task journals have their own persistence contracts.

@@ -1,3 +1,4 @@
+import { workspaceDocumentBackend } from "./workspace-storage";
 import type { PanelBridge, ProjectVersion } from "../host";
 import { migrateLegacyProject } from "./migration";
 import { EditorStorageConflictError, type EditorSessionStorage } from "./session";
@@ -21,6 +22,7 @@ export interface EditorUpgradeBackup {
 }
 export interface EditorHostStorageOptions {
   persistent: boolean;
+  workspace?: boolean;
   scopeKey?: string;
 }
 type Bridge = Pick<PanelBridge, "call">;
@@ -375,12 +377,17 @@ export function createEditorHostStorage(
   if (
     !options ||
     typeof options.persistent !== "boolean" ||
+    (options.workspace !== undefined && typeof options.workspace !== "boolean") ||
     (options.scopeKey !== undefined &&
       (typeof options.scopeKey !== "string" || !options.scopeKey || options.scopeKey.length > 4096))
   )
     throw new Error("工程存储范围无效");
   const host = !!panel && options.persistent;
-  const backend = host ? hostBackend(panel!) : indexedBackend(options.scopeKey ?? "browser");
+  const backend = host
+    ? hostBackend(panel!)
+    : panel && options.workspace
+      ? workspaceDocumentBackend(panel)
+      : indexedBackend(options.scopeKey ?? "browser");
   let initialRead: Promise<Stored> | undefined;
   const legacy = async (key: string): Promise<unknown | null> => {
     const value = panel

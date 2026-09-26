@@ -14,6 +14,8 @@
   "singleton": true,
   "permissions": [
     "context.workspace",
+    "workspace.read",
+    "workspace.write",
     "storage",
     "agent.task",
     "media",

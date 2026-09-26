@@ -328,6 +328,7 @@ let snapping = true;
 let search = "";
 let editorSession: EditorSession | undefined;
 let editorStorage: EditorHostStorage | undefined;
+let workspaceDocumentStorage = false;
 let editorWorkspace: EditorWorkspace | undefined;
 let editorRoot: HTMLElement | undefined;
 let editorTasks: ReturnType<typeof createEditorTaskBridge> | undefined;
@@ -1402,7 +1403,7 @@ function views() {
     canRedo: canRedo(),
     playing: Boolean(playback),
     connected: Boolean(panel),
-    persistentStorage: hasPersistentStorage(),
+    persistentStorage: hasPersistentStorage() || workspaceDocumentStorage,
     captionCount: editorCaptionList()?.length,
     editorClipCount: editorSession
       ?.read()
@@ -5904,8 +5905,12 @@ async function boot(): Promise<void> {
         ),
     );
     storageDiscovered = true;
+    workspaceDocumentStorage = ["workspace.list", "workspace.readText", "workspace.writeText"].every(
+      (method) => initialContext?.availableMethods?.includes(method),
+    );
     editorStorage = await createEditorHostStorage(panel, {
       persistent: hasPersistentStorage(),
+      workspace: workspaceDocumentStorage,
       scopeKey: initialContext?.cwd ?? "browser",
     });
     const restored = await editorStorage.read();

@@ -144,6 +144,7 @@ export const suites = [
         "tests/video-studio-editor-narration-alignment.test.ts",
       ],
       ["--test", "apps/video-studio/native/tests/voice-runtime.test.mjs"],
+      ["--test", "tests/video-studio-workspace-storage.test.mjs"],
     ],
   },
 ];
