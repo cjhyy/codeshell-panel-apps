@@ -11,9 +11,7 @@ const scopeOf = (context: Record<string, unknown>) =>
  * documents pass through unchanged; no implicit migration between backends.
  */
 export function createWorkspaceDocumentBridge(raw: PanelBridge): PanelBridge {
-  let initial:
-    | Promise<{ mode: "desktop" | "workspace" | "unsupported"; scope: string }>
-    | undefined;
+  let initial: { mode: "desktop" | "workspace" | "unsupported"; scope: string } | undefined;
   const modeOf = (context: Awaited<ReturnType<PanelBridge["getContext"]>>) => {
     const methods = context.availableMethods ?? [];
     if (DOCUMENTS.slice(0, 2).every((method) => methods.includes(method)))
@@ -22,21 +20,20 @@ export function createWorkspaceDocumentBridge(raw: PanelBridge): PanelBridge {
     return "unsupported" as const;
   };
   async function checked() {
-    initial ??= raw
-      .getContext()
-      .then((context) => ({ mode: modeOf(context), scope: scopeOf(context) }));
-    const bound = await initial,
-      context = await raw.getContext();
+    const context = await raw.getContext();
+    initial ??= { mode: modeOf(context), scope: scopeOf(context) };
+    const bound = initial;
     if (scopeOf(context) !== bound.scope || modeOf(context) !== bound.mode)
       throw new Error("项目或存储权限已改变，请重新打开视频面板；旧工程未写入新项目");
     return { mode: bound.mode, context };
   }
   const backend = workspaceDocumentBackend({
     async call(method, params) {
-      await checked();
-      const result = await raw.call(method, params);
-      await checked();
-      return result;
+      // Each mutation checks its destination. Reads are validated as one document
+      // operation below, avoiding two extra remote round trips for every part.
+      // The Host's bound grant still authorizes every individual file operation.
+      if (method === "workspace.writeText") await checked();
+      return raw.call(method, params);
     },
   });
   return {
@@ -65,21 +62,26 @@ export function createWorkspaceDocumentBridge(raw: PanelBridge): PanelBridge {
       const { mode } = await checked();
       if (mode !== "workspace") return raw.call(method, params);
       if (!params || typeof params.key !== "string") throw new Error("工程存储键无效");
+      let result: unknown;
       if (method === "media.document.get") {
         if (
           params.revision !== undefined &&
           (!Number.isSafeInteger(params.revision) || (params.revision as number) < 1)
         )
           throw new Error("工程历史版本无效");
-        return backend.get(params.key, params.revision as number | undefined);
+        result = await backend.get(params.key, params.revision as number | undefined);
+      } else if (method === "media.document.versions") {
+        result = await backend.versions(params.key);
+      } else {
+        result = await backend.set(
+          params.key,
+          structuredClone(params.data),
+          params.baseRevision as number,
+          params.label as string,
+        );
       }
-      if (method === "media.document.versions") return backend.versions(params.key);
-      return backend.set(
-        params.key,
-        structuredClone(params.data),
-        params.baseRevision as number,
-        params.label as string,
-      );
+      await checked();
+      return result;
     },
   };
 }

@@ -272,3 +272,22 @@ test("queued document writes capture their original inputs before asynchronous d
     saved: 1,
   });
 });
+
+test("a project change after the final read prevents publishing a stale document to the UI", async () => {
+  const f = cloud(),
+    bridge = createWorkspaceDocumentBridge(f.raw);
+  await bridge.call("media.document.set", {
+    key: "draft",
+    baseRevision: 0,
+    data: { saved: 1 },
+    label: "first",
+  });
+  const original = f.raw.call;
+  f.raw.call = async (method, params) => {
+    const result = await original(method, params);
+    if (method === "workspace.readText" && params.path.includes("/parts/")) f.state.projectId = "b";
+    return result;
+  };
+  await assert.rejects(bridge.call("media.document.get", { key: "draft" }), /项目或存储权限已改变/);
+  assert.ok([...f.files.keys()].every((key) => key.startsWith("a:")));
+});
