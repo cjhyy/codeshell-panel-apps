@@ -1018,7 +1018,8 @@ function recoverySnapshot(workspaceRoot) {
     : safeDesignPath(currentSourcePath ?? "")
       ? currentSourcePath
       : DEFAULT_PATH;
-  const tracksCurrentSource = recoveryPath === currentSourcePath;
+  const hasSourceBaseline = typeof currentSourcePath === "string" && safeDesignPath(currentSourcePath);
+  const savesToNewPath = hasSourceBaseline && recoveryPath !== currentSourcePath;
   const currentState = captureDesignOperationState(design);
   const record = createDesignOperationRecord(
     savedOperationState ?? currentState,
@@ -1026,14 +1027,17 @@ function recoverySnapshot(workspaceRoot) {
   );
   return {
     format: RECOVERY_FORMAT,
-    version: 1,
+    // v2 separates the destination from its original file baseline. Older
+    // readers reject and preserve it instead of replaying against the new path.
+    version: savesToNewPath ? 2 : 1,
     workspaceRoot,
     sourceContext: { sessionId: context.sessionId ?? null },
     path: recoveryPath,
+    ...(savesToNewPath ? { basePath: currentSourcePath } : {}),
     record,
-    baseDocument: tracksCurrentSource ? null : clone(recoveryBaseDocument ?? createBlankDocument()),
-    baseModifiedAt: tracksCurrentSource ? currentModifiedAt : null,
-    baseRevision: tracksCurrentSource ? currentRevision : null,
+    baseDocument: hasSourceBaseline ? null : clone(recoveryBaseDocument ?? createBlankDocument()),
+    baseModifiedAt: hasSourceBaseline ? currentSourceModifiedAt : null,
+    baseRevision: hasSourceBaseline ? currentSourceRevision : null,
   };
 }
 
@@ -5669,7 +5673,7 @@ async function restoreRecovery(
     !recovery ||
     typeof recovery !== "object" ||
     recovery.format !== RECOVERY_FORMAT ||
-    recovery.version !== 1 ||
+    ![1, 2].includes(recovery.version) ||
     recovery.workspaceRoot !== workspaceRoot ||
     typeof recovery.path !== "string" ||
     !safeDesignPath(recovery.path)
@@ -5693,6 +5697,9 @@ async function restoreRecovery(
   if (recovery.baseRevision !== null && typeof recovery.baseRevision !== "string") {
     throw new Error("恢复快照的内容版本无效");
   }
+  const baselinePath = recovery.version === 2 ? recovery.basePath : recovery.path;
+  if (typeof baselinePath !== "string" || !safeDesignPath(baselinePath))
+    throw new Error("恢复草稿的基础设计路径无效");
   let diskSnapshot = "";
   let diskModifiedAt = null;
   let diskRevision = null;
@@ -5703,7 +5710,7 @@ async function restoreRecovery(
   let diskPersistenceMode = "single";
   let baseDesign = null;
   try {
-    const disk = await bundleHostCall("workspace.readText", { path: recovery.path }, expectedWorkspaceEpoch);
+    const disk = await bundleHostCall("workspace.readText", { path: baselinePath }, expectedWorkspaceEpoch);
     assertWorkspaceEpoch(expectedWorkspaceEpoch);
     diskFound = true;
     diskModifiedAt = disk.modifiedAt;
@@ -5728,6 +5735,8 @@ async function restoreRecovery(
     { modifiedAt: recovery.baseModifiedAt, revision: recovery.baseRevision },
     { found: diskFound, modifiedAt: diskModifiedAt, revision: diskRevision },
   );
+  if (recovery.version === 2 && recoveryBaseChanged)
+    throw new Error("另存草稿的基础设计已变化；原草稿已保留，请下载备份并使用原版本恢复");
   design = baseDesign;
   currentPageCache = diskPageCache;
   currentResourceCache =
@@ -5741,14 +5750,15 @@ async function restoreRecovery(
   loadedFontResourceIds.clear();
   documentEpoch += 1;
   clearSelection();
-  currentModifiedAt = recovery.baseModifiedAt;
-  currentRevision = recovery.baseRevision;
+  const targetsBaseline = recovery.path === baselinePath;
+  currentModifiedAt = targetsBaseline ? recovery.baseModifiedAt : null;
+  currentRevision = targetsBaseline ? recovery.baseRevision : null;
   warnedExternalVersion = recoveryBaseChanged
     ? (diskRevision ?? (diskFound ? `mtime:${diskModifiedAt}` : "missing"))
     : null;
-  currentSourcePath = recovery.path;
-  currentSourceModifiedAt = currentModifiedAt;
-  currentSourceRevision = currentRevision;
+  currentSourcePath = diskFound ? baselinePath : null;
+  currentSourceModifiedAt = recovery.baseModifiedAt;
+  currentSourceRevision = recovery.baseRevision;
   currentDesignIndexManifest = diskIndexManifest;
   currentPersistenceMode = diskPersistenceMode;
   recoveryBaseDocument = diskFound ? null : clone(baseDesign);

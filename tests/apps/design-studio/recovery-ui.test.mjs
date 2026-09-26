@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { resolve, sep, extname } from "node:path";
 import { chromium } from "playwright";
 import { createDesignIndexPersistencePlan } from "../../../apps/design-studio/app/document-index.mjs";
-import { normalizeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
+import { normalizeDesignDocument, serializeDesignDocument } from "../../../apps/design-studio/app/document.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url)));
 const hash = (value) =>
@@ -140,7 +140,7 @@ async function fixture(t) {
     }, { cwd, scope, sessionId, deferContext });
     await page.goto(`${origin}/index.html`);
     if (!deferContext) await page.waitForFunction(() =>
-      /新设计|已打开/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
+      /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
     );
     return page;
   }
@@ -416,4 +416,96 @@ test("complete backup materializes twelve indexed pages including pages not yet 
   assert.deepEqual(backup.document.pages.map(p => p.name), document.pages.map(p => p.name));
   assert.ok(f.calls.filter(c => c.method === "workspace.readText").length > initialReads);
   assert.equal(await page.locator("#active-page option").count(), 12);
+});
+
+
+test("a legacy backup lets the user choose a valid draft after a damaged entry and restores only a new file", async t => {
+  const f = await fixture(t), page = await f.page();
+  await page.locator("#add-page").click();
+  await page.evaluate(() => window.switchProject("/project/B"));
+  await page.locator("#recovery-message").filter({ hasText: "切换前项目" }).waitFor();
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path()));
+  backup.drafts.unshift({ format: "damaged", retained: "keep original" });
+  await page.locator("#portable-backup-open").click();
+  await page.locator("#portable-backup-file").setInputFiles({ name: "old-drafts.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+  await page.locator("#portable-backup-status").filter({ hasText: "草稿格式" }).waitFor();
+  assert.equal(await page.locator("#portable-backup-restore").isDisabled(), true);
+  await page.locator("#portable-backup-candidate").selectOption("1");
+  await page.waitForFunction(() => !document.querySelector("#portable-backup-restore").disabled);
+  await page.locator("#portable-backup-path").fill("designs/legacy-copy.codesign.json");
+  await page.locator("#portable-backup-restore").click();
+  await page.locator("#portable-backup-status").filter({ hasText: "已恢复到" }).waitFor();
+  assert.equal(JSON.parse(f.files.get("/project/B:designs/legacy-copy.codesign.json")).pages.length, 2);
+  assert.equal(await page.locator("#active-page option").count(), 1);
+  assert.equal(f.calls.some(c => c.scope === "/project/B" && c.method === "storage.compareAndSet"), false);
+});
+
+
+test("a save-as draft reopens with its original file baseline and writes only the new destination", async t => {
+  const f = await fixture(t), initialPath = "designs/original.codesign.json";
+  const base = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Original saved design", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }, { id: "page-2", name: "Two", children: [] }] });
+  const originalBytes = serializeDesignDocument(base);
+  f.files.set(`/project/A:${initialPath}`, originalBytes);
+  const page = await f.page({ initialPath });
+  await page.locator("#add-page").click();
+  await page.locator("#document-path").fill("designs/copy.codesign.json");
+  await page.locator("#document-path").press("Tab");
+  const deadline = Date.now() + 5000;
+  while (![...f.records.values()].some(value => value?.path === "designs/copy.codesign.json" && value?.record)) {
+    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const reopened = await f.page({ initialPath });
+  assert.equal(await reopened.locator("#active-page option").count(), 3);
+  assert.equal(await reopened.locator("#document-path").inputValue(), "designs/copy.codesign.json");
+  await reopened.locator("#save").click();
+  await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
+  assert.equal(JSON.parse(f.files.get("/project/A:designs/copy.codesign.json")).pages.length, 3);
+  assert.equal(f.files.get(`/project/A:${initialPath}`), originalBytes);
+});
+
+
+test("save-as recovery refuses a changed original baseline and retains both the journal and existing destination", async t => {
+  const f = await fixture(t), initialPath = "designs/source.codesign.json";
+  const base = { format: "codeshell.design", version: 3, name: "Original", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }] };
+  f.files.set(`/project/A:${initialPath}`, JSON.stringify(base));
+  f.files.set("/project/A:designs/existing.codesign.json", "keep destination bytes");
+  const page = await f.page({ initialPath });
+  await page.locator("#add-page").click();
+  await page.locator("#document-path").fill("designs/existing.codesign.json");
+  await page.locator("#document-path").press("Tab");
+  const deadline = Date.now() + 5000;
+  while (![...f.records.values()].some(v => v?.version === 2 && v?.record)) {
+    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const [key, saved] = [...f.records].find(([, value]) => value?.record);
+  const snapshot = structuredClone(saved);
+  f.files.set(`/project/A:${initialPath}`, JSON.stringify({ ...base, name: "New external version" }));
+  const reopened = await f.page({ initialPath });
+  await reopened.locator("#recovery-message").filter({ hasText: "基础设计已变化" }).waitFor();
+  assert.deepEqual(f.records.get(key), snapshot);
+  assert.equal(f.files.get("/project/A:designs/existing.codesign.json"), "keep destination bytes");
+  assert.equal(await reopened.locator("#active-page option").count(), 1);
+});
+
+test("an unsaved draft keeps its embedded baseline through repeated recovery and editing", async t => {
+  const f = await fixture(t), a = await f.page();
+  await a.locator("#add-page").click();
+  const waitForPages = async count => {
+    const deadline = Date.now() + 5000;
+    while (![...f.records.values()].some(v => v?.record?.operations.filter(op => op.type === "add-page").length === count)) {
+      assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  await waitForPages(1);
+  const b = await f.page();
+  assert.equal(await b.locator("#active-page option").count(), 2);
+  await b.locator("#add-page").click();
+  await waitForPages(2);
+  const c = await f.page();
+  assert.equal(await c.locator("#active-page option").count(), 3);
+  const saved = [...f.records.values()].find(v => v?.record);
+  assert.ok(saved.baseDocument);
+  assert.equal(saved.baseRevision, null);
 });
