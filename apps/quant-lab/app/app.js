@@ -2299,6 +2299,8 @@ aShareSelectionController = createAShareSelectionController({
 
 selectionSignalLabController = createSelectionSignalLabController({
   hostCall,
+  currentEpoch: () => workspaceEpoch,
+  getContext: () => context,
   storageKey: () => scopedStorageKey("selectionSignalLab", context.cwd ?? "preview"),
   getSnapshot: () => aShareSelectionController?.snapshot ?? null,
   onStock(subject) {
@@ -2306,6 +2308,10 @@ selectionSignalLabController = createSelectionSignalLabController({
   },
   notify,
   elements: {
+    status: document.querySelector("#selection-signal-state"),
+    reload: document.querySelector("#selection-signal-reload"),
+    backup: document.querySelector("#selection-signal-backup"),
+    warning: document.querySelector("#selection-signal-warning"),
     mode: elements.selectionSignalMode,
     add: elements.selectionSignalAdd,
     export: elements.selectionSignalExport,
