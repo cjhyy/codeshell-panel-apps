@@ -567,8 +567,8 @@ function host(directory) {
         return { cancelled: true };
       }
       if (method === "resources.get") {
-        assert.deepEqual(Object.keys(params), ["assetId"]);
-        return { asset: resources.get(params.assetId)?.asset };
+        assert.deepEqual(Object.keys(params), ["id"]);
+        return { asset: resources.get(params.id)?.asset };
       }
       if (method === "resources.materialize") {
         assert.equal(params.directoryHandle, handle);
