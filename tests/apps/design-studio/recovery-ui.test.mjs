@@ -96,7 +96,7 @@ async function fixture(t) {
       if (method === "workspace.readText") {
         const content = files.get(`${scope}:${params.path}`);
         if (content === undefined) throw Error("file missing");
-        return { content, modifiedAt: 1, revision: hash(content) };
+        return deliver(scope, method, { content, modifiedAt: 1, revision: hash(content) });
       }
       if (method === "workspace.writeText") {
         const path = `${scope}:${params.path}`;
@@ -104,6 +104,7 @@ async function fixture(t) {
         files.set(path, params.content);
         return deliver(scope, method, { modifiedAt: 1, revision: hash(params.content) });
       }
+      if (method === "agent.submitPrompt") return { accepted: true };
       throw Error(`Unsupported ${method}`);
     });
     await page.addInitScript(({ cwd, scope, sessionId, deferContext }) => {
@@ -717,3 +718,84 @@ for (const stage of ["page", "image", "font", "same-project-document"]) {
       assert.equal(f.calls.filter(call => call.scope === scope && call.method === "storage.compareAndSet").length, writesBefore);
   });
 }
+
+
+test("a PRD read cannot save or submit a replacement design in the same project", async t => {
+  const f = await fixture(t), page = await f.page();
+  f.files.set("/project/A:docs/PRD.md", "# Previous design\nBuild a dashboard for the original project design.");
+  await page.locator("#open-delivery").click();
+  const hold = f.pauseResponse("/project/A", "workspace.readText");
+  await page.locator("#design-from-prd").click();
+  await hold.entered;
+  await page.locator("#open-files").click();
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#new-document").click();
+  hold.release();
+  await page.waitForFunction(() => !document.querySelector("#design-from-prd").disabled);
+  assert.equal(f.calls.some(call => call.method === "workspace.writeText"), false);
+  assert.equal(f.calls.some(call => call.method === "agent.submitPrompt"), false);
+  const metadata = await page.evaluate(() => window.tools.get_design_metadata());
+  assert.equal(metadata.name, "Untitled");
+  assert.equal(metadata.dirty, true);
+});
+
+
+for (const action of ["svg", "agent", "frontend", "comparison", "audit"]) {
+  test(`late ${action} delivery cannot continue against a replacement design`, { timeout: 10000 }, async t => {
+    const f = await fixture(t), page = await f.page();
+    f.files.set("/project/A:designs/result.html", "previous output bytes");
+    f.files.set("/project/A:designs/implementation.html", '<html><head><link rel="stylesheet" href="style.css"></head><body><p>Old implementation</p></body></html>');
+    f.files.set("/project/A:designs/style.css", "p { color: red; }");
+    const method = ["svg", "agent", "audit"].includes(action) ? "workspace.writeText" : "workspace.readText";
+    const hold = f.pauseResponse("/project/A", method);
+    if (action === "svg") await page.locator("#export-svg").click();
+    else if (action === "audit") {
+      await page.locator("#run-audit").click();
+      await page.locator("#save-audit-report").click();
+    }
+    else if (action === "agent") {
+      await page.locator("#open-ai").click();
+      await page.locator("#ai-request").fill("Update the original design");
+      await page.locator("#submit-ai").click();
+    } else await page.evaluate(async action => {
+      const metadata = await window.tools.get_design_metadata();
+      window.pendingDelivery = (action === "frontend"
+        ? window.tools.generate_frontend({ path: "designs/result.html", expected_state_revision: metadata.stateRevision })
+        : window.tools.compare_frontend({ path: "designs/implementation.html", expected_state_revision: metadata.stateRevision })
+      ).then(value => ({ value }), error => ({ error: error.message }));
+    }, action);
+    await hold.entered;
+    if (["agent", "audit"].includes(action)) await page.keyboard.press("Escape");
+    await page.locator("#open-files").click();
+    page.once("dialog", dialog => dialog.accept());
+    await page.locator("#new-document").click();
+    const writesBefore = f.calls.filter(call => call.method === "workspace.writeText").length;
+    hold.release();
+    if (["frontend", "comparison"].includes(action))
+      assert.match((await page.evaluate(() => window.pendingDelivery)).error, /设计文件.*切换/);
+    else await page.waitForFunction(action => !document.querySelector(action === "svg" ? "#export-svg" : action === "audit" ? "#save-audit-report" : "#submit-ai").disabled, action);
+    assert.equal(f.calls.filter(call => call.method === "workspace.writeText").length, writesBefore);
+    assert.equal(f.calls.some(call => call.method === "agent.submitPrompt"), false);
+    assert.equal(f.calls.some(call => call.method === "workspace.readText" && call.path === "designs/style.css"), false);
+    assert.equal(f.files.get("/project/A:designs/result.html"), "previous output bytes");
+    const metadata = await page.evaluate(() => window.tools.get_design_metadata());
+    assert.equal(metadata.name, "Untitled");
+    assert.equal(metadata.dirty, true);
+  });
+}
+
+
+test("unchanged designs still save, submit their PRD and export SVG", { timeout: 10000 }, async t => {
+  const f = await fixture(t), page = await f.page();
+  f.files.set("/project/A:docs/PRD.md", "# Original requirements\nBuild a project dashboard.");
+  await page.locator("#open-delivery").click();
+  await page.locator("#design-from-prd").click();
+  await page.locator("#product-brief-status").filter({ hasText: "已交给 Agent" }).waitFor();
+  const submission = f.calls.find(call => call.method === "agent.submitPrompt");
+  assert.equal(submission.scope, "/project/A");
+  assert.match(submission.prompt, /designs\/design.codesign.json/);
+  await page.locator("#export-svg").click();
+  await page.waitForFunction(() => !document.querySelector("#export-svg").disabled);
+  assert.match(f.files.get("/project/A:designs/design.svg"), /<svg/);
+  assert.equal((await page.evaluate(() => window.tools.get_design_metadata())).dirty, false);
+});
