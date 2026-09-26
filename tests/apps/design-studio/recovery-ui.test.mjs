@@ -573,3 +573,69 @@ for (const action of ["resource", "html", "rollback"]) {
     assert.equal(f.calls.some(call => call.scope === "cloud-B" && call.method === "workspace.writeText"), false);
   });
 }
+
+
+for (const indexed of [false, true]) {
+  test(`editing during a ${indexed ? "page-indexed" : "single-file"} save retains dirty state and recovers newer pages`, async t => {
+    const f = await fixture(t), initialPath = "designs/concurrent.codesign.json";
+    const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Concurrent save", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: [{ id: "page-1", name: "One", children: [] }] });
+    if (indexed) {
+      const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+      f.files.set(`/project/A:${initialPath}`, plan.primarySource);
+      for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
+    } else f.files.set(`/project/A:${initialPath}`, serializeDesignDocument(document));
+    const page = await f.page({ initialPath });
+    await page.locator("#add-page").click();
+    const hold = f.pauseResponse("/project/A", "workspace.writeText");
+    await page.locator("#save").click();
+    await hold.entered;
+    await page.locator("#add-page").click();
+    hold.release();
+    await page.waitForFunction(() => !document.querySelector("#save").disabled);
+    assert.equal(await page.locator("#active-page option").count(), 3);
+    assert.match(await page.locator("#save-state").textContent(), /有修改/);
+    const deadline = Date.now() + 5000;
+    while (![...f.records.values()].some(value => value?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) && value?.record?.operations?.some(op => op.type === "add-page"))) {
+      assert.ok(Date.now() < deadline, "newer edits need a recovery journal");
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const reopened = await f.page({ initialPath });
+    assert.equal(await reopened.locator("#active-page option").count(), 3);
+    await reopened.locator("#save").click();
+    await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
+    const final = await f.page({ initialPath });
+    assert.equal(await final.locator("#active-page option").count(), 3);
+  });
+}
+
+
+test("a page loaded and renamed during an indexed save survives recovery and the next save", async t => {
+  const f = await fixture(t), initialPath = "designs/lazy.codesign.json";
+  const document = normalizeDesignDocument({ format: "codeshell.design", version: 3, name: "Lazy save", canvas: { width: 800, height: 600, background: "#ffffff" }, tokens: { colors: [] }, resources: [], activePageId: "page-1", pages: Array.from({ length: 12 }, (_, i) => ({ id: `page-${i+1}`, name: `Page ${i+1}`, children: [] })) });
+  const plan = await createDesignIndexPersistencePlan({ document, sha256: async value => createHash("sha256").update(value).digest("hex") });
+  f.files.set(`/project/A:${initialPath}`, plan.primarySource);
+  for (const part of plan.parts) f.files.set(`/project/A:${part.path}`, part.content);
+  const page = await f.page({ initialPath });
+  const hold = f.pauseResponse("/project/A", "workspace.writeText");
+  await page.locator("#save").click();
+  await hold.entered;
+  await page.locator("#manage-pages").click();
+  const name = page.getByRole("textbox", { name: "Page 12 页面名称", exact: true });
+  await name.fill("Changed while saving");
+  await name.press("Enter");
+  await page.getByRole("textbox", { name: "Changed while saving 页面名称", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  hold.release();
+  await page.waitForFunction(() => !document.querySelector("#save").disabled);
+  assert.match(await page.locator("#save-state").textContent(), /有修改/);
+  const deadline = Date.now()+5000;
+  while (![...f.records.values()].some(v => v?.baseRevision === hash(f.files.get(`/project/A:${initialPath}`)) && v?.record?.operations?.some(op => op.type === "rename-page"))) {
+    assert.ok(Date.now()<deadline); await new Promise(resolve => setTimeout(resolve,20));
+  }
+  const reopened = await f.page({ initialPath });
+  assert.equal(await reopened.locator('#active-page option[value="page-12"]').textContent(), "Changed while saving");
+  await reopened.locator("#save").click();
+  await reopened.locator("#save-state").filter({ hasText: "已保存" }).waitFor();
+  const final = await f.page({ initialPath });
+  assert.equal(await final.locator('#active-page option[value="page-12"]').textContent(), "Changed while saving");
+});
