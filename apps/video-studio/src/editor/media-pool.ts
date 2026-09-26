@@ -41,6 +41,7 @@ interface Instance {
   element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement;
   /** Image assets are the first static frame, even when their bytes contain an animation. */
   bitmap?: ImageBitmap;
+  videoFrame?: VideoFrame;
   preparedSource?: number;
 }
 interface Request {
@@ -170,43 +171,89 @@ function seekVideo(
   signal: AbortSignal,
   timeoutMs: number,
   assetId: string,
-): Promise<void> {
+): Promise<VideoFrame> {
+  // Media clocks have microsecond precision. Rounding a rational frame boundary
+  // down can select the preceding picture forever (for example 26/30 seconds).
+  // Choose the first representable instant at/after the requested source tick.
+  const seekTime = Math.ceil(seconds * 1_000_000) / 1_000_000;
   return new Promise((resolve, reject) => {
     let settled = false,
       sought = false;
-    const finish = (error?: unknown) => {
-      if (settled) return;
+    let poll: ReturnType<typeof setTimeout> | undefined;
+    let callback: number | undefined;
+    let presentedTime: number | undefined;
+    let decodedTiming: { timestamp: number; duration: number | null } | undefined;
+    const finish = (error?: unknown, frame?: VideoFrame) => {
+      if (settled) {
+        frame?.close();
+        return;
+      }
       settled = true;
       clearTimeout(timer);
+      clearTimeout(poll);
+      if (callback !== undefined) video.cancelVideoFrameCallback(callback);
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("loadeddata", inspect);
       video.removeEventListener("canplay", inspect);
       video.removeEventListener("error", failed);
       signal.removeEventListener("abort", cancel);
-      error ? reject(error) : resolve();
+      error ? reject(error) : resolve(frame!);
     };
     const inspect = () => {
+      clearTimeout(poll);
+      if (settled) return;
       if (
         sought &&
         videoReady(video) &&
         Math.abs(video.currentTime - seconds) < 0.000_01
-      )
-        finish();
+      ) {
+        let frame: VideoFrame;
+        try {
+          frame = new VideoFrame(video);
+        } catch (cause) {
+          // HAVE_CURRENT_DATA may precede an accessible frame object in Chromium.
+          // Only its transient no-frame state is retried, under the same deadline.
+          if (cause instanceof DOMException && cause.name === "InvalidStateError") {
+            poll = setTimeout(inspect, 16);
+            return;
+          }
+          finish(new MediaPoolError("decode", `无法读取视频帧：${assetId}`, { cause }));
+          return;
+        }
+        // The media clock can reach the seek target before the drawable surface.
+        // Validate the decoded frame's own interval, then retain that exact frame
+        // rather than drawing the mutable video element later. Use the browser's
+        // microsecond media clock: requested rational frame boundaries may truncate.
+        decodedTiming = { timestamp: frame.timestamp, duration: frame.duration };
+        const time = Math.floor(video.currentTime * 1_000_000 + 0.000_1);
+        if (
+          frame.timestamp <= time + 1 &&
+          ((frame.duration !== null &&
+            frame.duration > 0 &&
+            time < frame.timestamp + frame.duration) ||
+            (presentedTime !== undefined && Math.abs(presentedTime - frame.timestamp) <= 1))
+        ) {
+          finish(undefined, frame);
+          return;
+        }
+        frame.close();
+      }
+      // Paused/offscreen videos need not present a new frame, so presentation
+      // callbacks must not be the only wake-up mechanism. This poll shares the
+      // existing deadline and is cancelled with the request.
+      poll = setTimeout(inspect, 16);
     };
     const onSeeked = () => {
-      // The seek algorithm completes decoding before dispatching seeked. Combined
-      // with current data at the requested time, this is sufficient for drawImage.
-      // requestVideoFrameCallback instead observes *presentation*: a paused or
-      // offscreen decoder (including repeated seeks within one frame) may never
-      // present another frame, and would otherwise time out despite decoded data.
-      // https://html.spec.whatwg.org/multipage/media.html#seeking
       sought = true;
       inspect();
     };
     const failed = () => finish(new MediaPoolError("decode", `视频寻帧失败：${assetId}`));
     const cancel = () => finish(aborted());
     const timer = setTimeout(
-      () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId}`)),
+      () => finish(new MediaPoolError("timeout", `视频寻帧或解码超时：${assetId} ${JSON.stringify({
+        target: seconds, current: video.currentTime, sought, seeking: video.seeking,
+        readyState: video.readyState, decodedTiming, presentedTime,
+      })}`)),
       timeoutMs,
     );
     video.addEventListener("seeked", onSeeked);
@@ -219,9 +266,18 @@ function seekVideo(
       return;
     }
     try {
-      // Always await this seek's completion, including zero. A changed media
-      // clock or metadata alone must never authorize a stale/blank surface.
-      video.currentTime = seconds;
+      // Some containers round durations (WebM) or omit them. A presentation
+      // receipt for this seek can also confirm the frozen frame, but is not
+      // required when the frame's own interval already covers the target.
+      if (typeof video.requestVideoFrameCallback === "function") {
+        callback = video.requestVideoFrameCallback((_now, metadata) => {
+          callback = undefined;
+          if (videoReady(video) && Math.abs(video.currentTime - seconds) < 0.000_01)
+            presentedTime = metadata.mediaTime * 1_000_000;
+          inspect();
+        });
+      }
+      video.currentTime = seekTime;
     } catch (cause) {
       finish(new MediaPoolError("decode", `无法定位视频素材：${assetId}`, { cause }));
     }
@@ -231,7 +287,7 @@ function seekVideo(
 /**
  * Frozen resource URLs are shared by asset, but every clip instance has its own
  * paused decoder. Consume a prepared map before starting another preparation:
- * its video surfaces may be sought and its image bitmaps released by the next request.
+ * its frozen video frames and image bitmaps may be released by the next request.
  * Reset when an existing asset ID is rebound to different resource bytes.
  */
 export class EditorMediaPool {
@@ -255,6 +311,7 @@ export class EditorMediaPool {
     if (!instance) return;
     this.instances.delete(instanceId);
     instance.bitmap?.close();
+    instance.videoFrame?.close();
     if (instance.element instanceof HTMLVideoElement) instance.element.pause();
     instance.element.removeAttribute("src");
     if (instance.element instanceof HTMLVideoElement) instance.element.load();
@@ -439,12 +496,19 @@ export class EditorMediaPool {
         instance.preparedSource !== layer.sourceTime ||
         !videoReady(element) ||
         Math.abs(element.currentTime - seconds) >= 0.000_01
-      )
-        await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+      ) {
+        const decoded = await seekVideo(element, seconds, signal, this.timeoutMs, layer.assetId);
+        if (signal.aborted || request.generation !== this.generation) {
+          decoded.close();
+          throw aborted();
+        }
+        instance.videoFrame?.close();
+        instance.videoFrame = decoded;
+      }
       assertActive(signal);
       instance.preparedSource = layer.sourceTime;
     }
-    return instance.bitmap ?? element;
+    return instance.videoFrame ?? instance.bitmap ?? element;
   }
 
   async prepare(
