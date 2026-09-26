@@ -212,7 +212,7 @@ async function installMockHost(page) {
         window.__events["media.job.changed"]?.(structuredClone(job));
       };
       window.codeshellPanel = {
-        getContext: async () => ({ cwd: "/isolated/capabilities-ui", theme: "dark" }),
+        getContext: async () => ({ cwd: "/isolated/capabilities-ui", theme: "dark", availableMethods: ["media.export"] }),
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
           return () => {};
@@ -223,6 +223,7 @@ async function installMockHost(page) {
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (method === "media.export") return { saved: true, name: "试听.wav" };
           if (method === "media.status")
             return {
               persistent: true,

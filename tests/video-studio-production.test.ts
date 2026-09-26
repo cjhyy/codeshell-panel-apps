@@ -17,6 +17,7 @@ import {
   TRANSCRIPTION_SETUP_MESSAGE,
   transcriptionSetupMessage,
 } from "../apps/video-studio/src/production.ts";
+import { renderProductionJobs } from "../apps/video-studio/src/production-views.ts";
 import { AutomaticProducer } from "../apps/video-studio/src/automatic.ts";
 import {
   narrationFingerprint,
@@ -25,6 +26,61 @@ import type { PanelBridge, PanelTask } from "../apps/video-studio/src/host.ts";
 
 const mediaId = `asset-${"a".repeat(64)}`;
 const controllers = new Set<ProductionController>();
+test("production results use cloud preview and do not advertise desktop delivery", async () => {
+  const host = new FakeHost();
+  host.getContext = async () => ({ availableMethods: ["resources.open"] });
+  host.handlers.set("resources.open", () => ({ opened: true }));
+  const { controller } = await fixture(host);
+  await controller.exportAsset(mediaId);
+  assert.equal(host.calls.at(-1)?.method, "resources.open");
+  assert.deepEqual(host.calls.at(-1)?.params, { assetId: mediaId });
+  await assert.rejects(controller.revealAsset(mediaId), /目录/);
+  const markup = renderProductionJobs({
+    status: controller.status,
+    jobs: [host.add("tts", "succeeded", { asset: { id: mediaId } })],
+    auto: null,
+    error: "",
+    preparations: new Map(),
+    delivery: controller.delivery,
+  });
+  assert.match(markup, /预览与保存/);
+  assert.doesNotMatch(markup, /data-job-action="play"|保存音频/);
+  assert.ok(!host.calls.some(({ method }) => ["media.export", "media.reveal"].includes(method)));
+});
+
+test("production delivery prefers native desktop and rejects unavailable methods", async () => {
+  for (const methods of [["media.export", "media.reveal", "resources.open"], []]) {
+    const host = new FakeHost();
+    host.getContext = async () => ({ availableMethods: methods });
+    host.handlers.set("media.export", () => ({ saved: true }));
+    host.handlers.set("media.reveal", () => ({ revealed: true }));
+    const { controller } = await fixture(host);
+    if (methods.length) {
+      await controller.exportAsset(mediaId);
+      await controller.revealAsset(mediaId);
+      assert.deepEqual(
+        host.calls.slice(-2).map((call) => call.method),
+        ["media.export", "media.reveal"],
+      );
+    } else {
+      await assert.rejects(controller.exportAsset(mediaId), /保存/);
+      await assert.rejects(controller.revealAsset(mediaId), /目录/);
+      assert.ok(
+        !host.calls.some(({ method }) =>
+          ["media.export", "media.reveal", "resources.open"].includes(method),
+        ),
+      );
+    }
+  }
+});
+test("failed delivery discovery cannot leave production partially enabled", async () => {
+  const host = new FakeHost();
+  host.getContext = async () => { throw new Error("project permission unavailable"); };
+  const { controller } = await fixture(host);
+  assert.equal(controller.enabled, false);
+  assert.match(controller.error, /project permission unavailable/);
+  assert.ok(!host.calls.some(({ method }) => method === "media.document.set"));
+});
 afterEach(() => {
   for (const controller of controllers) controller.dispose();
   controllers.clear();

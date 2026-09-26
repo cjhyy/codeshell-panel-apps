@@ -251,7 +251,7 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         window.__events["media.job.changed"]?.(structuredClone(task));
       };
       window.codeshellPanel = {
-        getContext: async () => ({ cwd: "/isolated/audio8-ui", theme: "dark" }),
+        getContext: async () => ({ cwd: "/isolated/audio8-ui", theme: "dark", availableMethods: ["media.export"] }),
         registerTool(name, fn) {
           window.__panelTools[name] = fn;
           return () => {};
@@ -262,6 +262,7 @@ async function pageWithHost({ width = 1440, installed = false } = {}) {
         },
         async call(method, args = {}) {
           window.__calls.push({ method, args: structuredClone(args) });
+          if (method === "media.export") return { saved: true, name: "试听.wav" };
           if (method === "media.status")
             return {
               persistent: true,
