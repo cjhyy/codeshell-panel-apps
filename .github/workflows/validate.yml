@@ -25,6 +25,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y poppler-utils fonts-noto-cjk
+      # Ubuntu restricts user namespaces for downloaded browser builds. Allow
+      # only this exact executable in the disposable runner; retain Chromium's
+      # sandbox and the machine-wide AppArmor user namespace restriction.
+      # https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md
+      - name: Allow the test browser to create its sandbox
+        run: |
+          node --input-type=module <<'NODE'
+          import { chromium } from 'playwright';
+          import { writeFileSync } from 'node:fs';
+          writeFileSync('/tmp/codeshell-pdf-chromium.apparmor', `abi <abi/4.0>,\ninclude <tunables/global>\nprofile codeshell-pdf-ci "${chromium.executablePath()}" flags=(unconfined) {\n  userns,\n}\n`);
+          NODE
+          sudo apparmor_parser -r /tmp/codeshell-pdf-chromium.apparmor
       - name: Diagnose sandboxed Chromium startup
         run: |
           node --input-type=module <<'NODE'
