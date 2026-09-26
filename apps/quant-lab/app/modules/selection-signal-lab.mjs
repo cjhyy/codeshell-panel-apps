@@ -311,9 +311,24 @@ export function createSelectionSignalLabController({
       control.disabled =
         loading || (control.dataset.signalRemove !== undefined && signal.conditions.length === 1);
   }
+  function invalidInput() {
+    return Array.from(elements.conditions.querySelectorAll("input")).some(
+      (control) =>
+        control.dataset.signalValue !== undefined &&
+        (!String(control.value).trim() ||
+          !Number.isFinite(Number(control.value)) ||
+          Math.abs(Number(control.value)) > 1_000_000_000),
+    );
+  }
+  function requireValidInput() {
+    if (!invalidInput()) return true;
+    status("请填写有效阈值；当前输入未生效、未保存。");
+    return false;
+  }
   function save() {
     dirty = true;
     const version = ++editVersion;
+    if (!requireValidInput()) return;
     if (!loaded) {
       status("当前条件仅保留在页面，未保存。请先下载草稿，再读取最新条件核对。");
       return;
@@ -446,6 +461,12 @@ export function createSelectionSignalLabController({
     const snapshot = getSnapshot();
     latestEvaluation = null;
     elements.results.replaceChildren();
+    if (invalidInput()) {
+      elements.export.disabled = true;
+      elements.count.textContent = "条件待修正";
+      elements.summary.textContent = "请修正阈值后再筛选；当前输入未保存。";
+      return;
+    }
     if (!snapshot) {
       elements.export.disabled = true;
       elements.count.textContent = "等待选股";
@@ -517,6 +538,7 @@ export function createSelectionSignalLabController({
       dirty = true;
       editVersion++;
       status(error.message);
+      renderResults();
       notify(error instanceof Error ? error.message : "筛选条件无效", "error");
     }
   }
@@ -528,7 +550,7 @@ export function createSelectionSignalLabController({
     renderResults();
   });
   elements.add.addEventListener("click", () => {
-    if (loading) return;
+    if (loading || !requireValidInput()) return;
     if (signal.conditions.length >= MAX_CONDITIONS) return;
     signal = normalizeSelectionSignal({
       ...signal,
@@ -540,8 +562,8 @@ export function createSelectionSignalLabController({
   elements.reset.addEventListener("click", () => {
     if (loading) return;
     signal = normalizeSelectionSignal(DEFAULT_SIGNAL);
-    save();
     render();
+    save();
     notify("已载入稳健观察模板；保存状态见下方。");
   });
   elements.export.addEventListener("click", async () => {
@@ -583,7 +605,7 @@ export function createSelectionSignalLabController({
       updateCondition(Number(threshold.dataset.signalValue), { value: threshold.value });
   });
   elements.conditions.addEventListener("click", (event) => {
-    if (loading) return;
+    if (loading || !requireValidInput()) return;
     const button = event.target.closest("[data-signal-remove]");
     if (!button || signal.conditions.length === 1) return;
     signal = normalizeSelectionSignal({

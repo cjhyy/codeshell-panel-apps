@@ -130,6 +130,19 @@ test("signal UI preserves another device, downloads conflicting/raw drafts, expl
     await b.locator('[data-signal-value="0"]').fill("");
     await b.locator('[data-signal-value="0"]').press("Tab");
     await state(b, "有效阈值");
+    await b.selectOption("#selection-signal-mode", "or");
+    await b.waitForFunction(() =>
+      /有效阈值|已保存/.test(document.querySelector("#selection-signal-state").textContent),
+    );
+    assert.equal(
+      records.get("signal-A").mode,
+      "and",
+      "Changing another control cannot save while a threshold is blank",
+    );
+    assert.match(await b.locator("#selection-signal-state").textContent(), /有效阈值/);
+    await b.locator("#selection-signal-add").click();
+    assert.equal(await b.locator("[data-signal-value]").count(), 3);
+    assert.equal(await b.locator('[data-signal-value="0"]').inputValue(), "");
     await b.evaluate(() => window.switchProject());
     assert.equal(records.has("signal-B"), false);
     const switched = await backup(b);
