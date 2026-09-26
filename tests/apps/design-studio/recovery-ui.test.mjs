@@ -15,6 +15,12 @@ async function fixture(t) {
     calls = [],
     contexts = [];
   let failedRead = false, seededRecovery;
+  const pauses = new Map();
+  const deliver = async (scope, method, value) => {
+    const key = `${scope}:${method}`, pause = pauses.get(key);
+    if (pause) { pauses.delete(key); pause.enter(); await pause.gate; }
+    return value;
+  };
   const server = createServer(async (request, response) => {
     const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
     if (!path.startsWith(root + sep) && path !== root) return response.writeHead(403).end();
@@ -45,7 +51,7 @@ async function fixture(t) {
     await new Promise((resolve) => server.close(resolve));
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  async function page() {
+  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false } = {}) {
     const context = await browser.newContext({ acceptDownloads: true });
     contexts.push(context);
     const page = await context.newPage();
@@ -63,14 +69,14 @@ async function fixture(t) {
       if (method === "storage.getSnapshot") {
         if (failedRead) throw Error("无法读取恢复记录");
         if (seededRecovery !== undefined && !records.has(key)) records.set(key, structuredClone(seededRecovery));
-        return snapshot();
+        return deliver(scope, method, snapshot());
       }
       if (method === "storage.compareAndSet") {
         if (params.expectedRevision !== snapshot().revision)
           return { updated: false, snapshot: snapshot() };
         if (params.remove) records.delete(key);
         else records.set(key, structuredClone(params.value));
-        return { updated: true, snapshot: snapshot() };
+        return deliver(scope, method, { updated: true, snapshot: snapshot() });
       }
       if (method === "storage.get") return records.get(key) ?? null;
       if (method === "storage.set") {
@@ -84,9 +90,11 @@ async function fixture(t) {
         return { modifiedAt: Date.now(), revision: hash(params.content) };
       throw Error(`Unsupported ${method}`);
     });
-    await page.addInitScript(() => {
+    await page.addInitScript(({ cwd, scope, sessionId, deferContext }) => {
+      let hostScope = scope;
       const context = {
-        cwd: "/project/A",
+        cwd,
+        sessionId,
         trusted: true,
         visible: true,
         busy: false,
@@ -95,8 +103,12 @@ async function fixture(t) {
       let listener;
       window.tools = {};
       window.codeshellPanel = {
-        getContext: async () => context,
-        call: (method, params) => window.hostBridge(context.cwd, method, params),
+        getContext: async () => {
+          const captured = { ...context };
+          if (deferContext) await new Promise(resolve => { window.releaseInitialContext = resolve; });
+          return captured;
+        },
+        call: (method, params) => window.hostBridge(hostScope, method, params),
         on: (name, callback) => {
           if (name === "context.changed") listener = callback;
         },
@@ -104,13 +116,15 @@ async function fixture(t) {
           window.tools[name] = callback;
         },
       };
-      window.switchProject = (cwd) => {
+      window.switchProject = (cwd, scope = cwd, sessionId = scope) => {
+        hostScope = scope;
         context.cwd = cwd;
-        listener({ ...context });
+        context.sessionId = sessionId;
+        listener?.({ ...context });
       };
-    });
+    }, { cwd, scope, sessionId, deferContext });
     await page.goto(`${origin}/index.html`);
-    await page.waitForFunction(() =>
+    if (!deferContext) await page.waitForFunction(() =>
       document.querySelector("#repo-link-state")?.textContent.includes("新设计"),
     );
     return page;
@@ -119,6 +133,14 @@ async function fixture(t) {
     page,
     records,
     calls,
+    pauseResponse(scope, method) {
+      let enter, release;
+      const entered = new Promise(resolve => { enter = resolve; });
+      const gate = new Promise(resolve => { release = resolve; });
+      pauses.set(`${scope}:${method}`, { enter, gate });
+      t.after(() => release());
+      return { entered, release };
+    },
     seedRecovery: value => { seededRecovery = value; },
     failRead: () => {
       failedRead = true;
@@ -201,4 +223,85 @@ test("malformed recovery remains stored and is included in an explicit backup", 
   assert.deepEqual(backup.storedRecovery.value, damaged);
   assert.equal(f.calls.some(c => c.method === "storage.compareAndSet" || c.method === "storage.delete"), false);
   assert.deepEqual([...f.records.values()], [damaged]);
+});
+
+
+test("same-path cloud projects cancel pending drafts and retain both project backups", async t => {
+  const f = await fixture(t);
+  const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  await page.locator("#add-page").click();
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
+  await new Promise(resolve => setTimeout(resolve, 650));
+  assert.equal(f.calls.some(c => c.scope === "cloud-B" && c.method === "storage.compareAndSet"), false);
+  await page.locator("#add-page").click();
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-C"));
+  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
+  assert.equal(backup.drafts.length, 3, "same cwd must not collapse separate cloud drafts");
+  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId).sort(), ["cloud-A", "cloud-B", "cloud-C"]);
+});
+
+
+test("a context event during initial read wins over the stale initial project", async t => {
+  const f = await fixture(t);
+  const page = await f.page({ cwd: "/workspace", scope: "cloud-A", deferContext: true });
+  await page.waitForFunction(() => typeof window.releaseInitialContext === "function");
+  await page.evaluate(() => {
+    window.switchProject("/workspace", "cloud-B");
+    window.releaseInitialContext();
+  });
+  await page.waitForFunction(() => document.querySelector("#repo-link-state")?.textContent.includes("新设计"));
+  await page.locator("#add-page").click();
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-C"));
+  await page.locator("#recovery-message").filter({ hasText: "切换前项目" }).waitFor();
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
+  assert.deepEqual(backup.drafts.map(d => d.sourceContext.sessionId).sort(), ["cloud-B", "cloud-C"]);
+});
+
+test("late recovery reads from a same-path old project cannot restore its canvas or request its baseline from the new project", async t => {
+  const f = await fixture(t);
+  f.seedRecovery({ format: "damaged" });
+  const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  await page.locator("#add-page").click();
+  const pending = page.waitForEvent("download");
+  await page.locator("#recovery-backup").click();
+  const backup = JSON.parse(await readFile(await (await pending).path(), "utf8"));
+  const key = [...f.records.keys()].find(k => k.startsWith("cloud-A:"));
+  f.records.set(key, backup.drafts[0]);
+  f.seedRecovery(undefined);
+  const hold = f.pauseResponse("cloud-A", "storage.getSnapshot");
+  page.once("dialog", dialog => dialog.accept());
+  await page.locator("#recovery-reload").click();
+  await hold.entered;
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await page.waitForFunction(() => document.querySelector("#repo-link-state")?.textContent.includes("新设计"));
+  const count = f.calls.length;
+  hold.release();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(f.calls.slice(count).some(c => c.method === "workspace.readText"), false);
+  assert.equal(await page.locator("#active-page option").count(), 1);
+});
+
+test("a saved old-project response cannot clear or overwrite the same-path new project", async t => {
+  const f = await fixture(t);
+  const page = await f.page({ cwd: "/workspace", scope: "cloud-A" });
+  const hold = f.pauseResponse("cloud-A", "storage.compareAndSet");
+  await page.locator("#add-page").click();
+  await hold.entered;
+  await page.evaluate(() => window.switchProject("/workspace", "cloud-B"));
+  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
+  hold.release();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(f.calls.some(c => c.scope === "cloud-B" && ["storage.compareAndSet", "storage.delete"].includes(c.method)), false);
+  await page.locator("#add-page").click();
+  const deadline = Date.now() + 5000;
+  while (![...f.records.keys()].some(k => k.startsWith("cloud-B:"))) {
+    assert.ok(Date.now() < deadline); await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal([...f.records.keys()].filter(k => k.includes("recovery")).length, 2);
 });
