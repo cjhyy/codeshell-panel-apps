@@ -346,6 +346,48 @@ test("shared frames become a verified NTSC MP4 with stereo audio and no intermed
   near(pixel(extracted.stdout, 64, 32), [255, 0, 0, 255], 8);
 });
 
+test("short exports drain the complete audible mix and retain exactly the produced frames", async () => {
+  for (const frames of [1, 30, 75]) {
+    const doc = document();
+    doc.assets = [];
+    doc.sequences[0].clips = [{
+      id: "title", label: "title", kind: "text", role: "title", trackId: "words",
+      start: 0, duration: frames * 8000, text: "Audio", words: [],
+      style: api.defaultTextStyle(), ...visual(),
+    }];
+    const workDir = await mkdtemp(join(temporary, "audio-drain-"));
+    const audioFile = join(workDir, "mix.wav");
+    const sampleCount = frames * 1600;
+    const tone = spawnSync("ffmpeg", [
+      "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+      "-af", `atrim=end_sample=${sampleCount}`, "-ac", "2", "-c:a", "pcm_f32le", audioFile,
+    ]);
+    assert.equal(tone.status, 0, tone.stderr.toString());
+    const result = await api.exportEditorSequence({
+      document: doc, sequenceId: "main", profile: profile(), mediaFiles: new Map(),
+      runtimeSource, workDir, audioFile, outputPath: join(workDir, "result.mp4"),
+      signal: new AbortController().signal,
+    });
+    const video = result.probe.streams.find((stream) => stream.codec_type === "video");
+    const audio = result.probe.streams.find((stream) => stream.codec_type === "audio");
+    assert.equal(Number(video.nb_frames), frames);
+    assert.ok(Math.abs(Number(audio.duration) - frames / 30) < 0.001);
+    const decoded = spawnSync("ffmpeg", [
+      "-v", "error", "-i", result.path, "-map", "0:a:0", "-f", "f32le",
+      "-ar", "48000", "-ac", "2", "pipe:1",
+    ]);
+    assert.equal(decoded.status, 0, decoded.stderr.toString());
+    assert.ok(decoded.stdout.length >= sampleCount * 8, "The entire mix must be decodable");
+    // AAC may pad the last packet. Inspect the end of the intended content,
+    // not padding, and require audible samples rather than just an audio header.
+    let energy = 0;
+    for (let i = sampleCount - 800; i < sampleCount; i++)
+      energy += decoded.stdout.readFloatLE(i * 8) ** 2;
+    assert.ok(Math.sqrt(energy / 800) > 0.03, "The final audio must not be lost or silent");
+    assert.deepEqual((await readdir(workDir)).sort(), ["mix.wav", "result.mp4"]);
+  }
+});
+
 test("keyword styles persist through real IndexedDB undo/reopen and interactive preview matches native frames and encoded video", async (t) => {
   const doc = document();
   doc.assets = [];
