@@ -477,8 +477,16 @@ test(
                   },
                   {
                     async onReady() {
-                      // Let scheduled gain values reach the audio rendering quantum.
-                      await new Promise((resolve) => setTimeout(resolve, 30));
+                      const beforeAudioTime = library.audio.currentTime;
+                      // A running AudioContext can still be waiting for its first
+                      // hardware quantum. Wall time alone does not prove that the
+                      // scheduled gain has been rendered; observe its own clock.
+                      const deadline = performance.now() + 1000;
+                      while (library.audio.currentTime <= beforeAudioTime) {
+                        if (performance.now() >= deadline)
+                          throw new Error(`Audio rendering clock did not advance: ${library.audio.state}`);
+                        await new Promise((resolve) => setTimeout(resolve, 5));
+                      }
                       const active = [...library.items].filter(([, item]) =>
                         item.element.hasAttribute("src"),
                       );
@@ -488,6 +496,11 @@ test(
                           time: item.element.currentTime,
                           gain: item.gain.gain.value,
                           connected: item.audioConnected,
+                          audioState: library.audio.state,
+                          audioTime: library.audio.currentTime,
+                          beforeAudioTime,
+                          paused: item.element.paused,
+                          readyState: item.element.readyState,
                         })),
                       );
                     },
