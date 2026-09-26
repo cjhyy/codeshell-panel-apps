@@ -126,6 +126,7 @@ function compactResumeDraft(draft) {
     resumeVersionId: boundedText(draft.resumeVersionId, 100),
     parentVersionId: boundedText(draft.parentVersionId, 100),
     markdown: String(draft.markdown || "").slice(0, 50_000),
+    ...(draft.textOnly === true ? { textOnly: true } : {}),
     updatedAt: boundedText(draft.updatedAt, 80),
   };
 }

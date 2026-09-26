@@ -1,3 +1,5 @@
+import { parseDraftBackup, MAX_DRAFT_BACKUP_BYTES } from "./draft-backup.mjs";
+import { createDraftStorage, LEGACY_DRAFT_KEY } from "./draft-storage.mjs";
 import {
   assessJobOpportunity,
   JD_COMPLETENESS_LABELS,
@@ -141,7 +143,7 @@ import {
 import { buildJobSearchContext } from "./job-search-context-model.mjs";
 
 const STORAGE_KEY = "job-hunt-state-v1";
-const CRITICAL_DRAFT_STORAGE_KEY = "job-hunt-critical-drafts-v1";
+const CRITICAL_DRAFT_STORAGE_KEY = LEGACY_DRAFT_KEY;
 const PREVIEW_PREFIX = "codeshell-job-hunt-hq:";
 const PROJECT_STATE_PATH = "job-hunt-panel.json";
 const DISCOVERY_AUTOMATION_MARKER = "job-hunt-hq:scheduled-discovery:v1";
@@ -1454,6 +1456,36 @@ const projectContext = {
   snapshotSemanticKey: "",
   snapshotStorageMigrationPending: false,
 };
+const initialProjectContext = structuredClone(projectContext);
+let projectEpoch = 0;
+let projectReady = false;
+let draftImportPending = null;
+let draftImportBusy = false;
+let draftStorage = null;
+const detachedDrafts = [];
+function currentProject() {
+  const epoch = projectEpoch;
+  const check = () => {
+    if (epoch !== projectEpoch)
+      throw Object.assign(new Error("项目已切换，旧项目操作已停止"), { code: "PROJECT_CHANGED" });
+  };
+  return {
+    check,
+    active: () => epoch === projectEpoch,
+    async call(method, params) {
+      check();
+      const result = await hostCall(method, params);
+      check();
+      return result;
+    },
+  };
+}
+function draftStatus(message) {
+  document.querySelector("#draft-storage-status").textContent = message;
+}
+function secureDraftId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, "0")).join("");
+}
 let resumeMode = "preview";
 let resumeManualEditRevisionStarted = false;
 let resumeVersionRestorePending = false;
@@ -1606,6 +1638,7 @@ function normalizeResumeEditorDraft(value = {}) {
     parentVersionId: cleanText(value.parentVersionId, 100),
     markdown: String(value.markdown || "").slice(0, 50_000),
     updatedAt: cleanText(value.updatedAt, 80),
+    ...(value.textOnly === true ? { textOnly: true } : {}),
   };
 }
 
@@ -2056,21 +2089,27 @@ function mockHostCall(method, params = {}) {
   return Promise.resolve(null);
 }
 
-function hostCall(method, params) {
-  if (window.codeshellPanel?.call) return window.codeshellPanel.call(method, params);
-  return mockHostCall(method, params);
+async function hostCall(method, params) {
+  const epoch = projectEpoch;
+  const result = await (window.codeshellPanel?.call
+    ? window.codeshellPanel.call(method, params)
+    : mockHostCall(method, params));
+  if (epoch !== projectEpoch)
+    throw Object.assign(new Error("项目已切换，旧项目操作已停止"), { code: "PROJECT_CHANGED" });
+  return result;
 }
 
 function panelHostRateLimited(error) {
   return /rate limit|too many requests|\b429\b/i.test(String(error?.message || error || ""));
 }
 
-async function hostCallWithRateLimitRetry(method, params, attempts = 6) {
+async function hostCallWithRateLimitRetry(method, params, attempts = 6, scope = currentProject()) {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await hostCall(method, params);
+      return await scope.call(method, params);
     } catch (error) {
+      scope.check();
       lastError = error;
       if (!panelHostRateLimited(error) || attempt === attempts - 1) throw error;
       await new Promise((resolve) => setTimeout(resolve, Math.min(4_000, 700 * 2 ** attempt)));
@@ -3459,50 +3498,44 @@ function criticalDraftRecoverySnapshot(source = state) {
 
 function saveCriticalDraftRecovery(source = state) {
   try {
-    const recovery = criticalDraftRecoverySnapshot(source);
-    if (!recovery.interviewDraft.answer && !recovery.resumeDraft.markdown) {
-      localStorage.removeItem(CRITICAL_DRAFT_STORAGE_KEY);
-      return;
-    }
-    localStorage.setItem(CRITICAL_DRAFT_STORAGE_KEY, JSON.stringify(recovery));
-  } catch {
-    // Host storage remains the primary local cache if synchronous WebView storage is unavailable.
+    draftStorage?.retain(criticalDraftRecoverySnapshot(source));
+  } catch (error) {
+    draftStatus(`浏览器备份未保存：${error.message}。请下载草稿备份。`);
   }
 }
 
-function loadCriticalDraftRecovery(saved) {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(CRITICAL_DRAFT_STORAGE_KEY) || "null");
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return saved;
-    const recovery = criticalDraftRecoverySnapshot(parsed);
-    const source = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
-    const interviewDraft = normalizeInterviewAnswerDraft(source.interviewDraft);
-    const resumeDraft = normalizeResumeEditorDraft(source.resumeDraft);
-    const newest = (primary, fallback) =>
-      String(fallback.updatedAt || "") > String(primary.updatedAt || "") ? fallback : primary;
-    return {
-      ...source,
-      localStateVersion: 2,
-      interviewDraft: newest(interviewDraft, recovery.interviewDraft),
-      resumeDraft: newest(resumeDraft, recovery.resumeDraft),
-    };
-  } catch {
-    return saved;
-  }
+function loadCriticalDraftRecovery(saved, recovery) {
+  if (!recovery) return saved;
+  const source = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+  const drafts = criticalDraftRecoverySnapshot(recovery);
+  const newest = (primary, fallback) =>
+    String(fallback.updatedAt || "") > String(primary.updatedAt || "") ? fallback : primary;
+  return {
+    ...source,
+    localStateVersion: 2,
+    interviewDraft: newest(normalizeInterviewAnswerDraft(source.interviewDraft), drafts.interviewDraft),
+    resumeDraft: newest(normalizeResumeEditorDraft(source.resumeDraft), drafts.resumeDraft),
+  };
 }
 
 function persist({ quiet = true } = {}) {
+  if (draftImportBusy) return;
+  if (!projectReady || !draftStorage) return;
   clearTimeout(saveTimer);
   saveCriticalDraftRecovery();
+  const scope = currentProject();
+  const store = draftStorage;
+  const copy = compactPanelLocalState(state);
   saveTimer = setTimeout(async () => {
+    if (!scope.active()) return;
     try {
-      await hostCall("storage.set", {
-        key: STORAGE_KEY,
-        value: compactPanelLocalState(state),
-      });
+      await store.save(copy);
+      if (!scope.active()) return;
       elements.lastSaved.textContent = "刚刚保存";
       if (!quiet) notify("已保存到求职面板");
     } catch (error) {
+      if (!scope.active()) return;
+      draftStatus(error.message);
       notify(error instanceof Error ? error.message : "保存失败", "error");
     }
   }, 80);
@@ -3538,7 +3571,7 @@ function projectSnapshotPayload() {
   });
 }
 
-async function readProjectSnapshotShards(root) {
+async function readProjectSnapshotShards(root, scope = currentProject()) {
   const descriptors = projectSnapshotShardDescriptors(root);
   if (!descriptors.length) return root;
   const documents = new Map();
@@ -3548,17 +3581,17 @@ async function readProjectSnapshotShards(root) {
     }
     const shard = await hostCallWithRateLimitRetry("workspace.readText", {
       path: descriptor.path,
-    });
+    }, 6, scope);
     documents.set(descriptor.path, JSON.parse(shard.content));
   }
   return hydrateProjectSnapshotDocuments(root, documents);
 }
 
-async function writeProjectSnapshotShards(shards) {
+async function writeProjectSnapshotShards(shards, scope = currentProject()) {
   if (!shards.length) return;
   const generation = shards[0].payload.generation;
   const directory = `career-data/panel-shards/${generation}`;
-  const listing = await hostCall("workspace.list", { path: directory });
+  const listing = await scope.call("workspace.list", { path: directory });
   const modifiedByPath = new Map(
     (listing?.entries || [])
       .filter((entry) => entry.kind === "file")
@@ -3568,7 +3601,7 @@ async function writeProjectSnapshotShards(shards) {
     if (index > 0 && index % PROJECT_SHARD_HOST_CALL_BATCH === 0) {
       await new Promise((resolve) => setTimeout(resolve, PROJECT_SHARD_HOST_CALL_PAUSE_MS));
     }
-    await hostCall("workspace.writeText", {
+    await scope.call("workspace.writeText", {
       path: shard.path,
       content: shard.content,
       expectedModifiedAt: modifiedByPath.get(shard.path) ?? null,
@@ -3636,7 +3669,8 @@ function setProjectSnapshotSaveProgress(saving, retryAttempt = 0) {
   renderPanelInterviewStage();
 }
 
-async function writeProjectSnapshotNow() {
+async function writeProjectSnapshotNow(scope = currentProject()) {
+  if (!scope.active() || !projectReady) return false;
   if (projectContext.snapshotUnreadable) {
     projectContext.snapshotDirty = true;
     return false;
@@ -3647,11 +3681,12 @@ async function writeProjectSnapshotNow() {
   const waitForRetry = (attempt) =>
     new Promise((resolve) => setTimeout(resolve, Math.min(4_000, 700 * 2 ** attempt)));
   for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (!scope.active()) return false;
     let expectedModifiedAt = null;
     let expectedRevision;
     let existingRoot = null;
     try {
-      const existing = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+      const existing = await scope.call("workspace.readText", { path: PROJECT_STATE_PATH });
       if (projectSnapshotChangedExternally(existing)) {
         markProjectSnapshotConflict(existing);
         setProjectSnapshotSaveProgress(false);
@@ -3661,6 +3696,7 @@ async function writeProjectSnapshotNow() {
       expectedRevision = projectContext.snapshotRevision || existing.revision;
       existingRoot = JSON.parse(existing.content);
     } catch (error) {
+      if (!scope.active()) return false;
       if (isRateLimit(error)) {
         lastError = error;
         setProjectSnapshotSaveProgress(true, attempt + 1);
@@ -3702,8 +3738,9 @@ async function writeProjectSnapshotNow() {
       const prepared = prepareProjectSnapshotDocuments(nextPayload, emptyProjectState(), {
         generation: nextSnapshotShardGeneration(existingRoot?.artifactStorage?.generation),
       });
-      await writeProjectSnapshotShards(prepared.shards);
-      const result = await hostCall("workspace.writeText", {
+      await writeProjectSnapshotShards(prepared.shards, scope);
+      scope.check();
+      const result = await scope.call("workspace.writeText", {
         path: PROJECT_STATE_PATH,
         content: prepared.rootContent,
         expectedModifiedAt,
@@ -3724,6 +3761,7 @@ async function writeProjectSnapshotNow() {
       setProjectSnapshotSaveProgress(false);
       return true;
     } catch (error) {
+      if (!scope.active()) return false;
       lastError = error;
       if (isRateLimit(error) && attempt < 5) {
         setProjectSnapshotSaveProgress(true, attempt + 1);
@@ -3739,6 +3777,8 @@ async function writeProjectSnapshotNow() {
 }
 
 function writeProjectSnapshot() {
+  if (!projectReady) return Promise.resolve(false);
+  const scope = currentProject();
   clearTimeout(projectSnapshotTimer);
   projectSnapshotTimer = null;
   projectContext.snapshotDirty = true;
@@ -3749,21 +3789,23 @@ function writeProjectSnapshot() {
       let saved = true;
       while (projectSnapshotCommittedVersion < projectSnapshotRequestedVersion) {
         const savingThroughVersion = projectSnapshotRequestedVersion;
-        saved = await writeProjectSnapshotNow();
-        if (!saved) break;
+        saved = await writeProjectSnapshotNow(scope);
+        if (!scope.active() || !saved) break;
         projectSnapshotCommittedVersion = savingThroughVersion;
       }
       return saved;
     })().finally(() => {
-      projectSnapshotSaveInFlight = null;
+      if (scope.active()) projectSnapshotSaveInFlight = null;
     });
   }
   return projectSnapshotSaveInFlight.then(
-    (saved) => saved && projectSnapshotCommittedVersion >= requestedVersion,
+    (saved) => scope.active() && saved && projectSnapshotCommittedVersion >= requestedVersion,
   );
 }
 
 function scheduleProjectSnapshotSave(delay = 500) {
+  if (!projectReady) return;
+  const scope = currentProject();
   clearTimeout(projectSnapshotTimer);
   projectContext.snapshotDirty = true;
   projectContext.snapshotError = "";
@@ -3771,7 +3813,7 @@ function scheduleProjectSnapshotSave(delay = 500) {
   elements.projectSnapshotState.classList.add("error");
   elements.saveProjectSnapshot.hidden = false;
   projectSnapshotTimer = setTimeout(() => {
-    void writeProjectSnapshot().then(() => renderMaterials());
+    if (scope.active()) void writeProjectSnapshot().then(() => { if (scope.active()) renderMaterials(); });
   }, delay);
 }
 
@@ -3783,6 +3825,7 @@ function requireProjectSnapshot(saved) {
 }
 
 async function importScheduledDiscoveryRuns() {
+  const scope = currentProject();
   if (scheduledReceiptImportPending || !context.cwd || projectContext.snapshotUnreadable) {
     return;
   }
@@ -3793,7 +3836,7 @@ async function importScheduledDiscoveryRuns() {
   try {
     let listing;
     try {
-      listing = await hostCall("workspace.list", { path: "career-data/discovery/runs" });
+      listing = await scope.call("workspace.list", { path: "career-data/discovery/runs" });
     } catch {
       return;
     }
@@ -3813,7 +3856,7 @@ async function importScheduledDiscoveryRuns() {
 
     for (const path of paths) {
       try {
-        const file = await hostCall("workspace.readText", { path });
+        const file = await scope.call("workspace.readText", { path });
         const parsed = JSON.parse(file.content);
         if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.jobs)) {
           throw new Error("scheduled discovery receipt schema is invalid");
@@ -3857,7 +3900,7 @@ async function importScheduledDiscoveryRuns() {
           );
           if (!job) continue;
           job.jdPath = formalJdPath(job);
-          await upsertWorkspaceText(job.jdPath, `${formalJdMarkdown(job)}\n`);
+          await upsertWorkspaceText(job.jdPath, `${formalJdMarkdown(job)}\n`, scope);
         }
         state.jobs = routed.jobs.slice(0, 80);
         state.jobLeads = routed.leads.slice(0, 160);
@@ -3875,6 +3918,7 @@ async function importScheduledDiscoveryRuns() {
         state.discoveryRunReceipts = state.discoveryRunReceipts.slice(-100);
         importedFiles += 1;
       } catch (error) {
+        if (!scope.active()) return;
         state.discoveryRunReceipts.push({
           id: path,
           path,
@@ -3889,6 +3933,7 @@ async function importScheduledDiscoveryRuns() {
     persist();
     renderAll();
     await writeProjectSnapshot();
+    if (!scope.active()) return;
     if (importedFiles) {
       notify(
         `已导入 ${importedFiles} 次定时抓取：${formalCount} 个完整 JD，${leadCount} 条待补全线索`,
@@ -3896,7 +3941,7 @@ async function importScheduledDiscoveryRuns() {
       );
     }
   } finally {
-    scheduledReceiptImportPending = false;
+    if (scope.active()) scheduledReceiptImportPending = false;
   }
 }
 
@@ -3905,12 +3950,14 @@ async function syncProjectContext({
   localStateSource = state,
   allowLegacyMigration = false,
 } = {}) {
+  const scope = currentProject();
   const localState = compactPanelLocalState(localStateSource);
   try {
     const [info, listing] = await Promise.all([
-      hostCallWithRateLimitRetry("workspace.info", {}),
-      hostCallWithRateLimitRetry("workspace.list", { path: "." }),
+      hostCallWithRateLimitRetry("workspace.info", {}, 6, scope),
+      hostCallWithRateLimitRetry("workspace.list", { path: "." }, 6, scope),
     ]);
+    scope.check();
     const entries = listing?.entries ?? [];
     projectContext.name =
       info?.name || context.cwd?.split(/[\\/]/).filter(Boolean).at(-1) || "当前项目";
@@ -3920,9 +3967,10 @@ async function syncProjectContext({
     try {
       const snapshot = await hostCallWithRateLimitRetry("workspace.readText", {
         path: PROJECT_STATE_PATH,
-      });
+      }, 6, scope);
       const root = JSON.parse(snapshot.content);
-      const parsed = await readProjectSnapshotShards(root);
+      const parsed = await readProjectSnapshotShards(root, scope);
+      scope.check();
       if (parsed?.schemaVersion !== 1 && parsed?.schemaVersion !== 2) {
         throw new Error("项目快照 schemaVersion 不受支持");
       }
@@ -3950,6 +3998,7 @@ async function syncProjectContext({
         projectContext.snapshotDirty = true;
         persist();
         const recoverySaved = await writeProjectSnapshot();
+        scope.check();
         if (!recoverySaved) projectContext.snapshotDirty = true;
         notify(
           recoverySaved
@@ -3961,9 +4010,11 @@ async function syncProjectContext({
       if (allowLegacyMigration || projectSnapshotNeedsMigration) persist();
       if (projectSnapshotNeedsMigration || projectStorageNeedsMigration) {
         const migratedProject = await writeProjectSnapshot();
+        scope.check();
         if (!migratedProject) projectContext.snapshotDirty = true;
       }
     } catch (error) {
+      if (!scope.active()) return;
       const message = error instanceof Error ? error.message : String(error || "");
       const snapshotMissing = /ENOENT|no such file|file not found/i.test(message);
       projectContext.hasSnapshot = false;
@@ -3987,6 +4038,7 @@ async function syncProjectContext({
       ) {
         state = mergeState(localStateSource);
         const migrated = await writeProjectSnapshot();
+        scope.check();
         if (migrated) persist();
         else projectContext.snapshotDirty = true;
       } else if (window.codeshellPanel?.call && snapshotMissing) {
@@ -4003,6 +4055,7 @@ async function syncProjectContext({
       );
     }
   } catch (error) {
+    if (!scope.active()) return;
     if (!quiet) {
       notify(error instanceof Error ? error.message : "读取当前项目失败", "error");
     }
@@ -4010,7 +4063,9 @@ async function syncProjectContext({
 }
 
 async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
+  const scope = currentProject();
   if (
+    draftImportBusy ||
     projectSnapshotRevisionCheckInFlight ||
     projectSnapshotSaveInFlight ||
     !window.codeshellPanel?.call ||
@@ -4023,7 +4078,7 @@ async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
   }
   projectSnapshotRevisionCheckInFlight = true;
   try {
-    const snapshot = await hostCall("workspace.readText", { path: PROJECT_STATE_PATH });
+    const snapshot = await scope.call("workspace.readText", { path: PROJECT_STATE_PATH });
     if (!projectSnapshotChangedExternally(snapshot)) return;
     if (projectContext.snapshotDirty) {
       const wasAlreadyVisible = projectContext.snapshotConflict;
@@ -4037,8 +4092,9 @@ async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
       quiet: true,
       localStateSource: compactPanelLocalState(state),
     });
-    if (notifyOnReload) notify("检测到项目数据更新，面板已自动重新读取", "success");
+    if (scope.active() && notifyOnReload) notify("检测到项目数据更新，面板已自动重新读取", "success");
   } catch (error) {
+    if (!scope.active()) return;
     const message = error instanceof Error ? error.message : String(error || "");
     if (/ENOENT|no such file|file not found/i.test(message)) {
       const wasAlreadyVisible = projectContext.snapshotConflict;
@@ -4049,7 +4105,7 @@ async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
       if (!wasAlreadyVisible) notify("项目快照已在外部移除；当前修改仍保留", "error");
     }
   } finally {
-    projectSnapshotRevisionCheckInFlight = false;
+    if (scope.active()) projectSnapshotRevisionCheckInFlight = false;
   }
 }
 
@@ -11290,6 +11346,7 @@ function retainResumeEditorDraft() {
     resumeVersionId: resumeRecordId(state.resume),
     parentVersionId: state.resume.parentVersionId || "",
     markdown: state.resume.markdown,
+    ...(state.resumeDraft.textOnly === true ? { textOnly: true } : {}),
     updatedAt: state.resume.updatedAt || new Date().toISOString(),
   });
 }
@@ -11309,7 +11366,7 @@ function clearSyncedResumeEditorDraft(savedResume = state.resume) {
 
 function recoverResumeEditorDraft() {
   const draft = normalizeResumeEditorDraft(state.resumeDraft);
-  if (!draft.markdown || !state.resume.markdown) return { recovered: false, stale: false };
+  if (!draft.markdown || (!state.resume.markdown && !draft.textOnly)) return { recovered: false, stale: false };
   const currentId = resumeRecordId(state.resume);
   if (draft.resumeVersionId === currentId && draft.markdown === state.resume.markdown) {
     state.resumeDraft = normalizeResumeEditorDraft();
@@ -11323,7 +11380,7 @@ function recoverResumeEditorDraft() {
       revisionReason: state.resume.revisionReason || "恢复未同步的手动编辑",
       updatedAt: draft.updatedAt || new Date().toISOString(),
     };
-  } else if (draft.parentVersionId && draft.parentVersionId === currentId) {
+  } else if ((draft.parentVersionId || draft.textOnly) && draft.parentVersionId === currentId) {
     archiveCurrentResume();
     state.resume = {
       ...state.resume,
@@ -11338,6 +11395,7 @@ function recoverResumeEditorDraft() {
   } else {
     return { recovered: false, stale: true };
   }
+  if (draft.textOnly) state.resume = { ...state.resume, kind: state.resume.kind || "base", pdfExports: [], claimEvidence: [], candidateQuestions: [], variantChanges: [], notes: [] };
   if (state.resume.kind === "base") state.selectedBaseResumeId = resumeRecordId(state.resume);
   state.activeView = "resumes";
   resumeMode = "edit";
@@ -12457,17 +12515,18 @@ async function writeNewWorkspaceText(path, content) {
   });
 }
 
-async function upsertWorkspaceText(path, content) {
+async function upsertWorkspaceText(path, content, scope = currentProject()) {
   let expectedModifiedAt = null;
   let expectedRevision;
   try {
-    const existing = await hostCall("workspace.readText", { path });
+    const existing = await scope.call("workspace.readText", { path });
     expectedModifiedAt = existing.modifiedAt;
     expectedRevision = existing.revision;
   } catch {
+    scope.check();
     expectedModifiedAt = null;
   }
-  return hostCall("workspace.writeText", {
+  return scope.call("workspace.writeText", {
     path,
     content,
     expectedModifiedAt,
@@ -13717,6 +13776,9 @@ function registerAgentTools(ready) {
   if (!registerTool) return;
   const register = (name, handler, options = {}) =>
     registerTool(name, async (args) => {
+      await ready;
+      if (!projectReady || draftImportBusy) throw new Error("当前项目尚未成功读取或正在恢复备份，请先恢复草稿存储连接");
+      const requestScope = currentProject();
       let recoveredTrace = null;
       try {
         activateTraceFromToolArgs(args);
@@ -13728,6 +13790,7 @@ function registerAgentTools(ready) {
       recordActiveTraceEvent("running", `调用 Panel 工具：${name}`);
       try {
         const result = await handler(args);
+        requestScope.check();
         return recoveredTrace && result && typeof result === "object"
           ? {
               ...result,
@@ -13737,6 +13800,7 @@ function registerAgentTools(ready) {
             }
           : result;
       } catch (error) {
+        requestScope.check();
         recordActiveTraceEvent(
           "failed",
           `Panel 工具失败：${name}`,
@@ -16891,39 +16955,249 @@ function bindEvents() {
   });
 }
 
-async function initialize() {
+async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
+  if (draftStorage) {
+    saveCriticalDraftRecovery();
+    detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
+  }
+  projectEpoch++;
+  draftImportPending = null;
+  draftImportBusy = false;
+  document.querySelector("#draft-import-dialog").close();
+  const scope = currentProject();
+  projectReady = false;
+  draftStorage = null;
+  clearTimeout(saveTimer);
+  clearTimeout(projectSnapshotTimer);
+  clearInterval(projectSnapshotWatchTimer);
+  projectSnapshotSaveInFlight = null;
+  projectSnapshotRequestedVersion = projectSnapshotCommittedVersion = 0;
+  projectSnapshotRevisionCheckInFlight = false;
+  scheduledReceiptImportPending = false;
+  Object.assign(projectContext, structuredClone(initialProjectContext));
+  state = mergeState(window.codeshellPanel?.call ? emptyProjectState() : null);
+  activeSessionTraceId = "";
+  activeChannelVerificationProviderId = "";
+  activeJdIntakeIds = [];
+  context.busy = false;
+  document.querySelector(".app-shell").inert = true;
+  draftStatus("正在读取当前项目的草稿…");
+  updateContext(next);
+  renderAll();
   try {
-    const [saved, nextContext] = await Promise.all([
-      hostCall("storage.get", { key: STORAGE_KEY }).catch(() => null),
-      getContext().catch(() => null),
-    ]);
-    const recoveredLocalState = loadCriticalDraftRecovery(saved);
+    const store = createDraftStorage({
+      call: scope.call, methods: context.availableMethods, storage: localStorage,
+      check: scope.check, randomId: secureDraftId,
+    });
+    draftStorage = store;
+    const { saved, recovery } = await store.load({ archiveDamagedBrowser: !restoreBrowserDrafts });
+    scope.check();
+    const recoveredLocalState = restoreBrowserDrafts ? loadCriticalDraftRecovery(saved, recovery) : saved;
     state = mergeState(recoveredLocalState);
-    updateContext(nextContext);
-    renderAll();
+    projectReady = true;
     await syncProjectContext({
       quiet: true,
       localStateSource: recoveredLocalState || compactPanelLocalState(state),
       allowLegacyMigration: Boolean(saved && saved.localStateVersion !== 2),
     });
-    startProjectSnapshotWatch();
-    if (window.codeshellPanel?.on) {
-      window.codeshellPanel.on("context.changed", (next) => {
-        const previousCwd = context.cwd;
-        updateContext(next);
-        if (next?.cwd && next.cwd !== previousCwd) {
-          void syncProjectContext({ quiet: true }).finally(() => startProjectSnapshotWatch());
-        } else if (!next?.cwd) {
-          startProjectSnapshotWatch();
-        }
-      });
-    }
-  } catch (error) {
-    updateContext({ cwd: null, trusted: false, busy: false });
+    scope.check();
+    if (!restoreBrowserDrafts) store.retain(criticalDraftRecoverySnapshot());
+    draftStatus(store.backup().legacyRaw
+      ? "发现旧版未标明项目的草稿，未自动导入；可下载备份。"
+      : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前主程序不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
+    document.querySelector(".app-shell").inert = false;
     renderAll();
-    notify(error instanceof Error ? error.message : "初始化失败", "error");
+    startProjectSnapshotWatch();
+  } catch (error) {
+    if (!scope.active()) return;
+    projectReady = false;
+    draftStatus(`读取失败，已停止编辑和覆盖：${error.message}`);
   }
 }
+
+async function initialize() {
+  if (window.codeshellPanel?.on) {
+    window.codeshellPanel.on("context.changed", next => {
+      const merged = { ...context, ...next };
+      if (merged.cwd !== context.cwd || merged.sessionId !== context.sessionId)
+        void activateProject(merged);
+      else updateContext(next);
+    });
+  }
+  const epoch = projectEpoch;
+  try {
+    const next = await getContext();
+    if (epoch === projectEpoch) await activateProject(next);
+  } catch (error) {
+    if (epoch === projectEpoch) draftStatus(`连接失败：${error.message}`);
+  }
+}
+
+function downloadDraftBackup() {
+  const payload = {
+    format: "codeshell.job-hunt.draft-backup", version: 1,
+    current: { cwd: context.cwd, sessionId: context.sessionId, owner: draftStorage?.owner, drafts: criticalDraftRecoverySnapshot() },
+    detached: detachedDrafts,
+    stored: draftStorage?.backup(),
+    legacyRaw: localStorage.getItem(CRITICAL_DRAFT_STORAGE_KEY),
+  };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "job-hunt-draft-backup.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.querySelector("#download-draft-backup").addEventListener("click", downloadDraftBackup);
+document.querySelector("#reload-draft-storage").addEventListener("click", () => {
+  if (window.confirm("重新读取会替换当前输入。请先下载草稿备份；确认继续？")) void activateProject(context, { restoreBrowserDrafts: false });
+});
+
+function draftImportBasis() {
+  return JSON.stringify({ resume: state.resume, versions: state.versions,
+    drafts: criticalDraftRecoverySnapshot(), questions: state.questionBank.map(q => [q.id, q.question, q.status]) });
+}
+function closeDraftImport() {
+  if (draftImportBusy) return;
+  draftImportPending = null;
+  document.querySelector("#draft-import-dialog").close();
+}
+function renderDraftImportCandidate() {
+  const pending = draftImportPending;
+  if (!pending || draftImportBusy) return;
+  const selected = pending.candidates.find(candidate => candidate.id === document.querySelector("#draft-import-source").value);
+  if (!selected) return;
+  document.querySelector("#draft-import-origin").textContent = `${selected.label} · 来源项目：${selected.cwd || "未标明"}`;
+  document.querySelector("#draft-import-resume-preview").value = selected.drafts.resumeDraft.markdown;
+  document.querySelector("#draft-import-answer-preview").value = selected.drafts.interviewDraft.answer;
+  for (const [name, present] of [["resume", !!selected.drafts.resumeDraft.markdown], ["answer", !!selected.drafts.interviewDraft.answer]]) {
+    const checkbox = document.querySelector(`#draft-import-${name}`);
+    checkbox.disabled = !present;
+    checkbox.checked = present;
+  }
+  // A question is always chosen from this project's reviewed list. Never carry
+  // a practice session or silently bind foreign answer IDs to a local question.
+  document.querySelector("#draft-import-question").value = "";
+}
+async function openDraftImport(file) {
+  if (!file || draftImportBusy) return;
+  const scope = currentProject();
+  try {
+    if (!projectReady) throw new Error("请先成功读取当前项目，再恢复备份。");
+    if (file.size > MAX_DRAFT_BACKUP_BYTES) throw new Error("草稿备份超过 8 MB");
+    const parsed = parseDraftBackup(await file.text());
+    scope.check();
+    if (!projectReady) throw new Error("当前项目尚未就绪");
+    draftImportPending = { ...parsed, scope, basis: draftImportBasis(), applied: false };
+    const source = document.querySelector("#draft-import-source");
+    source.replaceChildren(...parsed.candidates.map(candidate => {
+      const option = document.createElement("option");
+      option.value = candidate.id;
+      option.textContent = `${candidate.label} · ${candidate.cwd || "未标明项目"}`;
+      return option;
+    }));
+    const question = document.querySelector("#draft-import-question");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "请选择当前项目的题目";
+    question.replaceChildren(placeholder, ...state.questionBank.filter(q => ["ready", "mastered"].includes(q.status)).map(q => {
+      const option = document.createElement("option"); option.value = q.id; option.textContent = q.question; return option;
+    }));
+    document.querySelector("#draft-import-target").textContent = `恢复到：${projectContext.name} · ${context.cwd || "当前项目"}`;
+    document.querySelector("#draft-import-issues").textContent = parsed.issues.join("；");
+    document.querySelector("#draft-import-error").textContent = "";
+    document.querySelector("#draft-import-apply").disabled = false;
+    renderDraftImportCandidate();
+    document.querySelector("#draft-import-dialog").showModal();
+  } catch (error) {
+    if (scope.active()) draftStatus(`未导入：${error.message}`);
+  }
+}
+async function applyDraftImport() {
+  const pending = draftImportPending;
+  if (!pending || draftImportBusy || pending.applied) return;
+  const { scope } = pending;
+  let applied = false;
+  try {
+    scope.check();
+    if (!projectReady || projectSnapshotSaveInFlight) throw new Error("请等待当前项目读取或保存完成后重试。");
+    if (pending.basis !== draftImportBasis()) throw new Error("当前内容已变化，请关闭后重新选择备份并审阅。");
+    const candidate = pending.candidates.find(c => c.id === document.querySelector("#draft-import-source").value);
+    if (!candidate) throw new Error("请选择草稿来源");
+    const withResume = document.querySelector("#draft-import-resume").checked;
+    const withAnswer = document.querySelector("#draft-import-answer").checked;
+    if (!withResume && !withAnswer) throw new Error("请选择需要恢复的正文或回答");
+    if (withResume && !candidate.drafts.resumeDraft.markdown) throw new Error("所选记录没有简历正文");
+    const targetQuestion = state.questionBank.find(q => q.id === document.querySelector("#draft-import-question").value && ["ready", "mastered"].includes(q.status));
+    if (withAnswer && (!candidate.drafts.interviewDraft.answer || !targetQuestion))
+      throw new Error("恢复回答前，请选择当前项目中已有的题目；原练习关联不会导入。");
+    draftImportBusy = true;
+    clearTimeout(saveTimer); clearTimeout(projectSnapshotTimer);
+    document.querySelector(".app-shell").inert = true;
+    document.querySelector("#draft-import-apply").disabled = true;
+    const now = new Date().toISOString();
+    const nextResume = withResume ? {
+      ...state.resume, id: "", versionId: uid("resume"), parentVersionId: resumeRecordId(state.resume),
+      kind: state.resume.kind || "base", title: state.resume.title || "恢复的简历",
+      markdown: candidate.drafts.resumeDraft.markdown, updatedAt: now,
+      revisionReason: "恢复导入的简历正文", pdfExports: [], claimEvidence: [], candidateQuestions: [], variantChanges: [], notes: [],
+    } : state.resume;
+    const nextDraft = withResume ? normalizeResumeEditorDraft({
+      resumeVersionId: nextResume.versionId, parentVersionId: nextResume.parentVersionId,
+      markdown: nextResume.markdown, updatedAt: now, textOnly: true,
+    }) : state.resumeDraft;
+    const nextAnswer = withAnswer ? normalizeInterviewAnswerDraft({
+      questionId: targetQuestion.id, practiceSessionId: "", answer: candidate.drafts.interviewDraft.answer,
+      inputMode: candidate.drafts.interviewDraft.inputMode, updatedAt: now,
+    }) : state.interviewDraft;
+    const previous = criticalDraftRecoverySnapshot();
+    if (!previous.resumeDraft.markdown && state.resume.markdown)
+      previous.resumeDraft = normalizeResumeEditorDraft({ resumeVersionId: resumeRecordId(state.resume), markdown: state.resume.markdown, updatedAt: state.resume.updatedAt });
+    draftStorage.archive(previous);
+    detachedDrafts.push({ cwd: context.cwd, owner: draftStorage.owner, drafts: previous });
+    await draftStorage.save(compactPanelLocalState({ ...state, resumeDraft: nextDraft, interviewDraft: nextAnswer }));
+    scope.check();
+    if (pending.basis !== draftImportBasis()) throw new Error("保存期间内容已变化；恢复草稿已留存，请重新读取并审阅。");
+    if (withResume) { archiveCurrentResume(); state.resume = nextResume; }
+    state.resumeDraft = nextDraft;
+    state.interviewDraft = nextAnswer;
+    applied = pending.applied = true;
+    if (withResume) {
+      if (state.resume.kind === "base") state.selectedBaseResumeId = resumeRecordId(state.resume);
+      state.activeView = "resumes"; resumeMode = "edit"; resumeManualEditRevisionStarted = true;
+    }
+    saveCriticalDraftRecovery();
+    renderAll();
+    const projectSaved = !withResume || await writeProjectSnapshot();
+    scope.check();
+    if (!projectSaved) throw new Error("恢复草稿已保存，但项目文件尚未同步；当前内容保留，请在项目同步处重试。");
+    await draftStorage.save(compactPanelLocalState(state));
+    scope.check();
+    draftStatus("已恢复到当前项目，恢复前的内容仍保留在草稿备份中。");
+    document.querySelector("#draft-import-dialog").close();
+    draftImportPending = null;
+    if (withAnswer) startPanelInterview({ title: "恢复的回答草稿", questionIds: [targetQuestion.id] });
+  } catch (error) {
+    if (!scope.active()) return;
+    document.querySelector("#draft-import-error").textContent = error.message;
+    document.querySelector("#draft-import-apply").disabled = applied;
+  } finally {
+    if (scope.active()) {
+      draftImportBusy = false;
+      document.querySelector(".app-shell").inert = !projectReady;
+    }
+  }
+}
+
+document.querySelector("#import-draft-backup").addEventListener("click", () => document.querySelector("#draft-import-file").click());
+document.querySelector("#draft-import-file").addEventListener("change", event => {
+  const file = event.target.files?.[0]; event.target.value = ""; void openDraftImport(file);
+});
+document.querySelector("#draft-import-source").addEventListener("change", renderDraftImportCandidate);
+document.querySelector("#draft-import-cancel").addEventListener("click", closeDraftImport);
+document.querySelector("#draft-import-dialog").addEventListener("cancel", event => { event.preventDefault(); closeDraftImport(); });
+document.querySelector("#draft-import-apply").addEventListener("click", () => void applyDraftImport());
 
 bindEvents();
 const ready = initialize();
