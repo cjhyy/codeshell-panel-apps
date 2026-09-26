@@ -137,3 +137,51 @@ test("duration or resource changes require new preparation and dispose rejects q
     name: "AbortError",
   });
 });
+
+import { resourcePreviewUrl } from "../apps/video-studio/src/sdk/resource-preview";
+import type { RuntimeBridge } from "../apps/video-studio/src/sdk/panel-runtime";
+const previewId = "asset-" + "d".repeat(64);
+const previewBase = "https://host.example/p/project/api/v1/panel-assets/opaque/app/index.html";
+const previewUrl = "https://host.example/p/project/api/v1/panel-assets/opaque/_codeshell_resources/" + previewId;
+function resourceBridge() {
+  const context = { appId: "video-studio", cwd: "/project/a", availableMethods: ["resources.preview", "resources.open"], host: "hub" };
+  const calls: unknown[] = [];
+  const bridge: RuntimeBridge = {
+    getContext: async () => structuredClone(context),
+    call: async (method, params) => { calls.push([method, params]); return { asset: { id: previewId }, url: previewUrl }; },
+    on: () => () => {},
+  };
+  return { context, calls, bridge };
+}
+
+test("cloud media resolves through the exact authorized resource, retaining the project proxy URL", async () => {
+  const f = resourceBridge();
+  assert.equal(await resourcePreviewUrl(f.bridge, previewId, undefined, previewBase), previewUrl);
+  assert.deepEqual(f.calls, [["resources.preview", { assetId: previewId }]]);
+  f.bridge.callResult = async () => ({ ok: false, error: { code: "REVOKED", message: "授权已撤销" } });
+  await assert.rejects(resourcePreviewUrl(f.bridge, previewId, undefined, previewBase), /授权已撤销/);
+});
+
+test("old cloud Hosts report missing inline playback while legacy desktop URLs remain compatible", async () => {
+  const f = resourceBridge();
+  f.context.availableMethods = ["resources.open"];
+  await assert.rejects(resourcePreviewUrl(f.bridge, previewId, undefined, previewBase), /更新服务/);
+  const desktop = { ...f.bridge, getContext: async () => ({ availableMethods: ["media.get"] }) };
+  assert.equal(await resourcePreviewUrl(desktop, previewId, undefined, "codeshell-panel://video/app/index.html"), `codeshell-panel://video/media/${previewId}`);
+  assert.deepEqual(f.calls, []);
+});
+
+test("late media grants cannot cross projects or override cancellation, and foreign addresses are rejected", async () => {
+  const f = resourceBridge();
+  const original = f.bridge.call;
+  f.bridge.getContext = async () => f.context;
+  f.bridge.call = async (...args) => { const value = await original(...args); f.context.cwd = "/project/b"; return value; };
+  await assert.rejects(resourcePreviewUrl(f.bridge, previewId, undefined, previewBase), { name: "AbortError" });
+  const controller = new AbortController();
+  f.bridge.call = async (...args) => { const value = await original(...args); controller.abort(); return value; };
+  await assert.rejects(resourcePreviewUrl(f.bridge, previewId, controller.signal, previewBase), { name: "AbortError" });
+  for (const value of [{ asset: { id: "wrong" }, url: previewUrl }, { asset: { id: previewId }, url: "https://other.example/secret" }, { asset: { id: previewId }, url: "javascript:alert(1)" }]) {
+    f.bridge.call = async () => value;
+    await assert.rejects(resourcePreviewUrl(f.bridge, previewId, undefined, previewBase), /无效|当前 Host/);
+  }
+});

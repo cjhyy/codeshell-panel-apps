@@ -172,7 +172,13 @@ async function sourceThumbnail(
   }
 }
 
+function configureMediaOrigin(element: HTMLImageElement | HTMLMediaElement, url: string): void {
+  if (/^https?:$/.test(new URL(url, location.href).protocol)) element.crossOrigin = "anonymous";
+}
+
 export class MediaLibrary {
+  constructor(private readonly options: { resolveManagedUrl?(id: string): Promise<string> } = {}) {}
+
   items = new Map<string, LocalMedia>();
   audio?: AudioContext;
   destination?: MediaStreamAudioDestinationNode;
@@ -282,6 +288,7 @@ export class MediaLibrary {
     const pending = this.withVideoDecoder(async (signal) => {
       if (!isCurrent() || this.items.get(assetId) !== item) return;
       const element = document.createElement("video");
+      configureMediaOrigin(element, item.url);
       element.muted = true;
       element.playsInline = true;
       const temporary: LocalMedia = { url: item.url, element };
@@ -472,12 +479,12 @@ export class MediaLibrary {
     if (!mediaId || !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(mediaId))
       throw new Error("素材缺少有效的本地媒体编号");
     if (asset.kind === "demo") return;
-    return this.connectSource(
-      asset,
-      `/media/${encodeURIComponent(mediaId)}`,
-      options.reload,
-      options.inspect,
-    );
+    const generation = this.generation;
+    const url = this.options.resolveManagedUrl
+      ? await this.options.resolveManagedUrl(mediaId)
+      : `/media/${encodeURIComponent(mediaId)}`;
+    if (generation !== this.generation) throw new Error("素材读取已取消");
+    return this.connectSource(asset, url, options.reload, options.inspect);
   }
 
   /** Inspect an already captured immutable resource without requiring a media engine. */
@@ -542,6 +549,7 @@ export class MediaLibrary {
       if (!inspect) {
         if (existing) this.release(existing);
         const element = document.createElement("video");
+        configureMediaOrigin(element, url);
         element.playsInline = true;
         element.preload = "none";
         this.items.set(asset.id, {
@@ -552,7 +560,7 @@ export class MediaLibrary {
           width: asset.width,
           height: asset.height,
           thumbnail:
-            asset.thumbnailId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(asset.thumbnailId)
+            (!this.options.resolveManagedUrl || new URL(url, location.href).protocol === "codeshell-panel:") && asset.thumbnailId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(asset.thumbnailId)
               ? `/media/${encodeURIComponent(asset.thumbnailId)}`
               : undefined,
         });
@@ -581,6 +589,7 @@ export class MediaLibrary {
     this.loads.get(asset.id)?.abort();
     this.loads.set(asset.id, ticket);
     const element = asset.kind === "image" ? new Image() : document.createElement(asset.kind);
+    configureMediaOrigin(element, url);
     if (element instanceof HTMLMediaElement) {
       element.preload = "auto";
       if (element instanceof HTMLVideoElement) element.playsInline = true;
@@ -653,6 +662,7 @@ export class MediaLibrary {
     if (!source || source.element instanceof HTMLImageElement)
       throw new Error("独立音轨缺少可播放素材");
     const element = document.createElement("audio");
+    configureMediaOrigin(element, source.url);
     element.preload = "auto";
     const item: LocalMedia = { url: source.url, element, ownsUrl: false };
     this.voices.add(item);
@@ -1159,6 +1169,7 @@ async function captureAssetFrameNow(
   if (!Number.isFinite(seconds) || seconds < 0) throw new Error("采样位置必须是有效秒数");
   const element =
     item.element instanceof HTMLImageElement ? new Image() : document.createElement("video");
+  configureMediaOrigin(element, item.url);
   let captured: VideoFrame | undefined;
   try {
     if (element instanceof HTMLVideoElement) {
