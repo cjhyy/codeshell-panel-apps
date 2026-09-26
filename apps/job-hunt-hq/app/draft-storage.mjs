@@ -47,7 +47,7 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
     versioned,
     get owner() { return owner; },
     backup() { return { owner, hostState: observedState, records: browserRecords(), legacyRaw: raw(LEGACY_DRAFT_KEY) }; },
-    async load() {
+    async load({ archiveDamagedBrowser = false } = {}) {
       loaded = false;
       check();
       if (versioned) {
@@ -78,12 +78,35 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
       blocked = null;
       let recovery = null;
       try {
-        const records = browserRecords().map(record => {
-          const entry = JSON.parse(record.raw);
-          if (entry?.owner !== owner || entry?.version !== 2 || !entry?.drafts ||
-              typeof entry.drafts !== "object" || !Number.isFinite(entry.savedAt)) throw new Error();
-          return entry;
-        }).sort((a, b) => b.savedAt - a.savedAt);
+        const rawRecords = browserRecords();
+        const quarantined = rawRecords.flatMap(record => {
+          try {
+            const entry = JSON.parse(record.raw);
+            return entry?.version === 2 && entry.owner === owner && entry.archived === true &&
+              typeof entry.rawBackup?.key === "string" && typeof entry.rawBackup?.raw === "string"
+              ? [entry.rawBackup] : [];
+          } catch { return []; }
+        });
+        const records = [];
+        for (const record of rawRecords) {
+          if (quarantined.some(copy => copy.key === record.key && copy.raw === record.raw)) continue;
+          try {
+            const entry = JSON.parse(record.raw);
+            if (entry?.owner !== owner || entry?.version !== 2 || !entry?.drafts ||
+                typeof entry.drafts !== "object" || !Number.isFinite(entry.savedAt)) throw new Error();
+            if (!entry.archived) records.push(entry);
+          } catch (error) {
+            if (!archiveDamagedBrowser) throw error;
+            // Preserve raw bytes first, without deleting/changing the original.
+            // Future loads ignore only this exact archived key+value pair, so a
+            // concurrent writer's changed value is still inspected normally.
+            storage.setItem(browserPrefix() + "quarantine-" + randomId(), JSON.stringify({
+              version: 2, owner, archived: true, savedAt: Date.now(), drafts: {}, rawBackup: record,
+            }));
+          }
+        }
+        records.sort((a, b) => b.savedAt - a.savedAt);
+        browserBlocked = false;
         recovery = records[0]?.drafts ?? null;
       } catch {
         browserBlocked = true;
@@ -102,6 +125,11 @@ export function createDraftStorage({ call, methods = [], storage, check, randomI
       });
       const savedAt = Math.max(Date.now(), ...previousTimes.map(time => time + 1));
       storage.setItem(browserKey(), JSON.stringify({ version: 2, owner, savedAt, drafts }));
+    },
+    archive(drafts) {
+      check();
+      if (!loaded || !owner || blocked) throw blocked || failure("当前项目草稿尚未就绪，请先重新读取。");
+      storage.setItem(browserPrefix() + "backup-" + randomId(), JSON.stringify({ version: 2, owner, savedAt: Date.now(), archived: true, drafts }));
     },
     save(value) {
       const copy = structuredClone(value);

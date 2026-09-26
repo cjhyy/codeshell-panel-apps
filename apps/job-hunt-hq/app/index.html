@@ -20,8 +20,25 @@
     <aside class="draft-storage-bar" aria-label="草稿恢复">
       <span id="draft-storage-status" role="status">正在连接草稿存储…</span>
       <button id="download-draft-backup" type="button">下载草稿备份</button>
+      <button id="import-draft-backup" type="button">恢复草稿备份</button>
+      <input id="draft-import-file" type="file" accept="application/json,.json" hidden />
       <button id="reload-draft-storage" type="button">重新读取</button>
     </aside>
+    <dialog id="draft-import-dialog">
+      <h2>恢复草稿备份</h2>
+      <p id="draft-import-target"></p>
+      <p>仅恢复正文和回答；不沿用来源项目的版本、练习或证据关联。当前内容会先保留备份。</p>
+      <label>来源记录 <select id="draft-import-source"></select></label>
+      <p id="draft-import-origin"></p>
+      <p id="draft-import-issues" role="status"></p>
+      <label><input id="draft-import-resume" type="checkbox" />恢复简历正文（创建新版本）</label>
+      <textarea id="draft-import-resume-preview" readonly rows="7" aria-label="简历恢复预览"></textarea>
+      <label><input id="draft-import-answer" type="checkbox" />恢复回答草稿（不会提交回答）</label>
+      <textarea id="draft-import-answer-preview" readonly rows="5" aria-label="回答恢复预览"></textarea>
+      <label>当前项目的题目 <select id="draft-import-question"></select></label>
+      <p id="draft-import-error" role="alert"></p>
+      <footer><button id="draft-import-cancel" type="button">关闭</button><button id="draft-import-apply" type="button">确认恢复到当前项目</button></footer>
+    </dialog>
     <main class="app-shell">
       <header class="topbar">
         <button class="brand" type="button" data-view-target="today" aria-label="回到今日工作台">

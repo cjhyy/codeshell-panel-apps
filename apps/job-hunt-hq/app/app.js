@@ -1,3 +1,4 @@
+import { parseDraftBackup, MAX_DRAFT_BACKUP_BYTES } from "./draft-backup.mjs";
 import { createDraftStorage, LEGACY_DRAFT_KEY } from "./draft-storage.mjs";
 import {
   assessJobOpportunity,
@@ -1458,6 +1459,8 @@ const projectContext = {
 const initialProjectContext = structuredClone(projectContext);
 let projectEpoch = 0;
 let projectReady = false;
+let draftImportPending = null;
+let draftImportBusy = false;
 let draftStorage = null;
 const detachedDrafts = [];
 function currentProject() {
@@ -1635,6 +1638,7 @@ function normalizeResumeEditorDraft(value = {}) {
     parentVersionId: cleanText(value.parentVersionId, 100),
     markdown: String(value.markdown || "").slice(0, 50_000),
     updatedAt: cleanText(value.updatedAt, 80),
+    ...(value.textOnly === true ? { textOnly: true } : {}),
   };
 }
 
@@ -3515,6 +3519,7 @@ function loadCriticalDraftRecovery(saved, recovery) {
 }
 
 function persist({ quiet = true } = {}) {
+  if (draftImportBusy) return;
   if (!projectReady || !draftStorage) return;
   clearTimeout(saveTimer);
   saveCriticalDraftRecovery();
@@ -4060,6 +4065,7 @@ async function syncProjectContext({
 async function checkProjectSnapshotRevision({ notifyOnReload = true } = {}) {
   const scope = currentProject();
   if (
+    draftImportBusy ||
     projectSnapshotRevisionCheckInFlight ||
     projectSnapshotSaveInFlight ||
     !window.codeshellPanel?.call ||
@@ -11340,6 +11346,7 @@ function retainResumeEditorDraft() {
     resumeVersionId: resumeRecordId(state.resume),
     parentVersionId: state.resume.parentVersionId || "",
     markdown: state.resume.markdown,
+    ...(state.resumeDraft.textOnly === true ? { textOnly: true } : {}),
     updatedAt: state.resume.updatedAt || new Date().toISOString(),
   });
 }
@@ -11359,7 +11366,7 @@ function clearSyncedResumeEditorDraft(savedResume = state.resume) {
 
 function recoverResumeEditorDraft() {
   const draft = normalizeResumeEditorDraft(state.resumeDraft);
-  if (!draft.markdown || !state.resume.markdown) return { recovered: false, stale: false };
+  if (!draft.markdown || (!state.resume.markdown && !draft.textOnly)) return { recovered: false, stale: false };
   const currentId = resumeRecordId(state.resume);
   if (draft.resumeVersionId === currentId && draft.markdown === state.resume.markdown) {
     state.resumeDraft = normalizeResumeEditorDraft();
@@ -11373,7 +11380,7 @@ function recoverResumeEditorDraft() {
       revisionReason: state.resume.revisionReason || "恢复未同步的手动编辑",
       updatedAt: draft.updatedAt || new Date().toISOString(),
     };
-  } else if (draft.parentVersionId && draft.parentVersionId === currentId) {
+  } else if ((draft.parentVersionId || draft.textOnly) && draft.parentVersionId === currentId) {
     archiveCurrentResume();
     state.resume = {
       ...state.resume,
@@ -11388,6 +11395,7 @@ function recoverResumeEditorDraft() {
   } else {
     return { recovered: false, stale: true };
   }
+  if (draft.textOnly) state.resume = { ...state.resume, kind: state.resume.kind || "base", pdfExports: [], claimEvidence: [], candidateQuestions: [], variantChanges: [], notes: [] };
   if (state.resume.kind === "base") state.selectedBaseResumeId = resumeRecordId(state.resume);
   state.activeView = "resumes";
   resumeMode = "edit";
@@ -13769,7 +13777,7 @@ function registerAgentTools(ready) {
   const register = (name, handler, options = {}) =>
     registerTool(name, async (args) => {
       await ready;
-      if (!projectReady) throw new Error("当前项目尚未成功读取，请先恢复草稿存储连接");
+      if (!projectReady || draftImportBusy) throw new Error("当前项目尚未成功读取或正在恢复备份，请先恢复草稿存储连接");
       const requestScope = currentProject();
       let recoveredTrace = null;
       try {
@@ -16953,6 +16961,9 @@ async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
     detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
   }
   projectEpoch++;
+  draftImportPending = null;
+  draftImportBusy = false;
+  document.querySelector("#draft-import-dialog").close();
   const scope = currentProject();
   projectReady = false;
   draftStorage = null;
@@ -16979,7 +16990,7 @@ async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
       check: scope.check, randomId: secureDraftId,
     });
     draftStorage = store;
-    const { saved, recovery } = await store.load();
+    const { saved, recovery } = await store.load({ archiveDamagedBrowser: !restoreBrowserDrafts });
     scope.check();
     const recoveredLocalState = restoreBrowserDrafts ? loadCriticalDraftRecovery(saved, recovery) : saved;
     state = mergeState(recoveredLocalState);
@@ -16993,7 +17004,7 @@ async function activateProject(next, { restoreBrowserDrafts = true } = {}) {
     if (!restoreBrowserDrafts) store.retain(criticalDraftRecoverySnapshot());
     draftStatus(store.backup().legacyRaw
       ? "发现旧版未标明项目的草稿，未自动导入；可下载备份。"
-      : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前 Host 不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
+      : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前主程序不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
     document.querySelector(".app-shell").inert = false;
     renderAll();
     startProjectSnapshotWatch();
@@ -17025,7 +17036,7 @@ async function initialize() {
 function downloadDraftBackup() {
   const payload = {
     format: "codeshell.job-hunt.draft-backup", version: 1,
-    current: { cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() },
+    current: { cwd: context.cwd, sessionId: context.sessionId, owner: draftStorage?.owner, drafts: criticalDraftRecoverySnapshot() },
     detached: detachedDrafts,
     stored: draftStorage?.backup(),
     legacyRaw: localStorage.getItem(CRITICAL_DRAFT_STORAGE_KEY),
@@ -17042,6 +17053,151 @@ document.querySelector("#download-draft-backup").addEventListener("click", downl
 document.querySelector("#reload-draft-storage").addEventListener("click", () => {
   if (window.confirm("重新读取会替换当前输入。请先下载草稿备份；确认继续？")) void activateProject(context, { restoreBrowserDrafts: false });
 });
+
+function draftImportBasis() {
+  return JSON.stringify({ resume: state.resume, versions: state.versions,
+    drafts: criticalDraftRecoverySnapshot(), questions: state.questionBank.map(q => [q.id, q.question, q.status]) });
+}
+function closeDraftImport() {
+  if (draftImportBusy) return;
+  draftImportPending = null;
+  document.querySelector("#draft-import-dialog").close();
+}
+function renderDraftImportCandidate() {
+  const pending = draftImportPending;
+  if (!pending || draftImportBusy) return;
+  const selected = pending.candidates.find(candidate => candidate.id === document.querySelector("#draft-import-source").value);
+  if (!selected) return;
+  document.querySelector("#draft-import-origin").textContent = `${selected.label} · 来源项目：${selected.cwd || "未标明"}`;
+  document.querySelector("#draft-import-resume-preview").value = selected.drafts.resumeDraft.markdown;
+  document.querySelector("#draft-import-answer-preview").value = selected.drafts.interviewDraft.answer;
+  for (const [name, present] of [["resume", !!selected.drafts.resumeDraft.markdown], ["answer", !!selected.drafts.interviewDraft.answer]]) {
+    const checkbox = document.querySelector(`#draft-import-${name}`);
+    checkbox.disabled = !present;
+    checkbox.checked = present;
+  }
+  // A question is always chosen from this project's reviewed list. Never carry
+  // a practice session or silently bind foreign answer IDs to a local question.
+  document.querySelector("#draft-import-question").value = "";
+}
+async function openDraftImport(file) {
+  if (!file || draftImportBusy) return;
+  const scope = currentProject();
+  try {
+    if (!projectReady) throw new Error("请先成功读取当前项目，再恢复备份。");
+    if (file.size > MAX_DRAFT_BACKUP_BYTES) throw new Error("草稿备份超过 8 MB");
+    const parsed = parseDraftBackup(await file.text());
+    scope.check();
+    if (!projectReady) throw new Error("当前项目尚未就绪");
+    draftImportPending = { ...parsed, scope, basis: draftImportBasis(), applied: false };
+    const source = document.querySelector("#draft-import-source");
+    source.replaceChildren(...parsed.candidates.map(candidate => {
+      const option = document.createElement("option");
+      option.value = candidate.id;
+      option.textContent = `${candidate.label} · ${candidate.cwd || "未标明项目"}`;
+      return option;
+    }));
+    const question = document.querySelector("#draft-import-question");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "请选择当前项目的题目";
+    question.replaceChildren(placeholder, ...state.questionBank.filter(q => ["ready", "mastered"].includes(q.status)).map(q => {
+      const option = document.createElement("option"); option.value = q.id; option.textContent = q.question; return option;
+    }));
+    document.querySelector("#draft-import-target").textContent = `恢复到：${projectContext.name} · ${context.cwd || "当前项目"}`;
+    document.querySelector("#draft-import-issues").textContent = parsed.issues.join("；");
+    document.querySelector("#draft-import-error").textContent = "";
+    document.querySelector("#draft-import-apply").disabled = false;
+    renderDraftImportCandidate();
+    document.querySelector("#draft-import-dialog").showModal();
+  } catch (error) {
+    if (scope.active()) draftStatus(`未导入：${error.message}`);
+  }
+}
+async function applyDraftImport() {
+  const pending = draftImportPending;
+  if (!pending || draftImportBusy || pending.applied) return;
+  const { scope } = pending;
+  let applied = false;
+  try {
+    scope.check();
+    if (!projectReady || projectSnapshotSaveInFlight) throw new Error("请等待当前项目读取或保存完成后重试。");
+    if (pending.basis !== draftImportBasis()) throw new Error("当前内容已变化，请关闭后重新选择备份并审阅。");
+    const candidate = pending.candidates.find(c => c.id === document.querySelector("#draft-import-source").value);
+    if (!candidate) throw new Error("请选择草稿来源");
+    const withResume = document.querySelector("#draft-import-resume").checked;
+    const withAnswer = document.querySelector("#draft-import-answer").checked;
+    if (!withResume && !withAnswer) throw new Error("请选择需要恢复的正文或回答");
+    if (withResume && !candidate.drafts.resumeDraft.markdown) throw new Error("所选记录没有简历正文");
+    const targetQuestion = state.questionBank.find(q => q.id === document.querySelector("#draft-import-question").value && ["ready", "mastered"].includes(q.status));
+    if (withAnswer && (!candidate.drafts.interviewDraft.answer || !targetQuestion))
+      throw new Error("恢复回答前，请选择当前项目中已有的题目；原练习关联不会导入。");
+    draftImportBusy = true;
+    clearTimeout(saveTimer); clearTimeout(projectSnapshotTimer);
+    document.querySelector(".app-shell").inert = true;
+    document.querySelector("#draft-import-apply").disabled = true;
+    const now = new Date().toISOString();
+    const nextResume = withResume ? {
+      ...state.resume, id: "", versionId: uid("resume"), parentVersionId: resumeRecordId(state.resume),
+      kind: state.resume.kind || "base", title: state.resume.title || "恢复的简历",
+      markdown: candidate.drafts.resumeDraft.markdown, updatedAt: now,
+      revisionReason: "恢复导入的简历正文", pdfExports: [], claimEvidence: [], candidateQuestions: [], variantChanges: [], notes: [],
+    } : state.resume;
+    const nextDraft = withResume ? normalizeResumeEditorDraft({
+      resumeVersionId: nextResume.versionId, parentVersionId: nextResume.parentVersionId,
+      markdown: nextResume.markdown, updatedAt: now, textOnly: true,
+    }) : state.resumeDraft;
+    const nextAnswer = withAnswer ? normalizeInterviewAnswerDraft({
+      questionId: targetQuestion.id, practiceSessionId: "", answer: candidate.drafts.interviewDraft.answer,
+      inputMode: candidate.drafts.interviewDraft.inputMode, updatedAt: now,
+    }) : state.interviewDraft;
+    const previous = criticalDraftRecoverySnapshot();
+    if (!previous.resumeDraft.markdown && state.resume.markdown)
+      previous.resumeDraft = normalizeResumeEditorDraft({ resumeVersionId: resumeRecordId(state.resume), markdown: state.resume.markdown, updatedAt: state.resume.updatedAt });
+    draftStorage.archive(previous);
+    detachedDrafts.push({ cwd: context.cwd, owner: draftStorage.owner, drafts: previous });
+    await draftStorage.save(compactPanelLocalState({ ...state, resumeDraft: nextDraft, interviewDraft: nextAnswer }));
+    scope.check();
+    if (pending.basis !== draftImportBasis()) throw new Error("保存期间内容已变化；恢复草稿已留存，请重新读取并审阅。");
+    if (withResume) { archiveCurrentResume(); state.resume = nextResume; }
+    state.resumeDraft = nextDraft;
+    state.interviewDraft = nextAnswer;
+    applied = pending.applied = true;
+    if (withResume) {
+      if (state.resume.kind === "base") state.selectedBaseResumeId = resumeRecordId(state.resume);
+      state.activeView = "resumes"; resumeMode = "edit"; resumeManualEditRevisionStarted = true;
+    }
+    saveCriticalDraftRecovery();
+    renderAll();
+    const projectSaved = !withResume || await writeProjectSnapshot();
+    scope.check();
+    if (!projectSaved) throw new Error("恢复草稿已保存，但项目文件尚未同步；当前内容保留，请在项目同步处重试。");
+    await draftStorage.save(compactPanelLocalState(state));
+    scope.check();
+    draftStatus("已恢复到当前项目，恢复前的内容仍保留在草稿备份中。");
+    document.querySelector("#draft-import-dialog").close();
+    draftImportPending = null;
+    if (withAnswer) startPanelInterview({ title: "恢复的回答草稿", questionIds: [targetQuestion.id] });
+  } catch (error) {
+    if (!scope.active()) return;
+    document.querySelector("#draft-import-error").textContent = error.message;
+    document.querySelector("#draft-import-apply").disabled = applied;
+  } finally {
+    if (scope.active()) {
+      draftImportBusy = false;
+      document.querySelector(".app-shell").inert = !projectReady;
+    }
+  }
+}
+
+document.querySelector("#import-draft-backup").addEventListener("click", () => document.querySelector("#draft-import-file").click());
+document.querySelector("#draft-import-file").addEventListener("change", event => {
+  const file = event.target.files?.[0]; event.target.value = ""; void openDraftImport(file);
+});
+document.querySelector("#draft-import-source").addEventListener("change", renderDraftImportCandidate);
+document.querySelector("#draft-import-cancel").addEventListener("click", closeDraftImport);
+document.querySelector("#draft-import-dialog").addEventListener("cancel", event => { event.preventDefault(); closeDraftImport(); });
+document.querySelector("#draft-import-apply").addEventListener("click", () => void applyDraftImport());
 
 bindEvents();
 const ready = initialize();

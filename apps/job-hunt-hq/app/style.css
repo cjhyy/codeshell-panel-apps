@@ -10723,3 +10723,8 @@ body.panel-interview-focus-active .toast {
 
 .draft-storage-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; font-size: 12px; }
 .draft-storage-bar > span { flex: 1; min-width: 200px; }
+
+#draft-import-dialog { width: min(760px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; padding: 24px; }
+#draft-import-dialog textarea, #draft-import-dialog select { width: 100%; margin: 8px 0 16px; }
+#draft-import-dialog footer { display: flex; justify-content: flex-end; gap: 12px; }
+#draft-import-error, #draft-import-issues { color: var(--danger, #b32f2f); }

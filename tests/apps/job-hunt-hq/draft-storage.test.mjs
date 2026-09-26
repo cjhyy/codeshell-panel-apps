@@ -120,3 +120,16 @@ test('an uncertain unsuccessful save and malformed acknowledgement block subsequ
     assert.equal(h.data.has(STATE), false);
   }
 });
+
+test('explicit reread archives corrupt browser bytes without deleting them or ignoring later changes', async () => {
+  const h = host(), storage = browserStore();
+  const a = make(h, storage); await a.load(); a.retain({ answer: 'old' });
+  const key = a.backup().records[0].key; storage.setItem(key, '{corrupt');
+  await assert.rejects(make(h, storage).load(), /无法读取/);
+  const reloaded = make(h, storage); await reloaded.load({ archiveDamagedBrowser: true });
+  assert.equal(storage.getItem(key), '{corrupt');
+  assert.ok(reloaded.backup().records.some(r => r.raw.includes('rawBackup') && r.raw.includes('{corrupt')));
+  assert.equal((await make(h, storage).load()).recovery, null);
+  storage.setItem(key, '{changed corrupt bytes');
+  await assert.rejects(make(h, storage).load(), /无法读取/);
+});

@@ -75,6 +75,7 @@ async function fixture(t, options = {}) {
           return { content: JSON.stringify(record.value), revision: record.revision, modifiedAt: 1 };
         }
         if (method === 'workspace.writeText') {
+          if (window.__fixture.failWrites) throw new Error('write unavailable');
           project.files[params.path] = JSON.parse(params.content);
           const record = await snapshot(project.files, params.path);
           return { revision: record.revision, modifiedAt: 2 };
@@ -193,4 +194,100 @@ test('explicit reread keeps the old draft in backup but does not replay it over 
   assert.equal(result.current.drafts.interviewDraft.answer, 'latest remote answer');
   assert.ok(result.detached.some(draft => draft.drafts.resumeDraft.markdown === '# Discarded local draft'));
   assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+});
+
+async function importDraft(page, value) {
+  await page.locator('#draft-import-file').setInputFiles({ name: 'draft.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(value)) });
+  await page.locator('#draft-import-dialog').waitFor({ state: 'visible' });
+}
+
+test('reviewed legacy resume import archives the current content and resets foreign identity and evidence', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-panel.json'].resume.claimEvidence = [{ claim: 'old claim', status: 'verified' }]; });
+  page.once('dialog', d => d.accept()); await page.locator('#reload-draft-storage').click(); await ready(page);
+  await importDraft(page, { resumeDraft: { markdown: '# Imported resume', resumeVersionId: 'foreign-id', parentVersionId: 'foreign-parent' }, profile: { name: 'foreign person' } });
+  assert.equal(await page.locator('#draft-import-resume-preview').inputValue(), '# Imported resume');
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  await page.locator('#draft-import-apply').click();
+  await page.waitForFunction(() => !document.querySelector('#draft-import-dialog').open);
+  const record = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json']);
+  assert.equal(record.resume.markdown, '# Imported resume');
+  assert.notEqual(record.resume.versionId, 'foreign-id');
+  assert.equal(record.resume.parentVersionId, 'resume-a');
+  assert.deepEqual(record.resume.claimEvidence, []);
+  assert.equal(record.profile.name, 'a');
+  const saved = await backup(page);
+  assert.ok(saved.stored.records.some(r => JSON.parse(r.raw).archived && r.raw.includes('# Resume a')));
+});
+
+test('closing import or changing project before confirmation leaves documents untouched', async t => {
+  const page = await fixture(t); await ready(page);
+  const source = { resumeDraft: { markdown: '# Never applied' } };
+  await importDraft(page, source); await page.locator('#draft-import-cancel').click();
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+  await importDraft(page, source); await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  assert.equal(await page.locator('#draft-import-dialog').evaluate(el => el.open), false);
+  assert.equal(await page.evaluate(() => window.__fixture.projects.b.files['job-hunt-panel.json'].resume.markdown), '# Resume b');
+});
+
+test('a competing Host cache update prevents applying an imported draft', async t => {
+  const page = await fixture(t); await ready(page);
+  await importDraft(page, { resumeDraft: { markdown: '# Conflicting import' } });
+  await page.evaluate(() => { window.__fixture.projects.a.storage['job-hunt-state-v1'] = { localStateVersion: 2, interviewDraft: { answer: 'other window' } }; });
+  await page.locator('#draft-import-apply').click();
+  await page.waitForFunction(() => document.querySelector('#draft-import-error').textContent.includes('其他窗口'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume.markdown), '# Resume a');
+});
+
+test('answer import requires an explicit local question and never carries its old practice session', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'].questionBank = [{ id: 'question-local', question: '请说明项目数据的完整恢复策略？', status: 'ready', type: 'technical', category: '系统可靠性', competency: '数据恢复', answerPoints: ['保存', '校验', '恢复'], recommendedAnswer: '先验证完整性，再恢复到明确的目标项目。', sourceRefs: ['user:fixture'] }];
+  });
+  page.once('dialog', d => d.accept()); await page.locator('#reload-draft-storage').click(); await ready(page);
+  await importDraft(page, { interviewDraft: { answer: 'Recovered answer', questionId: 'foreign-question', practiceSessionId: 'foreign-session' } });
+  await page.locator('#draft-import-apply').click();
+  await page.waitForFunction(() => document.querySelector('#draft-import-error').textContent.includes('请选择当前项目'));
+  await page.locator('#draft-import-question').selectOption('question-local');
+  await page.locator('#draft-import-apply').click();
+  await page.waitForFunction(() => !document.querySelector('#draft-import-dialog').open);
+  const answer = await page.evaluate(() => window.__fixture.projects.a.storage['job-hunt-state-v1'].interviewDraft);
+  assert.equal(answer.questionId, 'question-local');
+  assert.equal(answer.practiceSessionId, '');
+  assert.equal(answer.answer, 'Recovered answer');
+});
+
+test('an imported resume awaiting file persistence recovers without reusing old evidence', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.evaluate(() => {
+    window.__fixture.projects.a.files['job-hunt-panel.json'].resume.claimEvidence = [{ claim: 'old verified text', status: 'verified' }];
+  });
+  page.once('dialog', d => d.accept()); await page.locator('#reload-draft-storage').click(); await ready(page);
+  await importDraft(page, { resumeDraft: { markdown: '# Resume after interrupted import' } });
+  await page.evaluate(() => { window.__fixture.failWrites = true; });
+  await page.locator('#draft-import-apply').click();
+  await page.waitForFunction(() => document.querySelector('#draft-import-error').textContent.includes('尚未同步'));
+  assert.equal(await page.evaluate(() => window.__fixture.projects.a.storage['job-hunt-state-v1'].resumeDraft.textOnly), true);
+  await page.evaluate(() => { window.__fixture.failWrites = false; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__fixture.switch('a')); await ready(page);
+  const record = await page.evaluate(() => window.__fixture.projects.a.files['job-hunt-panel.json'].resume);
+  assert.equal(record.markdown, '# Resume after interrupted import');
+  assert.deepEqual(record.claimEvidence, []);
+});
+
+test('explicit reread preserves damaged browser bytes and reopens the valid Host project', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.evaluate(() => {
+    const owner = window.__fixture.projects.a.storage['job-hunt-draft-owner-v1'].id;
+    window.__badDraftKey = 'job-hunt-critical-drafts-v2:' + owner + '.damaged';
+    localStorage.setItem(window.__badDraftKey, '{bad browser bytes');
+    window.__fixture.switch('b');
+  }); await ready(page);
+  await page.evaluate(() => window.__fixture.switch('a'));
+  await page.waitForFunction(() => document.querySelector('#draft-storage-status').textContent.includes('无法读取'));
+  assert.equal(await page.locator('.app-shell').evaluate(el => el.inert), true);
+  page.once('dialog', d => d.accept()); await page.locator('#reload-draft-storage').click(); await ready(page);
+  assert.equal(await page.evaluate(() => localStorage.getItem(window.__badDraftKey)), '{bad browser bytes');
+  const saved = await backup(page);
+  assert.ok(saved.stored.records.some(r => r.raw.includes('rawBackup') && r.raw.includes('bad browser bytes')));
 });
