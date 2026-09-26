@@ -16010,3 +16010,9 @@ button.stock-financial-history-row:focus-visible {
 
 .watch-storage-recovery:not([hidden]) { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .watch-storage-recovery button { min-height: 44px; }
+
+.backtest-storage { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
+.backtest-storage p { flex: 1 1 320px; margin: 0; }
+.backtest-storage div { display: flex; flex-wrap: wrap; gap: 8px; }
+.backtest-storage button { min-height: 44px; }
+.backtest-storage [data-tone="error"] { color: var(--danger, #b42318); }
