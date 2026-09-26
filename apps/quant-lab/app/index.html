@@ -483,6 +483,13 @@
                     <button id="selection-signal-export" type="button" hidden>导出命中 CSV</button>
                     <button id="selection-signal-reset" type="button">恢复稳健模板</button>
                   </div>
+                  <p id="selection-signal-state" role="status">正在读取项目筛选条件…</p>
+                  <p id="selection-signal-warning" hidden>当前主程序不支持保存版本校验；请避免多个页面同时修改筛选条件。</p>
+                  <div class="selection-signal-toolbar">
+                    <button id="selection-signal-backup" type="button">下载筛选草稿</button>
+                    <button id="selection-signal-reload" type="button">读取最新条件</button>
+                    <small>未保存草稿只在当前页面保留，关闭前请下载。</small>
+                  </div>
                   <div id="selection-signal-conditions" class="selection-signal-conditions"></div>
                   <p id="selection-signal-summary" class="selection-signal-summary">先生成或恢复一份今日选股快照，再按条件筛当前研究池。</p>
                   <div id="selection-signal-results" class="selection-signal-results"><p class="selection-empty">暂无可筛选的研究池。</p></div>
