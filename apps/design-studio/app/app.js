@@ -3321,7 +3321,19 @@ async function resolveWorkspaceDesignSource(
   };
 }
 
-async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEpoch) {
+function captureDeliveryScope() {
+  const assertDocument = captureDocumentScope();
+  const path = elements.path.value.trim();
+  return () => {
+    assertDocument();
+    if (elements.path.value.trim() !== path)
+      throw new Error("设计路径已在操作期间变化；请重新发起操作");
+  };
+}
+
+async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEpoch, assertScope = captureDeliveryScope()) {
+  assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  assertScope();
   let expectedModifiedAt = null;
   let expectedRevision = null;
   try {
@@ -3332,6 +3344,7 @@ async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEp
     // A missing output is created; an unreadable existing output fails the host create-only guard.
   }
   assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  assertScope();
   const result = await hostCall("workspace.writeText", {
     path,
     content,
@@ -3339,6 +3352,7 @@ async function writeRepoText(path, content, expectedWorkspaceEpoch = workspaceEp
     ...(expectedRevision ? { expectedRevision } : {}),
   });
   assertWorkspaceEpoch(expectedWorkspaceEpoch);
+  assertScope();
   return result;
 }
 
@@ -3982,20 +3996,26 @@ function comparisonReportPath(implementationPath) {
 }
 
 async function repositoryDocumentSnapshot() {
+  const assertScope = captureDocumentScope();
   await ensureAllDesignPagesLoaded();
+  assertScope();
   syncActivePageNodes();
   return JSON.parse(serializeDesign());
 }
 
 async function readProductBrief(sourcePath) {
+  const assertScope = captureDeliveryScope();
   if (!isSafeProductBriefPath(sourcePath)) {
     throw new Error("PRD 路径必须是工作区内安全的 .md、.mdx 或 .txt 文件");
   }
   const source = await bundleHostCall("workspace.readText", { path: sourcePath });
+  assertScope();
   return parseProductBrief(source.content, { path: sourcePath });
 }
 
 async function submitProductBriefToAgent() {
+  const assertScope = captureDeliveryScope();
+  const designPath = elements.path.value.trim();
   const sourcePath = elements.productBriefPath.value.trim();
   if (context.busy) return notify("当前会话正在运行，请稍后再提交", "error");
   elements.designFromPrd.disabled = true;
@@ -4003,11 +4023,14 @@ async function submitProductBriefToAgent() {
   elements.productBriefStatus.textContent = "正在读取 PRD 并整理需求…";
   try {
     const brief = await readProductBrief(sourcePath);
+    assertScope();
     await saveDocument({ quiet: true });
+    assertScope();
     const prompt = productBriefPrompt(brief, {
-      designPath: elements.path.value.trim(),
+      designPath,
     });
     await hostCall("agent.submitPrompt", { prompt });
+    assertScope();
     elements.productBriefStatus.dataset.kind = "success";
     elements.productBriefStatus.textContent = `${brief.requirements.length} 条需求 · ${brief.screens.length} 个页面线索 · 已交给 Agent`;
     notify("PRD 已结构化并交给当前 Agent");
@@ -4034,12 +4057,18 @@ async function generateFrontendFile({
   ) {
     throw new Error("设计状态已变化；请重新读取元数据后再生成前端");
   }
+  const assertScope = captureDeliveryScope();
+  const designPath = elements.path.value.trim();
   const operationStateRevision = currentDesignStateRevision();
   const operationWorkspaceEpoch = workspaceEpoch;
   await ensureAllDesignPagesLoaded();
+  assertScope();
   await loadReferencedDesignResources();
+  assertScope();
   const sourceDocument = await repositoryDocumentSnapshot();
+  assertScope();
   assertWorkspaceEpoch(operationWorkspaceEpoch);
+  assertScope();
   if (operationStateRevision !== currentDesignStateRevision()) {
     throw new Error("设计在前端生成期间发生变化；请基于最新状态重新生成");
   }
@@ -4058,15 +4087,16 @@ async function generateFrontendFile({
   if (operationStateRevision !== currentDesignStateRevision()) {
     throw new Error("设计在前端生成期间发生变化；已取消旧版本输出");
   }
-  const result = await writeRepoText(outputPath, html);
+  const result = await writeRepoText(outputPath, html, operationWorkspaceEpoch, assertScope);
+  assertScope();
   return {
     path: outputPath,
-    designPath: elements.path.value.trim(),
+    designPath,
     pageId,
     pageName: sourceDocument.pages.find((page) => page.id === pageId)?.name,
     bytes: new TextEncoder().encode(html).length,
     revision: result.revision ?? null,
-    stateRevision: currentDesignStateRevision(),
+    stateRevision: operationStateRevision,
     nodeCount: allDesignNodes(
       normalizeDesignDocument({
         ...sourceDocument,
@@ -4247,22 +4277,34 @@ async function compareFrontendFile({
   ) {
     throw new Error("设计状态已变化；请重新读取元数据后再对比");
   }
+  const assertScope = captureDeliveryScope();
+  const designPath = elements.path.value.trim();
   const operationStateRevision = currentDesignStateRevision();
   const operationWorkspaceEpoch = workspaceEpoch;
   await ensureAllDesignPagesLoaded();
+  assertScope();
   await loadReferencedDesignResources();
+  assertScope();
   const expectedDocument = await repositoryDocumentSnapshot();
-  const source = await bundleHostCall("workspace.readText", { path: implementationPath });
+  assertScope();
+  const source = await bundleHostCall("workspace.readText", { path: implementationPath }, operationWorkspaceEpoch);
+  assertScope();
   const capturedDocument = await captureWorkspaceHtml({
     sourcePath: implementationPath,
     html: source.content,
-    readText: async (path) => bundleHostCall("workspace.readText", { path }),
+    readText: async (path) => {
+      assertScope();
+      const result = await bundleHostCall("workspace.readText", { path }, operationWorkspaceEpoch);
+      assertScope();
+      return result;
+    },
     rootSelector,
     viewportWidth,
     viewportHeight,
     name: `Implementation · ${implementationPath}`,
   });
   assertWorkspaceEpoch(operationWorkspaceEpoch);
+  assertScope();
   if (operationStateRevision !== currentDesignStateRevision()) {
     throw new Error("设计在实现渲染期间发生变化；请基于最新状态重新对比");
   }
@@ -4283,14 +4325,15 @@ async function compareFrontendFile({
     viewportHeight,
   );
   const report = comparisonMarkdown(comparison, {
-    designPath: elements.path.value.trim(),
+    designPath,
     implementationPath,
     pixelMetrics,
   });
   if (operationStateRevision !== currentDesignStateRevision()) {
     throw new Error("设计在对比期间发生变化；已取消旧版本报告");
   }
-  await writeRepoText(reportPath, report);
+  await writeRepoText(reportPath, report, operationWorkspaceEpoch, assertScope);
+  assertScope();
   renderComparisonResult({
     comparison,
     pixelMetrics,
@@ -4620,20 +4663,25 @@ async function showAudit() {
 }
 
 async function saveAuditReport() {
-  await ensureAllDesignPagesLoaded();
+  const assertScope = captureDeliveryScope();
+  const operationDocumentEpoch = documentEpoch;
   const operationWorkspaceEpoch = workspaceEpoch;
   const sourcePath = elements.path.value.trim();
   if (!safeDesignPath(sourcePath)) return notify("先设置有效的设计文件路径", "error");
   elements.saveAuditReport.disabled = true;
   try {
+    await ensureAllDesignPagesLoaded();
+    assertScope();
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    assertScope();
     const issues = auditDocument(saved.design);
     const path = sourcePath.replace(/\.codesign\.json$/, ".audit.md");
     await writeRepoText(
       path,
       auditMarkdown(saved.design, issues, sourcePath),
       operationWorkspaceEpoch,
+      assertScope,
     );
     elements.auditDialog.close();
     notify(`检查报告已保存到 ${path}`);
@@ -4641,8 +4689,14 @@ async function saveAuditReport() {
     if (workspaceEpoch !== operationWorkspaceEpoch) return;
     notify(error instanceof Error ? error.message : "检查报告保存失败", "error");
   } finally {
-    await compactIndexedPageRuntime();
     if (workspaceEpoch === operationWorkspaceEpoch) {
+      if (documentEpoch === operationDocumentEpoch && elements.path.value.trim() === sourcePath) {
+        try { await compactIndexedPageRuntime(); }
+        catch (error) {
+          if (workspaceEpoch === operationWorkspaceEpoch && documentEpoch === operationDocumentEpoch)
+            notify(error instanceof Error ? error.message : "页面缓存整理失败", "error");
+        }
+      }
       elements.saveAuditReport.disabled = context.trusted !== true;
     }
   }
@@ -4736,9 +4790,9 @@ async function deleteDesignPage(pageId) {
 }
 
 async function exportSvg() {
-  await ensureAllDesignPagesLoaded();
-  await loadReferencedDesignResources();
   const operationWorkspaceEpoch = workspaceEpoch;
+  const operationDocumentEpoch = documentEpoch;
+  const assertScope = captureDeliveryScope();
   const sourcePath = elements.path.value.trim();
   if (!safeDesignPath(sourcePath)) {
     notify("先设置有效的 .codesign.json 路径", "error");
@@ -4747,12 +4801,19 @@ async function exportSvg() {
   const path = sourcePath.replace(/\.codesign\.json$/, ".svg");
   elements.exportSvg.disabled = true;
   try {
+    await ensureAllDesignPagesLoaded();
+    assertScope();
+    await loadReferencedDesignResources();
+    assertScope();
+    const resources = new Map(resourceDataUrls);
     const saved = await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    assertScope();
     await writeRepoText(
       path,
-      exportDesignSvg(saved.design, { resourceDataUrls }),
+      exportDesignSvg(saved.design, { resourceDataUrls: resources }),
       operationWorkspaceEpoch,
+      assertScope,
     );
     notify(`SVG 已导出到 ${path}`);
   } catch (error) {
@@ -4765,14 +4826,23 @@ async function exportSvg() {
       "error",
     );
   } finally {
-    await compactIndexedPageRuntime();
     if (workspaceEpoch === operationWorkspaceEpoch) {
+      if (documentEpoch === operationDocumentEpoch && elements.path.value.trim() === sourcePath) {
+        try { await compactIndexedPageRuntime(); }
+        catch (error) {
+          if (workspaceEpoch === operationWorkspaceEpoch && documentEpoch === operationDocumentEpoch)
+            notify(error instanceof Error ? error.message : "页面缓存整理失败", "error");
+        }
+      }
       elements.exportSvg.disabled = context.trusted !== true;
     }
   }
 }
 
 async function submitToAgent() {
+  const assertScope = captureDeliveryScope();
+  const path = elements.path.value.trim();
+  const version = design.version;
   const operationWorkspaceEpoch = workspaceEpoch;
   const request = elements.aiRequest.value.trim();
   if (!request) return notify("先写下你希望 Agent 做什么", "error");
@@ -4781,11 +4851,11 @@ async function submitToAgent() {
   try {
     await saveDocument({ quiet: true });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
-    const path = elements.path.value.trim();
+    assertScope();
     const prompt = [
       "请使用 design-studio:repo-design skill 和 panel-app:design-studio 的结构化工具处理当前仓库设计。",
       `设计源文件：${path}`,
-      `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${design.version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
+      `先读取元数据与相关子树，再按 edit → validate → screenshot 循环处理 codeshell.design v${version}；保持稳定 node id、组件引用、自动布局和确定性 JSON 格式。`,
       "所有嵌套节点的 x/y 都是画布绝对坐标；自动布局容器的流式直接子节点省略 x/y，layoutPositioning:absolute 的子节点仍必须提供 x/y。每个 create_node 必须先选定稳定的小写短横线语义 id。",
       "不要把 SVG 当作源文件。完成前必须达到零校验问题并实际检查完整画布截图；最后总结变更图层、设计理由和实现影响。",
       "",
@@ -4793,6 +4863,7 @@ async function submitToAgent() {
     ].join("\n");
     await hostCall("agent.submitPrompt", { prompt });
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    assertScope();
     elements.aiDialog.close();
     notify("已交给当前 Agent；文件写入 Repo 后画布会自动同步");
   } catch (error) {
