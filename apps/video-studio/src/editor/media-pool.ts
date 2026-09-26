@@ -229,7 +229,10 @@ export function seekVideo(
         const time = Math.floor(video.currentTime * 1_000_000 + 0.000_1);
         if (
           frame.timestamp <= time + 1 &&
-          ((frame.duration !== null &&
+          // An exact timestamp is already the requested picture, even when a
+          // MediaRecorder frame reports duration 0 and no new presentation fires.
+          (Math.abs(frame.timestamp - time) <= 1 ||
+            (frame.duration !== null &&
             frame.duration > 0 &&
             time < frame.timestamp + frame.duration) ||
             (presentedTime !== undefined && Math.abs(presentedTime - frame.timestamp) <= 1))
