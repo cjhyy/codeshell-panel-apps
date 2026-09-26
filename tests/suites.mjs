@@ -72,6 +72,7 @@ export const suites = [
         "scripts/run-typescript-tests.mjs",
         "tests/video-studio-voice-library-bridge.test.ts",
         "tests/video-studio-media-task-bridge.test.ts",
+        "tests/video-studio-workspace-document-bridge.test.ts",
         "tests/video-studio-media-file-storage.test.ts",
         "tests/video-studio-external-media.test.ts",
         "tests/video-studio-timeline-menu.test.ts",

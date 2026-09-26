@@ -8,6 +8,47 @@ import { canonicalRenderMediaJob, isCanonicalRenderTask } from "./editor/render-
 type Recipe = { id: string; action: string; type: string };
 type State = { cwd: string; key: string; revision: number; recipes: Recipe[] };
 const JOURNAL = "video-studio-native-media-v1";
+function journalRecipes(stored: any): Recipe[] {
+  const invalid = () => {
+    throw new Error("媒体任务记录格式不兼容或已损坏，原记录已保留；请检查项目备份后重新打开面板");
+  };
+  if (
+    !stored ||
+    !Number.isSafeInteger(stored.revision) ||
+    stored.revision < 0 ||
+    !Object.hasOwn(stored, "data") ||
+    (stored.revision === 0) !== (stored.data === null)
+  )
+    invalid();
+  if (stored.data === null) return [];
+  const data = stored.data;
+  if (
+    !data ||
+    typeof data !== "object" ||
+    Array.isArray(data) ||
+    data.schemaVersion !== 1 ||
+    Object.keys(data).some((key) => !["schemaVersion", "recipes"].includes(key)) ||
+    !Array.isArray(data.recipes) ||
+    data.recipes.length > 500
+  )
+    invalid();
+  const ids = new Set<string>();
+  return data.recipes.map((recipe: any) => {
+    if (
+      !recipe ||
+      typeof recipe !== "object" ||
+      Array.isArray(recipe) ||
+      Object.keys(recipe).some((key) => !["id", "action", "type"].includes(key)) ||
+      ["id", "action", "type"].some(
+        (key) => typeof recipe[key] !== "string" || !recipe[key].trim() || recipe[key].length > 256,
+      ) ||
+      ids.has(recipe.id)
+    )
+      invalid();
+    ids.add(recipe.id);
+    return { id: recipe.id, action: recipe.action, type: recipe.type };
+  });
+}
 const REQUIRED = [
   "tasks.start",
   "tasks.get",
@@ -92,18 +133,7 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
         .join("");
       const stored = (await sdk.call("media.document.get", { key: JOURNAL })) as any;
       if (disposed || (await raw.getContext()).cwd !== cwd) throw runtimeCancelled();
-      const recipes =
-        stored.data?.schemaVersion === 1 && Array.isArray(stored.data.recipes)
-          ? stored.data.recipes
-              .filter(
-                (r: any) =>
-                  r &&
-                  typeof r.id === "string" &&
-                  typeof r.action === "string" &&
-                  typeof r.type === "string",
-              )
-              .slice(-500)
-          : [];
+      const recipes = journalRecipes(stored);
       state = { cwd, key, revision: stored.revision, recipes };
       preparation.clear();
       processed.clear();
@@ -583,9 +613,11 @@ export function createMediaTaskBridge(raw: PanelBridge): { bridge: PanelBridge; 
             continue;
           jobs.push(await normalize(job, scope, false));
         }
-        const legacy = ((await advertised("media.jobs.list"))
-          ? await sdk.call("media.jobs.list", params).catch(() => ({ jobs: [] }))
-          : { jobs: [] }) as any;
+        const legacy = (
+          (await advertised("media.jobs.list"))
+            ? await sdk.call("media.jobs.list", params).catch(() => ({ jobs: [] }))
+            : { jobs: [] }
+        ) as any;
         jobs.push(...(legacy.jobs ?? []));
         return {
           total: jobs.length,

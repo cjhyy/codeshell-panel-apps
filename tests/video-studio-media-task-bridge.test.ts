@@ -170,7 +170,16 @@ function fixture(legacyMethods: string[] = []) {
       }
       if (method === "media.jobs.list")
         return {
-          jobs: [{ id: "legacy-job", type: "tts", status: "succeeded", attempt: 1, createdAt: 5, updatedAt: 5 }],
+          jobs: [
+            {
+              id: "legacy-job",
+              type: "tts",
+              status: "succeeded",
+              attempt: 1,
+              createdAt: 5,
+              updatedAt: 5,
+            },
+          ],
         };
       if (method === "media.jobs.recipe")
         return {
@@ -427,13 +436,17 @@ test("SDK explains stale installed tasks in Chinese and preserves structured and
     const sdk = createPanelRuntime({
       getContext: async () => ({ availableMethods: ["tasks.start", "tasks.get", "resources.get"] }),
       on: () => () => {},
-      call: async () => { throw stale; },
-      ...(structured ? {
-        callResult: async () => ({
-          ok: false as const,
-          error: { code: stale.code, message: stale.message, retryAfterMs: stale.retryAfterMs },
-        }),
-      } : {}),
+      call: async () => {
+        throw stale;
+      },
+      ...(structured
+        ? {
+            callResult: async () => ({
+              ok: false as const,
+              error: { code: stale.code, message: stale.message, retryAfterMs: stale.retryAfterMs },
+            }),
+          }
+        : {}),
     });
     try {
       await assert.rejects(sdk.start({ entry: "editor-runtime" }), (error: any) => {
@@ -761,7 +774,10 @@ test("task lists ask the Host for old media jobs only when it advertises them", 
   try {
     for (let round = 0; round < 3; round++) {
       const page = (await modern.bridge.call("media.jobs.list", { limit: 50 })) as any;
-      assert.equal(page.jobs.some((job: any) => job.id === "legacy-job"), false);
+      assert.equal(
+        page.jobs.some((job: any) => job.id === "legacy-job"),
+        false,
+      );
     }
     assert.equal(
       modern.calls.some((call) => call.method.startsWith("media.jobs.")),
@@ -769,15 +785,60 @@ test("task lists ask the Host for old media jobs only when it advertises them", 
       "No unadvertised media.jobs.* request reaches the Host",
     );
     await assert.rejects(modern.bridge.call("media.jobs.get", { id: "legacy-job" }), /not found/);
-    assert.equal(modern.calls.some((call) => call.method === "media.jobs.get"), false);
+    assert.equal(
+      modern.calls.some((call) => call.method === "media.jobs.get"),
+      false,
+    );
   } finally {
     modern.dispose();
   }
   const legacy = fixture(["media.jobs.list"]);
   try {
     const page = (await legacy.bridge.call("media.jobs.list", { limit: 50 })) as any;
-    assert.equal(page.jobs.some((job: any) => job.id === "legacy-job"), true);
+    assert.equal(
+      page.jobs.some((job: any) => job.id === "legacy-job"),
+      true,
+    );
   } finally {
     legacy.dispose();
+  }
+});
+
+test("unreadable or incompatible media journals never fall back to an empty writable task list", async () => {
+  const recipe = { id: "saved-job", action: "prepare", type: "prepare" };
+  for (const value of [
+    { revision: 2, data: { schemaVersion: 2, recipes: [recipe] } },
+    { revision: 2, data: { schemaVersion: 1, recipes: [{ ...recipe, unknown: true }] } },
+    { revision: 2, data: { schemaVersion: 1, recipes: [recipe, recipe] } },
+    {
+      revision: 2,
+      data: { schemaVersion: 1, recipes: [{ id: "", action: "prepare", type: "prepare" }] },
+    },
+    {
+      revision: 2,
+      data: {
+        schemaVersion: 1,
+        recipes: Array.from({ length: 501 }, (_, i) => ({ ...recipe, id: `job-${i}` })),
+      },
+    },
+    { revision: 0, data: { schemaVersion: 1, recipes: [] } },
+    { revision: 2, data: null },
+  ]) {
+    const f = fixture();
+    const key = "/project-a:video-studio-native-media-v1";
+    f.documents.set(key, structuredClone(value));
+    try {
+      await assert.rejects(
+        f.bridge.call("media.prepare", { assetIds: [sourceId] }),
+        /媒体任务记录/,
+      );
+      assert.deepEqual(f.documents.get(key), value);
+      assert.equal(
+        f.calls.some((c) => c.method === "tasks.start" || c.method === "media.document.set"),
+        false,
+      );
+    } finally {
+      f.dispose();
+    }
   }
 });

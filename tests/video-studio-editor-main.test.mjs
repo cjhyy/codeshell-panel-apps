@@ -187,6 +187,8 @@ async function openPage(t, options = {}) {
         },
         call: async (method, args = {}) => {
           calls.push({ method, args: structuredClone(args) });
+          if (method === "tasks.list" && window.__productionReleased)
+            window.__productionTaskLists = (window.__productionTaskLists ?? 0) + 1;
           if (options.exportHistory && method === "tasks.list")
             return options.exportHistory
               .slice(args.offset, args.offset + args.limit)
@@ -307,6 +309,17 @@ async function openPage(t, options = {}) {
             return true;
           }
           if (method === "media.document.get") {
+            if (
+              options.holdProductionInitialize &&
+              !window.__productionReleased &&
+              args.key === "video-studio-production"
+            )
+              await new Promise((resolve) => {
+                window.__releaseProductionInitialize = () => {
+                  window.__productionReleased = true;
+                  resolve();
+                };
+              });
             if (options.failRead && args.key === "video-studio-current")
               throw Error("工程读取暂时失败");
             const found =
@@ -3637,4 +3650,33 @@ test("closing the history dialog while backup bytes are loading prevents a late 
     document.querySelector("#toast").textContent.includes("窗口已变化"),
   );
   assert.deepEqual(await saved(page), edited);
+});
+
+test("late production initialization keeps an already opened history recovery dialog", async (t) => {
+  const page = await openPage(t, { fullNativeAccess: true, holdProductionInitialize: true });
+  await page.waitForFunction(() => !!window.__releaseProductionInitialize);
+  await oldAction(page, "versions").first().click();
+  const dialog = page.locator("#plan-dialog[open]");
+  await dialog.getByRole("button", { name: "恢复为当前工程", exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.__historyDialog = document.querySelector("#plan-dialog");
+    window.__releaseProductionInitialize();
+  });
+  await page.waitForFunction(() => window.__productionTaskLists >= 1);
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.__historyDialog === document.querySelector("#plan-dialog") && window.__historyDialog.open,
+    ),
+    true,
+  );
+  const downloading = page.waitForEvent("download");
+  await dialog.getByRole("button", { name: "导出原格式", exact: true }).click();
+  assert.deepEqual(JSON.parse(await readFile(await (await downloading).path(), "utf8")), seed);
+  await dialog.getByRole("button", { name: "恢复为当前工程", exact: true }).click();
+  await page.waitForFunction(() =>
+    document.querySelector("#toast").textContent.includes("已从升级前备份恢复工程"),
+  );
 });

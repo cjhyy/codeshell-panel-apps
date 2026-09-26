@@ -386,6 +386,13 @@ condition. Conflicts, unreadable indexes or missing/corrupt parts stop the save 
 restore. A lost publication reply is read back before reporting success. Retained
 parts and upgrade archives are not automatically deleted.
 
-This covers the editor document and its recovery history. It does not copy local
-browser media into a cloud project or establish complete cloud rendering/provider
-acceptance. Media assets and task journals have their own persistence contracts.
+The Panel also adapts its document calls for media task recipes, prepared-asset
+metadata, production progress, rough-cut drafts and sync recovery to these project
+files when the desktop document service is absent. Native desktop document calls
+keep their existing storage. A project or storage-capability change invalidates
+the open adapter instead of silently moving a pending write to another project.
+Malformed or newer task journals block new submissions without overwriting the
+original record.
+
+This does not copy local browser media into a cloud project or establish complete
+cloud rendering/provider acceptance. Media bytes remain in the Host resource store.
