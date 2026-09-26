@@ -999,6 +999,64 @@ export class ProductionController {
       throw error;
     }
   }
+  async importRecordedResource(
+    resourceId: string,
+    name: string,
+    check: () => void,
+  ): Promise<Asset> {
+    if (!/^asset-[a-f0-9]{64}$/.test(resourceId) || !name.trim() || name.length > 160)
+      throw new Error("请选择有效的项目录音和素材名称");
+    const host = this.requireHost(),
+      projectId = this.callbacks.getProject().id;
+    const finish = this.beginAssetRequest(projectId);
+    const current = () => {
+      check();
+      if (this.disposed || this.callbacks.getProject().id !== projectId)
+        throw new Error("工程已切换，录音文件仍保存在原项目");
+    };
+    try {
+      current();
+      const result = (await host.call("media.assets.get", { id: resourceId })) as {
+        asset?: ManagedAsset;
+        preparation?: PreparedMedia;
+      };
+      current();
+      const managed = result?.asset,
+        preparation = result?.preparation;
+      if (
+        !managed ||
+        managed.id !== resourceId ||
+        typeof managed.mimeType !== "string" ||
+        !managed.mimeType.startsWith("audio/") ||
+        !Number.isSafeInteger(managed.bytes) ||
+        managed.bytes < 1 ||
+        preparation?.assetId !== resourceId ||
+        preparation.inspection?.kind !== "audio" ||
+        !Number.isFinite(preparation.inspection.durationSeconds) ||
+        Number(preparation.inspection.durationSeconds) <= 0
+      )
+        throw new Error("录音检查未完成，原始文件仍在项目中，请重试或下载保留");
+      const previous = this.callbacks
+        .getProject()
+        .assets.find((asset) => asset.mediaId === resourceId);
+      if (previous) {
+        if (previous.kind !== "audio")
+          throw new Error("已有工程素材与录音类型不一致，请检查原素材");
+        return previous;
+      }
+      const asset = {
+        ...preparedAsset(managed, preparation, this.callbacks.getProject()),
+        name: name.trim(),
+      };
+      await this.callbacks.publishAssets(projectId, [asset], { label: "保存项目录音" });
+      current();
+      await this.prepare([asset.id]).catch((error) => this.reportError(error));
+      current();
+      return asset;
+    } finally {
+      finish();
+    }
+  }
   async setupTts(providerId: string): Promise<MediaJob> {
     const projectId = this.callbacks.getProject().id;
     const auto = this.auto;

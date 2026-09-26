@@ -169,6 +169,20 @@ async function openPage(t, options = {}) {
                     "filesystem.getKnownDirectory",
                   ]
                 : []),
+              ...(options.hostRecording
+                ? [
+                    "resources.recordAudio",
+                    "resources.list",
+                    "resources.get",
+                    "resources.open",
+                    "resources.read",
+                    "tasks.start",
+                    "tasks.get",
+                    "tasks.list",
+                    "tasks.cancel",
+                    "tasks.retry",
+                  ]
+                : []),
               ...(options.translation
                 ? ["agent.task.start", "agent.task.get", "agent.task.cancel"]
                 : []),
@@ -187,6 +201,61 @@ async function openPage(t, options = {}) {
         },
         call: async (method, args = {}) => {
           calls.push({ method, args: structuredClone(args) });
+          if (options.hostRecording) {
+            const asset = options.hostRecording.asset;
+            if (method === "resources.recordAudio") {
+              localStorage.setItem("editor-main-recording", JSON.stringify(asset));
+              return { asset };
+            }
+            if (method === "resources.list") {
+              const stored = JSON.parse(localStorage.getItem("editor-main-recording") ?? "null");
+              return { assets: stored ? [stored] : [], total: stored ? 1 : 0 };
+            }
+            if (method === "resources.get" && args.id === asset.id) return { asset };
+            if (method === "resources.open") return { opened: true };
+            if (method === "resources.preview") return { url: `/media/${asset.id}` };
+            if (method === "resources.read")
+              return {
+                dataBase64: options.hostRecording.base64,
+                totalBytes: asset.bytes,
+                offset: 0,
+                eof: true,
+              };
+            if (method === "tasks.list") return Object.values(window.__recordingJobs ?? {});
+            if (method === "tasks.get") return window.__recordingJobs[args.id];
+            if (method === "tasks.start") {
+              const request = args.input.request;
+              if (!["inspect", "status", "voices"].includes(request.action))
+                throw Error(`Unsupported recording fixture task ${request.action}`);
+              const result =
+                request.action === "inspect"
+                  ? {
+                      assetId: asset.id,
+                      inspection: { kind: "audio", durationSeconds: 1, hasAudio: true },
+                    }
+                  : request.action === "voices"
+                    ? { available: false, models: [], voices: [] }
+                    : {
+                        persistent: true,
+                        ffmpeg: { available: false },
+                        transcription: { available: false },
+                        tts: { available: false },
+                        hyperframes: { available: false },
+                      };
+              const job = {
+                id: crypto.randomUUID(),
+                entry: { name: args.entry },
+                input: args.input,
+                status: "succeeded",
+                attempt: 1,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                result: { result },
+              };
+              (window.__recordingJobs ??= {})[job.id] = job;
+              return job;
+            }
+          }
           if (method === "tasks.list" && window.__productionReleased)
             window.__productionTaskLists = (window.__productionTaskLists ?? 0) + 1;
           if (options.exportHistory && method === "tasks.list")
@@ -3682,4 +3751,90 @@ test("late production initialization keeps an already opened history recovery di
   await page.waitForFunction(() =>
     document.querySelector("#toast").textContent.includes("已从升级前备份恢复工程"),
   );
+});
+
+test("cloud recording survives editor save failure and reopening, then attaches once through native inspection", async (t) => {
+  const path = resolve(directory, "recording-main.wav");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=frequency=440:duration=1",
+    "-c:a",
+    "pcm_s16le",
+    path,
+  ]);
+  const bytes = await readFile(path);
+  const asset = {
+    id: `asset-${createHash("sha256").update(bytes).digest("hex")}`,
+    name: "recording.wav",
+    mimeType: "audio/wav",
+    bytes: bytes.length,
+    createdAt: 1,
+  };
+  const page = await openPage(t, {
+    hostRecording: { asset, base64: bytes.toString("base64") },
+    mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
+  });
+  await production(page, "recording");
+  assert.equal(await page.locator("#recording-mode").count(), 0);
+  await oldAction(page, "rec-host-start").click();
+  const row = page.locator(`[data-recording-resource="${asset.id}"]`);
+  await row.waitFor();
+  await page.evaluate(() => window.__mainHost.fail(true));
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "模拟磁盘保存失败" })
+    .waitFor()
+    .catch(async (e) => {
+      throw Error(`${e.message}\n${await page.locator("body").innerText()}`);
+    });
+  assert.equal(
+    (await saved(page)).assets.some((a) => a.resourceId === asset.id),
+    false,
+  );
+  await row.getByRole("button", { name: "打开／下载音频", exact: true }).click();
+  assert.equal(
+    await page.evaluate(
+      () => window.__mainHost.calls.filter((c) => c.method === "resources.open").length,
+    ),
+    1,
+  );
+  await page.reload();
+  await waitSaved(page);
+  await production(page, "recording");
+  await oldAction(page, "rec-host-refresh").click();
+  await row.waitFor();
+  await page.locator("#host-recording-name").fill("保留的本人录音");
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.waitForFunction(
+    (id) => window.__mainHost.current().assets.some((a) => a.resourceId === id),
+    asset.id,
+  );
+  await page.getByText("录音已加入本工程素材库。", { exact: true }).waitFor();
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.getByText("录音已加入本工程素材库。", { exact: true }).waitFor();
+  assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal(
+    (await saved(page)).assets.find((a) => a.resourceId === asset.id).name,
+    "保留的本人录音",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.__mainHost.calls.filter(
+          (c) => c.method === "resources.recordAudio" || c.method.startsWith("resources.upload."),
+        ).length,
+    ),
+    0,
+  );
+  await returnEditor(page);
+  await page.reload();
+  await waitSaved(page);
+  assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
 });

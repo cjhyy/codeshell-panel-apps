@@ -72,6 +72,7 @@ import { createTimelineContextMenu, isTimelineMenuTargetCurrent } from "./timeli
 import { createDesktopFolderSource } from "./folder-source";
 import { prepareFolderFiles, sameFileContents } from "./folder-files";
 import { createRecordingUI } from "./recording-ui";
+import { createHostAudioRecording } from "./host-audio-recording";
 import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
 import { cachedMediaFile } from "./recording-cache";
@@ -246,6 +247,7 @@ let panelVisible = true;
 let thumbnailObserver: IntersectionObserver | undefined;
 const visibleThumbnailCards = new Set<HTMLElement>();
 let sharedVoiceLibraryAvailable = false;
+let hostAudioRecordingAvailable = false;
 const sharedVoiceLibrary = panel
   ? createVoiceLibraryBridge(panel, { onProgress: showVoiceLibraryProgress })
   : undefined;
@@ -983,44 +985,72 @@ window.addEventListener(
   { once: true },
 );
 
+const recordingDescription = () =>
+  voiceReferenceRecording?.projectId === project.id
+    ? "录下 3–30 秒清晰的本人声音。可以自然朗读下方文案；保存后会返回声音克隆，确认录音内容。"
+    : narrationRecordingProjectId === project.id
+      ? "照着已确认的文案录口播。保存后用实际录音重排画面与字幕。"
+      : "录下自己的声音或画面，原片会保留在素材库。";
+const recordingSaveLabel = () =>
+  voiceReferenceRecording?.projectId === project.id
+    ? "保存录音，继续声音克隆"
+    : narrationRecordingProjectId === project.id
+      ? "保存口播，继续制作"
+      : "保存到素材库";
+function recordingSaved() {
+  if (voiceReferenceRecordingSaved) {
+    voiceReferenceRecordingSaved = false;
+    voiceReferenceRecording = undefined;
+    tab = "voiceover";
+    render();
+    return;
+  }
+  if (narrationRecordingSaved) {
+    narrationRecordingSaved = false;
+    narrationRecordingProjectId = "";
+    tab = "ai";
+    render();
+  }
+}
+const hostAudioRecording = createHostAudioRecording({
+  bridge: () => panel,
+  enabled: () => hostAudioRecordingAvailable,
+  scope: () => `${generation}:${project.id}`,
+  maxDurationSeconds: () => (voiceReferenceRecording?.projectId === project.id ? 30 : 600),
+  description: recordingDescription,
+  saveLabel: recordingSaveLabel,
+  imported: (id) => project.assets.some((asset) => asset.mediaId === id),
+  changed: () => {
+    if (tab === "recording") render();
+  },
+  saved: recordingSaved,
+  publish: async (source, name, check) => {
+    assertEditable();
+    const intended = narrationRecordingProjectId === project.id,
+      voiceIntent = voiceReferenceRecording;
+    const recordingGeneration = generation;
+    const asset = await production.importRecordedResource(source.id, name, check);
+    check();
+    await finishSavedRecording(asset, intended, voiceIntent, recordingGeneration);
+    check();
+  },
+});
 const recording = createRecordingUI({
   projectId: () => project.id,
-  description: () =>
-    voiceReferenceRecording?.projectId === project.id
-      ? "录下 3–30 秒清晰的本人声音。可以自然朗读下方文案；保存后会返回声音克隆，确认录音内容。"
-      : narrationRecordingProjectId === project.id
-        ? "照着已确认的文案录口播。保存后用实际录音重排画面与字幕。"
-        : "录下自己的声音或画面，原片会保留在素材库。",
-  saveLabel: () =>
-    voiceReferenceRecording?.projectId === project.id
-      ? "保存录音，继续声音克隆"
-      : narrationRecordingProjectId === project.id
-        ? "保存口播，继续制作"
-        : "保存到素材库",
+  description: recordingDescription,
+  saveLabel: recordingSaveLabel,
   audioOnly: () => voiceReferenceRecording?.projectId === project.id,
+  hostAudio: hostAudioRecording,
   changed: () => {
     if (tab === "recording") render();
   },
   toast,
-  saved: () => {
-    if (voiceReferenceRecordingSaved) {
-      voiceReferenceRecordingSaved = false;
-      voiceReferenceRecording = undefined;
-      tab = "voiceover";
-      render();
-      return;
-    }
-    if (narrationRecordingSaved) {
-      narrationRecordingSaved = false;
-      narrationRecordingProjectId = "";
-      tab = "ai";
-      render();
-    }
-  },
+  saved: recordingSaved,
   save: async (blob, name) => {
     assertEditable();
     const intended = narrationRecordingProjectId === project.id;
     const voiceIntent = voiceReferenceRecording;
+    const recordingGeneration = generation;
     const forVoice = voiceIntent?.projectId === project.id && voiceIntent.generation === generation;
     let asset: Asset;
     if (production.enabled && !forVoice)
@@ -1069,34 +1099,51 @@ const recording = createRecordingUI({
       }
       commit(savedProject, forVoice);
     }
-    if (forVoice && voiceIntent.generation === generation && voiceIntent.projectId === project.id) {
-      try {
-        await voicePreparation.selectReference(asset.id);
-        voiceReferenceRecordingSaved = true;
-        toast("参考录音已保存，请确认这段录音实际说出的内容");
-      } catch (error) {
-        // The recording is already durable; keep it usable if the voice settings write fails.
-        voiceReferenceRecordingSaved = true;
-        toast(
-          `录音已保存，请在声音克隆中重新选择：${userFacingError(error)}`,
-        );
-      }
-    } else if (intended) {
-      narrationRecordingSaved = true;
-      try {
-        await saveNarration(
-          (current) => planBindNarrationRecording(current, asset.id),
-          "绑定本人录音",
-        );
-        toast("口播已保存，点击“用我的录音完成视频”重排画面和字幕");
-      } catch (error) {
-        toast(
-          `原片已保存到素材库；${userFacingError(error)}，可重新确认后选择这份录音`,
-        );
-      }
-    } else toast("录制原片已保存，可在素材库加入时间轴，再到口播页整理");
+    await finishSavedRecording(asset, intended, voiceIntent, recordingGeneration);
   },
 });
+async function finishSavedRecording(
+  asset: Asset,
+  intended: boolean,
+  voiceIntent: typeof voiceReferenceRecording,
+  recordingGeneration: number,
+) {
+  const check = () => {
+    if (recordingGeneration !== generation) throw new Error("工程已切换，录音保留在原项目中");
+  };
+  check();
+  if (
+    voiceIntent &&
+    voiceIntent.generation === generation &&
+    voiceIntent.projectId === project.id
+  ) {
+    try {
+      await voicePreparation.selectReference(asset.id);
+      check();
+      voiceReferenceRecordingSaved = true;
+      toast("参考录音已保存，请确认这段录音实际说出的内容");
+    } catch (error) {
+      check();
+      // The recording is already durable; keep it usable if the voice settings write fails.
+      voiceReferenceRecordingSaved = true;
+      toast(`录音已保存，请在声音克隆中重新选择：${userFacingError(error)}`);
+    }
+  } else if (intended) {
+    try {
+      await saveNarration(
+        (current) => planBindNarrationRecording(current, asset.id),
+        "绑定本人录音",
+      );
+      check();
+      narrationRecordingSaved = true;
+      toast("口播已保存，点击“用我的录音完成视频”重排画面和字幕");
+    } catch (error) {
+      check();
+      narrationRecordingSaved = true;
+      toast(`原片已保存到素材库；${userFacingError(error)}，可重新确认后选择这份录音`);
+    }
+  } else toast("录制原片已保存，可在素材库加入时间轴，再到口播页整理");
+}
 async function fullTranscript(assetId: string) {
   if (!production.enabled) throw new Error("自动转写需要桌面面板；浏览器仍可录制、剪辑和导入字幕");
   let page = await production.transcript(assetId, 0, 100);
@@ -4784,7 +4831,7 @@ registerProjectReadTool(productionToolPanel, production, () => ({
     originalAudioEnhancement: production.enabled && production.status.ffmpeg.available,
     ttsSetup: production.enabled,
     recording: {
-      modes: ["microphone", "camera", "screen"],
+      modes: hostAudioRecordingAvailable ? ["microphone"] : ["microphone", "camera", "screen"],
       userInitiated: true,
       persistent: panel ? "host" : "indexeddb",
     },
@@ -5890,6 +5937,12 @@ async function boot(): Promise<void> {
   let storageDiscovered = !panel;
   try {
     const initialContext = await panel?.getContext();
+    hostAudioRecordingAvailable = [
+      "resources.recordAudio",
+      "resources.list",
+      "resources.get",
+      "resources.open",
+    ].every((method) => initialContext?.availableMethods?.includes(method));
     panelVisible = initialContext?.visible !== false;
     sharedVoiceLibraryAvailable =
       Boolean(sharedVoiceLibrary) &&

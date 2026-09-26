@@ -7,6 +7,7 @@ import {
 } from "./recording";
 import { escapeHtml as esc, html, icon } from "./icons";
 import { button } from "./views";
+import type { createHostAudioRecording } from "./host-audio-recording";
 interface RecordingContext {
   projectId(): string;
   save(blob: Blob, name: string, kind: "audio" | "video"): Promise<void>;
@@ -16,6 +17,7 @@ interface RecordingContext {
   saveLabel?(): string;
   audioOnly?(): boolean;
   toast?(message: string): void;
+  hostAudio?: ReturnType<typeof createHostAudioRecording>;
 }
 const elapsed = (seconds: number) =>
   `${Math.floor(seconds / 60)
@@ -62,6 +64,7 @@ export function createRecordingUI(context: RecordingContext) {
     if (!disposed) context.changed();
   });
   const busy = () =>
+    Boolean(context.hostAudio?.busy) ||
     saving ||
     countdown > 0 ||
     ["preparing", "recording", "paused", "stopping"].includes(capture.snapshot.phase);
@@ -209,6 +212,7 @@ export function createRecordingUI(context: RecordingContext) {
     }
   }
   function input(target: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): boolean {
+    if (context.hostAudio?.enabled() && context.hostAudio.input(target)) return true;
     if (target.id === "recording-script") {
       script = target.value;
       const content = document.querySelector<HTMLElement>("#recording-prompter-text");
@@ -250,6 +254,7 @@ export function createRecordingUI(context: RecordingContext) {
   }
   async function action(value: string): Promise<boolean> {
     if (!value.startsWith("rec-")) return false;
+    if (context.hostAudio?.enabled()) return context.hostAudio.action(value);
     try {
       if (value === "rec-devices") await refreshDevices();
       else if (value === "rec-prepare") await prepare();
@@ -322,6 +327,7 @@ export function createRecordingUI(context: RecordingContext) {
     }
   }
   function render(): string {
+    if (context.hostAudio?.enabled()) return context.hostAudio.render(script);
     syncResultURL();
     const snapshot = capture.snapshot;
     const recording = snapshot.phase === "recording",
@@ -465,12 +471,14 @@ ${esc(script)}</textarea
       </details>`;
   }
   function assertSafeToLeave(): void {
+    context.hostAudio?.assertSafeToLeave();
     if (busy()) throw new Error("请先结束当前录制或保存，再切换工程");
     if (capture.snapshot.result)
       throw new Error("这次录制还未保存，请先保存、下载后丢弃，或直接丢弃后切换工程");
     capture.cancelPreview();
   }
   function dispose(): void {
+    context.hostAudio?.dispose();
     disposed = true;
     attempt++;
     cancelCountdown();
