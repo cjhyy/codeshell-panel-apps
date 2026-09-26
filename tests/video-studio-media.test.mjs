@@ -1536,6 +1536,8 @@ test(
             const { MediaLibrary, createProject, captureAssetFrame } = window.videoMedia;
             const importing = new MediaLibrary(),
               library = new MediaLibrary();
+            const drawImage = CanvasRenderingContext2D.prototype.drawImage;
+            let mutableReads = 0;
             try {
               const asset = await importing.import(document.querySelector("#fixture").files[0]);
               asset.mediaId = "managed-source";
@@ -1548,6 +1550,17 @@ test(
               ];
               await library.seek(project, 30);
               const before = library.items.get(asset.id).element.currentTime;
+              // Preserve real decode/seek and JPEG encoding. A paused mutable
+              // surface may still be blank; only a verified frozen frame is safe.
+              CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+                if (source instanceof HTMLVideoElement) {
+                  mutableReads++;
+                  this.fillStyle = "black";
+                  this.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                  return;
+                }
+                return drawImage.call(this, source, ...args);
+              };
               const capture = await captureAssetFrame(library, asset.id, 2.5);
               const after = library.items.get(asset.id).element.currentTime;
               const image = new Image();
@@ -1566,6 +1579,7 @@ test(
               return {
                 before,
                 after,
+                mutableReads,
                 fileIsAbsent: !library.items.get(asset.id).file,
                 width: capture.width,
                 height: capture.height,
@@ -1574,11 +1588,13 @@ test(
                 pixels: pixels.some((value, index) => index % 4 !== 3 && value > 40),
               };
             } finally {
+              CanvasRenderingContext2D.prototype.drawImage = drawImage;
               importing.clear();
               library.clear();
             }
           }),
         );
+        assert.equal(result.mutableReads, 0, JSON.stringify(result));
         assert.equal(result.fileIsAbsent, true);
         assert.ok(
           Math.abs(result.before - 1) < 0.02 && Math.abs(result.after - result.before) < 0.001,
