@@ -577,12 +577,24 @@ function referencedDesignResourceIds(value = design) {
   return referencedIds;
 }
 
+function captureDocumentScope() {
+  const expectedWorkspaceEpoch = workspaceEpoch;
+  const expectedDocumentEpoch = documentEpoch;
+  return () => {
+    assertWorkspaceEpoch(expectedWorkspaceEpoch);
+    if (documentEpoch !== expectedDocumentEpoch)
+      throw new Error("设计文件已在操作期间切换；旧操作已取消");
+  };
+}
+
 async function loadReferencedDesignResources() {
+  const assertScope = captureDocumentScope();
   if (!currentResourceCache) return;
   const referencedIds = referencedDesignResourceIds();
   await Promise.all(
     [...referencedIds].map(async (resourceId) => {
       const resource = await currentResourceCache.load(resourceId);
+      assertScope();
       resourceDataUrls.set(resourceId, resource.dataUrl);
       if (
         resource.descriptor.kind === "font" &&
@@ -598,6 +610,7 @@ async function loadReferencedDesignResources() {
           },
         );
         await fontFace.load();
+        assertScope();
         document.fonts.add(fontFace);
         loadedFontResourceIds.add(resourceId);
       }
@@ -606,6 +619,7 @@ async function loadReferencedDesignResources() {
 }
 
 async function ensureDesignPageLoaded(pageId) {
+  const assertScope = captureDocumentScope();
   let target = design.pages.find((page) => page.id === pageId);
   if (!target) throw new Error(`页面不存在：${pageId}`);
   if (!currentPageCache || isDesignPageLoaded(target)) return target;
@@ -616,6 +630,7 @@ async function ensureDesignPageLoaded(pageId) {
       ? [pageId]
       : [design.activePageId, pageId],
   );
+  assertScope();
   const records = new Map(
     currentPageCache.loadedPageIds().map((loadedPageId) => [
       loadedPageId,
@@ -642,14 +657,17 @@ async function ensureDesignPageLoaded(pageId) {
     }
   }
   await loadReferencedDesignResources();
+  assertScope();
   return design.pages.find((page) => page.id === pageId);
 }
 
 async function ensureAllDesignPagesLoaded() {
+  const assertScope = captureDocumentScope();
   if (!currentPageCache) return;
   syncLoadedPageRecords();
   const pageIds = design.pages.map((page) => page.id);
   await currentPageCache.ensure(pageIds);
+  assertScope();
   const records = new Map(
     currentPageCache.loadedPageIds().map((pageId) => [
       pageId,
@@ -677,9 +695,11 @@ async function ensureAllDesignPagesLoaded() {
 }
 
 async function compactIndexedPageRuntime() {
+  const assertScope = captureDocumentScope();
   if (!currentPageCache) return;
   syncLoadedPageRecords();
   await currentPageCache.ensure([design.activePageId]);
+  assertScope();
   const records = new Map(
     currentPageCache.loadedPageIds().map((pageId) => [
       pageId,
@@ -702,11 +722,14 @@ async function compactIndexedPageRuntime() {
 }
 
 async function activateDesignPage(pageId) {
+  const assertScope = captureDocumentScope();
   let target = design.pages.find((page) => page.id === pageId);
   if (!target) throw new Error(`页面不存在：${pageId}`);
   if (pageId === design.activePageId) return false;
   await ensureDesignPageLoaded(pageId);
+  assertScope();
   await loadReferencedDesignResources();
+  assertScope();
   target = design.pages.find((page) => page.id === pageId);
   syncActivePageNodes();
   design.activePageId = pageId;
