@@ -64,6 +64,7 @@ import { writeProjectSnapshotDocuments } from "./snapshot-storage.mjs";
 import { persistSnapshotBundle, rawSnapshotBundle } from "./snapshot-backup.mjs";
 import { mountSnapshotRecovery } from "./snapshot-recovery-ui.mjs";
 import { selectSnapshotLocalState, snapshotRestoreId } from "./snapshot-recovery-model.mjs";
+import { createBrowserDraftStorage } from "./browser-draft-storage.mjs";
 import { buildProjectBootstrapTask, resolveProjectBootstrapStatus } from "./project-bootstrap.mjs";
 import {
   CHANNEL_VERIFICATION_STATE_IDS,
@@ -366,6 +367,8 @@ const PANEL_VIEWS = new Set([
   "resumes",
   "interviews",
 ]);
+
+const browserDrafts = createBrowserDraftStorage();
 
 const seedState = {
   snapshotRestoreId: "",
@@ -1504,6 +1507,7 @@ let jobSort = "added";
 let toastTimer = null;
 let lastRuntimeFailure = { key: "", at: 0 };
 let saveTimer = null;
+let draftSaveVersion = 0;
 let projectSnapshotTimer = null;
 let projectSnapshotSaveInFlight = null;
 let projectSnapshotRequestedVersion = 0;
@@ -3533,19 +3537,22 @@ function persist({ quiet = true } = {}) {
   const scope = currentProject();
   const store = draftStorage;
   const copy = compactPanelLocalState(state);
+  const version = ++draftSaveVersion;
+  if (!browserDrafts.persistent) draftStatus("正在保存项目草稿；当前页面的临时副本在关闭后不会保留。");
   saveTimer = setTimeout(async () => {
     if (!scope.active()) return;
     try {
       await store.save(copy);
-      if (!scope.active()) return;
+      if (!scope.active() || version !== draftSaveVersion) return;
       elements.lastSaved.textContent = "刚刚保存";
+      if (!browserDrafts.persistent) draftStatus("草稿已保存到项目；当前页面的临时副本在关闭后不会保留。");
       if (!quiet) notify("已保存到求职面板");
     } catch (error) {
       if (!scope.active()) return;
       draftStatus(error.message);
       notify(error instanceof Error ? error.message : "保存失败", "error");
     }
-  }, 80);
+  }, browserDrafts.persistent ? 80 : 0);
 }
 
 function projectSnapshotPayload() {
@@ -16984,7 +16991,7 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
   renderAll();
   try {
     const store = createDraftStorage({
-      call: scope.call, methods: context.availableMethods, storage: localStorage,
+      call: scope.call, methods: context.availableMethods, storage: browserDrafts.storage,
       check: scope.check, randomId: secureDraftId,
       beforeReplace: async (previous, next) => {
         if (!previous || snapshotRestoreId(previous) === snapshotRestoreId(next)) return;
@@ -17012,7 +17019,9 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
       ? "项目已恢复；旧草稿未自动覆盖，仍可下载草稿备份。"
       : store.backup().legacyRaw
       ? "发现旧版未标明项目的草稿，未自动导入；可下载备份。"
-      : store.versioned ? "草稿按项目保存；冲突时保留当前输入。" : "当前主程序不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
+      : store.versioned ? browserDrafts.persistent
+        ? "草稿按项目保存；冲突时保留当前输入。"
+        : "草稿按项目保存；当前页面仅有临时副本，请等待保存完成后关闭。" : "当前主程序不支持草稿并发保护；浏览器跨项目恢复已停用，可下载备份。");
     document.querySelector(".app-shell").inert = false;
     renderAll();
     startProjectSnapshotWatch();
@@ -17047,7 +17056,8 @@ function downloadDraftBackup() {
     current: { cwd: context.cwd, sessionId: context.sessionId, owner: draftStorage?.owner, drafts: criticalDraftRecoverySnapshot() },
     detached: detachedDrafts,
     stored: draftStorage?.backup(),
-    legacyRaw: localStorage.getItem(CRITICAL_DRAFT_STORAGE_KEY),
+    browserPersistence: browserDrafts.persistent,
+    legacyRaw: browserDrafts.storage.getItem(CRITICAL_DRAFT_STORAGE_KEY),
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");

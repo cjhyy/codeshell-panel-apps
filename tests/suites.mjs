@@ -11,6 +11,7 @@ export const suites = [
       "tests/apps/job-hunt-hq/snapshot-recovery-model.test.mjs",
       "tests/apps/job-hunt-hq/snapshot-restore.test.mjs",
       "tests/apps/job-hunt-hq/draft-storage.test.mjs",
+      "tests/apps/job-hunt-hq/browser-draft-storage.test.mjs",
       "tests/apps/job-hunt-hq/draft-backup.test.mjs",
       "tests/apps/job-hunt-hq/draft-ui.test.mjs",
     ]],
