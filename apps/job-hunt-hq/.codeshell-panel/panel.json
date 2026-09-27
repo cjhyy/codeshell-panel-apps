@@ -25,9 +25,14 @@
     "credentials.cookies",
     "automations.manage",
     "process",
-    "resources"
+    "resources",
+    "credentials.connections"
   ],
   "nativeEntries": {
+    "interview-transcribe": {
+      "entry": "app/tools/interview-transcribe.mjs",
+      "sha256": "1b7ddc280937609978961bb90a8076b70f2da645df80dc00bd4165dcd6ffaff7"
+    },
     "resume-pdf": {
       "entry": "app/tools/resume-pdf.mjs",
       "sha256": "fa5277ab082278f3db128fadc08d5c9b40d56bdb163aa3ccfcc3d47b40999f7e"
