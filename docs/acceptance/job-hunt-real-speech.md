@@ -42,8 +42,9 @@ node scripts/verify-job-hunt-whisper.mjs \
   --output "$task_root/evidence"
 ```
 
-The manual GitHub workflow **Job Hunt real speech model** runs the same sequence
-on Linux. Its artifact contains `acceptance.json` and `provider.log`; success is
+The GitHub workflow **Job Hunt real speech model** runs the same sequence on
+Linux for pull requests that change the native entry or this verifier, and can
+also be started manually after it reaches the default branch. Its artifact contains `acceptance.json` and `provider.log`; success is
 reported only after actual inference and offline result recovery. It does not
 publish packages, deploy services or change any user project.
 

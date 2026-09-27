@@ -1,5 +1,10 @@
 name: Job Hunt real speech model
 on:
+  pull_request:
+    paths:
+      - .github/workflows/interview-real-model.yml
+      - scripts/verify-job-hunt-whisper.mjs
+      - apps/job-hunt-hq/app/tools/interview-transcribe.mjs
   workflow_dispatch:
 permissions:
   contents: read
