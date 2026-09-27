@@ -292,3 +292,8 @@ Chromium、Poppler（`pdftotext`、`pdfinfo`、`pdfimages`）和中文字体，�
 
 验证包括受控语音服务的实际 HTTP、取消和重入、任务恢复及完整练习页面；真实
 服务商账号、物理麦克风和目标服务器验收仍需单独完成。
+
+真实语音模型的可重复验收见
+[Job Hunt real speech-model acceptance](../../docs/acceptance/job-hunt-real-speech.md)：
+通过本地 CPU 模型和公开音频验证原生转写入口、WAV／WebM、结果保存与离线重读。
+该验证独立于受控提供商测试，不代表云端部署或中文识别质量验收。
