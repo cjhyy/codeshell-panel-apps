@@ -1,3 +1,6 @@
+import { supportsInterviewAudioTasks } from "./interview-audio-tasks.mjs";
+import { createInterviewAudioUI } from "./interview-audio-ui.mjs";
+let interviewAudioUI = null;
 import { parseDraftBackup, MAX_DRAFT_BACKUP_BYTES } from "./draft-backup.mjs";
 import { createDraftStorage, LEGACY_DRAFT_KEY } from "./draft-storage.mjs";
 import { prepareResumePdfTask, supportsResumePdfTasks } from "./resume-pdf-tasks.mjs";
@@ -7844,6 +7847,15 @@ function useRecommendedInterviewAnswerAsDraft() {
 }
 
 function renderPanelInterviewStage() {
+  const cloudAudio = supportsInterviewAudioTasks(context);
+  elements.panelInterviewMic.hidden = cloudAudio;
+  elements.panelInterviewVoiceStatus.hidden = cloudAudio;
+  document.querySelector("#interview-cloud-audio-root").hidden = !cloudAudio;
+  document.querySelector(".panel-interview-privacy").textContent = cloudAudio
+    ? "原始录音保存在当前项目。只有确认转写后才会发送给所选语音服务；文字先进入可编辑草稿，保存回答后才写入练习记录。"
+    : "未提交文字会作为一份本地草稿保留；录音只用于本次转写，不保存音频。点击保存后，回答才写入当前项目，不发送到 Session。";
+  interviewAudioUI?.render();
+
   const stage = panelInterviewStage;
   const question = panelInterviewQuestion();
   const shouldShow = Boolean(
@@ -8108,7 +8120,11 @@ function renderInterviewReadiness() {
 
   elements.testInterviewMicrophone.hidden = true;
   elements.testInterviewMicrophone.disabled = false;
-  if (!panelAudioStatus.checked) {
+  if (supportsInterviewAudioTasks(context)) {
+    setInterviewReadinessItem(elements.interviewReadinessVoice, elements.interviewReadinessVoiceTitle,
+      elements.interviewReadinessVoiceDetail, "action", "项目录音与后台转写",
+      "进入练习后打开工作台录音器，再选择项目语音连接。设备权限与实际转写需在操作时确认。");
+  } else if (!panelAudioStatus.checked) {
     setInterviewReadinessItem(
       elements.interviewReadinessVoice,
       elements.interviewReadinessVoiceTitle,
@@ -8306,6 +8322,11 @@ function renderInterviewTrainingInsights() {
 }
 
 async function probePanelAudioAvailability({ force = false } = {}) {
+  if (supportsInterviewAudioTasks(context)) {
+    panelAudioStatus = { checked: true, available: false, source: "project", model: "", message: "请在练习页使用项目录音与后台转写。" };
+    renderInterviewReadiness(); renderPanelInterviewStage(); return panelAudioStatus;
+  }
+
   if (!force && panelAudioStatus.checked) {
     renderInterviewReadiness();
     renderPanelInterviewStage();
@@ -16995,6 +17016,7 @@ function bindEvents() {
   window.addEventListener("pagehide", () => {
     clearInterval(projectSnapshotWatchTimer);
     stopPanelAudioRecording({ discard: true });
+    interviewAudioUI?.close();
   });
 }
 
@@ -17006,6 +17028,8 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
   projectEpoch++;
   resumePdfUI?.close();
   resumePdfUI = null;
+  interviewAudioUI?.close();
+  interviewAudioUI = null;
   if (!keepSnapshotRecovery) snapshotRecoveryUI.contextChanged();
   draftImportPending = null;
   draftImportBusy = false;
@@ -17066,6 +17090,27 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
     document.querySelector(".app-shell").inert = false;
     renderAll();
     startProjectSnapshotWatch();
+    if (supportsInterviewAudioTasks(context)) {
+      const audioSource = () => panelInterviewStage && !panelInterviewStage.saving ? {
+        questionId: panelInterviewStage.currentQuestionId,
+        practiceSessionId: panelInterviewStage.mockSessionId || "",
+        answer: elements.panelInterviewAnswer.value,
+        language: String(context.locale || "zh-CN").toLowerCase().startsWith("zh") ? "zh" : "en",
+      } : null;
+      interviewAudioUI = createInterviewAudioUI({
+        root: document.querySelector("#interview-cloud-audio-root"), scope, source: audioSource, notify,
+        questionTitle: (id) => state.questionBank.find(question => question.id === id)?.question || "原练习题（已不可用）",
+        apply: (answer, expected) => {
+          scope.check();
+          if (JSON.stringify(expected) !== JSON.stringify(audioSource())) throw new Error("题目或回答已变化，转写文字仍保留。");
+          panelInterviewStage.inputMode = expected.answer ? "mixed" : "voice";
+          elements.panelInterviewAnswer.value = answer;
+          updatePanelInterviewDraft(); renderPanelInterviewStage();
+          elements.panelInterviewAnswer.focus();
+        },
+      });
+      void interviewAudioUI.refresh().catch(error => { if (scope.active()) notify(error.message, "error"); });
+    }
     if (supportsResumePdfTasks(context)) {
       let pdfReceiptsDirty = false;
       resumePdfUI = createResumePdfUI({
