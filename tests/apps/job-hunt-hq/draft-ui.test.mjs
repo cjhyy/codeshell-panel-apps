@@ -43,6 +43,10 @@ async function fixture(t, options = {}) {
       project.storage['job-hunt-state-v1'] = { localStateVersion: 2,
         interviewDraft: { answer: 'draft-' + id, updatedAt: '2026-01-01T00:00:00Z' },
       };
+      if (options.audioTasks) {
+        project.tasks = {}; project.resources = {};
+        project.files['job-hunt-panel.json'].questionBank = [{ id: 'question-' + id, question: '请说明项目数据的完整恢复策略？', status: 'ready', type: 'technical', category: '系统可靠性', competency: '数据恢复', answerPoints: ['保存', '校验', '恢复'], recommendedAnswer: '先验证完整性，再恢复到明确的目标项目。', sourceRefs: ['user:fixture'] }];
+      }
       if (options.pdfTasks) {
         project.tasks = {};
         project.files['job-hunt-panel.json'].profile = { name: 'Example Candidate', role: 'Engineer', contact: 'example@example.com' };
@@ -53,6 +57,7 @@ async function fixture(t, options = {}) {
     let current = 'a'; const listeners = [], calls = [], tools = {};
     const methods = ['storage.getSnapshot', 'storage.compareAndSet'];
     if (options.pdfTasks) methods.push('tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'tasks.retry', 'resources.open');
+    if (options.audioTasks) methods.push('resources.recordAudio', 'resources.list', 'resources.get', 'resources.open', 'tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'credentials.connections.list');
     const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods });
     const snapshot = async (data, key) => {
       if (!(key in data)) return { exists: false, value: null, revision: null };
@@ -68,6 +73,16 @@ async function fixture(t, options = {}) {
       async call(method, params = {}) {
         const id = current, project = projects[id]; calls.push({ id, method, params: structuredClone(params) });
         if (window.__fixture.hold === method) await new Promise(resolve => { window.__fixture.release = resolve; });
+        if (options.audioTasks) {
+          if (method === 'resources.recordAudio') {
+            const asset = { id: 'asset-' + (id === 'a' ? 'a' : 'b').repeat(64), name: 'recording.webm', mimeType: 'audio/webm', bytes: 200 };
+            project.resources[asset.id] = asset;
+            return { asset };
+          }
+          if (method === 'resources.list') return { assets: Object.values(project.resources), total: Object.keys(project.resources).length };
+          if (method === 'resources.get') { if (!project.resources[params.id]) throw Error('Not found'); return { asset: project.resources[params.id] }; }
+          if (method === 'credentials.connections.list') return { connections: [{ id: 'audio-' + id, fingerprint: 'c'.repeat(32), model: 'fixture-stt', providerName: 'Test speech', tag: 'audio', entry: { tag: 'audio' }, adapterKind: 'openai', hasCredentials: true }] };
+        }
         if (method === 'tasks.list') return Object.values(project.tasks).slice(params.offset, params.offset + params.limit).map(({ input, result, ...summary }) => structuredClone(summary));
         if (method === 'tasks.get') return structuredClone(project.tasks[params.id]);
         if (method === 'tasks.find') return structuredClone(Object.values(project.tasks).find(job => job.requestKey === params.requestKey) || null);
@@ -697,4 +712,75 @@ test('sandbox draft status waits for the latest Host acknowledgement', async t =
   await page.evaluate(() => { window.__fixture.hold = null; window.__fixture.release(); });
   await page.waitForFunction(() => document.querySelector('#draft-storage-status').textContent.includes('草稿已保存到项目'));
   assert.equal(await page.evaluate(() => window.__fixture.projects.a.storage['job-hunt-state-v1'].resumeDraft.markdown), '# Latest pending');
+});
+
+
+test('cloud interview audio persists one task, restores results after project switching, and never overwrites a changed answer', async t => {
+  const page = await fixture(t, { audioTasks: true, losePdfStart: true }); await ready(page);
+  const practice = async () => {
+    await page.locator('.side-nav [data-view-target="interviews"]').click();
+    await page.locator('#quick-practice-interview-question').click();
+    await page.locator('#panel-interview-stage').waitFor({ state: 'visible' });
+  };
+  await practice();
+  assert.equal(await page.locator('#panel-interview-mic').isVisible(), false);
+  const audio = page.locator('.interview-cloud-audio');
+  await audio.getByRole('button', { name: '打开项目录音器', exact: true }).click();
+  await audio.getByRole('button', { name: '刷新录音、连接与任务', exact: true }).click();
+  await page.locator('#interview-audio-connection').selectOption('audio-a');
+  await page.locator('#interview-audio-resource').selectOption('asset-' + 'a'.repeat(64));
+  await page.locator('#panel-interview-answer').fill('我的原始回答');
+  await audio.getByRole('button', { name: '确认发送录音并转写', exact: true }).click();
+  await page.waitForFunction(() => Object.keys(window.__fixture.projects.a.tasks).length === 1);
+  await page.waitForFunction(() => !document.querySelector('#interview-audio-resource').disabled);
+  await audio.getByRole('button', { name: '确认发送录音并转写', exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector('#interview-audio-resource').disabled);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(c => c.method === 'tasks.start').length), 1);
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  await practice();
+  assert.equal(await page.locator('[data-audio-task-id]').count(), 0);
+  await page.evaluate(() => {
+    const job = Object.values(window.__fixture.projects.a.tasks)[0]; job.status = 'succeeded'; job.sequence = 2;
+    job.result = { result: { text: '这是云端转写结果', assetId: job.input.request.assetId,
+      source: job.input.request.source, connection: job.input.request.connection } };
+    window.__fixture.switch('a');
+  }); await ready(page); await practice();
+  await audio.getByRole('button', { name: '刷新录音、连接与任务', exact: true }).click();
+  await page.locator('#panel-interview-answer').fill('新的手动回答');
+  await audio.getByRole('button', { name: '加入当前回答', exact: true }).click();
+  await audio.getByRole('status').filter({ hasText: '题目或回答已经变化' }).waitFor();
+  assert.equal(await page.locator('#panel-interview-answer').inputValue(), '新的手动回答');
+  await page.locator('#panel-interview-answer').fill('我的原始回答');
+  await audio.getByRole('button', { name: '加入当前回答', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#panel-interview-answer').value === '我的原始回答\n这是云端转写结果');
+  await audio.getByRole('button', { name: '加入当前回答', exact: true }).click();
+  await audio.getByRole('status').filter({ hasText: '题目或回答已经变化' }).waitFor();
+  assert.equal(await page.locator('#panel-interview-answer').inputValue(), '我的原始回答\n这是云端转写结果');
+  await audio.getByRole('button', { name: '打开原录音', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__fixture.calls.filter(c => c.method === 'resources.open').length), 1);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.some(c => ['audio.transcribe', 'audio.requestMicrophoneAccess'].includes(c.method))), false);
+  if (process.env.JOB_HUNT_AUDIO_EVIDENCE) await page.screenshot({ path: process.env.JOB_HUNT_AUDIO_EVIDENCE, fullPage: true });
+});
+
+test('cloud interview cancellation keeps the recording and only explicit confirmation creates another request', async t => {
+  const page = await fixture(t, { audioTasks: true }); await ready(page);
+  await page.locator('.side-nav [data-view-target="interviews"]').click();
+  await page.locator('#quick-practice-interview-question').click();
+  const audio = page.locator('.interview-cloud-audio');
+  await audio.getByRole('button', { name: '打开项目录音器', exact: true }).click();
+  await audio.getByRole('button', { name: '刷新录音、连接与任务', exact: true }).click();
+  await page.locator('#interview-audio-connection').selectOption('audio-a');
+  await page.locator('#interview-audio-resource').selectOption('asset-' + 'a'.repeat(64));
+  await audio.getByRole('button', { name: '确认发送录音并转写', exact: true }).click();
+  await audio.getByRole('button', { name: '取消转写', exact: true }).click();
+  await page.waitForFunction(() => Object.values(window.__fixture.projects.a.tasks)[0]?.status === 'cancelled');
+  await audio.getByRole('button', { name: '选择原录音重新转写', exact: true }).click();
+  assert.equal(await page.evaluate(() => Object.keys(window.__fixture.projects.a.tasks).length), 1);
+  assert.equal(await page.evaluate(() => Object.keys(window.__fixture.projects.a.resources).length), 1);
+  await audio.getByRole('button', { name: '确认再次发送转写', exact: true }).click();
+  await page.waitForFunction(() => Object.keys(window.__fixture.projects.a.tasks).length === 2);
+  const tasks = await page.evaluate(() => Object.values(window.__fixture.projects.a.tasks));
+  assert.notEqual(tasks[0].requestKey, tasks[1].requestKey);
+  assert.equal(tasks[0].input.request.assetId, tasks[1].input.request.assetId);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.some(c => c.method === 'tasks.retry')), false);
 });

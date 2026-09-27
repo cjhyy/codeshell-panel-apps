@@ -50,7 +50,7 @@ jobs:
             const result = spawnSync(chromium.executablePath(), ['--headless=new', '--no-first-run', '--disable-background-networking', '--user-data-dir=' + profile, '--dump-dom', 'about:blank'], { encoding: 'utf8', timeout: 15000 });
             console.log(JSON.stringify({ status: result.status, signal: result.signal, stderr: result.stderr?.slice(-8192) }));
             if (result.status !== 0) process.exitCode = 1;
-          } finally { rmSync(profile, { recursive: true, force: true }); }
+          } finally { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
           NODE
       - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
 
