@@ -1,0 +1,48 @@
+name: Job Hunt real speech model
+on:
+  pull_request:
+    paths:
+      - .github/workflows/interview-real-model.yml
+      - scripts/verify-job-hunt-whisper.mjs
+      - apps/job-hunt-hq/app/tools/interview-transcribe.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-speech:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.16.0"
+      - name: Build pinned CPU speech server
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y cmake ffmpeg build-essential
+          git clone --depth 1 --branch v1.9.4 https://github.com/ggml-org/whisper.cpp.git "$RUNNER_TEMP/whisper"
+          test "$(git -C "$RUNNER_TEMP/whisper" rev-parse HEAD)" = 927cfce34f31707e17f2bff35c349632fb9e2c3a
+          cmake -S "$RUNNER_TEMP/whisper" -B "$RUNNER_TEMP/whisper/build" -DGGML_METAL=OFF -DGGML_BLAS=OFF -DWHISPER_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/whisper/build" --target whisper-server -j 2
+          curl -fL --retry 2 --max-time 180 -o "$RUNNER_TEMP/ggml-tiny.en.bin" https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin
+      - name: Verify real Panel native entry against real inference
+        run: |
+          node scripts/verify-job-hunt-whisper.mjs \
+            --server "$RUNNER_TEMP/whisper/build/bin/whisper-server" \
+            --model "$RUNNER_TEMP/ggml-tiny.en.bin" \
+            --fixture "$RUNNER_TEMP/whisper/samples/jfk.wav" \
+            --output "$RUNNER_TEMP/interview-real-model"
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interview-real-model-evidence
+          path: |
+            ${{ runner.temp }}/interview-real-model/acceptance.json
+            ${{ runner.temp }}/interview-real-model/provider.log
+          if-no-files-found: ignore
+          retention-days: 14
