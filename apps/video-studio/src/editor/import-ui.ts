@@ -67,10 +67,7 @@ export class EditorImportUI {
     });
     this.close.addEventListener("click", () => this.hide());
     this.unsubscribe = session.subscribe((state) => {
-      if (
-        this.pending &&
-        !sameIdentity(this.pending.identity, state.identity, false)
-      ) {
+      if (this.pending && !sameIdentity(this.pending.identity, state.identity, false)) {
         this.pending = undefined;
         this.root.hidden = true;
       }
@@ -127,6 +124,16 @@ export class EditorImportUI {
     this.retry.disabled = true;
     this.cancel.hidden = false;
     try {
+      // A completed inspection can overlap another durable publication (for
+      // example recording preparation). Wait for that receipt before planning
+      // this new edit; never replay the previous write or reuse its revision.
+      if (this.session.getState().phase === "committing") {
+        this.message.textContent = "素材已保存，正在等待工程保存完成…";
+        await this.session.flush();
+      }
+      if (this.disposed) return;
+      if (controller.signal.aborted)
+        throw new DOMException("此次导入已取消，原始素材已保留", "AbortError");
       const identity = this.session.getState().identity;
       if (!sameIdentity(identity, pending.identity, false))
         throw new Error("工程已切换，请重新导入素材");

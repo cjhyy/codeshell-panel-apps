@@ -63,6 +63,12 @@ async function fixture(t) {
         backupLegacy: async () => {},
         write: async (value) => {
           fixture.writes++;
+          if (fixture.holdWrite) {
+            fixture.holdWrite = false;
+            await new Promise((resolve) => {
+              fixture.releaseWrite = resolve;
+            });
+          }
           if (fixture.fail) throw new Error("磁盘已满");
           document = structuredClone(value);
           return { revision: ++storageRevision };
@@ -78,6 +84,11 @@ async function fixture(t) {
       rename: () =>
         session.dispatch(
           [{ type: "project.rename", name: "导入时继续编辑" }],
+          session.getState().identity,
+        ),
+      commitRename: () =>
+        session.dispatchDurable(
+          [{ type: "project.rename", name: "后台录音准备完成" }],
           session.getState().identity,
         ),
       replace: () => session.replace({ ...session.read(), id: "another" }),
@@ -190,3 +201,70 @@ test("a clean import notice clears itself while partial failures stay until clos
   await page.getByRole("button", { name: "关闭导入提示" }).click();
   assert.equal(await page.locator(".editor-import-status").isVisible(), false);
 });
+
+test("import waits for an in-flight durable publication and uses its saved revision", async (t) => {
+  const page = await fixture(t);
+  await choose(page);
+  await page.evaluate(() => {
+    fixture.holdWrite = true;
+    fixture.commit = fixture.commitRename();
+  });
+  await page.waitForFunction(() => !!fixture.releaseWrite);
+  await page.evaluate(() => fixture.finish());
+  await page.getByRole("status").filter({ hasText: "等待工程保存完成" }).waitFor();
+  assert.equal(await page.evaluate(() => fixture.writes), 1);
+  assert.equal(
+    await page.evaluate(() => fixture.read().assets.some((a) => a.id === "new-source")),
+    false,
+  );
+  await page.evaluate(async () => {
+    fixture.releaseWrite();
+    await fixture.commit;
+  });
+  await page.waitForFunction(() => fixture.read().assets.some((a) => a.id === "new-source"));
+  const result = await page.evaluate(() => ({
+    doc: fixture.read(),
+    stored: fixture.stored(),
+    uploads: fixture.uploads,
+    writes: fixture.writes,
+  }));
+  assert.equal(result.doc.name, "后台录音准备完成");
+  assert.deepEqual(result.doc, result.stored);
+  assert.equal(result.uploads, 1);
+  assert.equal(result.writes, 2);
+});
+
+for (const action of ["cancel", "dispose", "replace"]) {
+  test(`import waiting on a durable write cannot publish after ${action}`, async (t) => {
+    const page = await fixture(t);
+    await choose(page);
+    await page.evaluate(() => {
+      fixture.holdWrite = true;
+      fixture.commit = fixture.commitRename();
+    });
+    await page.waitForFunction(() => !!fixture.releaseWrite);
+    if (action === "replace") {
+      await page.evaluate(() => {
+        fixture.replacing = fixture.commit.then(() => fixture.replace());
+      });
+    }
+    await page.evaluate(() => fixture.finish());
+    await page.getByRole("status").filter({ hasText: "等待工程保存完成" }).waitFor();
+    if (action === "cancel") await page.getByRole("button", { name: "取消此次导入" }).click();
+    if (action === "dispose") await page.evaluate(() => fixture.dispose());
+    await page.evaluate(async () => {
+      fixture.releaseWrite();
+      await fixture.commit;
+      await fixture.replacing;
+    });
+    if (action === "cancel") await page.getByRole("button", { name: "重试加入工程" }).waitFor();
+    if (action === "replace")
+      await page.locator(".editor-import-status").waitFor({ state: "hidden" });
+    assert.equal(
+      await page.evaluate(() => fixture.read().assets.some((a) => a.id === "new-source")),
+      false,
+    );
+    assert.equal(await page.evaluate(() => fixture.uploads), 1);
+    assert.equal(await page.evaluate(() => fixture.writes), action === "replace" ? 2 : 1);
+  });
+}
