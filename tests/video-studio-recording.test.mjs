@@ -16,15 +16,42 @@ before(async () => {
       contents: `
         import {createRecordingUI} from './apps/video-studio/src/recording-ui.ts';
         import {CaptureRecorder} from './apps/video-studio/src/recording.ts';
+        import {createHostAudioRecording} from './apps/video-studio/src/host-audio-recording.ts';
         window.CaptureRecorder = CaptureRecorder;
         window.saved = [];
         window.saveNotifications = [];
         window.failSave = false;
         window.errors = [];
         window.projectId = 'recording-project';
+        window.hostAssets = JSON.parse(localStorage.getItem('fixture-host-audio') || '[]');
+        window.hostCalls = [];
         const root = document.querySelector('#root');
         const render = () => { root.innerHTML = ui.render(); ui.mount(); };
+        const hosted = createHostAudioRecording({
+          bridge: () => ({call: async (method, params) => {
+            window.hostCalls.push({method, params});
+            if (method === 'resources.recordAudio') {
+              const asset = {id: 'asset-' + 'a'.repeat(64), name: 'recording.webm', mimeType: 'audio/webm', bytes: 1000, createdAt: 10};
+              window.hostAssets = [asset]; localStorage.setItem('fixture-host-audio', JSON.stringify(window.hostAssets));
+              if (window.loseCaptureReply) throw Error('录音保存响应丢失');
+              return {asset};
+            }
+            if (method === 'resources.list') return {assets: window.hostAssets, total: window.hostAssets.length};
+            if (method === 'resources.get') return {asset: window.hostAssets.find(asset => asset.id === params.id)};
+            if (method === 'resources.open') { window.openedAudio = params.assetId; return {opened: true}; }
+            throw Error('Unexpected host call ' + method);
+          }}),
+          enabled: () => window.hostRecording === true,
+          scope: () => window.projectId,
+          maxDurationSeconds: () => 600,
+          description: () => '在当前设备录音并保存到项目', saveLabel: () => '保存到素材库',
+          imported: id => window.saved.some(asset => asset.id === id),
+          publish: async (asset, name, check) => { check(); if (window.failSave) throw Error('工程保存暂时失败'); window.saved.push({...asset, name}); },
+          saved: () => { ui.assertSafeToLeave(); window.saveNotifications.push({busy: ui.busy}); },
+          changed: render,
+        });
         const ui = createRecordingUI({
+          hostAudio: hosted,
           projectId: () => window.projectId,
           changed: render,
           description: () => window.recordingDescription,
@@ -88,8 +115,9 @@ after(async () => {
   if (server) await new Promise((resolve) => server.close(resolve));
   if (directory) await rm(directory, { recursive: true, force: true });
 });
-async function page() {
+async function page(hosted = false) {
   const page = await browser.newPage();
+  await page.addInitScript((enabled) => { window.hostRecording = enabled; }, hosted);
   await page.addInitScript(() => {
     window.tracks = [];
     window.deviceRequests = 0;
@@ -103,10 +131,50 @@ async function page() {
     };
   });
   await page.goto(`${url}/?legacyWorkspace=1`);
-  await page.locator("#recording-mode").waitFor();
+  if (hosted) await page.getByRole("button", { name: "打开录音器", exact: true }).waitFor();
+  else await page.locator("#recording-mode").waitFor();
   return page;
 }
 const click = (page, name) => page.getByRole("button", { name, exact: true }).click();
+
+test("host recording UI preserves failed attachment, downloads original, and reopens saved project audio without requesting iframe devices", async () => {
+  const p = await page(true);
+  try {
+    await click(p, "打开录音器");
+    await p.locator("[data-recording-resource]").waitFor();
+    assert.equal(await p.evaluate(() => window.deviceRequests), 0);
+    assert.equal(await p.locator("#recording-mode").count(), 0);
+    assert.match(await p.locator("body").innerText(), /摄像头与屏幕录制尚未接入/);
+    await p.evaluate(() => { window.failSave = true; });
+    await click(p, "保存到素材库");
+    await p.getByRole("alert").waitFor();
+    assert.match(await p.getByRole("alert").innerText(), /原始文件不会.*删除/);
+    await click(p, "打开／下载音频");
+    assert.match(await p.evaluate(() => window.openedAudio), /^asset-a{64}$/);
+    await p.reload();
+    await click(p, "刷新项目音频");
+    await p.locator("[data-recording-resource]").waitFor();
+    await p.locator("#host-recording-name").fill("我的口播");
+    await click(p, "保存到素材库");
+    await p.waitForFunction(() => window.saved.length === 1);
+    assert.equal(await p.evaluate(() => window.saved[0].name), "我的口播");
+    assert.equal(await p.evaluate(() => window.hostCalls.some(call => call.method === "resources.recordAudio")), false);
+    assert.deepEqual(await p.evaluate(() => window.saveNotifications), [{ busy: false }]);
+  } finally { await p.close(); }
+});
+
+test("host recording lost reply is recovered by refreshing files without opening another recorder", async () => {
+  const p = await page(true);
+  try {
+    await p.evaluate(() => { window.loseCaptureReply = true; });
+    await click(p, "打开录音器");
+    await p.getByRole("alert").waitFor();
+    await click(p, "刷新项目音频");
+    await p.locator("[data-recording-resource]").waitFor();
+    assert.equal(await p.evaluate(() => window.hostCalls.filter(call => call.method === "resources.recordAudio").length), 1);
+    assert.equal(await p.evaluate(() => window.deviceRequests), 0);
+  } finally { await p.close(); }
+});
 
 test(
   "workflow script import never requests devices and cannot replace an active or unsaved take",

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createWorkspaceDocumentBridge } from "../apps/video-studio/src/workspace-document-bridge";
+import { createBridgeTraffic } from "../apps/video-studio/src/sdk/bridge-traffic";
 import { createMediaTaskBridge } from "../apps/video-studio/src/media-task-bridge";
 import { ProductionController } from "../apps/video-studio/src/production";
 import { createProject } from "../apps/video-studio/src/model";
@@ -290,4 +291,78 @@ test("a project change after the final read prevents publishing a stale document
   };
   await assert.rejects(bridge.call("media.document.get", { key: "draft" }), /项目或存储权限已改变/);
   assert.ok([...f.files.keys()].every((key) => key.startsWith("a:")));
+});
+
+
+test("multiple modules and fresh context checks share the actual Host admission budget", async () => {
+  let clock = 0, projectId = "a";
+  const calls: Array<{ time: number; method: string }> = [];
+  const stamp = (method: string) => {
+    const inWindow = calls.filter(call => call.time > clock - 1000);
+    assert.ok(inWindow.length < 4, "actual Host quota must not be exceeded by combined consumers");
+    calls.push({ time: clock, method });
+  };
+  const traffic = createBridgeTraffic({
+    async getContext() { stamp("context.get"); return { projectId, capabilities: { bridge: {
+      rateWindowMs: 1000, maxCallsPerWindow: 4,
+    } } }; },
+    async call(method) { stamp(method); return projectId; },
+    on() { return () => {}; }, registerTool() { return () => {}; },
+  } as any, { now: () => clock, sleep: async ms => { clock += ms; } });
+  const first = await traffic.bridge.getContext() as any;
+  assert.equal(first.projectId, "a");
+  projectId = "b";
+  const values = await Promise.all([
+    traffic.bridge.call("workspace.readText", { path: "a" }),
+    traffic.bridge.getContext(), traffic.bridge.call("tasks.list"),
+    traffic.bridge.getContext(), traffic.bridge.call("workspace.writeText", { path: "b", content: "saved" }),
+  ]);
+  assert.equal((values[1] as any).projectId, "b");
+  assert.equal((values[3] as any).projectId, "b");
+  assert.equal(calls.filter(call => call.method === "workspace.writeText").length, 1);
+  assert.ok(clock >= 2000);
+  traffic.dispose();
+});
+
+test("only explicit pre-dispatch rate refusals can replay; uncertain writes never repeat", async () => {
+  let clock = 0, accepted = 0, attempts = 0;
+  const traffic = createBridgeTraffic({
+    async getContext() { return {}; },
+    async call() { throw new Error("callResult expected"); },
+    async callResult() {
+      attempts++;
+      if (attempts === 1) return { ok: false, error: { code: "RATE_LIMITED", message: "wait", retryAfterMs: 50 } };
+      accepted++; return { ok: true, value: "saved" };
+    },
+    on() { return () => {}; }, registerTool() { return () => {}; },
+  } as any, { now: () => clock, sleep: async ms => { clock += ms; } });
+  assert.equal(await traffic.bridge.call("workspace.writeText", {}), "saved");
+  assert.equal(accepted, 1); assert.equal(attempts, 2); assert.equal(clock, 50);
+  traffic.dispose();
+  let writes = 0;
+  const uncertain = createBridgeTraffic({
+    async getContext() { return {}; }, async call() { writes++; throw new Error("reply lost after commit"); },
+    on() { return () => {}; }, registerTool() { return () => {}; },
+  });
+  await assert.rejects(uncertain.bridge.call("workspace.writeText", {}), /reply lost/);
+  assert.equal(writes, 1);
+  uncertain.dispose();
+});
+
+test("cancellation bypasses queued mutations and disposal prevents their dispatch", async () => {
+  let release!: () => void;
+  const calls: any[] = [];
+  const traffic = createBridgeTraffic({
+    async getContext() { return { capabilities: { bridge: { rateWindowMs: 1000, maxCallsPerWindow: 2 } } }; },
+    async call(method, params) { calls.push({ method, params }); return true; },
+    on() { return () => {}; }, registerTool() { return () => {}; },
+  } as any, { now: () => 0, sleep: () => new Promise<void>(resolve => { release = resolve; }) });
+  const pending = traffic.bridge.call("workspace.writeText", { path: "old", content: "original" });
+  const refused = assert.rejects(pending, /取消/);
+  while (!release) await new Promise(resolve => setTimeout(resolve, 0));
+  await traffic.bridge.call("tasks.cancel", { id: "running" });
+  assert.deepEqual(calls, [{ method: "tasks.cancel", params: { id: "running" } }]);
+  traffic.dispose(); release();
+  await refused;
+  assert.equal(calls.length, 1);
 });

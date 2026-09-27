@@ -590,48 +590,97 @@ test(
               for (let iteration = 0; iteration < 2; iteration++) {
                 const segments = [];
                 let lastFrame;
-                await playSequence(
-                  project,
-                  library,
-                  document.querySelector("#preview"),
-                  0,
-                  new AbortController().signal,
-                  (frame) => {
-                    lastFrame = frame;
-                  },
-                  {
-                    async onReady() {
-                      const beforeAudioTime = library.audio.currentTime;
-                      // A running AudioContext can still be waiting for its first
-                      // hardware quantum. Wall time alone does not prove that the
-                      // scheduled gain has been rendered; observe its own clock.
-                      const deadline = performance.now() + 1000;
-                      while (library.audio.currentTime <= beforeAudioTime) {
-                        if (performance.now() >= deadline)
-                          throw new Error(
-                            `Audio rendering clock did not advance: ${library.audio.state}`,
-                          );
-                        await new Promise((resolve) => setTimeout(resolve, 5));
-                      }
-                      const active = [...library.items].filter(([, item]) =>
-                        item.element.hasAttribute("src"),
-                      );
-                      segments.push(
-                        active.map(([id, item]) => ({
-                          id,
-                          time: item.element.currentTime,
-                          gain: item.gain.gain.value,
-                          connected: item.audioConnected,
-                          audioState: library.audio.state,
-                          audioTime: library.audio.currentTime,
-                          beforeAudioTime,
-                          paused: item.element.paused,
-                          readyState: item.element.readyState,
-                        })),
-                      );
+                const recent = [];
+                const clock = setInterval(() => {
+                  recent.push({
+                    wall: performance.now(),
+                    audioState: library.audio?.state,
+                    audioTime: library.audio?.currentTime,
+                    sources: [...library.items].map(([id, item]) => ({
+                      id, time: item.element.currentTime, paused: item.element.paused,
+                      ended: item.element.ended, seeking: item.element.seeking,
+                      readyState: item.element.readyState, connected: item.audioConnected,
+                    })),
+                  });
+                  if (recent.length > 10) recent.shift();
+                }, 100);
+                try {
+                  await playSequence(
+                    project,
+                    library,
+                    document.querySelector("#preview"),
+                    0,
+                    new AbortController().signal,
+                    (frame) => {
+                      lastFrame = frame;
                     },
-                  },
-                );
+                    {
+                      async onReady() {
+                        const beforeAudioTime = library.audio.currentTime;
+                        // A running AudioContext can still be waiting for its first
+                        // hardware quantum. Wall time alone does not prove that the
+                        // scheduled gain has been rendered; observe its own clock.
+                        const deadline = performance.now() + 1000;
+                        while (library.audio.currentTime <= beforeAudioTime) {
+                          if (performance.now() >= deadline)
+                            throw new Error(
+                              `Audio rendering clock did not advance: ${library.audio.state}`,
+                            );
+                          await new Promise((resolve) => setTimeout(resolve, 5));
+                        }
+                        const active = [...library.items].filter(([, item]) =>
+                          item.element.hasAttribute("src"),
+                        );
+                        segments.push(
+                          active.map(([id, item]) => ({
+                            id,
+                            time: item.element.currentTime,
+                            gain: item.gain.gain.value,
+                            connected: item.audioConnected,
+                            audioState: library.audio.state,
+                            audioTime: library.audio.currentTime,
+                            beforeAudioTime,
+                            paused: item.element.paused,
+                            readyState: item.element.readyState,
+                          })),
+                        );
+                      },
+                    },
+                  );
+                } catch (error) {
+                  clearInterval(clock);
+                  throw new Error(
+                    `${error.message}; playback diagnostic: ${JSON.stringify({
+                      iteration,
+                      lastFrame,
+                      segments,
+                      recent,
+                      audioState: library.audio?.state,
+                      audioTime: library.audio?.currentTime,
+                      visibility: document.visibilityState,
+                      sources: [...library.items].map(([id, item]) => ({
+                        id,
+                        time: item.element.currentTime,
+                        duration: item.element.duration,
+                        paused: item.element.paused,
+                        ended: item.element.ended,
+                        seeking: item.element.seeking,
+                        readyState: item.element.readyState,
+                        networkState: item.element.networkState,
+                        connected: item.audioConnected,
+                        error: item.element.error?.code,
+                        buffered: Array.from(
+                          { length: item.element.buffered.length },
+                          (_, index) => [
+                            item.element.buffered.start(index),
+                            item.element.buffered.end(index),
+                          ],
+                        ),
+                      })),
+                    })}`,
+                  );
+                }
+                clearInterval(clock);
                 runs.push({
                   segments,
                   lastFrame,
