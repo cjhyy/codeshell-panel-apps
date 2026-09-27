@@ -188,6 +188,7 @@ import {
   type ExportProfile,
 } from "./editor/export-settings";
 import { createPanelRuntime, taskValue } from "./sdk/panel-runtime";
+import { createBridgeTraffic } from "./sdk/bridge-traffic";
 import { createWorkspaceLayout, type WorkspaceLayoutSizes } from "./workspace-layout";
 
 // Older guide links changed the entry URL, which the Host correctly rejects
@@ -201,9 +202,13 @@ if (
 }
 
 if (panel) {
-  const mediaBridge = createMediaTaskBridge(createWorkspaceDocumentBridge(panel));
+  const traffic = createBridgeTraffic(panel);
+  const mediaBridge = createMediaTaskBridge(createWorkspaceDocumentBridge(traffic.bridge));
   setPanelBridge(mediaBridge.bridge);
-  window.addEventListener("pagehide", () => mediaBridge.dispose(), { once: true });
+  window.addEventListener("pagehide", () => {
+    traffic.dispose();
+    mediaBridge.dispose();
+  }, { once: true });
 }
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
