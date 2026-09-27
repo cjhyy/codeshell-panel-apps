@@ -549,7 +549,7 @@ class FakeHost implements PanelBridge {
     throw new Error(`unhandled ${method}`);
   }
 }
-async function fixture(host = new FakeHost()) {
+async function fixture(host = new FakeHost(), initialize = true) {
   let current = project();
   const published: { projectId: string; assets: Asset[]; options?: AssetPublication }[] = [];
   let changed = () => {};
@@ -577,7 +577,7 @@ async function fixture(host = new FakeHost()) {
     },
   });
   controllers.add(controller);
-  await controller.initialize();
+  if (initialize) await controller.initialize();
   return {
     host,
     controller,
@@ -1056,6 +1056,52 @@ test("switching projects during original inspection leaves the import for its or
   f.current = original;
   await f.controller.refresh();
   assert.equal(f.current.assets[0]!.mediaId, mediaId);
+});
+
+test("saved project recording attaches once without another upload and survives a failed document save", async () => {
+  const f = await fixture(), id = `asset-${"d".repeat(64)}`;
+  f.host.handlers.set("media.assets.get", () => ({
+    asset: { id, name: "recording.webm", mimeType: "audio/webm", bytes: 1000, createdAt: 1 },
+    preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 12.5, audio: { channels: 1 } } },
+  }));
+  f.host.handlers.set("media.prepare", () => { throw new Error("waveform unavailable"); });
+  f.beforePublish(async () => { throw new Error("document save failed"); });
+  await assert.rejects(f.controller.importRecordedResource(id, "本人录音", () => {}), /document save failed/);
+  assert.equal(f.published.length, 0);
+  f.beforePublish();
+  const value = await f.controller.importRecordedResource(id, "本人录音", () => {});
+  assert.equal(value.mediaId, id); assert.equal(value.name, "本人录音");
+  assert.equal(value.durationFrames, 375); assert.equal(f.published.length, 1);
+  await f.controller.importRecordedResource(id, "重复点击", () => {});
+  assert.equal(f.published.length, 1);
+  assert.equal(f.current.assets.filter(asset => asset.mediaId === id).length, 1);
+  assert.ok(!f.host.calls.some(call => /recording\.|upload\.|resources\.recordAudio/.test(call.method)));
+  assert.match(f.controller.error, /waveform unavailable/);
+});
+
+test("recording inspection cannot publish into a replaced project generation", async () => {
+  const f = await fixture(), id = `asset-${"d".repeat(64)}`, gate = deferred<void>();
+  let active = true;
+  f.host.handlers.set("media.assets.get", async () => { await gate.promise; return {
+    asset: { id, name: "recording.webm", mimeType: "audio/webm", bytes: 1000, createdAt: 1 },
+    preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 12.5 } },
+  }; });
+  const result = f.controller.importRecordedResource(id, "本人录音", () => { if (!active) throw new Error("stale generation"); });
+  active = false; gate.resolve();
+  await assert.rejects(result, /stale generation/);
+  assert.equal(f.published.length, 0);
+});
+
+test("recording attachment rejects wrong resource, video inspection and missing duration", async () => {
+  for (const patch of [{ assetId: `asset-${"e".repeat(64)}` }, { inspection: { kind: "video", durationSeconds: 3 } }, { inspection: { kind: "audio", durationSeconds: null } }]) {
+    const f = await fixture(), id = `asset-${"d".repeat(64)}`;
+    f.host.handlers.set("media.assets.get", () => ({
+      asset: { id, name: "recording.webm", mimeType: "audio/webm", bytes: 1000, createdAt: 1 },
+      preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 12.5 }, ...patch },
+    }));
+    await assert.rejects(f.controller.importRecordedResource(id, "本人录音", () => {}), /录音检查未完成/);
+    assert.equal(f.published.length, 0);
+  }
 });
 
 test("recording upload returns its durable original even when preparation fails", async () => {
@@ -2298,4 +2344,44 @@ test("preparing a non-whole-frame source keeps its exact decoded length in the e
     ),
     "preparation must not rewrite the probed duration",
   );
+});
+
+
+test("recording attachment waits for one shared initialization and restored document revision", async () => {
+  const f = await fixture(new FakeHost(), false), gate = deferred<void>();
+  const id = `asset-${"d".repeat(64)}`;
+  f.host.handlers.set("media.document.get", async () => {
+    await gate.promise;
+    return { revision: 0, data: null };
+  });
+  f.host.handlers.set("media.assets.get", () => ({
+    asset: { id, name: "recording.webm", mimeType: "audio/webm", bytes: 1000, createdAt: 1 },
+    preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 12.5 } },
+  }));
+  f.host.handlers.set("media.prepare", () => { throw new Error("waveform unavailable"); });
+  const saving = f.controller.importRecordedResource(id, "本人录音", () => {});
+  await until(() => f.host.calls.some(call => call.method === "media.document.get"));
+  const boot = f.controller.initialize();
+  assert.equal(f.published.length, 0);
+  assert.ok(!f.host.calls.some(call => call.method === "media.assets.get"));
+  gate.resolve();
+  await Promise.all([saving, boot]);
+  assert.equal(f.host.calls.filter(call => call.method === "media.document.get").length, 1);
+  assert.equal(f.published.length, 1);
+});
+
+test("recording attachment abandoned during initialization preserves the original without inspection", async () => {
+  const f = await fixture(new FakeHost(), false), gate = deferred<void>();
+  let active = true;
+  f.host.handlers.set("media.document.get", async () => {
+    await gate.promise; return { revision: 0, data: null };
+  });
+  const saving = f.controller.importRecordedResource(`asset-${"d".repeat(64)}`, "本人录音", () => {
+    if (!active) throw new Error("stale generation");
+  });
+  await until(() => f.host.calls.some(call => call.method === "media.document.get"));
+  active = false; gate.resolve();
+  await assert.rejects(saving, /stale generation/);
+  assert.equal(f.published.length, 0);
+  assert.ok(!f.host.calls.some(call => call.method === "media.assets.get"));
 });
