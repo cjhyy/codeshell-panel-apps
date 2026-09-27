@@ -41,16 +41,26 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { chromium } from 'playwright';
-          import { spawnSync } from 'node:child_process';
-          import { mkdtempSync, rmSync } from 'node:fs';
+          import { mkdtemp, rm } from 'node:fs/promises';
           import { tmpdir } from 'node:os';
           import { join } from 'node:path';
-          const profile = mkdtempSync(join(tmpdir(), 'pdf-sandbox-probe-'));
+          const profile = await mkdtemp(join(tmpdir(), 'pdf-sandbox-probe-'));
+          let context;
           try {
-            const result = spawnSync(chromium.executablePath(), ['--headless=new', '--no-first-run', '--disable-background-networking', '--user-data-dir=' + profile, '--dump-dom', 'about:blank'], { encoding: 'utf8', timeout: 15000 });
-            console.log(JSON.stringify({ status: result.status, signal: result.signal, stderr: result.stderr?.slice(-8192) }));
-            if (result.status !== 0) process.exitCode = 1;
-          } finally { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+            context = await chromium.launchPersistentContext(profile, {
+              executablePath: chromium.executablePath(),
+              chromiumSandbox: true,
+              headless: true,
+              timeout: 15000,
+            });
+            const page = await context.newPage();
+            await page.goto('about:blank', { timeout: 15000 });
+            console.log(JSON.stringify({ sandbox: true, url: page.url() }));
+          } finally {
+            // Close the owned browser process tree before deleting its profile.
+            await context?.close();
+            await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+          }
           NODE
       - run: node --test tests/apps/job-hunt-hq/resume-pdf-native.test.mjs
 
