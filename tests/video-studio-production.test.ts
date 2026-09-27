@@ -549,7 +549,7 @@ class FakeHost implements PanelBridge {
     throw new Error(`unhandled ${method}`);
   }
 }
-async function fixture(host = new FakeHost()) {
+async function fixture(host = new FakeHost(), initialize = true) {
   let current = project();
   const published: { projectId: string; assets: Asset[]; options?: AssetPublication }[] = [];
   let changed = () => {};
@@ -577,7 +577,7 @@ async function fixture(host = new FakeHost()) {
     },
   });
   controllers.add(controller);
-  await controller.initialize();
+  if (initialize) await controller.initialize();
   return {
     host,
     controller,
@@ -2344,4 +2344,44 @@ test("preparing a non-whole-frame source keeps its exact decoded length in the e
     ),
     "preparation must not rewrite the probed duration",
   );
+});
+
+
+test("recording attachment waits for one shared initialization and restored document revision", async () => {
+  const f = await fixture(new FakeHost(), false), gate = deferred<void>();
+  const id = `asset-${"d".repeat(64)}`;
+  f.host.handlers.set("media.document.get", async () => {
+    await gate.promise;
+    return { revision: 0, data: null };
+  });
+  f.host.handlers.set("media.assets.get", () => ({
+    asset: { id, name: "recording.webm", mimeType: "audio/webm", bytes: 1000, createdAt: 1 },
+    preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 12.5 } },
+  }));
+  f.host.handlers.set("media.prepare", () => { throw new Error("waveform unavailable"); });
+  const saving = f.controller.importRecordedResource(id, "本人录音", () => {});
+  await until(() => f.host.calls.some(call => call.method === "media.document.get"));
+  const boot = f.controller.initialize();
+  assert.equal(f.published.length, 0);
+  assert.ok(!f.host.calls.some(call => call.method === "media.assets.get"));
+  gate.resolve();
+  await Promise.all([saving, boot]);
+  assert.equal(f.host.calls.filter(call => call.method === "media.document.get").length, 1);
+  assert.equal(f.published.length, 1);
+});
+
+test("recording attachment abandoned during initialization preserves the original without inspection", async () => {
+  const f = await fixture(new FakeHost(), false), gate = deferred<void>();
+  let active = true;
+  f.host.handlers.set("media.document.get", async () => {
+    await gate.promise; return { revision: 0, data: null };
+  });
+  const saving = f.controller.importRecordedResource(`asset-${"d".repeat(64)}`, "本人录音", () => {
+    if (!active) throw new Error("stale generation");
+  });
+  await until(() => f.host.calls.some(call => call.method === "media.document.get"));
+  active = false; gate.resolve();
+  await assert.rejects(saving, /stale generation/);
+  assert.equal(f.published.length, 0);
+  assert.ok(!f.host.calls.some(call => call.method === "media.assets.get"));
 });

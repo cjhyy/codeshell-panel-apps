@@ -716,6 +716,7 @@ export class ProductionController {
   private documentRevision = 0;
   private writeQueue = Promise.resolve();
   private refreshQueue = Promise.resolve();
+  private initialization?: Promise<void>;
   private statusPending?: Promise<void>;
   private statusPendingFresh = false;
   private documentFailed = false;
@@ -772,8 +773,11 @@ export class ProductionController {
     const job = this.currentJobs.find((j) => j.type === "render" && j.status === "succeeded");
     return (job?.result as { video?: { asset?: ManagedAsset } } | undefined)?.video?.asset;
   }
-  async initialize(): Promise<void> {
-    if (!this.bridge) return;
+  initialize(): Promise<void> {
+    return (this.initialization ??= this.initializeOnce());
+  }
+  private async initializeOnce(): Promise<void> {
+    if (!this.bridge || this.disposed) return;
     try {
       const status = (await this.bridge.call("media.status", { probe: false })) as ProductionStatus;
       if (!status?.persistent) {
@@ -808,6 +812,7 @@ export class ProductionController {
       this.documentFailed = true;
       this.error = String(error);
     }
+    if (this.disposed) return;
     this.unsubscribe = this.bridge.on("media.job.changed", () => {
       void this.refresh().catch((error) => this.reportError(error));
     });
@@ -1006,8 +1011,7 @@ export class ProductionController {
   ): Promise<Asset> {
     if (!/^asset-[a-f0-9]{64}$/.test(resourceId) || !name.trim() || name.length > 160)
       throw new Error("请选择有效的项目录音和素材名称");
-    const host = this.requireHost(),
-      projectId = this.callbacks.getProject().id;
+    const projectId = this.callbacks.getProject().id;
     const finish = this.beginAssetRequest(projectId);
     const current = () => {
       check();
@@ -1016,6 +1020,11 @@ export class ProductionController {
     };
     try {
       current();
+      // The editor can open before its slower task/document restoration. Share
+      // that initialization and wait for the restored revision before publishing.
+      await this.initialize();
+      current();
+      const host = this.requireHost();
       const result = (await host.call("media.assets.get", { id: resourceId })) as {
         asset?: ManagedAsset;
         preparation?: PreparedMedia;

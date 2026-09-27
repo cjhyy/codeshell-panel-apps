@@ -3777,6 +3777,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
     createdAt: 1,
   };
   const page = await openPage(t, {
+    holdProductionInitialize: true,
     hostRecording: { asset, base64: bytes.toString("base64") },
     mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
   });
@@ -3787,6 +3788,9 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await row.waitFor();
   await page.evaluate(() => window.__mainHost.fail(true));
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.waitForFunction(() => !!window.__releaseProductionInitialize);
+  assert.equal((await saved(page)).assets.some((a) => a.resourceId === asset.id), false);
+  await page.evaluate(() => window.__releaseProductionInitialize());
   await page
     .getByRole("alert")
     .filter({ hasText: "模拟磁盘保存失败" })
@@ -3812,6 +3816,8 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await row.waitFor();
   await page.locator("#host-recording-name").fill("保留的本人录音");
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.waitForFunction(() => !!window.__releaseProductionInitialize);
+  await page.evaluate(() => window.__releaseProductionInitialize());
   await page.waitForFunction(
     (id) => window.__mainHost.current().assets.some((a) => a.resourceId === id),
     asset.id,
