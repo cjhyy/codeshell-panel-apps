@@ -2091,8 +2091,22 @@ dialog::backdrop {
 }
 .recovery-status[hidden] { display: none; }
 .recovery-status span { flex: 1 1 240px; }
-.app-shell:has(> .recovery-status:not([hidden])) {
+.host-connection-state {
+  padding: 8px 12px;
+  color: var(--text);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.host-connection-state[hidden] { display: none; }
+.app-shell:has(> .recovery-status:not([hidden])),
+.app-shell:has(> .host-connection-state:not([hidden])) {
   grid-template-rows: var(--topbar-height) auto minmax(0, 1fr);
+}
+.app-shell:has(> .recovery-status:not([hidden])):has(> .host-connection-state:not([hidden])) {
+  grid-template-rows: var(--topbar-height) auto auto minmax(0, 1fr);
 }
 
 #portable-backup-dialog { width: min(640px, 94vw); }

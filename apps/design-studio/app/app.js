@@ -3292,13 +3292,19 @@ function mockHostCall(method, params = {}) {
       revision: `preview:${modifiedAt}`,
     });
   }
-  if (method === "agent.submitPrompt") {
-    return Promise.resolve({ accepted: true });
-  }
-  return Promise.resolve(null);
+  return Promise.reject(new Error("浏览器本地模式未连接此功能，请连接 CodeShell 后重试"));
+}
+
+function agentSubmissionAvailable() {
+  if (!window.codeshellPanel?.call) return false;
+  return !Array.isArray(context.availableMethods) || (
+    context.availableMethods.includes("agent.submitPrompt") && Boolean(context.sessionId)
+  );
 }
 
 function hostCall(method, params) {
+  if (method === "agent.submitPrompt" && !agentSubmissionAvailable())
+    return Promise.reject(new Error("当前未连接可提交的 Agent 会话；请求未发送，可连接 CodeShell 后重试"));
   if (window.codeshellPanel?.call) return window.codeshellPanel.call(method, params);
   return mockHostCall(method, params);
 }
@@ -4094,6 +4100,7 @@ async function readProductBrief(sourcePath) {
 }
 
 async function submitProductBriefToAgent() {
+  if (!agentSubmissionAvailable()) return notify("当前未连接可提交的 Agent 会话，请连接 CodeShell 并选择对话", "error");
   const assertScope = captureDeliveryScope();
   const designPath = elements.path.value.trim();
   const sourcePath = elements.productBriefPath.value.trim();
@@ -4119,7 +4126,7 @@ async function submitProductBriefToAgent() {
     elements.productBriefStatus.textContent =
       error instanceof Error ? error.message : "无法读取 PRD";
   } finally {
-    elements.designFromPrd.disabled = Boolean(context.busy) || context.trusted !== true;
+    elements.designFromPrd.disabled = Boolean(context.busy) || context.trusted !== true || !agentSubmissionAvailable();
   }
 }
 
@@ -4923,6 +4930,7 @@ async function exportSvg() {
 }
 
 async function submitToAgent() {
+  if (!agentSubmissionAvailable()) return notify("当前未连接可提交的 Agent 会话，请连接 CodeShell 并选择对话", "error");
   const assertScope = captureDeliveryScope();
   const path = elements.path.value.trim();
   const version = design.version;
@@ -4954,7 +4962,7 @@ async function submitToAgent() {
     notify(error instanceof Error ? error.message : "提交失败", "error");
   } finally {
     if (workspaceEpoch === operationWorkspaceEpoch) {
-      elements.submitAi.disabled = Boolean(context.busy) || context.trusted !== true;
+      elements.submitAi.disabled = Boolean(context.busy) || context.trusted !== true || !agentSubmissionAvailable();
     }
   }
 }
@@ -5908,13 +5916,20 @@ function updateContext(next) {
   elements.openHtmlImport.disabled = workspaceUnavailable;
   elements.runHtmlImport.disabled = workspaceUnavailable;
   elements.openDelivery.disabled = workspaceUnavailable;
-  elements.designFromPrd.disabled = Boolean(context.busy) || workspaceUnavailable;
+  elements.designFromPrd.disabled = Boolean(context.busy) || workspaceUnavailable || !agentSubmissionAvailable();
   elements.generateFrontend.disabled = workspaceUnavailable;
   elements.compareImplementation.disabled = workspaceUnavailable;
   elements.saveAuditReport.disabled = workspaceUnavailable;
   elements.openAi.disabled = Boolean(context.busy) || workspaceUnavailable;
-  elements.submitAi.disabled = Boolean(context.busy) || workspaceUnavailable;
-  elements.aiContextState.textContent = context.busy
+  elements.submitAi.disabled = Boolean(context.busy) || workspaceUnavailable || !agentSubmissionAvailable();
+  const connectionState = document.getElementById("host-connection-state");
+  connectionState.hidden = Boolean(window.codeshellPanel?.call) && agentSubmissionAvailable();
+  connectionState.textContent = !window.codeshellPanel?.call
+    ? "浏览器本地模式：设计与导出文件仅存于此浏览器，可编辑、保存并下载完整备份。Agent 需要连接 CodeShell。"
+    : "已连接项目；当前未提供可提交的 Agent 会话。设计编辑、保存与导出仍可使用，请在 CodeShell 中选择对话或检查授权。";
+  elements.aiContextState.textContent = !agentSubmissionAvailable()
+    ? "未连接可提交的 Agent 会话；不会发送请求"
+    : context.busy
     ? "当前会话忙碌中"
     : context.trusted === false
       ? "工作区尚未信任"

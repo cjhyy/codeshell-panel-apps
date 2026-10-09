@@ -1263,6 +1263,17 @@ summary:focus-visible,
   min-height: 100vh;
 }
 
+.host-connection-state {
+  padding: 10px 16px;
+  color: var(--text);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.host-connection-state[hidden] { display: none; }
+
 .topbar {
   position: sticky;
   z-index: 10;
@@ -7282,19 +7293,22 @@ dialog::backdrop {
     justify-self: start;
   }
 
-  .header-actions .ghost-button {
-    display: none;
-  }
-
   .desk-header .header-actions {
     display: grid;
     width: 100%;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow: visible;
   }
 
-  .header-actions #export-backtest {
+  .desk-header .header-actions .run-status {
+    grid-column: 1 / -1;
+  }
+
+  .desk-header .header-actions .ghost-button,
+  .desk-header .header-actions .run-button {
     display: inline-flex;
+    justify-content: center;
+    min-height: 44px;
   }
 
   .backtest-run-version {
@@ -16013,6 +16027,9 @@ button.stock-financial-history-row:focus-visible {
 
 .backtest-storage { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 12px 0; }
 .backtest-storage p { flex: 1 1 320px; margin: 0; }
-.backtest-storage div { display: flex; flex-wrap: wrap; gap: 8px; }
+.backtest-storage div { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; }
+.backtest-storage label { display: grid; gap: 4px; max-width: 100%; min-width: 0; }
+.backtest-storage label[hidden] { display: none; }
+.backtest-storage select { min-height: 44px; width: 100%; min-width: 0; max-width: 320px; }
 .backtest-storage button { min-height: 44px; }
 .backtest-storage [data-tone="error"] { color: var(--danger, #b42318); }

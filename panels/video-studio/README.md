@@ -416,21 +416,27 @@ pending writes or late results. Visibility and busy-status updates keep the bind
 This does not copy local browser media into a cloud project or establish complete
 cloud rendering/provider acceptance. Media bytes remain in the Host resource store.
 
-### 云端项目录音
+### 云端项目录制
 
 Host 提供 `resources.recordAudio`、`resources.list/get/open` 时，录制页使用工作台的
 录音器。用户主动开始、停止试听并确认保存后，原始音频进入当前项目资源存储；
 再点击“保存到素材库”，通过 Panel 自己的媒体检查任务加入当前视频工程。没有
 新增权限，沿用已审核的资源和工具任务权限；不会把麦克风权限交给 Panel iframe。
 普通录音最长 10 分钟，声音克隆的参考录制最长 30 秒，Host 还限制文件大小。
-浏览器录音需要安全连接及设备授权；云端摄像头和屏幕采集尚未接入，桌面仍使用
-原有录制流程。
+新版 Host 还提供 `resources.recordVideo` 与 `resources.recordVideo.capabilities`。
+录制页按当前设备的实际 API 和编码能力显示摄像头／屏幕来源；录屏可请求系统音，
+并如实显示最终取得的麦克风与系统音轨。开始、停止预览和保存都在可信工作台确认，
+仍不把设备权限交给 iframe。视频最长 10 分钟、200 MiB，并受 Host 更低限制约束。
+手机浏览器未提供录屏时保留摄像头、录音和原片导入。声音参考只允许音频；旧 Host
+保留原录音入口。安全连接和设备授权仍由浏览器检查。
 
 原始文件保存与加入工程是两个独立步骤。工程保存失败、页面关闭或录音保存回复
 丢失后，重新打开录制页，点击“刷新项目音频”找回已经保存的音频，可打开／下载
 或再次加入工程。项目音频列表也包含其他音频资源；切换工程不会移动原始文件。
-同一工程再次选择已有资源不会重复添加素材。录音未在工作台确认保存前，仍受
-工作台录音器的临时保存边界约束；关闭页面不保证保留未保存的录音。
+同一工程再次选择已有资源不会重复添加素材。支持视频的 Host 显示“刷新项目录制文件”，
+同时找回音视频；当前设备不支持采集也可恢复已有文件。视频经 Panel 的媒体检查确认
+类型、时长和画面尺寸后才入库。录制未在工作台确认保存前，仍受临时保存边界约束；
+关闭页面不保证保留未保存的录制。
 
 素材检查、预处理、转写和声音模型仍由 Panel 的审核任务执行；录音接入本身不
 表示转写模型、声音克隆或真实第三方账号已完成部署验收。

@@ -72,7 +72,11 @@ import { createTimelineContextMenu, isTimelineMenuTargetCurrent } from "./timeli
 import { createDesktopFolderSource } from "./folder-source";
 import { prepareFolderFiles, sameFileContents } from "./folder-files";
 import { createRecordingUI } from "./recording-ui";
-import { createHostAudioRecording } from "./host-audio-recording";
+import {
+  createHostAudioRecording,
+  hostVideoCapabilities,
+  type HostVideoCapabilities,
+} from "./host-audio-recording";
 import { createSpokenUI } from "./spoken-ui";
 import { createRoughCutUI } from "./rough-cut-ui";
 import { cachedMediaFile } from "./recording-cache";
@@ -257,6 +261,8 @@ let thumbnailObserver: IntersectionObserver | undefined;
 const visibleThumbnailCards = new Set<HTMLElement>();
 let sharedVoiceLibraryAvailable = false;
 let hostAudioRecordingAvailable = false;
+let hostVideoRecordingAvailable = false;
+let hostVideoRecordingCapabilities: HostVideoCapabilities | undefined;
 const sharedVoiceLibrary = panel
   ? createVoiceLibraryBridge(panel, { onProgress: showVoiceLibraryProgress })
   : undefined;
@@ -1027,7 +1033,11 @@ function recordingSaved() {
 }
 const hostAudioRecording = createHostAudioRecording({
   bridge: () => panel,
-  enabled: () => hostAudioRecordingAvailable,
+  enabled: () => hostAudioRecordingAvailable || hostVideoRecordingAvailable,
+  audioEnabled: () => hostAudioRecordingAvailable,
+  videoEnabled: () => hostVideoRecordingAvailable,
+  videoCapabilities: () => hostVideoRecordingCapabilities,
+  audioOnly: () => voiceReferenceRecording?.projectId === project.id,
   scope: () => `${generation}:${project.id}`,
   maxDurationSeconds: () => (voiceReferenceRecording?.projectId === project.id ? 30 : 600),
   description: recordingDescription,
@@ -4874,7 +4884,7 @@ registerProjectReadTool(productionToolPanel, production, () => ({
     originalAudioEnhancement: production.enabled && production.status.ffmpeg.available,
     ttsSetup: production.enabled,
     recording: {
-      modes: hostAudioRecordingAvailable ? ["microphone"] : ["microphone", "camera", "screen"],
+      modes: hostAudioRecording.enabled() ? hostAudioRecording.modes() : ["microphone", "camera", "screen"],
       userInitiated: true,
       persistent: panel ? "host" : "indexeddb",
     },
@@ -5986,6 +5996,28 @@ async function boot(): Promise<void> {
       "resources.get",
       "resources.open",
     ].every((method) => initialContext?.availableMethods?.includes(method));
+    hostVideoRecordingAvailable = [
+      "resources.recordVideo.capabilities",
+      "resources.list",
+      "resources.get",
+      "resources.open",
+    ].every((method) => initialContext?.availableMethods?.includes(method));
+    if (hostVideoRecordingAvailable) {
+      try {
+        hostVideoRecordingCapabilities = hostVideoCapabilities(
+          await panel!.call("resources.recordVideo.capabilities", {}),
+        );
+        if (!initialContext?.availableMethods?.includes("resources.recordVideo"))
+          hostVideoRecordingCapabilities = {
+            ...hostVideoRecordingCapabilities,
+            camera: false,
+            screen: false,
+          };
+      } catch {
+        // File discovery remains available even when this device cannot report capture support.
+        hostVideoRecordingCapabilities = undefined;
+      }
+    }
     panelVisible = initialContext?.visible !== false;
     sharedVoiceLibraryAvailable =
       Boolean(sharedVoiceLibrary) &&

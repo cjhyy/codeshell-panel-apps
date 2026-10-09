@@ -98,6 +98,7 @@
       </header>
 
       <div class="module-panels">
+        <aside id="host-connection-state" class="host-connection-state" role="status" hidden></aside>
         <section
           id="module-today"
           class="module-panel"
@@ -1791,7 +1792,10 @@
       <section class="backtest-storage" aria-label="回测参数保存">
         <p id="backtest-storage-status" role="status" aria-live="polite">正在读取项目回测参数…</p>
         <div>
-          <button id="backtest-storage-backup" type="button" disabled>备份当前参数</button>
+          <label id="backtest-storage-draft-choice" hidden>备份参数
+            <select id="backtest-storage-draft" aria-label="选择备份参数"></select>
+          </label>
+          <button id="backtest-storage-backup" type="button" disabled>备份当前与暂存参数</button>
           <button id="backtest-storage-import" type="button" disabled>载入参数备份</button>
           <input id="backtest-storage-file" type="file" accept="application/json,.json" hidden>
           <button id="backtest-storage-reload" type="button" disabled>备份草稿并读取最新</button>

@@ -18,6 +18,7 @@ export const suites = [
       "tests/apps/job-hunt-hq/draft-storage.test.mjs",
       "tests/apps/job-hunt-hq/browser-draft-storage.test.mjs",
       "tests/apps/job-hunt-hq/host-capabilities.test.mjs",
+      "tests/apps/job-hunt-hq/discovery-automation.test.mjs",
       "tests/apps/job-hunt-hq/draft-backup.test.mjs",
       "tests/apps/job-hunt-hq/draft-ui.test.mjs",
       "tests/apps/job-hunt-hq/resume-pdf-tasks.test.mjs",
@@ -43,7 +44,7 @@ export const suites = [
   {
     id: "design-studio",
     label: "Design Studio project recovery",
-    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs", "tests/apps/design-studio/touch-ui.test.mjs"]],
+    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs", "tests/apps/design-studio/touch-ui.test.mjs", "tests/apps/design-studio/connection-ui.test.mjs"]],
   },
   {
     id: "quant-lab",

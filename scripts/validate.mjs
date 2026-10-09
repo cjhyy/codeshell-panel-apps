@@ -3073,7 +3073,7 @@ async function validatePackage(packagePath) {
       assert.match(html, new RegExp(`id="${id}"`), `${packagePath}: missing #${id}`);
     }
     assert.match(
-      appScript,
+      appScript + await readFile(join(root, "app", "discovery-automation.mjs"), "utf8"),
       /job-hunt-hq:scheduled-discovery:v1/,
       `${packagePath}: recurring discovery needs a stable task marker`,
     );

@@ -115,7 +115,8 @@ async function fixture(t) {
         trusted: true,
         visible: true,
         busy: false,
-        availableMethods: ["storage.getSnapshot", "storage.compareAndSet"],
+        availableMethods: ["storage.getSnapshot", "storage.compareAndSet", "storage.get", "storage.set", "storage.delete",
+          "workspace.info", "workspace.list", "workspace.readText", "workspace.writeText", "agent.submitPrompt"],
       };
       let listener;
       window.tools = {};

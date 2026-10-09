@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createHostAudioRecording } from "../apps/video-studio/src/host-audio-recording.ts";
+import {
+  createHostAudioRecording,
+  hostVideoCapabilities,
+  type HostVideoCapabilities,
+} from "../apps/video-studio/src/host-audio-recording.ts";
 import type { PanelBridge } from "../apps/video-studio/src/host.ts";
 
 const asset = {
@@ -10,7 +14,7 @@ const asset = {
   bytes: 1000,
   createdAt: 10,
 };
-function fixture() {
+function fixture(capabilities?: HostVideoCapabilities, videoEnabled = Boolean(capabilities)) {
   const state = {
     scope: "a:1",
     enabled: true,
@@ -18,6 +22,7 @@ function fixture() {
     saved: 0,
     published: [] as string[],
     assets: [asset],
+    audioOnly: false,
   };
   const calls: { method: string; params: any }[] = [];
   const handlers = new Map<string, (params: any) => unknown>();
@@ -36,6 +41,9 @@ function fixture() {
     createHostAudioRecording({
       bridge: () => bridge,
       enabled: () => state.enabled,
+      videoCapabilities: () => capabilities,
+      videoEnabled: () => videoEnabled,
+      audioOnly: () => state.audioOnly,
       scope: () => state.scope,
       maxDurationSeconds: () => 600,
       description: () => "录音",
@@ -178,4 +186,128 @@ test("rendered source names and scripts cannot insert active markup", async () =
   assert.doesNotMatch(markup, /<img|<script>/);
   assert.match(markup, /&lt;img/);
   assert.match(markup, /&lt;script/);
+});
+
+const videoCapabilities = {
+  camera: true,
+  screen: true,
+  microphone: true,
+  systemAudio: true,
+  maxDurationSeconds: 1200,
+  maxBytes: 200 * 1024 * 1024,
+};
+const videoAsset = { ...asset, id: `asset-${"b".repeat(64)}`, mimeType: "video/webm" };
+test("trusted video capture uses discovered modes, explicit durable attachment and actual audio receipt", async () => {
+  const f = fixture(videoCapabilities);
+  f.handlers.set("resources.recordVideo", (params) => ({
+    asset: videoAsset,
+    capture: { source: params.source, microphone: true, systemAudio: false },
+  }));
+  await f.ui.action("rec-host-mode:screen");
+  await f.ui.capture();
+  assert.deepEqual(f.calls[0], {
+    method: "resources.recordVideo",
+    params: {
+      source: "screen",
+      microphone: true,
+      systemAudio: true,
+      maxDurationSeconds: 600,
+      maxBytes: 200 * 1024 * 1024,
+    },
+  });
+  assert.match(f.ui.snapshot().notice, /系统声音未录入/);
+  assert.equal(f.state.published.length, 0);
+  f.handlers.set("resources.get", () => ({ asset: videoAsset }));
+  await f.ui.publish(videoAsset.id);
+  assert.deepEqual(f.state.published, [videoAsset.id]);
+  assert.match(f.ui.snapshot().notice, /视频已加入/);
+});
+test("camera-only devices hide screen, voice reference only offers microphone and cannot attach video", async () => {
+  const f = fixture({ ...videoCapabilities, screen: false, systemAudio: false });
+  assert.deepEqual(f.ui.modes(), ["microphone", "camera"]);
+  assert.throws(() => f.ui.setMode("screen"), /没有所选/);
+  f.state.audioOnly = true;
+  assert.deepEqual(f.ui.modes(), ["microphone"]);
+  assert.throws(() => f.ui.setMode("camera"), /没有所选/);
+  f.handlers.set("resources.list", () => ({ assets: [videoAsset, asset], total: 2 }));
+  await f.ui.refresh();
+  assert.deepEqual(f.ui.snapshot().assets, [asset]);
+});
+test("unavailable device APIs still allow recovery of previously saved videos without a new capture", async () => {
+  const f = fixture({
+    ...videoCapabilities,
+    camera: false,
+    screen: false,
+    microphone: false,
+    systemAudio: false,
+  });
+  assert.deepEqual(f.ui.modes(), []);
+  f.handlers.set("resources.list", () => ({ assets: [videoAsset], total: 1 }));
+  await f.ui.refresh();
+  assert.deepEqual(f.ui.snapshot().assets, [videoAsset]);
+  await assert.rejects(f.ui.capture(), /没有所选/);
+  assert.equal(f.calls.length, 1);
+});
+test("lost video reply is recovered on reopen; stale scope receipt and malformed capture cannot attach", async () => {
+  const f = fixture(videoCapabilities);
+  f.handlers.set("resources.recordVideo", () => {
+    throw new Error("video reply lost");
+  });
+  f.ui.setMode("camera");
+  await assert.rejects(f.ui.capture(), /video reply lost/);
+  f.handlers.set("resources.list", () => ({ assets: [videoAsset], total: 1 }));
+  f.reopen();
+  await f.ui.refresh();
+  assert.deepEqual(f.ui.snapshot().assets, [videoAsset]);
+  assert.equal(f.calls.filter((c) => c.method === "resources.recordVideo").length, 1);
+  const pending = deferred<unknown>();
+  f.handlers.set("resources.recordVideo", () => pending.promise);
+  f.ui.setMode("screen");
+  const capturing = f.ui.capture();
+  f.state.scope = "b:1";
+  pending.resolve({
+    asset: videoAsset,
+    capture: { source: "screen", microphone: false, systemAudio: false },
+  });
+  await assert.rejects(capturing, /工程已切换/);
+  assert.deepEqual(f.ui.snapshot().assets, []);
+  f.handlers.set("resources.recordVideo", () => ({
+    asset: videoAsset,
+    capture: { source: "camera" },
+  }));
+  f.ui.setMode("camera");
+  await assert.rejects(f.ui.capture(), /视频采集回执无效/);
+});
+test("video capabilities require bounded limits and booleans", () => {
+  assert.deepEqual(hostVideoCapabilities(videoCapabilities), videoCapabilities);
+  for (const patch of [
+    { camera: 1 },
+    { maxBytes: Infinity },
+    { maxDurationSeconds: 1201 },
+    { maxBytes: 0 },
+  ])
+    assert.throws(() => hostVideoCapabilities({ ...videoCapabilities, ...patch }), /能力回执无效/);
+});
+
+test("failed device capability discovery keeps durable video recovery available", async () => {
+  const f = fixture(undefined,true);
+  f.handlers.set("resources.list",()=>({assets:[videoAsset],total:1}));
+  await f.ui.refresh();
+  assert.deepEqual(f.ui.snapshot().assets,[videoAsset]);
+  assert.deepEqual(f.ui.modes(),["microphone"]);
+  assert.doesNotMatch(f.ui.render(""), /rec-host-mode:camera|rec-host-mode:screen/);
+});
+
+test("switching to voice reference hides previously cached videos before any explicit action", async () => {
+  const f = fixture(videoCapabilities);
+  f.handlers.set("resources.list",()=>({assets:[videoAsset,asset],total:2}));
+  await f.ui.refresh();
+  f.state.audioOnly = true;
+  assert.deepEqual(f.ui.snapshot().assets,[asset]);
+  assert.doesNotMatch(f.ui.render(""), new RegExp(videoAsset.id));
+  const previous = f.calls.length;
+  await assert.rejects(f.ui.publish(videoAsset.id), /请先刷新/);
+  assert.equal(f.calls.length,previous);
+  f.state.audioOnly=false;
+  assert.deepEqual(f.ui.snapshot().assets,[videoAsset,asset]);
 });
