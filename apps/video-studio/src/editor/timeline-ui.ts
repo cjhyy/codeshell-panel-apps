@@ -58,6 +58,7 @@ type Drag = {
   lastY: number;
   documentId: string;
   revision: number;
+  generation?: number;
   sequenceId: string;
   clip?: EditorClip;
   ids: string[];
@@ -166,8 +167,8 @@ export class EditorTimeline {
     container.addEventListener("pointerdown", this.pointerdown);
     container.addEventListener("pointermove", this.pointermove);
     container.addEventListener("pointerup", this.pointerup);
-    container.addEventListener("pointercancel", this.cancel);
-    container.addEventListener("lostpointercapture", this.lostCapture);
+    container.addEventListener("pointercancel", this.cancelPointer);
+    container.addEventListener("lostpointercapture", this.cancelPointer);
     window.addEventListener("blur", this.interrupt);
     globalThis.document.addEventListener("visibilitychange", this.interrupt);
     container.addEventListener("dragover", this.dragover);
@@ -1108,7 +1109,7 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
-    if (event.button !== 0 || editableTarget(event.target)) return;
+    if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
     this.notice.textContent = "";
@@ -1150,6 +1151,7 @@ export class EditorTimeline {
       lastY: event.clientY,
       documentId: document.id,
       revision: document.revision,
+      generation: this.context.identity?.().generation,
       sequenceId: sequence.id,
       clip,
       ids: clip
@@ -1209,6 +1211,7 @@ export class EditorTimeline {
     if (
       document.id !== drag.documentId ||
       document.revision !== drag.revision ||
+      this.context.identity?.().generation !== drag.generation ||
       sequence.id !== drag.sequenceId
     ) {
       this.cancel();
@@ -1389,6 +1392,7 @@ export class EditorTimeline {
       if (
         document.id !== drag.documentId ||
         document.revision !== drag.revision ||
+        this.context.identity?.().generation !== drag.generation ||
         sequence.id !== drag.sequenceId
       )
         throw new Error("工程已变化，请重新拖动片段");
@@ -1467,7 +1471,7 @@ export class EditorTimeline {
     for (const lane of this.container.querySelectorAll<HTMLElement>("[data-et-lane]"))
       lane.classList.remove("drop-target");
   };
-  private lostCapture = (event: PointerEvent) => {
+  private cancelPointer = (event: PointerEvent) => {
     if (this.drag?.pointerId === event.pointerId) this.cancel();
   };
   /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
@@ -1489,8 +1493,8 @@ export class EditorTimeline {
     this.container.removeEventListener("pointerdown", this.pointerdown);
     this.container.removeEventListener("pointermove", this.pointermove);
     this.container.removeEventListener("pointerup", this.pointerup);
-    this.container.removeEventListener("pointercancel", this.cancel);
-    this.container.removeEventListener("lostpointercapture", this.lostCapture);
+    this.container.removeEventListener("pointercancel", this.cancelPointer);
+    this.container.removeEventListener("lostpointercapture", this.cancelPointer);
     window.removeEventListener("blur", this.interrupt);
     globalThis.document.removeEventListener("visibilitychange", this.interrupt);
     this.container.removeEventListener("dragover", this.dragover);
