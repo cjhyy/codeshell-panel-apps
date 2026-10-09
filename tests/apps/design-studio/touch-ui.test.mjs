@@ -10,6 +10,11 @@ const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.me
 
 async function fixture(t, width = 390, touch = true) {
   const files = new Map(), records = new Map();
+  const projectFiles = new Map([["test", files]]), projectRecords = new Map([["test", records]]);
+  const filesForSession = sessionId => {
+    if (!projectFiles.has(sessionId)) projectFiles.set(sessionId, new Map());
+    return projectFiles.get(sessionId);
+  };
   const server = createServer(async (request, response) => {
     const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
     if (!path.startsWith(root)) return response.writeHead(403).end();
@@ -35,9 +40,14 @@ async function fixture(t, width = 390, touch = true) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.exposeFunction("hostBridge", async (method, params = {}) => {
+  await page.exposeFunction("hostBridge", async (sessionId, method, params = {}) => {
+    const files = filesForSession(sessionId);
+    if (!projectRecords.has(sessionId)) projectRecords.set(sessionId, new Map());
+    const records = projectRecords.get(sessionId);
     if (method === "workspace.info") return { cwd: "/test-project", name: "test-project" };
-    if (method === "workspace.list") return { entries: [], truncated: false };
+    if (method === "workspace.list") return { entries: [...files.keys()].map(path => ({
+      path, name: path.split("/").at(-1), kind: "file", modifiedAt: 1,
+    })), truncated: false };
     if (method === "workspace.readText") {
       if (!files.has(params.path)) throw Error("file missing");
       return { content: files.get(params.path), modifiedAt: 1, revision: "test-revision" };
@@ -60,11 +70,17 @@ async function fixture(t, width = 390, touch = true) {
   });
   await page.addInitScript(() => {
     window.tools = {};
+    let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
+    let contextListener;
     window.codeshellPanel = {
-      getContext: async () => ({ cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] }),
-      call: (method, params) => window.hostBridge(method, params),
-      on: () => {},
+      getContext: async () => ({ ...context }),
+      call: (method, params) => window.hostBridge(context.sessionId, method, params),
+      on: (name, callback) => { if (name === "context.changed") contextListener = callback; },
       registerTool: (name, callback) => { window.tools[name] = callback; },
+    };
+    window.switchProject = sessionId => {
+      context = { ...context, sessionId };
+      contextListener?.({ ...context });
     };
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
@@ -81,7 +97,7 @@ async function fixture(t, width = 390, touch = true) {
     await page.locator("#compact-actions summary").tap();
     await page.locator(`[data-toolbar-action="${action}"]`).tap();
   };
-  return { page, files, errors, sendTouch, design, menu };
+  return { page, files, filesForSession, errors, sendTouch, design, menu };
 }
 
 async function drawRectangle(f) {
@@ -194,6 +210,84 @@ test("native touch cancellation rolls back create, move, resize and pan without 
   assert.equal(await f.page.locator("#stage [data-node-id]").count(), 0);
   await drawRectangle(f);
   assert.equal(await f.page.locator("#stage rect[data-node-id]").count(), 1);
+  assert.deepEqual(f.errors, []);
+});
+
+test("switching same-path projects cancels the old drag before retaining its draft and ignores late touch events", async t => {
+  const f = await fixture(t);
+  const node = await drawRectangle(f);
+  const before = await f.design();
+  const replacement = structuredClone(before.document);
+  replacement.name = "Next project";
+  replacement.pages[0].children[0].x = 600;
+  replacement.pages[0].children[0].y = 300;
+  f.filesForSession("next-project").set("designs/design.codesign.json", JSON.stringify(replacement));
+  const center = await nodeCenter(node);
+  const originalX = await f.page.locator("#prop-x").inputValue();
+  await f.sendTouch("touchStart", [center]);
+  await f.sendTouch("touchMove", [{ ...center, x: center.x + 50 }]);
+  assert.notEqual(await f.page.locator("#prop-x").inputValue(), originalX);
+  await f.page.evaluate(() => window.switchProject("next-project"));
+  const next = await f.design();
+  assert.equal(next.document.name, "Next project");
+  assert.equal(next.document.pages[0].children[0].x, 600);
+  await f.sendTouch("touchMove", [{ ...center, x: center.x + 90 }]);
+  await f.sendTouch("touchCancel");
+  assert.deepEqual(await f.design(), next);
+  const downloadPromise = f.page.waitForEvent("download");
+  await f.page.locator("#recovery-backup").tap();
+  const backup = JSON.parse(await readFile(await (await downloadPromise).path(), "utf8"));
+  const oldDraft = backup.drafts.find(draft => draft.record.operations.some(operation => operation.type === "add-node"));
+  assert.ok(oldDraft);
+  assert.deepEqual(oldDraft.record.operations.map(operation => operation.type), ["add-node"]);
+  assert.equal(oldDraft.record.operations[0].node.x, before.document.pages[0].children[0].x);
+  assert.deepEqual(f.errors, []);
+});
+
+test("opening a replacement file with the same node ID cannot inherit an old resize or its late pointer-up", async t => {
+  const f = await fixture(t);
+  await drawRectangle(f);
+  const before = await f.design();
+  const replacement = structuredClone(before.document);
+  replacement.name = "Replacement design";
+  replacement.pages[0].children[0].width = 300;
+  f.files.set("designs/replacement.codesign.json", JSON.stringify(replacement));
+  await f.page.locator("#refresh-repo-files").evaluate(button => button.click());
+  await f.page.locator("#repo-files-list .file-row").filter({ hasText: "replacement" }).waitFor({ state: "attached" });
+  const handle = await f.page.locator('[data-handle="se"]').last().boundingBox();
+  const corner = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2, id: 1 };
+  const originalWidth = await f.page.locator("#prop-width").inputValue();
+  await f.sendTouch("touchStart", [corner]);
+  await f.sendTouch("touchMove", [{ ...corner, x: corner.x + 40, y: corner.y + 30 }]);
+  assert.notEqual(await f.page.locator("#prop-width").inputValue(), originalWidth);
+  await f.page.keyboard.press("Control+o");
+  f.page.once("dialog", dialog => dialog.accept());
+  await f.page.locator("#files-list .file-row").filter({ hasText: "replacement" }).press("Enter");
+  await f.page.waitForFunction(() => document.querySelector("#document-path").value.endsWith("replacement.codesign.json"));
+  const next = await f.design();
+  assert.equal(next.document.pages[0].children[0].width, 300);
+  await f.sendTouch("touchMove", [{ ...corner, x: corner.x + 90, y: corner.y + 70 }]);
+  await f.sendTouch("touchEnd");
+  assert.deepEqual(await f.design(), next);
+  assert.deepEqual(f.errors, []);
+});
+
+test("changing pages restores a pending move on its original page before switching the active page", async t => {
+  const f = await fixture(t);
+  const node = await drawRectangle(f);
+  const before = await f.design();
+  const center = await nodeCenter(node);
+  const originalX = await f.page.locator("#prop-x").inputValue();
+  await f.sendTouch("touchStart", [center]);
+  await f.sendTouch("touchMove", [{ ...center, x: center.x + 50 }]);
+  assert.notEqual(await f.page.locator("#prop-x").inputValue(), originalX);
+  await f.page.locator("#add-page").evaluate(button => button.click());
+  await f.page.waitForFunction(() => document.querySelector("#active-page").value === "page-2");
+  await f.sendTouch("touchCancel");
+  await f.page.locator("#active-page").selectOption("page-1");
+  const after = await f.design();
+  assert.deepEqual(after.document.pages[0], before.document.pages[0]);
+  assert.equal(after.document.pages[1].children.length, 0);
   assert.deepEqual(f.errors, []);
 });
 

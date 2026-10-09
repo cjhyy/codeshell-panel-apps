@@ -728,16 +728,17 @@ async function activateDesignPage(pageId) {
   let target = design.pages.find((page) => page.id === pageId);
   if (!target) throw new Error(`页面不存在：${pageId}`);
   if (pageId === design.activePageId) return false;
+  cancelInteraction();
   await ensureDesignPageLoaded(pageId);
   assertScope();
   await loadReferencedDesignResources();
   assertScope();
   target = design.pages.find((page) => page.id === pageId);
+  cancelInteraction();
   syncActivePageNodes();
   design.activePageId = pageId;
   design.nodes = target.nodes;
   clearSelection();
-  interaction = null;
   return true;
 }
 
@@ -2548,12 +2549,19 @@ function pointerDown(event) {
   if (!interaction) return;
   interaction.pointerId = event.pointerId;
   interaction.before = before;
+  interaction.workspaceEpoch = workspaceEpoch;
+  interaction.documentEpoch = documentEpoch;
+  interaction.pageId = design.activePageId;
   elements.stage.setPointerCapture(event.pointerId);
   updateCursor();
 }
 
 function pointerMove(event) {
   if (!interaction || event.pointerId !== interaction.pointerId) return;
+  if (!interactionIsCurrent(interaction)) {
+    releaseInteraction();
+    return;
+  }
   const point = documentPoint(event);
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
@@ -2691,13 +2699,29 @@ function resizeNode(node, point, state, preserveAspect) {
   }
 }
 
+function interactionIsCurrent(state) {
+  return (
+    state.workspaceEpoch === workspaceEpoch &&
+    state.documentEpoch === documentEpoch &&
+    state.pageId === design.activePageId
+  );
+}
+
+function releaseInteraction() {
+  const released = interaction;
+  interaction = null;
+  if (released && elements.stage.hasPointerCapture(released.pointerId)) {
+    elements.stage.releasePointerCapture(released.pointerId);
+  }
+  updateCursor();
+  return released;
+}
+
 function finishInteraction(pointerId = null) {
   if (!interaction || (pointerId !== null && pointerId !== interaction.pointerId)) return;
-  const finished = interaction;
-  interaction = null;
-  if (elements.stage.hasPointerCapture(finished.pointerId)) {
-    elements.stage.releasePointerCapture(finished.pointerId);
-  }
+  const current = interactionIsCurrent(interaction);
+  const finished = releaseInteraction();
+  if (!current) return;
   const node = finished.nodeId ? nodeById(finished.nodeId) : selectedNode();
   if (finished.kind === "create" && node && (node.width < 4 || node.height < 4)) {
     node.width = finished.tool === "frame" ? 390 : 160;
@@ -2725,11 +2749,9 @@ function pointerUp(event) {
 
 function cancelInteraction(pointerId = null) {
   if (!interaction || (pointerId !== null && pointerId !== interaction.pointerId)) return;
-  const cancelled = interaction;
-  interaction = null;
-  if (elements.stage.hasPointerCapture(cancelled.pointerId)) {
-    elements.stage.releasePointerCapture(cancelled.pointerId);
-  }
+  const current = interactionIsCurrent(interaction);
+  const cancelled = releaseInteraction();
+  if (!current) return;
   if (cancelled.kind === "create") {
     design.nodes = design.nodes.filter((node) => node.id !== cancelled.nodeId);
   } else if (cancelled.kind === "move") {
@@ -3693,6 +3715,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
   ) {
     return false;
   }
+  cancelInteraction();
   const operationStateRevision = currentDesignStateRevision();
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
@@ -3704,6 +3727,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     }
     const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    cancelInteraction();
     design = resolved.pageCache
       ? resolved.document
       : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
@@ -3807,6 +3831,7 @@ async function checkExternalChange({ force = false } = {}) {
         ) {
           return false;
         }
+        cancelInteraction();
         design = nextDesign;
         documentEpoch += 1;
         clearSelection();
@@ -4434,6 +4459,7 @@ async function replaceDesignWithHtmlImport(
   { save = false, recordAgentTransaction = false, sourcePath } = {},
 ) {
   const operationWorkspaceEpoch = workspaceEpoch;
+  cancelInteraction();
   await ensureAllDesignPagesLoaded();
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   const nextDesign = normalizeDocument(imported);
@@ -4759,6 +4785,7 @@ async function saveAuditReport() {
 
 function newDocument() {
   if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
+  cancelInteraction();
   design = createBlankDocument("Untitled");
   recoveryBaseDocument = clone(design);
   documentEpoch += 1;
@@ -4814,6 +4841,7 @@ async function deleteDesignPage(pageId) {
     notify("设计文件必须保留至少一页", "error");
     return;
   }
+  cancelInteraction();
   await ensureAllDesignPagesLoaded();
   syncActivePageNodes();
   const pageIndex = design.pages.findIndex((page) => page.id === pageId);
@@ -5990,6 +6018,7 @@ async function restoreRecovery(
   );
   if (recovery.version === 2 && recoveryBaseChanged)
     throw new Error("另存草稿的基础设计已变化；原草稿已保留，请下载备份并使用原版本恢复");
+  cancelInteraction();
   design = baseDesign;
   currentPageCache = diskPageCache;
   currentResourceCache =
@@ -6081,6 +6110,7 @@ async function restoreRecovery(
 }
 
 function resetToRepoBlankDocument() {
+  cancelInteraction();
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
   recoveryBaseDocument = clone(design);
@@ -6108,6 +6138,7 @@ function resetToRepoBlankDocument() {
 }
 
 function setWorkspaceLoading(loading) {
+  if (loading) cancelInteraction();
   workspaceLoading = loading;
   document.querySelector(".topbar").inert = loading;
   elements.workspace.inert = loading;
