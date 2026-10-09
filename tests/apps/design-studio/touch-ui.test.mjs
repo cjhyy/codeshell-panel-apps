@@ -94,14 +94,14 @@ async function fixture(t, width = 390, touch = true) {
   await page.addInitScript(() => {
     window.tools = {};
     window.touchTrace = [];
-    for (const name of ["pointerdown", "pointerup", "pointercancel", "touchend", "click"]) {
+    for (const name of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchend", "click"]) {
       document.addEventListener(name, event => {
         const target = event.target.closest?.("button, summary") ?? event.target;
         window.touchTrace.push({
           type: event.type, time: performance.now(), target: target.id || target.tagName,
-          tool: target.dataset?.tool, trusted: event.isTrusted,
+          tool: target.dataset?.tool, trusted: event.isTrusted, pointerType: event.pointerType,
         });
-        if (window.touchTrace.length > 40) window.touchTrace.shift();
+        if (window.touchTrace.length > 80) window.touchTrace.shift();
       }, true);
     }
     let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
@@ -126,21 +126,26 @@ async function fixture(t, width = 390, touch = true) {
     });
     await page.evaluate(() => new Promise(requestAnimationFrame));
   };
+  const dragTouch = (start, distance) => cdp.send("Input.synthesizeScrollGesture", {
+    x: start.x, y: start.y, xDistance: distance.x, yDistance: distance.y,
+    gestureSourceType: "touch", preventFling: true, speed: 500,
+  });
   const design = () => page.evaluate(() => window.tools.get_design_context({}));
   const menu = async action => {
     await tapForAttribute(page, "#compact-actions summary", "open", "", "#compact-actions");
     await page.locator(`[data-toolbar-action="${action}"]`).tap();
   };
-  return { page, files, filesForSession, errors, sendTouch, design, menu };
+  return { page, files, filesForSession, errors, sendTouch, dragTouch, design, menu };
 }
 
 async function drawRectangle(f) {
   await tapForAttribute(f.page, '[data-tool="rectangle"]', "aria-pressed", "true");
   const stage = await f.page.locator("#stage").boundingBox();
   const start = { x: stage.x + 65, y: stage.y + 120, id: 1 };
-  await f.sendTouch("touchStart", [start]);
-  await f.sendTouch("touchMove", [{ ...start, x: start.x + 110, y: start.y + 90 }]);
-  await f.sendTouch("touchEnd");
+  // Raw CDP dispatchTouchEvent generates a browser fling before touch-action is
+  // filtered on Linux. Use the native touch driver with a non-flinging release
+  // for completed draws; cancellation and multi-pointer cases retain raw input.
+  await f.dragTouch(start, { x: 110, y: 90 });
   return f.page.locator("#stage [data-node-id]").first();
 }
 
@@ -156,9 +161,18 @@ test("320–680px touch workspaces retain a usable canvas, drawers and every des
       const stage = await f.page.locator("#stage").boundingBox();
       assert.ok(stage.width >= width - 50, `canvas was only ${stage.width}px wide`);
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth), width);
-      await drawRectangle(f);
+      const node = await drawRectangle(f);
+      const bounds = await node.boundingBox();
+      assert.ok(bounds.width >= 100 && bounds.width <= 140, `draw width was ${bounds.width}`);
+      assert.ok(bounds.height >= 80 && bounds.height <= 120, `draw height was ${bounds.height}`);
+      assert.equal(await f.page.evaluate(() => window.touchTrace.some(event =>
+        event.type === "pointermove" && event.pointerType === "touch" && event.trusted)), true);
       await tapForAttribute(f.page, "#toggle-layers", "aria-expanded", "true");
       assert.equal(await f.page.locator("#layers-sidebar").isVisible(), true);
+      const activation = await f.page.evaluate(() => window.touchTrace.filter(event => event.target === "toggle-layers"));
+      for (const type of ["pointerdown", "pointerup", "touchstart", "touchend", "click"]) {
+        assert.equal(activation.filter(event => event.type === type && event.trusted).length, 1, `expected one native ${type}`);
+      }
       await tapForAttribute(f.page, ".layer-visibility", "data-hidden", "true", ".layer-row");
       assert.equal(await f.page.locator(".layer-row").getAttribute("data-hidden"), "true");
       await tapForAttribute(f.page, ".layer-visibility", "data-hidden", "false", ".layer-row");
