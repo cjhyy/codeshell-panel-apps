@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 const root = fileURLToPath(new URL("../../../apps/quant-lab/app/", import.meta.url));
 const manifest = JSON.parse(await readFile(new URL("../../../apps/quant-lab/.codeshell-panel/panel.json", import.meta.url)));
 
-async function fixture(t, { offline = false, deferInitial = false, width = 390 } = {}) {
+async function fixture(t, { offline = false, deferInitial = false, width = 390, holdModuleRestore } = {}) {
   const server = createServer(async (request, response) => {
     const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
     if (!path.startsWith(root)) return response.writeHead(403).end();
@@ -27,6 +27,9 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390 }
   page.setDefaultTimeout(10000);
   page.on("pageerror", error => errors.push(error.message));
   let revision = 0, holdWrite, holdRead;
+  let releaseModule, moduleStarted, moduleHeld = false;
+  const moduleReady = new Promise(resolve => { moduleStarted = resolve; });
+  const moduleResponse = new Promise(resolve => { releaseModule = resolve; });
   const project = id => {
     if (!projects.has(id)) projects.set(id, new Map());
     return projects.get(id);
@@ -40,6 +43,13 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390 }
       });
       const snapshot = () => records.has(params.key) ? { exists: true, ...structuredClone(records.get(params.key)) } : { exists: false, value: null, revision: null };
       if (method === "storage.getSnapshot") return snapshot();
+      if (method === "storage.get" && binding.project === holdModuleRestore && params.key.startsWith("activeTab.") && !moduleHeld) {
+        moduleHeld = true;
+        const value = snapshot().value;
+        moduleStarted();
+        await moduleResponse;
+        return value;
+      }
       if (method === "storage.get") return snapshot().value;
       if (method === "storage.set") { records.set(params.key, { value: params.value, revision: `sha256:${(++revision).toString(16).padStart(64, "0")}` }); return null; }
       if (method === "storage.compareAndSet") {
@@ -75,7 +85,7 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390 }
     }, { permissions: manifest.permissions, deferInitial });
   }
   await page.goto(`${origin}/index.html`);
-  if (!deferInitial) await page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成", null, { timeout: 10000 }).catch(error => {
+  if (!deferInitial && holdModuleRestore !== "A") await page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成", null, { timeout: 10000 }).catch(error => {
     error.message += `\nInitialization errors: ${JSON.stringify(errors)}; latest calls: ${JSON.stringify(calls.slice(-8))}`;
     throw error;
   });
@@ -86,7 +96,7 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390 }
     if (kind === "write") holdWrite = { pending, started }; else holdRead = { pending, started };
     return { release, ready };
   };
-  return { page, calls, projects, errors, hold };
+  return { page, calls, projects, errors, hold, moduleRestore: { ready: moduleReady, release: releaseModule } };
 }
 
 const configWrites = f => f.calls.filter(call => call.method === "storage.compareAndSet" && call.params.key.startsWith("configuration."));
@@ -162,6 +172,50 @@ test("new context events win over a stale initial getContext even when cwd is id
   await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
   const reads = f.calls.filter(call => call.method === "storage.getSnapshot" && call.params.key.startsWith("configuration."));
   assert.deepEqual(reads.map(call => [call.project, call.sessionId]), [["B", "chat-C"]]);
+  assert.deepEqual(f.errors, []);
+});
+
+test("a late same-path execution tab restore cannot hide the user's research draft backup", { timeout: 20000 }, async t => {
+  const f = await fixture(t, { holdModuleRestore: "B" });
+  await f.page.locator('[data-module-tab="research"]').tap();
+  const write = f.hold("write");
+  await f.page.locator("#fast-period").fill("18");
+  await write.ready;
+  await f.page.locator("#fast-period").fill("19");
+  await f.page.evaluate(() => window.switchExecution("chat-B", "B"));
+  await parameter(f.page, 9);
+  write.release();
+  await f.moduleRestore.ready;
+  await f.page.locator('[data-module-tab="research"]').tap();
+  f.moduleRestore.release();
+  await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  assert.equal(await f.page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
+  assert.equal(await f.page.locator("#backtest-storage-backup").isVisible(), true);
+  const [download] = await Promise.all([
+    f.page.waitForEvent("download"),
+    f.page.locator("#backtest-storage-backup").tap(),
+  ]);
+  const backup = JSON.parse(await readFile(await download.path(), "utf8"));
+  assert.equal(backup.sessionId, "chat-B");
+  assert.equal(backup.fields.fastPeriod, "9");
+  assert.equal(backup.retainedDrafts[0].sessionId, "chat-A");
+  assert.equal(backup.retainedDrafts[0].fields.fastPeriod, "19");
+  assert.equal(configWrites(f).length, 1);
+  assert.deepEqual(f.errors, []);
+});
+
+test("a late initial tab restore preserves user navigation and cold reopening still restores the saved tab", { timeout: 20000 }, async t => {
+  const f = await fixture(t, { holdModuleRestore: "A" });
+  await parameter(f.page, 17);
+  await f.moduleRestore.ready;
+  await f.page.locator('[data-module-tab="research"]').tap();
+  f.moduleRestore.release();
+  await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  assert.equal(await f.page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true");
+  await f.page.reload();
+  await f.page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成");
+  assert.equal(await f.page.locator('[data-module-tab="research"]').getAttribute("aria-selected"), "true",
+    "A saved tab still restores when no newer user navigation supersedes it");
   assert.deepEqual(f.errors, []);
 });
 
