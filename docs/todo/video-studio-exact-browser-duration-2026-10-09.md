@@ -33,6 +33,8 @@ WebM 仍是实时编码输出，耗时接近序列时长、最长 10 分钟、�
 逐采样编码。末尾画面与已排队音频在停止编码前完成呈现/排空。
 结束、取消、owner 变更和编码失败均释放 capture/destination tracks、声音
 解码器、AudioContext、画面池和 owned URL；borrowed URL 不由导出器撤销。
+编码器 stop 与 AudioContext close 的收尾等待也保留取消、可见性和 owner
+监测；清理完成后再次检查原始取消信号，已取消的编码结果不会下载。
 
 ## 验收
 
@@ -44,7 +46,9 @@ WebM 仍是实时编码输出，耗时接近序列时长、最长 10 分钟、�
 `tests/video-studio-browser-export-media.test.mjs` 使用真实浏览器编码与解码 PCM，
 检查静音、增益比例、不同 source offset 的同源重叠、共享 owned URL 在画面和
 声音均释放后只撤销一次、第二素材延迟 250ms 的相邻尾音，以及悬挂 resolver/play、owner 变更、
-提前 EOF 和编码器构造失败时的清理。每个夹具只使用合成媒体及 blob URL；
+提前 EOF 和编码器构造失败时的清理。真实 MediaRecorder 已停止但延迟交付
+stop 事件时，取消、切后台和 owner 变更均拒绝返回文件；AudioContext close
+尚未完成时取消也保留相同保证。每个夹具只使用合成媒体及 blob URL；
 不访问真实摄像头、个人工程、外部账号或付费模型。
 
 原有摄像头回归改读实际持久化的多轨片段/尺寸/时长，保留实际导出文件的

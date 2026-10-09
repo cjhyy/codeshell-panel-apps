@@ -594,3 +594,118 @@ test(
     clean(result.receipt);
   },
 );
+
+test(
+  "cancel, hidden workspace and replaced owner during actual encoder teardown reject output",
+  { timeout: 30000 },
+  async (t) => {
+    for (const mode of ["cancel-stop", "hidden-stop", "owner-stop", "cancel-close"]) {
+      const page = await open(t);
+      const result = await page.evaluate(async (mode) => {
+        const doc = makeDocument(),
+          before = JSON.stringify(doc),
+          controller = new AbortController(),
+          events = [];
+        let current = true,
+          error,
+          output;
+        const invalidate = () => {
+          events.push({ kind: "invalidate", time: performance.now() });
+          if (mode.startsWith("cancel")) controller.abort();
+          else if (mode === "owner-stop") current = false;
+          else {
+            Object.defineProperty(document, "visibilityState", {
+              configurable: true,
+              get: () => "hidden",
+            });
+            document.dispatchEvent(new Event("visibilitychange"));
+            // Returning to the foreground cannot revive an export that was
+            // invalidated during the encoder's asynchronous teardown.
+            setTimeout(() => {
+              Object.defineProperty(document, "visibilityState", {
+                configurable: true,
+                get: () => "visible",
+              });
+              events.push({ kind: "visible-again", time: performance.now() });
+              document.dispatchEvent(new Event("visibilitychange"));
+            }, 40);
+          }
+        };
+        if (mode === "cancel-close") {
+          const close = AudioContext.prototype.close;
+          AudioContext.prototype.close = async function () {
+            events.push({ kind: "close-start", time: performance.now() });
+            const completion = close.call(this);
+            setTimeout(invalidate, 25);
+            await completion;
+            events.push({ kind: "native-closed", time: performance.now(), state: this.state });
+            await new Promise((resolve) => setTimeout(resolve, 180));
+            events.push({ kind: "close-return", time: performance.now() });
+          };
+        } else {
+          const stop = MediaRecorder.prototype.stop;
+          MediaRecorder.prototype.stop = function () {
+            const deliver = this.onstop;
+            this.onstop = (event) => {
+              events.push({ kind: "native-stop", time: performance.now(), state: this.state });
+              setTimeout(() => {
+                events.push({ kind: "stop-delivery", time: performance.now() });
+                deliver.call(this, event);
+              }, 180);
+            };
+            events.push({ kind: "stop-start", time: performance.now() });
+            const returned = stop.call(this);
+            setTimeout(invalidate, 25);
+            return returned;
+          };
+        }
+        const started = performance.now();
+        try {
+          output = await api.recordEditorSequence({
+            document: doc,
+            sequenceId: doc.activeSequenceId,
+            signal: controller.signal,
+            resolveAsset: async () => ({ url: fixture.sourceUrl, owned: true }),
+            assertCurrent() {
+              if (!current) throw new Error("fixture teardown owner changed");
+            },
+          });
+        } catch (failure) {
+          error = failure.message;
+        }
+        return {
+          mode,
+          error,
+          returnedBytes: output ? Array.from(new Uint8Array(await output.arrayBuffer())) : [],
+          events,
+          settledMilliseconds: performance.now() - started,
+          signalAborted: controller.signal.aborted,
+          visibility: document.visibilityState,
+          unchanged: JSON.stringify(doc) === before,
+          receipt: cleanupReceipt(),
+          sourceUrl: fixture.sourceUrl,
+        };
+      }, mode);
+      await mkdir(evidence, { recursive: true });
+      await writeFile(resolve(evidence, `teardown-${mode}.json`), JSON.stringify(result, null, 2));
+      if (result.returnedBytes.length)
+        await pcm(result.returnedBytes, `teardown-${mode}-unexpected-output.webm`);
+      assert.ok(result.error, `Expected teardown ${mode} to reject: ${JSON.stringify(result)}`);
+      assert.equal(result.returnedBytes.length, 0);
+      assert.equal(result.unchanged, true);
+      const invalidated = result.events.find((event) => event.kind === "invalidate"),
+        completed = result.events.find(
+          (event) => event.kind === (mode === "cancel-close" ? "close-return" : "stop-delivery"),
+        );
+      assert.ok(invalidated && completed && invalidated.time < completed.time);
+      if (mode === "hidden-stop") {
+        assert.equal(result.visibility, "visible");
+        assert.ok(result.events.some((event) => event.kind === "visible-again"));
+      }
+      assert.ok(result.receipt.encoders[0].chunks.some((size) => size > 0));
+      assert.ok(result.settledMilliseconds < 2500);
+      assert.deepEqual(result.receipt.revoked, [result.sourceUrl]);
+      clean(result.receipt);
+    }
+  },
+);

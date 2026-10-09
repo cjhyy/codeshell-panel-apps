@@ -329,6 +329,10 @@ export async function recordEditorSequence(input: BrowserExportOptions): Promise
   document.addEventListener("visibilitychange", visibility);
   if (input.signal.aborted) abort();
   const check = () => {
+    // Recheck the caller's authorities as well as their event notifications.
+    // In particular, encoder/context teardown still awaits before publishing.
+    if (input.signal.aborted) abort();
+    visibility();
     if (signal.aborted) throw authorityError ?? visibilityError ?? cancelled();
     options.assertCurrent();
   };
@@ -462,9 +466,6 @@ export async function recordEditorSequence(input: BrowserExportOptions): Promise
     check();
     options.onProgress?.(duration, duration);
   } finally {
-    clearInterval(authority);
-    input.signal.removeEventListener("abort", abort);
-    document.removeEventListener("visibilitychange", visibility);
     const cleanupErrors: unknown[] = [];
     const release = (action: () => void) => {
       try {
@@ -474,41 +475,51 @@ export async function recordEditorSequence(input: BrowserExportOptions): Promise
       }
     };
     try {
-      if (recorder && recorder.state !== "inactive") {
-        recorder.stop();
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const completed = await Promise.race([
-          stopped!.then(() => true),
-          new Promise<false>((resolve) => {
-            timeout = setTimeout(() => resolve(false), 3000);
-          }),
-        ]);
-        clearTimeout(timeout);
-        if (!completed) recordingError ??= new Error("编码器未完成收尾，未生成导出文件");
+      try {
+        if (recorder && recorder.state !== "inactive") {
+          recorder.stop();
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          const completed = await Promise.race([
+            stopped!.then(() => true),
+            new Promise<false>((resolve) => {
+              timeout = setTimeout(() => resolve(false), 3000);
+            }),
+          ]);
+          clearTimeout(timeout);
+          if (!completed) recordingError ??= new Error("编码器未完成收尾，未生成导出文件");
+        }
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-    } catch (error) {
-      cleanupErrors.push(error);
+      release(() => voices?.dispose());
+      release(() => silence?.stop());
+      release(() => silence?.disconnect());
+      for (const track of new Set([
+        ...(stream?.getTracks() ?? []),
+        ...(destinationStream?.getTracks() ?? []),
+      ]))
+        release(() => track.stop());
+      try {
+        await context?.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+      release(() => pool.dispose());
+      release(() => compositor.dispose());
+      canvas.width = canvas.height = 1;
+      mediaReleased = true;
+      for (const url of ownedUrls) release(() => URL.revokeObjectURL(url));
+      if (cleanupErrors.length)
+        recordingError ??= new Error("导出资源清理失败，未生成导出文件", {
+          cause: cleanupErrors[0],
+        });
+    } finally {
+      // Cancellation, visibility and owner checks remain live through every
+      // asynchronous cleanup step, even when the real encoder already stopped.
+      clearInterval(authority);
+      input.signal.removeEventListener("abort", abort);
+      document.removeEventListener("visibilitychange", visibility);
     }
-    release(() => voices?.dispose());
-    release(() => silence?.stop());
-    release(() => silence?.disconnect());
-    for (const track of new Set([
-      ...(stream?.getTracks() ?? []),
-      ...(destinationStream?.getTracks() ?? []),
-    ]))
-      release(() => track.stop());
-    try {
-      await context?.close();
-    } catch (error) {
-      cleanupErrors.push(error);
-    }
-    release(() => pool.dispose());
-    release(() => compositor.dispose());
-    canvas.width = canvas.height = 1;
-    mediaReleased = true;
-    for (const url of ownedUrls) release(() => URL.revokeObjectURL(url));
-    if (cleanupErrors.length)
-      recordingError ??= new Error("导出资源清理失败，未生成导出文件", { cause: cleanupErrors[0] });
   }
   check();
   if (recordingError) throw recordingError;
