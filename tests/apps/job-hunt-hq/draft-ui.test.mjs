@@ -148,6 +148,7 @@ async function fixture(t, options = {}) {
         if (method.startsWith('automations.') && window.__automationHost) return window.__automationHost(method, params, id);
         if (method === 'automations.list') return { automations: options.projectAutomations?.[id] || options.automations || [] };
         if (method === 'credentials.cookies.list') return { accounts: options.accounts || [] };
+        if (method === 'agent.submitPrompt') return { accepted: true };
         return null;
       },
     };
@@ -162,6 +163,19 @@ async function fixture(t, options = {}) {
   return page;
 }
 const ready = page => page.waitForFunction(() => !document.querySelector('.app-shell').inert && document.querySelector('#draft-storage-status').textContent !== '正在连接草稿存储…');
+
+test('Session instruction acknowledgement reports submission and preserves the user display text', async t => {
+  const page = await fixture(t, { extraMethods: ['agent.submitPrompt'] }); await ready(page);
+  await page.locator('#open-session-bridge').click();
+  await page.locator('#session-instruction').fill('请检查候选人资料');
+  await page.locator('#send-session-instruction').click();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.method === 'agent.submitPrompt'));
+  await page.locator('#toast').filter({ hasText: '已发送到当前 Session' }).waitFor();
+  const submitted = await page.evaluate(() => window.__fixture.calls.find(call => call.method === 'agent.submitPrompt'));
+  assert.equal(submitted.params.displayText, '请检查候选人资料');
+  assert.doesNotMatch(await page.locator('#toast').textContent(), /已完成/);
+  assert.match(await page.locator('#session-bridge-state-label').textContent(), /任务已发送/);
+});
 
 test('cloud PDF export keeps its source, recovers a lost reply, cancels and downloads the captured result', async t => {
   const page = await fixture(t, { pdfTasks: true, losePdfStart: true }); await ready(page);

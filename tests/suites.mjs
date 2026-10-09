@@ -43,8 +43,8 @@ export const suites = [
   },
   {
     id: "design-studio",
-    label: "Design Studio project recovery",
-    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs", "tests/apps/design-studio/touch-ui.test.mjs", "tests/apps/design-studio/connection-ui.test.mjs"]],
+    label: "Design Studio project recovery and editor interactions",
+    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs", "tests/apps/design-studio/touch-ui.test.mjs", "tests/apps/design-studio/connection-ui.test.mjs", "tests/apps/design-studio/polish-ui.test.mjs"]],
   },
   {
     id: "quant-lab",
