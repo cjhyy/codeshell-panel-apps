@@ -8,6 +8,29 @@ import { chromium } from "playwright";
 
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
 
+async function waitForAttribute(page, selector, name, value) {
+  try {
+    await page.waitForFunction(({ selector, name, value }) =>
+      document.querySelector(selector)?.getAttribute(name) === value,
+    { selector, name, value }, { timeout: 2000 });
+  } catch (error) {
+    const details = await page.evaluate(({ selector, name }) => ({
+      selector, attribute: name, actual: document.querySelector(selector)?.getAttribute(name),
+      workspace: document.querySelector(".workspace")?.className,
+      events: window.touchTrace,
+    }), { selector, name });
+    error.message += `\nTouch state did not reach ${JSON.stringify(value)}: ${JSON.stringify(details)}`;
+    throw error;
+  }
+}
+
+async function tapForAttribute(page, trigger, name, value, selector = trigger) {
+  // Native touch completion can precede the compatibility click that updates the UI.
+  // Observe that handler's state once; never repeat the tap to make a failed action pass.
+  await page.locator(trigger).tap();
+  await waitForAttribute(page, selector, name, value);
+}
+
 async function fixture(t, width = 390, touch = true) {
   const files = new Map(), records = new Map();
   const projectFiles = new Map([["test", files]]), projectRecords = new Map([["test", records]]);
@@ -70,6 +93,17 @@ async function fixture(t, width = 390, touch = true) {
   });
   await page.addInitScript(() => {
     window.tools = {};
+    window.touchTrace = [];
+    for (const name of ["pointerdown", "pointerup", "pointercancel", "touchend", "click"]) {
+      document.addEventListener(name, event => {
+        const target = event.target.closest?.("button, summary") ?? event.target;
+        window.touchTrace.push({
+          type: event.type, time: performance.now(), target: target.id || target.tagName,
+          tool: target.dataset?.tool, trusted: event.isTrusted,
+        });
+        if (window.touchTrace.length > 40) window.touchTrace.shift();
+      }, true);
+    }
     let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
     let contextListener;
     window.codeshellPanel = {
@@ -94,14 +128,14 @@ async function fixture(t, width = 390, touch = true) {
   };
   const design = () => page.evaluate(() => window.tools.get_design_context({}));
   const menu = async action => {
-    await page.locator("#compact-actions summary").tap();
+    await tapForAttribute(page, "#compact-actions summary", "open", "", "#compact-actions");
     await page.locator(`[data-toolbar-action="${action}"]`).tap();
   };
   return { page, files, filesForSession, errors, sendTouch, design, menu };
 }
 
 async function drawRectangle(f) {
-  await f.page.locator('[data-tool="rectangle"]').tap();
+  await tapForAttribute(f.page, '[data-tool="rectangle"]', "aria-pressed", "true");
   const stage = await f.page.locator("#stage").boundingBox();
   const start = { x: stage.x + 65, y: stage.y + 120, id: 1 };
   await f.sendTouch("touchStart", [start]);
@@ -123,15 +157,15 @@ test("320–680px touch workspaces retain a usable canvas, drawers and every des
       assert.ok(stage.width >= width - 50, `canvas was only ${stage.width}px wide`);
       assert.equal(await f.page.evaluate(() => document.documentElement.scrollWidth), width);
       await drawRectangle(f);
-      await f.page.locator("#toggle-layers").tap();
+      await tapForAttribute(f.page, "#toggle-layers", "aria-expanded", "true");
       assert.equal(await f.page.locator("#layers-sidebar").isVisible(), true);
-      await f.page.locator(".layer-visibility").tap();
+      await tapForAttribute(f.page, ".layer-visibility", "data-hidden", "true", ".layer-row");
       assert.equal(await f.page.locator(".layer-row").getAttribute("data-hidden"), "true");
-      await f.page.locator(".layer-visibility").tap();
-      await f.page.locator("#toggle-inspector").tap();
+      await tapForAttribute(f.page, ".layer-visibility", "data-hidden", "false", ".layer-row");
+      await tapForAttribute(f.page, "#toggle-inspector", "aria-expanded", "true");
       assert.equal(await f.page.locator("#inspector").isVisible(), true);
       assert.equal(await f.page.locator("#layers-sidebar").isVisible(), false);
-      await f.page.locator("#close-inspector").tap();
+      await tapForAttribute(f.page, "#close-inspector", "aria-expanded", "false", "#toggle-inspector");
       assert.equal(await f.page.locator("#inspector").isVisible(), false);
       for (const [action, dialog] of [["open-files", "files-dialog"], ["open-html-import", "html-import-dialog"], ["open-shortcuts", "shortcuts-dialog"], ["portable-backup-open", "portable-backup-dialog"], ["run-audit", "audit-dialog"]]) {
         await f.menu(action);
@@ -139,9 +173,10 @@ test("320–680px touch workspaces retain a usable canvas, drawers and every des
         await f.page.keyboard.press("Escape");
       }
       await f.menu("open-delivery");
+      await waitForAttribute(f.page, '[data-tab="delivery"]', "aria-selected", "true");
       assert.equal(await f.page.locator('[data-tab="delivery"]').getAttribute("aria-selected"), "true");
       assert.equal(await f.page.locator("#inspector").isVisible(), true);
-      await f.page.locator("#close-inspector").tap();
+      await tapForAttribute(f.page, "#close-inspector", "aria-expanded", "false", "#toggle-inspector");
       await f.menu("export-svg");
       await f.page.waitForFunction(() => document.querySelector("#toast")?.textContent.includes("SVG 已导出"));
       assert.match(f.files.get("designs/design.svg"), /<svg/);
@@ -190,7 +225,7 @@ test("native touch cancellation rolls back create, move, resize and pan without 
   await f.sendTouch("touchCancel");
   assert.deepEqual(await f.design(), before);
 
-  await f.page.locator('[data-tool="rectangle"]').tap();
+  await tapForAttribute(f.page, '[data-tool="rectangle"]', "aria-pressed", "true");
   const creation = { x: center.x, y: center.y + 200, id: 1 };
   await f.sendTouch("touchStart", [creation]);
   await f.sendTouch("touchMove", [{ ...creation, x: creation.x + 50, y: creation.y + 30 }]);
@@ -199,7 +234,7 @@ test("native touch cancellation rolls back create, move, resize and pan without 
   assert.deepEqual(await f.design(), before);
 
   const transform = await f.page.locator("#scene").getAttribute("transform");
-  await f.page.locator('[data-tool="hand"]').tap();
+  await tapForAttribute(f.page, '[data-tool="hand"]', "aria-pressed", "true");
   await f.sendTouch("touchStart", [center]);
   await f.sendTouch("touchMove", [{ ...center, x: center.x + 50, y: center.y + 30 }]);
   assert.notEqual(await f.page.locator("#scene").getAttribute("transform"), transform);
