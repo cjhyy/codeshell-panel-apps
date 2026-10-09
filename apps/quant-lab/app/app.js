@@ -629,6 +629,7 @@ let context = { busy: false, trusted: false };
 let toastTimer;
 let workspaceEpoch = 0;
 let contextInitialized = false;
+let initialContextPending = true;
 let activeModule = "today";
 let lastMarketProbeAt = null;
 let visibilityMarketProbeInFlight = false;
@@ -636,7 +637,7 @@ let backgroundMarketProbeTimer = null;
 let marketNetworkProbeGeneration = 0;
 let configurationStorageValue = {};
 let configurationSession = null;
-// Unconfirmed edits stay attached to their original project for this page's lifetime.
+// Execution-bound drafts never move to another chat, even at the same project path.
 const configurationDrafts = new Map();
 const configurationFieldNames = [
   "strategyType", "fastPeriod", "slowPeriod", "rsiPeriod", "rsiOversold",
@@ -1743,11 +1744,22 @@ function mockHostCall(method, params = {}) {
       revision: `preview:${modifiedAt}`,
     });
   }
-  if (method === "agent.submitPrompt") return Promise.resolve({ accepted: true });
-  return Promise.resolve(null);
+  return Promise.reject(new Error("浏览器本地模式未连接此功能，请连接 CodeShell 后重试"));
+}
+
+function hostMethodAvailable(method) {
+  if (!window.codeshellPanel?.call) return false;
+  return !Array.isArray(context.availableMethods) || context.availableMethods.includes(method);
+}
+
+function agentSubmissionAvailable() {
+  return hostMethodAvailable("agent.submitPrompt") &&
+    (!Array.isArray(context.availableMethods) || Boolean(context.sessionId));
 }
 
 function hostCall(method, params) {
+  if (method === "agent.submitPrompt" && !agentSubmissionAvailable())
+    return Promise.reject(new Error("当前未连接可提交的 Agent 会话；请求未发送，可连接 CodeShell 后重试"));
   if (!window.codeshellPanel?.call) return mockHostCall(method, params);
   panelHostCallScheduler ??= createPanelHostCallScheduler({
     invoke: (nextMethod, nextParams) => window.codeshellPanel.call(nextMethod, nextParams),
@@ -2333,7 +2345,7 @@ stockStrategyController = createStockStrategyController({
   now: currentInstant,
   notify,
   onBusyChange() {
-    updateContext({});
+    updateContext(context);
   },
   elements: {
     button: elements.stockDetailStrategy,
@@ -3759,6 +3771,10 @@ function configurationFields() {
   return Object.fromEntries(configurationFieldNames.map((name) => [name, elements[name].value]));
 }
 
+function configurationBindingKey() {
+  return JSON.stringify([context.cwd ?? null, context.sessionId ?? null]);
+}
+
 function restoreConfigurationFields(fields) {
   for (const name of configurationFieldNames) {
     if (typeof fields?.[name] === "string") elements[name].value = fields[name];
@@ -3776,6 +3792,18 @@ function renderConfigurationStorage() {
       : session?.exists ? "回测参数已与项目记录一致。" : "项目尚无已保存参数，修改后将保存。")
       + (session?.store.versioned ? "" : " 当前执行环境不支持冲突检查，请避免同时编辑。");
   status.dataset.tone = session?.error ? "error" : "idle";
+  const retainedCount = [...configurationDrafts.keys()].filter(key => key !== session?.bindingKey).length;
+  if (retainedCount) status.textContent += ` 另有 ${retainedCount} 份其他会话暂存参数，可一起备份下载。`;
+  const draftChoice = document.getElementById("backtest-storage-draft");
+  const selectedDraft = draftChoice.value;
+  draftChoice.replaceChildren(new Option("当前参数", ""));
+  for (const [key, draft] of configurationDrafts) {
+    if (key === session?.bindingKey) continue;
+    draftChoice.add(new Option(`暂存 · ${draft.workspaceRoot ?? "未连接项目"} · ${draft.sessionId ?? "无对话"}`, key));
+  }
+  if (configurationDrafts.has(selectedDraft) && selectedDraft !== session?.bindingKey)
+    draftChoice.value = selectedDraft;
+  document.getElementById("backtest-storage-draft-choice").hidden = retainedCount === 0;
   document.getElementById("backtest-storage-reload").disabled = !session || session.loading;
   document.getElementById("backtest-storage-backup").disabled = !session || session.loading;
   for (const name of configurationFieldNames) elements[name].disabled = Boolean(session?.loading);
@@ -3784,19 +3812,28 @@ function renderConfigurationStorage() {
 
 function rememberConfigurationDraft(session = configurationSession) {
   if (!session || session !== configurationSession) return;
-  configurationDrafts.set(session.workspaceRoot, {
+  configurationDrafts.set(session.bindingKey, {
     workspaceRoot: session.workspaceRoot,
+    sessionId: session.sessionId,
     configuration: structuredClone(configurationStorageValue),
     fields: configurationFields(),
   });
 }
 
 function backupConfigurationDraft() {
+  const current = {
+    workspaceRoot: context.cwd ?? null, sessionId: context.sessionId ?? null,
+    configuration: configurationStorageValue, fields: configurationFields(),
+  };
+  const currentKey = configurationBindingKey();
+  const selectedKey = document.getElementById("backtest-storage-draft").value || currentKey;
+  const selected = selectedKey === currentKey ? current : configurationDrafts.get(selectedKey) ?? current;
+  const drafts = new Map(configurationDrafts);
+  drafts.set(currentKey, current);
   const draft = {
     format: "codeshell.quant-backtest-draft", version: 1,
-    workspaceRoot: context.cwd ?? null,
-    configuration: configurationStorageValue,
-    fields: configurationFields(),
+    ...selected,
+    retainedDrafts: [...drafts.entries()].filter(([key]) => key !== selectedKey).map(([, value]) => value),
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }));
   const link = document.createElement("a");
@@ -3842,7 +3879,7 @@ async function saveUiState() {
     if (sequence === session.sequence) {
       session.dirty = false;
       session.error = "";
-      configurationDrafts.delete(session.workspaceRoot);
+      configurationDrafts.delete(session.bindingKey);
     }
   } catch (error) {
     if (session !== configurationSession) return;
@@ -3856,11 +3893,12 @@ async function loadConfiguration(workspaceRoot, storageRoot, epoch, { reload = f
   const previous = configurationSession;
   const session = {
     workspaceRoot, epoch, loading: true, ready: false, error: "", dirty: false, sequence: 0,
+    sessionId: context.sessionId ?? null, bindingKey: configurationBindingKey(),
     store: createProjectSetting({ hostCall, key: scopedStorageKey("configuration", storageRoot),
       currentEpoch: () => workspaceEpoch, getContext: () => context, label: "回测参数" }),
   };
   configurationSession = session;
-  const retained = configurationDrafts.get(workspaceRoot);
+  const retained = configurationDrafts.get(session.bindingKey);
   if (!reload) {
     resetUiState();
     if (retained) {
@@ -3884,7 +3922,7 @@ async function loadConfiguration(workspaceRoot, storageRoot, epoch, { reload = f
       session.exists = saved != null;
       resetUiState();
       restoreUiState(saved);
-      configurationDrafts.delete(workspaceRoot);
+      configurationDrafts.delete(session.bindingKey);
       session.ready = true;
     }
   } catch (error) {
@@ -4099,7 +4137,7 @@ async function checkPendingMarketInsightTask({ retry = true } = {}) {
     }
     elements.marketCommandState.dataset.tone = "active";
     elements.marketCommandState.textContent = `已完成并自动载入：${task.displayText}`;
-    updateContext({});
+    updateContext(context);
     renderStockDiagnosis();
     notify(`${task.displayText}已完成，结果已回显到投资工作台`);
     if (
@@ -4121,7 +4159,7 @@ async function checkPendingMarketInsightTask({ retry = true } = {}) {
     }
     elements.marketCommandState.dataset.tone = "error";
     elements.marketCommandState.textContent = "尚未读取到诊断结果；可以重新诊断或手动重新读取。";
-    updateContext({});
+    updateContext(context);
     renderStockDiagnosis();
     return false;
   }
@@ -4159,7 +4197,7 @@ function failPendingMarketInsightTask(task, message) {
   }
   elements.marketCommandState.dataset.tone = "error";
   elements.marketCommandState.textContent = message;
-  updateContext({});
+  updateContext(context);
   renderStockDiagnosis();
   notify(message, "error");
 }
@@ -4283,7 +4321,7 @@ async function submitMarketCommand(command, subject = "", variant = "standard") 
   } finally {
     if (operationWorkspaceEpoch === workspaceEpoch) {
       marketCommandSubmitting = false;
-      updateContext({});
+      updateContext(context);
     } else {
       marketCommandSubmitting = false;
     }
@@ -4331,6 +4369,7 @@ async function submitAgentRequest() {
   if (!request) return notify("先填写希望 Agent 处理的问题", "error");
   if (context.busy) return notify("当前会话正在运行，请稍后再提交", "error");
   if (context.trusted !== true) return notify("请先信任当前工作区，再提交给 Agent", "error");
+  if (!agentSubmissionAvailable()) return notify("当前未连接可提交的 Agent 会话，请连接 CodeShell 并选择对话", "error");
   const researchMode = activeModule === "research";
   if (researchMode && !run()) return;
   elements.submitAgent.disabled = true;
@@ -4402,7 +4441,7 @@ async function submitAgentRequest() {
     notify(error instanceof Error ? error.message : "提交失败", "error");
   } finally {
     if (operationWorkspaceEpoch === workspaceEpoch) {
-      elements.submitAgent.disabled = Boolean(context.busy) || context.trusted !== true;
+      elements.submitAgent.disabled = Boolean(context.busy) || context.trusted !== true || !agentSubmissionAvailable();
     }
   }
 }
@@ -4413,9 +4452,15 @@ function updateContext(next) {
   const wasTrusted = context.trusted === true;
   const hadInitializedContext = contextInitialized;
   const previousWorkspaceRoot = typeof context.cwd === "string" ? context.cwd : null;
-  const nextContext = { ...context, ...(next ?? {}) };
+  // Host context events are complete permission-projected snapshots. Omitted
+  // session/workspace fields must clear the old binding rather than inherit it.
+  const nextContext = next && typeof next === "object" && !Array.isArray(next)
+    ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
+    : { busy: false, trusted: false };
   const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
-  const workspaceChanged = contextInitialized && previousWorkspaceRoot !== nextWorkspaceRoot;
+  const workspaceChanged = contextInitialized && (
+    previousWorkspaceRoot !== nextWorkspaceRoot || context.sessionId !== nextContext.sessionId
+  );
   if (workspaceChanged) {
     // The Host has already switched projects: do not submit an old-project write.
     if (configurationSession?.dirty) rememberConfigurationDraft();
@@ -4518,7 +4563,7 @@ function updateContext(next) {
   elements.watchExport.disabled = workspaceUnavailable || watchlist.length === 0;
   elements.backtestSavedRefresh.disabled = workspaceUnavailable;
   elements.askAgent.disabled = taskActionsUnavailable;
-  elements.submitAgent.disabled = taskActionsUnavailable;
+  elements.submitAgent.disabled = taskActionsUnavailable || !agentSubmissionAvailable();
   // Single-stock data export is a reviewed local process, not an Agent action.
   // It only needs a trusted workspace and its own history-task mutex.
   historyDataController.setBusy(workspaceUnavailable);
@@ -4533,15 +4578,23 @@ function updateContext(next) {
       marketCommandSubmitting,
   );
   socialRadarController?.setDisabled(taskActionsUnavailable);
-  elements.agentState.textContent = context.busy
+  const connectionState = document.getElementById("host-connection-state");
+  connectionState.hidden = Boolean(window.codeshellPanel?.call) && agentSubmissionAvailable();
+  connectionState.textContent = !window.codeshellPanel?.call
+    ? "浏览器本地模式：参数与文件仅存于此浏览器，可回测、保存与下载参数备份。实时数据、Agent 与后台自动化需要连接 CodeShell。"
+    : "已连接 CodeShell；当前未提供可提交的 Agent 会话。本地回测可用，项目读写以当前授权为准，请选择对话或检查授权。";
+  elements.agentState.textContent = !agentSubmissionAvailable()
+    ? "未连接可提交的 Agent 会话；不会发送请求"
+    : context.busy
     ? "当前会话忙碌中"
     : context.trusted === false
       ? "工作区尚未信任"
       : "当前会话可用";
   if (workspaceChanged) {
     setRunState("切换中");
-    notify("工作区已切换；旧仓库行情已清除，正在载入新仓库参数");
-    void restoreWorkspaceState(nextWorkspaceRoot, nextWorkspaceRoot ?? "preview", workspaceEpoch);
+    notify("项目或会话已切换；旧行情已清除，正在载入当前项目参数，未确认草稿可备份下载");
+    if (!initialContextPending)
+      void restoreWorkspaceState(nextWorkspaceRoot, nextWorkspaceRoot ?? "preview", workspaceEpoch);
   } else if (hadInitializedContext && !wasTrusted && context.trusted === true) {
     // A panel can finish its first render while the workspace is still
     // untrusted. Once trust is granted, re-read the project data directory so
@@ -5235,7 +5288,7 @@ socialRadarController = createSocialRadarController({
   now: currentInstant,
   notify,
   onBusyChange() {
-    updateContext({});
+    updateContext(context);
   },
   root: elements.newsRoot,
 });
@@ -5973,16 +6026,23 @@ window.addEventListener("keydown", (event) => {
 });
 
 async function initialize() {
+  let receivedContextEvent = false;
+  window.codeshellPanel?.on?.("context.changed", next => {
+    receivedContextEvent = true;
+    updateContext(next);
+  });
   try {
-    if (window.codeshellPanel?.getContext) updateContext(await window.codeshellPanel.getContext());
-    else updateContext({ busy: false, trusted: true, cwd: "/preview/codeshell" });
-    window.codeshellPanel?.on?.("context.changed", updateContext);
+    const initialContext = window.codeshellPanel?.getContext
+      ? await window.codeshellPanel.getContext()
+      : { busy: false, trusted: true, cwd: "/preview/codeshell" };
+    if (!receivedContextEvent) updateContext(initialContext);
     window.codeshellPanel?.on?.("agent.task.changed", (task) => {
       void handleMarketInsightAgentTaskChanged(task);
     });
   } catch {
-    updateContext({ busy: false, trusted: false });
+    if (!receivedContextEvent) updateContext({ busy: false, trusted: false });
   }
+  initialContextPending = false;
   const initializationWorkspaceEpoch = workspaceEpoch;
   const initializationWorkspaceIdentity = context.cwd ?? null;
   const initializationWorkspaceRoot = initializationWorkspaceIdentity ?? "preview";
