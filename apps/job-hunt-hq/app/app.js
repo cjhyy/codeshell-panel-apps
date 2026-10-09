@@ -15739,7 +15739,7 @@ function bindEvents() {
     try {
       const sent = await submitSessionTask(
         buildSessionBridgePrompt(instruction),
-        "当前 Session 已完成这条指令；发送内容已保留在面板",
+        "已发送到当前 Session；输入内容已保留在面板",
         { traceId: submissionId },
       );
       elements.sessionBridgeStateLabel.textContent = sent
