@@ -733,3 +733,143 @@ test(
     );
   },
 );
+
+test(
+  "production main rejects encoded output invalidated before its download continuation",
+  { timeout: 30000 },
+  async (t) => {
+    const results = [];
+    for (const mode of ["cancel", "hidden-without-event"]) {
+      const page = await open(t);
+      await page.locator("#media-input").setInputFiles(audioPath);
+      await page.waitForFunction(() =>
+        document.querySelector("#toast")?.textContent.includes("已导入 1 个素材"),
+      );
+      await page.locator("[data-add-asset]").click();
+      await page.waitForFunction(
+        () => document.querySelector("#save-state")?.textContent === "已自动保存",
+      );
+      const before = await readSavedEditorDocument(page),
+        downloads = [];
+      page.on("download", (download) => downloads.push(download));
+      await page.evaluate((mode) => {
+        const NativeBlob = Blob,
+          events = [],
+          nativeAbort = AbortController.prototype.abort,
+          nativeClick = HTMLAnchorElement.prototype.click;
+        let armed = true;
+        window.__publicationFixture = { mode, events };
+        AbortController.prototype.abort = function (...args) {
+          events.push({ kind: "abort", time: performance.now() });
+          return nativeAbort.apply(this, args);
+        };
+        HTMLAnchorElement.prototype.click = function (...args) {
+          if (this.download.endsWith(".webm"))
+            events.push({ kind: "download", time: performance.now(), name: this.download });
+          return nativeClick.apply(this, args);
+        };
+        window.Blob = class extends NativeBlob {
+          constructor(parts, options) {
+            super(parts, options);
+            if (
+              armed &&
+              options?.type?.startsWith("video/webm") &&
+              parts.length &&
+              parts.every((part) => part instanceof NativeBlob)
+            ) {
+              armed = false;
+              window.__publicationFixture.encoded = this;
+              events.push({ kind: "encoded", time: performance.now(), bytes: this.size });
+              // This is the real final Blob, after the exporter's last check.
+              // Its microtask runs before the awaiting production caller resumes.
+              queueMicrotask(() => {
+                events.push({ kind: "invalidate", time: performance.now() });
+                if (mode === "cancel") {
+                  const cancel = document.querySelector('[data-action="cancel-export"]');
+                  window.__publicationFixture.cancelAvailable = Boolean(cancel);
+                  cancel?.click();
+                } else {
+                  Object.defineProperty(document, "hidden", {
+                    configurable: true,
+                    get: () => true,
+                  });
+                  Object.defineProperty(document, "visibilityState", {
+                    configurable: true,
+                    get: () => "hidden",
+                  });
+                  // No notification: the caller must recheck actual visibility.
+                }
+                events.push({
+                  kind: "invalidated",
+                  time: performance.now(),
+                  hidden: document.hidden,
+                });
+              });
+            }
+          }
+        };
+      }, mode);
+      await page.getByRole("button", { name: "导出视频", exact: true }).click();
+      await page.getByRole("button", { name: "开始导出", exact: true }).click();
+      await page.waitForFunction(
+        () =>
+          window.__publicationFixture?.events.some((event) => event.kind === "invalidated") &&
+          document.querySelector('[data-action="record"]')?.textContent === "重新导出",
+      );
+      const receipt = await page.evaluate(async () => ({
+        mode: window.__publicationFixture.mode,
+        events: window.__publicationFixture.events,
+        cancelAvailable: window.__publicationFixture.cancelAvailable,
+        encodedBytes: window.__publicationFixture.encoded.size,
+        status: document.querySelector("#export-progress p").textContent,
+      }));
+      const anchor = receipt.events.find((event) => event.kind === "download");
+      if (anchor) {
+        await page.waitForEvent("download", { timeout: 1000 }).catch(() => {});
+        assert.equal(
+          downloads.length,
+          1,
+          "An actual browser download must accompany the recorded publication",
+        );
+        await mkdir(evidence, { recursive: true });
+        const file = resolve(evidence, `publication-${mode}-unexpected.webm`);
+        await downloads[0].saveAs(file);
+        const { stdout } = await run(
+          "ffmpeg",
+          ["-v", "error", "-i", file, "-f", "f32le", "-ar", "48000", "-ac", "1", "pipe:1"],
+          { encoding: "buffer" },
+        );
+        assert.ok(stdout.length > 0, "The unexpected download must contain actual decodable media");
+        receipt.decodedPcmBytes = stdout.length;
+      }
+      receipt.downloadCount = downloads.length;
+      receipt.unchanged =
+        JSON.stringify(await readSavedEditorDocument(page)) === JSON.stringify(before);
+      results.push(receipt);
+      await mkdir(evidence, { recursive: true });
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(
+        resolve(evidence, `publication-${mode}.json`),
+        JSON.stringify(receipt, null, 2),
+      );
+    }
+    for (const receipt of results) {
+      assert.ok(receipt.encodedBytes > 0);
+      const encoded = receipt.events.find((event) => event.kind === "encoded"),
+        invalidated = receipt.events.find((event) => event.kind === "invalidate"),
+        downloaded = receipt.events.find((event) => event.kind === "download");
+      assert.ok(encoded.time <= invalidated.time);
+      if (receipt.mode === "cancel") {
+        assert.equal(receipt.cancelAvailable, true);
+        assert.ok(
+          receipt.events.some((event) => event.kind === "abort" && event.time >= invalidated.time),
+        );
+      }
+      if (downloaded) assert.ok(invalidated.time <= downloaded.time);
+      assert.equal(receipt.unchanged, true);
+      assert.equal(receipt.downloadCount, 0, JSON.stringify(receipt));
+      assert.equal(downloaded, undefined, JSON.stringify(receipt));
+      assert.match(receipt.status, /已取消/);
+    }
+  },
+);

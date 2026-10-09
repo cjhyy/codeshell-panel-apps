@@ -3459,6 +3459,8 @@ async function record(): Promise<void> {
           showProgress(value, duration(), value / 30, duration() / 30),
         );
     if (snapshot) assertCurrent();
+    if (document.hidden) controller.abort();
+    if (controller.signal.aborted) throw new DOMException("导出已取消", "AbortError");
     download(blob, (snapshot?.name ?? project.name) + ".webm");
     progress.querySelector("p")!.textContent =
       `导出完成 · ${(blob.size / 1024 / 1024).toFixed(1)} MB`;
