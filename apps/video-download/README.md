@@ -373,7 +373,8 @@ stable project or execution-environment ID. Session changes therefore invalidate
 this page's execution binding even within one project. They do not change storage
 keys or saved data: reopening the same project in another session reads the same
 queue and history. Hosts omitting session information can only be checked using
-the context fields they expose. No Host permissions or package version change.
+the context fields they expose. This development change does not bump the package
+version.
 
 ### Background queue and selected accounts (development build)
 
