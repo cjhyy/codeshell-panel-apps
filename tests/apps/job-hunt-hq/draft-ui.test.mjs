@@ -55,10 +55,10 @@ async function fixture(t, options = {}) {
       }
     }
     let current = 'a'; const listeners = [], calls = [], tools = {};
-    const methods = ['storage.getSnapshot', 'storage.compareAndSet'];
+    const methods = ['storage.getSnapshot', 'storage.compareAndSet', 'workspace.info', 'workspace.list', 'workspace.readText', 'workspace.writeText', ...(options.extraMethods || [])];
     if (options.pdfTasks) methods.push('tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'tasks.retry', 'resources.open');
     if (options.audioTasks) methods.push('resources.recordAudio', 'resources.list', 'resources.get', 'resources.open', 'tasks.start', 'tasks.find', 'tasks.get', 'tasks.list', 'tasks.cancel', 'credentials.connections.list');
-    const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods });
+    const ctx = () => ({ cwd: '/workspace', sessionId: 'session-' + current, trusted: true, busy: false, availableMethods: methods, ...(options.hostContext || {}) });
     const snapshot = async (data, key) => {
       if (!(key in data)) return { exists: false, value: null, revision: null };
       const value = structuredClone(data[key]);
@@ -139,7 +139,8 @@ async function fixture(t, options = {}) {
           const record = await snapshot(project.files, params.path);
           return { revision: record.revision, modifiedAt: 2 };
         }
-        if (method === 'automations.list') return [];
+        if (method === 'automations.list') return { automations: options.projectAutomations?.[id] || options.automations || [] };
+        if (method === 'credentials.cookies.list') return { accounts: options.accounts || [] };
         return null;
       },
     };
@@ -783,4 +784,94 @@ test('cloud interview cancellation keeps the recording and only explicit confirm
   assert.notEqual(tasks[0].requestKey, tasks[1].requestKey);
   assert.equal(tasks[0].input.request.assetId, tasks[1].input.request.assetId);
   assert.equal(await page.evaluate(() => window.__fixture.calls.some(c => c.method === 'tasks.retry')), false);
+});
+
+
+test('Web channels use method discovery and provide a usable JD import route', async t => {
+  const page = await fixture(t, { hostContext: { apiVersion: 99, capabilities: { bridge: { structuredErrors: true } } }, extraMethods: ['external.open'] }); await ready(page);
+  await page.locator('.side-nav [data-view-target="dashboard"]').click();
+  await page.locator('#view-dashboard [data-view-target="channels"]').click();
+  assert.equal(await page.locator('[data-login-provider-id]').count(), 0);
+  assert.equal(await page.locator('[data-restore-provider-login-id]').count(), 0);
+  await page.locator('[data-open-provider-url]').first().click();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.method === 'external.open'));
+  await page.locator('[data-paste-provider-jd]').first().click();
+  assert.equal(await page.locator('#jd-intake-text').isVisible(), true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.some(call => call.method.startsWith('credentials.cookies.'))), false);
+});
+
+test('a partial automation host can list tasks without sending unsupported controls', async t => {
+  const page = await fixture(t, { hostContext: { apiVersion: 0 }, extraMethods: ['automations.list'], automations: [{ id: 'existing', prompt: 'job-hunt-hq:scheduled-discovery:v1', enabled: true }] }); await ready(page);
+  await page.locator('.side-nav [data-view-target="dashboard"]').click();
+  await page.locator('#view-dashboard [data-view-target="channels"]').click();
+  await page.waitForFunction(() => window.__fixture.calls.some(call => call.method === 'automations.list'));
+  await page.locator('#discovery-automation-actions').waitFor();
+  assert.equal(await page.locator('#toggle-discovery-automation').isDisabled(), true);
+  assert.equal(await page.locator('#run-discovery-automation').isDisabled(), true);
+  assert.equal(await page.locator('#delete-discovery-automation').isDisabled(), true);
+  assert.match(await page.locator('#discovery-automation-status').textContent(), /不能修改/);
+  await page.locator('#manual-discovery-fallback').click();
+  assert.equal(await page.locator('#agent-dialog').evaluate(dialog => dialog.open), true);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.some(call => /^automations\.(create|update|pause|resume|delete|runNow)$/.test(call.method))), false);
+});
+
+test('Web delivery files download exact Markdown bytes and browse their project directory', async t => {
+  const page = await fixture(t); await ready(page);
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-resume-base-test.md'] = '# Exact saved resume\n姓名与经历'; });
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('[data-resume-workspace="files"]').click();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 Markdown', exact: true }).click();
+  const download = await downloadPromise;
+  assert.equal(download.suggestedFilename(), 'job-hunt-resume-base-test.md');
+  assert.equal(await readFile(await download.path(), 'utf8'), '# Exact saved resume\n姓名与经历');
+  await page.getByRole('button', { name: '浏览项目目录' }).click();
+  await page.getByRole('dialog').filter({ hasText: '项目投递文件' }).waitFor();
+  assert.match(await page.getByRole('dialog').filter({ hasText: '项目投递文件' }).textContent(), /job-hunt-resume-base-test.md/);
+  await page.evaluate(() => window.__fixture.switch('b')); await ready(page);
+  assert.equal(await page.getByRole('dialog').filter({ hasText: '项目投递文件' }).count(), 0);
+  assert.equal(await page.evaluate(() => window.__fixture.calls.some(call => ['workspace.openPath', 'workspace.revealPath'].includes(call.method))), false);
+});
+
+
+test('desktop file methods advertised by a low-version Host remain usable', async t => {
+  const page = await fixture(t, { hostContext: { apiVersion: 0 }, extraMethods: ['workspace.openPath', 'workspace.revealPath'] }); await ready(page);
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-resume-base-native.md'] = '# Desktop resume'; });
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('[data-resume-workspace="files"]').click();
+  await page.getByRole('button', { name: '打开文件', exact: true }).click();
+  await page.getByRole('button', { name: '打开所在文件夹', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__fixture.calls.filter(call => ['workspace.openPath', 'workspace.revealPath'].includes(call.method)).map(call => [call.id, call.method, call.params.path])), [
+    ['a', 'workspace.openPath', 'job-hunt-resume-base-native.md'],
+    ['a', 'workspace.revealPath', 'job-hunt-resume-base-native.md'],
+  ]);
+});
+
+test('late automation lists cannot show another same-path project task', async t => {
+  const page = await fixture(t, { extraMethods: ['automations.list'], projectAutomations: { a: [{ id: 'old', prompt: 'job-hunt-hq:scheduled-discovery:v1', enabled: true }], b: [] } }); await ready(page);
+  await page.evaluate(() => { window.__fixture.hold = 'automations.list'; });
+  await page.locator('.side-nav [data-view-target="dashboard"]').click();
+  await page.locator('#view-dashboard [data-view-target="channels"]').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__oldListRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__oldListRelease());
+  await page.waitForFunction(() => !document.querySelector('#discovery-automation-status').textContent.includes('正在读取'));
+  assert.equal(await page.locator('#discovery-automation-actions').isVisible(), false);
+});
+
+test('a Markdown read completing after project switch never downloads old private bytes', async t => {
+  const page = await fixture(t); await ready(page);
+  const downloads = []; page.on('download', item => downloads.push(item));
+  await page.evaluate(() => { window.__fixture.projects.a.files['job-hunt-resume-base-private.md'] = '# Private old project'; });
+  await page.locator('.side-nav [data-view-target="resumes"]').click();
+  await page.locator('[data-resume-workspace="files"]').click();
+  await page.getByRole('button', { name: '下载 Markdown', exact: true }).waitFor();
+  await page.evaluate(() => { window.__fixture.hold = 'workspace.readText'; });
+  await page.getByRole('button', { name: '下载 Markdown', exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__oldReadRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); }); await ready(page);
+  await page.evaluate(() => window.__oldReadRelease());
+  await page.waitForTimeout(50);
+  assert.equal(downloads.length, 0);
+  assert.equal(await page.locator('[data-open-resume-file-path="job-hunt-resume-base-private.md"]').count(), 0);
 });
