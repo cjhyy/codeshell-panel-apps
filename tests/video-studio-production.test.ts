@@ -1092,6 +1092,20 @@ test("recording inspection cannot publish into a replaced project generation", a
   assert.equal(f.published.length, 0);
 });
 
+test("native recording inspections publish exact new-source ticks instead of their display frame count", async () => {
+  const f = await fixture(), id = `asset-${"d".repeat(64)}`;
+  f.host.handlers.set("media.assets.get", () => ({
+    asset: { id, name: "non-frame.wav", mimeType: "audio/wav", bytes: 20050, createdAt: 1 },
+    preparation: { assetId: id, inspection: { kind: "audio", durationSeconds: 10003 / 48000, audio: { channels: 1 } } },
+  }));
+  f.host.handlers.set("media.prepare", () => { throw new Error("no optional preparation"); });
+  const asset = await f.controller.importRecordedResource(id, "非整帧录音", () => {});
+  assert.equal(asset.durationFrames, 6);
+  assert.deepEqual(f.published[0]!.options?.sourceDurations, { [asset.id]: 50015 });
+  await f.controller.importRecordedResource(id, "重复", () => {});
+  assert.equal(f.published.length, 1);
+});
+
 test("recording attachment rejects wrong resource, video inspection and missing duration", async () => {
   for (const patch of [{ assetId: `asset-${"e".repeat(64)}` }, { inspection: { kind: "video", durationSeconds: 3 } }, { inspection: { kind: "audio", durationSeconds: null } }]) {
     const f = await fixture(), id = `asset-${"d".repeat(64)}`;
@@ -2393,7 +2407,7 @@ test("durable video recording attaches checked dimensions and duration once with
     asset: { id, name: "screen.webm", mimeType: "video/webm", bytes: 1234, createdAt: 1 },
     preparation: {
       assetId: id,
-      inspection: { kind: "video", durationSeconds: 4, video: { width: 640, height: 360 } },
+      inspection: { kind: "video", durationSeconds: 4 + 1 / 48000, video: { width: 640, height: 360 } },
     },
   }));
   const asset = await f.controller.importRecordedResource(id, "屏幕讲解", () => {});
@@ -2401,6 +2415,7 @@ test("durable video recording attaches checked dimensions and duration once with
   assert.equal(asset.width, 640);
   assert.equal(asset.height, 360);
   assert.equal(asset.durationFrames, 120);
+  assert.deepEqual(f.published[0]!.options?.sourceDurations, { [asset.id]: 960005 });
   await f.controller.importRecordedResource(id, "再次保存", () => {});
   assert.equal(f.current.assets.filter((a) => a.mediaId === id).length, 1);
   assert.ok(!f.host.calls.some((c) => /recordVideo|upload\./.test(c.method)));

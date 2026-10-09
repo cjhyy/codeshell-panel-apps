@@ -244,7 +244,7 @@ async function openPage(t, options = {}) {
                 request.action === "inspect"
                   ? {
                       assetId: asset.id,
-                      inspection: options.hostRecording.inspection ?? { kind: "audio", durationSeconds: 1, hasAudio: true },
+                      inspection: options.hostRecording.inspection ?? { kind: "audio", durationSeconds: options.hostRecording.durationSeconds ?? 1, hasAudio: true },
                     }
                   : request.action === "voices"
                     ? { available: false, models: [], voices: [] }
@@ -3776,7 +3776,9 @@ test("cloud recording survives editor save failure and reopening, then attaches 
     "-f",
     "lavfi",
     "-i",
-    "sine=frequency=440:duration=1",
+    "sine=frequency=440:sample_rate=48000",
+    "-af",
+    "atrim=end_sample=10003",
     "-c:a",
     "pcm_s16le",
     path,
@@ -3791,7 +3793,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   };
   const page = await openPage(t, {
     holdProductionInitialize: true,
-    hostRecording: { asset, base64: bytes.toString("base64") },
+    hostRecording: { asset, base64: bytes.toString("base64"), durationSeconds: 10003 / 48000 },
     mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
   });
   await production(page, "recording");
@@ -3839,6 +3841,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
   await page.getByText("录音已加入本工程素材库。", { exact: true }).waitFor();
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
   assert.equal(
     (await saved(page)).assets.find((a) => a.resourceId === asset.id).name,
     "保留的本人录音",
@@ -3856,6 +3859,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
 });
 
 test("cloud camera records a durable video and publishes real checked media into editor once", async (t) => {
@@ -3868,7 +3872,7 @@ test("cloud camera records a durable video and publishes real checked media into
     "-f",
     "lavfi",
     "-i",
-    "testsrc2=size=320x240:rate=30:duration=1",
+    "testsrc2=size=320x240:rate=29:duration=1.03",
     "-c:v",
     "libvpx",
     "-an",
@@ -3931,7 +3935,9 @@ test("cloud camera records a durable video and publishes real checked media into
   assert.equal(imported.kind, "video");
   assert.equal(imported.width, 320);
   assert.equal(imported.height, 240);
-  assert.equal(imported.duration, 240000);
+  const exactDuration = Math.round(inspection.durationSeconds * 240000);
+  assert.notEqual(exactDuration % 8000, 0, "the real captured video must exercise a duration outside the old frame grid");
+  assert.equal(imported.duration, exactDuration);
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
   await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
@@ -3945,6 +3951,7 @@ test("cloud camera records a durable video and publishes real checked media into
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, exactDuration);
 });
 
 test("a device without capture support recovers and attaches an existing real project video", async (t) => {
