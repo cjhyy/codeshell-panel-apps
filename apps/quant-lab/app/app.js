@@ -631,6 +631,7 @@ let workspaceEpoch = 0;
 let contextInitialized = false;
 let initialContextPending = true;
 let activeModule = "today";
+let moduleNavigationRevision = 0;
 let lastMarketProbeAt = null;
 let visibilityMarketProbeInFlight = false;
 let backgroundMarketProbeTimer = null;
@@ -1271,6 +1272,7 @@ function openQuickStockSelection() {
 
 function activateModule(moduleId, { focusTarget = "tab", persist = true } = {}) {
   const nextModule = MODULE_IDS.includes(moduleId) ? moduleId : "today";
+  if (persist) moduleNavigationRevision++;
   activeModule = nextModule;
   for (const tab of moduleTabs) {
     const selected = tab.dataset.moduleTab === nextModule;
@@ -1304,11 +1306,11 @@ function activateModule(moduleId, { focusTarget = "tab", persist = true } = {}) 
   }
 }
 
-async function restoreActiveModule(storageRoot, epoch) {
+async function restoreActiveModule(storageRoot, epoch, navigationRevision) {
   const saved = await hostCall("storage.get", {
     key: activeModuleStorageKey(storageRoot),
   }).catch(() => null);
-  if (epoch !== workspaceEpoch) return;
+  if (epoch !== workspaceEpoch || navigationRevision !== moduleNavigationRevision) return;
   activateModule(MODULE_IDS.includes(saved) ? saved : "today", {
     focusTarget: "none",
     persist: false,
@@ -4000,6 +4002,8 @@ function restoreUiState(value) {
 }
 
 async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
+  // A user may navigate while the current project's other records are loading.
+  const navigationRevision = moduleNavigationRevision;
   await loadConfiguration(workspaceIdentity, storageRoot, epoch);
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   await loadWatchlist();
@@ -4033,7 +4037,7 @@ async function restoreWorkspaceState(workspaceIdentity, storageRoot, epoch) {
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   holdingsController.refreshRules();
   notesController.render();
-  await restoreActiveModule(storageRoot, epoch);
+  await restoreActiveModule(storageRoot, epoch, navigationRevision);
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
   await alertsController.load();
   if (epoch !== workspaceEpoch || (context.cwd ?? null) !== workspaceIdentity) return;
