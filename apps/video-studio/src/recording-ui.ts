@@ -77,6 +77,7 @@ export function createRecordingUI(context: RecordingContext) {
     if (capture.snapshot.result) throw new Error("这次录制还未保存，请先保存或丢弃，再载入提词稿");
     if (typeof text !== "string" || text.length > 10000)
       throw new Error("提词稿需要是文字，且不超过 10000 字");
+    if (recordingMode && context.hostAudio?.enabled()) context.hostAudio.setMode(recordingMode);
     script = text;
     if (recordingMode) {
       attempt++;

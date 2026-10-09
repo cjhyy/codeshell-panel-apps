@@ -30,6 +30,12 @@ before(async () => {
         const hosted = createHostAudioRecording({
           bridge: () => ({call: async (method, params) => {
             window.hostCalls.push({method, params});
+            if (method === 'resources.recordVideo') {
+              const asset = {id:'asset-'+'b'.repeat(64),name:'camera.webm',mimeType:'video/webm',bytes:2000,createdAt:10};
+              window.hostAssets=[asset];localStorage.setItem('fixture-host-audio',JSON.stringify(window.hostAssets));
+              if(window.loseCaptureReply) throw Error('视频保存响应丢失');
+              return {asset,capture:{source:params.source,microphone:params.microphone,systemAudio:false}};
+            }
             if (method === 'resources.recordAudio') {
               const asset = {id: 'asset-' + 'a'.repeat(64), name: 'recording.webm', mimeType: 'audio/webm', bytes: 1000, createdAt: 10};
               window.hostAssets = [asset]; localStorage.setItem('fixture-host-audio', JSON.stringify(window.hostAssets));
@@ -42,6 +48,8 @@ before(async () => {
             throw Error('Unexpected host call ' + method);
           }}),
           enabled: () => window.hostRecording === true,
+          videoCapabilities: () => window.hostVideoCapabilities,
+          audioOnly: () => window.audioOnly,
           scope: () => window.projectId,
           maxDurationSeconds: () => 600,
           description: () => '在当前设备录音并保存到项目', saveLabel: () => '保存到素材库',
@@ -144,7 +152,7 @@ test("host recording UI preserves failed attachment, downloads original, and reo
     await p.locator("[data-recording-resource]").waitFor();
     assert.equal(await p.evaluate(() => window.deviceRequests), 0);
     assert.equal(await p.locator("#recording-mode").count(), 0);
-    assert.match(await p.locator("body").innerText(), /摄像头与屏幕录制尚未接入/);
+    assert.match(await p.locator("body").innerText(), /当前工作台未提供摄像头或屏幕录制/);
     await p.evaluate(() => { window.failSave = true; });
     await click(p, "保存到素材库");
     await p.getByRole("alert").waitFor();
@@ -683,4 +691,59 @@ test("an unsupported recording format is not reported as a missing device", { ti
   assert.match(text, /当前环境不支持录制所需的格式/);
   assert.doesNotMatch(text, /未找到可用的麦克风/);
   await p.close();
+});
+
+test("trusted camera on narrow device recovers original after lost reply and save failure, with no iframe device access", async () => {
+  const p = await page(true);
+  try {
+    await p.evaluate(() => {
+      window.hostVideoCapabilities = {
+        camera: true,
+        screen: false,
+        microphone: true,
+        systemAudio: false,
+        maxDurationSeconds: 1200,
+        maxBytes: 200 * 1024 * 1024,
+      };
+      window.loseCaptureReply = true;
+      window.recording.setScript("手机口播稿", "camera");
+    });
+    assert.equal(await p.getByRole("button", { name: "屏幕", exact: true }).count(), 0);
+    await click(p, "打开录制器");
+    await p.getByRole("alert").filter({ hasText: "视频保存响应丢失" }).waitFor();
+    await p.reload();
+    await p.evaluate(() => {
+      window.hostVideoCapabilities = {
+        camera: true,
+        screen: false,
+        microphone: true,
+        systemAudio: false,
+        maxDurationSeconds: 1200,
+        maxBytes: 200 * 1024 * 1024,
+      };
+      window.recording.setScript("恢复原片");
+    });
+    await click(p, "刷新项目录制文件");
+    await p.locator("[data-recording-resource]").waitFor();
+    await p.evaluate(() => {
+      window.failSave = true;
+    });
+    await click(p, "保存到素材库");
+    await p.getByRole("alert").filter({ hasText: "工程保存暂时失败" }).waitFor();
+    await click(p, "打开／下载视频");
+    assert.match(await p.evaluate(() => window.openedAudio), /^asset-b{64}$/);
+    await p.evaluate(() => {
+      window.failSave = false;
+    });
+    await click(p, "保存到素材库");
+    await p.waitForFunction(() => window.saved.length === 1);
+    assert.equal(await p.evaluate(() => window.deviceRequests), 0);
+    assert.equal(
+      await p.evaluate(() => window.hostCalls.some((c) => c.method === "resources.recordVideo")),
+      false,
+    );
+    assert.equal(await p.locator("body").evaluate((el) => el.scrollWidth <= innerWidth), true);
+  } finally {
+    await p.close();
+  }
 });

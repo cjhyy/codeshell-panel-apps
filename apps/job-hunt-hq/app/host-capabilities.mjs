@@ -12,6 +12,8 @@ const legacyMethods = {
   "credentials.cookies.restore": [4, "credentials.cookies"],
   ...Object.fromEntries(["list", "create", "update", "pause", "resume", "delete", "runNow"]
     .map(action => [`automations.${action}`, [5, "automations.manage"]])),
+  ...Object.fromEntries(["createUnique", "updateIfRevision", "deleteIfRevision"]
+    .map(action => [`automations.${action}`, [Infinity, "automations.manage"]])),
 };
 
 export function supportsHostMethod(context, method) {

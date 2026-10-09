@@ -2385,3 +2385,42 @@ test("recording attachment abandoned during initialization preserves the origina
   assert.equal(f.published.length, 0);
   assert.ok(!f.host.calls.some(call => call.method === "media.assets.get"));
 });
+
+test("durable video recording attaches checked dimensions and duration once without re-upload", async () => {
+  const f = await fixture(),
+    id = `asset-${"f".repeat(64)}`;
+  f.host.handlers.set("media.assets.get", () => ({
+    asset: { id, name: "screen.webm", mimeType: "video/webm", bytes: 1234, createdAt: 1 },
+    preparation: {
+      assetId: id,
+      inspection: { kind: "video", durationSeconds: 4, video: { width: 640, height: 360 } },
+    },
+  }));
+  const asset = await f.controller.importRecordedResource(id, "屏幕讲解", () => {});
+  assert.equal(asset.kind, "video");
+  assert.equal(asset.width, 640);
+  assert.equal(asset.height, 360);
+  assert.equal(asset.durationFrames, 120);
+  await f.controller.importRecordedResource(id, "再次保存", () => {});
+  assert.equal(f.current.assets.filter((a) => a.mediaId === id).length, 1);
+  assert.ok(!f.host.calls.some((c) => /recordVideo|upload\./.test(c.method)));
+});
+test("durable video recording rejects missing dimensions and a mismatched inspection", async () => {
+  for (const inspection of [
+    { kind: "video", durationSeconds: 4 },
+    { kind: "video", durationSeconds: 4, video: { width: 0, height: 360 } },
+    { kind: "audio", durationSeconds: 4 },
+  ]) {
+    const f = await fixture(),
+      id = `asset-${"f".repeat(64)}`;
+    f.host.handlers.set("media.assets.get", () => ({
+      asset: { id, name: "camera.webm", mimeType: "video/webm", bytes: 1000, createdAt: 1 },
+      preparation: { assetId: id, inspection },
+    }));
+    await assert.rejects(
+      f.controller.importRecordedResource(id, "镜头", () => {}),
+      /视频信息无效/,
+    );
+    assert.equal(f.published.length, 0);
+  }
+});
