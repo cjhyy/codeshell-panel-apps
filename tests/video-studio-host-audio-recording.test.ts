@@ -297,3 +297,17 @@ test("failed device capability discovery keeps durable video recovery available"
   assert.deepEqual(f.ui.modes(),["microphone"]);
   assert.doesNotMatch(f.ui.render(""), /rec-host-mode:camera|rec-host-mode:screen/);
 });
+
+test("switching to voice reference hides previously cached videos before any explicit action", async () => {
+  const f = fixture(videoCapabilities);
+  f.handlers.set("resources.list",()=>({assets:[videoAsset,asset],total:2}));
+  await f.ui.refresh();
+  f.state.audioOnly = true;
+  assert.deepEqual(f.ui.snapshot().assets,[asset]);
+  assert.doesNotMatch(f.ui.render(""), new RegExp(videoAsset.id));
+  const previous = f.calls.length;
+  await assert.rejects(f.ui.publish(videoAsset.id), /请先刷新/);
+  assert.equal(f.calls.length,previous);
+  f.state.audioOnly=false;
+  assert.deepEqual(f.ui.snapshot().assets,[videoAsset,asset]);
+});

@@ -103,6 +103,9 @@ export function createHostAudioRecording(options: Options) {
     ...(!options.audioOnly?.() && options.videoCapabilities?.()?.screen ? ["screen" as const] : []),
   ];
   const allowVideo = () => (options.videoEnabled?.() ?? Boolean(options.videoCapabilities?.())) && !options.audioOnly?.();
+  const visibleAssets = () => options.audioOnly?.()
+    ? assets.filter(asset => asset.mimeType.startsWith("audio/"))
+    : assets;
   const changed = () => {
     if (!disposed) options.changed();
   };
@@ -242,7 +245,7 @@ export function createHostAudioRecording(options: Options) {
   async function publish(id: string) {
     let completed: (() => void) | undefined;
     await operation(async (scope) => {
-      const saved = assets.find((asset) => asset.id === id);
+      const saved = visibleAssets().find((asset) => asset.id === id);
       if (!saved) throw new Error("请先刷新并选择当前项目的录制文件。");
       const current = (await scope.call("resources.get", { id })) as { asset?: unknown };
       const asset = recordingAsset(current?.asset, allowVideo());
@@ -261,7 +264,7 @@ export function createHostAudioRecording(options: Options) {
   }
   async function open(id: string) {
     await operation(async (scope) => {
-      if (!assets.some((asset) => asset.id === id)) throw new Error("请选择当前列表中的录制文件。");
+      if (!visibleAssets().some((asset) => asset.id === id)) throw new Error("请选择当前列表中的录制文件。");
       await scope.call("resources.open", { assetId: id });
     });
   }
@@ -285,7 +288,7 @@ export function createHostAudioRecording(options: Options) {
     snapshot() {
       observe();
       return {
-        assets: structuredClone(assets),
+        assets: structuredClone(visibleAssets()),
         busy: working,
         error,
         notice,
@@ -334,6 +337,7 @@ export function createHostAudioRecording(options: Options) {
       const capabilities = options.videoCapabilities?.();
       const video = allowVideo();
       const kind = video ? "录制文件" : "音频";
+      const listed = visibleAssets();
       const modeLabel = (value: RecordingMode) =>
         value === "microphone" ? "仅麦克风" : value === "camera" ? "摄像头" : "屏幕";
       return `<div class="section-title"><h2>录制口播</h2><span class="tiny-badge">项目录音</span></div>
@@ -359,7 +363,7 @@ export function createHostAudioRecording(options: Options) {
         <label class="input-label">加入工程时的名称<input id="host-recording-name" maxlength="160" value="${esc(name)}" placeholder="沿用音频文件名" ${disabled}></label>
         <h3>已保存的项目${kind}</h3>
         <p class="small muted">包含本项目保存的${video ? "音视频" : "音频"}；刷新可找回关闭页面前保存的文件。</p>
-        ${assets.length ? assets.map((asset) => `<article class="recording-resource" data-recording-resource="${asset.id}"><strong>${esc(asset.name)}</strong><p>${(asset.bytes / 1024 / 1024).toFixed(1)} MB · ${options.imported(asset.id) ? "已在本工程素材库" : "项目文件"}</p><div class="recording-actions"><button data-action="rec-host-open:${asset.id}" ${disabled}>打开／下载${asset.mimeType.startsWith("video/") ? "视频" : "音频"}</button><button data-action="rec-host-save:${asset.id}" ${disabled}>${esc(options.saveLabel())}</button></div></article>`).join("") : `<p>${loaded ? `这一页没有项目${kind}。可继续加载，或开始录制。` : `点击刷新查看已保存${kind}，或开始新录制。`}</p>`}
+        ${listed.length ? listed.map((asset) => `<article class="recording-resource" data-recording-resource="${asset.id}"><strong>${esc(asset.name)}</strong><p>${(asset.bytes / 1024 / 1024).toFixed(1)} MB · ${options.imported(asset.id) ? "已在本工程素材库" : "项目文件"}</p><div class="recording-actions"><button data-action="rec-host-open:${asset.id}" ${disabled}>打开／下载${asset.mimeType.startsWith("video/") ? "视频" : "音频"}</button><button data-action="rec-host-save:${asset.id}" ${disabled}>${esc(options.saveLabel())}</button></div></article>`).join("") : `<p>${loaded ? `这一页没有项目${kind}。可继续加载，或开始录制。` : `点击刷新查看已保存${kind}，或开始新录制。`}</p>`}
         ${offset < total ? `<button data-action="rec-host-more" ${disabled}>加载更多项目文件</button>` : ""}
         ${script ? `<details class="recording-script" open><summary>已确认的提词稿</summary><pre>${esc(script)}</pre></details>` : ""}`;
     },

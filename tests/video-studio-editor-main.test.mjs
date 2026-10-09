@@ -172,7 +172,10 @@ async function openPage(t, options = {}) {
               ...(options.hostRecording
                 ? [
                     "resources.recordAudio",
-                    ...(options.hostRecording.videoCapabilities ? ["resources.recordVideo", "resources.recordVideo.capabilities"] : []),
+                    ...(options.hostRecording.videoCapabilities ? [
+                      "resources.recordVideo.capabilities",
+                      ...(options.hostRecording.videoCaptureAvailable === false ? [] : ["resources.recordVideo"]),
+                    ] : []),
                     "resources.list",
                     "resources.get",
                     "resources.open",
@@ -3942,4 +3945,72 @@ test("cloud camera records a durable video and publishes real checked media into
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+});
+
+test("a device without capture support recovers and attaches an existing real project video", async (t) => {
+  const path = resolve(directory, "recovered-video-main.webm");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+    "testsrc2=size=320x240:rate=30:duration=1", "-c:v", "libvpx", "-an", path,
+  ]);
+  const { stdout } = await promisify(execFile)("ffprobe", [
+    "-v", "error", "-show_streams", "-show_format", "-of", "json", path,
+  ]);
+  const probe = JSON.parse(stdout),
+    stream = probe.streams.find((s) => s.codec_type === "video"),
+    bytes = await readFile(path);
+  const asset = {
+    id: `asset-${createHash("sha256").update(bytes).digest("hex")}`,
+    name: "saved-on-another-device.webm",
+    mimeType: "video/webm",
+    bytes: bytes.length,
+    createdAt: 1,
+  };
+  const page = await openPage(t, {
+    hostRecording: {
+      asset,
+      base64: bytes.toString("base64"),
+      inspection: {
+        kind: "video",
+        durationSeconds: Number(probe.format.duration),
+        hasAudio: false,
+        video: { width: stream.width, height: stream.height },
+      },
+      videoCaptureAvailable: false,
+      videoCapabilities: {
+        camera: false,
+        screen: false,
+        microphone: false,
+        systemAudio: false,
+        maxDurationSeconds: 1200,
+        maxBytes: 200 * 1024 * 1024,
+      },
+    },
+    mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
+  });
+  await page.evaluate((asset) => {
+    localStorage.setItem("editor-main-recording", JSON.stringify(asset));
+  }, asset);
+  await production(page, "recording");
+  assert.equal(await oldAction(page, "rec-host-mode:camera").count(), 0);
+  assert.equal(await oldAction(page, "rec-host-mode:screen").count(), 0);
+  assert.equal(await oldAction(page, "rec-host-start").isDisabled(), true);
+  await oldAction(page, "rec-host-refresh").click();
+  const row = page.locator(`[data-recording-resource="${asset.id}"]`);
+  await row.waitFor();
+  assert.equal((await saved(page)).assets.some((a) => a.resourceId === asset.id), false);
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
+  const imported = (await saved(page)).assets.find((a) => a.resourceId === asset.id);
+  assert.equal(imported.kind, "video");
+  assert.equal(imported.width, stream.width);
+  assert.equal(imported.height, stream.height);
+  assert.equal(imported.duration, 240000);
+  assert.equal(
+    await page.evaluate(() => window.__mainHost.calls.some((c) =>
+      c.method === "resources.recordVideo" || c.method === "resources.recordAudio" ||
+      c.method.startsWith("resources.upload."),
+    )),
+    false,
+  );
 });
