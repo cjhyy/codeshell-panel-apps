@@ -3299,6 +3299,15 @@ dialog .range-inputs {
     monospace;
   white-space: nowrap;
 }
+.shortcuts-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.shortcuts-dialog > header h2 {
+  margin: 0;
+}
 .shortcut-list {
   display: grid;
   grid-template-columns: 1fr auto;

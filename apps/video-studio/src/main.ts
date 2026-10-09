@@ -3977,6 +3977,14 @@ async function action(name: string, id?: string): Promise<void> {
       const dialog = document.createElement("dialog");
       dialog.className = "shortcuts-dialog";
       dialog.innerHTML = `<header><h2>剪辑快捷键</h2>${tool("close-dialog", "关闭", "close")}</header>
+        ${editorVisible ? `<dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
+        <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 10 帧</dt><dd>Shift + ← / →</dd>
+        <dt>上一 / 下一片段边缘（跨轨）</dt><dd>↑ / ↓</dd><dt>开头 / 最后一帧</dt><dd>Home / End</dd>
+        <dt>切分选中片段，继续选中右半段</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
+        <dt>复制 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
+        <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
+        <dt>一屏看全</dt><dd>Shift + Z</dd><dt>开关边缘吸附</dt><dd>N</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd></dl>
+        <p>时间轴快捷键在时间轴获得焦点时生效。磁吸主画面轨用移动键调整片段顺序；自由模式及声音、文字轨逐帧移动。输入文字和编辑数字时暂停生效；片段获得键盘焦点时，Space 用于选中片段。按 ? 可打开此说明。</p>` : `
         <dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 5 秒</dt><dd>Shift + ← / →</dd>
         <dt>上一 / 下一画面切点</dt><dd>↑ / ↓</dd><dt>开头 / 结尾</dt><dd>Home / End</dd>
@@ -3984,7 +3992,7 @@ async function action(name: string, id?: string): Promise<void> {
         <dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
         <dt>一屏看全</dt><dd>Shift + Z</dd><dt>切换磁吸 / 自由排列</dt><dd>M</dd><dt>开关边缘吸附</dt><dd>N</dd>
         <dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消当前拖动</dt><dd>Esc</dd></dl>
-        <p>输入文字和编辑数字时，剪辑快捷键暂停生效。粗剪页使用自己的 I / O 标记快捷键。</p>`;
+        <p>输入文字和编辑数字时，剪辑快捷键暂停生效。粗剪页使用自己的 I / O 标记快捷键。</p>`}`;
       studio.append(dialog);
       dialog.addEventListener("close", () => dialog.remove(), { once: true });
       openDialog(dialog);
@@ -4696,6 +4704,11 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (editorVisible && editorWorkspace && !sourcePreviewActive()) {
+    if (event.key === "?" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.isComposing) {
+      event.preventDefault();
+      if (!event.repeat) void action("timeline-shortcuts").catch(fail);
+      return;
+    }
     if (!(event.target as Element).closest("#editor-workspace"))
       editorWorkspace.handleShortcut(event);
     return;
@@ -5762,6 +5775,7 @@ function mountEditorWorkspace(): void {
   editorRoot = root;
   studio.querySelector(".workspace")!.append(root);
   editorWorkspace = new EditorWorkspace(root, {
+    showShortcuts: () => action("timeline-shortcuts"),
     layout: "embedded",
     showComposition: showEditorWorkspace,
     session: editorSession,
