@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { touchInput } from "./helpers/video-studio-touch.mjs";
 
 let browser, source, css;
 before(async () => {
@@ -41,7 +42,7 @@ after(async () => {
 });
 
 async function fixture(t, options = {}) {
-  const page = await browser.newPage({ viewport: { width: 1240, height: 900 } }),
+  const page = await browser.newPage({ viewport: { width: options.touch ? 680 : 1240, height: 900 }, hasTouch: !!options.touch }),
     pageErrors = [];
   page.setDefaultTimeout(3000);
   page.on("pageerror", (error) => pageErrors.push(String(error)));
@@ -60,7 +61,7 @@ async function fixture(t, options = {}) {
   await page.addStyleTag({
     content:
       css +
-      "\nbody{display:block;margin:0;padding:16px;overflow:auto;background:#202124}#timeline{width:1140px}#undo,#redo,#outside{margin:14px 6px 0 0}",
+      `\nbody{display:block;margin:0;padding:16px;overflow:auto;background:#202124}#timeline{width:${options.touch ? 640 : 1140}px}#undo,#redo,#outside{margin:14px 6px 0 0}`,
   });
   await page.addScriptTag({ content: source });
   await page.evaluate((options) => {
@@ -227,6 +228,79 @@ async function fixture(t, options = {}) {
 async function state(page) {
   return page.evaluate(() => fixture.read());
 }
+test("two native touches retain the first timeline owner, commit once and undo together", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    before = (await state(page)).document,
+    input = await touchInput(page, "#timeline"),
+    first = { ...await center(clip(page, "a")), id: 1 },
+    second = { ...await center(clip(page, "b")), id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  const [, secondaryId] = await input.ids();
+  assert.deepEqual((await state(page)).selected, ["a"], "second touch cannot change selection");
+  // Probe only the non-owner cancellation, then release its actual Chromium pointer capture.
+  await page.evaluate((pointerId) => {
+    const timeline = document.querySelector("#timeline");
+    timeline.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true, pointerId, pointerType: "touch" }));
+    timeline.setPointerCapture(pointerId);
+  }, secondaryId);
+  await input.send("touchMove", [{ ...first, x: first.x + 64 }, { ...second, x: second.x + 30 }]);
+  await page.evaluate((pointerId) => document.querySelector("#timeline").releasePointerCapture(pointerId), secondaryId);
+  await input.send("touchMove", [{ ...first, x: first.x + 64 }, { ...second, x: second.x + 32 }]);
+  assert.ok(await page.evaluate((pointerId) => touchTrace.some((event) => event.type === "lostpointercapture" && event.pointerId === pointerId && event.trusted), secondaryId));
+  await input.send("touchEnd", [{ ...second, x: second.x + 32 }]);
+  assert.ok(await page.evaluate((pointerId) => touchTrace.some((event) => event.type === "pointerup" && event.pointerId === pointerId && event.trusted), secondaryId));
+  assert.equal((await state(page)).applied.length, 0, "releasing a secondary touch cannot commit");
+  await input.send("touchEnd");
+  await settle(page);
+  const after = await state(page);
+  assert.equal(after.applied.length, 1);
+  assert.equal(after.document.sequences[0].clips.find((value) => value.id === "a").start, 480000);
+  assert.deepEqual(after.document.sequences[0].clips.find((value) => value.id === "b"), before.sequences[0].clips.find((value) => value.id === "b"));
+  await input.assertNative();
+  await input.capture("timeline-owner", after);
+  await undo(page, before);
+});
+
+test("native touch cancellation rolls back the timeline owner and late releases do not write", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    before = (await state(page)).document,
+    input = await touchInput(page, "#timeline"),
+    first = { ...await center(clip(page, "a")), id: 1 },
+    second = { ...await center(clip(page, "b")), id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  const [ownerId] = await input.ids();
+  await input.send("touchMove", [{ ...first, x: first.x + 64 }, second]);
+  await input.send("touchCancel");
+  await page.evaluate((pointerId) => document.querySelector("#timeline").dispatchEvent(
+    new PointerEvent("pointerup", { bubbles: true, pointerId, pointerType: "touch" }),
+  ), ownerId);
+  await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.ok(await page.evaluate(() => touchTrace.some((event) => event.type === "pointercancel" && event.trusted)));
+  assert.equal(await clip(page, "a").evaluate((element) => element.style.transform), "");
+  await input.capture("timeline-owner-cancel", await state(page));
+});
+
+test("a timeline open-generation switch fences both old native touch releases", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    input = await touchInput(page, "#timeline"),
+    first = { ...await center(clip(page, "a")), id: 1 },
+    second = { ...await center(clip(page, "b")), id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  await input.send("touchMove", [{ ...first, x: first.x + 64 }, { ...second, x: second.x + 64 }]);
+  await page.evaluate(() => fixture.replaceGeneration());
+  const switched = (await state(page)).document;
+  await input.send("touchEnd", [first]);
+  await input.send("touchEnd");
+  await settle(page);
+  assert.deepEqual((await state(page)).document, switched);
+  assert.equal((await state(page)).applied.length, 0);
+  await input.capture("timeline-generation-switch", await state(page));
+});
 async function settle(page) {
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
