@@ -89,9 +89,22 @@
             title="打开属性面板"
             aria-label="打开属性面板"
             aria-expanded="false"
+            aria-controls="inspector"
           >
             ◫
           </button>
+          <details id="compact-actions" class="compact-actions">
+            <summary aria-label="更多设计操作">⋯</summary>
+            <div class="compact-actions-list" aria-label="设计操作">
+              <button type="button" data-toolbar-action="open-files">打开设计文件</button>
+              <button type="button" data-toolbar-action="open-html-import">从 HTML 导入</button>
+              <button type="button" data-toolbar-action="open-delivery">交付与前端生成</button>
+              <button type="button" data-toolbar-action="export-svg">导出 SVG</button>
+              <button type="button" data-toolbar-action="run-audit">检查设计质量</button>
+              <button type="button" data-toolbar-action="portable-backup-open">完整设计备份</button>
+              <button type="button" data-toolbar-action="open-shortcuts">快捷键说明</button>
+            </div>
+          </details>
           <button id="open-ai" class="ai-button" type="button" title="让 Agent 继续设计">
             <span class="ai-spark">✦</span>
             AI
@@ -106,6 +119,9 @@
       </aside>
       <section class="workspace">
         <nav class="toolrail" aria-label="设计工具">
+          <button id="toggle-layers" class="tool layers-toggle" type="button"
+            aria-label="打开页面与图层" aria-expanded="false" aria-controls="layers-sidebar"
+            title="打开页面与图层">☷</button>
           <button
             class="tool active"
             data-tool="select"
@@ -181,10 +197,11 @@
           </button>
         </nav>
 
-        <aside class="layers-sidebar" aria-label="页面与图层">
+        <aside id="layers-sidebar" class="layers-sidebar" aria-label="页面与图层">
           <section class="sidebar-pages">
             <div class="layers-heading">
               <span>页面</span>
+              <button id="close-layers" class="drawer-close" type="button" aria-label="关闭页面与图层">关闭</button>
               <button id="sidebar-add-page" type="button" title="新建设计页面">＋</button>
             </div>
             <div id="sidebar-pages-list" class="sidebar-pages-list" role="listbox"></div>
@@ -251,7 +268,8 @@
           <div id="selection-size" class="selection-size" hidden></div>
         </section>
 
-        <aside class="inspector">
+        <aside id="inspector" class="inspector" aria-label="属性与交付">
+          <button id="close-inspector" class="drawer-close inspector-close" type="button" aria-label="关闭属性面板">关闭属性面板</button>
           <div class="inspector-tabs" role="tablist" aria-label="检查器视图">
             <button
               id="design-tab-button"
