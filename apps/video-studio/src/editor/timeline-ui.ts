@@ -40,11 +40,12 @@ export interface EditorTimelineContext {
   selectedMarker?(): string | undefined;
   selectMarker?(markerId: string): void;
   time(): Tick;
-  seek(time: Tick): void | Promise<void>;
+  seek(time: Tick, exact?: boolean): void | Promise<void>;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
   addAsset?(assetId: string, placement: { at: Tick; trackId: string }): void | Promise<void>;
   /** Adds a visible title at the playhead; shown as the 添加文字 tool when provided. */
   addText?(): void | Promise<void>;
+  showShortcuts?(): void | Promise<void>;
   onError(error: unknown): void;
 }
 type Drag = {
@@ -82,6 +83,11 @@ const TIMELINE_MODES = [
 ] as const;
 const editableTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
+const lastFrameTime = (sequence: EditorSequence) =>
+  frameToTicks(
+    ticksToFrame(Math.max(0, sequenceDuration(sequence) - 1), sequence.frameRate, "floor"),
+    sequence.frameRate,
+  );
 const stamp = (time: Tick) => {
   const value = ticksToSeconds(time);
   return `${Math.floor(value / 60)}:${(value % 60).toFixed(value < 10 ? 2 : 1).padStart(value < 10 ? 5 : 4, "0")}`;
@@ -328,10 +334,10 @@ export class EditorTimeline {
             !sequence.tracks.some((track) => track.kind === "video");
           return `<button type="button" data-et-mode="${mode}" aria-pressed="${sequence.timelineMode === mode}" title="${blocked ? "磁吸需要画面轨：序列里还没有画面轨，先添加画面轨" : title}"${blocked ? " disabled" : ""}>${label}</button>`;
         }).join("")}</div>
-        <label class="et-snap" title="吸附 · 自动对齐片段边缘"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
+        <label class="et-snap" title="吸附 · 自动对齐片段边缘 · N"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
         <output class="et-selection-status" aria-live="polite">${selected.size ? `已选 ${selected.size} 个片段` : ""}</output>
         <span class="et-spacer"></span>
-        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit")}<label class="et-zoom" title="时间轴缩放">${timelineIcon("minus", 14)}<input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放">${timelineIcon("plus", 14)}</label></div>
+        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit", false, "Shift+Z")}<label class="et-zoom" title="时间轴缩放">${timelineIcon("minus", 14)}<input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放">${timelineIcon("plus", 14)}</label>${this.context.showShortcuts ? button("shortcuts", "剪辑快捷键", "keyboard", false, "?") : ""}</div>
       </div>
       <div class="et-body"><div class="et-track-heads"><div class="et-track-top"><span>轨道</span><span class="et-track-count">${sequence.tracks.length}</span><div class="et-add" role="group" aria-label="添加轨道">${addTrack("track-video", "新建画面轨", "film")}${addTrack("track-audio", "新建声音轨", "audio")}${addTrack("track-text", "新建文字轨", "title")}</div></div>${sequence.tracks
         .slice()
@@ -500,6 +506,21 @@ export class EditorTimeline {
     const line = this.container.querySelector<HTMLElement>(".et-playhead");
     if (line) line.style.left = `${ticksToSeconds(this.context.time()) * this.scale}px`;
   }
+  /** Keyboard navigation reveals the current result without changing the document or selection. */
+  private async seekVisible(time: Tick, exact = false): Promise<void> {
+    await this.context.seek(time, exact);
+    if (this.destroyed) return;
+    const viewport = this.viewport(),
+      x = ticksToSeconds(this.context.time()) * this.scale,
+      margin = Math.min(40, viewport.clientWidth / 4);
+    if (x < viewport.scrollLeft + margin || x > viewport.scrollLeft + viewport.clientWidth - margin) {
+      viewport.scrollLeft = Math.max(
+        0,
+        x - (x < viewport.scrollLeft + margin ? margin : viewport.clientWidth - margin),
+      );
+      this.render();
+    }
+  }
   private click = (event: MouseEvent) => {
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target) return;
@@ -667,6 +688,10 @@ export class EditorTimeline {
     );
   }
   async action(action: string): Promise<void> {
+    if (action === "shortcuts") {
+      await this.context.showShortcuts?.();
+      return;
+    }
     if (action === "add-text") {
       await this.context.addText?.();
       return;
@@ -714,7 +739,25 @@ export class EditorTimeline {
     }
     if (action === "split") {
       if (ids.length !== 1) throw new Error("请选择一个片段切分");
-      await this.apply(splitClip(document, sequence.id, ids[0]!, time, uid), "切分片段");
+      const operations = splitClip(document, sequence.id, ids[0]!, time, uid),
+        source = sequence.clips.find((clip) => clip.id === ids[0])!,
+        right = operations.find(
+          (operation) =>
+            operation.type === "clip.add" &&
+            operation.clip.trackId === source.trackId &&
+            operation.clip.start === time,
+        ),
+        generation = this.context.identity?.().generation;
+      await this.apply(operations, "切分片段");
+      // Bound subtitles are also split; keep just the right-hand source ready for the next S.
+      const current = this.current();
+      if (
+        right?.type === "clip.add" &&
+        current.document.id === document.id &&
+        current.sequence.id === sequence.id &&
+        generation === this.context.identity?.().generation
+      )
+        this.select([right.clip.id]);
       return;
     }
     if (action === "group") {
@@ -767,7 +810,7 @@ export class EditorTimeline {
     }
   }
   private keydown = (event: KeyboardEvent) => {
-    if (editableTarget(event.target)) return;
+    if (event.isComposing || editableTarget(event.target)) return;
     if (event.key === "Escape" && this.confirmTrack) {
       event.preventDefault();
       this.confirmTrack = undefined;
@@ -791,6 +834,54 @@ export class EditorTimeline {
       return;
     }
     const modified = event.ctrlKey || event.metaKey;
+    if (
+      !modified && !event.altKey && !this.drag && !this.confirmTrack && !this.menu &&
+      !(event.target instanceof HTMLElement && event.target.closest("button"))
+    ) {
+      const { sequence } = this.current(),
+        last = lastFrameTime(sequence);
+      if (event.key === "?" && this.context.showShortcuts) {
+        event.preventDefault();
+        if (!event.repeat) this.run(() => this.action("shortcuts"));
+        return;
+      }
+      if (["Home", "End", "ArrowUp", "ArrowDown"].includes(event.key) && !event.shiftKey) {
+        event.preventDefault();
+        const time = this.context.time(),
+          next = event.key === "ArrowDown";
+        let target = event.key === "Home" || event.key === "ArrowUp" ? 0 : last;
+        if (event.key === "ArrowUp" || next) {
+          const end = Math.max(0, sequenceDuration(sequence) - 1);
+          let candidate: Tick | undefined;
+          if (next) target = Math.min(end, Math.max(time, last));
+          for (const clip of sequence.clips) {
+            for (const boundary of [clip.start, clip.start + clip.duration]) {
+              if (boundary > end) continue;
+              if (next
+                ? boundary > time && (candidate === undefined || boundary < candidate)
+                : boundary < time && (candidate === undefined || boundary > candidate))
+                candidate = boundary;
+            }
+          }
+          if (candidate !== undefined) target = candidate;
+        }
+        this.run(() => this.seekVisible(target, true));
+        return;
+      }
+      if (event.shiftKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        this.run(() => this.action("fit"));
+        return;
+      }
+      if (!event.shiftKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        if (!event.repeat) {
+          this.snapping = !this.snapping;
+          this.render();
+        }
+        return;
+      }
+    }
     const option =
       event.target instanceof HTMLElement
         ? event.target.closest<HTMLElement>("[data-et-clip]")
@@ -842,6 +933,8 @@ export class EditorTimeline {
       const delta =
         frameToTicks(event.shiftKey ? 10 : 1, sequence.frameRate) *
         (event.key === "ArrowLeft" ? -1 : 1);
+      // An exact cut point can be after the final frame's start. Right must not jump backward.
+      if (!modified && delta > 0 && this.context.time() >= lastFrameTime(sequence)) return;
       this.run(() =>
         modified && selected.size
           ? sequence.timelineMode === "magnetic"
@@ -856,7 +949,12 @@ export class EditorTimeline {
                 [{ type: "clip.move", sequenceId: sequence.id, clipIds: [...selected], delta }],
                 "逐帧移动片段",
               )
-          : this.context.seek(Math.max(0, this.context.time() + delta)),
+          : this.seekVisible(
+              Math.min(
+                lastFrameTime(sequence),
+                Math.max(0, this.context.time() + delta),
+              ),
+            ),
       );
     }
   };

@@ -1649,6 +1649,37 @@ const realMediaSeed = {
     },
   ],
 };
+test("composition shortcut help matches the active editor and cut navigation preserves off-frame edges", async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed });
+  const before = await waitSaved(page),
+    timeline = page.locator("[data-ew-timeline]"),
+    time = page.locator("[data-ew-seek]");
+  await timeline.focus();
+  await page.keyboard.press("Home");
+  await page.waitForFunction(() => Number(document.querySelector("[data-ew-seek]").value) === 0);
+  for (const boundary of [1_234_567, 2_000_001, 2_400_011]) {
+    await page.keyboard.press("ArrowDown");
+    await page.waitForFunction((expected) => Number(document.querySelector("[data-ew-seek]").value) === expected, boundary);
+    assert.equal(Number(await time.inputValue()), boundary, "Navigation must not snap before the new clip's actual start");
+  }
+  await page.keyboard.press("?");
+  const dialog = page.locator(".shortcuts-dialog");
+  await dialog.waitFor({ state: "visible" });
+  assert.match(await dialog.innerText(), /10 帧/);
+  assert.match(await dialog.innerText(), /跨轨/);
+  assert.doesNotMatch(await dialog.innerText(), /5 秒|Alt|切换磁吸/);
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  await timeline.getByRole("button", { name: "剪辑快捷键", exact: true }).click();
+  await dialog.waitFor({ state: "visible" });
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  await page.locator('[data-et-track-name="v1"]').focus();
+  await page.keyboard.press("?");
+  assert.equal(await dialog.count(), 0, "Typing a question mark must not open shortcut help");
+  assert.deepEqual(await saved(page), before);
+});
+
 /** Five tracks with clips: two pictures, captions and two sound tracks, as a docked panel shows them. */
 const denseSeed = {
   ...realMediaSeed,

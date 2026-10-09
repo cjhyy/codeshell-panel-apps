@@ -38,6 +38,7 @@ import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
   showComposition?(): void;
+  showShortcuts?(): void | Promise<void>;
   session: EditorSession;
   assertEditable?(): void;
   resolveAsset: EditorMediaPoolOptions["resolveAsset"];
@@ -232,7 +233,7 @@ export class EditorWorkspace {
       selection,
       apply,
       time: () => this.playhead,
-      seek: (time) => this.seek(time),
+      seek: (time, exact) => this.seek(time, exact),
       select: (ids) => {
         this.selected = ids;
         this.inspector.render();
@@ -251,6 +252,7 @@ export class EditorWorkspace {
       media: options.timelineMedia,
       addAsset: (assetId, placement) => this.addAsset(assetId, placement),
       addText: () => this.addText(),
+      showShortcuts: options.showShortcuts,
       onError: options.onError,
     });
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
@@ -563,9 +565,13 @@ export class EditorWorkspace {
       }
       this.audio = prepared;
       this.preparationStatus(controller, "正在载入画面并同步声音…");
+      // Natural completion reports the duration; a manual last-frame seek stays below it.
+      const ended = this.playhead >= sequenceDuration(this.sequence());
       // Resource preparation may replace an incompatible source with a verified preview proxy.
       this.preview.setDocument(doc, sequenceId);
-      await this.preview.seek(this.playhead, { exact: this.exactPlayhead });
+      await this.preview.seek(ended ? 0 : this.playhead, {
+        exact: !ended && this.exactPlayhead,
+      });
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -805,6 +811,8 @@ export class EditorWorkspace {
   };
   private input = (event: Event) => {
     const target = event.target as HTMLInputElement;
+    // seek() pauses immediately and supersedes older decodes, so playback cannot move the thumb.
+    if (target.matches("[data-ew-seek]")) this.run(() => this.seek(Number(target.value)));
     if (target.matches("[data-ew-search]")) {
       this.search = target.value;
       this.renderAssets();
@@ -839,7 +847,7 @@ export class EditorWorkspace {
     } else if (event.code === "Space" && !(event.target as Element).closest("[data-et-clip]")) {
       event.preventDefault();
       event.stopPropagation();
-      this.run(() => this.togglePlayback());
+      if (!event.repeat) this.run(() => this.togglePlayback());
     }
   };
   private async action(action: string): Promise<void> {

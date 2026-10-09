@@ -87,7 +87,7 @@ async function fixture(t, options = {}) {
   await page.addStyleTag({ content: css + "\nbody{display:block;margin:0;padding:0;}" });
   await page.addScriptTag({ content: source });
   await page.evaluate(async (options) => {
-    const duration = 4 * 240000;
+    const duration = options.duration ?? 4 * 240000;
     const visual = () => ({
       transform: editor.defaultTransform(),
       color: editor.defaultColorAdjustment(),
@@ -305,6 +305,7 @@ async function fixture(t, options = {}) {
       read: () => session.read(),
       addAsset: (assetId, placement) => workspace.addAsset(assetId, placement),
       playhead: () => workspace.getPlayhead(),
+      playing: () => workspace.playing,
       selection: () => workspace.getSelection().clipIds,
       dispatch: (operations, label) =>
         session.dispatch(operations, session.getState().identity, label),
@@ -883,6 +884,110 @@ test("real demo preview plays, pauses, seeks, and a focused clip Space selects i
   await clip(page).press("Space");
   assert.equal(await clip(page).getAttribute("aria-selected"), "true");
   assert.equal(await action(page, "play").textContent(), "播放");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("the play button replays a finished sequence without restarting a manual last-frame seek", async (t) => {
+  const duration = 240000,
+    lastFrame = duration - 8000,
+    page = await fixture(t, { duration });
+  await action(page, "play").click();
+  await page.waitForFunction(
+    (end) => !fixture.playing() && fixture.playhead() === end,
+    duration,
+  );
+  await action(page, "play").click();
+  await page.waitForFunction(
+    (end) => fixture.playing() && fixture.playhead() > 0 && fixture.playhead() < end / 2,
+    duration,
+  );
+  await action(page, "play").click();
+  await page.getByRole("slider", { name: "播放位置", exact: true }).fill(String(lastFrame));
+  await page.waitForFunction((last) => fixture.playhead() === last, lastFrame);
+  await page.evaluate(() => {
+    window.lastFrameTimes = [];
+    new MutationObserver(() => window.lastFrameTimes.push(fixture.playhead())).observe(
+      document.querySelector("[data-ew-time]"),
+      { childList: true },
+    );
+  });
+  await action(page, "play").click();
+  await page.waitForFunction(
+    (end) => !fixture.playing() && fixture.playhead() === end,
+    duration,
+  );
+  const times = await page.evaluate(() => window.lastFrameTimes);
+  assert.ok(times.length > 0);
+  assert.ok(times.every((time) => time >= lastFrame), "A manual last-frame seek must play from there");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("dragging the playback slider seeks before release and holds the chosen frame while paused", async (t) => {
+  const page = await fixture(t),
+    before = await documentState(page),
+    seek = page.getByRole("slider", { name: "播放位置", exact: true }),
+    bounds = await seek.boundingBox();
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing() && fixture.playhead() > 0);
+  await page.mouse.move(bounds.x + bounds.width * 0.7, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.waitForFunction(
+    () => !fixture.playing() && fixture.playhead() > 2.5 * 240000,
+  );
+  await page.mouse.move(bounds.x + bounds.width * 0.3, bounds.y + bounds.height / 2, { steps: 4 });
+  await page.waitForFunction(
+    () => fixture.playhead() > 240000 && fixture.playhead() < 1.5 * 240000,
+  );
+  const chosen = await page.evaluate(() => fixture.playhead());
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => fixture.playhead()), chosen);
+  assert.equal(Number(await seek.inputValue()), chosen);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playhead()), chosen);
+  assert.equal(await action(page, "play").textContent(), "播放");
+  assert.deepEqual(await documentState(page), before);
+  assert.equal((await page.evaluate(() => fixture.state())).canUndo, false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("slider input cancels audio preparation before change and ignores its late completion", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => {
+    const seek = document.querySelector("[data-ew-seek]");
+    seek.value = "240000";
+    seek.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(
+    () => fixture.audio()[0].aborted && fixture.playhead() === 240000,
+  );
+  await page.evaluate(() => fixture.resolveAudio(0));
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await page.evaluate(() => fixture.playhead()), 240000);
+  assert.equal(await action(page, "play").textContent(), "播放");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("holding Space leaves playback and audio preparation unchanged until the next fresh press", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.locator("[data-ew-timeline]").focus();
+  await page.keyboard.down("Space");
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.keyboard.down("Space");
+  assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), false);
+  assert.equal(await action(page, "play").textContent(), "取消播放准备");
+  await page.evaluate(() => fixture.resolveAudio(0));
+  await page.waitForFunction(() => fixture.playing());
+  await page.keyboard.down("Space");
+  assert.equal(await page.evaluate(() => fixture.playing()), true);
+  await page.keyboard.up("Space");
+  await page.keyboard.press("Space");
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await action(page, "play").textContent(), "播放");
+  assert.equal(await page.evaluate(() => fixture.audio().length), 1);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 

@@ -380,6 +380,118 @@ test("real mouse selection focuses keyboard controls, NTSC stepping is exact, an
   assert.equal((await state(page)).time, 80080);
 });
 
+test("cut-point and endpoint keys reveal distant NTSC positions without changing selection or history", async (t) => {
+  const page = await fixture(t, {
+    ntsc: true,
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2 },
+      { id: "b", trackId: "v2", start: 3, duration: 2 },
+      { id: "duplicate-edge", trackId: "v3", start: 3, duration: 1 },
+      { id: "late", trackId: "v1", start: 100, duration: 2 },
+    ],
+  });
+  await clickClip(page, "a");
+  const before = (await state(page)).document;
+  for (const [key, time] of [
+    ["ArrowDown", 2 * 240000],
+    ["ArrowDown", 3 * 240000],
+    ["ArrowUp", 2 * 240000],
+    ["Home", 0],
+    ["End", Math.floor((102 * 240000 - 1) / 8008) * 8008],
+    ["ArrowUp", 100 * 240000],
+  ]) {
+    await page.keyboard.press(key);
+    await settle(page);
+    assert.equal((await state(page)).time, time, key);
+    assert.equal(await page.evaluate(() => document.activeElement.id), "timeline");
+    const visible = await page.evaluate(() => {
+      const viewport = document.querySelector(".et-scroll").getBoundingClientRect(),
+        playhead = document.querySelector(".et-playhead").getBoundingClientRect();
+      return playhead.left >= viewport.left && playhead.left < viewport.right;
+    });
+    assert.ok(visible, `${key} must reveal its playhead`);
+  }
+  assert.ok(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft > 5000));
+  assert.equal(await clip(page, "late").count(), 1, "Distant clips are drawn after navigation");
+  await page.keyboard.press("Home");
+  await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft), 0);
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).selected, ["a"]);
+  assert.deepEqual((await state(page)).applied, []);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("timeline navigation handles empty sequences and leaves native input keys alone", async (t) => {
+  const page = await fixture(t, { clips: [] });
+  await page.locator("#timeline").focus();
+  for (const key of ["End", "ArrowDown", "ArrowUp", "Home", "ArrowRight", "Shift+ArrowRight"])
+    await page.keyboard.press(key);
+  await settle(page);
+  assert.equal((await state(page)).time, 0);
+  assert.equal((await state(page)).document.revision, 3);
+  assert.deepEqual((await state(page)).errors, []);
+  await page.locator('[data-et-track-name="v1"]').fill("abcdef");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Shift+End");
+  assert.equal(await page.locator('[data-et-track-name="v1"]').evaluate((input) => input.value.slice(input.selectionStart, input.selectionEnd)), "abcdef");
+  await page.keyboard.press("n");
+  assert.equal(await page.locator('[data-et-track-name="v1"]').inputValue(), "n");
+  assert.equal(await page.locator("[data-et-snap]").isChecked(), true);
+  assert.equal((await state(page)).time, 0);
+});
+
+test("cut navigation includes exact edges inside the final frame and never reverses direction", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 1.035 },
+      { id: "tail", trackId: "v1", start: 1.035, duration: 0.005 },
+    ],
+  });
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("End");
+  await settle(page);
+  assert.equal((await state(page)).time, 248000);
+  await page.keyboard.press("ArrowDown");
+  await settle(page);
+  assert.equal((await state(page)).time, 248400, "The cut is inside the final frame");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowRight");
+  await settle(page);
+  assert.equal((await state(page)).time, 248400, "Forward navigation cannot jump to an earlier frame");
+  await page.keyboard.press("ArrowUp");
+  await settle(page);
+  assert.equal((await state(page)).time, 0);
+  assert.equal((await state(page)).document.revision, 3);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("fit and snapping shortcuts use the existing view controls and never create edits", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "late", trackId: "v1", start: 100, duration: 2 },
+    ],
+  });
+  await clickClip(page, "a");
+  const before = (await state(page)).document;
+  await page.keyboard.press("n");
+  assert.equal(await page.locator("[data-et-snap]").isChecked(), false);
+  await page.keyboard.down("n");
+  await page.keyboard.down("n");
+  await page.keyboard.up("n");
+  assert.equal(await page.locator("[data-et-snap]").isChecked(), true, "Holding N must toggle only once");
+  await page.keyboard.press("End");
+  await settle(page);
+  await page.keyboard.press("Shift+z");
+  await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft), 0);
+  assert.equal(await clip(page, "a").count(), 1);
+  assert.equal(await clip(page, "late").count(), 1);
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
 test("Ctrl and Shift toggles, Escape, select all, and non-additive marquee maintain exact selection", async (t) => {
   const page = await fixture(t);
   await clickClip(page, "a");
@@ -605,6 +717,44 @@ test("split with bound captions is one edit and one undo restores both source an
   assert.deepEqual(captions.map((item) => item.text).sort(), ["one", "two"]);
   assert.deepEqual(after.errors, []);
   await undo(page, before);
+});
+
+test("successive S cuts keep the right-hand NTSC source selected and bound captions undo together", async (t) => {
+  const page = await fixture(t, {
+    ntsc: true,
+    caption: true,
+    clips: [{ id: "a", trackId: "v1", start: 0, duration: 10 }],
+  });
+  await clickClip(page, "a");
+  const original = (await state(page)).document;
+  await seek(page, 3);
+  await page.keyboard.press("s");
+  await settle(page);
+  const first = await state(page),
+    firstRight = first.document.sequences[0].clips.find((clip) => clip.kind === "media" && clip.start === first.time);
+  assert.deepEqual(first.selected, [firstRight.id]);
+  await seek(page, 6);
+  await page.keyboard.press("s");
+  await settle(page);
+  const second = await state(page),
+    sequence = second.document.sequences[0],
+    sources = sequence.clips.filter((clip) => clip.kind === "media").sort((a, b) => a.start - b.start);
+  assert.equal(sources.length, 3, "Two cuts need no intermediate selection click");
+  assert.deepEqual(second.selected, [sources[2].id]);
+  assert.equal(second.document.revision, original.revision + 2);
+  assert.equal(second.applied.length, 2);
+  assert.equal(sources[0].start + sources[0].duration, sources[1].start);
+  assert.equal(sources[1].start + sources[1].duration, sources[2].start);
+  assert.equal(sources[2].start + sources[2].duration, 10 * 240000);
+  for (const caption of sequence.clips.filter((clip) => clip.kind === "text")) {
+    const owner = sources.find((clip) => clip.id === caption.sourceBinding.clipId);
+    assert.ok(owner);
+    assert.equal(caption.start, owner.start);
+    assert.equal(caption.duration, owner.duration);
+  }
+  assert.deepEqual(second.errors, []);
+  await undo(page, first.document);
+  await undo(page, original);
 });
 
 test("paste and duplicate select only the new instances so immediate Delete preserves original clips", async (t) => {
