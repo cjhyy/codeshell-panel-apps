@@ -404,6 +404,15 @@ the open adapter instead of silently moving a pending write to another project.
 Malformed or newer task journals block new submissions without overwriting the
 original record.
 
+The open page is also bound to the Host type, application, workspace and selected
+session. Published Hosts do not expose a stable project ID, so a selected-session
+change invalidates this page even when both cloud projects use `/workspace`.
+The updated package requests `context.session` so the Host can supply that
+binding; review this additional context permission when updating the Panel.
+Reopen the Panel to continue; existing project files and accepted background tasks
+stay in their original project. Returning to the earlier session does not revive
+pending writes or late results. Visibility and busy-status updates keep the binding.
+
 This does not copy local browser media into a cloud project or establish complete
 cloud rendering/provider acceptance. Media bytes remain in the Host resource store.
 

@@ -16,7 +16,17 @@ export interface PanelTask {
 }
 
 export interface PanelBridge {
-  getContext(): Promise<{ cwd?: string; theme?: string; visible?: boolean; availableMethods?: string[] }>;
+  getContext(): Promise<{
+    cwd?: string;
+    appId?: string;
+    host?: string;
+    sessionId?: string | null;
+    environmentId?: string;
+    projectId?: string;
+    theme?: string;
+    visible?: boolean;
+    availableMethods?: string[];
+  }>;
   call(method: string, params?: unknown): Promise<unknown>;
   callResult?(method: string, params?: unknown): Promise<BridgeResult>;
   registerTool(name: string, handler: (args: Record<string, unknown>) => unknown): () => void;

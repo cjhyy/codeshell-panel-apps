@@ -143,6 +143,8 @@ const elements = {
   openShortcuts: document.querySelector("#open-shortcuts"),
   openAi: document.querySelector("#open-ai"),
   toggleInspector: document.querySelector("#toggle-inspector"),
+  toggleLayers: document.querySelector("#toggle-layers"),
+  compactActions: document.querySelector("#compact-actions"),
   filesDialog: document.querySelector("#files-dialog"),
   shortcutsDialog: document.querySelector("#shortcuts-dialog"),
   filesList: document.querySelector("#files-list"),
@@ -726,16 +728,17 @@ async function activateDesignPage(pageId) {
   let target = design.pages.find((page) => page.id === pageId);
   if (!target) throw new Error(`页面不存在：${pageId}`);
   if (pageId === design.activePageId) return false;
+  cancelInteraction();
   await ensureDesignPageLoaded(pageId);
   assertScope();
   await loadReferencedDesignResources();
   assertScope();
   target = design.pages.find((page) => page.id === pageId);
+  cancelInteraction();
   syncActivePageNodes();
   design.activePageId = pageId;
   design.nodes = target.nodes;
   clearSelection();
-  interaction = null;
   return true;
 }
 
@@ -1664,6 +1667,19 @@ function renderSelection(node, showHandles) {
     ["sw", node.x, node.y + node.height, "nesw-resize"],
   ];
   for (const [handle, x, y, cursor] of handles) {
+    if (window.matchMedia("(pointer: coarse)").matches) {
+      const hitSize = 28 / zoom;
+      const hitArea = svgElement("rect", {
+        x: x - hitSize / 2,
+        y: y - hitSize / 2,
+        width: hitSize,
+        height: hitSize,
+        fill: "transparent",
+      });
+      hitArea.dataset.handle = handle;
+      hitArea.style.cursor = cursor;
+      overlay.append(hitArea);
+    }
     const point = svgElement("rect", {
       x: x - size / 2,
       y: y - size / 2,
@@ -2426,7 +2442,12 @@ function documentPoint(event) {
 }
 
 function pointerDown(event) {
-  if (event.button !== 0 && event.button !== 1) return;
+  if (interaction || (event.button !== 0 && event.button !== 1)) return;
+  const before = {
+    selectedId,
+    selectedIds: new Set(selectedIds),
+    tool: activeTool,
+  };
   const point = documentPoint(event);
   const handle = event.target.closest?.("[data-handle]")?.dataset.handle;
   const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
@@ -2442,6 +2463,7 @@ function pointerDown(event) {
     const node = selectedNode();
     interaction = {
       kind: "resize",
+      nodeId: node.id,
       handle,
       start: point,
       bounds: { x: node.x, y: node.y, width: node.width, height: node.height },
@@ -2506,6 +2528,9 @@ function pointerDown(event) {
       setActiveTool("select");
       commitHistory();
       markChanged();
+      if (window.matchMedia("(max-width: 680px)").matches) {
+        setResponsivePanel("inspector", true);
+      }
       requestAnimationFrame(() => {
         propertyInputs.text.focus();
         propertyInputs.text.select();
@@ -2521,12 +2546,22 @@ function pointerDown(event) {
     };
     renderAll();
   }
+  if (!interaction) return;
+  interaction.pointerId = event.pointerId;
+  interaction.before = before;
+  interaction.workspaceEpoch = workspaceEpoch;
+  interaction.documentEpoch = documentEpoch;
+  interaction.pageId = design.activePageId;
   elements.stage.setPointerCapture(event.pointerId);
   updateCursor();
 }
 
 function pointerMove(event) {
-  if (!interaction) return;
+  if (!interaction || event.pointerId !== interaction.pointerId) return;
+  if (!interactionIsCurrent(interaction)) {
+    releaseInteraction();
+    return;
+  }
   const point = documentPoint(event);
   if (interaction.kind === "pan") {
     pan.x = interaction.startPan.x + event.clientX - interaction.startClient.x;
@@ -2599,7 +2634,7 @@ function pointerMove(event) {
       Math.abs(point.x - interaction.start.x) > 0.2 ||
       Math.abs(point.y - interaction.start.y) > 0.2;
   } else if (interaction.kind === "create") {
-    const node = selectedNode();
+    const node = nodeById(interaction.nodeId);
     if (!node) return;
     const parent = node.parentId ? nodeById(node.parentId) : null;
     const localPoint = pointToParentSpace(point, parent) ?? point;
@@ -2619,7 +2654,7 @@ function pointerMove(event) {
     node.width = round(Math.max(1, Math.abs(endX - interaction.start.x)));
     node.height = round(Math.max(1, Math.abs(endY - interaction.start.y)));
   } else if (interaction.kind === "resize") {
-    const node = selectedNode();
+    const node = nodeById(interaction.nodeId);
     if (!node) return;
     resizeNode(node, snapPoint(point, event.altKey), interaction, event.shiftKey);
   }
@@ -2664,14 +2699,30 @@ function resizeNode(node, point, state, preserveAspect) {
   }
 }
 
-function finishInteraction(pointerId = null) {
-  if (!interaction) return;
-  const finished = interaction;
+function interactionIsCurrent(state) {
+  return (
+    state.workspaceEpoch === workspaceEpoch &&
+    state.documentEpoch === documentEpoch &&
+    state.pageId === design.activePageId
+  );
+}
+
+function releaseInteraction() {
+  const released = interaction;
   interaction = null;
-  if (Number.isInteger(pointerId) && elements.stage.hasPointerCapture(pointerId)) {
-    elements.stage.releasePointerCapture(pointerId);
+  if (released && elements.stage.hasPointerCapture(released.pointerId)) {
+    elements.stage.releasePointerCapture(released.pointerId);
   }
-  const node = selectedNode();
+  updateCursor();
+  return released;
+}
+
+function finishInteraction(pointerId = null) {
+  if (!interaction || (pointerId !== null && pointerId !== interaction.pointerId)) return;
+  const current = interactionIsCurrent(interaction);
+  const finished = releaseInteraction();
+  if (!current) return;
+  const node = finished.nodeId ? nodeById(finished.nodeId) : selectedNode();
   if (finished.kind === "create" && node && (node.width < 4 || node.height < 4)) {
     node.width = finished.tool === "frame" ? 390 : 160;
     node.height = finished.tool === "frame" ? 260 : 120;
@@ -2694,6 +2745,32 @@ function finishInteraction(pointerId = null) {
 
 function pointerUp(event) {
   finishInteraction(event.pointerId);
+}
+
+function cancelInteraction(pointerId = null) {
+  if (!interaction || (pointerId !== null && pointerId !== interaction.pointerId)) return;
+  const current = interactionIsCurrent(interaction);
+  const cancelled = releaseInteraction();
+  if (!current) return;
+  if (cancelled.kind === "create") {
+    design.nodes = design.nodes.filter((node) => node.id !== cancelled.nodeId);
+  } else if (cancelled.kind === "move") {
+    for (const [nodeId, origin] of cancelled.origins) {
+      const node = nodeById(nodeId);
+      if (node) Object.assign(node, origin);
+    }
+  } else if (cancelled.kind === "resize") {
+    const node = nodeById(cancelled.nodeId);
+    if (node) Object.assign(node, cancelled.bounds);
+  } else if (cancelled.kind === "pan") {
+    Object.assign(pan, cancelled.startPan);
+  }
+  selectedId = cancelled.before.selectedId;
+  selectedIds = cancelled.before.selectedIds;
+  setActiveTool(cancelled.before.tool);
+  syncActivePageNodes();
+  updateDirtyState();
+  renderAll();
 }
 
 function duplicateSelected() {
@@ -3638,6 +3715,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
   ) {
     return false;
   }
+  cancelInteraction();
   const operationStateRevision = currentDesignStateRevision();
   clearTimeout(recoveryTimer);
   setSaveState("打开中…", "idle");
@@ -3649,6 +3727,7 @@ async function openDocument(path, { discardChanges = false } = {}) {
     }
     const resolved = await resolveWorkspaceDesignSource(result, operationWorkspaceEpoch);
     assertWorkspaceEpoch(operationWorkspaceEpoch);
+    cancelInteraction();
     design = resolved.pageCache
       ? resolved.document
       : normalizeDocument(resolved.document ?? JSON.parse(resolved.source));
@@ -3752,6 +3831,7 @@ async function checkExternalChange({ force = false } = {}) {
         ) {
           return false;
         }
+        cancelInteraction();
         design = nextDesign;
         documentEpoch += 1;
         clearSelection();
@@ -4379,6 +4459,7 @@ async function replaceDesignWithHtmlImport(
   { save = false, recordAgentTransaction = false, sourcePath } = {},
 ) {
   const operationWorkspaceEpoch = workspaceEpoch;
+  cancelInteraction();
   await ensureAllDesignPagesLoaded();
   assertWorkspaceEpoch(operationWorkspaceEpoch);
   const nextDesign = normalizeDocument(imported);
@@ -4704,6 +4785,7 @@ async function saveAuditReport() {
 
 function newDocument() {
   if (dirty && !window.confirm("当前设计有未保存修改。确定要新建设计吗？")) return;
+  cancelInteraction();
   design = createBlankDocument("Untitled");
   recoveryBaseDocument = clone(design);
   documentEpoch += 1;
@@ -4759,6 +4841,7 @@ async function deleteDesignPage(pageId) {
     notify("设计文件必须保留至少一页", "error");
     return;
   }
+  cancelInteraction();
   await ensureAllDesignPagesLoaded();
   syncActivePageNodes();
   const pageIndex = design.pages.findIndex((page) => page.id === pageId);
@@ -5440,7 +5523,8 @@ elements.layerFilter.addEventListener("input", () => {
 elements.stage.addEventListener("pointerdown", pointerDown);
 elements.stage.addEventListener("pointermove", pointerMove);
 elements.stage.addEventListener("pointerup", pointerUp);
-elements.stage.addEventListener("pointercancel", pointerUp);
+elements.stage.addEventListener("pointercancel", (event) => cancelInteraction(event.pointerId));
+elements.stage.addEventListener("lostpointercapture", (event) => cancelInteraction(event.pointerId));
 elements.stage.addEventListener("dblclick", (event) => {
   const targetId = event.target.closest?.("[data-node-id]")?.dataset.nodeId;
   const node = design.nodes.find((candidate) => candidate.id === targetId);
@@ -5448,6 +5532,9 @@ elements.stage.addEventListener("dblclick", (event) => {
   selectOnly(node.id);
   document.querySelector('[data-tab="design"]').click();
   renderAll();
+  if (window.matchMedia("(max-width: 680px)").matches) {
+    setResponsivePanel("inspector", true);
+  }
   requestAnimationFrame(() => {
     propertyInputs.text.focus();
     propertyInputs.text.select();
@@ -5530,19 +5617,52 @@ elements.newDocument.addEventListener("click", newDocument);
 elements.openAi.addEventListener("click", () => elements.aiDialog.showModal());
 elements.openDelivery.addEventListener("click", () => {
   const deliveryTab = document.querySelector('[data-tab="delivery"]');
+  setResponsivePanel("inspector", true);
   activateInspectorTab(deliveryTab, { focus: true });
-  elements.workspace.classList.add("inspector-open");
-  elements.toggleInspector.setAttribute("aria-expanded", "true");
 });
 elements.designFromPrd.addEventListener("click", () => void submitProductBriefToAgent());
 elements.generateFrontend.addEventListener("click", () => void generateFrontendFromPanel());
 elements.compareImplementation.addEventListener("click", () => void compareFrontendFromPanel());
 elements.toggleInspector.addEventListener("click", () => {
-  const open = elements.workspace.classList.toggle("inspector-open");
-  elements.toggleInspector.setAttribute("aria-expanded", String(open));
-  elements.toggleInspector.title = open ? "关闭属性面板" : "打开属性面板";
-  elements.toggleInspector.setAttribute("aria-label", elements.toggleInspector.title);
+  setResponsivePanel("inspector", !elements.workspace.classList.contains("inspector-open"));
 });
+elements.toggleLayers.addEventListener("click", () => {
+  setResponsivePanel("layers", !elements.workspace.classList.contains("layers-open"));
+});
+document.querySelector("#close-inspector").addEventListener("click", () => {
+  setResponsivePanel("inspector", false);
+  elements.toggleInspector.focus();
+});
+document.querySelector("#close-layers").addEventListener("click", () => {
+  setResponsivePanel("layers", false);
+  elements.toggleLayers.focus();
+});
+for (const button of elements.compactActions.querySelectorAll("[data-toolbar-action]")) {
+  button.addEventListener("click", () => {
+    elements.compactActions.open = false;
+    document.getElementById(button.dataset.toolbarAction).click();
+  });
+}
+elements.compactActions.addEventListener("toggle", () => {
+  for (const button of elements.compactActions.querySelectorAll("[data-toolbar-action]")) {
+    button.disabled = document.getElementById(button.dataset.toolbarAction).disabled;
+  }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!elements.compactActions.contains(event.target)) elements.compactActions.open = false;
+});
+
+function setResponsivePanel(panel, open) {
+  for (const name of ["inspector", "layers"]) {
+    const expanded = name === panel && open;
+    elements.workspace.classList.toggle(`${name}-open`, expanded);
+    const button = name === "inspector" ? elements.toggleInspector : elements.toggleLayers;
+    const label = name === "inspector" ? "属性面板" : "页面与图层";
+    button.setAttribute("aria-expanded", String(expanded));
+    button.title = `${expanded ? "关闭" : "打开"}${label}`;
+    button.setAttribute("aria-label", button.title);
+  }
+}
 elements.submitAi.addEventListener("click", () => void submitToAgent());
 elements.path.addEventListener("change", () => {
   const path = elements.path.value.trim();
@@ -5560,12 +5680,34 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     return;
   }
+  if (event.key === "Escape" && interaction) {
+    event.preventDefault();
+    cancelInteraction();
+    return;
+  }
+  if (event.key === "Escape" && elements.compactActions.open) {
+    event.preventDefault();
+    elements.compactActions.open = false;
+    elements.compactActions.querySelector("summary").focus();
+    return;
+  }
   const activeTag = document.activeElement?.tagName;
   const editing = ["INPUT", "TEXTAREA", "SELECT"].includes(activeTag);
   const interactive = editing || activeTag === "BUTTON" || activeTag === "A";
   const command = event.metaKey || event.ctrlKey;
   const dialogOpen = Boolean(document.querySelector("dialog[open]"));
   if (dialogOpen) return;
+  if (event.key === "Escape" && window.matchMedia("(max-width: 680px)").matches) {
+    const panel = elements.workspace.classList.contains("inspector-open")
+      ? "inspector"
+      : elements.workspace.classList.contains("layers-open") ? "layers" : null;
+    if (panel) {
+      event.preventDefault();
+      setResponsivePanel(panel, false);
+      (panel === "inspector" ? elements.toggleInspector : elements.toggleLayers).focus();
+      return;
+    }
+  }
   if (event.code === "Space" && !interactive) {
     spacePressed = true;
     updateCursor();
@@ -5695,7 +5837,7 @@ window.addEventListener("keyup", (event) => {
 
 window.addEventListener("blur", () => {
   spacePressed = false;
-  finishInteraction();
+  cancelInteraction();
   updateCursor();
 });
 window.addEventListener("resize", () => renderScene());
@@ -5876,6 +6018,7 @@ async function restoreRecovery(
   );
   if (recovery.version === 2 && recoveryBaseChanged)
     throw new Error("另存草稿的基础设计已变化；原草稿已保留，请下载备份并使用原版本恢复");
+  cancelInteraction();
   design = baseDesign;
   currentPageCache = diskPageCache;
   currentResourceCache =
@@ -5967,6 +6110,7 @@ async function restoreRecovery(
 }
 
 function resetToRepoBlankDocument() {
+  cancelInteraction();
   const repoName = workspaceInfo?.name ?? context.cwd?.split("/").filter(Boolean).at(-1) ?? "Repo";
   design = createBlankDocument(`${repoName} design`);
   recoveryBaseDocument = clone(design);
@@ -5994,6 +6138,7 @@ function resetToRepoBlankDocument() {
 }
 
 function setWorkspaceLoading(loading) {
+  if (loading) cancelInteraction();
   workspaceLoading = loading;
   document.querySelector(".topbar").inert = loading;
   elements.workspace.inert = loading;

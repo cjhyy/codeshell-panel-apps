@@ -1,3 +1,5 @@
+import { supportsHostMethod, resumeFileAction } from "./host-capabilities.mjs";
+import { downloadResumeMarkdown, browseResumeDirectory, closeResumeDirectories } from "./resume-file-browser.mjs";
 import { supportsInterviewAudioTasks } from "./interview-audio-tasks.mjs";
 import { createInterviewAudioUI } from "./interview-audio-ui.mjs";
 let interviewAudioUI = null;
@@ -2156,7 +2158,7 @@ function updateContext(next) {
     ? state.sessionActivity.find((item) => item.id === activeSessionTraceId) || activeTrace()
     : null;
   context = { ...context, ...(next ?? {}) };
-  if (context.cwd !== previousCwd) {
+  if (context.cwd !== previousCwd || context.sessionId !== previousSessionId) {
     channelCookieAccounts.clear();
     channelCookieAccountLoads.clear();
   }
@@ -2169,6 +2171,12 @@ function updateContext(next) {
     panelMicrophoneStatus = { checked: false, checking: false, granted: false, message: "" };
     discoveryAutomation = null;
     discoveryAutomationLoaded = false;
+    discoveryAutomationLoading = false;
+    discoveryAutomationActionPending = false;
+    activeChannelLoginProviderId = "";
+    resumeMarkdownArtifacts = [];
+    resumeMarkdownDiscoveryCwd = "";
+    resumeMarkdownDiscoveryRequest = null;
     if (!candidateProfileSavePending) {
       candidateProfileEditMode = false;
     }
@@ -5985,19 +5993,20 @@ function providerCookieAccounts(providerId) {
 }
 
 function providerSupportsManagedLogin(provider) {
-  return Boolean(provider?.url) && Number(context.apiVersion || 0) >= 4;
+  return Boolean(provider?.url) && supportsHostMethod(context, "credentials.cookies.loginAndSave");
 }
 
 async function loadProviderCookieAccounts(providerId, { force = false } = {}) {
   const provider = providerById(providerId);
-  if (!providerSupportsManagedLogin(provider) || !context.cwd) return [];
+  if (!provider?.url || !supportsHostMethod(context, "credentials.cookies.list") || !context.cwd) return [];
   if (!force && channelCookieAccounts.has(providerId)) {
     return providerCookieAccounts(providerId);
   }
   if (channelCookieAccountLoads.has(providerId)) {
     return channelCookieAccountLoads.get(providerId);
   }
-  const request = hostCall("credentials.cookies.list", { url: provider.url })
+  const scope = currentProject();
+  const request = scope.call("credentials.cookies.list", { url: provider.url })
     .then((result) => {
       const accounts = Array.isArray(result?.accounts)
         ? result.accounts
@@ -6022,10 +6031,12 @@ async function loadProviderCookieAccounts(providerId, { force = false } = {}) {
       return accounts;
     })
     .catch(() => {
+      if (!scope.active()) return [];
       channelCookieAccounts.set(providerId, []);
       return [];
     })
     .finally(() => {
+      if (!scope.active()) return;
       channelCookieAccountLoads.delete(providerId);
       renderChannelVerifications();
     });
@@ -6037,7 +6048,7 @@ function refreshChannelCookieAccounts({ force = false } = {}) {
   if (state.activeView !== "channels") return;
   let requested = false;
   for (const provider of providerCatalog()) {
-    if (providerSupportsManagedLogin(provider)) {
+    if (provider?.url && supportsHostMethod(context, "credentials.cookies.list")) {
       if (
         force ||
         (!channelCookieAccounts.has(provider.id) && !channelCookieAccountLoads.has(provider.id))
@@ -6074,16 +6085,17 @@ async function loginAndSaveProvider(providerId) {
   const provider = providerById(providerId);
   if (!provider?.url) return notify("这个渠道还没有可登录的 HTTPS 入口", "error");
   if (!context.cwd) return notify("请先绑定当前求职数据项目", "error");
-  if (Number(context.apiVersion || 0) < 4) {
-    return notify("请重启到支持渠道登录的 CodeShell 版本", "error");
+  if (!providerSupportsManagedLogin(provider)) {
+    return notify("当前项目不提供保存网站登录；可打开招聘页，并用“粘贴 JD”导入职位。", "error");
   }
   if (context.busy || activeChannelLoginProviderId || activeChannelVerificationProviderId) {
     return notify("请先完成当前渠道操作", "error");
   }
+  const scope = currentProject();
   activeChannelLoginProviderId = providerId;
   renderChannelVerifications();
   try {
-    const result = await hostCall("credentials.cookies.loginAndSave", {
+    const result = await scope.call("credentials.cookies.loginAndSave", {
       providerId: provider.id,
       providerLabel: provider.label,
       url: provider.url,
@@ -6098,9 +6110,11 @@ async function loginAndSaveProvider(providerId) {
     }
     notify(`已保存 ${provider.label} 登录，正在检查当前状态`, "success");
   } catch (error) {
+    if (!scope.active()) return;
     notify(error instanceof Error ? error.message : "登录保存失败", "error");
     return;
   } finally {
+    if (!scope.active()) return;
     activeChannelLoginProviderId = "";
     renderChannelVerifications();
   }
@@ -6140,13 +6154,17 @@ function markProviderSavedLoginInvalid(providerId, credentialId) {
 async function restoreProviderLogin(providerId, credentialId) {
   const provider = providerById(providerId);
   if (!provider || !credentialId) return;
+  if (!supportsHostMethod(context, "credentials.cookies.restore")) {
+    return notify("当前项目不能恢复保存的登录；可打开招聘页，并用“粘贴 JD”导入职位。", "error");
+  }
   if (context.busy || activeChannelLoginProviderId || activeChannelVerificationProviderId) {
     return notify("请先完成当前渠道操作", "error");
   }
+  const scope = currentProject();
   activeChannelLoginProviderId = providerId;
   renderChannelVerifications();
   try {
-    const result = await hostCall("credentials.cookies.restore", {
+    const result = await scope.call("credentials.cookies.restore", {
       credentialId,
       providerLabel: provider.label,
     });
@@ -6160,6 +6178,7 @@ async function restoreProviderLogin(providerId, credentialId) {
     }
     notify(`已恢复 ${provider.label} 登录，正在重新验证`, "success");
   } catch (error) {
+    if (!scope.active()) return;
     if (isCorruptedSavedLoginError(error)) {
       markProviderSavedLoginInvalid(providerId, credentialId);
       return;
@@ -6167,6 +6186,7 @@ async function restoreProviderLogin(providerId, credentialId) {
     notify(error instanceof Error ? error.message : "保存的登录无法恢复", "error");
     return;
   } finally {
+    if (!scope.active()) return;
     activeChannelLoginProviderId = "";
     renderChannelVerifications();
   }
@@ -6403,7 +6423,7 @@ function renderChannelVerifications() {
       primary.dataset.loginProviderId = provider.id;
       primary.disabled = actionDisabled;
       actions.append(primary);
-    } else if (account && !connectionReady) {
+    } else if (account && !connectionReady && supportsHostMethod(context, "credentials.cookies.restore")) {
       const primary = makeTextElement(
         "button",
         "button button-primary button-compact",
@@ -6455,6 +6475,19 @@ function renderChannelVerifications() {
       relogin.dataset.loginProviderId = provider.id;
       relogin.disabled = actionDisabled;
       actions.append(relogin);
+    }
+    if (provider.url && !providerSupportsManagedLogin(provider)) {
+      detail.textContent += " 当前项目不提供保存网站登录，可打开招聘页后粘贴 JD。";
+      if (supportsHostMethod(context, "external.open")) {
+        const visit = makeTextElement("button", "channel-secondary-action", "打开招聘页");
+        visit.type = "button";
+        visit.dataset.openProviderUrl = provider.id;
+        actions.append(visit);
+      }
+      const paste = makeTextElement("button", "channel-secondary-action", "粘贴 JD");
+      paste.type = "button";
+      paste.dataset.pasteProviderJd = provider.id;
+      actions.append(paste);
     }
     if (provider.custom) {
       const remove = makeTextElement(
@@ -6533,7 +6566,9 @@ function scheduledDiscoveryPrompt(count) {
 
 function renderDiscoveryAutomation() {
   if (!elements.discoveryAutomationPanel) return;
-  const apiReady = Number(context.apiVersion || 0) >= 5;
+  const listReady = supportsHostMethod(context, "automations.list");
+  const saveMethod = discoveryAutomation ? "automations.update" : "automations.create";
+  const apiReady = listReady && supportsHostMethod(context, saveMethod);
   const projectReady = currentProjectBootstrapStatus().state === "ready" && Boolean(context.cwd);
   const readyProviders = scheduledDiscoveryProviders();
   const busy = discoveryAutomationActionPending || discoveryAutomationLoading;
@@ -6541,9 +6576,8 @@ function renderDiscoveryAutomation() {
   for (const control of elements.discoveryAutomationForm.elements) control.disabled = !canConfigure;
 
   if (!apiReady) {
-    elements.discoveryAutomationStatus.textContent = "需要重启新版 CodeShell";
-    elements.discoveryAutomationDetail.textContent =
-      "新版 Host 才能把定时任务安全绑定到当前项目和当前任务。";
+    elements.discoveryAutomationStatus.textContent = listReady ? "当前项目不能修改定时任务" : "当前项目不提供定时抓取";
+    elements.discoveryAutomationDetail.textContent = "仍可按当前关键词手动搜索岗位；已有项目资料和 JD 导入继续可用。";
   } else if (!projectReady) {
     elements.discoveryAutomationStatus.textContent = "等待项目初始化";
     elements.discoveryAutomationDetail.textContent = "先初始化求职数据项目，再开启定时抓取。";
@@ -6571,20 +6605,26 @@ function renderDiscoveryAutomation() {
     : "开启定时抓取";
   elements.discoveryAutomationActions.hidden = !discoveryAutomation;
   elements.toggleDiscoveryAutomation.textContent = discoveryAutomation?.enabled ? "暂停" : "继续";
-  for (const button of elements.discoveryAutomationActions.querySelectorAll("button")) {
-    button.disabled = busy;
-  }
+  for (const [button, method] of [
+    [elements.toggleDiscoveryAutomation, discoveryAutomation?.enabled ? "automations.pause" : "automations.resume"],
+    [elements.runDiscoveryAutomation, "automations.runNow"],
+    [elements.deleteDiscoveryAutomation, "automations.delete"],
+  ]) button.disabled = busy || !supportsHostMethod(context, method);
+  const manual = document.querySelector("#manual-discovery-fallback");
+  manual.hidden = apiReady;
+  manual.disabled = Boolean(context.busy);
 }
 
 async function loadDiscoveryAutomation({ force = false } = {}) {
-  if (state.activeView !== "channels" || Number(context.apiVersion || 0) < 5 || !context.cwd)
+  if (state.activeView !== "channels" || !supportsHostMethod(context, "automations.list") || !context.cwd)
     return;
   if (!force && discoveryAutomationLoaded) return;
   if (discoveryAutomationLoading) return;
+  const scope = currentProject();
   discoveryAutomationLoading = true;
   renderDiscoveryAutomation();
   try {
-    const result = await hostCall("automations.list", {});
+    const result = await scope.call("automations.list", {});
     const automations = Array.isArray(result?.automations) ? result.automations : [];
     discoveryAutomation =
       automations.find((automation) =>
@@ -6601,11 +6641,13 @@ async function loadDiscoveryAutomation({ force = false } = {}) {
       if (target) elements.discoveryAutomationCount.value = target;
     }
   } catch (error) {
+    if (!scope.active()) return;
     discoveryAutomationLoaded = true;
     discoveryAutomation = null;
     elements.discoveryAutomationDetail.textContent =
       error instanceof Error ? error.message : "定时任务读取失败";
   } finally {
+    if (!scope.active()) return;
     discoveryAutomationLoading = false;
     renderDiscoveryAutomation();
   }
@@ -6613,6 +6655,8 @@ async function loadDiscoveryAutomation({ force = false } = {}) {
 
 async function saveDiscoveryAutomation() {
   if (discoveryAutomationActionPending) return;
+  const method = discoveryAutomation ? "automations.update" : "automations.create";
+  if (!supportsHostMethod(context, method)) return notify("当前项目不能保存定时任务，可使用手动搜索岗位。", "error");
   const providers = scheduledDiscoveryProviders();
   if (!providers.length) return notify("先连接至少一个启用渠道", "error");
   const count = Number(elements.discoveryAutomationCount.value);
@@ -6622,18 +6666,19 @@ async function saveDiscoveryAutomation() {
   );
   const prompt = scheduledDiscoveryPrompt(count);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Singapore";
+  const scope = currentProject();
   discoveryAutomationActionPending = true;
   renderDiscoveryAutomation();
   try {
     discoveryAutomation = discoveryAutomation
-      ? await hostCall("automations.update", {
+      ? await scope.call("automations.update", {
           id: discoveryAutomation.id,
           name: `求职作战室 · ${state.discoveryPreferences.keyword || "定时找岗位"}`,
           schedule,
           prompt,
           timezone,
         })
-      : await hostCall("automations.create", {
+      : await scope.call("automations.create", {
           name: `求职作战室 · ${state.discoveryPreferences.keyword || "定时找岗位"}`,
           schedule,
           prompt,
@@ -6642,8 +6687,10 @@ async function saveDiscoveryAutomation() {
     discoveryAutomationLoaded = true;
     notify("定时抓取已保存到当前求职项目", "success");
   } catch (error) {
+    if (!scope.active()) return;
     notify(error instanceof Error ? error.message : "定时抓取保存失败", "error");
   } finally {
+    if (!scope.active()) return;
     discoveryAutomationActionPending = false;
     renderDiscoveryAutomation();
   }
@@ -6656,6 +6703,7 @@ async function controlDiscoveryAutomation(action) {
     !window.confirm("删除这个项目的定时岗位抓取任务？已收集的 JD 不会删除。")
   )
     return;
+  const scope = currentProject();
   discoveryAutomationActionPending = true;
   renderDiscoveryAutomation();
   try {
@@ -6667,7 +6715,8 @@ async function controlDiscoveryAutomation(action) {
         : action === "run"
           ? "automations.runNow"
           : "automations.delete";
-    await hostCall(method, { id: discoveryAutomation.id });
+    if (!supportsHostMethod(context, method)) throw new Error("当前项目不提供这个定时任务操作。");
+    await scope.call(method, { id: discoveryAutomation.id });
     if (action === "delete") discoveryAutomation = null;
     else if (action === "toggle") {
       discoveryAutomation = { ...discoveryAutomation, enabled: !discoveryAutomation.enabled };
@@ -6683,8 +6732,10 @@ async function controlDiscoveryAutomation(action) {
       "success",
     );
   } catch (error) {
+    if (!scope.active()) return;
     notify(error instanceof Error ? error.message : "定时任务操作失败", "error");
   } finally {
+    if (!scope.active()) return;
     discoveryAutomationActionPending = false;
     renderDiscoveryAutomation();
   }
@@ -7254,14 +7305,15 @@ function renderResumeWorkspace() {
     card.dataset.format = file.format;
     const actions = document.createElement("div");
     actions.className = "resume-file-actions";
-    const openButton = makeTextElement("button", "card-session-action", "打开文件");
+    const filePlan = resumeFileAction(context, file.path, "open");
+    const openButton = makeTextElement("button", "card-session-action", filePlan.kind === "download" ? "下载 Markdown" : "打开文件");
     openButton.type = "button";
     openButton.dataset.openResumeFilePath = file.path;
     if (file.assetId) {
       openButton.textContent = "打开／下载 PDF";
       openButton.dataset.resumeAssetId = file.assetId;
     }
-    const revealButton = makeTextElement("button", "card-session-action", "打开所在文件夹");
+    const revealButton = makeTextElement("button", "card-session-action", supportsHostMethod(context, "workspace.revealPath") ? "打开所在文件夹" : "浏览项目目录");
     revealButton.type = "button";
     revealButton.dataset.revealResumeFilePath = file.path;
     actions.append(openButton);
@@ -11923,13 +11975,18 @@ function resumeMarkdownProjectPath(resume = state.resume, resumeJob) {
 
 async function runResumeFileAction(path, action) {
   if (!path) return notify("这个投递文件还没有可用路径", "error");
-  if (!window.codeshellPanel?.call || Number(context.apiVersion || 0) < 9) {
-    return notify("请更新并完全重启 CodeShell 后再打开本地投递文件", "error");
-  }
-  const method = action === "reveal" ? "workspace.revealPath" : "workspace.openPath";
+  const scope = currentProject();
+  const plan = resumeFileAction(context, path, action);
   try {
-    await hostCall(method, { path });
+    if (plan.kind === "native") {
+      if (action === "reveal") await scope.call("workspace.revealPath", { path });
+      else await scope.call("workspace.openPath", { path });
+    }
+    else if (plan.kind === "download") await downloadResumeMarkdown(path, scope);
+    else if (plan.kind === "browse") await browseResumeDirectory(path, scope, notify);
+    else notify(/\.pdf$/i.test(path) ? "当前项目不能读取这个旧版 PDF 路径；请回到简历内容重新导出可下载 PDF。" : "当前项目没有文件读取权限，请检查 Panel 的项目授权。", "error");
   } catch (error) {
+    if (!scope.active()) return;
     const detail = error instanceof Error ? error.message : "无法打开投递文件";
     if (/does not exist|ENOENT|not a file/i.test(detail)) {
       return notify(`项目中没有找到 ${path}；请先重新保存或导出`, "error");
@@ -11939,13 +11996,13 @@ async function runResumeFileAction(path, action) {
 }
 
 async function refreshResumeMarkdownFiles({ force = false } = {}) {
-  if (!window.codeshellPanel?.call || !context.cwd) return;
+  if (!window.codeshellPanel?.call || !context.cwd || !supportsHostMethod(context, "workspace.list")) return;
   if (!force && resumeMarkdownDiscoveryCwd === context.cwd) return;
   if (resumeMarkdownDiscoveryRequest) return resumeMarkdownDiscoveryRequest;
-  const requestedCwd = context.cwd;
-  resumeMarkdownDiscoveryRequest = hostCall("workspace.list", { path: "." })
+  const scope = currentProject();
+  resumeMarkdownDiscoveryRequest = scope.call("workspace.list", { path: "." })
     .then((listing) => {
-      if (context.cwd !== requestedCwd) return;
+      scope.check();
       const records = resumeRecords();
       resumeMarkdownArtifacts = (Array.isArray(listing?.entries) ? listing.entries : [])
         .filter(
@@ -11969,13 +12026,15 @@ async function refreshResumeMarkdownFiles({ force = false } = {}) {
             format: "markdown",
           };
         });
-      resumeMarkdownDiscoveryCwd = requestedCwd;
+      resumeMarkdownDiscoveryCwd = context.cwd;
       renderResumeWorkspace();
     })
     .catch((error) => {
+      if (!scope.active()) return;
       notify(error instanceof Error ? error.message : "无法读取简历投递文件", "error");
     })
     .finally(() => {
+      if (!scope.active()) return;
       resumeMarkdownDiscoveryRequest = null;
     });
   return resumeMarkdownDiscoveryRequest;
@@ -12086,9 +12145,14 @@ async function exportResumeToPdf() {
   try {
     await waitForResumePrintLayout();
     scope.check();
-    const methods = context.availableMethods;
-    if (Array.isArray(methods) && !methods.includes("workspace.exportPdf")) {
-      if (!supportsResumePdfTasks(context) || !resumePdfUI) throw new Error("当前项目还不支持云端 PDF 导出，请更新主程序并确认求职 Panel 的执行与文件权限。");
+    if (window.codeshellPanel?.call && !supportsHostMethod(context, "workspace.exportPdf")) {
+      if (!supportsResumePdfTasks(context) || !resumePdfUI) {
+        if (!Array.isArray(context.availableMethods) && !context.capabilities?.bridge && context.host !== "hub" && context.host !== "web") {
+          openSystemPdfFallback(cleanup);
+          return;
+        }
+        throw new Error("当前项目还不支持云端 PDF 导出，请确认求职 Panel 的执行与文件权限。");
+      }
       const prepared = await prepareResumePdfTask({ html, ...source });
       scope.check();
       const job = await resumePdfUI.submit(prepared);
@@ -12099,7 +12163,7 @@ async function exportResumeToPdf() {
       cleanup();
       return;
     }
-    if (!window.codeshellPanel?.call || Number(context.apiVersion || 0) < 3) {
+    if (!window.codeshellPanel?.call) {
       openSystemPdfFallback(cleanup);
       return;
     }
@@ -15842,6 +15906,14 @@ function bindEvents() {
     void addCustomChannel(event.currentTarget);
   });
   elements.channelVerificationList.addEventListener("click", (event) => {
+    const visit = event.target.closest("[data-open-provider-url]");
+    if (visit) {
+      const provider = providerById(visit.dataset.openProviderUrl);
+      if (provider?.url && supportsHostMethod(context, "external.open"))
+        void currentProject().call("external.open", { url: provider.url }).catch(error => notify(error.message, "error"));
+      return;
+    }
+    if (event.target.closest("[data-paste-provider-jd]")) { openJdIntakeDialog(); return; }
     const removeChannel = event.target.closest("[data-remove-provider-id]");
     if (removeChannel) {
       void removeCustomChannel(removeChannel.dataset.removeProviderId);
@@ -15869,6 +15941,7 @@ function bindEvents() {
     if (!input) return;
     void setProviderEnabled(input.dataset.providerEnabledId, input.checked);
   });
+  document.querySelector("#manual-discovery-fallback").addEventListener("click", () => openJobSearchDialog());
   elements.discoveryAutomationForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void saveDiscoveryAutomation();
@@ -17025,6 +17098,7 @@ async function activateProject(next, { restoreBrowserDrafts = true, keepSnapshot
     saveCriticalDraftRecovery();
     detachedDrafts.push({ cwd: context.cwd, sessionId: context.sessionId, drafts: criticalDraftRecoverySnapshot() });
   }
+  closeResumeDirectories();
   projectEpoch++;
   resumePdfUI?.close();
   resumePdfUI = null;

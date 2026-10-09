@@ -202,8 +202,11 @@ if (
 }
 
 if (panel) {
-  const traffic = createBridgeTraffic(panel);
-  const mediaBridge = createMediaTaskBridge(createWorkspaceDocumentBridge(traffic.bridge));
+  let checkBinding = () => {};
+  const traffic = createBridgeTraffic(panel, { beforeDispatch: () => checkBinding() });
+  const documents = createWorkspaceDocumentBridge(traffic.bridge);
+  checkBinding = documents.assertActive;
+  const mediaBridge = createMediaTaskBridge(documents);
   setPanelBridge(mediaBridge.bridge);
   window.addEventListener("pagehide", () => {
     traffic.dispose();
