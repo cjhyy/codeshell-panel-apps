@@ -9,6 +9,9 @@ import { chromium } from "playwright";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const appDirectory = resolve(root, "apps/video-download/app");
 const artifacts = resolve(root, "artifacts/video-download/queue-ui");
+const panelPermissions = JSON.parse(
+  await readFile(resolve(root, "apps/video-download/.codeshell-panel/panel.json"), "utf8"),
+).permissions;
 const firstUrl = "https://www.youtube.com/watch?v=queue-first";
 const secondUrl = "https://www.youtube.com/watch?v=queue-second";
 const thirdUrl = "https://www.youtube.com/watch?v=queue-third";
@@ -77,10 +80,20 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
     assert.deepEqual(errors, [], "The download panel must not throw or request remote resources");
   });
   await page.addInitScript(
-    ({ projectDirectoryError, ai }) => {
+    ({ projectDirectoryError, ai, panelPermissions }) => {
       const fixtureUuid = crypto.randomUUID.bind(crypto);
       if (ai.noRandomUuid) Object.defineProperty(crypto, "randomUUID", { value: undefined });
       const handlers = {};
+      // Match the real Host projection: no session identity without the
+      // package permission, and no session field until one actually exists.
+      const publishedContext = (input) => {
+        const context = structuredClone(input);
+        if (!panelPermissions.includes("context.session") || typeof context.sessionId !== "string" || !context.sessionId) {
+          delete context.sessionId;
+          delete context.busy;
+        }
+        return context;
+      };
       let nextProcess = 0;
       window.__panelTools = {};
       window.__calls = [];
@@ -106,7 +119,8 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         path: "/fixture/second",
       };
       window.__emit = (name, payload) => {
-        for (const handler of handlers[name] || []) handler(structuredClone(payload));
+        for (const handler of handlers[name] || [])
+          handler(name === "context.changed" ? publishedContext(payload) : structuredClone(payload));
       };
       window.__hostStorage = {};
       window.__hostStorageRevision = 0;
@@ -161,7 +175,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
             await new Promise((resolve) => setTimeout(resolve, 0));
             window.__emit("context.changed", ai.contextBeforeInitial);
           }
-          return initial;
+          return publishedContext(initial);
         },
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
@@ -354,7 +368,7 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         },
       };
     },
-    { projectDirectoryError, ai },
+    { projectDirectoryError, ai, panelPermissions },
   );
   await page.goto(baseUrl);
   await page.waitForFunction((projectDirectoryError) => {
@@ -459,6 +473,34 @@ test("a context event during initial loading remains authoritative", async (t) =
   await addDownload(page, firstUrl, { start: false });
   assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
   assert.equal(await page.evaluate(() => window.__hostStorage["video-download.library.v2"].queue.length), 1);
+});
+
+
+test("the first real session can join a project; the next session invalidates its open page", async (t) => {
+  const page = await openPanel(t, 390, "", 1, {
+    versionedStorage: true,
+    initialContext: { sessionId: null, host: "hub" },
+  });
+  await addDownload(page, firstUrl, { start: false });
+  await page.evaluate(() => window.__emit("context.changed", {
+    cwd: "/fixture/project", sessionId: "created-session", host: "hub",
+  }));
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
+  await addDownload(page, secondUrl, { start: false });
+  assert.equal(await page.evaluate(() => window.__hostStorage["video-download.library.v2"].queue.length), 2);
+  await page.evaluate(() => {
+    window.__calls = [];
+    window.__emit("context.changed", {
+      cwd: "/fixture/project", sessionId: "different-session", host: "hub",
+    });
+  });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), true);
+  assert.equal(await page.locator("#download-button").isDisabled(), true);
+  assert.equal(await page.evaluate(async () => {
+    try { await window.__panelTools.start_video_download(); }
+    catch (error) { return error.code; }
+  }), "PROJECT_CHANGED");
+  assert.deepEqual(await page.evaluate(() => window.__calls), []);
 });
 
 async function addDownload(page, url, { start = true } = {}) {

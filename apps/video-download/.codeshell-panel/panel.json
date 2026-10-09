@@ -19,6 +19,7 @@
     "agent.task",
     "storage",
     "context.workspace",
+    "context.session",
     "external.open"
   ],
   "agent": {
