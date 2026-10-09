@@ -1,4 +1,5 @@
 import { supportsHostMethod, resumeFileAction } from "./host-capabilities.mjs";
+import { DISCOVERY_AUTOMATION_KEY, discoveryAutomationMethod, readDiscoveryAutomation, saveDiscoveryAutomationTask, controlDiscoveryAutomationTask } from "./discovery-automation.mjs";
 import { downloadResumeMarkdown, browseResumeDirectory, closeResumeDirectories } from "./resume-file-browser.mjs";
 import { supportsInterviewAudioTasks } from "./interview-audio-tasks.mjs";
 import { createInterviewAudioUI } from "./interview-audio-ui.mjs";
@@ -159,7 +160,7 @@ const STORAGE_KEY = "job-hunt-state-v1";
 const CRITICAL_DRAFT_STORAGE_KEY = LEGACY_DRAFT_KEY;
 const PREVIEW_PREFIX = "codeshell-job-hunt-hq:";
 const PROJECT_STATE_PATH = "job-hunt-panel.json";
-const DISCOVERY_AUTOMATION_MARKER = "job-hunt-hq:scheduled-discovery:v1";
+const DISCOVERY_AUTOMATION_MARKER = DISCOVERY_AUTOMATION_KEY;
 const PROJECT_SHARD_HOST_CALL_BATCH = 12;
 const PROJECT_SHARD_HOST_CALL_PAUSE_MS = 10_100;
 const PANEL_AUDIO_API_VERSION = 6;
@@ -1000,6 +1001,7 @@ const elements = {
   runDiscoveryAutomation: document.querySelector("#run-discovery-automation"),
   deleteDiscoveryAutomation: document.querySelector("#delete-discovery-automation"),
   discoveryAutomationDetail: document.querySelector("#discovery-automation-detail"),
+  reloadDiscoveryAutomation: document.querySelector("#reload-discovery-automation"),
   jdInboxPanel: document.querySelector("#jd-inbox-panel"),
   jdInboxTotal: document.querySelector("#jd-inbox-total"),
   jdInboxPending: document.querySelector("#jd-inbox-pending"),
@@ -1533,6 +1535,7 @@ let discoveryAutomation = null;
 let discoveryAutomationLoaded = false;
 let discoveryAutomationLoading = false;
 let discoveryAutomationActionPending = false;
+let discoveryAutomationError = "";
 let scheduledReceiptImportPending = false;
 let pendingDeleteJobId = "";
 let pendingJdFiles = [];
@@ -2173,6 +2176,7 @@ function updateContext(next) {
     discoveryAutomationLoaded = false;
     discoveryAutomationLoading = false;
     discoveryAutomationActionPending = false;
+    discoveryAutomationError = "";
     activeChannelLoginProviderId = "";
     resumeMarkdownArtifacts = [];
     resumeMarkdownDiscoveryCwd = "";
@@ -6567,26 +6571,27 @@ function scheduledDiscoveryPrompt(count) {
 function renderDiscoveryAutomation() {
   if (!elements.discoveryAutomationPanel) return;
   const listReady = supportsHostMethod(context, "automations.list");
-  const saveMethod = discoveryAutomation ? "automations.update" : "automations.create";
+  const saveMethod = discoveryAutomationMethod(context, discoveryAutomation ? "update" : "create");
   const apiReady = listReady && supportsHostMethod(context, saveMethod);
   const projectReady = currentProjectBootstrapStatus().state === "ready" && Boolean(context.cwd);
   const readyProviders = scheduledDiscoveryProviders();
   const busy = discoveryAutomationActionPending || discoveryAutomationLoading;
-  const canConfigure = apiReady && projectReady && readyProviders.length > 0 && !busy;
+  const readReady = discoveryAutomationLoaded && !discoveryAutomationError;
+  const canConfigure = apiReady && projectReady && readyProviders.length > 0 && readReady && !busy;
   for (const control of elements.discoveryAutomationForm.elements) control.disabled = !canConfigure;
 
-  if (!apiReady) {
-    elements.discoveryAutomationStatus.textContent = listReady ? "当前项目不能修改定时任务" : "当前项目不提供定时抓取";
-    elements.discoveryAutomationDetail.textContent = "仍可按当前关键词手动搜索岗位；已有项目资料和 JD 导入继续可用。";
-  } else if (!projectReady) {
-    elements.discoveryAutomationStatus.textContent = "等待项目初始化";
-    elements.discoveryAutomationDetail.textContent = "先初始化求职数据项目，再开启定时抓取。";
-  } else if (!readyProviders.length) {
-    elements.discoveryAutomationStatus.textContent = "没有可用渠道";
-    elements.discoveryAutomationDetail.textContent = "先把至少一个启用渠道连接到“已登录，可抓取”。";
-  } else if (discoveryAutomationLoading) {
+  if (listReady && discoveryAutomationLoading) {
     elements.discoveryAutomationStatus.textContent = "正在读取任务";
     elements.discoveryAutomationDetail.textContent = "正在从 CodeShell 同步当前项目的定时任务。";
+  } else if (listReady && discoveryAutomationError) {
+    elements.discoveryAutomationStatus.textContent = "需要重新读取任务";
+    elements.discoveryAutomationDetail.textContent = discoveryAutomationError;
+  } else if (!apiReady) {
+    elements.discoveryAutomationStatus.textContent = listReady ? "当前项目不能修改定时任务" : "当前项目不提供定时抓取";
+    elements.discoveryAutomationDetail.textContent = "仍可按当前关键词手动搜索岗位；已有项目资料和 JD 导入继续可用。";
+  } else if (!discoveryAutomationLoaded) {
+    elements.discoveryAutomationStatus.textContent = "等待读取任务";
+    elements.discoveryAutomationDetail.textContent = "先读取当前项目的定时任务，再配置抓取。";
   } else if (discoveryAutomation) {
     elements.discoveryAutomationStatus.textContent = discoveryAutomation.enabled
       ? "运行中"
@@ -6595,6 +6600,14 @@ function renderDiscoveryAutomation() {
       ? formatDate(discoveryAutomation.nextRun)
       : "等待排期";
     elements.discoveryAutomationDetail.textContent = `${readyProviders.length} 个可用渠道 · 下次 ${nextRun} · 已运行 ${discoveryAutomation.runCount || 0} 次`;
+    if (discoveryAutomation.disabledReason)
+      elements.discoveryAutomationDetail.textContent += ` 停止原因：${discoveryAutomation.disabledReason}。继续或再次运行前，请先核对项目中的 career-data/discovery/runs/ 结果收据。`;
+  } else if (!projectReady) {
+    elements.discoveryAutomationStatus.textContent = "等待项目初始化";
+    elements.discoveryAutomationDetail.textContent = "先初始化求职数据项目，再开启定时抓取。";
+  } else if (!readyProviders.length) {
+    elements.discoveryAutomationStatus.textContent = "没有可用渠道";
+    elements.discoveryAutomationDetail.textContent = "先把至少一个启用渠道连接到“已登录，可抓取”。";
   } else {
     elements.discoveryAutomationStatus.textContent = "尚未开启";
     elements.discoveryAutomationDetail.textContent = `${readyProviders.length} 个渠道已可用；任务会继续当前求职 Session 并复用其浏览器登录态。`;
@@ -6608,8 +6621,17 @@ function renderDiscoveryAutomation() {
   for (const [button, method] of [
     [elements.toggleDiscoveryAutomation, discoveryAutomation?.enabled ? "automations.pause" : "automations.resume"],
     [elements.runDiscoveryAutomation, "automations.runNow"],
-    [elements.deleteDiscoveryAutomation, "automations.delete"],
-  ]) button.disabled = busy || !supportsHostMethod(context, method);
+    [elements.deleteDiscoveryAutomation, discoveryAutomationMethod(context, "delete")],
+  ]) button.disabled = busy || !readReady || !context.cwd || !supportsHostMethod(context, method);
+  elements.reloadDiscoveryAutomation.disabled = busy || !listReady || !context.cwd;
+  const legacyMutations = ["create", "update", "delete"].some(action => {
+    const method = discoveryAutomationMethod(context, action);
+    return method === `automations.${action}` && supportsHostMethod(context, method);
+  });
+  if (apiReady && readReady && !busy && legacyMutations)
+    elements.discoveryAutomationDetail.textContent += " 当前 Host 仅支持读取后核对，不能保证并发保护；请避免多端同时修改任务。";
+  else if (apiReady && readReady && !busy && discoveryAutomation)
+    elements.discoveryAutomationDetail.textContent += " 暂停、继续和立即运行需避免多端同时操作。";
   const manual = document.querySelector("#manual-discovery-fallback");
   manual.hidden = apiReady;
   manual.disabled = Boolean(context.busy);
@@ -6619,18 +6641,14 @@ async function loadDiscoveryAutomation({ force = false } = {}) {
   if (state.activeView !== "channels" || !supportsHostMethod(context, "automations.list") || !context.cwd)
     return;
   if (!force && discoveryAutomationLoaded) return;
-  if (discoveryAutomationLoading) return;
+  if (discoveryAutomationLoading || discoveryAutomationActionPending) return;
   const scope = currentProject();
   discoveryAutomationLoading = true;
   renderDiscoveryAutomation();
   try {
-    const result = await scope.call("automations.list", {});
-    const automations = Array.isArray(result?.automations) ? result.automations : [];
-    discoveryAutomation =
-      automations.find((automation) =>
-        String(automation?.prompt || "").includes(DISCOVERY_AUTOMATION_MARKER),
-      ) || null;
+    discoveryAutomation = await readDiscoveryAutomation(scope.call);
     discoveryAutomationLoaded = true;
+    discoveryAutomationError = "";
     if (discoveryAutomation) {
       const schedule = parseDiscoveryAutomationSchedule(discoveryAutomation.schedule);
       if (schedule) {
@@ -6643,9 +6661,7 @@ async function loadDiscoveryAutomation({ force = false } = {}) {
   } catch (error) {
     if (!scope.active()) return;
     discoveryAutomationLoaded = true;
-    discoveryAutomation = null;
-    elements.discoveryAutomationDetail.textContent =
-      error instanceof Error ? error.message : "定时任务读取失败";
+    discoveryAutomationError = error instanceof Error ? error.message : "定时任务读取失败，请重新读取。";
   } finally {
     if (!scope.active()) return;
     discoveryAutomationLoading = false;
@@ -6654,8 +6670,9 @@ async function loadDiscoveryAutomation({ force = false } = {}) {
 }
 
 async function saveDiscoveryAutomation() {
-  if (discoveryAutomationActionPending) return;
-  const method = discoveryAutomation ? "automations.update" : "automations.create";
+  if (discoveryAutomationActionPending || discoveryAutomationLoading || !discoveryAutomationLoaded || discoveryAutomationError) return;
+  if (!context.cwd || currentProjectBootstrapStatus().state !== "ready") return notify("先初始化当前求职项目，再保存定时抓取。", "error");
+  const method = discoveryAutomationMethod(context, discoveryAutomation ? "update" : "create");
   if (!supportsHostMethod(context, method)) return notify("当前项目不能保存定时任务，可使用手动搜索岗位。", "error");
   const providers = scheduledDiscoveryProviders();
   if (!providers.length) return notify("先连接至少一个启用渠道", "error");
@@ -6670,25 +6687,18 @@ async function saveDiscoveryAutomation() {
   discoveryAutomationActionPending = true;
   renderDiscoveryAutomation();
   try {
-    discoveryAutomation = discoveryAutomation
-      ? await scope.call("automations.update", {
-          id: discoveryAutomation.id,
-          name: `求职作战室 · ${state.discoveryPreferences.keyword || "定时找岗位"}`,
-          schedule,
-          prompt,
-          timezone,
-        })
-      : await scope.call("automations.create", {
-          name: `求职作战室 · ${state.discoveryPreferences.keyword || "定时找岗位"}`,
-          schedule,
-          prompt,
-          timezone,
-        });
+    discoveryAutomation = await saveDiscoveryAutomationTask(scope.call, context, discoveryAutomation, {
+      name: `求职作战室 · ${state.discoveryPreferences.keyword || "定时找岗位"}`,
+      schedule,
+      prompt,
+      timezone,
+    });
     discoveryAutomationLoaded = true;
     notify("定时抓取已保存到当前求职项目", "success");
   } catch (error) {
     if (!scope.active()) return;
-    notify(error instanceof Error ? error.message : "定时抓取保存失败", "error");
+    discoveryAutomationError = error instanceof Error ? error.message : "定时抓取保存失败，请重新读取。";
+    notify(discoveryAutomationError, "error");
   } finally {
     if (!scope.active()) return;
     discoveryAutomationActionPending = false;
@@ -6697,7 +6707,7 @@ async function saveDiscoveryAutomation() {
 }
 
 async function controlDiscoveryAutomation(action) {
-  if (!discoveryAutomation || discoveryAutomationActionPending) return;
+  if (!discoveryAutomation || discoveryAutomationActionPending || discoveryAutomationLoading || !discoveryAutomationLoaded || discoveryAutomationError) return;
   if (
     action === "delete" &&
     !window.confirm("删除这个项目的定时岗位抓取任务？已收集的 JD 不会删除。")
@@ -6707,33 +6717,29 @@ async function controlDiscoveryAutomation(action) {
   discoveryAutomationActionPending = true;
   renderDiscoveryAutomation();
   try {
-    const method =
+    const operation =
       action === "toggle"
         ? discoveryAutomation.enabled
-          ? "automations.pause"
-          : "automations.resume"
+          ? "pause"
+          : "resume"
         : action === "run"
-          ? "automations.runNow"
-          : "automations.delete";
-    if (!supportsHostMethod(context, method)) throw new Error("当前项目不提供这个定时任务操作。");
-    await scope.call(method, { id: discoveryAutomation.id });
-    if (action === "delete") discoveryAutomation = null;
-    else if (action === "toggle") {
-      discoveryAutomation = { ...discoveryAutomation, enabled: !discoveryAutomation.enabled };
-    }
+          ? "runNow"
+          : "delete";
+    discoveryAutomation = await controlDiscoveryAutomationTask(scope.call, context, discoveryAutomation, operation);
     notify(
       action === "run"
         ? "已启动一次岗位抓取"
         : action === "delete"
           ? "已删除定时抓取任务"
-          : discoveryAutomation.enabled
-            ? "已继续定时抓取"
-            : "已暂停定时抓取",
+          : operation === "resume"
+            ? "已请求继续定时抓取，并重新读取当前状态"
+            : "已请求暂停定时抓取，并重新读取当前状态",
       "success",
     );
   } catch (error) {
     if (!scope.active()) return;
-    notify(error instanceof Error ? error.message : "定时任务操作失败", "error");
+    discoveryAutomationError = error instanceof Error ? error.message : "定时任务操作失败，请重新读取。";
+    notify(discoveryAutomationError, "error");
   } finally {
     if (!scope.active()) return;
     discoveryAutomationActionPending = false;
@@ -15945,6 +15951,9 @@ function bindEvents() {
   elements.discoveryAutomationForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void saveDiscoveryAutomation();
+  });
+  elements.reloadDiscoveryAutomation.addEventListener("click", () => {
+    void loadDiscoveryAutomation({ force: true });
   });
   elements.toggleDiscoveryAutomation.addEventListener("click", () => {
     void controlDiscoveryAutomation("toggle");

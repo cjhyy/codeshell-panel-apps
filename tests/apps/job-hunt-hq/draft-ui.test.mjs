@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { resolve, extname, sep } from 'node:path';
 import { chromium } from 'playwright';
 import { createHash } from 'node:crypto';
+import { createDiscoveryAutomationHost } from './fixtures/discovery-automation-host.mjs';
 import { prepareProjectSnapshotDocuments, hydrateProjectSnapshotDocuments } from '../../../apps/job-hunt-hq/app/snapshot-sharding-model.mjs';
 const root = fileURLToPath(new URL('../../../apps/job-hunt-hq/app/', import.meta.url));
 let browser, server, url;
@@ -28,8 +29,9 @@ async function fixture(t, options = {}) {
   const context = await browser.newContext({ acceptDownloads: true });
   t.after(() => context.close());
   const page = await context.newPage();
-  const { workspace, ...browserOptions } = options;
+  const { workspace, automationHost, ...browserOptions } = options;
   if (workspace) await page.exposeFunction("__workspace", workspace);
+  if (automationHost) await page.exposeFunction("__automationHost", automationHost);
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   t.after(() => assert.deepEqual(errors, []));
   await page.addInitScript(options => {
@@ -43,6 +45,10 @@ async function fixture(t, options = {}) {
       project.storage['job-hunt-state-v1'] = { localStateVersion: 2,
         interviewDraft: { answer: 'draft-' + id, updatedAt: '2026-01-01T00:00:00Z' },
       };
+      if (options.readyDiscovery) {
+        project.files['CODESHELL.md'] = '# Example project';
+        project.files['job-hunt-panel.json'].channelVerifications = [{ providerId: 'boss', state: 'ready', sessionId: 'session-' + id, verifiedAt: '2026-10-09T00:00:00Z' }];
+      }
       if (options.audioTasks) {
         project.tasks = {}; project.resources = {};
         project.files['job-hunt-panel.json'].questionBank = [{ id: 'question-' + id, question: '请说明项目数据的完整恢复策略？', status: 'ready', type: 'technical', category: '系统可靠性', competency: '数据恢复', answerPoints: ['保存', '校验', '恢复'], recommendedAnswer: '先验证完整性，再恢复到明确的目标项目。', sourceRefs: ['user:fixture'] }];
@@ -139,6 +145,7 @@ async function fixture(t, options = {}) {
           const record = await snapshot(project.files, params.path);
           return { revision: record.revision, modifiedAt: 2 };
         }
+        if (method.startsWith('automations.') && window.__automationHost) return window.__automationHost(method, params, id);
         if (method === 'automations.list') return { automations: options.projectAutomations?.[id] || options.automations || [] };
         if (method === 'credentials.cookies.list') return { accounts: options.accounts || [] };
         return null;
@@ -813,6 +820,140 @@ test('a partial automation host can list tasks without sending unsupported contr
   await page.locator('#manual-discovery-fallback').click();
   assert.equal(await page.locator('#agent-dialog').evaluate(dialog => dialog.open), true);
   assert.equal(await page.evaluate(() => window.__fixture.calls.some(call => /^automations\.(create|update|pause|resume|delete|runNow)$/.test(call.method))), false);
+});
+
+const discoveryMethods = ['list', 'create', 'createUnique', 'update', 'updateIfRevision', 'delete', 'deleteIfRevision', 'pause', 'resume', 'runNow'].map(action => 'automations.' + action);
+async function openDiscovery(page) {
+  await ready(page);
+  await page.locator('.side-nav [data-view-target="dashboard"]').click();
+  await page.locator('#view-dashboard [data-view-target="channels"]').click();
+  await page.waitForFunction(() => !document.querySelector('#discovery-automation-status').textContent.includes('正在读取'));
+}
+
+test('failed discovery reads block creation until an explicit read confirms the task list', async t => {
+  const host = createDiscoveryAutomationHost(); host.failRead = true;
+  const page = await fixture(t, { readyDiscovery: true, extraMethods: discoveryMethods, automationHost: host.call });
+  await openDiscovery(page);
+  assert.match(await page.locator('#discovery-automation-status').textContent(), /需要重新读取/);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /scheduler unavailable/);
+  assert.equal(await page.locator('#save-discovery-automation').isDisabled(), true);
+  host.failRead = false;
+  await page.locator('#reload-discovery-automation').click();
+  await page.waitForFunction(() => !document.querySelector('#save-discovery-automation').disabled);
+  assert.equal(host.calls.some(call => call.method !== 'automations.list'), false);
+  await page.locator('#save-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#save-discovery-automation').textContent.includes('更新'));
+  assert.equal(host.tasks.a.length, 1);
+  assert.deepEqual(host.calls.filter(call => call.method !== 'automations.list').map(call => call.method), ['automations.createUnique']);
+});
+
+test('an interrupted schedule remains readable and deletable before project initialization', async t => {
+  const host = createDiscoveryAutomationHost({ a: [{ id: 'interrupted', name: 'scheduled JD', schedule: '0 9 * * *', prompt: 'job-hunt-hq:scheduled-discovery:v1', timezone: 'UTC', enabled: false, disabledReason: 'Previous execution was interrupted; inspect its results before resuming' }] });
+  const page = await fixture(t, { extraMethods: discoveryMethods, automationHost: host.call });
+  await openDiscovery(page);
+  assert.match(await page.locator('#discovery-automation-status').textContent(), /已暂停/);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /Previous execution was interrupted/);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /career-data\/discovery\/runs\//);
+  assert.equal(await page.locator('#save-discovery-automation').isDisabled(), true);
+  assert.equal(await page.locator('#reload-discovery-automation').isDisabled(), false);
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#delete-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#discovery-automation-actions').hidden);
+  assert.equal(host.tasks.a.length, 0);
+  assert.equal(host.calls.some(call => ['automations.resume', 'automations.runNow'].includes(call.method)), false);
+});
+
+test('two discovery pages use one stable creation key and keep a peer edit through conflict and reload', async t => {
+  const host = createDiscoveryAutomationHost();
+  const options = { readyDiscovery: true, extraMethods: discoveryMethods, automationHost: host.call };
+  const first = await fixture(t, options), second = await fixture(t, options);
+  await openDiscovery(first); await openDiscovery(second);
+  for (const page of [first, second]) await page.evaluate(() => { window.__fixture.hold = 'automations.createUnique'; });
+  await first.locator('#save-discovery-automation').click();
+  await first.waitForFunction(() => Boolean(window.__fixture.release));
+  await second.locator('#save-discovery-automation').click();
+  await second.waitForFunction(() => Boolean(window.__fixture.release));
+  for (const page of [first, second]) await page.evaluate(() => { window.__fixture.hold = null; window.__fixture.release(); });
+  for (const page of [first, second]) await page.waitForFunction(() => !document.querySelector('#save-discovery-automation').disabled && document.querySelector('#save-discovery-automation').textContent.includes('更新'));
+  assert.equal(host.tasks.a.length, 1);
+  const creates = host.calls.filter(call => call.method === 'automations.createUnique');
+  assert.equal(creates.length, 2);
+  assert.equal(creates[0].params.key, creates[1].params.key);
+  await first.locator('#discovery-automation-time').fill('10:15');
+  await first.locator('#save-discovery-automation').click();
+  await first.waitForFunction(() => !document.querySelector('#save-discovery-automation').disabled);
+  await second.locator('#discovery-automation-time').fill('11:30');
+  await second.locator('#save-discovery-automation').click();
+  await second.waitForFunction(() => document.querySelector('#discovery-automation-status').textContent.includes('需要重新读取'));
+  assert.equal(host.tasks.a[0].schedule, '15 10 * * *');
+  assert.equal(await second.locator('#delete-discovery-automation').isDisabled(), true);
+  await second.locator('#reload-discovery-automation').click();
+  await second.waitForFunction(() => !document.querySelector('#save-discovery-automation').disabled);
+  assert.equal(await second.locator('#discovery-automation-time').inputValue(), '10:15');
+  second.once('dialog', dialog => dialog.accept());
+  await second.locator('#delete-discovery-automation').click();
+  await second.waitForFunction(() => document.querySelector('#discovery-automation-actions').hidden);
+  assert.equal(host.tasks.a.length, 0);
+  assert.equal(host.calls.some(call => ['automations.create', 'automations.update', 'automations.delete'].includes(call.method)), false);
+});
+
+test('lost discovery create and manual-run replies recover by reading without replaying either action', async t => {
+  const host = createDiscoveryAutomationHost(); host.loseResponse = 'automations.createUnique';
+  const page = await fixture(t, { readyDiscovery: true, extraMethods: discoveryMethods, automationHost: host.call });
+  await openDiscovery(page);
+  await page.locator('#save-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#discovery-automation-status').textContent.includes('需要重新读取'));
+  assert.equal(host.tasks.a.length, 1);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /不会自动重发/);
+  await page.locator('#reload-discovery-automation').click();
+  await page.waitForFunction(() => !document.querySelector('#run-discovery-automation').disabled);
+  host.loseResponse = 'automations.runNow';
+  await page.locator('#run-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#discovery-automation-status').textContent.includes('需要重新读取'));
+  assert.equal(host.tasks.a[0].runCount, 1);
+  assert.equal(await page.locator('#run-discovery-automation').isDisabled(), true);
+  await page.locator('#reload-discovery-automation').click();
+  await page.waitForFunction(() => !document.querySelector('#run-discovery-automation').disabled);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /已运行 1 次/);
+  assert.equal(host.calls.filter(call => call.method === 'automations.createUnique').length, 1);
+  assert.equal(host.calls.filter(call => call.method === 'automations.runNow').length, 1);
+});
+
+test('legacy discovery controls clearly degrade and refuse changes from a stale page', async t => {
+  const host = createDiscoveryAutomationHost();
+  const page = await fixture(t, { readyDiscovery: true, extraMethods: discoveryMethods.filter(method => !/Unique|IfRevision/u.test(method)), automationHost: host.call });
+  await openDiscovery(page);
+  assert.match(await page.locator('#discovery-automation-detail').textContent(), /不能保证并发保护/);
+  await page.locator('#save-discovery-automation').click();
+  await page.waitForFunction(() => !document.querySelector('#toggle-discovery-automation').disabled);
+  await page.locator('#toggle-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#toggle-discovery-automation').textContent === '继续');
+  assert.equal(host.tasks.a[0].enabled, false);
+  host.tasks.a[0].schedule = '30 12 * * *';
+  await page.locator('#toggle-discovery-automation').click();
+  await page.waitForFunction(() => document.querySelector('#discovery-automation-status').textContent.includes('需要重新读取'));
+  assert.equal(host.tasks.a[0].enabled, false);
+  assert.equal(host.calls.some(call => call.method === 'automations.resume'), false);
+  await page.locator('#reload-discovery-automation').click();
+  await page.waitForFunction(() => !document.querySelector('#toggle-discovery-automation').disabled);
+  assert.equal(await page.locator('#discovery-automation-time').inputValue(), '12:30');
+});
+
+test('a discovery write finishing after a same-path Session switch cannot set the new project task', async t => {
+  const host = createDiscoveryAutomationHost();
+  const page = await fixture(t, { readyDiscovery: true, extraMethods: discoveryMethods, automationHost: host.call });
+  await openDiscovery(page);
+  await page.evaluate(() => { window.__fixture.hold = 'automations.createUnique'; });
+  await page.locator('#save-discovery-automation').click();
+  await page.waitForFunction(() => Boolean(window.__fixture.release));
+  await page.evaluate(() => { window.__oldCreateRelease = window.__fixture.release; window.__fixture.hold = null; window.__fixture.switch('b'); });
+  await openDiscovery(page);
+  await page.evaluate(() => window.__oldCreateRelease());
+  await page.waitForFunction(() => !document.querySelector('#save-discovery-automation').disabled);
+  assert.equal(await page.locator('#discovery-automation-actions').isVisible(), false);
+  assert.equal(host.tasks.a.length, 1);
+  assert.equal(host.tasks.b.length, 0);
+  assert.equal(host.calls.some(call => call.project === 'b' && call.method !== 'automations.list'), false);
 });
 
 test('Web delivery files download exact Markdown bytes and browse their project directory', async t => {

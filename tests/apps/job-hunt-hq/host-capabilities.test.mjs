@@ -13,6 +13,11 @@ test("a modern bridge and web host never guess desktop-only methods", () => {
 test("explicit permission denial takes precedence over advertised methods", () => {
   assert.equal(supportsHostMethod({ permissions: [], availableMethods: ["automations.create"] }, "automations.create"), false);
   assert.equal(supportsHostMethod({ permissions: ["automations.manage"], availableMethods: ["automations.create"] }, "automations.create"), true);
+  for (const method of ["automations.createUnique", "automations.updateIfRevision", "automations.deleteIfRevision"]) {
+    assert.equal(supportsHostMethod({ permissions: [], availableMethods: [method] }, method), false);
+    assert.equal(supportsHostMethod({ permissions: ["automations.manage"], availableMethods: [method] }, method), true);
+    assert.equal(supportsHostMethod({ apiVersion: 99 }, method), false);
+  }
 });
 test("legacy desktop methods retain their historical minimum versions", () => {
   assert.equal(supportsHostMethod({ apiVersion: 4 }, "credentials.cookies.restore"), true);
