@@ -354,6 +354,23 @@ minimum version). Storage alone does not create durable tasks; the background in
 requires additional Host capabilities. Full mobile/cloud workflow acceptance
 remains separate work.
 
+### Project and session changes
+
+Changing the execution binding stops the open page's new saves, downloads, AI
+requests and file actions. This also detects two cloud projects using the same
+`/workspace` path when their session changes. A persistent notice keeps unsaved
+links available to copy; reopen the Panel to load the current project's records.
+Returning to the original session does not reactivate the old page or its delayed
+requests. Accepted background tasks remain with the original project; check them
+there before deciding to retry.
+
+The public Host context exposes the directory, session and host kind, without a
+stable project or execution-environment ID. Session changes therefore invalidate
+this page's execution binding even within one project. They do not change storage
+keys or saved data: reopening the same project in another session reads the same
+queue and history. Hosts omitting session information can only be checked using
+the context fields they expose. No Host permissions or package version change.
+
 ### Background queue and selected accounts (development build)
 
 The package declares `download-runtime` and the `resources` permission for

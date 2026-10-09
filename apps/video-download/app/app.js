@@ -15,6 +15,7 @@ import {
   configurationKey,
 } from "./download-library.js";
 import { createProjectStorage } from "./project-storage.js";
+import { createProjectBinding } from "./project-binding.js";
 import { createLibraryProcess } from "./library-process.js";
 import { mountVideoSearch, normalizeVideoSearchUrl } from "./video-search.js";
 import {
@@ -25,7 +26,10 @@ import {
   shouldOfferSetup,
 } from "./version.js";
 
-const panel = window.codeshellPanel;
+const projectBinding = window.codeshellPanel
+  ? createProjectBinding(window.codeshellPanel, { onInvalidated: invalidateProjectBinding })
+  : null;
+const panel = projectBinding?.panel;
 const previewMode = !panel;
 
 const elements = {
@@ -651,7 +655,8 @@ function reportLibraryError(error) {
   renderQueue();
 }
 
-function saveLibrary() {
+async function saveLibrary() {
+  projectBinding?.assertCurrent();
   if (!libraryReady) return Promise.resolve();
   let snapshot;
   try {
@@ -710,6 +715,7 @@ async function loadLibrary() {
       );
     }
     document.querySelector("#queue-concurrency").value = String(maxConcurrent);
+    projectBinding?.assertCurrent();
     libraryReady = true;
     libraryStatus.textContent = downloadQueue.some((item) =>
       ["paused", "restored", "interrupted"].includes(item.status),
@@ -1994,14 +2000,21 @@ function currentConfiguration() {
   };
 }
 
+function invalidateProjectBinding(message) {
+  libraryReady = false;
+  queuePaused = true;
+  durableDownloads?.close();
+  clearInterval(durableTimer);
+  clearTimeout(cookieReloadTimer);
+  cookieRequestId++;
+  videoSearch.destroy();
+  const notice = document.querySelector("#project-binding-notice");
+  notice.hidden = false;
+  notice.textContent = message;
+  libraryStatus.textContent = message;
+}
+
 function updateSessionContext(next) {
-  if (libraryReady && context.cwd && next?.cwd && next.cwd !== context.cwd) {
-    libraryReady = false;
-    queuePaused = true;
-    durableDownloads?.close();
-    clearInterval(durableTimer);
-    libraryStatus.textContent = "项目已变化，请重新打开面板载入该项目的下载记录。";
-  }
   context = { ...context, ...(next || {}) };
   updateActionAvailability();
 }
@@ -2412,6 +2425,12 @@ function updateActionAvailability() {
   renderSetupCard();
   renderVersionInfo();
   updateQueueControls();
+  if (projectBinding?.invalidated) {
+    document.querySelector("#download-readiness").textContent =
+      document.querySelector("#project-binding-notice").textContent;
+    for (const control of document.querySelectorAll("button:not(.panel-tab), select"))
+      control.disabled = true;
+  }
 }
 
 function updateDownloadAvailability() {

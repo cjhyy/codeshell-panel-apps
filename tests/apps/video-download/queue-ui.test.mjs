@@ -126,35 +126,43 @@ async function openPanel(t, width = 1280, projectDirectoryError = "", concurrenc
         );
       }
       window.codeshellPanel = {
-        getContext: async () => ({
-          apiVersion: 10,
-          theme: "light",
-          ...(ai.durable
-            ? {
-                cwd: "/fixture/project",
-                availableMethods: [
-                  "tasks.find",
-                  ...(ai.taskCookies ? ["credentials.cookies.listForTask"] : []),
-                  ...(ai.processCookies ? ["credentials.cookies.authorizeProcess"] : []),
-                ],
-                capabilities: {
-                  process: { cookieCredentials: ai.processCookies === true },
-                  tasks: {
-                    directoryBookmarks: true,
-                    queueControl: true,
-                    maxConcurrent: 2,
-                    cookieCredentials: ai.taskCookies === true,
+        getContext: async () => {
+          const initial = {
+            apiVersion: 10,
+            theme: "light",
+            ...(ai.durable
+              ? {
+                  cwd: "/fixture/project",
+                  availableMethods: [
+                    "tasks.find",
+                    ...(ai.taskCookies ? ["credentials.cookies.listForTask"] : []),
+                    ...(ai.processCookies ? ["credentials.cookies.authorizeProcess"] : []),
+                  ],
+                  capabilities: {
+                    process: { cookieCredentials: ai.processCookies === true },
+                    tasks: {
+                      directoryBookmarks: true,
+                      queueControl: true,
+                      maxConcurrent: 2,
+                      cookieCredentials: ai.taskCookies === true,
+                    },
                   },
-                },
-              }
-            : {}),
-          ...(ai.versionedStorage
-            ? {
-                cwd: "/fixture/project",
-                availableMethods: ["storage.getSnapshot", "storage.compareAndSet", ...(ai.durable ? ["tasks.find"] : [])],
-              }
-            : {}),
-        }),
+                }
+              : {}),
+            ...(ai.versionedStorage
+              ? {
+                  cwd: "/fixture/project",
+                  availableMethods: ["storage.getSnapshot", "storage.compareAndSet", ...(ai.durable ? ["tasks.find"] : [])],
+                }
+              : {}),
+            ...(ai.initialContext || {}),
+          };
+          if (ai.contextBeforeInitial) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            window.__emit("context.changed", ai.contextBeforeInitial);
+          }
+          return initial;
+        },
         registerTool(name, handler) {
           window.__panelTools[name] = handler;
           return () => {};
@@ -376,6 +384,82 @@ async function downloadForm(page) {
     await page.locator('[data-tab="download"]').click();
   }
 }
+
+test("same-path session changes preserve links and stop the old page even after switching back", async (t) => {
+  const page = await openPanel(t, 390, "", 1, {
+    versionedStorage: true,
+    initialContext: { sessionId: "project-a-session", host: "hub" },
+  });
+  await addDownload(page, firstUrl, { start: false });
+  await page.locator("#url-input").fill(secondUrl);
+  const stored = await page.evaluate(() => structuredClone(window.__hostStorage));
+  await page.evaluate(() => {
+    window.__calls = [];
+    window.__emit("context.changed", {
+      cwd: "/fixture/project", sessionId: "project-b-session", host: "hub",
+    });
+    window.__emit("context.changed", {
+      cwd: "/fixture/project", sessionId: "project-a-session", host: "hub",
+    });
+  });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), true);
+  assert.equal(await page.locator("#url-input").inputValue(), secondUrl);
+  assert.equal(await page.locator("#download-button").isDisabled(), true);
+  assert.equal(await page.locator("#inspect-button").isDisabled(), true);
+  assert.match(await page.locator("#queue-list").innerText(), /待开始/);
+  const toolCode = await page.evaluate(async () => {
+    try { await window.__panelTools.start_video_download(); }
+    catch (error) { return error.code; }
+  });
+  assert.equal(toolCode, "PROJECT_CHANGED");
+  await page.locator('[data-tab="search"]').click();
+  await page.locator('[data-tab="download"]').click();
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), true);
+  assert.deepEqual(await page.evaluate(() => window.__hostStorage), stored);
+  assert.deepEqual(await page.evaluate(() => window.__calls), []);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: resolve(artifacts, "project-binding-390.png"), fullPage: true });
+});
+
+test("a late spawn after A to B to A cannot write records, cancel the new Host, or start the next item", async (t) => {
+  const page = await openPanel(t, 1280, "", 1, {
+    versionedStorage: true,
+    initialContext: { sessionId: "session-a", host: "hub" },
+  });
+  await page.evaluate(() => { window.__holdNextDownload = true; });
+  await page.locator("#url-input").fill([firstUrl, secondUrl].join("\n"));
+  await page.locator("#download-button").click();
+  const [started] = await waitForDownloads(page, 1);
+  await page.evaluate((processId) => {
+    window.__calls = [];
+    window.__emit("context.changed", { cwd: "/fixture/project", sessionId: "session-b" });
+    window.__emit("context.changed", { cwd: "/fixture/project", sessionId: "session-a" });
+    window.__heldSpawns[processId]();
+    window.__emit("process.exit", { processId, code: 0 });
+  }, started.processId);
+  await page.waitForFunction(() => !document.querySelector("#project-binding-notice").hidden);
+  // Flush the spawn receipt and its finally handlers before checking requests.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  assert.deepEqual(await page.evaluate(() => window.__calls), []);
+  assert.equal(await page.evaluate(() => window.__downloads.length), 1);
+});
+
+test("a context event during initial loading remains authoritative", async (t) => {
+  const page = await openPanel(t, 390, "", 1, {
+    versionedStorage: true,
+    initialContext: { sessionId: "old-session", host: "hub" },
+    contextBeforeInitial: { cwd: "/fixture/project", sessionId: "latest-session", host: "hub" },
+  });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
+  // If the late snapshot restored old-session, this identical latest event
+  // would incorrectly invalidate the page and prevent this ordinary save.
+  await page.evaluate(() => {
+    window.__emit("context.changed", { sessionId: "latest-session", visible: true });
+  });
+  await addDownload(page, firstUrl, { start: false });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.__hostStorage["video-download.library.v2"].queue.length), 1);
+});
 
 async function addDownload(page, url, { start = true } = {}) {
   await downloadForm(page);
