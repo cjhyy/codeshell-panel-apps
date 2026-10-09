@@ -145,6 +145,7 @@ export const suites = [
         "tests/video-studio-voice-preparation-ui.test.ts",
         "tests/video-studio-host.test.ts",
         "tests/video-studio-production.test.ts",
+        "tests/video-studio-browser-export.test.ts",
         "tests/video-studio-production-ui.test.ts",
         "tests/video-studio-production-tools.test.ts",
         "tests/video-studio-tts.test.ts",

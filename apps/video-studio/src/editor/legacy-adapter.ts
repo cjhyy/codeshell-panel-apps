@@ -287,7 +287,9 @@ export function projectLegacyView(
                 )
                 .map((clip) => Math.ceil(frames(clip.duration))),
             )
-          : Math.floor(frames(source.duration)),
+          // A sub-frame source still needs a library/cache identity. This is a
+          // display projection; asset-tail below prohibits legacy rendering.
+          : Math.max(1, Math.floor(frames(source.duration))),
       ...(source.width === undefined ? {} : { width: source.width }),
       ...(source.height === undefined ? {} : { height: source.height }),
       ...(source.resourceId === undefined ? {} : { mediaId: source.resourceId }),

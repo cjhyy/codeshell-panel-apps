@@ -231,7 +231,7 @@ async function openPage(t, options = {}) {
                 request.action === "inspect"
                   ? {
                       assetId: asset.id,
-                      inspection: { kind: "audio", durationSeconds: 1, hasAudio: true },
+                      inspection: { kind: "audio", durationSeconds: options.hostRecording.durationSeconds ?? 1, hasAudio: true },
                     }
                   : request.action === "voices"
                     ? { available: false, models: [], voices: [] }
@@ -3763,7 +3763,9 @@ test("cloud recording survives editor save failure and reopening, then attaches 
     "-f",
     "lavfi",
     "-i",
-    "sine=frequency=440:duration=1",
+    "sine=frequency=440:sample_rate=48000",
+    "-af",
+    "atrim=end_sample=10003",
     "-c:a",
     "pcm_s16le",
     path,
@@ -3778,7 +3780,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   };
   const page = await openPage(t, {
     holdProductionInitialize: true,
-    hostRecording: { asset, base64: bytes.toString("base64") },
+    hostRecording: { asset, base64: bytes.toString("base64"), durationSeconds: 10003 / 48000 },
     mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
   });
   await production(page, "recording");
@@ -3826,6 +3828,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
   await page.getByText("录音已加入本工程素材库。", { exact: true }).waitFor();
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
   assert.equal(
     (await saved(page)).assets.find((a) => a.resourceId === asset.id).name,
     "保留的本人录音",
@@ -3843,4 +3846,5 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
 });

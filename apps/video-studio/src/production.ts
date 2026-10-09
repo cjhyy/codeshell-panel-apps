@@ -12,6 +12,7 @@ import {
   type VoiceoverReplaceTarget,
 } from "./editor/voiceover-publication";
 import { MAX_LEGACY_FRAME } from "./editor/legacy-time";
+import { secondsToTicks } from "./editor/time";
 import { audioEnhancementReceipt, type AudioEnhancementResult } from "./editor/audio-enhancement";
 
 export type TranscriptionUnavailableReason =
@@ -161,6 +162,8 @@ export function validateVoicePreparation(value: unknown): VoicePreparation {
   return structuredClone(raw) as unknown as VoicePreparation;
 }
 export interface AssetPublication {
+  /** Exact decoded/native-inspected lengths for newly published sources. */
+  sourceDurations?: Readonly<Record<string, number>>;
   audioPlacement?: {
     clipId: string;
     assetId: string;
@@ -994,7 +997,10 @@ export class ProductionController {
         { assetId: result.asset.id, inspection: result.inspection },
         this.callbacks.getProject(),
       );
-      await this.callbacks.publishAssets(projectId, [asset], { label: "保存录制原片" });
+      await this.callbacks.publishAssets(projectId, [asset], {
+        label: "保存录制原片",
+        ...sourceDuration(asset, result.inspection),
+      });
       // The original is already durable. A preparation failure must not make
       // the user upload that recording again or lose its stable identity.
       await this.prepare([asset.id]).catch((error) => this.reportError(error));
@@ -1057,7 +1063,10 @@ export class ProductionController {
         ...preparedAsset(managed, preparation, this.callbacks.getProject()),
         name: name.trim(),
       };
-      await this.callbacks.publishAssets(projectId, [asset], { label: "保存项目录音" });
+      await this.callbacks.publishAssets(projectId, [asset], {
+        label: "保存项目录音",
+        ...sourceDuration(asset, preparation.inspection),
+      });
       current();
       await this.prepare([asset.id]).catch((error) => this.reportError(error));
       current();
@@ -1671,7 +1680,10 @@ export class ProductionController {
     const preparation = { assetId: managed.id, inspection: result.inspection };
     const asset = preparedAsset(managed, preparation, project);
     this.preparations.set(managed.id, preparation);
-    await this.callbacks.publishAssets(binding.projectId, [asset], { label: "保存声音参考选段" });
+    await this.callbacks.publishAssets(binding.projectId, [asset], {
+      label: "保存声音参考选段",
+      ...sourceDuration(asset, result.inspection),
+    });
     if (this.disposed || this.callbacks.getProject().id !== binding.projectId)
       throw new Error("工程已切换，参考录音任务仍保留，可返回原工程恢复保存。");
     binding.referenceResultId = managed.id;
@@ -1748,10 +1760,15 @@ export class ProductionController {
             continue;
           }
           if (!current()) break;
+          const source = preparedAsset(
+            asset,
+            { assetId: asset.id, inspection },
+            this.callbacks.getProject(),
+          );
           await this.callbacks.publishAssets(
             projectId,
-            [preparedAsset(asset, { assetId: asset.id, inspection }, this.callbacks.getProject())],
-            { label: "原片已持久保存" },
+            [source],
+            { label: "原片已持久保存", ...sourceDuration(source, inspection) },
           );
         }
         if (!current()) continue;
@@ -1799,9 +1816,8 @@ export class ProductionController {
         };
         if (this.disposed || this.callbacks.getProject().id !== projectId) continue;
         this.preparations.set(preparation.assetId, preparation);
-        await this.callbacks.publishAssets(projectId, [
-          preparedAsset(fetched.asset, preparation, this.callbacks.getProject()),
-        ]);
+        const asset = preparedAsset(fetched.asset, preparation, this.callbacks.getProject());
+        await this.callbacks.publishAssets(projectId, [asset], sourceDuration(asset, preparation.inspection));
       } else if (binding.purpose === "scene") {
         const asset = result.asset as ManagedAsset;
         const previous = this.callbacks.getProject().assets.find((a) => a.mediaId === asset.id);
@@ -1950,6 +1966,16 @@ export class ProductionController {
       }
     }
   }
+}
+
+function sourceDuration(
+  asset: Asset,
+  inspection: PreparedMedia["inspection"],
+): Pick<AssetPublication, "sourceDurations"> {
+  if (asset.kind === "image") return {};
+  if (!Number.isFinite(inspection.durationSeconds) || Number(inspection.durationSeconds) <= 0)
+    throw new Error("原始素材没有有效检查时长，原文件已保留，尚未发布工程素材");
+  return { sourceDurations: { [asset.id]: secondsToTicks(Number(inspection.durationSeconds)) } };
 }
 
 export function preparedAsset(
