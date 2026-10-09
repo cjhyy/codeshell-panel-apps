@@ -20,3 +20,7 @@
 Panel App 包不能包含 Skills、Agents、Commands、Hooks、MCP 或普通 Plugin
 manifest。完整格式和 Host API 见
 [CodeShell Panel App 文档](https://github.com/cjhyy/codeshell/blob/main/docs/panel-apps.md)。
+
+模板先订阅项目上下文，再读取初始状态，避免切换项目时被旧响应覆盖。
+工作区路径可悬停查看全文，窄屏不横向溢出；未授权和连接失败分别显示真实状态。
+点击计数只演示当前页面交互，关闭后重置，不申请持久存储权限。

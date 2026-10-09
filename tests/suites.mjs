@@ -2,6 +2,11 @@
 // while their application ownership is explicit here.
 export const suites = [
   {
+    id: "starter",
+    label: "Starter context and narrow-screen interaction",
+    commands: [["--test", "tests/starter-ui.test.mjs"]],
+  },
+  {
     id: "job-hunt-hq",
     label: "Job Hunt HQ project draft persistence",
     commands: [[

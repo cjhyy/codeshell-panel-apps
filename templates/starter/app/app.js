@@ -7,8 +7,9 @@ let clicks = 0;
 
 function renderContext(context) {
   workspace.textContent = context?.cwd || "未绑定项目";
+  workspace.title = context?.cwd || "未绑定项目";
   status.textContent = context?.trusted ? "可信工作区" : "只读上下文";
-  status.dataset.ready = "true";
+  status.dataset.ready = context?.trusted ? "true" : "false";
 }
 
 increment.addEventListener("click", () => {
@@ -16,9 +17,25 @@ increment.addEventListener("click", () => {
   count.textContent = `${clicks} 次点击`;
 });
 
-try {
-  renderContext(await window.codeshellPanel.getContext());
-  window.codeshellPanel.on("context.changed", renderContext);
-} catch {
+const bridge = window.codeshellPanel;
+if (!bridge) {
   renderContext({ cwd: "浏览器预览", trusted: false });
+} else {
+  let contextChanged = false;
+  const unsubscribe = bridge.on("context.changed", (context) => {
+    contextChanged = true;
+    renderContext(context);
+  });
+  window.addEventListener("pagehide", () => unsubscribe(), { once: true });
+  try {
+    const context = await bridge.getContext();
+    // A project selected while discovery was pending owns the current view.
+    if (!contextChanged) renderContext(context);
+  } catch {
+    if (!contextChanged) {
+      workspace.textContent = "无法读取项目，请重新打开面板";
+      status.textContent = "连接失败";
+      status.dataset.ready = "false";
+    }
+  }
 }
