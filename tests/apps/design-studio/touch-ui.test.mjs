@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 const root = fileURLToPath(new URL("../../../apps/design-studio/app/", import.meta.url));
+const diagnostics = new WeakMap();
 
 async function waitForAttribute(page, selector, name, value) {
   try {
@@ -18,7 +19,10 @@ async function waitForAttribute(page, selector, name, value) {
       selector, attribute: name, actual: document.querySelector(selector)?.getAttribute(name),
       workspace: document.querySelector(".workspace")?.className,
       events: window.touchTrace,
+      layout: window.touchLayout(),
+      cancellationFrames: window.touchCancellationFrames,
     }), { selector, name });
+    details.driver = diagnostics.get(page);
     error.message += `\nTouch state did not reach ${JSON.stringify(value)}: ${JSON.stringify(details)}`;
     throw error;
   }
@@ -61,6 +65,12 @@ async function fixture(t, width = 390, touch = true) {
     viewport: { width, height: 844 }, hasTouch: touch, isMobile: touch,
   });
   const page = await context.newPage();
+  const rawInputs = [];
+  diagnostics.set(page, {
+    node: process.version, platform: process.platform, arch: process.arch,
+    nodePid: process.pid, nodePpid: process.ppid, nodeTimeOrigin: performance.timeOrigin,
+    chromium: browser.version(), rawInputs,
+  });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.exposeFunction("hostBridge", async (sessionId, method, params = {}) => {
@@ -94,16 +104,71 @@ async function fixture(t, width = 390, touch = true) {
   await page.addInitScript(() => {
     window.tools = {};
     window.touchTrace = [];
-    for (const name of ["pointerdown", "pointermove", "pointerup", "pointercancel", "touchstart", "touchend", "click"]) {
+    window.touchCancellationFrames = [];
+    const describe = element => element ? {
+      tag: element.tagName, id: element.id, tool: element.dataset?.tool,
+    } : null;
+    const rect = selector => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const box = element.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    };
+    window.touchLayout = () => ({
+      hand: rect('[data-tool="hand"]'), text: rect('[data-tool="text"]'),
+      rail: rect(".toolrail"), stage: rect("#stage"),
+      railScroll: document.querySelector(".toolrail")?.scrollTop,
+      windowScroll: { x: scrollX, y: scrollY },
+      sceneTransform: document.querySelector("#scene")?.getAttribute("transform"),
+      activeElement: describe(document.activeElement),
+      viewport: visualViewport ? {
+        width: visualViewport.width, height: visualViewport.height,
+        offsetTop: visualViewport.offsetTop, offsetLeft: visualViewport.offsetLeft,
+        pageTop: visualViewport.pageTop, pageLeft: visualViewport.pageLeft, scale: visualViewport.scale,
+      } : null,
+    });
+    const append = event => {
+      window.touchTrace.push(event);
+      if (window.touchTrace.length > 80) window.touchTrace.shift();
+    };
+    let cancellationGeneration = 0;
+    const recordCancellationFrames = () => {
+      const generation = ++cancellationGeneration;
+      let remaining = 150;
+      const sample = () => {
+        if (generation !== cancellationGeneration || remaining-- === 0) return;
+        window.touchCancellationFrames.push({ generation, time: performance.now(), layout: window.touchLayout() });
+        if (window.touchCancellationFrames.length > 180) window.touchCancellationFrames.shift();
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    };
+    for (const name of ["pointerdown", "pointermove", "pointerup", "pointercancel", "gotpointercapture", "lostpointercapture", "touchstart", "touchend", "touchcancel", "click"]) {
       document.addEventListener(name, event => {
         const target = event.target.closest?.("button, summary") ?? event.target;
-        window.touchTrace.push({
+        const point = event.changedTouches?.[0] ?? event;
+        const hit = Number.isFinite(point.clientX) && Number.isFinite(point.clientY)
+          ? document.elementFromPoint(point.clientX, point.clientY) : null;
+        append({
           type: event.type, time: performance.now(), target: target.id || target.tagName,
           tool: target.dataset?.tool, trusted: event.isTrusted, pointerType: event.pointerType,
+          pointerId: event.pointerId, isPrimary: event.isPrimary, buttons: event.buttons,
+          coordinates: {
+            clientX: point.clientX, clientY: point.clientY, pageX: point.pageX, pageY: point.pageY,
+            screenX: point.screenX, screenY: point.screenY, radiusX: point.radiusX, radiusY: point.radiusY,
+          },
+          hit: describe(hit?.closest?.("button, summary") ?? hit),
+          layout: event.type === "pointermove" ? undefined : window.touchLayout(),
         });
-        if (window.touchTrace.length > 80) window.touchTrace.shift();
+        if (event.type === "pointercancel") recordCancellationFrames();
       }, true);
     }
+    document.addEventListener("scroll", event => append({
+      type: "scroll", time: performance.now(), target: describe(event.target), layout: window.touchLayout(),
+    }), true);
+    window.addEventListener("resize", () => append({
+      type: "resize", time: performance.now(), layout: window.touchLayout(),
+    }));
     let context = { cwd: "/test-project", trusted: true, busy: false, sessionId: "test", availableMethods: ["storage.getSnapshot", "storage.compareAndSet"] };
     let contextListener;
     window.codeshellPanel = {
@@ -121,10 +186,21 @@ async function fixture(t, width = 390, touch = true) {
   await page.waitForFunction(() => !document.querySelector(".workspace").inert);
   const cdp = await context.newCDPSession(page);
   const sendTouch = async (type, points = []) => {
+    const input = { type, points, nodeStarted: performance.now() };
+    rawInputs.push(input);
+    if (rawInputs.length > 40) rawInputs.shift();
     await cdp.send("Input.dispatchTouchEvent", {
       type, touchPoints: points.map(point => ({ ...point, radiusX: 3, radiusY: 3 })),
     });
-    await page.evaluate(() => new Promise(requestAnimationFrame));
+    input.nodeDispatched = performance.now();
+    // Keep the existing single animation-frame boundary. The snapshots only
+    // diagnose cancelled raw input without another wait or repeated tap.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
+      window.touchCancellationFrames.push({ rawInputFrame: true, time: performance.now(), layout: window.touchLayout() });
+      if (window.touchCancellationFrames.length > 180) window.touchCancellationFrames.shift();
+      resolve();
+    })));
+    input.nodeFrameObserved = performance.now();
   };
   const dragTouch = (start, distance) => cdp.send("Input.synthesizeScrollGesture", {
     x: start.x, y: start.y, xDistance: distance.x, yDistance: distance.y,
