@@ -2,6 +2,7 @@ import { createVoiceWavFixture } from "./helpers/video-studio-voice-wav.mjs";
 import { installGenericMediaTaskMock } from "./helpers/video-studio-generic-task.mjs";
 import {
   enterLegacyProduction,
+  readSavedEditorDocument,
   readSavedLegacyProject,
 } from "./helpers/video-studio-editor-fixture.mjs";
 import assert from "node:assert/strict";
@@ -414,8 +415,8 @@ test(
       await page.locator('[data-tab="media"]').click();
       await page.locator("[data-add-asset]").click();
       await saved(page);
-      const before = await readProject(page);
-      assert.equal(before.clips[0].assetId, asset.id);
+      const before = await readSavedEditorDocument(page);
+      assert.equal(before.sequences[0].clips[0].assetId, asset.id);
       await page.reload();
       await enterLegacyProduction(page);
       await page.locator("#editor-workspace").waitFor({ state: "visible" });
@@ -424,7 +425,7 @@ test(
           document.querySelectorAll(".asset-card").length === 1 &&
           document.querySelectorAll(".asset-card.missing").length === 0,
       );
-      assert.equal((await readProject(page)).clips[0].assetId, asset.id);
+      assert.equal((await readSavedEditorDocument(page)).sequences[0].clips[0].assetId, asset.id);
       assert.equal(
         await page.evaluate(() => window.__deviceRequests.length),
         0,
@@ -476,9 +477,10 @@ test(
         }
       }, bytes.toString("base64"));
       assert.ok(media.rms > 0.001, JSON.stringify(media));
-      assert.ok(Math.abs(media.duration - asset.durationFrames / 30) < 0.35, JSON.stringify(media));
-      assert.equal(media.width, before.width);
-      assert.equal(media.height, before.height);
+      assert.ok(Math.abs(media.duration - before.assets[0].duration / 240000) < 0.35, JSON.stringify(media));
+      assert.equal(media.width, before.sequences[0].width);
+      assert.equal(media.height, before.sequences[0].height);
+      assert.deepEqual(await readSavedEditorDocument(page), before);
     } finally {
       await context.close();
     }

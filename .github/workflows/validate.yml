@@ -93,6 +93,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y ffmpeg
       - run: npm run test:ui:video-studio
+      - name: Retain exact-duration UI media
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-exact-duration-ui
+          path: artifacts/video-studio/exact-browser-duration
+          if-no-files-found: ignore
 
   video-media:
     name: Video Studio media
@@ -110,6 +117,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y ffmpeg
       - run: npm run test:media:video-studio
+      - name: Retain exact-duration encoder media
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-exact-duration-encoder
+          path: artifacts/video-studio/exact-browser-duration
+          if-no-files-found: ignore
 
   design-studio:
     name: Design Studio fidelity

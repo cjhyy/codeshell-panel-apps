@@ -101,7 +101,8 @@ import { createWorkspaceDocumentBridge } from "./workspace-document-bridge";
 import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
-import { formatFrameRate, secondsToTicks } from "./editor/time";
+import { formatFrameRate, secondsToTicks, ticksToSeconds } from "./editor/time";
+import { browserExportReason, recordEditorSequence } from "./editor/browser-export";
 import {
   legacyClipIssue,
   legacyRestrictionReasons,
@@ -598,13 +599,17 @@ const production = new ProductionController(panel, {
     if (!editorSession) throw new Error("工程尚未恢复，已阻止保存");
     // Sources go through the old view (it accepts additions while incomplete); a placement is
     // planned on the editor document, whose real sequence length the old view may not show.
-    const { audioPlacement, ...publicationOptions } = options ?? {};
+    const { audioPlacement, sourceDurations, ...publicationOptions } = options ?? {};
     const publication = publishProductionAssets(project, assets, publicationOptions);
     const session = editorSession,
       identity = session.getState().identity,
       before = session.read();
     let operations = publication.project
-      ? legacyCandidateOperations(publication.project).operations
+      ? legacyCandidateOperations(
+          publication.project,
+          false,
+          new Map(Object.entries(sourceDurations ?? {})),
+        ).operations
       : [];
     let after = applyEditorOperations(before, operations, before.revision),
       notice = publication.notice;
@@ -1097,25 +1102,23 @@ const recording = createRecordingUI({
         revision: project.revision + 1,
         assets: [...project.assets, asset],
       });
-      if (forVoice) {
-        mediaImporting = true;
-        try {
-          await saveProject(savedProject, "保存声音参考", true);
-        } catch (error) {
-          if (
-            imported &&
-            library.items.get(asset.id) === imported &&
-            !project.assets.some((item) => item.id === asset.id)
-          ) {
-            library.release(imported);
-            library.items.delete(asset.id);
-          }
-          throw error;
-        } finally {
-          mediaImporting = false;
+      mediaImporting = true;
+      try {
+        await saveProject(savedProject, forVoice ? "保存声音参考" : "保存录制原片", true);
+      } catch (error) {
+        if (
+          imported &&
+          library.items.get(asset.id) === imported &&
+          !project.assets.some((item) => item.id === asset.id)
+        ) {
+          library.release(imported);
+          library.items.delete(asset.id);
         }
+        throw error;
+      } finally {
+        mediaImporting = false;
       }
-      commit(savedProject, forVoice);
+      commit(savedProject, true);
     }
     await finishSavedRecording(asset, intended, voiceIntent, recordingGeneration);
   },
@@ -1682,7 +1685,11 @@ function legacyCandidateKey(value: Project): string {
   );
 }
 /** Editor operations for an old-view candidate, before the approval guard. */
-function legacyCandidateOperations(next: Project, exactNewAssets = false) {
+function legacyCandidateOperations(
+  next: Project,
+  exactNewAssets = false,
+  inspectedDurations: ReadonlyMap<string, number> = new Map(),
+) {
   if (!editorSession || !legacyView) throw new Error("工程尚未恢复，已阻止修改");
   const validated = validateProject(next);
   if (
@@ -1691,11 +1698,18 @@ function legacyCandidateOperations(next: Project, exactNewAssets = false) {
       legacyCandidateKey(next) !== legacyCandidateKey(project))
   )
     throw new Error("工程版本已变化，请重新读取后编辑");
-  // Folder imports, referenced originals and voice references decode their files in the media
-  // library; publish that exact length instead of the old view's whole 30 fps frames. Other
-  // additions keep whole frames so the browser-only WebM export (which renders the old view)
-  // still includes them in full.
+  // Decoded/native-inspected length is authoritative for new sources. Reconnecting
+  // existing sources never extends historical assets or resets their time maps.
   const assetDurations = new Map<string, number>();
+  for (const [id, duration] of inspectedDurations) {
+    const asset = validated.assets.find((asset) => asset.id === id);
+    if (!asset || asset.kind === "image" || !Number.isSafeInteger(duration) || duration < 1)
+      throw new Error("原始素材检查时长与发布素材不一致，未保存工程");
+    if (editorSession.read().assets.some((asset) => asset.id === id)) continue;
+    if (Math.abs(duration - asset.durationFrames * LEGACY_FRAME_TICKS) >= LEGACY_FRAME_TICKS)
+      throw new Error("原始素材检查时长与发布素材不一致，未保存工程");
+    assetDurations.set(id, duration);
+  }
   for (const asset of exactNewAssets ? validated.assets : []) {
     const seconds = library.items.get(asset.id)?.duration;
     if (
@@ -3320,20 +3334,18 @@ async function importMedia(
   if (added || reconnected) {
     try {
       next.revision++;
-      if (audioReference || fromFolder) {
-        mediaImporting = true;
-        try {
-          await saveProject(
-            validateProject(next),
-            fromFolder ? "导入素材文件夹" : "保存声音参考",
-            true,
-          );
-        } finally {
-          mediaImporting = false;
-        }
-        if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的声音参考");
+      mediaImporting = true;
+      try {
+        await saveProject(
+          validateProject(next),
+          fromFolder ? "导入素材文件夹" : audioReference ? "保存声音参考" : "导入原始素材",
+          true,
+        );
+      } finally {
+        mediaImporting = false;
       }
-      commit(next, audioReference || fromFolder);
+      if (importGeneration !== generation) throw new Error("工程已切换，未关联原工程的素材");
+      commit(next, true);
       editorWorkspace?.refreshMedia();
     } catch (error) {
       releaseBatch();
@@ -3369,6 +3381,9 @@ function quickPlan(): void {
 
 async function exportDialog(): Promise<void> {
   await production.refreshStatus();
+  const document = editorSession?.read(),
+    sequence = document?.sequences.find((sequence) => sequence.id === document.activeSequenceId),
+    browserReason = document && sequence ? browserExportReason(document, sequence.id) : undefined;
   const dialog = $<HTMLDialogElement>("#export-dialog");
   dialog.innerHTML = html`<div class="dialog-heading">
       <div>
@@ -3381,7 +3396,7 @@ async function exportDialog(): Promise<void> {
       <span>${icon("film", 28)}</span>
       <div>
         <strong>${esc(project.name)}</strong>
-        <p>${project.width} × ${project.height} · 30 fps · ${seconds(duration())} 秒</p>
+        <p>${sequence?.width ?? project.width} × ${sequence?.height ?? project.height} · ${sequence ? formatFrameRate(sequence.frameRate) : "30"} fps · ${sequence ? ticksToSeconds(sequenceDuration(sequence)).toFixed(3) : seconds(duration())} 秒</p>
       </div>
     </div>
     ${production.enabled
@@ -3392,6 +3407,7 @@ async function exportDialog(): Promise<void> {
       本地实时编码，耗时接近视频时长。请保持工作台可见。此版本支持 10
       分钟内的序列，不支持关闭面板后后台导出。
     </p>
+    ${browserReason ? `<p role="status">${esc(browserReason)}</p>` : ""}
     <div id="export-progress" hidden>
       <progress max="100" value="0"></progress>
       <p role="status"></p>
@@ -3402,6 +3418,7 @@ async function exportDialog(): Promise<void> {
         "开始导出",
         "upload",
         "primary",
+        Boolean(browserReason),
       )}
     </div>`;
   openDialog(dialog);
@@ -3412,6 +3429,9 @@ async function record(): Promise<void> {
   assertEditable();
   stop();
   const priorFrame = frame;
+  const session = editorSession,
+    identity = session?.getState().identity,
+    snapshot = session?.read();
   const controller = new AbortController();
   exporting = controller;
   const progress = $("#export-progress");
@@ -3425,18 +3445,33 @@ async function record(): Promise<void> {
   document.addEventListener("visibilitychange", cancelWhenHidden);
   try {
     if (document.hidden) throw new Error("请保持工作台可见后再导出");
-    const blob = await recordSequence(
-      structuredClone(project),
-      library,
-      controller.signal,
-      (value) => {
-        const percent = Math.round((value / duration()) * 100);
-        progress.querySelector("progress")!.value = percent;
-        progress.querySelector("p")!.textContent =
-          `正在导出 ${percent}% · ${seconds(value)} / ${seconds(duration())} 秒`;
-      },
-    );
-    download(blob, project.name + ".webm");
+    const showProgress = (value: number, total: number, elapsed: number, secondsTotal: number) => {
+      const percent = Math.round((value / total) * 100);
+      progress.querySelector("progress")!.value = percent;
+      progress.querySelector("p")!.textContent =
+        `正在导出 ${percent}% · ${elapsed.toFixed(2)} / ${secondsTotal.toFixed(2)} 秒`;
+    };
+    const assertCurrent = () => {
+      if (!identity || session !== editorSession || !sameIdentity(identity, session.getState().identity))
+        throw new Error("工程已变化，导出已取消，请读取当前工程后重试");
+    };
+    const blob = snapshot
+      ? await recordEditorSequence({
+          document: snapshot,
+          sequenceId: snapshot.activeSequenceId,
+          resolveAsset: resolveEditorAsset,
+          signal: controller.signal,
+          assertCurrent,
+          onProgress: (value, total) =>
+            showProgress(value, total, ticksToSeconds(value), ticksToSeconds(total)),
+        })
+      : await recordSequence(structuredClone(project), library, controller.signal, (value) =>
+          showProgress(value, duration(), value / 30, duration() / 30),
+        );
+    if (snapshot) assertCurrent();
+    if (document.hidden) controller.abort();
+    if (controller.signal.aborted) throw new DOMException("导出已取消", "AbortError");
+    download(blob, (snapshot?.name ?? project.name) + ".webm");
     progress.querySelector("p")!.textContent =
       `导出完成 · ${(blob.size / 1024 / 1024).toFixed(1)} MB`;
     toast("视频已生成并开始下载");
@@ -4008,7 +4043,7 @@ async function action(name: string, id?: string): Promise<void> {
       break;
     }
     case "export":
-      if (editorWorkspace && (editorTasks || !legacyView?.renderSafe)) {
+      if (editorWorkspace && editorTasks) {
         showEditorWorkspace();
         editorWorkspace.openExport();
         break;
@@ -4021,7 +4056,7 @@ async function action(name: string, id?: string): Promise<void> {
       await exportDialog();
       break;
     case "record":
-      if (legacyView && !legacyView.renderSafe) {
+      if (editorTasks && legacyView && !legacyView.renderSafe) {
         showEditorWorkspace();
         editorWorkspace?.openExport();
         break;

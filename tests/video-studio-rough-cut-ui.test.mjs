@@ -26,7 +26,7 @@ let browser;
 let server;
 let url;
 let directory;
-let sourcePath;
+let sourcePath, frameAlignedAudioPath;
 const managedSources = new Map();
 
 before(async () => {
@@ -38,6 +38,14 @@ before(async () => {
     output = join(isolatedOutput, "app");
   }
   sourcePath = join(directory, "rough-cut-source.mp4");
+  frameAlignedAudioPath = join(directory, "rough-cut-three-frames.wav");
+  const alignedAudio = spawnSync(
+    "ffmpeg",
+    ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+      "-af", "atrim=end_sample=4800", "-c:a", "pcm_s16le", frameAlignedAudioPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(alignedAudio.status, 0, alignedAudio.stderr);
   const generated = spawnSync(
     "ffmpeg",
     [
@@ -846,11 +854,11 @@ test(
   },
 );
 
-async function importedPage() {
+async function importedPage(audioPath = resolve(root, "tests/fixtures/static-tone.wav")) {
   const page = await openPage();
   await page
     .locator("#media-input")
-    .setInputFiles([sourcePath, resolve(root, "tests/fixtures/static-tone.wav")]);
+    .setInputFiles([sourcePath, audioPath]);
   await page.waitForFunction(
     () => window.__roughCutTools.read_video_project().project.assets.length === 2,
   );
@@ -1967,7 +1975,9 @@ test(
   "audio source marks append to independent audio without changing the retained video",
   { timeout: 45_000 },
   async () => {
-    const { page, audio } = await importedPage();
+    // Preserve the original render-safe legacy-debug actions with an actual
+    // whole-frame source; fractional sources are exercised through the canonical UI.
+    const { page, audio } = await importedPage(frameAlignedAudioPath);
     try {
       const before = (await state(page)).project;
       await page.locator(`[data-rough-source="${audio.id}"]`).click();
