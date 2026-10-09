@@ -244,7 +244,11 @@ async function openPage(t, options = {}) {
                 request.action === "inspect"
                   ? {
                       assetId: asset.id,
-                      inspection: options.hostRecording.inspection ?? { kind: "audio", durationSeconds: options.hostRecording.durationSeconds ?? 1, hasAudio: true },
+                      inspection: options.hostRecording.inspection ?? {
+                        kind: "audio",
+                        durationSeconds: options.hostRecording.durationSeconds ?? 1,
+                        hasAudio: true,
+                      },
                     }
                   : request.action === "voices"
                     ? { available: false, models: [], voices: [] }
