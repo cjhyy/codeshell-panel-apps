@@ -6,6 +6,7 @@ import { createBridgeTraffic } from "../apps/video-studio/src/sdk/bridge-traffic
 import { createMediaTaskBridge } from "../apps/video-studio/src/media-task-bridge";
 import { ProductionController } from "../apps/video-studio/src/production";
 import { createProject } from "../apps/video-studio/src/model";
+import videoManifest from "../apps/video-studio/.codeshell-panel/panel.json";
 const hash = (s: string) => `sha256:${createHash("sha256").update(s).digest("hex")}`;
 const sourceId = `asset-${"a".repeat(64)}`;
 function cloud() {
@@ -23,7 +24,9 @@ function cloud() {
       return {
         cwd: "/workspace",
         projectId: state.projectId,
-        sessionId: state.sessionId,
+        ...(videoManifest.permissions.includes("context.session")
+          ? { sessionId: state.sessionId }
+          : {}),
         host: "hub",
         availableMethods: [
           "workspace.list",
@@ -154,6 +157,10 @@ test("cloud preparation needs a document adapter and retains task recipe/results
 });
 
 test("real Host session bindings distinguish cloud projects sharing /workspace", async () => {
+  assert.ok(
+    videoManifest.permissions.includes("context.session"),
+    "Host session IDs require this reviewed permission",
+  );
   const f = cloud();
   f.state.projectId = undefined; // Published Host contexts have no projectId.
   const bridge = createWorkspaceDocumentBridge(f.raw);

@@ -33,7 +33,9 @@ function fixture() {
       calls.push({ method, sessionId });
       return { accepted: true };
     },
-    registerTool() { return () => {}; },
+    registerTool() {
+      return () => {};
+    },
     on(name: string, listener: (value: unknown) => void) {
       if (name === "context.changed") listeners.add(listener);
       return () => listeners.delete(listener);
@@ -59,8 +61,12 @@ function fixture() {
   });
   const documents = createWorkspaceDocumentBridge(traffic.bridge);
   return {
-    documents, traffic, calls,
-    arm() { armed = true; },
+    documents,
+    traffic,
+    calls,
+    arm() {
+      armed = true;
+    },
     armAfterNextContextRead() {
       const before = contextReads;
       onContextRead = () => {
@@ -70,7 +76,9 @@ function fixture() {
         }
       };
     },
-    get time() { return time; },
+    get time() {
+      return time;
+    },
   };
 }
 
@@ -91,7 +99,10 @@ for (const method of ["workspace.writeText", "tasks.start", "context.get", "reso
         method === "context.get"
           ? f.documents.getContext()
           : f.documents.call(method, {
-              path: "old-project.json", content: "old draft", entry: "media-runtime", id: "old-resource",
+              path: "old-project.json",
+              content: "old draft",
+              entry: "media-runtime",
+              id: "old-resource",
             }),
         /项目或存储权限已改变/,
       );

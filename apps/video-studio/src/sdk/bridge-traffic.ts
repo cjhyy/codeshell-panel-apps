@@ -6,7 +6,11 @@ import { runtimeCancelled, type BridgeResult } from "./panel-runtime";
  * can expand one logical operation into many calls, all of which pass this queue. */
 export function createBridgeTraffic(
   raw: PanelBridge,
-  timing: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+  timing: {
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    beforeDispatch?: () => void;
+  } = {},
 ): { bridge: PanelBridge; dispose(): void } {
   const now = timing.now ?? Date.now;
   const sleep = timing.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -23,6 +27,7 @@ export function createBridgeTraffic(
   };
   const check = () => {
     if (disposed) throw runtimeCancelled();
+    timing.beforeDispatch?.();
   };
   async function initialize() {
     check();
@@ -83,6 +88,7 @@ export function createBridgeTraffic(
         check();
         ordinary.push(now());
       } else await reserve(method);
+      check();
       try {
         return await action();
       } catch (error) {

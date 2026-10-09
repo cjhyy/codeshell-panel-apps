@@ -12,7 +12,9 @@ const SCOPE_CHANGED = "项目或存储权限已改变，请重新打开视频面
  * Host still exposes only its reviewed workspace capabilities. Native desktop
  * documents pass through unchanged; no implicit migration between backends.
  */
-export function createWorkspaceDocumentBridge(raw: PanelBridge): PanelBridge {
+export function createWorkspaceDocumentBridge(
+  raw: PanelBridge,
+): PanelBridge & { assertActive(): void } {
   let initial: { mode: "desktop" | "workspace" | "unsupported"; scope: string } | undefined;
   let observed: Record<string, unknown> = {},
     invalidated = false;
@@ -80,6 +82,7 @@ export function createWorkspaceDocumentBridge(raw: PanelBridge): PanelBridge {
     },
   });
   return {
+    assertActive,
     async getContext() {
       const { mode, context } = await checked();
       return mode === "workspace"

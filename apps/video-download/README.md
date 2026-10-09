@@ -356,6 +356,10 @@ remains separate work.
 
 ### Project and session changes
 
+The updated package requests `context.session` to read the execution binding.
+Review this added context permission when updating an installed Panel. It does
+not make downloads or isolated AI tasks depend on a selected chat.
+
 Changing the execution binding stops the open page's new saves, downloads, AI
 requests and file actions. This also detects two cloud projects using the same
 `/workspace` path when their session changes. A persistent notice keeps unsaved

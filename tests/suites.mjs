@@ -17,6 +17,7 @@ export const suites = [
       "tests/apps/job-hunt-hq/snapshot-restore.test.mjs",
       "tests/apps/job-hunt-hq/draft-storage.test.mjs",
       "tests/apps/job-hunt-hq/browser-draft-storage.test.mjs",
+      "tests/apps/job-hunt-hq/host-capabilities.test.mjs",
       "tests/apps/job-hunt-hq/draft-backup.test.mjs",
       "tests/apps/job-hunt-hq/draft-ui.test.mjs",
       "tests/apps/job-hunt-hq/resume-pdf-tasks.test.mjs",
@@ -42,7 +43,7 @@ export const suites = [
   {
     id: "design-studio",
     label: "Design Studio project recovery",
-    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs"]],
+    commands: [["--test", "tests/apps/design-studio/legacy-backup.test.mjs", "tests/apps/design-studio/portable-backup.test.mjs", "tests/apps/design-studio/recovery-session.test.mjs", "tests/apps/design-studio/recovery-ui.test.mjs", "tests/apps/design-studio/touch-ui.test.mjs"]],
   },
   {
     id: "quant-lab",
@@ -64,6 +65,7 @@ export const suites = [
           "package",
           "library-process",
           "project-storage",
+          "project-binding",
           "queue-ui",
           "library-ui",
           "search-source",
@@ -82,6 +84,7 @@ export const suites = [
         "tests/video-studio-media-task-bridge.test.ts",
         "tests/video-studio-host-audio-recording.test.ts",
         "tests/video-studio-workspace-document-bridge.test.ts",
+        "tests/video-studio-binding-traffic.test.ts",
         "tests/video-studio-media-file-storage.test.ts",
         "tests/video-studio-external-media.test.ts",
         "tests/video-studio-timeline-menu.test.ts",

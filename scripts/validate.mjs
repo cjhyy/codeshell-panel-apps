@@ -5626,9 +5626,12 @@ async function validatePackage(packagePath) {
       `${packagePath}: isolated Task permission is required`,
     );
     assert(
-      !manifest.permissions.includes("context.session") &&
-        !manifest.permissions.includes("agent.submitPrompt"),
+      !manifest.permissions.includes("agent.submitPrompt"),
       `${packagePath}: setup and analysis must not depend on the current Session`,
+    );
+    assert(
+      manifest.permissions.includes("context.session"),
+      `${packagePath}: detecting stale execution bindings requires reviewed session context`,
     );
     assert.deepEqual(
       [...registeredToolNames].sort(),

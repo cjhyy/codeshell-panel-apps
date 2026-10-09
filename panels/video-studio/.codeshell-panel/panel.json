@@ -13,6 +13,7 @@
   "placement": "right-dock",
   "singleton": true,
   "permissions": [
+    "context.session",
     "context.workspace",
     "workspace.read",
     "workspace.write",
