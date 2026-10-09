@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, resolve, sep } from "node:path";
 import { chromium } from "playwright";
@@ -76,6 +76,30 @@ async function openPage(t, options = {}) {
   const page = await context.newPage(),
     errors = [];
   page.setDefaultTimeout(7000);
+  // Retain this synthetic fixture if its transient notice disappears before the assertion.
+  // This only observes input/DOM; the original actions, assertions and timeouts stay intact.
+  const spokenNoticeFixture = options.seed?.id === "spoken-leaving";
+  if (spokenNoticeFixture)
+    await page.addInitScript(() => {
+      const events = (window.__spokenNoticeEvents = []);
+      const record = (event) => {
+        events.push({ time: performance.now(), projectId: window.__mainHost?.current().id, ...event });
+        if (events.length > 200) events.shift();
+      };
+      for (const name of ["pointerdown", "pointerup", "click"])
+        document.addEventListener(name, (event) => {
+          const control = event.target.closest?.("[data-action],[data-tab]");
+          if (control) record({ kind: name, action: control.dataset.action, tab: control.dataset.tab });
+        }, true);
+      new MutationObserver((changes) => {
+        if (!changes.some((change) => {
+          const node = change.target.nodeType === 1 ? change.target : change.target.parentElement;
+          return node?.id === "toast" || node?.closest?.("#toast");
+        })) return;
+        const toast = document.querySelector("#toast");
+        record({ kind: "toast", text: toast?.textContent, visible: toast?.classList.contains("visible") });
+      }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    });
   page.on("pageerror", (error) => errors.push(error.message));
   page.fixtureMediaRequests = [];
   if (options.mediaResources)
@@ -87,7 +111,28 @@ async function openPage(t, options = {}) {
       return route.fulfill({ status: 200, contentType: media.mimeType, body: media.bytes });
     });
   t.after(async () => {
-    await context.close();
+    try {
+      if (spokenNoticeFixture && !page.spokenNoticeCompleted) {
+        const evidence = resolve(process.env.VIDEO_STUDIO_EXACT_EVIDENCE ??
+          "artifacts/video-studio/exact-browser-duration", "spoken-notice-failure");
+        await mkdir(evidence, { recursive: true });
+        const receipt = await page.evaluate(() => ({
+          events: window.__spokenNoticeEvents,
+          current: window.__mainHost.current(),
+          calls: window.__mainHost.calls.slice(-150),
+          toast: { text: document.querySelector("#toast")?.textContent, className: document.querySelector("#toast")?.className },
+          body: document.querySelector("#studio")?.innerText.slice(0, 12000),
+        }));
+        receipt.errors = [...errors];
+        await writeFile(resolve(evidence, "receipt.json"), JSON.stringify(receipt, null, 2));
+        await page.screenshot({ path: resolve(evidence, "screen.png"), fullPage: true });
+        console.error("Synthetic spoken notice failure evidence:", evidence);
+      }
+    } catch (error) {
+      console.error("Could not retain synthetic spoken notice diagnostics:", error);
+    } finally {
+      await context.close();
+    }
     assert.deepEqual(errors, []);
   });
   // Voiceover jobs run through the real tasks/resources contract of the media task bridge.
@@ -244,7 +289,11 @@ async function openPage(t, options = {}) {
                 request.action === "inspect"
                   ? {
                       assetId: asset.id,
-                      inspection: options.hostRecording.inspection ?? { kind: "audio", durationSeconds: 1, hasAudio: true },
+                      inspection: options.hostRecording.inspection ?? {
+                        kind: "audio",
+                        durationSeconds: options.hostRecording.durationSeconds ?? 1,
+                        hasAudio: true,
+                      },
                     }
                   : request.action === "voices"
                     ? { available: false, models: [], voices: [] }
@@ -3549,6 +3598,7 @@ test("leaving a project clears its 口播 analysis and old notices", async (t) =
   await page.waitForFunction(() => document.querySelector("#toast").textContent === "", undefined, {
     timeout: 2000,
   });
+  page.spokenNoticeCompleted = true;
 });
 
 test("disabled production buttons say why instead of staying silent", async (t) => {
@@ -3776,7 +3826,9 @@ test("cloud recording survives editor save failure and reopening, then attaches 
     "-f",
     "lavfi",
     "-i",
-    "sine=frequency=440:duration=1",
+    "sine=frequency=440:sample_rate=48000",
+    "-af",
+    "atrim=end_sample=10003",
     "-c:a",
     "pcm_s16le",
     path,
@@ -3791,7 +3843,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   };
   const page = await openPage(t, {
     holdProductionInitialize: true,
-    hostRecording: { asset, base64: bytes.toString("base64") },
+    hostRecording: { asset, base64: bytes.toString("base64"), durationSeconds: 10003 / 48000 },
     mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
   });
   await production(page, "recording");
@@ -3839,6 +3891,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
   await page.getByText("录音已加入本工程素材库。", { exact: true }).waitFor();
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
   assert.equal(
     (await saved(page)).assets.find((a) => a.resourceId === asset.id).name,
     "保留的本人录音",
@@ -3856,6 +3909,7 @@ test("cloud recording survives editor save failure and reopening, then attaches 
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, 50015);
 });
 
 test("cloud camera records a durable video and publishes real checked media into editor once", async (t) => {
@@ -3868,7 +3922,7 @@ test("cloud camera records a durable video and publishes real checked media into
     "-f",
     "lavfi",
     "-i",
-    "testsrc2=size=320x240:rate=30:duration=1",
+    "testsrc2=size=320x240:rate=29:duration=1.03",
     "-c:v",
     "libvpx",
     "-an",
@@ -3931,7 +3985,9 @@ test("cloud camera records a durable video and publishes real checked media into
   assert.equal(imported.kind, "video");
   assert.equal(imported.width, 320);
   assert.equal(imported.height, 240);
-  assert.equal(imported.duration, 240000);
+  const exactDuration = Math.round(inspection.durationSeconds * 240000);
+  assert.notEqual(exactDuration % 8000, 0, "the real captured video must exercise a duration outside the old frame grid");
+  assert.equal(imported.duration, exactDuration);
   await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
   await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
@@ -3945,6 +4001,7 @@ test("cloud camera records a durable video and publishes real checked media into
   await page.reload();
   await waitSaved(page);
   assert.equal((await saved(page)).assets.filter((a) => a.resourceId === asset.id).length, 1);
+  assert.equal((await saved(page)).assets.find((a) => a.resourceId === asset.id).duration, exactDuration);
 });
 
 test("a device without capture support recovers and attaches an existing real project video", async (t) => {
@@ -4013,4 +4070,77 @@ test("a device without capture support recovers and attaches an existing real pr
     )),
     false,
   );
+});
+
+test("cloud camera inspection preserves a real non-frame video duration once across cold reopening", async (t) => {
+  const path = resolve(directory, "fractional-camera-main.webm");
+  await promisify(execFile)("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+    "testsrc2=size=320x240:rate=30000/1001", "-frames:v", "7", "-c:v", "libvpx", "-an", path,
+  ]);
+  const { stdout } = await promisify(execFile)("ffprobe", [
+    "-v", "error", "-count_frames", "-show_streams", "-show_format", "-of", "json", path,
+  ]);
+  const probe = JSON.parse(stdout), stream = probe.streams.find((s) => s.codec_type === "video");
+  assert.equal(Number(stream.nb_read_frames), 7, "The inspection uses actual seven-frame bytes");
+  const duration = Math.round(Number(probe.format.duration) * T);
+  assert.notEqual(duration % (T / 30), 0, "The actual container inspection is not a 30fps frame boundary");
+  const bytes = await readFile(path);
+  const asset = {
+    id: `asset-${createHash("sha256").update(bytes).digest("hex")}`,
+    name: "fractional-camera.webm", mimeType: "video/webm", bytes: bytes.length, createdAt: 1,
+  };
+  const page = await openPage(t, {
+    hostRecording: {
+      asset, base64: bytes.toString("base64"),
+      inspection: {
+        kind: "video", durationSeconds: Number(probe.format.duration), hasAudio: false,
+        video: { width: stream.width, height: stream.height },
+      },
+      videoCapabilities: {
+        camera: true, screen: false, microphone: true, systemAudio: false,
+        maxDurationSeconds: 1200, maxBytes: 200 * 1024 * 1024,
+      },
+    },
+    mediaResources: { [asset.id]: { mimeType: asset.mimeType, bytes } },
+  });
+  await production(page, "recording");
+  await oldAction(page, "rec-host-mode:camera").click();
+  await oldAction(page, "rec-host-start").click();
+  const row = page.locator(`[data-recording-resource="${asset.id}"]`);
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
+  let doc = await waitSaved(page);
+  const readAsset = (doc) => doc.assets.filter((item) => item.resourceId === asset.id);
+  assert.equal(readAsset(doc).length, 1);
+  assert.equal(readAsset(doc)[0].duration, duration);
+  assert.equal(readAsset(doc)[0].kind, "video");
+  assert.equal(readAsset(doc)[0].width, 320);
+  assert.equal(readAsset(doc)[0].height, 240);
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
+  assert.equal(readAsset(await waitSaved(page)).length, 1);
+  assert.equal(await page.evaluate(() => window.__mainHost.calls.filter((call) =>
+    call.method === "resources.recordVideo").length), 1);
+  await page.reload();
+  doc = await waitSaved(page);
+  assert.equal(readAsset(doc).length, 1);
+  assert.equal(readAsset(doc)[0].duration, duration);
+  await production(page, "recording");
+  await oldAction(page, "rec-host-refresh").click();
+  await row.getByRole("button", { name: "保存到素材库", exact: true }).click();
+  await page.getByText("视频已加入本工程素材库。", { exact: true }).waitFor();
+  assert.deepEqual(readAsset(await waitSaved(page)), readAsset(doc));
+  assert.equal(await page.evaluate(() => window.__mainHost.calls.filter((call) =>
+    call.method === "resources.recordVideo" || call.method === "resources.recordAudio").length), 0,
+  "Cold recovery only attaches the saved resource, without another capture");
+  const evidence = resolve(process.env.VIDEO_STUDIO_EXACT_EVIDENCE ??
+    "artifacts/video-studio/exact-browser-duration");
+  await mkdir(evidence, { recursive: true });
+  await writeFile(resolve(evidence, "native-fractional-camera.webm"), bytes);
+  await writeFile(resolve(evidence, "native-fractional-camera.json"), JSON.stringify({
+    kind: "synthetic controlled Host inspection, not a real camera or installed Host",
+    sourceSha256: asset.id.slice(6), probe, ticks: duration, imported: readAsset(doc)[0],
+    captureCallsBeforeCold: 1, captureCallsAfterCold: 0,
+  }, null, 2));
 });

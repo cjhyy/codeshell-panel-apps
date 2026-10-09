@@ -337,18 +337,21 @@ test(
       // "+" would append after the narration, past what the old view shows; insert at 0 instead.
       await (await menu(page, audio.id)).locator('[data-action="insert-media-playhead"]').click();
       await saved(page);
-      const before = (await state(page)).project;
-      const audioClip = before.audioClips.find((clip) => clip.assetId === audio.id);
+      const before = await canonical(page),
+        sequence = before.sequences[0];
+      const audioClip = sequence.clips.find((clip) => clip.assetId === audio.id);
       assert.ok(audioClip);
-      assert.equal(audioClip.startFrame, 0, "插入到播放头 keeps the playhead position");
+      assert.equal(audioClip.start, 0, "插入到播放头 keeps the exact playhead position");
       const target = page.locator(`[data-et-clip="${audioClip.id}"]`);
       const context = page.locator("#timeline-context-menu");
-      await page.locator(`[data-et-clip="${before.clips[0].id}"]`).focus();
+      await page
+        .locator(`[data-et-clip="${sequence.clips.find((clip) => clip.assetId !== audio.id).id}"]`)
+        .focus();
       await target.click({ button: "right" });
       await context.waitFor({ state: "visible" });
       assert.deepEqual(await selectedClipIds(page), [audioClip.id]);
       await context.locator('[data-timeline-menu-action="cancel"]').click();
-      assert.deepEqual((await state(page)).project, before);
+      assert.deepEqual(await canonical(page), before);
 
       for (const key of ["Shift+F10", "ContextMenu"]) {
         await target.focus();
@@ -380,13 +383,15 @@ test(
       );
       await page.keyboard.press("Enter");
       await saved(page);
-      const changed = (await state(page)).project;
-      assert.deepEqual(changed.clips, before.clips);
+      const changed = await canonical(page);
+      assert.deepEqual(
+        changed.sequences[0].clips,
+        sequence.clips.filter((clip) => clip.id !== audioClip.id),
+      );
       assert.deepEqual(changed.assets, before.assets);
-      assert.ok(!changed.audioClips.some((clip) => clip.id === audioClip.id));
       await page.locator('[data-ew-action="undo"]').click();
       await saved(page);
-      assert.deepEqual((await state(page)).project.audioClips, before.audioClips);
+      assert.deepEqual((await canonical(page)).sequences[0].clips, sequence.clips);
       await assertNoResourceDeletion(page);
     } finally {
       await page.close();
