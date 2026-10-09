@@ -100,8 +100,8 @@ export class EditorCanvas {
     this.overlay.addEventListener("pointerdown", this.down);
     this.overlay.addEventListener("pointermove", this.move);
     this.overlay.addEventListener("pointerup", this.up);
-    this.overlay.addEventListener("pointercancel", this.cancelEvent);
-    this.overlay.addEventListener("lostpointercapture", this.cancelEvent);
+    this.overlay.addEventListener("pointercancel", this.cancelPointer);
+    this.overlay.addEventListener("lostpointercapture", this.cancelPointer);
     this.overlay.addEventListener("keydown", this.keydown);
     this.observer = new ResizeObserver(() => {
       this.cancel();
@@ -415,6 +415,9 @@ export class EditorCanvas {
     this.render();
   }
   private cancelEvent = () => this.cancel();
+  private cancelPointer = (event: PointerEvent) => {
+    if (this.gesture?.pointer === event.pointerId) this.cancel();
+  };
   private keydown = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.preventDefault();

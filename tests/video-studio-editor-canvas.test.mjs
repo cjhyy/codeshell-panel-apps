@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { touchInput } from "./helpers/video-studio-touch.mjs";
 let browser, source, css;
 before(async () => {
   source = (
@@ -30,7 +31,7 @@ after(async () => {
   await browser?.close();
 });
 async function fixture(t, options = {}) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 800 } });
+  const page = await browser.newPage({ viewport: { width: 1000, height: 800 }, hasTouch: !!options.touch });
   const uncaught = [];
   page.on("pageerror", (error) => uncaught.push(String(error)));
   t.after(async () => {
@@ -245,6 +246,7 @@ async function fixture(t, options = {}) {
           "外部编辑",
         ),
       cancel: () => controls.cancel(),
+      replace: () => session.replace({ ...documentValue, id: "replacement", name: "另一个工程" }),
       dispose: () => {
         controls.dispose();
         return preview.dispose();
@@ -282,6 +284,92 @@ async function drag(page, locator, dx, dy, beforeUp) {
   await settle(page);
 }
 const handle = (page, name) => page.locator(`[data-canvas-handle="${name}"]`);
+test("two native canvas touches ignore secondary cancellation and capture loss, commit once and undo", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    before = await page.evaluate(() => f.read()),
+    input = await touchInput(page, ".editor-canvas-controls"),
+    box = await handle(page, "move").boundingBox(),
+    first = { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 1 },
+    second = { x: first.x + 40, y: first.y + 20, id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  const [, secondaryId] = await input.ids();
+  // Chromium cannot cancel just one of its active touches via CDP. Probe that one event
+  // explicitly, then use real capture/release for the same live secondary pointer.
+  await page.evaluate((pointerId) => {
+    const overlay = document.querySelector(".editor-canvas-controls");
+    overlay.dispatchEvent(new PointerEvent("pointercancel", { bubbles: true, pointerId, pointerType: "touch" }));
+    overlay.setPointerCapture(pointerId);
+  }, secondaryId);
+  await input.send("touchMove", [{ ...first, x: first.x + 80 }, { ...second, x: second.x + 5 }]);
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => f.pixel(95, 90)), [0, 0, 0, 255], "secondary cancellation must preserve the owner's preview");
+  await page.evaluate((pointerId) => document.querySelector(".editor-canvas-controls").releasePointerCapture(pointerId), secondaryId);
+  await input.send("touchMove", [{ ...first, x: first.x + 80 }, { ...second, x: second.x + 10 }]);
+  assert.ok(await page.evaluate((pointerId) => touchTrace.some((event) => event.type === "lostpointercapture" && event.pointerId === pointerId && event.trusted), secondaryId));
+  await input.send("touchEnd", [{ ...second, x: second.x + 10 }]);
+  assert.ok(await page.evaluate((pointerId) => touchTrace.some((event) => event.type === "pointerup" && event.pointerId === pointerId && event.trusted), secondaryId));
+  assert.deepEqual(await page.evaluate(() => f.read()), before);
+  await input.send("touchEnd");
+  await settle(page);
+  await page.evaluate(() => f.flush());
+  const after = await page.evaluate(() => f.read());
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.125);
+  assert.equal(await page.evaluate(() => f.writes.length), 1);
+  await input.assertNative();
+  await input.capture("canvas-owner", { document: after, writes: await page.evaluate(() => f.writes) });
+  await page.evaluate(() => f.undo());
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => f.read().sequences), before.sequences);
+});
+
+test("native owner cancellation restores canvas pixels without saving a gesture", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    before = await page.evaluate(() => f.read()),
+    input = await touchInput(page, ".editor-canvas-controls"),
+    box = await handle(page, "move").boundingBox(),
+    first = { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 1 },
+    second = { x: first.x + 40, y: first.y + 20, id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  const [ownerId] = await input.ids();
+  await input.send("touchMove", [{ ...first, x: first.x + 80 }, second]);
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => f.pixel(95, 90)), [0, 0, 0, 255]);
+  await input.send("touchCancel");
+  await page.evaluate((pointerId) => document.querySelector(".editor-canvas-controls").dispatchEvent(
+    new PointerEvent("pointerup", { bubbles: true, pointerId, pointerType: "touch" }),
+  ), ownerId);
+  await settle(page);
+  await page.evaluate(() => f.flush());
+  assert.deepEqual(await page.evaluate(() => f.read()), before);
+  assert.deepEqual(await page.evaluate(() => f.pixel(95, 90)), [255, 0, 0, 255]);
+  assert.equal(await page.evaluate(() => f.writes.length), 0);
+  assert.ok(await page.evaluate(() => touchTrace.some((event) => event.type === "pointercancel" && event.trusted)));
+  await input.capture("canvas-owner-cancel", { document: await page.evaluate(() => f.read()), writes: await page.evaluate(() => f.writes) });
+});
+
+test("a canvas project replacement rejects old native touch releases without writing into its successor", async (t) => {
+  const page = await fixture(t, { touch: true }),
+    input = await touchInput(page, ".editor-canvas-controls"),
+    box = await handle(page, "move").boundingBox(),
+    first = { x: box.x + box.width / 2, y: box.y + box.height / 2, id: 1 },
+    second = { x: first.x + 40, y: first.y + 20, id: 2 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  await input.send("touchMove", [{ ...first, x: first.x + 80 }, second]);
+  await page.evaluate(() => f.replace());
+  const switched = await page.evaluate(() => f.read()),
+    writes = await page.evaluate(() => f.writes.length);
+  await input.send("touchEnd", [first]);
+  await input.send("touchEnd");
+  await settle(page);
+  await page.evaluate(() => f.flush());
+  assert.deepEqual(await page.evaluate(() => f.read()), switched);
+  assert.equal(await page.evaluate(() => f.writes.length), writes);
+  await input.capture("canvas-project-switch", { document: switched, writes: await page.evaluate(() => f.writes) });
+});
 test("canvas tools are compact icons and selecting an oversized picture keeps its outline inside the preview", async (t) => {
   const page = await fixture(t, { oversized: true });
   const toolbar = page.locator(".editor-canvas-toolbar");
