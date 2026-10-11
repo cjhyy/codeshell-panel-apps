@@ -544,3 +544,72 @@ test("magnetic operations reject locked affected dependencies and leave audio-on
   assert.equal(read(moved, "sound").start, 4 * T + 8000);
   assert.deepEqual(read(moved, "b"), read(audio, "b"));
 });
+
+test("equal ripple shifts batch disconnected components without double-moving linked audio, captions or transitions", () => {
+  const initial = fixture(),
+    before = apply(initial, planTransition(initial, "main", "b", "c", {
+      id: "bc", kind: "dissolve", duration: T,
+    })),
+    snapshot = structuredClone(before),
+    history = new EditorHistory(before),
+    operations = planClipTiming(before, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }),
+    movements = operations.filter((operation) => operation.type === "clip.move");
+  assert.equal(movements.length, 1);
+  assert.deepEqual(new Set(movements[0]!.clipIds), new Set(["b", "sound", "cb", "c"]));
+  assert.equal(movements[0]!.delta, -2 * T);
+  history.apply(operations, history.revision, "同步裁切");
+  const after = history.read();
+  for (const id of ["b", "sound", "cb"]) assert.equal(read(after, id).start, 2 * T);
+  assert.equal(read(after, "c").start, 5 * T);
+  assert.equal(read(after, "ca").duration, 2 * T);
+  assert.equal(after.sequences[0]!.transitions[0]!.start, 5 * T);
+  assert.equal(after.sequences[0]!.transitions[0]!.duration, T);
+  assert.deepEqual(before, snapshot);
+  history.undo();
+  assert.deepEqual(history.read(), { ...before, revision: before.revision + 2 });
+  assert.equal(history.canUndo, false);
+});
+
+test("a locked later movement component rejects the whole merged ripple and magnetic move", () => {
+  const before = fixture(),
+    sequence = before.sequences[0]!,
+    companion = structuredClone(read(before, "sound"));
+  sequence.tracks.push({ ...createTrack("later-audio", "audio"), locked: true });
+  companion.id = "later-sound";
+  companion.trackId = "later-audio";
+  companion.start = 8 * T;
+  companion.linkGroupId = "later-link";
+  read(before, "c").linkGroupId = "later-link";
+  sequence.clips.push(companion);
+  const snapshot = structuredClone(before),
+    history = new EditorHistory(before);
+  assert.throws(() => planClipTiming(before, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }), /锁定/);
+  assert.throws(() => planMagneticMove(before, "main", ["a"], { delta: 12 * T }), /锁定/);
+  assert.deepEqual(before, snapshot);
+  assert.deepEqual(history.read(), snapshot);
+  assert.equal(history.canUndo, false);
+});
+
+test("indexed magnetic planning retains strict whole-document validation and nested source bounds", () => {
+  const malformed = fixture();
+  let getterCalls = 0;
+  Object.defineProperty(malformed, "name", { enumerable: true, get() { getterCalls++; return "unsafe"; } });
+  assert.throws(() => planMagneticMove(malformed, "main", ["a"], { delta: 0 }), /访问器/);
+  assert.throws(() => planClipTiming(malformed, "main", ["a"], { kind: "keep-left", time: 2 * T }), /访问器/);
+  assert.equal(getterCalls, 0);
+  const before = fixture();
+  before.sequences.push({
+    ...structuredClone(before.sequences[0]!),
+    id: "outer",
+    clips: [{
+      id: "nested", kind: "sequence", sequenceId: "main", label: "嵌套实例", trackId: "video",
+      start: 0, duration: 12 * T,
+      timeMap: { points: [{ time: 0, source: 0 }, { time: 12 * T, source: 12 * T }] },
+      audio: defaultAudioMix(), transform: defaultTransform(), color: defaultColorAdjustment(), blendMode: "normal",
+    }],
+    transitions: [], markers: [],
+  });
+  const valid = validateEditorDocument(before), snapshot = structuredClone(valid);
+  assert.throws(() => planClipTiming(valid, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }), /来源|素材|超出|映射/);
+  assert.deepEqual(valid, snapshot);
+});

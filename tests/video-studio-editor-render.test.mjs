@@ -201,6 +201,95 @@ test("range encoding uses the original frame clock, sample crop and NTSC duratio
   assert.deepEqual(doc, before);
 });
 test(
+  "59.94 WebM verifies tiny tail ranges and a normal range after container frame-period quantization",
+  { timeout: 60000 },
+  async () => {
+    const doc = document(),
+      media = clip("webm-tail", "lower");
+    media.duration = 480000;
+    media.timeMap = api.constantTimeMap(0, 480000).timeMap;
+    doc.sequences[0].clips.push(media);
+    const workDir = await mkdtemp(join(temporary, "webm-range-")),
+      audioFile = join(workDir, "full.wav");
+    const audio = spawnSync("ffmpeg", [
+      "-nostdin",
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "aevalsrc='0.2*sin(2*PI*440*t)|0.2*sin(2*PI*440*t)':s=48000:d=2",
+      "-ac",
+      "2",
+      "-c:a",
+      "pcm_f32le",
+      audioFile,
+    ]);
+    assert.equal(audio.status, 0, audio.stderr.toString());
+    const settings = profile({
+      container: "webm",
+      videoCodec: "vp9",
+      audioCodec: "opus",
+      frameRate: { numerator: 60000, denominator: 1001 },
+    });
+    for (const [index, range] of [
+      { start: 479999, duration: 1 },
+      { start: 479995, duration: 1 },
+      { start: 240001, duration: 239999 },
+    ].entries()) {
+      const output = await api.exportEditorSequence({
+        document: doc,
+        sequenceId: "main",
+        range,
+        profile: settings,
+        mediaFiles: new Map([["source", { path: videoPath, mimeType: "video/webm" }]]),
+        runtimeSource,
+        workDir,
+        audioFile,
+        outputPath: join(workDir, `tail-${index}.webm`),
+        signal: new AbortController().signal,
+      });
+      assert.equal(output.frameCount, index < 2 ? 1 : 60);
+      assert.deepEqual(output.range, range);
+      const pcm = spawnSync("ffmpeg", [
+        "-v",
+        "error",
+        "-i",
+        output.path,
+        "-map",
+        "0:a:0",
+        "-f",
+        "f32le",
+        "-c:a",
+        "pcm_f32le",
+        "pipe:1",
+      ]);
+      assert.equal(pcm.status, 0, pcm.stderr.toString());
+      assert.ok(pcm.stdout.length > 0);
+      if (!index)
+        assert.ok(
+          pcm.stdout.every((byte) => byte === 0),
+          "A zero-sample range stays silent after Opus encoding",
+        );
+      const frame = spawnSync("ffmpeg", [
+        "-v",
+        "error",
+        "-i",
+        output.path,
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "pipe:1",
+      ]);
+      assert.equal(frame.status, 0, frame.stderr.toString());
+      near(pixel(frame.stdout, 64, 32), [0, 0, 255, 255], 8);
+    }
+  },
+);
+test(
   "low-quality real-media previews match original native export composition and never change export dimensions",
   { timeout: 60000 },
   async (t) => {

@@ -1,6 +1,6 @@
 import type { CaptionController } from "./caption-controller";
 import { findCaptionText, type CaptionTextMatch } from "./captions";
-import type { EditorSession } from "./session";
+import { sameIdentity, type EditorSession } from "./session";
 
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
   const value = document.createElement(tag);
@@ -100,13 +100,24 @@ export class CaptionFindUI {
       button.disabled = busy || !this.matches.length;
   }
   private navigate(direction: number): void {
-    if (!this.matches.length) return;
+    if (this.busy || !this.matches.length) return;
     const index = this.matches.findIndex((match) => match.clipId === this.current),
       next = index < 0 ? (direction < 0 ? this.matches.length - 1 : 0) : (index + direction + this.matches.length) % this.matches.length,
       match = this.matches[next]!;
     this.current = match.clipId;
     this.render();
-    this.context.run(() => this.context.reveal(match, this.query.value));
+    const session = this.context.session(), identity = session.getState().identity,
+      sequenceId = this.context.sequenceId(), query = this.query.value, scope = this.scope.value;
+    this.context.run(() => {
+      if (this.busy || this.context.session() !== session ||
+          !sameIdentity(session.getState().identity, identity, false) ||
+          this.context.sequenceId() !== sequenceId || this.query.value !== query || this.scope.value !== scope)
+        return;
+      // A later revision may legitimately retime this match; reveal its current saved row and tick.
+      this.render();
+      const current = this.matches.find((item) => item.clipId === match.clipId);
+      if (current) return this.context.reveal(current, query);
+    });
   }
   private preview(all: boolean): void {
     this.context.run(() => {

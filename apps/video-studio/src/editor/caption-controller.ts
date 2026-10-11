@@ -21,6 +21,7 @@ import {
 } from "./captions";
 import { planCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds, recordedNarrationClipIds } from "./narration-edits";
+import { planCaptionMerge, planCaptionSplit } from "./caption-sentence-edits";
 
 /** Temporary narration captions: the narration workflow replaces them, so they never block. */
 function workflowCaptions(doc: EditorDocument, sequenceId: string): Set<string> {
@@ -71,6 +72,8 @@ export interface CaptionCandidate {
   skipped: number;
   /** Lets the workbench guard against row drafts created after preparing a replacement. */
   replacement?: { query: string; text: string; matched: number; occurrences: number; scope: "sequence" | "selected" | "current" };
+  /** Sentence edits include rows removed by a merge, not only rows shown in the result. */
+  sentence?: { affectedIds: string[]; action: "split" | "merge" };
 }
 export interface CaptionControllerState {
   phase:
@@ -157,6 +160,7 @@ export function createCaptionController(context: CaptionControllerContext) {
     plan: CaptionPlan,
     label: string,
     replacement?: CaptionCandidate["replacement"],
+    sentence?: CaptionCandidate["sentence"],
   ) => {
     const after = applyEditorOperations(
       snapshot.document,
@@ -195,6 +199,7 @@ export function createCaptionController(context: CaptionControllerContext) {
           : [],
       ),
       ...(replacement ? { replacement } : {}),
+      ...(sentence ? { sentence } : {}),
     };
     set({
       phase: "preview",
@@ -423,6 +428,29 @@ export function createCaptionController(context: CaptionControllerContext) {
       } finally {
         work = undefined;
       }
+    },
+    previewSplit(options: { sequenceId: string; clipId: string; caret: number; time?: number }) {
+      const running = start();
+      try {
+        const plan = planCaptionSplit(running.snapshot.document, options.sequenceId, options.clipId, {
+          caret: options.caret, ...(options.time === undefined ? {} : { time: options.time }),
+          ...(context.idFactory ? { idFactory: context.idFactory } : {}),
+        });
+        preview(running.snapshot, plan, "在光标处分句", undefined, { affectedIds: plan.affectedIds, action: "split" });
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally { work = undefined; }
+    },
+    previewMerge(options: { sequenceId: string; clipIds: string[] }) {
+      const running = start();
+      try {
+        const plan = planCaptionMerge(running.snapshot.document, options.sequenceId, options.clipIds);
+        preview(running.snapshot, plan, "合并相邻字幕", undefined, { affectedIds: plan.affectedIds, action: "merge" });
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally { work = undefined; }
     },
     async translate(options: {
       sequenceId: string;

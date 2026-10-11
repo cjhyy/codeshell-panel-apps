@@ -90,6 +90,7 @@ export class EditorCaptionsUI {
   private readonly newText = element("textarea");
   private readonly addButton = element("button", "在播放头添加字幕");
   private readonly exportButton = element("button", "导出所选 SRT");
+  private readonly mergeButton = element("button", "预览合并所选两条字幕");
   private readonly find: CaptionFindUI;
   private readonly disposers: Array<() => void> = [];
   private unwatch: (() => void) | undefined;
@@ -177,8 +178,19 @@ export class EditorCaptionsUI {
     const detachButton = element("button", "解除所选来源绑定");
     const importButton = element("button", "导入 SRT"),
       all = element("button", "全选字幕");
-    tools.append(importButton, this.exportButton, all, this.file);
+    tools.append(importButton, this.exportButton, all, this.mergeButton, this.file);
     tools.append(detachButton);
+    this.mergeButton.title = "同轨相邻的两条已保存字幕；文字以换行连接，检查预览后应用";
+    this.mergeButton.addEventListener("click", () => {
+      const session = context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId, ids = [...this.selected];
+      this.run(() => {
+        if (context.session() !== session || !sameIdentity(session.getState().identity, identity, false) ||
+            this.sequenceId !== sequenceId) return;
+        this.assertSavedRows(ids, "合并");
+        context.controller.previewMerge({ sequenceId, clipIds: ids });
+      });
+    });
     detachButton.addEventListener("click", () =>
       this.edit(() => context.controller.detach(this.sequenceId, [...this.selected])),
     );
@@ -271,19 +283,25 @@ export class EditorCaptionsUI {
       }),
     );
     this.cancelButton.addEventListener("click", () => context.controller.cancel());
-    this.applyButton.addEventListener("click", () =>
+    this.applyButton.addEventListener("click", () => {
+      const session = context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId;
+      const owns = () => !this.disposed && context.session() === session &&
+        sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId;
       this.edit(async () => {
+        if (!owns()) return;
         const candidate = context.controller.getState().candidate,
           ids = candidate?.rows.map((row) => row.id) ?? [];
         if (candidate?.replacement) this.assertSavedRows(ids);
+        if (candidate?.sentence) this.assertSavedRows(candidate.sentence.affectedIds, "分句或合并");
         await context.controller.apply();
-        if (this.disposed) return;
+        if (!owns()) return;
         const savedIds = new Set(this.captions().map((clip) => clip.id));
         this.selected = new Set(ids.filter((id) => savedIds.has(id)));
         this.renderRows();
         this.selectionChanged();
-      }),
-    );
+      });
+    });
     this.generateButton.addEventListener("click", () =>
       this.run(() =>
         context.controller.generate({
@@ -400,7 +418,7 @@ export class EditorCaptionsUI {
   }
   private run(task: () => void | Promise<void>): void {
     void Promise.resolve()
-      .then(task)
+      .then(() => { if (!this.disposed) return task(); })
       .catch((error) => {
         if (this.disposed) return;
         this.status.textContent = (error as Error).message ?? String(error);
@@ -410,9 +428,12 @@ export class EditorCaptionsUI {
   /** A saved caption change may revoke an approved narration draft; say so right away. */
   private edit(task: () => Promise<unknown>): void {
     this.run(async () => {
-      const before = narration(this.context.session().read()).phase;
+      const session = this.context.session(), identity = session.getState().identity,
+        sequenceId = this.sequenceId,
+        before = narration(session.read()).phase;
       await task();
-      if (this.disposed) return;
+      if (this.disposed || this.context.session() !== session ||
+          !sameIdentity(session.getState().identity, identity, false) || this.sequenceId !== sequenceId) return;
       const after = narration(this.context.session().read()).phase;
       if (APPROVED.has(before) && after === "review")
         this.status.textContent =
@@ -430,6 +451,8 @@ export class EditorCaptionsUI {
     return this.sequence() ? listCaptions(this.context.session().read(), this.sequenceId) : [];
   }
   private selectionChanged() {
+    if (this.context.controller.getState().candidate?.sentence?.action === "merge")
+      this.context.controller.cancel();
     this.syncStyles();
     this.find.selectionChanged();
     this.context.select?.(this.sequenceId, [...this.selected]);
@@ -500,9 +523,10 @@ export class EditorCaptionsUI {
     for (const field of fields) delete draft[field];
     if (!Object.keys(draft).length) this.drafts.delete(clipId);
   }
-  private assertSavedRows(ids: string[]): void {
+  private assertSavedRows(ids: string[], action = "替换"): void {
+    const affected = new Set(ids);
     if (this.captions().some((clip) => {
-      if (!ids.includes(clip.id)) return false;
+      if (!affected.has(clip.id)) return false;
       const draft = this.drafts.get(clip.id);
       return draft && (
         (draft.text !== undefined && draft.text !== clip.text) ||
@@ -510,7 +534,7 @@ export class EditorCaptionsUI {
         (draft.end !== undefined && draft.end !== seconds(clip.start + clip.duration))
       );
     }))
-      throw new Error("匹配字幕含未保存的文字或时间，请先保存再替换；草稿已保留。");
+      throw new Error(`匹配字幕含未保存的文字或时间，请先保存再${action}；草稿已保留。`);
   }
   private renderRows() {
     const session = this.context.session(),
@@ -574,9 +598,9 @@ export class EditorCaptionsUI {
       row.className = "ec-row";
       row.dataset.captionId = clip.id;
       const sequenceId = this.sequenceId,
-        owns = () => !this.disposed && this.context.session() === session &&
-          sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId &&
-          row.isConnected && this.rowNodes.get(clip.id)?.element === row,
+        ownsScope = () => !this.disposed && this.context.session() === session &&
+          sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId,
+        owns = () => ownsScope() && row.isConnected && this.rowNodes.get(clip.id)?.element === row,
         runRow = (task: () => void | Promise<void>) => this.run(async () => { if (owns()) await task(); }),
         editRow = (task: () => Promise<unknown>) => this.edit(async () => { if (owns()) await task(); });
       const head = element("div");
@@ -600,7 +624,7 @@ export class EditorCaptionsUI {
       seek.addEventListener("click", () =>
         runRow(async () => {
           await this.context.seek?.(clip.start);
-          this.context.select?.(this.sequenceId, [clip.id]);
+          if (owns()) this.context.select?.(sequenceId, [clip.id]);
         }),
       );
       head.append(checkbox, seek);
@@ -619,7 +643,7 @@ export class EditorCaptionsUI {
       save.addEventListener("click", () =>
         editRow(async () => {
           await this.context.controller.updateText(this.sequenceId, clip.id, input.value);
-          this.saved(clip.id, ["text"]);
+          if (ownsScope()) this.saved(clip.id, ["text"]);
         }),
       );
       const timing = element("div");
@@ -651,19 +675,72 @@ export class EditorCaptionsUI {
             start: inputTick(start, clip.start, current),
             end: inputTick(end, clip.start + clip.duration, current),
           });
-          this.saved(clip.id, ["start", "end"]);
+          if (ownsScope()) this.saved(clip.id, ["start", "end"]);
         }),
       );
       remove.addEventListener("click", () =>
         editRow(async () => {
           await this.context.controller.remove(this.sequenceId, [clip.id]);
-          this.selected.delete(clip.id);
+          if (ownsScope()) this.selected.delete(clip.id);
         }),
       );
       timing.append(saveTime, remove);
       const actions = element("div");
       actions.className = "ec-row-actions";
-      actions.append(save);
+      const split = element("button", "在光标处分句"), manual = element("details");
+      manual.className = "ec-split-manual";
+      let splitTime: HTMLInputElement | undefined;
+      split.type = "button";
+      split.title = "先在已保存的文字中放置光标；有真实词边界时使用精确词时间，否则填写手动分割时间";
+      const invalidateSplit = () => {
+        const sentence = this.context.controller.getState().candidate?.sentence;
+        if (owns() && sentence?.action === "split" && sentence.affectedIds.includes(clip.id))
+          this.context.controller.cancel();
+      };
+      manual.append(element("summary", "手动分句时间"));
+      const prepareManual = () => {
+        if (splitTime || !owns()) return;
+        splitTime = element("input");
+        splitTime.type = "number";
+        splitTime.min = "0";
+        splitTime.step = "any";
+        splitTime.setAttribute("aria-label", "手动分割时间（秒）");
+        splitTime.placeholder = "请输入片段内部的秒数";
+        splitTime.addEventListener("input", invalidateSplit);
+        const manualLabel = element("label");
+        manualLabel.append(element("span", "手动分割时间（秒）"), splitTime);
+        manual.append(manualLabel,
+          element("small", "留空时仅使用真实词边界。手动时间不估算词时；无法证明归属的词时间将清除。"));
+        if (this.context.currentTime) {
+          const usePlayhead = element("button", "使用播放头时间");
+          usePlayhead.type = "button";
+          usePlayhead.addEventListener("click", () => {
+            if (!owns()) return;
+            splitTime!.value = String(this.context.currentTime!() / 240000);
+            invalidateSplit();
+          });
+          manual.append(usePlayhead);
+        }
+      };
+      manual.addEventListener("toggle", () => { if (manual.open) prepareManual(); });
+      split.addEventListener("click", () => runRow(() => {
+        this.assertSavedRows([clip.id], "分句");
+        if (input.selectionStart !== input.selectionEnd) throw new Error("请取消文字选区，将光标放在需要分句的位置");
+        let time: number | undefined;
+        if (splitTime?.validity.badInput) throw new Error("请输入有效的手动分割秒数");
+        if (splitTime?.value.trim()) time = secondsToTicks(Number(splitTime.value));
+        try {
+          this.context.controller.previewSplit({ sequenceId: this.sequenceId, clipId: clip.id, caret: input.selectionStart,
+            ...(time === undefined ? {} : { time }) });
+        } catch (error) {
+          if (/没有可靠的真实词边界/.test((error as Error).message)) {
+            prepareManual();
+            manual.open = true;
+          }
+          throw error;
+        }
+      }));
+      actions.append(save, split, manual);
       const info = element(
         "small",
         clip.words.length
@@ -774,6 +851,7 @@ export class EditorCaptionsUI {
     this.recheckButton.hidden = !hint || !this.context.recheckTranscription;
     this.translateButton.title = state.canTranslate ? "" : "当前环境未连接翻译服务";
     this.styleButton.disabled = busy;
+    this.mergeButton.disabled = busy;
     this.addButton.disabled = busy;
     this.preset.disabled = busy;
     this.applyButton.disabled = busy || !state.candidate?.operations.length;
@@ -786,6 +864,8 @@ export class EditorCaptionsUI {
         const scope = { sequence: "当前序列全部字幕", selected: "仅所选字幕", current: "当前匹配字幕" }[change.scope];
         this.candidateRows.append(element("p", `${scope}：将替换 ${change.matched} 条字幕中的 ${change.occurrences} 处匹配。检查预览后应用；可一次撤销。`));
       }
+      if (state.candidate.sentence) this.candidateRows.append(element("p",
+        `${state.candidate.sentence.action === "split" ? "将一条字幕分为两条" : "将相邻两条字幕合为一条"}；仅修改这些字幕，检查文字与时间后应用，可一次撤销。`));
       for (const notice of state.candidate.notices) this.candidateRows.append(element("p", notice));
       for (const row of state.candidate.rows) {
         const item = element("article");

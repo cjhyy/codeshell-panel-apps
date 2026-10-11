@@ -164,3 +164,31 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
 
 后续并行：字幕光标分句/相邻合并、长时间线磁吸扫描优化、59.94fps WebM帧率量化修复。
 新源改动后需再生成installable包；11:00时停止增加范围，完成必要校验、正常合并和交付。
+
+## 第四批固定代码（02:15 左右）
+
+- 第三批38cb7d1已推送，push/PR两套CI共14个checks全部通过。
+- 新增量8139933消除磁吸块反复排序与线性查找，并合并相同delta的移动组件；
+  既有完整输入/最终图校验次数不变。root复跑合法5000片段：连续磁吸移动74.43ms、
+  裁切79.23ms，含间隙磁吸移动170.85ms、裁切81.08ms，自由移动42.70ms/裁切63.52ms。
+  机器并发负载会影响结果；这不是60fps保证。22单测+99真实UI通过。
+- efdfb3e与2a0b99b加入光标分句/手动分割时间、两条同轨相邻字幕合并。
+  有可证明的真实词边界取右首词.start；无可靠词边界必须显式给时间，完全不按字数估时。
+  文本按caret原样切片，Unicode grapheme不能拆开；手动时间保持tick精度。
+  预览前和应用前保护所有受影响草稿，durable一次提交/撤销及旁白审批回退同步。
+  翻译元数据、关键帧/淡入/打字机、不连续绑定和不同样式关联保守拒绝并解释。
+- 来源切片逐嵌套stage证明正向map段、单一逆映射及保存source/provenance边界，
+  拒绝2x整数取整造成范围扩大和正端点但内部反向循环的两个审查反例。
+  同工程修订查找导航重新取当前tick；排队导航、分句/合并和await seek后的选择
+  均受session/generation/sequence所有权约束。最新字幕47单测、44完整字幕UI通过。
+  合并前相关caption/inspector70UI及caption/clip/session/narration/history123单测也通过。
+  420px真实Chromium视觉检查无溢出，证据
+  `/Users/admin/.codex/visualizations/2026/10/12/video-studio-caption-sentences/`。
+- cee45e1修复WebM59.94帧周期纳秒量化误拒及24h NTSC末帧上取整误拒，仍拒绝
+  错误率/avg与nominal冲突/额外整帧。7项含真实编码检查与15渲染媒体回归通过。
+- 本批typecheck/build/build:check/validate/diffcheck通过，源与installable包同步。
+  固定此批后将再跑完整UI/媒体/离线，不在其运行中改变被测源。
+
+下一轮分工：media_audit跨序列剪贴板与durable cut/paste/duplicate；editing_audit
+其他属性面板代际隔离；linked_split只做owned preview能力原型/反例/性能评估，尚未改正式API。
+11:00截止和automation11有效，goal继续active，不提前完成。

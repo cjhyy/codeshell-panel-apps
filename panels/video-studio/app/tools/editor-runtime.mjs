@@ -2744,7 +2744,8 @@ function probeSeconds(value) {
 }
 function verifyExportOutput(profile, probe, expectedDurationSeconds) {
   const p = validateExportProfile(profile);
-  if (!Number.isFinite(expectedDurationSeconds) || expectedDurationSeconds <= 0 || expectedDurationSeconds > 86400)
+  const maximumDurationSeconds = Math.ceil(86400 * p.frameRate.numerator / p.frameRate.denominator) * p.frameRate.denominator / p.frameRate.numerator;
+  if (!Number.isFinite(expectedDurationSeconds) || expectedDurationSeconds <= 0 || expectedDurationSeconds > maximumDurationSeconds)
     throw new Error("预期成片时长无效");
   if (!probe || typeof probe !== "object" || !Array.isArray(probe.streams))
     throw new Error("导出文件缺少有效的音视频检测结果");
@@ -2765,8 +2766,12 @@ function verifyExportOutput(profile, probe, expectedDurationSeconds) {
   if (Number(audio2.sample_rate) !== p.sampleRate || audio2.channels !== 2)
     throw new Error("导出文件的音频采样率或声道数量不正确");
   const expectedRate = p.frameRate.numerator / p.frameRate.denominator;
-  const actualRate = probeRate(video.avg_frame_rate) ?? probeRate(video.r_frame_rate);
-  if (actualRate === void 0 || Math.abs(actualRate - expectedRate) > 1e-6)
+  const actualRates = [probeRate(video.avg_frame_rate), probeRate(video.r_frame_rate)].filter(
+    (rate2) => rate2 !== void 0
+  );
+  if (!actualRates.length || actualRates.some(
+    (rate2) => Math.abs(rate2 - expectedRate) > 1e-6 && (p.container !== "webm" || Math.abs(1 / rate2 - 1 / expectedRate) > 1e-9)
+  ))
     throw new Error("导出文件的实际帧率与所选配置不一致");
   const durations = [probeSeconds(video.duration), probeSeconds(value.format?.duration)].filter(
     (v) => v !== void 0

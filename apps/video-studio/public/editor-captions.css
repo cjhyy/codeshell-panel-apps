@@ -185,6 +185,19 @@
 .editor-captions .ec-row-actions {
   justify-content: flex-end;
 }
+.editor-captions .ec-split-manual label {
+  flex-wrap: wrap;
+}
+.editor-captions .ec-split-manual input {
+  flex: 1 1 120px;
+  width: 150px;
+  min-width: 0;
+}
+.editor-captions .ec-split-manual small {
+  display: block;
+  margin: 6px 0;
+  color: #b7c4d6;
+}
 .editor-captions .ec-row-time label,
 .editor-captions .ec-preset {
   display: flex;

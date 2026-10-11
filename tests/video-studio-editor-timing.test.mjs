@@ -8,7 +8,7 @@ let browser, page;
 before(async () => {
   const bundle = await build({
     stdin: {
-      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';`,
+      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';export * from './apps/video-studio/src/editor/timing-edits';export {applyEditorOperations} from './apps/video-studio/src/editor/operations';export {trimClip} from './apps/video-studio/src/editor/clip-edits';export {validateEditorDocument} from './apps/video-studio/src/editor/validation';`,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
     bundle: true,
@@ -337,3 +337,94 @@ test("pending parent persistence disables repeated submits and disposal removes 
   assert.equal(await page.getByRole("region", { name: "时间与转场" }).count(), 0);
   assert.equal(await page.locator(".editor-timing").count(), 0);
 });
+
+test("ripple trim keeps a later transition, audio and subtitles aligned through one parent edit and undo", async () => {
+  const before = await page.evaluate(() => {
+    const initial = fixture();
+    const document = api.applyEditorOperations(initial, api.planTransition(initial, "main", "b", "c", {
+      id: "bc", kind: "dissolve", duration: 240000,
+    }), initial.revision);
+    reset(["a"], document);
+    now = 480000;
+    timing.render();
+    return editorHistory.read();
+  });
+  await page.getByLabel("联动后续片段", { exact: true }).check();
+  await click("保留播放头左侧");
+  const result = await page.evaluate(() => ({ document: editorHistory.read(), calls, errors }));
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].ops.filter((operation) => operation.type === "clip.move").length, 1);
+  for (const id of ["b", "sound", "cb"]) assert.equal((await read(id)).start, 480000);
+  assert.equal((await read("c")).start, 1200000);
+  assert.equal(result.document.sequences[0].transitions[0].start, 1200000);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => { editorHistory.undo(); timing.render(); });
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), { ...before, revision: before.revision + 2 });
+  assert.equal(await page.evaluate(() => editorHistory.canUndo), false);
+});
+
+for (const count of [1000, 5000]) {
+  test(`Chromium planning benchmark retains legal sequence limits for ${count} media clips`, async (t) => {
+    const results = await page.evaluate((count) => {
+      const make = (mode, spacing) => {
+        const document = {
+          schemaVersion: 2, timebase: 240000, id: "large", name: "规划基准", revision: 3,
+          activeSequenceId: "main", exportProfiles: [], sequences: [],
+          assets: [{ id: "demo", kind: "demo", name: "测试视频", duration: 8000, width: 320, height: 180 }],
+        };
+        for (let offset = 0; offset < count; offset += 2000) document.sequences.push({
+          id: offset ? `sequence-${offset}` : "main", name: "序列", width: 320, height: 180,
+          frameRate: { numerator: 30, denominator: 1 }, background: "#000000", timelineMode: mode,
+          tracks: [api.createTrack("v", "video")], transitions: [], markers: [],
+          clips: Array.from({ length: Math.min(2000, count - offset) }, (_, index) => ({
+            id: `clip-${offset + index}`, kind: "media", assetId: "demo", trackId: "v", label: "视频",
+            start: index * spacing, duration: 8000,
+            timeMap: { points: [{ time: 0, source: 0 }, { time: 8000, source: 8000 }] },
+            audio: api.defaultAudioMix(), transform: api.defaultTransform(),
+            color: api.defaultColorAdjustment(), blendMode: "normal",
+          })),
+        });
+        return api.validateEditorDocument(document);
+      };
+      const free = make("free", 16000),
+        magnetic = make("magnetic", 16000),
+        contiguous = make("magnetic", 8000),
+        functions = {
+          freeMove: () => api.applyEditorOperations(free, [{
+            type: "clip.move", sequenceId: "main", clipIds: ["clip-0"], delta: 4000,
+          }], free.revision),
+          freeTrim: () => api.trimClip(free, "main", "clip-0", 1000, 7000),
+          gappedMagneticMove: () => api.planMagneticMove(magnetic, "main", ["clip-0"], { delta: 16000 }),
+          gappedMagneticTrim: () => api.planClipTiming(magnetic, "main", ["clip-0"], { kind: "keep-left", time: 4000 }, { ripple: true }),
+          contiguousMagneticMove: () => api.planMagneticMove(contiguous, "main", ["clip-0"], { delta: 8000 }),
+          contiguousMagneticTrim: () => api.planClipTiming(contiguous, "main", ["clip-0"], { kind: "keep-left", time: 4000 }, { ripple: true }),
+        },
+        timings = [];
+      for (const [name, plan] of Object.entries(functions)) {
+        for (let index = 0; index < 2; index++) plan();
+        const samples = [];
+        for (let index = 0; index < 6; index++) {
+          const started = performance.now();
+          plan();
+          samples.push(performance.now() - started);
+        }
+        timings.push({ name, mean: samples.reduce((sum, value) => sum + value, 0) / samples.length });
+      }
+      const operations = functions.contiguousMagneticTrim(),
+        result = api.applyEditorOperations(contiguous, operations, contiguous.revision);
+      return {
+        timings,
+        sequenceLengths: contiguous.sequences.map((sequence) => sequence.clips.length),
+        movementCount: operations.filter((operation) => operation.type === "clip.move").length,
+        afterStart: result.sequences[0].clips.at(-1).start,
+        expectedStart: (contiguous.sequences[0].clips.length - 1) * 8000 - 4000,
+        inactiveUnchanged: JSON.stringify(result.sequences.slice(1)) === JSON.stringify(contiguous.sequences.slice(1)),
+      };
+    }, count);
+    assert.deepEqual(results.sequenceLengths, count === 5000 ? [2000, 2000, 1000] : [1000]);
+    assert.equal(results.movementCount, 1);
+    assert.equal(results.afterStart, results.expectedStart);
+    assert.equal(results.inactiveUnchanged, true);
+    t.diagnostic(`${count} media clips: ${results.timings.map(({ name, mean }) => `${name} ${mean.toFixed(2)}ms`).join(", ")}`);
+  });
+}

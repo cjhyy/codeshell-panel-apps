@@ -219,10 +219,16 @@ export function verifyExportOutput(
   expectedDurationSeconds: number,
 ): void {
   const p = validateExportProfile(profile);
+  // The final encoded frame may extend past the 24-hour source limit at NTSC
+  // rates. Accept precisely that last whole frame, never a longer timeline.
+  const maximumDurationSeconds =
+    (Math.ceil((86400 * p.frameRate.numerator) / p.frameRate.denominator) *
+      p.frameRate.denominator) /
+    p.frameRate.numerator;
   if (
     !Number.isFinite(expectedDurationSeconds) ||
     expectedDurationSeconds <= 0 ||
-    expectedDurationSeconds > 86400
+    expectedDurationSeconds > maximumDurationSeconds
   )
     throw new Error("预期成片时长无效");
   if (!probe || typeof probe !== "object" || !Array.isArray((probe as any).streams))
@@ -250,8 +256,21 @@ export function verifyExportOutput(
   if (Number(audio.sample_rate) !== p.sampleRate || audio.channels !== 2)
     throw new Error("导出文件的音频采样率或声道数量不正确");
   const expectedRate = p.frameRate.numerator / p.frameRate.denominator;
-  const actualRate = probeRate(video.avg_frame_rate) ?? probeRate(video.r_frame_rate);
-  if (actualRate === undefined || Math.abs(actualRate - expectedRate) > 0.000001)
+  const actualRates = [probeRate(video.avg_frame_rate), probeRate(video.r_frame_rate)].filter(
+    (rate): rate is number => rate !== undefined,
+  );
+  // Matroska DefaultDuration stores an integer nanosecond frame period. Its
+  // rational probe rate can differ slightly (59.94 -> 19001/317) without a
+  // different frame cadence. Keep both average and nominal rates within that
+  // one-nanosecond bound; a correct average cannot hide a different cadence.
+  if (
+    !actualRates.length ||
+    actualRates.some(
+      (rate) =>
+        Math.abs(rate - expectedRate) > 0.000001 &&
+        (p.container !== "webm" || Math.abs(1 / rate - 1 / expectedRate) > 0.000000001),
+    )
+  )
     throw new Error("导出文件的实际帧率与所选配置不一致");
   const durations = [probeSeconds(video.duration), probeSeconds(value.format?.duration)].filter(
     (v): v is number => v !== undefined,

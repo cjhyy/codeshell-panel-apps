@@ -53,8 +53,10 @@ async function fixture(t, options = {}) {
     globalThis.errors = [];
     globalThis.waitRead = null;
     globalThis.waitTranslate = null;
+    globalThis.waitSeek = null;
     globalThis.abortSignal = null;
     globalThis.selection = [];
+    globalThis.selectionCalls = [];
     globalThis.sought = [];
     globalThis.soughtExact = [];
     globalThis.playhead = 0;
@@ -211,8 +213,11 @@ async function fixture(t, options = {}) {
       session: () => session,
       controller,
       ...(options.inline ? { presentation: "inline", currentTime: () => playhead } : {}),
-      select: (sequenceId, ids) => (selection = ids),
-      seek: (tick, exact) => { sought.push(tick); soughtExact.push(Boolean(exact)); },
+      select: (sequenceId, ids) => { selectionCalls.push({ sequenceId, ids }); selection = ids; },
+      seek: async (tick, exact) => {
+        sought.push(tick); soughtExact.push(Boolean(exact));
+        if (waitSeek) await waitSeek;
+      },
       onError: (error) => errors.push(error.message),
       ...(options.recheck
         ? {
@@ -1037,5 +1042,367 @@ test("saving punctuation-only corrections keeps real timed highlighting and Undo
   await page.evaluate(() => session.undo());
   await page.waitForFunction(() => captions()[0].text === "Hello world");
   assert.deepEqual(await page.evaluate(() => captions()[0]), before);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("real textarea caret previews a precise word split, saves once and restores words/bindings with one Undo", async (t) => {
+  const page = await fixture(t, { inline: true, width: 420 });
+  const original = await page.evaluate(async () => {
+    transcript[0].words[0].end = (2 * 240000 - 7) / 240000;
+    transcript[0].words[1].start = (2 * 240000 + 13) / 240000;
+    await seed();
+    return session.read();
+  });
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => { node.focus(); node.setSelectionRange(6, 6); });
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.deepEqual(await page.evaluate(() => controller.getState().candidate.rows.map((item) => [item.text, item.start, item.duration, item.wordCount])), [
+    ["Hello ", 240000, 240013, 1], ["world", 480013, 239987, 1],
+  ]);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.equal(await page.evaluate(() => session.read().revision), original.revision + 1);
+  assert.equal(await page.evaluate(() => selection.length), 2);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  const divided = await page.evaluate(() => session.read());
+  assert.equal(divided.sequences[0].clips.find((clip) => clip.kind === "text" && clip.text === "world").sourceBinding.provenance.start, 480013);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), original.sequences);
+  await page.evaluate(() => session.redo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), divided.sequences);
+});
+
+test("untimed captions require an explicit interior split time and never split an emoji grapheme or a text selection", async (t) => {
+  const page = await fixture(t, { inline: true, width: 320 });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, duration: 2 * 240000, text: "A👩‍💻 B" }));
+  const row = page.locator(`[data-caption-id="${id}"]`), input = row.locator("textarea");
+  await input.evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /没有可靠的真实词边界/);
+  assert.equal(await row.locator("details").getAttribute("open"), "");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.evaluate(() => { playhead = 240017; });
+  await row.getByRole("button", { name: "使用播放头时间", exact: true }).click();
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").textContent(), /手动分割时间/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.deepEqual(await page.evaluate(() => captions().map((clip) => [clip.text, clip.start, clip.duration, clip.words.length])), [["A👩‍💻", 0, 240017, 0], [" B", 240017, 239983, 0]]);
+  await page.evaluate(() => session.undo());
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("0");
+  await input.evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.match(await page.locator(".ec-status").textContent(), /严格位于/);
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("1");
+  await input.evaluate((node) => node.setSelectionRange(3, 3));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.match(await page.locator(".ec-status").textContent(), /完整字符/);
+  await input.evaluate((node) => node.setSelectionRange(0, 1));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 4);
+  assert.match(await page.locator(".ec-status").textContent(), /取消文字选区/);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+});
+
+test("caption split protects text and timing drafts before preview and again before apply while preserving other row drafts", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => { await seed(); await controller.add("main", { start: 6 * 240000, text: "旁边的字幕" }); });
+  const first = page.locator(".ec-row").first(), other = page.locator(".ec-row").last();
+  await other.locator("textarea").fill("不受影响的草稿");
+  await first.locator("textarea").fill("尚未保存文字");
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /未保存/);
+  await first.locator("textarea").fill("Hello world");
+  await first.locator('[data-caption-field="start"]').fill("1.1");
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  await first.locator('[data-caption-field="start"]').fill("1.000");
+  await first.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await first.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await first.locator('[data-caption-field="end"]').fill("2.9");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+  assert.equal(await other.locator("textarea").inputValue(), "不受影响的草稿");
+  await first.locator('[data-caption-field="end"]').fill("3.000");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.equal(await other.locator("textarea").inputValue(), "不受影响的草稿");
+});
+
+test("caption merge previews both lines, guards the removed row's draft and saves one undoable change", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const ids = await page.evaluate(async () => [await controller.add("main", { start: 0, duration: 240000, text: "第一句" }), await controller.add("main", { start: 240000, duration: 240000, text: "第二句" })]);
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.equal(await page.locator(".ec-result").textContent(), "第一句\n第二句");
+  const removed = page.locator(`[data-caption-id="${ids[1]}"] textarea`);
+  await removed.fill("第二句的未保存草稿");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+  assert.equal(await removed.inputValue(), "第二句的未保存草稿");
+  await removed.fill("第二句");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 1);
+  assert.deepEqual(await page.evaluate(() => selection), [ids[0]]);
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before.sequences);
+});
+
+test("caption sentence previews retry failed durable saves and restore narration approval with a single Undo", async (t) => {
+  const page = await fixture(t, { inline: true, narration: true });
+  const row = page.locator('[data-caption-id="draft-clip"]');
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(2, 2));
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("0.5");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const before = await page.evaluate(() => { fail = true; return session.read(); });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => controller.getState().phase === "error");
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.equal(await page.locator(".ec-preview").isVisible(), true);
+  await page.evaluate(() => { fail = false; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 3);
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "review");
+  assert.match(await page.locator(".ec-status").textContent(), /回到待确认/);
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before.sequences);
+  assert.deepEqual(await page.evaluate(() => session.read().production), before.production);
+});
+
+test("caption split and merge reject locked, translated and incompatible rows with visible explanations and stale previews cannot apply", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => seed());
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => session.replace(session.read()));
+  assert.equal(await page.evaluate(() => controller.getState().phase), "stale");
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await page.evaluate(async () => { try { await controller.apply(); } catch (error) { errors.push(error.message); } });
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  await page.evaluate(async () => {
+    await controller.translate({ sequenceId: "main", clipIds: [captions()[0].id], language: "英语", mode: "bilingual" });
+    await controller.apply();
+  });
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 3);
+  assert.match(await page.locator(".ec-status").textContent(), /含译文字幕暂不支持.*重新生成原字幕/);
+  await page.evaluate(() => session.undo());
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.evaluate(() => {
+    const right = captions()[1];
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: right.id, patch: { style: { ...right.style, fontSize: right.style.fontSize + 1 } } }], session.getState().identity);
+  });
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 4);
+  assert.match(await page.locator(".ec-status").textContent(), /属性不同/);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+});
+
+test("changing manual split time or merge selection discards its previous candidate", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => seed());
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.locator("summary").click();
+  const time = row.getByLabel("手动分割时间（秒）", { exact: true });
+  await time.fill("2");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await time.fill("2.1");
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => { playhead = 2 * 240000; });
+  await row.getByRole("button", { name: "使用播放头时间", exact: true }).click();
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.getByRole("button", { name: "预览合并所选两条字幕", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.locator('.ec-row input[type="checkbox"]').last().uncheck();
+  assert.equal(await page.locator(".ec-preview").isVisible(), false);
+  assert.equal(await page.evaluate(() => captions().length), 2);
+});
+
+test("unproven caption provenance visibly requires detach and the existing detach action allows a safe split", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    const doc = session.read(), owner = doc.sequences[0].clips.find((clip) => clip.id === "voice-clip");
+    owner.timeMap.points = [{ time: 0, source: 4 * 240000 }, { time: 4 * 240000, source: 0 }];
+    await session.replace(doc);
+  });
+  const row = page.locator(".ec-row");
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(6, 6));
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /解除所选来源绑定/);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  await page.getByRole("button", { name: "全选字幕", exact: true }).click();
+  await page.getByRole("button", { name: "解除所选来源绑定", exact: true }).click();
+  await page.waitForFunction(() => !captions()[0].sourceBinding);
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  await page.evaluate(() => session.undo());
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.equal(await page.evaluate(() => Boolean(captions()[0].sourceBinding)), false);
+});
+
+test("manual split inside a timed word keeps other proven words and visibly drops only the crossing alignment", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    await controller.updateStyle("main", [captions()[0].id], { animation: "word-highlight" });
+    session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "audio", patch: { locked: true } }], session.getState().identity);
+  });
+  const row = page.locator(".ec-row"), before = await page.evaluate(() => session.read().sequences);
+  await row.locator("textarea").evaluate((node) => node.setSelectionRange(8, 8));
+  await row.locator("summary").click();
+  await row.getByLabel("手动分割时间（秒）", { exact: true }).fill("2.5");
+  await row.getByRole("button", { name: "在光标处分句", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").textContent(), /1 个词时间将清除/);
+  assert.match(await page.locator(".ec-candidates").textContent(), /关闭逐词高亮/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().length === 2);
+  assert.deepEqual(await page.evaluate(() => captions().map((clip) => ({ text: clip.text, words: clip.words, animation: clip.style.animation }))), [
+    { text: "Hello wo", words: [{ text: "Hello", start: 0, end: 240000 }], animation: "none" },
+    { text: "rld", words: [], animation: "none" },
+  ]);
+  assert.deepEqual(await page.evaluate(() => session.read().sequences[0].clips.filter((clip) => clip.kind === "media")), before[0].clips.filter((clip) => clip.kind === "media"));
+  await page.evaluate(() => session.undo());
+  assert.deepEqual(await page.evaluate(() => session.read().sequences), before);
+});
+
+test("a row seek finishing after generation replacement never selects its old caption in the successor", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(async () => {
+    const id = await controller.add("main", { start: 0, text: "延迟定位字幕" });
+    waitSeek = new Promise((resolve) => { globalThis.finishSeek = resolve; });
+    return id;
+  });
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  await page.waitForFunction(() => sought.length === 1);
+  await page.evaluate(async () => {
+    await session.replace(session.read());
+    selectionCalls = [];
+    selection = [];
+    finishSeek();
+    waitSeek = null;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  assert.deepEqual(await page.evaluate(() => selectionCalls), []);
+  assert.deepEqual(await page.evaluate(() => selection), []);
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  await page.waitForFunction(() => selectionCalls.length === 1);
+  assert.deepEqual(await page.evaluate(() => selectionCalls), [{ sequenceId: "main", ids: [id] }]);
+});
+
+test("queued split and merge clicks belong to their initiating generation", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(async () => {
+    await seed();
+    const doc = session.read();
+    const successor = await editor.EditorSession.open({ read: async () => ({ data: doc, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    const row = document.querySelector(".ec-row"), input = row.querySelector("textarea");
+    input.setSelectionRange(6, 6);
+    [...row.querySelectorAll("button")].find((button) => button.textContent === "在光标处分句").click();
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "预览合并所选两条字幕").click();
+    session = successor;
+    ui.open("main");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.equal(await page.evaluate(() => captions().length), 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("queued find navigation never reveals a same-ID successor or a disposed workbench", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    const doc = session.read(), successor = await editor.EditorSession.open({ read: async () => ({ data: doc, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    session = successor;
+    ui.open("main");
+    selectionCalls = [];
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.evaluate(async () => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    ui.dispose();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+});
+
+test("queued find navigation rejects a changed query and uses an exact updated tick within the same generation", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    const input = document.querySelector('[aria-label="查找字幕文字"]');
+    input.value = "没有匹配";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async (id) => {
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: id, patch: { start: 400013 } }], session.getState().identity);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }, id);
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought, soughtExact]), [[{ sequenceId: "main", ids: [id] }], [400013], [true]]);
+});
+
+test("find navigation queued immediately before a busy caption job cannot seek behind that job", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => controller.add("main", { start: 0, text: "查找目标" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.evaluate(async () => {
+    waitRead = new Promise((resolve) => { globalThis.finishRead = resolve; });
+    [...document.querySelectorAll("button")].find((button) => button.textContent === "下一条匹配").click();
+    globalThis.findBusyJob = controller.generate({ sequenceId: "main", assetIds: ["voice"] }).catch(() => {});
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.deepEqual(await page.evaluate(() => [selectionCalls, sought]), [[], []]);
+  await page.evaluate(async () => { controller.cancel(); finishRead(); waitRead = null; await findBusyJob; });
+  assert.equal(await page.evaluate(() => captions().length), 1);
   assert.deepEqual(await page.evaluate(() => errors), []);
 });

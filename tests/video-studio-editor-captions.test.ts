@@ -39,7 +39,7 @@ import {
   sequenceDuration,
   validateEditorDocument,
 } from "../apps/video-studio/src/editor/validation";
-import { secondsToTicks } from "../apps/video-studio/src/editor/time";
+import { secondsToTicks, sourceRangesToTimeline } from "../apps/video-studio/src/editor/time";
 import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import { EditorSession } from "../apps/video-studio/src/editor/session";
 import {
@@ -49,6 +49,8 @@ import {
   pasteClips,
 } from "../apps/video-studio/src/editor/clip-edits";
 import { evaluateAnimatedNumber } from "../apps/video-studio/src/editor/animation";
+import { planCaptionMerge, planCaptionSplit } from "../apps/video-studio/src/editor/caption-sentence-edits";
+import { sliceCaptionBinding } from "../apps/video-studio/src/editor/caption-bindings";
 import type {
   EditorDocument,
   MediaClip,
@@ -135,6 +137,221 @@ const generated = (doc = fixture()) => {
   });
   return applyEditorOperations(doc, plan.operations, doc.revision);
 };
+
+test("caption caret split preserves exact subframe words, punctuation, source provenance and detached input", () => {
+  const doc = generated(), clip = captions(doc)[0]!;
+  clip.words[0]!.end = T - 9;
+  clip.words[1]!.start = T + 13;
+  const before = structuredClone(doc), plan = planCaptionSplit(doc, "main", clip.id, { caret: 3, idFactory: () => "sentence-right" });
+  assert.deepEqual(doc, before);
+  assert.deepEqual(plan.affectedIds, [clip.id]);
+  const result = applyEditorOperations(doc, plan.operations, doc.revision), [left, right] = captions(result);
+  assert.equal(left!.text, "你好 ");
+  assert.equal(right!.text, "世界");
+  assert.equal(left!.duration, T + 13);
+  assert.equal(right!.start, 2 * T + 13);
+  assert.deepEqual(left!.words, [{ text: "你好", start: 0, end: T - 9 }]);
+  assert.deepEqual(right!.words, [{ text: "世界", start: 0, end: T - 13 }]);
+  assert.equal(left!.sourceBinding!.provenance!.end, right!.sourceBinding!.provenance!.start);
+  assert.equal(left!.sourceBinding!.sourceEnd, right!.sourceBinding!.sourceStart);
+  assert.deepEqual(result.sequences[0]!.clips.find((item) => item.id === "sound"), before.sequences[0]!.clips.find((item) => item.id === "sound"));
+  const add = plan.operations.find((op) => op.type === "clip.add")!;
+  if (add.type === "clip.add" && add.clip.kind === "text") add.clip.style.fontSize = 99;
+  assert.deepEqual(doc, before);
+});
+
+test("caption caret split requires an explicit manual time without a reliable boundary and never cuts a grapheme", () => {
+  const doc = generated(), clip = captions(doc)[0]!;
+  delete clip.sourceBinding;
+  clip.text = "A👩‍💻B";
+  clip.words = [];
+  assert.throws(() => planCaptionSplit(doc, "main", clip.id, { caret: 6 }), /手动|分割时间/);
+  for (const caret of [0, 2, 3, 4, 5, 7])
+    assert.throws(() => planCaptionSplit(doc, "main", clip.id, { caret, time: 2 * T }), /完整字符|两侧/);
+  const result = applyEditorOperations(doc, planCaptionSplit(doc, "main", clip.id, { caret: 6, time: 2 * T + 17 }).operations, doc.revision);
+  assert.deepEqual(captions(result).map((item) => [item.text, item.start, item.duration, item.words]), [["A👩‍💻", T, T + 17, []], ["B", 2 * T + 17, T - 17, []]]);
+  for (const time of [T, 3 * T, T - 1, NaN])
+    assert.throws(() => planCaptionSplit(doc, "main", clip.id, { caret: 6, time }), /分割时间/);
+});
+
+test("manual caption split retains only whole words whose side and exact times can be proved", () => {
+  const doc = generated(), clip = captions(doc)[0]!;
+  delete clip.sourceBinding;
+  clip.start = 0;
+  clip.duration = 3 * T;
+  clip.text = "one two three";
+  clip.words = [{ text: "one", start: 0, end: T }, { text: "two", start: T, end: 2 * T }, { text: "three", start: 2 * T, end: 3 * T }];
+  const plan = planCaptionSplit(doc, "main", clip.id, { caret: 4, time: 1.5 * T });
+  const [left, right] = captions(applyEditorOperations(doc, plan.operations, doc.revision));
+  assert.deepEqual(left!.words, [{ text: "one", start: 0, end: T }]);
+  assert.deepEqual(right!.words, [{ text: "three", start: .5 * T, end: 1.5 * T }]);
+  assert.equal(left!.style.animation, "word-highlight");
+  assert.equal(right!.style.animation, "none");
+  assert.ok(plan.notices.some((notice) => notice.includes("1 个词时间")));
+  const insideWord = planCaptionSplit(doc, "main", clip.id, { caret: 5, time: 1.5 * T });
+  const halves = captions(applyEditorOperations(doc, insideWord.operations, doc.revision));
+  assert.deepEqual(halves.map((item) => item.words.map((word) => word.text)), [["one"], ["three"]]);
+  assert.ok(halves.every((item) => item.style.animation === "none"));
+  clip.text = "独立校对文字";
+  const unaligned = planCaptionSplit(doc, "main", clip.id, { caret: 2, time: T });
+  assert.ok(captions(applyEditorOperations(doc, unaligned.operations, doc.revision)).every((item) => !item.words.length));
+});
+
+test("adjacent caption merge preserves ordered local word times, exact binding and same group/link membership", () => {
+  const doc = generated(), clip = captions(doc)[0]!;
+  clip.groupId = "group";
+  clip.linkGroupId = "link";
+  const split = planCaptionSplit(doc, "main", clip.id, { caret: 3, idFactory: () => "right" });
+  const parted = applyEditorOperations(doc, split.operations, doc.revision), before = structuredClone(parted);
+  const merge = planCaptionMerge(parted, "main", ["right", clip.id]);
+  assert.deepEqual(parted, before);
+  const [joined] = captions(applyEditorOperations(parted, merge.operations, parted.revision));
+  assert.equal(joined!.id, clip.id);
+  assert.equal(joined!.text, "你好 \n世界");
+  assert.equal(joined!.duration, clip.duration);
+  assert.deepEqual(joined!.words, clip.words);
+  assert.deepEqual(joined!.sourceBinding, clip.sourceBinding);
+  assert.equal(joined!.groupId, "group");
+  assert.equal(joined!.linkGroupId, "link");
+  assert.deepEqual(new Set(merge.affectedIds), new Set([clip.id, "right"]));
+});
+
+test("unbound caption merge preserves real offsets across an explicit gap without fabricating missing timing", () => {
+  const doc = generated(), left = captions(doc)[0]!;
+  delete left.sourceBinding;
+  left.style.animation = "none";
+  const right = structuredClone(left);
+  right.id = "right";
+  right.start = 4 * T;
+  right.duration = T;
+  right.text = "没有词时";
+  right.words = [];
+  doc.sequences[0]!.clips.push(right);
+  const plan = planCaptionMerge(doc, "main", [right.id, left.id]), [joined] = captions(applyEditorOperations(doc, plan.operations, doc.revision));
+  assert.equal(joined!.duration, 4 * T);
+  assert.deepEqual(joined!.words, left.words);
+  assert.ok(plan.notices.some((notice) => notice.includes("空白时间")));
+  assert.ok(plan.notices.some((notice) => notice.includes("没有补造")));
+});
+
+test("caption sentence edits reject locked, translated, animated and incompatible captions atomically", () => {
+  const original = generated();
+  for (const change of [
+    (doc: EditorDocument) => { doc.sequences[0]!.tracks.find((track) => track.id === "t")!.locked = true; },
+    (doc: EditorDocument) => { captions(doc)[0]!.translation = { original: "你好 世界", language: "英语", mode: "translated" }; },
+    (doc: EditorDocument) => { captions(doc)[0]!.style.animation = "fade"; },
+    (doc: EditorDocument) => { captions(doc)[0]!.transform.x = { keyframes: [{ time: 0, value: 0, easing: "linear" }] }; },
+  ]) {
+    const doc = structuredClone(original);
+    change(doc);
+    const before = structuredClone(doc);
+    assert.throws(() => planCaptionSplit(doc, "main", captions(doc)[0]!.id, { caret: 3 }), /锁定|译文|动画/);
+    assert.deepEqual(doc, before);
+  }
+  const parted = applyEditorOperations(original, planCaptionSplit(original, "main", captions(original)[0]!.id, { caret: 3, idFactory: () => "right" }).operations, original.revision);
+  for (const change of [
+    (right: TextClip) => { right.style.fontSize += 1; },
+    (right: TextClip) => { right.groupId = "other"; },
+    (right: TextClip) => { right.linkGroupId = "other"; },
+    (right: TextClip) => { right.start -= 1; },
+    (right: TextClip) => { right.start += 1; },
+    (right: TextClip) => { delete right.sourceBinding; },
+  ]) {
+    const doc = structuredClone(parted), right = captions(doc)[1]!;
+    change(right);
+    const before = structuredClone(doc);
+    assert.throws(() => planCaptionMerge(doc, "main", captions(doc).map((item) => item.id)), /样式|关联|重叠|连续|来源/);
+    assert.deepEqual(doc, before);
+  }
+});
+
+test("caption binding proof supports exact nested forward routes and rejects freezes, reverse and repeated output ranges", () => {
+  const base = generated();
+  base.sequences[0]!.tracks.find((track) => track.id === "a")!.locked = true;
+  assert.doesNotThrow(() => planCaptionSplit(base, "main", captions(base)[0]!.id, { caret: 3 }));
+  for (const points of [
+    [{ time: 0, source: 0 }, { time: 4 * T, source: 0 }],
+    [{ time: 0, source: 4 * T }, { time: 4 * T, source: 0 }],
+    [{ time: 0, source: 0 }, { time: T, source: 2 * T }, { time: 2 * T, source: T }, { time: 4 * T, source: 4 * T }],
+  ]) {
+    const doc = structuredClone(base), owner = doc.sequences[0]!.clips[0] as MediaClip;
+    owner.timeMap.points = points;
+    assert.throws(() => planCaptionSplit(doc, "main", captions(doc)[0]!.id, { caret: 3 }), /解除所选来源绑定/);
+  }
+  const doc = generated(nested()), clip = captions(doc)[0]!;
+  assert.ok(clip.sourceBinding!.provenance!.path.length);
+  assert.doesNotThrow(() => planCaptionSplit(doc, "main", clip.id, { caret: 3 }));
+});
+
+test("caption merge rejects a skipped row or mismatched word alignment without changing the project", () => {
+  const doc = generated(), left = captions(doc)[0]!;
+  delete left.sourceBinding;
+  left.start = 0;
+  left.duration = 2 * T;
+  const right = structuredClone(left), middle = structuredClone(left);
+  right.id = "right";
+  right.start = 4 * T;
+  middle.id = "middle";
+  middle.start = 2 * T;
+  doc.sequences[0]!.clips.push(middle, right);
+  const before = structuredClone(doc);
+  assert.throws(() => planCaptionMerge(doc, "main", [left.id, right.id]), /真正相邻/);
+  assert.deepEqual(doc, before);
+  right.text = "与旧词时间不一致";
+  assert.throws(() => planCaptionMerge(doc, "main", [middle.id, right.id]), /词时间.*不一致/);
+});
+
+test("a caption slice never widens a saved source interval between integral source samples", () => {
+  const doc = generated(), owner = doc.sequences[0]!.clips[0] as MediaClip,
+    clip = captions(doc)[0]!;
+  owner.duration = 10;
+  owner.timeMap = { points: [{ time: 0, source: 0 }, { time: 10, source: 20 }] };
+  clip.start = 0;
+  clip.duration = 10;
+  clip.text = "你好";
+  clip.words = [{ text: "你", start: 0, end: 5 }, { text: "好", start: 5, end: 10 }];
+  clip.sourceBinding = { clipId: owner.id, sourceStart: 0, sourceEnd: 19 };
+  const valid = validateEditorDocument(doc), before = structuredClone(valid);
+  assert.deepEqual(sourceRangesToTimeline(owner.timeMap, 0, 19), [{ start: 0, end: 10 }]);
+  // Both source end 19 and 20 map to the same output end. The saved exclusive end is still 19.
+  assert.throws(() => planCaptionSplit(valid, "main", clip.id, { caret: 1 }), /解除所选来源绑定/);
+  assert.deepEqual(valid, before);
+});
+
+test("a single inverse interval cannot hide a reverse source loop, including within a nested route", () => {
+  const doc = generated(), root = doc.sequences[0]!, owner = root.clips[0] as MediaClip,
+    clip = captions(doc)[0]!, loop = [{ time: 0, source: 0 }, { time: 3, source: 8 }, { time: 6, source: 2 }, { time: 10, source: 20 }];
+  owner.duration = 10;
+  owner.timeMap = { points: loop };
+  clip.start = 0;
+  clip.duration = 9;
+  clip.text = "你好";
+  clip.words = [{ text: "你", start: 0, end: 3 }, { text: "好", start: 3, end: 9 }];
+  clip.sourceBinding = { clipId: owner.id, sourceStart: 0, sourceEnd: 16 };
+  const valid = validateEditorDocument(doc);
+  assert.deepEqual(sourceRangesToTimeline(owner.timeMap, 0, 16), [{ start: 0, end: 9 }]);
+  assert.throws(() => sliceCaptionBinding(valid, "main", captions(valid)[0]!, 0, 9), /解除所选来源绑定/);
+  const child = { ...structuredClone(root), id: "child", clips: [{ ...structuredClone(owner), id: "leaf" }] };
+  const wrapper: SequenceClip = { id: "wrapper", kind: "sequence", trackId: "a", start: 0, duration: 10,
+    sequenceId: "child", label: "嵌套", timeMap: { points: [{ time: 0, source: 0 }, { time: 10, source: 10 }] },
+    audio: defaultAudioMix(), transform: defaultTransform(), color: defaultColorAdjustment(), blendMode: "normal" };
+  root.clips = [wrapper, clip];
+  doc.sequences.push(child);
+  clip.sourceBinding = { clipId: wrapper.id, sourceStart: 0, sourceEnd: 9,
+    provenance: { path: ["leaf"], assetId: "voice", start: 0, end: 16 } };
+  const nestedValid = validateEditorDocument(doc);
+  assert.throws(() => sliceCaptionBinding(nestedValid, "main", captions(nestedValid)[0]!, 0, 9), /解除所选来源绑定/);
+  // Positive nonlinear curves and slow-motion repeated rounded samples remain supported.
+  for (const [points, end] of [
+    [[{ time: 0, source: 0 }, { time: 3, source: 4 }, { time: 6, source: 10 }, { time: 10, source: 20 }], 18],
+    [[{ time: 0, source: 0 }, { time: 10, source: 5 }], 5],
+  ] as const) {
+    (child.clips[0] as MediaClip).timeMap = { points: points.map((point) => ({ ...point })) };
+    clip.sourceBinding!.provenance!.end = end;
+    const forward = validateEditorDocument(doc);
+    assert.doesNotThrow(() => sliceCaptionBinding(forward, "main", captions(forward)[0]!, 0, 9));
+  }
+});
 function nested(): EditorDocument {
   const doc = fixture(),
     root = doc.sequences[0]!;
