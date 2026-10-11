@@ -192,3 +192,26 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
 下一轮分工：media_audit跨序列剪贴板与durable cut/paste/duplicate；editing_audit
 其他属性面板代际隔离；linked_split只做owned preview能力原型/反例/性能评估，尚未改正式API。
 11:00截止和automation11有效，goal继续active，不提前完成。
+
+## 第四批完整验证（02:25 左右）
+
+- 固定提交a31c7a7完成完整UI581/581、真实媒体223/223。
+  离线1103项：1100通过、3可选环境跳过；native voice5通过1可选模型跳过，
+  workspace documents5/5。三份完整日志分别为
+  `/tmp/video-studio-morning-fourth-full-ui.log`、`-media.log`、`-unit.log`。
+- 最新origin/main仍为b85dfc8，无需重复合并。第三批38cb7d1的14项CI均通过；
+  第四批将同步到PR70，之后继续增量工作。
+- 已交付待整合21f09a5：跨序列按完整同类轨序位粘贴（含侧链引用），
+  剪切按钮及durable cut/paste/duplicate；保存失败保留工程、选择和原剪贴板。
+  独立88时间轴UI、71workspace UI、107相关单测及主入口帮助验证通过。
+- 新任务codex/video-studio/editor-scope-fences已证明旧时间/序列/机位/标记控件的
+  5个代际反例，正在补修复与异步回调隔离；preview-endurance审查真实资源释放。
+- owned-gesture-preview原型对合法5000片段的自由移动约42→25ms、裁切64→25ms，
+  首次factory约24–30ms；私有validated/frozen base每次clone并完整最终图验证。
+  正式实现仅在真实workspace带identity的手势中启用；公共API输入/最终验证保留，
+  empty操作结果仍复制隔离。等正式实现验证、审查后整合，不能当作已发布性能。
+- root独立codex/video-studio/track-confirm-scope复现4项删轨确认反例：
+  同ID/rev重新打开、未render的generation/revision变化、同trackID切序列。
+  旧确认必须失效且不能绕过当前确认；正在修复，不修改完整回归被测a31源码。
+
+11:00截止仍有效。未发布、未安装新版本；不改变用户工程、不调用付费模型。
