@@ -10,14 +10,14 @@ import { createTrack } from "./defaults";
 import {
   copyClips,
   pasteClips,
-  splitClip,
+  planSplitClips,
   trimClip,
   groupClips,
   ungroupClips,
   type ClipClipboard,
 } from "./clip-edits";
 import { planCutClips, duplicateClipsInPlace } from "./clipboard-edits";
-import type { EditorOperation } from "./operations";
+import { applyEditorOperations, type EditorOperation } from "./operations";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, EditorTrack } from "./types";
 import type { SessionIdentity } from "./session";
@@ -61,6 +61,8 @@ type Drag = {
   revision: number;
   generation?: number;
   sequenceId: string;
+  document: EditorDocument;
+  sequence: EditorSequence;
   clip?: EditorClip;
   ids: string[];
   targetTrack?: string;
@@ -68,6 +70,8 @@ type Drag = {
   time: Tick;
   moved: boolean;
   additive: boolean;
+  altKey: boolean;
+  plan?: { key: string; operations?: EditorOperation[]; error?: unknown; reason?: string };
 };
 const uid = (kind: string) => `${kind}-${randomId()}`;
 /** Plain explanation shown when a magnetic move lands where it started. */
@@ -172,6 +176,7 @@ export class EditorTimeline {
     container.addEventListener("input", this.input);
     container.addEventListener("wheel", this.wheel, { passive: false });
     container.addEventListener("keydown", this.keydown);
+    container.addEventListener("keyup", this.keyup);
     container.addEventListener("pointerdown", this.pointerdown);
     container.addEventListener("pointermove", this.pointermove);
     container.addEventListener("pointerup", this.pointerup);
@@ -186,7 +191,7 @@ export class EditorTimeline {
     this.resizeObserver = new ResizeObserver(() => {
       const width = container.clientWidth;
       if (!this.destroyed && !this.drag && width > 0 && width !== this.renderedWidth)
-        this.render();
+        this.render({ preserveToolbar: true });
       else this.scheduleMedia();
     });
     this.resizeObserver.observe(container);
@@ -331,7 +336,7 @@ export class EditorTimeline {
       `<button type="button" data-et-action="${action}" class="et-tool" aria-label="${label}" title="${label}">${timelineIcon("plus", 10)}${timelineIcon(icon, 13)}<span class="et-add-label">${label}</span></button>`;
     const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
-        <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S", false, selected.size ? "一次只能切分一个片段" : "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
+        <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", !selected.size, "S", false, "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C", false, needSelection)}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V", false, "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D", false, needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
         <div class="et-tool-group et-mode" role="group" aria-label="时间线模式">${TIMELINE_MODES.map(([mode, label, title]) => {
           const blocked =
@@ -422,7 +427,7 @@ export class EditorTimeline {
         // detached, where scrollLeft reads 0. Rendering for it would queue the next stale event.
         if (scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
         this.scrollPosition = scroll.scrollLeft;
-        if (!this.drag) this.render();
+        if (!this.drag) this.render({ preserveToolbar: true });
       },
       { passive: true },
     );
@@ -812,26 +817,17 @@ export class EditorTimeline {
       return;
     }
     if (action === "split") {
-      if (ids.length !== 1) throw new Error("请选择一个片段切分");
-      const operations = splitClip(document, sequence.id, ids[0]!, time, uid),
-        source = sequence.clips.find((clip) => clip.id === ids[0])!,
-        right = operations.find(
-          (operation) =>
-            operation.type === "clip.add" &&
-            operation.clip.trackId === source.trackId &&
-            operation.clip.start === time,
-        ),
+      const plan = planSplitClips(document, sequence.id, ids, time, uid),
         generation = this.context.identity?.().generation;
-      await this.apply(operations, "切分片段");
-      // Bound subtitles are also split; keep just the right-hand source ready for the next S.
+      await this.apply(plan.operations, "切分片段");
+      // Keep the complete right-hand group ready for the next edit; bound subtitles follow sources.
       const current = this.current();
       if (
-        right?.type === "clip.add" &&
         current.document.id === document.id &&
         current.sequence.id === sequence.id &&
         generation === this.context.identity?.().generation
       )
-        this.select([right.clip.id]);
+        this.select(plan.rightClipIds);
       return;
     }
     if (action === "group") {
@@ -885,6 +881,12 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
+    if (event.key === "Alt" && this.drag) {
+      event.preventDefault();
+      this.drag.altKey = true;
+      this.run(() => this.updateDrag());
+      return;
+    }
     if (event.key === "Escape" && this.confirmTrack) {
       event.preventDefault();
       this.confirmTrack = undefined;
@@ -1036,6 +1038,12 @@ export class EditorTimeline {
             ),
       );
     }
+  };
+  private keyup = (event: KeyboardEvent): void => {
+    if (event.key !== "Alt" || !this.drag) return;
+    event.preventDefault();
+    this.drag.altKey = false;
+    this.run(() => this.updateDrag());
   };
   private menuCurrent(): boolean {
     const menu = this.menu;
@@ -1213,22 +1221,28 @@ export class EditorTimeline {
         return;
       const { sequence } = this.current();
       await this.context.addAsset!(payload.assetId, {
-        at: this.snap(this.point(event.clientX), sequence, new Set()),
+        at: this.snap(this.point(event.clientX), sequence, new Set(), !event.altKey),
         trackId: lane.dataset.etLane!,
       });
       this.render();
     });
   };
-  private snap(time: Tick, sequence: EditorSequence, omitted: ReadonlySet<string>): Tick {
+  private snap(
+    time: Tick,
+    sequence: EditorSequence,
+    omitted: ReadonlySet<string>,
+    allowSnapping = true,
+    includePlayhead = true,
+  ): Tick {
     let target = frameToTicks(
       ticksToFrame(Math.max(0, time), sequence.frameRate),
       sequence.frameRate,
     );
-    if (this.snapping) {
+    if (this.snapping && allowSnapping) {
       let distance = (6 / this.scale) * 240000;
       const candidates = [
         0,
-        this.context.time(),
+        ...(includePlayhead ? [this.context.time()] : []),
         ...sequence.markers.flatMap((marker) => [marker.time, marker.time + marker.duration]),
         ...sequence.clips
           .filter((clip) => !omitted.has(clip.id))
@@ -1249,6 +1263,7 @@ export class EditorTimeline {
     sequence: EditorSequence,
     ids: readonly string[],
     anchor: EditorClip,
+    allowSnapping = true,
   ): Tick {
     const chosen = new Set(ids),
       moving = sequence.clips.filter((clip) => chosen.has(clip.id));
@@ -1260,7 +1275,7 @@ export class EditorTimeline {
         sequence.frameRate,
       ) - anchor.start,
     );
-    if (!this.snapping) return delta;
+    if (!this.snapping || !allowSnapping) return delta;
     let distance = (6 / this.scale) * 240000;
     const targets = [
       0,
@@ -1330,6 +1345,8 @@ export class EditorTimeline {
       revision: document.revision,
       generation: this.context.identity?.().generation,
       sequenceId: sequence.id,
+      document,
+      sequence,
       clip,
       ids: clip
         ? [
@@ -1344,6 +1361,7 @@ export class EditorTimeline {
       time: this.point(event.clientX),
       moved: false,
       additive,
+      altKey: event.altKey,
     };
     this.container.focus({ preventScroll: true });
     this.container.setPointerCapture(event.pointerId);
@@ -1365,6 +1383,7 @@ export class EditorTimeline {
     }
     drag.lastX = event.clientX;
     drag.lastY = event.clientY;
+    drag.altKey = event.altKey;
     this.run(() => {
       this.updateDrag();
       this.startAutoScroll();
@@ -1384,18 +1403,22 @@ export class EditorTimeline {
     const dx = drag.lastX - drag.x + viewport.scrollLeft - drag.scroll,
       dy = drag.lastY - drag.y + body.scrollTop - drag.verticalScroll;
     drag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
-    const { document, sequence } = this.current();
+    const identity = this.context.identity?.(),
+      { document, sequence } = identity
+        ? { document: drag.document, sequence: drag.sequence }
+        : this.current();
     if (
-      document.id !== drag.documentId ||
-      document.revision !== drag.revision ||
-      this.context.identity?.().generation !== drag.generation ||
-      sequence.id !== drag.sequenceId
+      (identity?.documentId ?? document.id) !== drag.documentId ||
+      (identity?.revision ?? document.revision) !== drag.revision ||
+      identity?.generation !== drag.generation ||
+      this.context.selection().sequenceId !== drag.sequenceId
     ) {
       this.cancel();
       throw new Error("工程已变化，请重新拖动片段");
     }
     if (drag.kind === "seek") {
-      drag.time = this.snap(this.point(drag.lastX), sequence, new Set());
+      // Seeking must not snap to the playhead it just moved, which would trap small movements.
+      drag.time = this.snap(this.point(drag.lastX), sequence, new Set(), !drag.altKey, false);
       this.run(() => this.context.seek(drag.time));
       return;
     }
@@ -1417,7 +1440,11 @@ export class EditorTimeline {
         width: `${Math.max(0, Math.min(right, visible.right) - displayLeft)}px`,
         height: `${Math.max(0, Math.min(bottom, area.bottom) - displayTop)}px`,
       });
-      const ids = new Set(drag.additive ? drag.ids : []);
+      const ids = new Set(drag.additive ? drag.ids : []),
+        sample = this.container.querySelector<HTMLElement>("[data-et-clip]"),
+        // Offscreen clips are virtualized; all clip kinds share the visible clip's geometry.
+        clipTop = sample?.offsetTop ?? 4,
+        clipHeight = sample?.offsetHeight ?? 39;
       for (const clip of sequence.clips) {
         const lane = this.container
           .querySelector<HTMLElement>(`[data-et-lane="${CSS.escape(clip.trackId)}"]`)!
@@ -1426,8 +1453,8 @@ export class EditorTimeline {
         if (
           x + Math.max(3, ticksToSeconds(clip.duration) * this.scale) >= left &&
           x <= right &&
-          lane.top + 56 >= top &&
-          lane.top + 7 <= bottom
+          lane.top + clipTop + clipHeight > top &&
+          lane.top + clipTop < bottom
         )
           ids.add(clip.id);
       }
@@ -1444,12 +1471,13 @@ export class EditorTimeline {
     const desired = Math.round((dx / this.scale) * 240000);
     drag.delta =
       drag.kind === "move"
-        ? this.moveDelta(desired, sequence, drag.ids, clip)
-        : this.snap(edge + desired, sequence, new Set(drag.ids)) - edge;
+        ? this.moveDelta(desired, sequence, drag.ids, clip, !drag.altKey)
+        : this.snap(edge + desired, sequence, new Set(drag.ids), !drag.altKey) - edge;
     const hit = globalThis.document
       .elementFromPoint(drag.lastX, drag.lastY)
       ?.closest<HTMLElement>("[data-et-lane]");
     drag.targetTrack = hit?.dataset.etLane ?? clip.trackId;
+    if (drag.moved) this.previewPlan(document, sequence, drag);
     const sourceLane = this.container.querySelector<HTMLElement>(
       `[data-et-lane="${CSS.escape(clip.trackId)}"]`,
     );
@@ -1460,13 +1488,18 @@ export class EditorTimeline {
       drag.kind === "move" && sourceLane && destinationLane
         ? destinationLane.getBoundingClientRect().top - sourceLane.getBoundingClientRect().top
         : 0;
-    for (const lane of this.container.querySelectorAll<HTMLElement>("[data-et-lane]"))
-      lane.classList.toggle(
-        "drop-target",
-        drag.kind === "move" && lane.dataset.etLane === drag.targetTrack,
-      );
+    for (const lane of this.container.querySelectorAll<HTMLElement>("[data-et-lane]")) {
+      const target = drag.kind === "move" && lane.dataset.etLane === drag.targetTrack;
+      lane.classList.toggle("drop-target", target);
+      lane.classList.toggle("drop-target-invalid", !!drag.plan?.reason && target);
+    }
     for (const element of this.container.querySelectorAll<HTMLElement>("[data-et-clip]")) {
       const source = sequence.clips.find((item) => item.id === element.dataset.etClip)!;
+      element.classList.toggle(
+        "drag-invalid",
+        !!drag.plan?.reason &&
+          (drag.kind === "move" ? drag.ids.includes(source.id) : source.id === clip.id),
+      );
       if (drag.kind === "move" && drag.ids.includes(source.id)) {
         element.style.pointerEvents = "none";
         element.style.transform = `translate(${(drag.delta / 240000) * this.scale}px,${vertical}px)`;
@@ -1476,6 +1509,67 @@ export class EditorTimeline {
         element.style.width = `${Math.max(3, ticksToSeconds(clip.duration) * this.scale + (drag.kind === "left" ? -deltaPx : deltaPx))}px`;
       }
     }
+  }
+  /** Preview and release share the exact planners; only changed frame/track results are validated. */
+  private previewPlan(document: EditorDocument, sequence: EditorSequence, drag: Drag): void {
+    const key = `${drag.kind}:${drag.delta}:${drag.kind === "move" ? drag.targetTrack : ""}`;
+    if (drag.plan?.key === key) return;
+    try {
+      drag.plan = { key, operations: this.planDrag(document, sequence, drag) };
+    } catch (error) {
+      drag.plan = {
+        key,
+        error,
+        reason: (error instanceof Error ? error.message : String(error)) || "无法在此位置编辑片段",
+      };
+    }
+    const reason = drag.plan.reason ?? "";
+    if (this.notice.textContent !== reason) this.notice.textContent = reason;
+  }
+  private planDrag(
+    document: EditorDocument,
+    sequence: EditorSequence,
+    drag: Drag,
+  ): EditorOperation[] {
+    const clip = drag.clip!;
+    if (drag.kind === "move") {
+      if (sequence.timelineMode === "magnetic")
+        return planMagneticMove(document, sequence.id, drag.ids, {
+          delta: drag.delta,
+          trackId: drag.targetTrack,
+          anchorClipId: clip.id,
+        });
+      const operations: EditorOperation[] = [
+        {
+          type: "clip.move",
+          sequenceId: sequence.id,
+          clipIds: drag.ids,
+          delta: drag.delta,
+          trackId: drag.targetTrack,
+        },
+      ];
+      // Free movement has no planner, so use the same detached validation as session dispatch.
+      applyEditorOperations(document, operations, document.revision);
+      return operations;
+    }
+    return isMagneticTrack(sequence, clip.trackId)
+      ? planClipTiming(
+          document,
+          sequence.id,
+          [clip.id],
+          {
+            kind: drag.kind === "left" ? "keep-right" : "keep-left",
+            time: clip.start + (drag.kind === "left" ? drag.delta : clip.duration + drag.delta),
+          },
+          { ripple: true },
+        )
+      : trimClip(
+          document,
+          sequence.id,
+          clip.id,
+          drag.kind === "left" ? drag.delta : 0,
+          drag.kind === "right" ? clip.duration + drag.delta : clip.duration,
+        );
   }
   /** Keep scrolling bounded by pixels per second, never by callback count or elapsed background time. */
   private scrollVelocity(): { x: number; y: number } {
@@ -1563,6 +1657,16 @@ export class EditorTimeline {
   private pointerup = (event: PointerEvent) => {
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    drag.altKey = event.altKey;
+    try {
+      this.updateDrag();
+    } catch (error) {
+      this.cancel();
+      this.context.onError(error);
+      return;
+    }
     this.cancel();
     this.run(async () => {
       const { document, sequence } = this.current();
@@ -1574,61 +1678,26 @@ export class EditorTimeline {
       )
         throw new Error("工程已变化，请重新拖动片段");
       if (drag.kind === "seek")
-        await this.context.seek(this.snap(this.point(event.clientX), sequence, new Set()));
+        await this.context.seek(
+          this.snap(this.point(event.clientX), sequence, new Set(), !drag.altKey, false),
+        );
       else if (drag.kind === "box") {
         if (!drag.moved && !drag.additive) this.context.select([]);
       } else if (drag.moved) {
-        const clip = drag.clip!;
+        if (drag.plan?.reason) {
+          this.notice.textContent = drag.plan.reason;
+          throw drag.plan.error;
+        }
+        const operations = drag.plan?.operations ?? this.planDrag(document, sequence, drag);
         if (drag.kind === "move" && sequence.timelineMode === "magnetic")
-          await this.applyMagneticMove(
-            planMagneticMove(document, sequence.id, drag.ids, {
-              delta: drag.delta,
-              trackId: drag.targetTrack,
-              anchorClipId: clip.id,
-            }),
-            "移动片段",
-          );
-        else if (drag.kind === "move")
-          await this.apply(
-            [
-              {
-                type: "clip.move",
-                sequenceId: sequence.id,
-                clipIds: drag.ids,
-                delta: drag.delta,
-                trackId: drag.targetTrack,
-              },
-            ],
-            "移动片段",
-          );
-        else
-          await this.apply(
-            isMagneticTrack(sequence, clip.trackId)
-              ? planClipTiming(
-                  document,
-                  sequence.id,
-                  [clip.id],
-                  {
-                    kind: drag.kind === "left" ? "keep-right" : "keep-left",
-                    time:
-                      clip.start + (drag.kind === "left" ? drag.delta : clip.duration + drag.delta),
-                  },
-                  { ripple: true },
-                )
-              : trimClip(
-                  document,
-                  sequence.id,
-                  clip.id,
-                  drag.kind === "left" ? drag.delta : 0,
-                  drag.kind === "right" ? clip.duration + drag.delta : clip.duration,
-                ),
-            "裁剪片段",
-          );
+          await this.applyMagneticMove(operations, "移动片段");
+        else await this.apply(operations, drag.kind === "move" ? "移动片段" : "裁剪片段");
       }
       this.render();
     });
   };
   private cancel = () => {
+    this.notice.textContent = "";
     if (this.autoScrollFrame !== undefined) cancelAnimationFrame(this.autoScrollFrame);
     this.autoScrollFrame = undefined;
     const drag = this.drag;
@@ -1639,6 +1708,7 @@ export class EditorTimeline {
     this.box = undefined;
     const clips = this.current().sequence.clips;
     for (const clip of this.container.querySelectorAll<HTMLElement>("[data-et-clip]")) {
+      clip.classList.remove("drag-invalid");
       clip.style.transform = "";
       clip.style.pointerEvents = "";
       const source = clips.find((item) => item.id === clip.dataset.etClip);
@@ -1646,7 +1716,7 @@ export class EditorTimeline {
         clip.style.width = `${Math.max(3, ticksToSeconds(source.duration) * this.scale)}px`;
     }
     for (const lane of this.container.querySelectorAll<HTMLElement>("[data-et-lane]"))
-      lane.classList.remove("drop-target");
+      lane.classList.remove("drop-target", "drop-target-invalid");
   };
   private cancelPointer = (event: PointerEvent) => {
     if (this.drag?.pointerId === event.pointerId) this.cancel();
@@ -1669,6 +1739,7 @@ export class EditorTimeline {
     this.container.removeEventListener("input", this.input);
     this.container.removeEventListener("wheel", this.wheel);
     this.container.removeEventListener("keydown", this.keydown);
+    this.container.removeEventListener("keyup", this.keyup);
     this.container.removeEventListener("pointerdown", this.pointerdown);
     this.container.removeEventListener("pointermove", this.pointermove);
     this.container.removeEventListener("pointerup", this.pointerup);

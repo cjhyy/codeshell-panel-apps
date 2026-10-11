@@ -67,6 +67,7 @@ test(
     export {renderEditorAudio} from "./apps/video-studio/native/media/editor-audio-renderer.ts";
     export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from "./apps/video-studio/src/editor/defaults.ts";
     export {constantTimeMap,freezeTimeMap} from "./apps/video-studio/src/editor/time.ts";
+    export {audioMixWarning} from "./apps/video-studio/src/editor/audio-mix-report.ts";
   `,
       },
       outfile: bundle,
@@ -505,6 +506,30 @@ test(
         near(result.peak, 3.2, 0.0001);
         assert.ok(result.samplesOverFullScale > 0);
         near(rms(pcm, 0.2, 1.8), 3.2 / Math.sqrt(2), 0.001);
+      },
+    );
+
+    await t.test(
+      "two real sine tracks warn about overload and clear after lowering gain",
+      async () => {
+        const seq = sequence();
+        seq.clips = [clip("first", "tone", 2 * T, "video"), clip("second", "tone", 2 * T, "sound")];
+        for (const media of seq.clips) media.audio.volume = 3;
+        const overloaded = await render(seq);
+        near(overloaded.result.peak, 1.2, 0.0001);
+        const measured = overloaded.pcm.reduce(
+          (peak, sample) => Math.max(peak, Math.abs(sample)),
+          0,
+        );
+        near(measured, overloaded.result.peak, 0.0001);
+        assert.ok(overloaded.result.samplesOverFullScale > 0);
+        assert.match(api.audioMixWarning(overloaded.result), /\+1\.6 dBFS.*降低音轨或片段音量/);
+        assert.equal(seq.clips[0].audio.volume, 3, "A warning must preserve the chosen gain");
+        for (const media of seq.clips) media.audio.volume = 1;
+        const corrected = await render(seq);
+        near(corrected.result.peak, 0.4, 0.0001);
+        assert.equal(corrected.result.samplesOverFullScale, 0);
+        assert.equal(api.audioMixWarning(corrected.result), "");
       },
     );
 

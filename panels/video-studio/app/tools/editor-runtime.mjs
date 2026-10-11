@@ -3728,6 +3728,25 @@ function decodeEditorWaveform(value) {
   return { ...metadata, data };
 }
 
+// src/editor/audio-mix-report.ts
+function validateAudioMixReport(value) {
+  const report = value;
+  if (!report || !Number.isSafeInteger(report.sampleCount) || report.sampleCount < 0 || report.sampleCount > 86400 * 48e3 || !Number.isFinite(report.peak) || report.peak < 0 || !Number.isSafeInteger(report.samplesOverFullScale) || report.samplesOverFullScale < 0 || report.samplesOverFullScale > report.sampleCount || report.peak > 1 !== report.samplesOverFullScale > 0 || !report.sampleCount && report.peak !== 0)
+    throw new Error("混音测量结果无效，请重新准备声音");
+  return {
+    sampleCount: report.sampleCount,
+    peak: report.peak,
+    samplesOverFullScale: report.samplesOverFullScale
+  };
+}
+function audioMixWarning(value) {
+  const report = validateAudioMixReport(value);
+  if (!report.samplesOverFullScale) return "";
+  const db = 20 * Math.log10(report.peak);
+  const level = db < 0.05 ? "略高于 0 dBFS" : `+${db.toFixed(1)} dBFS`;
+  return `混音峰值 ${level}，声音叠加或音量过高可能导致失真。请降低音轨或片段音量后重新播放或导出。`;
+}
+
 // src/editor/task-bridge.ts
 var EDITOR_DEMO_NARRATION_SHA = "a57af26cc6bec773097f739da61e222548d72a5edc4fcaf377276696e7da3d40";
 function isEditorDemoNarration(asset2) {
@@ -7536,9 +7555,11 @@ async function runEditorRequest(raw, context) {
   const cache = await directory(scope, ["cache"]);
   const artifacts = [];
   let succeeded = false;
+  let mixWarning = "";
   const progress2 = async (fraction, stage, message) => {
     abort(context.signal);
-    await context.reportProgress({ fraction, stage, ...message ? { message } : {} });
+    const detail = [message, mixWarning].filter(Boolean).join(" ");
+    await context.reportProgress({ fraction, stage, ...detail ? { message: detail } : {} });
   };
   const add2 = async (path, extension, mimeType, role) => {
     const artifact = await publish(root, path, extension, mimeType, role, context.signal);
@@ -8197,6 +8218,12 @@ async function runEditorRequest(raw, context) {
         artifacts
       };
     }
+    const audioMix = {
+      documentHash: manifest.documentHash,
+      sequenceId: manifest.sequenceId,
+      ...validateAudioMixReport(mix)
+    };
+    mixWarning = audioMixWarning(audioMix);
     if (bytesHash(Buffer.from(context.runtimeSource)) !== context.runtimeSha)
       throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
     const mediaFiles = /* @__PURE__ */ new Map();
@@ -8245,6 +8272,7 @@ async function runEditorRequest(raw, context) {
       documentHash: manifest.documentHash,
       sequenceId: manifest.sequenceId,
       preparedAudio,
+      audioMix,
       runtimeSha: context.runtimeSha,
       profile: request.profile,
       frameCount: output.frameCount,
@@ -8261,6 +8289,7 @@ async function runEditorRequest(raw, context) {
         video: exported,
         audio: audio2,
         preparedAudio,
+        audioMix,
         reusedAudio: reused,
         report: details,
         frameCount: output.frameCount,

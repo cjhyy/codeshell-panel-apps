@@ -11,6 +11,7 @@ import {
   freezeClip,
   groupClips,
   pasteClips,
+  planSplitClips,
   reverseClip,
   setClipSpeed,
   setClipSpeedCurve,
@@ -248,6 +249,142 @@ test("NTSC split uses an exact interior tick, preserves both halves and does not
   for (const boundary of [source.start, source.start + source.duration, -1, 1.5, NaN])
     assert.throws(() => splitClip(original, main, source.id, boundary, ids()));
   assert.throws(() => splitClip(original, main, source.id, cut, () => source.id), /ID/);
+});
+
+test("multi-split cuts linked sources once, rebinds selected captions and separates both sides' groups", () => {
+  const source = picture(),
+    voice = picture("voice", source.start, source.duration, "a1"),
+    text = caption(source),
+    later = picture("later", sec(8), sec(1), "v2");
+  voice.assetId = "audio";
+  source.linkGroupId = voice.linkGroupId = "sync";
+  for (const item of [source, voice, text, later]) item.groupId = "group";
+  const original = document([source, voice, text, later]),
+    before = structuredClone(original),
+    cut = sec(4),
+    plan = planSplitClips(original, main, [source.id, text.id, voice.id, later.id], cut, ids()),
+    after = apply(original, plan.operations),
+    right = plan.rightClipIds.map((id) => clip(after, id)).filter((item) => item.kind === "media" && item.start === cut),
+    subtitles = after.sequences[0]!.clips.filter((item): item is TextClip => item.kind === "text");
+  assert.equal(after.revision, original.revision + 1);
+  assert.equal(after.sequences[0]!.clips.length, 7, "Two sources and one caption each split once");
+  assert.equal(right.length, 2);
+  assert.equal(plan.rightClipIds.length, 4, "The right-hand group includes its subtitle and future member");
+  assert.ok(plan.rightClipIds.every((id) => clip(after, id).start >= cut));
+  assert.ok(plan.rightClipIds.includes(later.id));
+  assert.ok(right.every((item) => item.start === cut && item.duration === sec(2)));
+  assert.equal(right[0]!.linkGroupId, right[1]!.linkGroupId);
+  assert.notEqual(right[0]!.linkGroupId, "sync");
+  assert.equal(right[0]!.groupId, right[1]!.groupId);
+  assert.notEqual(right[0]!.groupId, "group");
+  assert.equal(clip(after).groupId, "group");
+  assert.equal(clip(after, "voice").linkGroupId, "sync");
+  assert.equal(clip(after, "later").start, later.start);
+  assert.equal(clip(after, "later").groupId, right[0]!.groupId);
+  assert.deepEqual(subtitles.map((item) => item.text), ["one two", "three four"]);
+  const rightSubtitle = subtitles.find((item) => item.start === cut)!;
+  assert.equal(rightSubtitle.sourceBinding!.clipId, right[0]!.id);
+  assert.equal(rightSubtitle.sourceBinding!.sourceStart, sec(3));
+  assert.equal(rightSubtitle.groupId, right[0]!.groupId);
+  assert.ok(plan.rightClipIds.includes(rightSubtitle.id));
+  for (const item of right)
+    assert.equal(sourceTimeAt(item.timeMap, 0), sec(3), "Both tracks retain the exact source offset");
+  const next = planSplitClips(after, main, plan.rightClipIds, sec(5), ids("next")),
+    again = apply(after, next.operations);
+  assert.equal(clip(again, "later").groupId, clip(again, next.rightClipIds[0]!).groupId);
+  assert.notEqual(clip(again, "later").groupId, right[0]!.groupId);
+  assert.deepEqual(original, before);
+});
+
+test("multi-split ignores clips outside the playhead and boundaries, and supports an independently selected bound caption", () => {
+  const source = picture(),
+    text = caption(source),
+    before = picture("before", 0, sec(4), "v2"),
+    after = picture("after", sec(4), sec(2), "v3"),
+    original = document([source, text, before, after]);
+  const plan = planSplitClips(original, main, [text.id, before.id, after.id], sec(4), ids()),
+    result = apply(original, plan.operations);
+  assert.equal(plan.rightClipIds.length, 1);
+  assert.equal(clip<TextClip>(result, plan.rightClipIds[0]!).sourceBinding!.clipId, source.id);
+  for (const id of [source.id, before.id, after.id]) assert.deepEqual(clip(result, id), clip(original, id));
+  assert.throws(
+    () => planSplitClips(original, main, [before.id, after.id], sec(4), ids()),
+    /播放头.*内部/,
+  );
+});
+
+test("right-side group partition separates links found only on future members from clips before the cut", () => {
+  const source = picture("owner", sec(2), sec(4)),
+    future = picture("future", sec(8), sec(1), "v2"),
+    past = picture("past", 0, sec(1), "v3"),
+    further = picture("further", sec(10), sec(1), "a1");
+  source.groupId = future.groupId = "group";
+  future.linkGroupId = past.linkGroupId = further.linkGroupId = "link";
+  further.assetId = "audio";
+  const original = document([source, future, past, further]),
+    plan = planSplitClips(original, main, [source.id], sec(4), ids()),
+    after = apply(original, plan.operations),
+    right = clip(after, plan.rightClipIds[0]!);
+  assert.deepEqual(new Set(plan.rightClipIds), new Set([right.id, future.id, further.id]));
+  assert.equal(clip(after, "future").groupId, right.groupId);
+  assert.notEqual(clip(after, "future").linkGroupId, "link");
+  assert.equal(clip(after, "future").linkGroupId, clip(after, "further").linkGroupId);
+  assert.deepEqual(clip(after, "past"), past);
+  assert.equal(clip(after).groupId, "group");
+  const deleted = apply(after, [{ type: "clip.remove", sequenceId: main, clipIds: plan.rightClipIds }]);
+  assert.deepEqual(deleted.sequences[0]!.clips.map((item) => item.id).sort(), ["owner", "past"]);
+});
+
+test("multi-split rejects locked targets or caption dependencies, unsupported text and transitions as a whole", () => {
+  const source = picture(),
+    voice = picture("voice", source.start, source.duration, "a1"),
+    text = caption(source);
+  voice.assetId = "audio";
+  for (const trackId of [source.trackId, voice.trackId, text.trackId]) {
+    const original = document([source, voice, text]);
+    original.sequences[0]!.tracks.find((item) => item.id === trackId)!.locked = true;
+    const before = structuredClone(original);
+    assert.throws(
+      () => planSplitClips(original, main, [source.id, voice.id, text.id], sec(4), ids()),
+      /锁定/,
+    );
+    assert.deepEqual(original, before);
+  }
+  const later = picture("later", sec(8), sec(1), "v2");
+  source.groupId = later.groupId = "group";
+  const lockedGroup = document([source, later]);
+  lockedGroup.sequences[0]!.tracks.find((item) => item.id === later.trackId)!.locked = true;
+  assert.throws(
+    () => planSplitClips(lockedGroup, main, [source.id, later.id], sec(4), ids()),
+    /锁定/,
+  );
+  const title = caption(source);
+  delete title.sourceBinding;
+  title.style.animation = "typewriter";
+  const unsupported = document([source, title]),
+    before = structuredClone(unsupported);
+  assert.throws(
+    () => planSplitClips(unsupported, main, [source.id, title.id], sec(4), ids()),
+    /打字机/,
+  );
+  assert.deepEqual(unsupported, before);
+
+  const incoming = picture("incoming", sec(5), sec(4)),
+    transitioning = document([]);
+  transitioning.sequences[0]!.clips = [source, voice, incoming];
+  transitioning.sequences[0]!.transitions = [{
+    id: "dissolve",
+    fromClipId: source.id,
+    toClipId: incoming.id,
+    start: sec(5),
+    duration: sec(1),
+    kind: "dissolve",
+  }];
+  assert.throws(
+    () => planSplitClips(transitioning, main, [voice.id, source.id], sec(4), ids()),
+    /转场/,
+  );
+  assert.throws(() => planSplitClips(document([source, voice]), main, [source.id, voice.id], sec(4), () => "same"), /ID/);
 });
 
 test("trim preserves keyframe easing, held values, crops, masks, grade recipes and exact audible gain through overlapping fades", () => {

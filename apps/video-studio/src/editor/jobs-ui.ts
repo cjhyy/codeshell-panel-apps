@@ -4,6 +4,7 @@ import {
   type RuntimeBridge,
   type RuntimeJob,
 } from "../sdk/panel-runtime";
+import { exportAudioMixWarning } from "./audio-mix-report";
 
 let nextExportJobsId = 0;
 /** Remembered export titles; the newest are kept when the bound is reached. */
@@ -319,6 +320,11 @@ export class EditorExportJobs {
       if (previous && !terminal(previous)) this.reportFinished(job);
     }
     row.dataset.status = job.status;
+    const result = job.result?.result ?? job.result;
+    const mixWarning =
+      job.status === "succeeded"
+        ? exportAudioMixWarning(result, (job.input as any)?.request)
+        : "";
     row.querySelector("output")!.textContent = this.observationErrors.has(job.id)
       ? "状态暂未同步，请刷新查看"
       : job.status === "failed"
@@ -327,7 +333,7 @@ export class EditorExportJobs {
             {
               queued: "等待导出",
               running: job.progress?.message || "正在导出",
-              succeeded: "导出完成",
+              succeeded: ["导出完成", mixWarning].filter(Boolean).join(" · "),
               cancelled: "已取消",
             } as const
           )[job.status];
@@ -389,7 +395,6 @@ export class EditorExportJobs {
         this.watching.delete(job.id);
         this.track(retried, row.querySelector("strong")!.textContent!);
       });
-    const result = job.result?.result ?? job.result;
     if (
       job.status === "succeeded" &&
       result?.verified === true &&

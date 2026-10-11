@@ -20,6 +20,7 @@ import { decodeEditorWaveform, WAVEFORM_LIMITS, type EditorWaveform } from "./wa
 import type { Tick } from "./time";
 import type { EditorAsset, EditorDocument } from "./types";
 import type { MulticamAlignment, MulticamAlignmentOptions } from "./multicam-edits";
+import { validateAudioMixReport } from "./audio-mix-report";
 
 /** Fixed installed example audio; ordinary resources always take precedence. */
 export const EDITOR_DEMO_NARRATION_SHA =
@@ -1271,9 +1272,7 @@ export function createEditorTaskBridge(raw: RuntimeBridge, defaults: EditorTaskB
         job,
         preparedAudio: result.preparedAudio,
         audioResource: result.audio,
-        sampleCount: result.sampleCount,
-        peak: result.peak,
-        samplesOverFullScale: result.samplesOverFullScale,
+        ...validateAudioMixReport(result),
         report: result.report,
         reused: result.reused === true,
       };

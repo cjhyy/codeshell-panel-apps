@@ -303,6 +303,7 @@ async function fixture(t, options = {}) {
     });
     globalThis.fixture = {
       read: () => session.read(),
+      refreshMedia: () => workspace.refreshMedia(),
       addAsset: (assetId, placement) => workspace.addAsset(assetId, placement),
       playhead: () => workspace.getPlayhead(),
       playing: () => workspace.playing,
@@ -389,12 +390,13 @@ async function fixture(t, options = {}) {
         })),
       audioProgress: (index, message) => audioRequests[index].onProgress?.(message),
       rejectAudio: (index, message) => audioRequests[index].reject(new Error(message)),
-      resolveAudio: (index, stream = false) => {
+      resolveAudio: (index, stream = false, stale = false, mix) => {
         const request = audioRequests[index];
         request.resolve({
           documentId: request.documentId,
-          revision: request.revision,
+          revision: stale ? request.revision - 1 : request.revision,
           sequenceId: request.sequenceId,
+          ...(mix ? { mix: { sampleCount: (request.duration / 240000) * 48000, ...mix } } : {}),
           ...(stream
             ? {
                 stream: {
@@ -428,7 +430,11 @@ async function fixture(t, options = {}) {
         next.id = "replacement-document";
         await session.replace(next, { identity: session.getState().identity });
       },
+      replaceGeneration: async () => {
+        await session.replace(session.read(), { identity: session.getState().identity });
+      },
       flush: () => session.flush(),
+      sourcePreview: (active) => workspace.setSourcePreview(active),
       hide: () => workspace.setVisible(false),
       show: () => workspace.setVisible(true),
       dispose: () => workspace.dispose(),
@@ -1163,6 +1169,160 @@ test("cancelled native audio completion never plays or contaminates the next pre
   );
   await action(page, "play").click();
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a wrong audio identity is released instead of being cached for the next resume", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true, true));
+  await page.waitForFunction(() => fixture.errors.length === 1);
+  assert.match(await page.locator("[data-ew-preview-error]").textContent(), /版本不一致/);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].disposed), 1);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.resolveAudio(1, true));
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  assert.equal(await page.evaluate(() => fixture.audio().length), 2);
+  assert.equal(await page.evaluate(() => fixture.audio()[1].disposed), 0);
+  await action(page, "play").click();
+});
+
+test("same-revision media refresh releases a cached mix and fences a pending replacement", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const warning = page.locator("[data-ew-audio-warning]");
+  const before = await page.evaluate(() => fixture.state().identity);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.resolveAudio(0, true, false, { peak: 1.2, samplesOverFullScale: 100 }));
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  assert.equal(await warning.isVisible(), true);
+  await page.evaluate(() => fixture.refreshMedia());
+  assert.equal(await warning.isHidden(), true);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].disposed), 1);
+  assert.equal(await page.evaluate(() => fixture.audio().length), 1);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.refreshMedia());
+  assert.equal(await page.evaluate(() => fixture.audio()[1].aborted), true);
+  await page.evaluate(() => fixture.resolveAudio(1, true));
+  await page.waitForFunction(() => fixture.audio()[1].disposed === 1);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 3);
+  await page.evaluate(() => fixture.resolveAudio(2, true));
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  assert.deepEqual(await page.evaluate(() => fixture.state().identity), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  await page.evaluate(() => { fixture.dispose(); fixture.refreshMedia(); });
+  assert.equal(await page.evaluate(() => fixture.audio()[2].disposed), 1);
+});
+
+test("audio overload remains visible while paused and clears for revisions, sequences and document generations", async (t) => {
+  const page = await fixture(t, { audio: true, sequenceCount: 2 });
+  const warning = page.locator("[data-ew-audio-warning]");
+  const prepare = async (index, report = { peak: 1.2, samplesOverFullScale: 100 }) => {
+    await action(page, "play").click();
+    await page.waitForFunction((count) => fixture.audio().length === count, index + 1);
+    await page.evaluate(({ index, report }) => fixture.resolveAudio(index, true, false, report), {
+      index,
+      report,
+    });
+    await page.waitForFunction(() => fixture.playing());
+    await action(page, "play").click();
+  };
+  const before = await documentState(page);
+  await prepare(0);
+  assert.equal(await warning.isVisible(), true);
+  assert.match(await warning.textContent(), /\+1\.6 dBFS.*降低音轨或片段音量/);
+  assert.deepEqual(await documentState(page), before, "Measuring overload never edits the project");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  assert.equal(await warning.isVisible(), true);
+  assert.equal(
+    await page.evaluate(() => fixture.audio().length),
+    1,
+    "Resume reuses the same measured mix",
+  );
+  await page.evaluate(() => fixture.sourcePreview(true));
+  assert.equal(await warning.isVisible(), false, "Source browsing must not show the timeline mix warning");
+  await page.evaluate(() => fixture.sourcePreview(false));
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  await action(page, "play").click();
+  assert.equal(await warning.isVisible(), true);
+  await page.evaluate(() => fixture.externalEdit());
+  assert.equal(await warning.isVisible(), false);
+  await prepare(1, { peak: 0.4, samplesOverFullScale: 0 });
+  assert.equal(await warning.isVisible(), false, "A safe corrected mix has no warning");
+  await page.locator("[data-ew-sequence]").selectOption("sequence-2");
+  await prepare(2);
+  assert.equal(await warning.isVisible(), true);
+  await page.locator("[data-ew-sequence]").selectOption("main");
+  assert.equal(await warning.isVisible(), false);
+  await prepare(3);
+  await page.evaluate(() => fixture.replaceGeneration());
+  assert.equal(
+    await warning.isVisible(),
+    false,
+    "Same document and revision with a new generation invalidates the mix",
+  );
+  await prepare(4);
+  await page.evaluate(() => fixture.replaceProject());
+  assert.equal(await warning.isVisible(), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("cancelled, failed, invalid and stale audio reports never appear as current overload warnings", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const warning = page.locator("[data-ew-audio-warning]");
+  const overload = { peak: 1.2, samplesOverFullScale: 100 };
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await action(page, "play").click();
+  await page.evaluate((mix) => fixture.resolveAudio(0, true, false, mix), overload);
+  await settle(page);
+  assert.equal(await warning.isVisible(), false);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 2);
+  await page.evaluate(() => fixture.externalEdit());
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 3);
+  await page.evaluate((mix) => fixture.resolveAudio(1, true, false, mix), overload);
+  await settle(page);
+  assert.equal(await warning.isVisible(), false);
+  await page.evaluate(() => fixture.rejectAudio(2, "混音失败"));
+  await page.waitForFunction(() => fixture.errors.length === 1);
+  assert.equal(await warning.isVisible(), false);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 4);
+  await page.evaluate((mix) => fixture.resolveAudio(3, true, true, mix), overload);
+  await page.waitForFunction(() => fixture.errors.length === 2);
+  assert.equal(await warning.isVisible(), false);
+  assert.equal(await page.evaluate(() => fixture.audio()[3].disposed), 1);
+  for (const mix of [
+    { peak: 1.2, samplesOverFullScale: 0 },
+    { peak: 1.2, samplesOverFullScale: 100, sampleCount: 1 },
+    { peak: 1.2, samplesOverFullScale: 1, sampleCount: 100 },
+  ]) {
+    const index = await page.evaluate(() => fixture.audio().length);
+    await action(page, "play").click();
+    await page.waitForFunction((count) => fixture.audio().length === count, index + 1);
+    await page.evaluate(({ index, mix }) => fixture.resolveAudio(index, true, false, mix), {
+      index,
+      mix,
+    });
+    await page.waitForFunction((index) => fixture.audio()[index].disposed === 1, index);
+    assert.equal(await page.evaluate(() => fixture.playing()), false);
+    assert.equal(await warning.isVisible(), false);
+  }
 });
 
 test("workspace releases abandoned streamed readers and retains a paused current reader until the next edit", async (t) => {

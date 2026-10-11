@@ -634,6 +634,20 @@
   box-shadow: inset 0 0 0 1px #75ddcf88;
   background: #263934;
 }
+.et-lane.drop-target-invalid {
+  box-shadow: inset 0 0 0 1px #ef8c8c;
+  background: #432a2d;
+}
+.et-clip.drag-invalid {
+  outline: 2px solid #ef8c8c;
+  outline-offset: -2px;
+  opacity: 0.75;
+}
+.editor-timeline:has(.drag-invalid),
+.editor-timeline:has(.drag-invalid) .et-clip,
+.editor-timeline:has(.drag-invalid) .et-edge {
+  cursor: not-allowed;
+}
 /* Only visible intervals allocate a canvas; labels and trim handles stay above it. */
 .et-media-strip {
   position: absolute;

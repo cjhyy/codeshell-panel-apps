@@ -10,6 +10,7 @@ import {
   type PreparedEditorAudio,
 } from "../../src/editor/task-bridge.js";
 import type { EditorDocument } from "../../src/editor/types.js";
+import { audioMixWarning, validateAudioMixReport } from "../../src/editor/audio-mix-report.js";
 import { renderEditorAudio } from "../media/editor-audio-renderer.js";
 import { exportEditorSequence } from "../media/editor-export.js";
 import { runMediaProcess } from "../process-runner.js";
@@ -133,9 +134,11 @@ export async function runEditorRequest(
   const cache = await directory(scope, ["cache"]);
   const artifacts: EditorArtifact[] = [];
   let succeeded = false;
+  let mixWarning = "";
   const progress = async (fraction: number, stage: string, message?: string) => {
     abort(context.signal);
-    await context.reportProgress({ fraction, stage, ...(message ? { message } : {}) });
+    const detail = [message, mixWarning].filter(Boolean).join(" ");
+    await context.reportProgress({ fraction, stage, ...(detail ? { message: detail } : {}) });
   };
   const add = async (path: string, extension: string, mimeType: string, role: string) => {
     const artifact = await publish(root, path, extension, mimeType, role, context.signal);
@@ -915,6 +918,12 @@ export async function runEditorRequest(
         artifacts,
       };
     }
+    const audioMix = {
+      documentHash: manifest.documentHash,
+      sequenceId: manifest.sequenceId,
+      ...validateAudioMixReport(mix),
+    };
+    mixWarning = audioMixWarning(audioMix);
     if (bytesHash(Buffer.from(context.runtimeSource)) !== context.runtimeSha)
       throw new EditorTaskError("RUNTIME_CHANGED", "安装的渲染运行代码校验失败");
     const mediaFiles = new Map<string, { path: string; mimeType: string }>();
@@ -982,6 +991,7 @@ export async function runEditorRequest(
       documentHash: manifest.documentHash,
       sequenceId: manifest.sequenceId,
       preparedAudio,
+      audioMix,
       runtimeSha: context.runtimeSha,
       profile: request.profile,
       frameCount: output.frameCount,
@@ -998,6 +1008,7 @@ export async function runEditorRequest(
         video: exported,
         audio,
         preparedAudio,
+        audioMix,
         reusedAudio: reused,
         report: details,
         frameCount: output.frameCount,

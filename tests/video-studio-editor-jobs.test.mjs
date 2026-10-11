@@ -148,6 +148,7 @@ async function fixture(t, specifications = [], options = {}) {
         finished,
         track: (id, name = id) => panel.track(structuredClone(jobs.get(id)), name),
         savedTitles: () => structuredClone(savedTitles),
+        summaries: () => panel.summaries(),
         load: () => panel.loadMore(),
         remount: () =>
           panel.mountTrigger(
@@ -195,6 +196,88 @@ async function open(page) {
 }
 const calls = (page, method) =>
   page.evaluate((method) => fixture.calls.filter((call) => call.method === method), method);
+
+test("export overload stays in its verified snapshot record and task summary without stale retry warnings", async (t) => {
+  const request = { action: "render", documentHash: "a".repeat(64), sequenceId: "main" };
+  const audioMix = { ...request, sampleCount: 48000, peak: 1.2, samplesOverFullScale: 100 };
+  const result = { verified: true, video: { id: assetId }, audioMix };
+  const jobs = [
+    job("overload", 10, "succeeded", { input: { request }, result }),
+    job("wrong-document", 9, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, documentHash: "b".repeat(64) } },
+    }),
+    job("wrong-sequence", 8, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, sequenceId: "other" } },
+    }),
+    job("safe", 7, "succeeded", {
+      input: { request },
+      result: { ...result, audioMix: { ...audioMix, peak: 0.4, samplesOverFullScale: 0 } },
+    }),
+    job("unverified", 6, "succeeded", {
+      input: { request },
+      result: { ...result, verified: false },
+    }),
+    job("cancelled", 5, "cancelled", { input: { request }, result }),
+    job("failed", 4, "failed", {
+      input: { request },
+      result,
+      error: { message: "渲染失败", retryable: true },
+    }),
+  ];
+  const page = await fixture(t, jobs);
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.match(
+    await row(page, "overload").locator("output").textContent(),
+    /导出完成.*\+1\.6 dBFS.*降低音轨或片段音量/,
+  );
+  assert.match(
+    (await page.evaluate(() => fixture.summaries())).find((item) => item.id === "overload").message,
+    /可能导致失真/,
+  );
+  for (const id of [
+    "wrong-document",
+    "wrong-sequence",
+    "safe",
+    "unverified",
+    "cancelled",
+    "failed",
+  ])
+    assert.doesNotMatch(await row(page, id).locator("output").textContent(), /可能导致失真/);
+  await page.evaluate(() =>
+    fixture.publish("overload", {
+      attempt: 2,
+      status: "running",
+      updatedAt: 20,
+      progress: { message: "重新准备声音" },
+    }),
+  );
+  assert.equal(await row(page, "overload").locator("output").textContent(), "重新准备声音");
+  await page.evaluate(
+    (result) =>
+      fixture.publish("overload", { attempt: 1, status: "succeeded", updatedAt: 30, result }),
+    result,
+  );
+  assert.equal(
+    await row(page, "overload").locator("output").textContent(),
+    "重新准备声音",
+    "An old attempt cannot replace retry progress",
+  );
+  await page.evaluate(
+    (result) =>
+      fixture.publish("overload", {
+        attempt: 2,
+        status: "succeeded",
+        updatedAt: 40,
+        result: { ...result, audioMix: { ...result.audioMix, peak: 0.4, samplesOverFullScale: 0 } },
+      }),
+    result,
+  );
+  assert.equal(await row(page, "overload").locator("output").textContent(), "导出完成");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
 
 test("cloud completed exports open the authorized preview for saving on this device", async (t) => {
   const page = await fixture(t, [job("cloud", 1)], { deliveryMethods: ["resources.open"] });

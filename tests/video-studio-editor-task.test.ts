@@ -17,7 +17,38 @@ import type { EditorDocument, MediaClip } from "../apps/video-studio/src/editor/
 import type { RuntimeBridge, RuntimeJob } from "../apps/video-studio/src/sdk/panel-runtime";
 import { validateEditorRequest } from "../apps/video-studio/native/editor-runtime/protocol";
 import { createExportPresets } from "../apps/video-studio/src/editor/export-settings";
+import {
+  audioMixWarning,
+  exportAudioMixWarning,
+} from "../apps/video-studio/src/editor/audio-mix-report";
 const resource = (index: number) => `asset-${index.toString(16).padStart(64, "0")}`;
+test("mix warnings validate actual measurement bounds and export snapshot identity", () => {
+  const measurement = { sampleCount: 48000, peak: 1.2, samplesOverFullScale: 120 };
+  assert.match(audioMixWarning(measurement), /\+1\.6 dBFS.*降低音轨或片段音量/);
+  assert.equal(audioMixWarning({ sampleCount: 48000, peak: 1, samplesOverFullScale: 0 }), "");
+  assert.equal(audioMixWarning({ sampleCount: 0, peak: 0, samplesOverFullScale: 0 }), "");
+  for (const report of [
+    { ...measurement, peak: NaN },
+    { ...measurement, peak: Infinity },
+    { ...measurement, sampleCount: 0 },
+    { ...measurement, samplesOverFullScale: -1 },
+    { ...measurement, samplesOverFullScale: 48001 },
+    { ...measurement, samplesOverFullScale: 1.5 },
+    { ...measurement, samplesOverFullScale: 0 },
+    { ...measurement, peak: 0.4 },
+  ])
+    assert.throws(() => audioMixWarning(report), /混音测量结果无效/);
+  const request = { documentHash: "a".repeat(64), sequenceId: "main" };
+  const result = { verified: true, audioMix: { ...measurement, ...request } };
+  assert.match(exportAudioMixWarning(result, request), /可能导致失真/);
+  assert.equal(exportAudioMixWarning(result, { ...request, documentHash: "b".repeat(64) }), "");
+  assert.equal(exportAudioMixWarning(result, { ...request, sequenceId: "other" }), "");
+  assert.equal(exportAudioMixWarning({ ...result, verified: false }, request), "");
+  assert.equal(
+    exportAudioMixWarning({ ...result, audioMix: { ...result.audioMix, peak: NaN } }, request),
+    "",
+  );
+});
 function document(count = 1): EditorDocument {
   return {
     schemaVersion: 2,

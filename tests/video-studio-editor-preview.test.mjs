@@ -3,6 +3,10 @@ import { test, before, after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 let browser, source;
@@ -89,7 +93,7 @@ test("font diagnostics include reachable offscreen text, remain non-blocking and
 before(async () => {
   const bundle = await build({
     stdin: {
-      contents: `import { EditorPreview } from './apps/video-studio/src/editor/preview'; import * as defaults from './apps/video-studio/src/editor/defaults'; import * as fonts from './apps/video-studio/src/editor/font-availability'; globalThis.api = { EditorPreview, ...defaults, ...fonts };`,
+      contents: `import { EditorPreview } from './apps/video-studio/src/editor/preview'; import { EditorWorkspace } from './apps/video-studio/src/editor/workspace-ui'; import { EditorSession } from './apps/video-studio/src/editor/session'; import * as defaults from './apps/video-studio/src/editor/defaults'; import * as fonts from './apps/video-studio/src/editor/font-availability'; globalThis.api = { EditorPreview, EditorWorkspace, EditorSession, ...defaults, ...fonts };`,
       resolveDir: root,
     },
     bundle: true,
@@ -413,3 +417,309 @@ test("switching document invalidates playback and old snapshots cannot mutate th
   });
   assert.deepEqual(result, { playing: false, pixel: [0, 0, 255, 255] });
 });
+
+test("resuming reuses a committed frame but redraws a pointer draft before playback", async (t) => {
+  const page = await pageFixture(t);
+  const result = await page.evaluate(async () => {
+    await preview.seek(0);
+    const committedFrames = frames.length;
+    await preview.play();
+    preview.pause();
+    const resumedFrames = frames.length;
+    const draft = structuredClone(doc);
+    draft.sequences[0].clips[0].fill = "#0000ff";
+    await preview.previewDraft(draft);
+    const draftPixel = pixel(24, 32);
+    await preview.play();
+    preview.pause();
+    return { committedFrames, resumedFrames, draftPixel, committedPixel: pixel(24, 32), errors };
+  });
+  assert.equal(result.resumedFrames, result.committedFrames);
+  assert.deepEqual(result.draftPixel, [0, 0, 255, 255]);
+  assert.deepEqual(result.committedPixel, [255, 0, 0, 255]);
+  assert.deepEqual(result.errors, []);
+});
+
+test(
+  "workspace resume retains real video decoders only for the prepared session identity",
+  { timeout: 60000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "video-studio-resume-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const videos = [];
+    for (const color of ["lime", "blue"]) {
+      const path = join(directory, `${color}.mp4`);
+      const generated = spawnSync(
+        "ffmpeg",
+        [
+          "-nostdin",
+          "-v",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          `color=${color}:s=96x64:r=30:d=3`,
+          "-c:v",
+          "libx264",
+          "-pix_fmt",
+          "yuv420p",
+          "-g",
+          "30",
+          "-movflags",
+          "+faststart",
+          "-y",
+          path,
+        ],
+        { timeout: 15000, encoding: "utf8" },
+      );
+      assert.equal(generated.status, 0, generated.stderr || String(generated.error));
+      videos.push([...(await readFile(path))]);
+    }
+    async function realWorkspace(t) {
+      const page = await pageFixture(t);
+      await page.evaluate(async (videos) => {
+        await preview.dispose();
+        document.body.innerHTML = '<main id="workspace"></main>';
+        const urls = videos.map((bytes) =>
+          URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "video/mp4" })),
+        );
+        const createdVideos = [];
+        const create = document.createElement.bind(document);
+        document.createElement = (tag, ...args) => {
+          const node = create(tag, ...args);
+          if (tag === "video") createdVideos.push(node);
+          return node;
+        };
+        const value = structuredClone(doc);
+        const seq = value.sequences[0];
+        seq.width = 96;
+        seq.height = 64;
+        value.assets = [
+          {
+            id: "video",
+            name: "真实视频",
+            kind: "video",
+            duration: 720000,
+            width: 96,
+            height: 64,
+            resourceId: "original",
+          },
+        ];
+        seq.clips = [
+          {
+            id: "clip",
+            kind: "media",
+            label: "真实视频",
+            trackId: "video",
+            assetId: "video",
+            start: 0,
+            duration: 720000,
+            timeMap: {
+              points: [
+                { time: 0, source: 0 },
+                { time: 720000, source: 720000 },
+              ],
+            },
+            audio: { ...api.defaultAudioMix(), volume: 0 },
+            transform: api.defaultTransform(),
+            color: api.defaultColorAdjustment(),
+            blendMode: "normal",
+          },
+        ];
+        value.sequences.push({ ...structuredClone(seq), id: "second", name: "第二序列" });
+        let stored = value,
+          storageRevision = 1,
+          sourceIndex = 0,
+          proxyIndex,
+          preparations = 0,
+          resolves = 0;
+        const session = await api.EditorSession.open(
+          {
+            read: async () => ({ data: stored, revision: storageRevision }),
+            write: async (data) => {
+              stored = structuredClone(data);
+              return { revision: ++storageRevision };
+            },
+            backupLegacy: async () => {},
+          },
+          { autosaveDelayMs: 60000 },
+        );
+        const workspaceErrors = [];
+        const workspace = new api.EditorWorkspace(document.querySelector("#workspace"), {
+          session,
+          resolveAsset: () => {
+            resolves++;
+            return urls[sourceIndex];
+          },
+          prepareAudio: async () => {
+            preparations++;
+            if (proxyIndex !== undefined) sourceIndex = proxyIndex;
+            return undefined;
+          },
+          importMedia() {},
+          openProject() {},
+          newProject() {},
+          downloadProject() {},
+          showProduction() {},
+          onError: (error) => workspaceErrors.push(String(error)),
+        });
+        globalThis.mediaFixture = {
+          workspace,
+          session,
+          counts: () => ({ videos: createdVideos.length, preparations, resolves }),
+          setProxy: (index) => {
+            proxyIndex = index;
+          },
+          reconnect: () => {
+            sourceIndex = 1;
+            workspace.refreshMedia();
+          },
+          rebind: () => {
+            sourceIndex = 1;
+            session.dispatch(
+              [{ type: "asset.update", assetId: "video", patch: { resourceId: "replacement" } }],
+              session.getState().identity,
+              "替换素材",
+            );
+          },
+          pixel: () => [
+            ...document
+              .querySelector("[data-ew-canvas]")
+              .getContext("2d")
+              .getImageData(48, 32, 1, 1).data,
+          ],
+          errors: workspaceErrors,
+        };
+        await workspace.seek(288000);
+      }, videos);
+      return page;
+    }
+    const dominant = (pixel, channel) => {
+      assert.ok(
+        pixel[channel] > 240 && pixel[(channel + 1) % 3] < 8 && pixel[(channel + 2) % 3] < 8,
+        `${pixel} must have channel ${channel}`,
+      );
+      assert.equal(pixel[3], 255);
+    };
+    await t.test(
+      "silent video pauses and resumes without preparing again or reopening its decoder",
+      async (t) => {
+        const page = await realWorkspace(t);
+        const result = await page.evaluate(async () => {
+          const f = mediaFixture;
+          await f.workspace.togglePlayback();
+          await f.workspace.togglePlayback();
+          const first = f.counts();
+          for (let i = 0; i < 3; i++) {
+            await f.workspace.togglePlayback();
+            await f.workspace.togglePlayback();
+          }
+          return {
+            first,
+            resumed: f.counts(),
+            pixel: f.pixel(),
+            playing: f.workspace.playing,
+            errors: f.errors,
+          };
+        });
+        assert.equal(result.first.preparations, 1);
+        assert.deepEqual(result.resumed, result.first);
+        dominant(result.pixel, 1);
+        assert.equal(result.playing, false);
+        assert.deepEqual(result.errors, []);
+      },
+    );
+    await t.test(
+      "first preparation reloads a newly bound proxy before drawing its pixels",
+      async (t) => {
+        const page = await realWorkspace(t);
+        const result = await page.evaluate(async () => {
+          const f = mediaFixture,
+            before = f.pixel();
+          f.setProxy(1);
+          await f.workspace.togglePlayback();
+          await f.workspace.togglePlayback();
+          return { before, after: f.pixel(), counts: f.counts(), errors: f.errors };
+        });
+        dominant(result.before, 1);
+        dominant(result.after, 2);
+        assert.equal(result.counts.preparations, 1);
+        assert.deepEqual(result.errors, []);
+      },
+    );
+    await t.test("same-revision media reconnection discards old decoders and prepared audio", async (t) => {
+      const page = await realWorkspace(t);
+      const result = await page.evaluate(async () => {
+        const f = mediaFixture;
+        await f.workspace.togglePlayback();
+        await f.workspace.togglePlayback();
+        const before = f.counts(),
+          identity = f.session.getState().identity;
+        f.reconnect();
+        await f.workspace.seek(288000);
+        const reconnected = f.pixel();
+        await f.workspace.togglePlayback();
+        await f.workspace.togglePlayback();
+        return {
+          before,
+          after: f.counts(),
+          identity,
+          nextIdentity: f.session.getState().identity,
+          reconnected,
+          pixel: f.pixel(),
+          errors: f.errors,
+        };
+      });
+      assert.deepEqual(result.nextIdentity, result.identity);
+      assert.equal(result.after.preparations, 2);
+      assert.ok(result.after.videos > result.before.videos);
+      assert.ok(result.after.resolves > result.before.resolves);
+      dominant(result.reconnected, 2);
+      dominant(result.pixel, 2);
+      assert.deepEqual(result.errors, []);
+    });
+    for (const change of ["asset", "generation", "sequence"]) {
+      await t.test(
+        `${change} changes invalidate prepared media and cannot reuse a previous decoder`,
+        async (t) => {
+          const page = await realWorkspace(t);
+          const result = await page.evaluate(async (change) => {
+            const f = mediaFixture;
+            await f.workspace.togglePlayback();
+            await f.workspace.togglePlayback();
+            const before = f.counts(),
+              identity = f.session.getState().identity;
+            if (change === "asset") f.rebind();
+            else if (change === "generation") await f.session.replace(f.session.read());
+            else
+              f.session.dispatch(
+                [{ type: "sequence.activate", sequenceId: "second" }],
+                f.session.getState().identity,
+                "切换序列",
+              );
+            await f.workspace.seek(288000);
+            await f.workspace.togglePlayback();
+            await f.workspace.togglePlayback();
+            return {
+              before,
+              after: f.counts(),
+              identity,
+              nextIdentity: f.session.getState().identity,
+              pixel: f.pixel(),
+              errors: f.errors,
+            };
+          }, change);
+          assert.equal(result.after.preparations, 2);
+          assert.ok(result.after.videos > result.before.videos);
+          assert.ok(result.after.resolves > result.before.resolves);
+          if (change === "generation") {
+            assert.ok(result.nextIdentity.revision > result.identity.revision);
+            assert.notEqual(result.identity.generation, result.nextIdentity.generation);
+          }
+          dominant(result.pixel, change === "asset" ? 2 : 1);
+          assert.deepEqual(result.errors, []);
+        },
+      );
+    }
+  },
+);

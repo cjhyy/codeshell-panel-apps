@@ -5,6 +5,7 @@ import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick }
 import type { EditorDocument, EditorSequence } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
 import { StreamingPreviewAudio, type PreviewPcmStream } from "./stream-audio";
+import type { EditorAudioMixReport } from "./audio-mix-report";
 import {
   editorFontWarnings,
   resetFontAvailabilityCache,
@@ -15,6 +16,7 @@ export type PreviewAudio = {
   documentId: string;
   revision: number;
   sequenceId: string;
+  mix?: EditorAudioMixReport;
 } & (
   | {
       /** Short full-sequence PCM from the shared audio renderer. */ buffer: AudioBuffer;
@@ -70,6 +72,8 @@ export class EditorPreview {
   private disposed = false;
   private isPlaying = false;
   private playhead = 0;
+  /** Only a committed frame can be reused when resuming; pointer drafts cannot. */
+  private renderedTime?: Tick;
   private animationFrame?: number;
   private frameWork: Promise<void> = Promise.resolve();
   private fontWarningSignature = "";
@@ -111,6 +115,7 @@ export class EditorPreview {
     if (!sequence) throw new Error("预览序列不存在");
     this.pause();
     this.pool.reset();
+    this.renderedTime = undefined;
     this.document = valid;
     this.sequence = sequence;
     this.evaluator = prepareEvaluator(valid);
@@ -138,6 +143,7 @@ export class EditorPreview {
     const media = await this.pool.prepare(frame, signal);
     if (signal.aborted || generation !== this.generation || this.disposed) return;
     this.compositor.draw(this.canvas, frame, media);
+    this.renderedTime = draft ? undefined : time;
     this.playhead = time;
     this.options.onFrame?.(time);
   }
@@ -217,7 +223,7 @@ export class EditorPreview {
         if (this.audioContext.state !== "running") throw new Error("请点击播放按钮启用声音");
       }
       const start = this.playhead >= duration ? 0 : this.snap(this.playhead, sequence);
-      await this.draw(start, request.signal, generation);
+      if (this.renderedTime !== start) await this.draw(start, request.signal, generation);
       if (request.signal.aborted || generation !== this.generation) return;
       const clock = audio ? () => this.audioContext!.currentTime : () => performance.now() / 1000;
       // The audio and image clock share this origin; decoder currentTime is never a clock.

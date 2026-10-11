@@ -3980,7 +3980,7 @@ async function action(name: string, id?: string): Promise<void> {
         ${editorVisible ? `<dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 10 帧</dt><dd>Shift + ← / →</dd>
         <dt>上一 / 下一片段边缘（跨轨）</dt><dd>↑ / ↓</dd><dt>开头 / 最后一帧</dt><dd>Home / End</dd>
-        <dt>切分选中片段，继续选中右半段</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
+        <dt>同步切分所选片段，继续选中右侧</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
         <dt>复制 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
         <dt>一屏看全</dt><dd>Shift + Z</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
@@ -5901,7 +5901,14 @@ function mountEditorWorkspace(): void {
         signal,
       );
       activateTimelineMedia();
-      return audio;
+      return {
+        ...audio,
+        mix: {
+          sampleCount: result.sampleCount,
+          peak: result.peak,
+          samplesOverFullScale: result.samplesOverFullScale,
+        },
+      };
     },
     exportSequence: panel
       ? async (doc, sequenceId, profile, signal) => {

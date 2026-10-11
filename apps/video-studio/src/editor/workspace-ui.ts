@@ -34,6 +34,7 @@ import { EditorSequences } from "./sequences-ui";
 import { EditorMulticam, type EditorMulticamContext } from "./multicam-ui";
 import type { EditorTimelineContext } from "./timeline-ui";
 import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
+import { audioMixWarning } from "./audio-mix-report";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
@@ -121,6 +122,8 @@ export class EditorWorkspace {
   /** Task start can wait minutes without progress while the Host copies originals. */
   private preparationClock?: { started: number; timer: ReturnType<typeof setInterval> };
   private audio?: PreviewAudio;
+  /** Includes the session generation, so restoring the same revision cannot reuse old media. */
+  private preparedRevision = "";
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
@@ -135,7 +138,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span></div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span></div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -388,6 +391,8 @@ export class EditorWorkspace {
     this.cancelPreparation();
     this.audio?.stream?.dispose();
     this.audio = undefined;
+    this.preparedRevision = "";
+    this.clearAudioWarning();
     this.preview.setDocument(doc, sequence.id);
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
@@ -450,6 +455,7 @@ export class EditorWorkspace {
     button.title = `${label} · 空格`;
   }
   private cancelPreparation(): void {
+    if (this.preparing) this.clearAudioWarning();
     this.preparing?.abort();
     this.preparing = undefined;
     this.clearPreparationStatus();
@@ -458,11 +464,20 @@ export class EditorWorkspace {
   }
   private previewError(error: unknown): void {
     if (this.disposed) return;
+    this.preparedRevision = "";
+    this.audio?.stream?.dispose();
+    this.audio = undefined;
+    this.clearAudioWarning();
     const output = this.get("[data-ew-preview-error]");
     delete output.dataset.previewPreparing;
     delete output.dataset.audioBuffering;
     output.hidden = false;
     output.textContent = panelRuntimeErrorMessage(error);
+  }
+  private clearAudioWarning(): void {
+    const output = this.get("[data-ew-audio-warning]");
+    output.textContent = "";
+    output.hidden = true;
   }
   private preparationStatus(controller: AbortController, message: string): void {
     if (this.disposed || this.preparing !== controller || controller.signal.aborted) return;
@@ -549,11 +564,14 @@ export class EditorWorkspace {
       sequenceId = this.sequenceId,
       signature = this.revision;
     try {
-      const prepared =
-        this.audio ??
-        (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
-          this.preparationStatus(controller, message),
-        ));
+      const preparedCurrent = this.preparedRevision === signature;
+      if (!preparedCurrent) this.clearAudioWarning();
+      const prepared = preparedCurrent
+        ? this.audio
+        : (this.audio ??
+          (await this.options.prepareAudio?.(doc, sequenceId, controller.signal, (message) =>
+            this.preparationStatus(controller, message),
+          )));
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -564,14 +582,23 @@ export class EditorWorkspace {
         return;
       }
       this.audio = prepared;
+      // Validate the measurements before starting Web Audio, so a bad report cannot
+      // leave playback running behind an error or publish a warning for another mix.
+      const warning = this.audio?.mix ? audioMixWarning(this.audio.mix) : "";
+      if (
+        this.audio?.mix &&
+        this.audio.mix.sampleCount !== (this.audio.stream?.sampleCount ?? this.audio.buffer?.length)
+      )
+        throw new Error("混音测量与声音长度不一致，请重新准备声音");
       this.preparationStatus(controller, "正在载入画面并同步声音…");
       // Natural completion reports the duration; a manual last-frame seek stays below it.
       const ended = this.playhead >= sequenceDuration(this.sequence());
       // Resource preparation may replace an incompatible source with a verified preview proxy.
-      this.preview.setDocument(doc, sequenceId);
-      await this.preview.seek(ended ? 0 : this.playhead, {
-        exact: !ended && this.exactPlayhead,
-      });
+      // Once that preparation played successfully, pause/resume keeps its decoders and mix.
+      if (!preparedCurrent) this.preview.setDocument(doc, sequenceId);
+      const target = ended ? 0 : this.playhead;
+      if (this.preview.time !== target)
+        await this.preview.seek(target, { exact: !ended && this.exactPlayhead });
       if (
         controller.signal.aborted ||
         signature !== this.revision ||
@@ -580,6 +607,18 @@ export class EditorWorkspace {
       )
         return;
       await this.preview.play(this.audio);
+      if (
+        !controller.signal.aborted &&
+        signature === this.revision &&
+        !this.disposed &&
+        this.visible &&
+        this.preview.playing
+      ) {
+        this.preparedRevision = signature;
+        const output = this.get("[data-ew-audio-warning]");
+        if (output.textContent !== warning) output.textContent = warning;
+        output.hidden = !warning;
+      }
       if (!this.disposed) this.get("[data-ew-preview-error]").hidden = true;
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -610,6 +649,14 @@ export class EditorWorkspace {
   }
   /** Called after an imported/reconnected resource becomes available without a document edit. */
   refreshMedia(): void {
+    if (this.disposed) return;
+    this.cancelPreparation();
+    this.clearAudioWarning();
+    this.audio?.stream?.dispose();
+    this.audio = undefined;
+    this.preparedRevision = "";
+    // Resource URLs may change while the document identity stays exactly the same.
+    this.preview.setDocument(this.options.session.read(), this.sequenceId);
     if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
   }
   /** Browsing source footage replaces the monitor, while the canonical timeline stays mounted. */
@@ -618,6 +665,7 @@ export class EditorWorkspace {
     this.sourcePreview = active;
     if (active) {
       this.cancelPreparation();
+      this.clearAudioWarning();
       this.preview.pause();
     } else if (this.visible) this.run(() => this.seek(this.playhead));
   }

@@ -298,6 +298,15 @@ test(
     assert.equal(rendered.result.verified, true);
     assert.equal(rendered.result.reusedAudio, true);
     assert.equal(rendered.result.audio.id, prepared.result.audio.id);
+    assert.deepEqual(rendered.result.audioMix, {
+      documentHash: snapshot.documentHash,
+      sequenceId: snapshot.sequenceId,
+      sampleCount: prepared.result.sampleCount,
+      peak: prepared.result.peak,
+      samplesOverFullScale: prepared.result.samplesOverFullScale,
+    });
+    assert.equal(rendered.result.audioMix.samplesOverFullScale, 0);
+    assert.doesNotMatch(JSON.stringify(rendered.messages), /可能导致失真/);
     assert.equal(rendered.result.frameCount, 15);
     const probe = spawnSync("ffprobe", [
       "-v",
@@ -327,6 +336,46 @@ test(
     assert.equal((await readdir(mismatch.jobDir)).includes("outputs"), false);
   },
 );
+test(
+  "native export exposes real two-track overload throughout progress and in its bound result",
+  { timeout: 60000 },
+  async () => {
+    const d = document(),
+      seq = d.sequences[0];
+    const resourceId = `asset-${sha(await readFile(tone))}`;
+    d.assets.push({ id: "tone", name: "Tone", kind: "audio", duration: 480000, resourceId });
+    seq.tracks.push(api.createTrack("second-audio", "audio"));
+    const first = clip("tone", "audio"),
+      second = clip("tone", "second-audio");
+    second.id = "clip-second-tone";
+    first.audio.volume = second.audio.volume = 4;
+    seq.clips.push(clip(), first, second);
+    const snapshot = await stage(d, new Map([[resourceId, tone]]));
+    const prepared = await call({ action: "prepare-audio", ...snapshot });
+    assert.ok(prepared.result.peak > 1);
+    assert.ok(prepared.result.samplesOverFullScale > 0);
+    const rendered = await call({
+      action: "render",
+      ...snapshot,
+      profile: profile(),
+      preparedAudio: prepared.result.preparedAudio,
+    });
+    assert.equal(rendered.result.verified, true);
+    assert.equal(rendered.result.audioMix.documentHash, snapshot.documentHash);
+    assert.equal(rendered.result.audioMix.sequenceId, snapshot.sequenceId);
+    assert.equal(rendered.result.audioMix.peak, prepared.result.peak);
+    assert.equal(
+      rendered.result.audioMix.samplesOverFullScale,
+      prepared.result.samplesOverFullScale,
+    );
+    const progress = rendered.messages.filter((message) => message.type === "progress");
+    assert.ok(progress.some((message) => JSON.stringify(message).includes("降低音轨或片段音量")));
+    assert.match(JSON.stringify(progress.at(-1)), /可能导致失真/);
+    const report = JSON.parse(await readFile(artifactPath(rendered, "editor-report"), "utf8"));
+    assert.deepEqual(report.audioMix, rendered.result.audioMix);
+  },
+);
+
 test(
   "installed built-in narration is hash checked and genuinely audible without Host materialization",
   { timeout: 60000 },

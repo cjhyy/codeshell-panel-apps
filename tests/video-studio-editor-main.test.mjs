@@ -1667,7 +1667,11 @@ test("composition shortcut help matches the active editor and cut navigation pre
   await dialog.waitFor({ state: "visible" });
   assert.match(await dialog.innerText(), /10 帧/);
   assert.match(await dialog.innerText(), /跨轨/);
-  assert.doesNotMatch(await dialog.innerText(), /5 秒|Alt|切换磁吸/);
+  assert.match(await dialog.innerText(), /临时关闭吸附/);
+  assert.match(await dialog.innerText(), /Alt/);
+  assert.match(await dialog.innerText(), /以鼠标位置缩放/);
+  assert.match(await dialog.innerText(), /横向滚动时间轴/);
+  assert.doesNotMatch(await dialog.innerText(), /5 秒|切换磁吸/);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   await timeline.getByRole("button", { name: "剪辑快捷键", exact: true }).click();

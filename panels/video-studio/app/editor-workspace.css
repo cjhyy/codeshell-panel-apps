@@ -664,7 +664,8 @@
   color: #a4efca;
 }
 
-[data-ew-font-warning] {
+[data-ew-font-warning],
+[data-ew-audio-warning] {
   flex: 0 0 auto;
   max-height: 72px;
   overflow: auto;

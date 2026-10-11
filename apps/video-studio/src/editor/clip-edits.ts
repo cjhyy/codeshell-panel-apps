@@ -108,6 +108,23 @@ function selectedIds(sequence: EditorSequence, values: readonly string[]): Set<s
   for (const id of values) findClip(sequence, id);
   return new Set(values);
 }
+/** Explicit groups and links define selection; subtitle source bindings alone do not. */
+function groupLinkClosure(sequence: EditorSequence, ids: Iterable<string>): Set<string> {
+  const selected = new Set(ids);
+  for (let count = -1; count !== selected.size; ) {
+    count = selected.size;
+    const chosen = sequence.clips.filter((clip) => selected.has(clip.id)),
+      groups = new Set(chosen.map((clip) => clip.groupId).filter(Boolean)),
+      links = new Set(chosen.map((clip) => clip.linkGroupId).filter(Boolean));
+    for (const clip of sequence.clips)
+      if (
+        (clip.groupId && groups.has(clip.groupId)) ||
+        (clip.linkGroupId && links.has(clip.linkGroupId))
+      )
+        selected.add(clip.id);
+  }
+  return selected;
+}
 function allocate(document: EditorDocument, factory: ClipIdFactory) {
   if (typeof factory !== "function") throw new Error("需要新片段 ID 生成器");
   const used = new Set(
@@ -395,11 +412,25 @@ export function splitClip(
   const { document, sequence } = context(value, sequenceId),
     before = findClip(sequence, clipId);
   assertTick(timelineTick);
+  return finish(
+    document,
+    splitOperations(sequence, before, timelineTick, allocate(document, idFactory)),
+  );
+}
+
+/** Build one source and its subtitle edits with a shared allocator for a larger transaction. */
+function splitOperations(
+  sequence: EditorSequence,
+  before: EditorClip,
+  timelineTick: Tick,
+  newId: ReturnType<typeof allocate>,
+): EditorOperation[] {
+  const sequenceId = sequence.id,
+    clipId = before.id;
   const local = timelineTick - before.start;
   if (local <= 0 || local >= before.duration) throw new Error("播放头须位于片段内部才能切分");
   assertNoTransition(sequence, new Set([clipId]));
-  const newId = allocate(document, idFactory),
-    left = sliceClip(before, 0, local),
+  const left = sliceClip(before, 0, local),
     right = sliceClip(before, local, before.duration);
   right.id = newId("clip");
   if (before.kind === "text" && before.sourceBinding) {
@@ -434,7 +465,97 @@ export function splitClip(
         operations.push({ type: "clip.add", sequenceId, clip: part });
     }
   }
-  return finish(document, operations);
+  return operations;
+}
+
+/** Split the selected instances under the playhead in one transaction, retaining right-side links. */
+export function planSplitClips(
+  value: EditorDocument,
+  sequenceId: string,
+  clipIds: readonly string[],
+  timelineTick: Tick,
+  idFactory: ClipIdFactory,
+): { operations: EditorOperation[]; rightClipIds: string[] } {
+  const { document, sequence } = context(value, sequenceId),
+    selected = groupLinkClosure(sequence, selectedIds(sequence, clipIds));
+  assertTick(timelineTick);
+  const covering = sequence.clips.filter(
+    (clip) =>
+      selected.has(clip.id) &&
+      clip.start < timelineTick &&
+      timelineTick < clip.start + clip.duration,
+  );
+  if (!covering.length) throw new Error("播放头须位于所选片段内部才能切分");
+  const coveringIds = new Set(covering.map((clip) => clip.id)),
+    // A source already splits and rebinds its subtitles, including explicitly selected ones.
+    targets = covering.filter(
+      (clip) =>
+        clip.kind !== "text" ||
+        !clip.sourceBinding ||
+        !coveringIds.has(clip.sourceBinding.clipId),
+    ),
+    newId = allocate(document, idFactory),
+    operations: EditorOperation[] = [],
+    rightClipIds: string[] = [],
+    groups = new Map<string, string>(),
+    links = new Map<string, string>();
+  for (const target of targets) {
+    const edits = splitOperations(sequence, target, timelineTick, newId),
+      right = edits[1]!;
+    if (right.type !== "clip.add") throw new Error("切分规划无效，请重新操作");
+    rightClipIds.push(right.clip.id);
+    operations.push(...edits);
+  }
+  const remap = (id: string, kind: "group" | "link", map: Map<string, string>) => {
+    if (!map.has(id)) map.set(id, newId(kind));
+    return map.get(id)!;
+  };
+  const changed = new Set<string>();
+  for (const operation of operations) {
+    const part =
+      operation.type === "clip.add"
+        ? operation.clip
+        : operation.type === "clip.update"
+          ? operation.patch
+          : undefined;
+    if (!part || typeof part.start !== "number" || part.start < timelineTick) continue;
+    if (operation.type === "clip.update") changed.add(operation.clipId);
+    if (part.groupId) part.groupId = remap(part.groupId, "group", groups);
+    if (part.linkGroupId) part.linkGroupId = remap(part.linkGroupId, "link", links);
+  }
+  // Partition every relation reached on the right, including links found only on future members.
+  // Keeping one of those old labels could otherwise select an untouched clip before the cut.
+  const following = sequence.clips.filter(
+    (clip) => !changed.has(clip.id) && clip.start >= timelineTick,
+  );
+  for (let count = -1; count !== groups.size + links.size; ) {
+    count = groups.size + links.size;
+    for (const before of following)
+      if (
+        (before.groupId && groups.has(before.groupId)) ||
+        (before.linkGroupId && links.has(before.linkGroupId))
+      ) {
+        if (before.groupId) remap(before.groupId, "group", groups);
+        if (before.linkGroupId) remap(before.linkGroupId, "link", links);
+      }
+  }
+  for (const before of following) {
+    const groupId = before.groupId && groups.get(before.groupId),
+      linkGroupId = before.linkGroupId && links.get(before.linkGroupId);
+    if (!groupId && !linkGroupId) continue;
+    operations.push({
+      type: "clip.update",
+      sequenceId,
+      clipId: before.id,
+      patch: { ...(groupId ? { groupId } : {}), ...(linkGroupId ? { linkGroupId } : {}) },
+    });
+  }
+  const after = applyEditorOperations(document, operations, document.revision),
+    rightSequence = after.sequences.find((item) => item.id === sequenceId)!;
+  return {
+    operations: structuredClone(operations),
+    rightClipIds: [...groupLinkClosure(rightSequence, rightClipIds)],
+  };
 }
 
 /** Selection-based copy/group expands explicit groups, links and source-bound subtitle dependencies. */
