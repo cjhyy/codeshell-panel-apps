@@ -9,9 +9,16 @@ import { planCaptionText } from "./captions";
 import { unavailableFontFamilies, fontWarningMessage } from "./font-availability";
 import type { EditorClipPatch, EditorOperation } from "./operations";
 import type { EditorClip, EditorDocument, EditorSequence, Mask } from "./types";
+import type { SessionIdentity } from "./session";
+import {
+  canvasAlignmentReason,
+  planCanvasAlignment,
+  type CanvasAlignment,
+} from "./canvas-alignment";
 
 export interface EditorInspectorContext {
   read(): EditorDocument;
+  identity?(): SessionIdentity;
   selection(): { sequenceId: string; clipIds: string[] };
   apply(operations: EditorOperation[], label: string): unknown | Promise<unknown>;
   time(): Tick;
@@ -20,6 +27,8 @@ export interface EditorInspectorContext {
   editVoiceover?(sequenceId: string, clipId: string): void | Promise<void>;
 }
 interface Scope {
+  identity?: SessionIdentity;
+  document: EditorDocument;
   revision: number;
   sequence: EditorSequence;
   selectionIds: string[];
@@ -90,6 +99,11 @@ function patchAt(clip: EditorClip, path: Path, value: unknown): EditorClipPatch 
 function equal(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+function hasKeyframes(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if ("keyframes" in value && Array.isArray(value.keyframes)) return true;
+  return Object.values(value).some(hasKeyframes);
+}
 function common<T>(values: T[]): T | undefined {
   return values.every((value) => equal(value, values[0])) ? values[0] : undefined;
 }
@@ -144,11 +158,16 @@ export class EditorInspector {
   private individuals = new Map<string, string>();
   private pages = new Map<string, number>();
   private renderedSignature = "";
+  private renderedAnimation = false;
+  private replacingControls = false;
   constructor(
     container: HTMLElement,
     private readonly context: EditorInspectorContext,
   ) {
     this.root.setAttribute("aria-label", "片段属性");
+    this.root.addEventListener("change", (event) => {
+      if (this.replacingControls) event.stopImmediatePropagation();
+    }, true);
     container.append(this.root);
     this.render();
   }
@@ -182,7 +201,14 @@ export class EditorInspector {
     const clips = selectionIds
       .map((id) => sequence.clips.find((clip) => clip.id === id))
       .filter((clip): clip is EditorClip => !!clip);
-    return { revision: document.revision, sequence, selectionIds, clips };
+    return {
+      document,
+      identity: this.context.identity ? { ...this.context.identity() } : undefined,
+      revision: document.revision,
+      sequence,
+      selectionIds,
+      clips,
+    };
   }
   private locked(scope: Scope): boolean {
     return scope.selectionIds.some((id) => {
@@ -202,9 +228,16 @@ export class EditorInspector {
     label: string,
     patch: (clip: EditorClip) => EditorClipPatch,
   ): Promise<void> {
-    if (this.disposed || this.pending) return;
+    if (this.disposed || this.pending || this.replacingControls) return;
     try {
       const fresh = this.scope();
+      if (
+        !equal(
+          [scope.identity?.documentId, scope.identity?.generation],
+          [fresh?.identity?.documentId, fresh?.identity?.generation],
+        )
+      )
+        throw new Error("工程已切换，请重新调整属性");
       if (
         !fresh ||
         fresh.sequence.id !== scope.sequence.id ||
@@ -780,16 +813,24 @@ export class EditorInspector {
     const key = JSON.stringify([scope?.sequence.id, scope?.selectionIds]);
     if (!scope?.clips.length || key === this.tabSelection) return;
     this.tabSelection = key;
-    const doc = this.context.read(),
+    const doc = scope.document,
       lists = scope.clips.map((clip) => clipTabs(clip, scope.sequence, doc)),
       valid = lists[0]!.filter((tab) => lists.every((list) => list.includes(tab)));
     if (valid.length && !valid.includes(this.tab)) this.tab = valid[0]!;
   }
   render(): void {
-    if (this.disposed) return;
+    this.renderView(false);
+  }
+  /** Static controls need no DOM work when only the preview clock has changed. */
+  renderFrame(): void {
+    this.renderView(true);
+  }
+  private renderView(playheadOnly: boolean): void {
+    if (this.disposed || this.replacingControls) return;
     const scope = this.scope();
     this.followSelection(scope);
     const signature = JSON.stringify([
+      scope?.identity,
       scope?.revision,
       scope?.sequence.id,
       scope?.selectionIds,
@@ -797,21 +838,41 @@ export class EditorInspector {
     ]);
     const focused = document.activeElement;
     if (
+      playheadOnly &&
+      !this.pending &&
+      !this.error &&
+      signature === this.renderedSignature &&
+      !this.renderedAnimation
+    ) {
+      this.refreshAlignment(scope);
+      return;
+    }
+    if (
       !this.pending &&
       !this.error &&
       signature === this.renderedSignature &&
       (focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement) &&
       this.root.contains(focused) &&
       !focused.disabled
-    )
+    ) {
+      this.refreshAlignment(scope);
       return; // Playhead refreshes must not erase an in-progress text or number draft.
+    }
     this.renderedSignature = signature;
+    this.renderedAnimation = scope?.clips.some(hasKeyframes) ?? false;
     const scrollTop = this.root.scrollTop;
     // A native details toggle event may still be queued when a form commits.
     // Capture its current state synchronously before rebuilding the controls.
     for (const details of this.root.querySelectorAll<HTMLDetailsElement>("details[data-state-key]"))
       this.expanded.set(details.dataset.stateKey!, details.open);
-    this.root.replaceChildren();
+    // Removing a focused native input can synchronously fire change. Disposal must not
+    // commit its draft into a new selection or a newly opened project.
+    this.replacingControls = true;
+    try {
+      this.root.replaceChildren();
+    } finally {
+      this.replacingControls = false;
+    }
     const header = el("header", "ei-header");
     this.root.append(header);
     header.append(
@@ -924,7 +985,96 @@ export class EditorInspector {
       this.pending || this.locked(scope),
     );
   }
+  private async align(scope: Scope, alignment: CanvasAlignment, label: string): Promise<void> {
+    if (this.disposed || this.pending || this.replacingControls) return;
+    try {
+      const fresh = this.scope();
+      if (
+        !fresh ||
+        fresh.document.id !== scope.document.id ||
+        !equal(
+          [scope.identity?.documentId, scope.identity?.generation],
+          [fresh.identity?.documentId, fresh.identity?.generation],
+        ) ||
+        fresh.sequence.id !== scope.sequence.id ||
+        !equal(fresh.selectionIds, scope.selectionIds)
+      )
+        throw new Error("选择已变化，请重新调整属性");
+      const operations = planCanvasAlignment(
+        fresh.document,
+        fresh.sequence.id,
+        fresh.selectionIds,
+        this.context.time(),
+        alignment,
+      );
+      this.error = "";
+      if (!operations.length) return;
+      this.pending = true;
+      this.render();
+      await this.context.apply(operations, `画布${label}`);
+    } catch (error) {
+      this.report(error);
+    } finally {
+      this.pending = false;
+      this.render();
+    }
+  }
+  private alignment(parent: HTMLElement, scope: Scope): void {
+    const section = this.section(
+      parent,
+      "快速对齐到画布",
+      "多选时每个片段分别对齐。按旋转、裁切后的画面框，透明素材边距仍计入；复合片段按子画布框，文字按完整排版框。已有位置动画只更新或添加当前关键帧。",
+    );
+    const reason = canvasAlignmentReason(
+      scope.document,
+      scope.sequence.id,
+      scope.selectionIds,
+      this.context.time(),
+    );
+    const notice = el("p", "ei-notice ei-alignment-reason", reason);
+    notice.hidden = !reason;
+    section.append(notice);
+    const actions = el("div", "ei-alignment-actions");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "对齐到画布");
+    section.append(actions);
+    for (const [alignment, label] of [
+      ["left", "左侧对齐"],
+      ["center-x", "水平居中"],
+      ["right", "右侧对齐"],
+      ["top", "顶部对齐"],
+      ["center-y", "垂直居中"],
+      ["bottom", "底部对齐"],
+    ] as const) {
+      const button = this.action(
+        actions,
+        label,
+        () => void this.align(scope, alignment, label),
+        Boolean(reason),
+      );
+      button.title = reason || `${label}到画布；多选逐个对齐`;
+    }
+  }
+  /** Clock-only eligibility changes must not replace a focused property draft. */
+  private refreshAlignment(scope: Scope | undefined): void {
+    if (!scope || this.tab !== "visual") return;
+    const notice = this.root.querySelector<HTMLElement>(".ei-alignment-reason");
+    if (!notice) return;
+    const reason = canvasAlignmentReason(
+      scope.document,
+      scope.sequence.id,
+      scope.selectionIds,
+      this.context.time(),
+    );
+    notice.textContent = reason;
+    notice.hidden = !reason;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>(".ei-alignment-actions button")) {
+      button.disabled = this.pending || Boolean(reason);
+      button.title = reason || `${button.textContent}到画布；多选逐个对齐`;
+    }
+  }
   private visual(parent: HTMLElement, scope: Scope): void {
+    this.alignment(parent, scope);
     const transform = this.section(
       parent,
       "构图",
@@ -1299,7 +1449,7 @@ export class EditorInspector {
     const content = this.section(
       parent,
       "文字内容",
-      `样式应用于 ${scope.clips.length} 个文字片段；内容和逐词时间单独编辑。修改文字会清除旧词时间和翻译标记，保留来源绑定。`,
+      `样式应用于 ${scope.clips.length} 个文字片段；内容和逐词时间单独编辑。字幕只改词间标点或空白可保留词时间；改词或改标题会清除旧词时间。修改后的翻译标记会清除，来源绑定保留。`,
     );
     this.individual(content, scope, "text", (selected) => {
       this.plain(content, selected, "文字内容（保留换行）", ["text"], true);

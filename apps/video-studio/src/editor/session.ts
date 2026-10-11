@@ -251,9 +251,12 @@ export class EditorSession {
     return this.history.read();
   }
   getState(): EditorSessionState {
-    const value = this.history.read();
     return {
-      identity: { documentId: value.id, generation: this.generation, revision: value.revision },
+      identity: {
+        documentId: this.history.documentId,
+        generation: this.generation,
+        revision: this.history.revision,
+      },
       storageRevision: this.storageRevision,
       phase: this.phase,
       saveState:

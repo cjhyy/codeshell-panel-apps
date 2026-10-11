@@ -53,7 +53,7 @@ export class CaptionFindUI {
     const controls = node("div");
     controls.className = "ec-find-actions";
     controls.append(this.scope, this.previous, this.next, this.single, this.all);
-    this.element.append(controls, this.count, node("small", "按字面查找已保存文字，区分大小写；Shift+Enter 输入换行。替换会清除旧词时间与译文，可能需要重新对齐声音。"));
+    this.element.append(controls, this.count, node("small", "按字面查找已保存文字，区分大小写；Shift+Enter 输入换行。只改词间标点或空白可保留词时间；改词后需要重新对齐。修改后的旧译文会清除。"));
     for (const button of [this.previous, this.next, this.single, this.all]) button.type = "button";
     this.query.addEventListener("input", () => { this.current = undefined; this.invalidate(); });
     this.replacement.addEventListener("input", () => this.invalidate());

@@ -5,6 +5,7 @@ import {
   type RuntimeJob,
 } from "../sdk/panel-runtime";
 import { exportAudioMixWarning } from "./audio-mix-report";
+import { exportRangeLabel, validateExportRange } from "./export-range";
 
 let nextExportJobsId = 0;
 /** Remembered export titles; the newest are kept when the bound is reached. */
@@ -26,11 +27,13 @@ export interface ExportJobSummary {
   fraction?: number;
 }
 /** A readable name for an export found in Host history without a remembered title. */
-function historyTitle(request: { profile?: { name?: unknown } }): string {
+function historyTitle(request: { profile?: { name?: unknown }; range?: unknown }): string {
   const preset = request.profile?.name;
-  return typeof preset === "string" && preset.trim()
-    ? `视频导出 · ${preset.trim().slice(0, 200)}`
-    : "视频导出";
+  let range = "";
+  try {
+    if (request.range !== undefined) range = ` · ${exportRangeLabel(validateExportRange(request.range))}`;
+  } catch { /* An unrecognized receipt must not acquire a fabricated interval. */ }
+  return `视频导出${range}${typeof preset === "string" && preset.trim() ? ` · ${preset.trim().slice(0, 200)}` : ""}`;
 }
 
 /** A view of Host-owned durable exports. Reloads discover the original jobs rather than submitting new work. */

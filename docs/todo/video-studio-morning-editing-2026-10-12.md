@@ -140,3 +140,27 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
 - editing_audit：先审计字幕光标拆句/相邻合并现状和安全语义，再实现有限范围。
 
 11:00截止和goal/automation11仍然有效。未发布、未修改用户工程或调用付费模型。
+
+## 第三批整合（02:00 左右）
+
+- 第二批已在 e2d68f1 提交并推送 PR70。相同 HEAD 的 PR CI 全绿；push CI
+  唯一失败是千条字幕真实 click 的 4s 超时（已进入 performing click），并非断言失败。
+  仅该大型用例把 apply click 等待设为15s，保留原始点击、存储、一次撤销断言；本机复测通过。
+- 已集成 440c813 标点保留、72a1589 帧回调、0a2acda/aa92ace 属性代际隔离、
+  f2e02a4 字幕行代际隔离、8c9ec6f 六向对齐及 b751eb9 导出历史范围文字。
+  代际合并后再补旧对齐按钮失效、时钟变化只刷新按钮不丢属性草稿、工程名草稿隔离。
+- 标点保留要求原文/新文完整覆盖同一串真实词，Unicode字母/数字/组合符拼词、
+  数字分隔、撇号/连字/斜线及新词均保守清除旧对齐；不会根据文字推算词时间。
+- 帧内共享一个 detached snapshot，只用于同步只读UI，finally释放；public read仍复制。
+  Canvas evaluator按document/revision/generation/sequence缓存；动画属性仍随seek刷新。
+  合并后真实Chromium合法5000片段（活动2000）frame mean8.85ms/p9512.20ms，
+  seek8.74ms；仅同步界面，不包含解码或完整播放。1000片段frame1.71ms/seek2.14ms。
+- 快速左/右/上/下/水平/垂直对齐使用旋转裁切后画框，多选逐个对齐、一个原子undo；
+  仅更新相应位置轴当前关键帧。锁轨、隐藏、活动区间、蒙版、叠放字幕、转场歧义给原因。
+- 恢复的范围导出历史仍显示精确区间，1tick显示0–0.000004秒，非法范围不伪造标题。
+- 本批167/167相关UI通过，1088离线项1085通过3可选跳过，native voice5通过1跳过，
+  workspace documents5/5；标点扩展37/37再验通过。typecheck/build/build:check/validate通过。
+  日志 `/tmp/video-studio-morning-third-ui.log` 与 `-unit.log`。
+
+后续并行：字幕光标分句/相邻合并、长时间线磁吸扫描优化、59.94fps WebM帧率量化修复。
+新源改动后需再生成installable包；11:00时停止增加范围，完成必要校验、正常合并和交付。

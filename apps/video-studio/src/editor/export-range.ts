@@ -1,4 +1,4 @@
-import { assertTick, type Tick } from "./time";
+import { assertTick, ticksToSeconds, type Tick } from "./time";
 import { MAX_EDITOR_TICK } from "./validation";
 
 /** Half-open original sequence interval. Audio is cropped from the complete mix so
@@ -34,4 +34,11 @@ export function sameExportRange(expected: unknown, actual: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/** Keep sub-millisecond ranges distinguishable in durable history without unnecessary zeroes. */
+export function exportRangeLabel(value: ExportRange): string {
+  const range = validateExportRange(value),
+    seconds = (tick: Tick) => ticksToSeconds(tick).toFixed(6).replace(/\.?0+$/, "");
+  return `${seconds(range.start)}–${seconds(range.start + range.duration)} 秒`;
 }

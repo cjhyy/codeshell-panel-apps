@@ -33,6 +33,9 @@ export class EditorHistory {
   get revision(): number {
     return this.value.revision;
   }
+  get documentId(): string {
+    return this.value.id;
+  }
 
   read(): EditorDocument {
     return structuredClone(this.value);

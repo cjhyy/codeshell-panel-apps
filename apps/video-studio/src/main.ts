@@ -102,7 +102,7 @@ import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
 import { formatFrameRate, secondsToTicks, ticksToSeconds } from "./editor/time";
-import type { ExportRange } from "./editor/export-range";
+import { exportRangeLabel, type ExportRange } from "./editor/export-range";
 import { browserExportReason, recordEditorSequence } from "./editor/browser-export";
 import {
   legacyClipIssue,
@@ -5587,7 +5587,7 @@ async function submitEditorExport(
   });
   transfer.snapshot = snapshot;
   const rangeLabel = range
-    ? ` · ${ticksToSeconds(range.start).toFixed(3)}–${ticksToSeconds(range.start + range.duration).toFixed(3)} 秒`
+    ? ` · ${exportRangeLabel(range)}`
     : "";
   editorExportJobs?.track(job, `${doc.name}${rangeLabel} · ${profile.name}`);
   toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");

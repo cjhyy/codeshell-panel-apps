@@ -10,6 +10,7 @@ import {
   type EditorSessionStorage,
 } from "../apps/video-studio/src/editor/session";
 import type { EditorDocument } from "../apps/video-studio/src/editor/types";
+import { EditorHistory } from "../apps/video-studio/src/editor/history";
 
 function document(id = "project", name = "原工程", revision = 7): EditorDocument {
   return { ...migrateLegacyProject(createDemoProject()), id, name, revision };
@@ -76,6 +77,43 @@ function rename(session: EditorSession, name: string) {
     `改名 ${name}`,
   );
 }
+
+test("status identity reads avoid document copies and remain isolated across edits, undo and opens", async (t) => {
+  const { storage } = memory(),
+    session = await open(t, storage),
+    initial = session.getState().identity;
+  const read = EditorHistory.prototype.read;
+  let reads = 0;
+  EditorHistory.prototype.read = function () {
+    reads++;
+    return read.call(this);
+  };
+  try {
+    const state = session.getState();
+    state.identity.documentId = "caller mutation";
+    state.identity.revision = -1;
+    state.identity.generation = -1;
+    assert.deepEqual(session.getState().identity, initial);
+    assert.equal(reads, 0, "Status metadata must not clone the full document");
+  } finally {
+    EditorHistory.prototype.read = read;
+  }
+  const snapshot = session.read();
+  snapshot.sequences[0]!.clips.length = 0;
+  assert.ok(session.read().sequences[0]!.clips.length);
+  rename(session, "edited");
+  assert.deepEqual(session.getState().identity, { ...initial, revision: initial.revision + 1 });
+  session.undo();
+  assert.deepEqual(session.getState().identity, { ...initial, revision: initial.revision + 2 });
+  await session.replace(document("successor", "next", 0));
+  const replaced = session.getState().identity;
+  assert.equal(replaced.documentId, "successor");
+  assert.notEqual(replaced.generation, initial.generation);
+  assert.equal(replaced.revision, session.read().revision);
+  const reopened = await open(t, storage);
+  assert.equal(reopened.getState().identity.documentId, replaced.documentId);
+  assert.notEqual(reopened.getState().identity.generation, replaced.generation);
+});
 
 test("durable proposals publish only after storage accepts them and preserve redo on failed writes", async (t) => {
   const { storage, state } = memory();

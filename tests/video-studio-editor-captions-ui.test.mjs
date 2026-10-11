@@ -788,7 +788,8 @@ test("a thousand matching subtitles preview and save as one reversible batch", a
   await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
   assert.equal(await page.evaluate(() => controller.getState().candidate.operations.length), 1000);
   assert.deepEqual(await page.evaluate(() => session.read()), before);
-  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  // A real click includes the synchronous 1000-row update on two-core CI runners.
+  await page.getByRole("button", { name: "应用预览", exact: true }).click({ timeout: 15000 });
   await page.waitForFunction(() => captions().every((clip) => clip.text.startsWith("已校对 字幕")));
   assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
   await page.evaluate(() => session.undo());
@@ -901,6 +902,89 @@ test("another sequence and a new document generation never reuse old caption row
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
 
+test("same-document restore discards old text/timing/IME drafts and fences detached row events", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "同一字幕" }));
+  const row = page.locator(`[data-caption-id="${id}"]`), input = row.getByLabel("字幕文字", { exact: true });
+  await input.fill("旧版本未保存文字");
+  await row.locator('[data-caption-field="start"]').fill("0.25");
+  await row.locator('[data-caption-field="end"]').fill("1.5");
+  await input.focus();
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "旧输入法内容", selectionStart: 6, selectionEnd: 6 });
+    const result = await page.evaluate(async (id) => {
+      const old = document.querySelector(`[data-caption-id="${id}"]`), oldInput = old.querySelector("textarea");
+      const saved = session.read();
+      await session.replace(saved);
+      const identity = session.getState().identity, successor = session.read();
+      oldInput.value = "移除时迟到的输入";
+      oldInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertCompositionText", data: "迟到" }));
+      oldInput.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "旧输入法内容" }));
+      for (const button of old.querySelectorAll("button")) button.click();
+      const checkbox = old.querySelector('input[type="checkbox"]');
+      checkbox.checked = false;
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const current = document.querySelector(`[data-caption-id="${id}"]`);
+      return { sameDocument: saved.id === identity.documentId,
+        newNode: current !== old, text: current.querySelector("textarea").value,
+        times: [...current.querySelectorAll('[data-caption-field="start"], [data-caption-field="end"]')].map((field) => field.value),
+        unchanged: JSON.stringify(session.read()) === JSON.stringify(successor),
+        oldFocused: document.activeElement === oldInput,
+        errors: [...errors] };
+    }, id);
+    assert.deepEqual(result, { sameDocument: true, newNode: true, text: "同一字幕", times: ["0.000", "3.000"], unchanged: true, oldFocused: false, errors: [] });
+    // A later unrelated revision must not resurrect events written by the old detached row.
+    await page.evaluate(() => session.dispatch([{ type: "sequence.rename", sequenceId: "main", name: "恢复后" }], session.getState().identity));
+    assert.equal(await input.inputValue(), "同一字幕");
+  } finally { await cdp.detach(); }
+});
+
+test("a successor session at the same document ID and revision owns fresh drafts and listeners", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "相同版本字幕" }));
+  const input = page.locator(`[data-caption-id="${id}"] textarea`);
+  await input.fill("上一会话草稿");
+  const result = await page.evaluate(async (id) => {
+    const before = session.read(), oldIdentity = session.getState().identity,
+      old = document.querySelector(`[data-caption-id="${id}"]`), previous = session;
+    session = await editor.EditorSession.open({ read: async () => ({ data: before, revision: 1 }),
+      write: async () => ({ revision: 2 }), backupLegacy: async () => {} }, { autosaveDelayMs: 60000 });
+    ui.open("main");
+    for (const button of old.querySelectorAll("button")) button.click();
+    old.querySelector("textarea").dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const next = session.getState().identity;
+    globalThis.previousSession = previous;
+    return { sameId: next.documentId === oldIdentity.documentId, sameRevision: next.revision === oldIdentity.revision,
+      newGeneration: next.generation !== oldIdentity.generation,
+      text: document.querySelector(`[data-caption-id="${id}"] textarea`).value,
+      unchanged: JSON.stringify(session.read()) === JSON.stringify(before) };
+  }, id);
+  assert.deepEqual(result, { sameId: true, sameRevision: true, newGeneration: true, text: "相同版本字幕", unchanged: true });
+  await input.fill("新会话草稿");
+  await page.evaluate(() => session.dispatch([{ type: "sequence.rename", sequenceId: "main", name: "新会话修订" }], session.getState().identity));
+  assert.equal(await input.inputValue(), "新会话草稿");
+  await page.evaluate((id) => session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: id, patch: { text: "新会话已保存值" } }], session.getState().identity), id);
+  assert.equal(await page.locator(`[data-caption-id="${id}"] small`).textContent(), "无词时间，可使用普通字幕");
+  assert.equal(await input.inputValue(), "新会话草稿");
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("switching to a same-ID caption in another sequence never inherits the first sequence's drafts", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "已保存字幕" }));
+  await page.locator(`[data-caption-id="${id}"] textarea`).fill("第一序列草稿");
+  await page.evaluate(() => {
+    const seq = structuredClone(session.read().sequences[0]);
+    seq.id = "second";
+    session.dispatch([{ type: "sequence.add", sequence: seq }], session.getState().identity);
+    ui.open("second");
+  });
+  assert.equal(await page.locator(`[data-caption-id="${id}"] textarea`).inputValue(), "已保存字幕");
+});
+
 test("a thousand-row refresh retains every unchanged node and replaces only the edited row", async (t) => {
   const page = await fixture(t, { inline: true });
   const result = await page.evaluate(async () => {
@@ -926,5 +1010,32 @@ test("a thousand-row refresh retains every unchanged node and replaces only the 
       restored: captions().find((clip) => clip.id === "stable-caption-500").text };
   });
   assert.deepEqual(result, { unchanged: true, unrelatedMutations: 0, retained: 999, count: 1000, restored: "字幕 500" });
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("saving punctuation-only corrections keeps real timed highlighting and Undo restores the exact caption", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(async () => {
+    await seed();
+    const caption = captions()[0];
+    session.dispatch([{
+      type: "clip.update", sequenceId: "main", clipId: caption.id,
+      patch: { words: [{ text: "Hello", start: 0, end: 240000 }, { text: "world", start: 240000, end: 480000 }],
+        style: { ...caption.style, animation: "word-highlight" } },
+    }], session.getState().identity);
+    await session.flush();
+  });
+  const before = await page.evaluate(() => captions()[0]);
+  await page.getByLabel("字幕文字", { exact: true }).fill("Hello,\nworld!");
+  await page.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "Hello,\nworld!");
+  const after = await page.evaluate(() => captions()[0]);
+  assert.deepEqual(after.words, before.words);
+  assert.equal(after.style.animation, "word-highlight");
+  assert.deepEqual(after.sourceBinding, before.sourceBinding);
+  assert.match(await page.locator(".ec-row").innerText(), /词间标点可保留/);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions()[0].text === "Hello world");
+  assert.deepEqual(await page.evaluate(() => captions()[0]), before);
   assert.deepEqual(await page.evaluate(() => errors), []);
 });

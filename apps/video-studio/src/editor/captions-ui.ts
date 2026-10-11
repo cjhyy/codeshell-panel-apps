@@ -3,7 +3,7 @@ import { CaptionFindUI } from "./caption-find-ui";
 import { exportEditorSrt, listCaptions } from "./captions";
 import { CAPTION_PRESETS, currentCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds } from "./narration-edits";
-import type { EditorSession } from "./session";
+import { sameIdentity, type EditorSession } from "./session";
 import { secondsToTicks, snapToFrame, type Tick } from "./time";
 import type { EditorDocument, EditorSequence, TextClip } from "./types";
 export interface EditorCaptionsUIContext {
@@ -93,6 +93,7 @@ export class EditorCaptionsUI {
   private readonly find: CaptionFindUI;
   private readonly disposers: Array<() => void> = [];
   private unwatch: (() => void) | undefined;
+  private watchedSession?: EditorSession;
   private selected = new Set<string>();
   private sourceIds = new Set<string>();
   private sequenceId = "";
@@ -481,6 +482,7 @@ export class EditorCaptionsUI {
     clipId: string,
     field: "text" | "start" | "end",
     saved: string,
+    owns: () => boolean,
   ) {
     input.dataset.captionField = field;
     input.value = saved;
@@ -488,6 +490,7 @@ export class EditorCaptionsUI {
     if (draft?.[field] !== undefined && draft[field] !== saved) input.value = draft[field]!;
     else if (draft) delete draft[field];
     input.addEventListener("input", () => {
+      if (!owns()) return;
       this.drafts.set(clipId, { ...this.drafts.get(clipId), [field]: input.value });
     });
   }
@@ -516,14 +519,17 @@ export class EditorCaptionsUI {
       clips = this.captions(),
       seq = this.sequence(),
       drafts = this.draftIds(session.read());
-    if (this.rowSession !== session || this.rowScope !== scope) {
+    const changedScope = this.rowSession !== session || this.rowScope !== scope;
+    if (changedScope) {
       this.rowSession = session;
       this.rowScope = scope;
       this.rowNodes.clear();
+      this.drafts.clear();
+      this.focused = undefined;
     }
     const active = document.activeElement;
     const focus =
-      active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
+      !changedScope && active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
         ? {
             clipId: active.closest<HTMLElement>("[data-caption-id]")?.dataset.captionId,
             field: active.dataset.captionField,
@@ -567,6 +573,12 @@ export class EditorCaptionsUI {
       const row = element("article");
       row.className = "ec-row";
       row.dataset.captionId = clip.id;
+      const sequenceId = this.sequenceId,
+        owns = () => !this.disposed && this.context.session() === session &&
+          sameIdentity(session.getState().identity, identity, false) && this.sequenceId === sequenceId &&
+          row.isConnected && this.rowNodes.get(clip.id)?.element === row,
+        runRow = (task: () => void | Promise<void>) => this.run(async () => { if (owns()) await task(); }),
+        editRow = (task: () => Promise<unknown>) => this.edit(async () => { if (owns()) await task(); });
       const head = element("div");
       head.className = "ec-row-head";
       const checkbox = element("input");
@@ -574,6 +586,7 @@ export class EditorCaptionsUI {
       checkbox.checked = this.selected.has(clip.id);
       checkbox.setAttribute("aria-label", `选择字幕 ${clip.text.slice(0, 30)}`);
       checkbox.addEventListener("change", () => {
+        if (!owns()) return;
         if (checkbox.checked) this.selected.add(clip.id);
         else this.selected.delete(clip.id);
         this.selectionChanged();
@@ -585,7 +598,7 @@ export class EditorCaptionsUI {
       seek.type = "button";
       seek.className = "ec-seek";
       seek.addEventListener("click", () =>
-        this.run(async () => {
+        runRow(async () => {
           await this.context.seek?.(clip.start);
           this.context.select?.(this.sequenceId, [clip.id]);
         }),
@@ -598,13 +611,13 @@ export class EditorCaptionsUI {
         head.append(badge);
       }
       const input = element("textarea");
-      this.draft(input, clip.id, "text", clip.text);
+      this.draft(input, clip.id, "text", clip.text, owns);
       input.setAttribute("aria-label", "字幕文字");
       input.rows = Math.min(4, clip.text.split("\n").length + 1);
       const save = element("button", "保存文字");
       save.type = "button";
       save.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           await this.context.controller.updateText(this.sequenceId, clip.id, input.value);
           this.saved(clip.id, ["text"]);
         }),
@@ -618,7 +631,7 @@ export class EditorCaptionsUI {
         value.min = "0";
         value.step = "0.001";
         value.inputMode = "decimal";
-        this.draft(value, clip.id, name, seconds(tick));
+        this.draft(value, clip.id, name, seconds(tick), owns);
         wrapper.append(element("span", label), value);
         timing.append(wrapper);
         return value;
@@ -631,7 +644,7 @@ export class EditorCaptionsUI {
       remove.className = "ec-remove";
       remove.title = "删除这条字幕";
       saveTime.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           const current = this.sequence();
           if (!current) throw new Error("字幕时间线不存在");
           await this.context.controller.updateTiming(this.sequenceId, clip.id, {
@@ -642,7 +655,7 @@ export class EditorCaptionsUI {
         }),
       );
       remove.addEventListener("click", () =>
-        this.edit(async () => {
+        editRow(async () => {
           await this.context.controller.remove(this.sequenceId, [clip.id]);
           this.selected.delete(clip.id);
         }),
@@ -654,7 +667,7 @@ export class EditorCaptionsUI {
       const info = element(
         "small",
         clip.words.length
-          ? `${clip.words.length} 个真实词时间 · 修改文字会清除旧词时间`
+          ? `${clip.words.length} 个真实词时间 · 改词会清除，词间标点可保留`
           : "无词时间，可使用普通字幕",
       );
       row.append(head, input, actions, timing, info);
@@ -825,9 +838,10 @@ export class EditorCaptionsUI {
     if (this.inline) this.opened = true;
     else if (!(this.root as HTMLDialogElement).open) (this.root as HTMLDialogElement).showModal();
     this.renderDocument(!reopened);
-    if (!reopened || !this.unwatch) {
+    if (!reopened || !this.unwatch || this.watchedSession !== this.context.session()) {
       this.unwatch?.();
-      this.unwatch = this.context.session().subscribe(() => this.renderDocument());
+      this.watchedSession = this.context.session();
+      this.unwatch = this.watchedSession.subscribe(() => this.renderDocument());
     }
   }
   close() {

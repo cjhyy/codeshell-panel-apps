@@ -188,6 +188,32 @@ async function fixture(t, options = {}) {
       empty.clips = [];
       initial.sequences.push(empty);
     }
+    if (options.clipCount) {
+      const template = structuredClone(initial.sequences[0]);
+      initial.assets = [];
+      initial.sequences = [];
+      for (let offset = 0; offset < options.clipCount; offset += 2000) {
+        const sequence = structuredClone(template);
+        sequence.id = offset ? `large-${offset}` : "main";
+        sequence.clips = Array.from(
+          { length: Math.min(2000, options.clipCount - offset) },
+          (_, index) => ({
+            id: offset + index ? `shape-${offset + index}` : "a",
+            kind: "shape",
+            trackId: "video",
+            label: "性能测试图形",
+            start: index * 8000,
+            duration: 8000,
+            shape: "rectangle",
+            fill: "#ff0000",
+            stroke: "#00000000",
+            strokeWidth: 0,
+            ...visual(),
+          }),
+        );
+        initial.sequences.push(sequence);
+      }
+    }
     let exportFailAt = options.exportFailAt ?? 0,
       exportHeldAt = options.exportHeldAt ?? 0,
       releaseExport;
@@ -304,6 +330,7 @@ async function fixture(t, options = {}) {
       onError: (error) => errors.push(String(error)),
     });
     globalThis.fixture = {
+      internals: { session, workspace },
       read: () => session.read(),
       refreshMedia: () => workspace.refreshMedia(),
       addAsset: (assetId, placement) => workspace.addAsset(assetId, placement),
@@ -432,8 +459,10 @@ async function fixture(t, options = {}) {
         next.id = "replacement-document";
         await session.replace(next, { identity: session.getState().identity });
       },
-      replaceGeneration: async () => {
-        await session.replace(session.read(), { identity: session.getState().identity });
+      replaceGeneration: async (name) => {
+        const next = session.read();
+        if (name !== undefined) next.name = name;
+        await session.replace(next, { identity: session.getState().identity });
       },
       flush: () => session.flush(),
       sourcePreview: (active) => workspace.setSourcePreview(active),
@@ -2176,4 +2205,136 @@ test("material + near the 24-hour limit explains it is too long and changes noth
   assert.deepEqual(await page.evaluate(() => fixture.errors), [
     "Error: 加入素材后超出时长上限（24 小时）",
   ]);
+});
+
+for (const clipCount of [1000, 5000]) {
+  test(`${clipCount} legal clips share one isolated snapshot and one prepared canvas evaluator per frame`, async (t) => {
+    const page = await fixture(t, { clipCount });
+    const result = await page.evaluate(async () => {
+      const { session, workspace } = fixture.internals;
+      workspace.selectClips("main", ["a"]);
+      await workspace.seek(0);
+      const callback = workspace.preview.options.onFrame,
+        prepared = workspace.canvasEditor.prepared.evaluator,
+        field = document.querySelector('[aria-label="水平位置（%）"]'),
+        read = session.read.bind(session),
+        snapshots = [],
+        costs = [];
+      let reads = 0;
+      session.read = () => {
+        reads++;
+        const document = read();
+        snapshots.push(document);
+        return document;
+      };
+      for (let index = 0; index < 3; index++) callback((index % 2) * 8000);
+      reads = 0;
+      snapshots.length = 0;
+      for (let index = 0; index < 20; index++) {
+        const start = performance.now();
+        callback((index % 2) * 8000);
+        costs.push(performance.now() - start);
+      }
+      const frameReads = reads,
+        frameCount = snapshots.length,
+        unchangedEvaluator = prepared === workspace.canvasEditor.prepared.evaluator,
+        unchangedField = field === document.querySelector('[aria-label="水平位置（%）"]'),
+        frameSnapshot = snapshots.at(-1);
+      const seekCosts = [];
+      for (let index = 0; index < 8; index++) {
+        const start = performance.now();
+        await workspace.seek((index % 2) * 8000);
+        seekCosts.push(performance.now() - start);
+      }
+      const detached = workspace.inspector.context.read();
+      detached.name = "caller mutation";
+      const detachedRead = detached !== frameSnapshot && session.read().name !== detached.name;
+      const timingRender = workspace.timing.render;
+      let rejected = false;
+      workspace.timing.render = () => {
+        throw new Error("deliberate view failure");
+      };
+      try {
+        callback(0);
+      } catch {
+        rejected = true;
+      }
+      workspace.timing.render = timingRender;
+      const failedSnapshot = snapshots.at(-1),
+        releasedAfterError = workspace.inspector.context.read() !== failedSnapshot;
+      session.read = read;
+      const freeze = (value) => {
+        if (value && typeof value === "object" && !Object.isFrozen(value)) {
+          Object.values(value).forEach(freeze);
+          Object.freeze(value);
+        }
+        return value;
+      };
+      session.read = () => freeze(read());
+      workspace.inspector.renderedSignature = "";
+      workspace.timing.signature = "";
+      workspace.sequences.signature = "";
+      try {
+        callback(0);
+      } finally {
+        session.read = read;
+      }
+      const revision = session.getState().identity.revision;
+      session.dispatch(
+        [{ type: "clip.update", sequenceId: "main", clipId: "a", patch: {
+          transform: { ...session.read().sequences[0].clips[0].transform, x: 0.2 },
+        } }],
+        session.getState().identity,
+        "画面变化",
+      );
+      await workspace.seek(0);
+      return {
+        frameReads,
+        frameCount,
+        unchangedEvaluator,
+        unchangedField,
+        detachedRead,
+        rejected,
+        releasedAfterError,
+        revision: session.read().revision,
+        expectedRevision: revision + 1,
+        evaluatorChanged: prepared !== workspace.canvasEditor.prepared.evaluator,
+        targetX: workspace.canvasEditor.targets[0].layer.transform.x,
+        mean: costs.reduce((sum, value) => sum + value, 0) / costs.length,
+        seekMean: seekCosts.reduce((sum, value) => sum + value, 0) / seekCosts.length,
+        p95: costs.toSorted((a, b) => a - b)[18],
+        errors: fixture.errors,
+      };
+    });
+    assert.equal(result.frameReads, 20);
+    assert.equal(result.frameCount, 20);
+    for (const key of [
+      "unchangedEvaluator", "unchangedField", "detachedRead",
+      "rejected", "releasedAfterError", "evaluatorChanged",
+    ])
+      assert.equal(result[key], true, key);
+    assert.equal(result.revision, result.expectedRevision);
+    assert.equal(result.targetX, 0.2);
+    assert.deepEqual(result.errors, []);
+    t.diagnostic(
+      `Chromium ${clipCount} clips: frame view mean ${result.mean.toFixed(2)}ms, ` +
+      `p95 ${result.p95.toFixed(2)}ms; real seek ${result.seekMean.toFixed(2)}ms`,
+    );
+  });
+}
+
+
+test("opening a new generation replaces an unfinished project-name draft instead of renaming the successor on blur", async (t) => {
+  const page = await fixture(t);
+  const input = page.getByLabel("工程名称", { exact: true });
+  await input.fill("上个工程的未提交名称");
+  await page.evaluate(() => fixture.externalEdit());
+  assert.equal(await input.inputValue(), "上个工程的未提交名称");
+  await page.evaluate(() => fixture.replaceGeneration("已打开的工程名称"));
+  assert.equal(await input.inputValue(), "已打开的工程名称");
+  await input.blur();
+  await page.evaluate(() => fixture.flush());
+  assert.equal((await documentState(page)).name, "已打开的工程名称");
+  assert.equal((await page.evaluate(() => fixture.stored())).name, "已打开的工程名称");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });

@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { chromium } from "playwright";
 
-let browser, page;
+let browser, page, source;
 before(async () => {
   const compiled = await build({
     stdin: {
@@ -14,6 +14,12 @@ before(async () => {
     export * from './apps/video-studio/src/editor/defaults';
     export { EditorHistory } from './apps/video-studio/src/editor/history';
     export { evaluateAnimatedNumber } from './apps/video-studio/src/editor/animation';
+    export * from './apps/video-studio/src/editor/canvas-alignment';
+    export { canvasTargets, canvasTargetCorners } from './apps/video-studio/src/editor/canvas-edits';
+    export { evaluateFrame } from './apps/video-studio/src/editor/evaluate';
+    export { FrameCompositor } from './apps/video-studio/src/editor/compositor';
+    export { EditorSession } from './apps/video-studio/src/editor/session';
+    export { createEditorHostStorage } from './apps/video-studio/src/editor/host-storage';
   `,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
@@ -36,7 +42,8 @@ before(async () => {
       "utf8",
     ),
   });
-  await page.addScriptTag({ content: compiled.outputFiles[0].text });
+  source = compiled.outputFiles[0].text;
+  await page.addScriptTag({ content: source });
   await page.addScriptTag({
     content: `
     const T=240000;
@@ -103,6 +110,374 @@ async function details(name) {
   if (!(await item.evaluate((node) => node.open))) await item.locator(":scope > summary").click();
   return item;
 }
+
+test("quick canvas alignment moves each selected clip independently and preserves the other animated axis", async () => {
+  await page.evaluate(() => {
+    now = 480013;
+    const a = clip("a"),
+      b = clip("b");
+    a.transform.x = {
+      keyframes: [
+        { time: 0, value: -0.3, easing: "ease-in" },
+        { time: 960000, value: 0.4, easing: "hold" },
+      ],
+    };
+    a.transform.y = {
+      keyframes: [
+        { time: 0, value: 0.3, easing: "linear" },
+        { time: 960000, value: -0.1, easing: "ease-out" },
+      ],
+    };
+    b.transform.y = {
+      keyframes: [
+        { time: 0, value: 0.1, easing: "linear" },
+        { time: 240013, value: 0.4, easing: "hold" },
+        { time: 960000, value: -0.2 },
+      ],
+    };
+    a.transform.scaleX = a.transform.scaleY = 0.3;
+    a.transform.rotation = 37;
+    update("a", { transform: a.transform });
+    update("b", { transform: b.transform });
+    globalThis.beforeAlignment = editorHistory.read();
+    select(["a", "b"]);
+  });
+  await page.getByRole("button", { name: "水平居中", exact: true }).click();
+  await page.waitForFunction(
+    () => calls.length === 1 && !document.querySelector(".ei-panel").disabled,
+  );
+  let result = await page.evaluate(() => ({
+    before: beforeAlignment,
+    after: editorHistory.read(),
+    calls,
+    errors,
+  }));
+  for (let index = 0; index < 2; index++)
+    assert.deepEqual(
+      result.after.sequences[0].clips[index].transform.y,
+      result.before.sequences[0].clips[index].transform.y,
+    );
+  assert.equal(result.calls[0].ops.length, 2);
+  assert.equal(result.after.sequences[0].clips[0].transform.x.keyframes[1].time, 480013);
+  assert.deepEqual(
+    result.after.sequences[0].clips[0].transform.x.keyframes.filter((key) => key.time !== 480013),
+    result.before.sequences[0].clips[0].transform.x.keyframes,
+  );
+  assert.ok(Math.abs(result.after.sequences[0].clips[1].transform.x) < 1e-10);
+  await page.getByRole("button", { name: "垂直居中", exact: true }).click();
+  await page.waitForFunction(
+    () => calls.length === 2 && !document.querySelector(".ei-panel").disabled,
+  );
+  result = await page.evaluate(() => ({
+    before: beforeAlignment,
+    after: editorHistory.read(),
+    calls,
+    errors,
+  }));
+  const bY = result.after.sequences[0].clips[1].transform.y.keyframes;
+  assert.equal(bY.length, 3);
+  assert.equal(bY[1].time, 240013);
+  assert.equal(bY[1].easing, "hold");
+  assert.ok(Math.abs(bY[1].value) < 1e-10);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => {
+    editorHistory.undo();
+    editorHistory.undo();
+    inspector.render();
+  });
+  assert.deepEqual(
+    await page.evaluate(() => editorHistory.read().sequences),
+    result.before.sequences,
+  );
+});
+
+test("alignment shows conservative reasons and a lock introduced after render blocks the entire selection", async () => {
+  await page.evaluate(() => {
+    const a = clip("a");
+    a.mask = {
+      kind: "ellipse",
+      x: 0,
+      y: 0,
+      width: 1,
+      height: 1,
+      rotation: 0,
+      feather: 0,
+      inverted: false,
+    };
+    update("a", { mask: a.mask });
+    select(["a", "b"]);
+  });
+  assert.equal(
+    await page.getByRole("button", { name: "左侧对齐", exact: true }).isDisabled(),
+    true,
+  );
+  assert.match(
+    await page.getByRole("group", { name: "对齐到画布" }).locator("..").innerText(),
+    /蒙版边缘/,
+  );
+  await page.evaluate(() => {
+    reset(["a", "b"]);
+    editorHistory.apply(
+      [{ type: "track.update", sequenceId: "main", trackId: "v2", patch: { locked: true } }],
+      editorHistory.revision,
+    );
+  });
+  const before = await page.evaluate(() => editorHistory.read());
+  await page.getByRole("button", { name: "右侧对齐", exact: true }).click();
+  assert.match(await page.getByRole("alert").innerText(), /锁定/);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+  await page.evaluate(() => {
+    reset(["a", "b"]);
+    now = 0;
+    inspector.render();
+  });
+  assert.match(
+    await page.getByRole("group", { name: "对齐到画布" }).locator("..").innerText(),
+    /同时出现/,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "顶部对齐", exact: true }).isDisabled(),
+    true,
+  );
+  await page.evaluate(() => {
+    reset(["t"]);
+    const t = clip("t");
+    t.style.layout = "caption-stack";
+    update("t", { style: t.style });
+    inspector.render();
+  });
+  await tab("画面");
+  assert.match(
+    await page.getByRole("group", { name: "对齐到画布" }).locator("..").innerText(),
+    /叠放字幕/,
+  );
+});
+
+test("pending alignment blocks duplicates and rejected apply retains the entire original selection", async () => {
+  const before = await page.evaluate(() => {
+    select(["a", "b"]);
+    waitApply = new Promise((_resolve, reject) => {
+      globalThis.rejectAlignment = reject;
+    });
+    return editorHistory.read();
+  });
+  await page.getByRole("button", { name: "左侧对齐", exact: true }).click();
+  assert.equal(
+    await page.getByRole("button", { name: "右侧对齐", exact: true }).isDisabled(),
+    true,
+  );
+  await page
+    .getByRole("button", { name: "右侧对齐", exact: true })
+    .evaluate((button) => button.dispatchEvent(new Event("click")));
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await page.evaluate(() => rejectAlignment(new Error("保存暂时失败")));
+  await page.getByRole("alert").waitFor();
+  assert.match(await page.getByRole("alert").innerText(), /保存暂时失败/);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+});
+
+test("alignment applies compositor text bounds and real rotated cropped image pixels", async () => {
+  const result = await page.evaluate(async () => {
+    const doc = makeDocument(),
+      sequence = doc.sequences[0],
+      a = sequence.clips[0];
+    sequence.width = 321;
+    sequence.height = 181;
+    sequence.background = "#00000000";
+    sequence.clips = [a];
+    doc.assets[0] = {
+      id: "video",
+      name: "图片",
+      kind: "image",
+      duration: 0,
+      width: 641,
+      height: 359,
+    };
+    a.timeMap.points[1].source = 0;
+    Object.assign(a.transform, {
+      scaleX: 0.37,
+      scaleY: 0.43,
+      rotation: 37,
+      x: 0.2,
+      y: -0.14,
+      fit: "cover",
+      crop: { left: 0.17, right: 0.08, top: 0.13, bottom: 0.09 },
+    });
+    const image = new Image();
+    image.src =
+      "data:image/svg+xml," +
+      encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="641" height="359"><rect width="641" height="359" fill="white"/></svg>',
+      );
+    await image.decode();
+    const canvas = document.createElement("canvas"),
+      compositor = new api.FrameCompositor(),
+      pixels = [];
+    for (const alignment of ["left", "center-x", "right", "top", "center-y", "bottom"]) {
+      const ops = api.planCanvasAlignment(doc, "main", ["a"], now, alignment);
+      const h = new api.EditorHistory(doc),
+        aligned = h.apply(ops, h.revision),
+        frame = api.evaluateFrame(aligned, "main", now);
+      compositor.draw(canvas, frame, new Map([[frame.layers[0].instanceId, image]]));
+      const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+      let left = canvas.width,
+        right = -1,
+        top = canvas.height,
+        bottom = -1;
+      for (let y = 0; y < canvas.height; y++)
+        for (let x = 0; x < canvas.width; x++)
+          if (data[(y * canvas.width + x) * 4 + 3] > 10) {
+            left = Math.min(left, x);
+            right = Math.max(right, x);
+            top = Math.min(top, y);
+            bottom = Math.max(bottom, y);
+          }
+      pixels.push({ alignment, left, right, top, bottom });
+    }
+    compositor.dispose();
+    const textDoc = makeDocument();
+    textDoc.sequences[0].clips = [textDoc.sequences[0].clips.find((c) => c.id === "t")];
+    const t = textDoc.sequences[0].clips[0];
+    t.style.shadow = { color: "#ff0000", blur: 8, x: 40, y: -20 };
+    t.style.strokeWidth = 6;
+    const textOps = api.planCanvasAlignment(textDoc, "main", ["t"], now, "left"),
+      h = new api.EditorHistory(textDoc);
+    const aligned = h.apply(textOps, h.revision),
+      target = api.canvasTargets(aligned, "main", now)[0];
+    return {
+      pixels,
+      textLeft: Math.min(...api.canvasTargetCorners(target).map((point) => point.x)),
+      textY: aligned.sequences[0].clips[0].transform.y,
+      oldTextY: t.transform.y,
+    };
+  });
+  for (const p of result.pixels) {
+    const value =
+      p.alignment === "left"
+        ? p.left
+        : p.alignment === "right"
+          ? p.right + 1
+          : p.alignment === "top"
+            ? p.top
+            : p.alignment === "bottom"
+              ? p.bottom + 1
+              : p.alignment === "center-x"
+                ? (p.left + p.right + 1) / 2
+                : (p.top + p.bottom + 1) / 2;
+    const expected =
+      p.alignment === "left" || p.alignment === "top"
+        ? 0
+        : p.alignment === "right"
+          ? 321
+          : p.alignment === "bottom"
+            ? 181
+            : p.alignment === "center-x"
+              ? 160.5
+              : 90.5;
+    assert.ok(Math.abs(value - expected) <= 1.5, JSON.stringify(p));
+  }
+  assert.ok(Math.abs(result.textLeft) < 1e-7);
+  assert.deepEqual(result.textY, result.oldTextY);
+});
+
+test("quick alignment saves one atomic batch through real IndexedDB and one undo durably restores both clips", async (t) => {
+  const durable = await browser.newPage({ viewport: { width: 500, height: 900 } });
+  t.after(() => durable.close());
+  await durable.route("http://127.0.0.1:41789/alignment", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<main id="mount" style="width:300px;height:900px"></main>',
+    }),
+  );
+  await durable.goto("http://127.0.0.1:41789/alignment");
+  await durable.addStyleTag({
+    content: await readFile(
+      new URL("../apps/video-studio/public/editor-inspector.css", import.meta.url),
+      "utf8",
+    ),
+  });
+  await durable.addScriptTag({ content: source });
+  const initial = await page.evaluate(() => makeDocument());
+  await durable.evaluate(async (initial) => {
+    globalThis.storage = api.createEditorHostStorage(undefined, {
+      persistent: true,
+      scopeKey: "alignment-" + crypto.randomUUID(),
+    });
+    const write = storage.write.bind(storage);
+    globalThis.writes = [];
+    storage.write = async (document, base, label) => {
+      writes.push({ document: structuredClone(document), label });
+      return write(document, base, label);
+    };
+    globalThis.session = await api.EditorSession.open(storage, {
+      initialDocument: initial,
+      autosaveDelayMs: 60000,
+    });
+    await session.flush();
+    writes.length = 0;
+    globalThis.before = session.read();
+    globalThis.calls = [];
+    globalThis.errors = [];
+    globalThis.mount = () => {
+      globalThis.inspector?.dispose();
+      globalThis.inspector = api.mountEditorInspector(document.querySelector("#mount"), {
+        read: () => session.read(),
+        selection: () => ({ sequenceId: "main", clipIds: ["a", "b"] }),
+        time: () => 480013,
+        onError: (error) => errors.push(error.message),
+        apply: async (ops, label) => {
+          calls.push(ops);
+          session.dispatch(ops, session.getState().identity, label);
+          await session.flush();
+        },
+      });
+    };
+    mount();
+  }, initial);
+  await durable.getByRole("button", { name: "水平居中", exact: true }).click();
+  await durable.waitForFunction(
+    () => writes.length === 1 && !document.querySelector(".ei-panel").disabled,
+  );
+  let result = await durable.evaluate(async () => ({
+    doc: session.read(),
+    stored: (await storage.read()).data,
+    writes,
+    calls,
+    errors,
+  }));
+  assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].length, 2);
+  assert.deepEqual(result.stored, result.doc);
+  assert.deepEqual(result.errors, []);
+  await durable.getByRole("button", { name: "水平居中", exact: true }).click();
+  assert.equal(await durable.evaluate(() => writes.length), 1);
+  await durable.evaluate(async () => {
+    session.undo();
+    await session.flush();
+    inspector.render();
+  });
+  result = await durable.evaluate(async () => ({
+    doc: session.read(),
+    stored: (await storage.read()).data,
+    before,
+    writes,
+  }));
+  assert.equal(result.writes.length, 2);
+  assert.deepEqual(result.doc.sequences, result.before.sequences);
+  assert.deepEqual(result.stored, result.doc);
+  await durable.evaluate(async () => {
+    inspector.dispose();
+    await session.close({ save: false });
+    session = await api.EditorSession.open(storage);
+    mount();
+  });
+  assert.deepEqual(await durable.evaluate(() => session.read().sequences), initial.sequences);
+  await durable.evaluate(async () => {
+    inspector.dispose();
+    await session.close({ save: false });
+  });
+});
 
 test("visual controls convert percentages, preserve unrelated properties, and expose keyboard-accessible tabs", async () => {
   await change("水平位置（%）", 25);
@@ -713,4 +1088,171 @@ test("selecting another kind of clip switches away from a tab that does not appl
   await tab("调色");
   await page.evaluate(() => select(["b"]));
   assert.equal(await selectedTab(), "调色");
+});
+
+test("frame refreshes retain static controls and drafts while regular local actions still render", async () => {
+  const result = await page.evaluate(() => {
+    const field = document.querySelector('[aria-label="水平位置（%）"]');
+    now += 8000;
+    inspector.renderFrame();
+    return field === document.querySelector('[aria-label="水平位置（%）"]');
+  });
+  assert.equal(result, true);
+  await page.evaluate(() => {
+    update("t", {
+      words: Array.from({ length: 21 }, (_, index) => ({
+        text: String(index), start: index * 1000, end: index * 1000 + 500,
+      })),
+    });
+    select(["t"]);
+  });
+  await tab("文字");
+  const input = page.getByLabel("文字内容（保留换行）", { exact: true });
+  await input.fill("未保存的中文\n第二行");
+  await page.evaluate(() => {
+    now += 8000;
+    inspector.renderFrame();
+  });
+  assert.equal(await input.inputValue(), "未保存的中文\n第二行");
+  assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+  assert.equal((await read("t")).text, "你好世界");
+  await input.fill("你好世界");
+  await page.getByRole("heading", { name: "片段属性", exact: true }).click();
+  await details("逐词时间");
+  await page.getByRole("button", { name: "下一页词语", exact: true }).click();
+  assert.equal(await page.getByLabel("词语 21", { exact: true }).inputValue(), "20");
+});
+
+test("paused seeking refreshes nested animated inspector values and current key indicators", async () => {
+  await page.evaluate(() => {
+    const transform = clip("a").transform;
+    transform.x = { keyframes: [
+      { time: 0, value: 0, easing: "linear" },
+      { time: 480000, value: 0.4, easing: "linear" },
+    ] };
+    update("a", { transform });
+    now = 0;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "0");
+  await page.getByRole("button", { name: "移除水平位置（%）当前关键帧", exact: true }).waitFor();
+  await page.evaluate(() => {
+    now = 240000;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "20");
+  await page.getByRole("button", { name: "添加水平位置（%）当前关键帧", exact: true }).waitFor();
+  await page.evaluate(() => {
+    now = 480000;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "40");
+  await page.getByRole("button", { name: "移除水平位置（%）当前关键帧", exact: true }).waitFor();
+  // Animations outside the active tab also invalidate the static fast path.
+  await page.evaluate(() => {
+    const audio = clip("b").audio;
+    audio.pan = { keyframes: [
+      { time: 0, value: 0, easing: "linear" },
+      { time: 480000, value: 1, easing: "linear" },
+    ] };
+    update("b", { audio });
+    select(["b"]);
+  });
+  await tab("音频");
+  await page.evaluate(() => {
+    now = 480000;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByLabel("声像（%）", { exact: true }).inputValue(), "50");
+});
+
+test("a new session generation replaces focused drafts and invalidates static and animated controls at the same document revision", async () => {
+  await page.evaluate(() => {
+    globalThis.inspectorIdentity = { documentId: "project", generation: 1, revision: 0 };
+    inspector.context.identity = () => ({ ...inspectorIdentity });
+    inspector.render();
+  });
+  const field = page.getByLabel("水平位置（%）", { exact: true });
+  const oldField = await field.elementHandle();
+  await field.fill("999999");
+  await page.evaluate(() => {
+    const replacement = editorHistory.read();
+    replacement.sequences[0].clips[0].transform.x = 0.7;
+    editorHistory = new api.EditorHistory(replacement);
+    inspectorIdentity.generation++;
+    inspector.render();
+  });
+  assert.equal(await field.inputValue(), "70");
+  assert.equal(await field.evaluate((node) => node === document.activeElement), false);
+  assert.equal((await read()).transform.x, 0.7);
+  await field.fill("88");
+  await page.evaluate(() => {
+    const replacement = editorHistory.read();
+    replacement.sequences[0].clips[0].transform.x = { keyframes: [
+      { time: 0, value: 0, easing: "linear" },
+      { time: 480000, value: 0.4, easing: "linear" },
+    ] };
+    editorHistory = new api.EditorHistory(replacement);
+    inspectorIdentity.generation++;
+    now = 0;
+    inspector.renderFrame();
+  });
+  assert.equal(await field.inputValue(), "0");
+  assert.equal(await field.evaluate((node) => node === document.activeElement), false);
+  await page.evaluate(() => {
+    now = 240000;
+    inspector.renderFrame();
+  });
+  assert.equal(await field.inputValue(), "20");
+  assert.equal(await page.evaluate(() => editorHistory.revision), 0);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+  await oldField.evaluate((node) => {
+    node.value = "99";
+    node.dispatchEvent(new Event("change"));
+  });
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), ["工程已切换，请重新调整属性"]);
+});
+
+test("clock-only alignment availability updates in place without discarding a focused property draft", async () => {
+  await page.evaluate(() => select(["a", "b"]));
+  const field = page.getByLabel("水平位置（%）", { exact: true });
+  await field.fill("73");
+  const oldField = await field.elementHandle();
+  await page.evaluate(() => {
+    now = 0;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByRole("button", { name: "左侧对齐", exact: true }).isDisabled(), true);
+  assert.match(await page.locator(".ei-alignment-reason").innerText(), /同时出现/);
+  assert.equal(await field.inputValue(), "73");
+  assert.equal(await oldField.evaluate((node) => node === document.activeElement), true);
+  await page.evaluate(() => {
+    now = 480000;
+    inspector.renderFrame();
+  });
+  assert.equal(await page.getByRole("button", { name: "左侧对齐", exact: true }).isDisabled(), false);
+  assert.equal(await page.locator(".ei-alignment-reason").isHidden(), true);
+  assert.equal(await field.inputValue(), "73");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+});
+
+test("a detached alignment button cannot modify a restored generation with matching ids and revision", async () => {
+  await page.evaluate(() => {
+    globalThis.inspectorIdentity = { documentId: "project", generation: 1, revision: 0 };
+    inspector.context.identity = () => ({ ...inspectorIdentity });
+    inspector.render();
+  });
+  const button = await page.getByRole("button", { name: "水平居中", exact: true }).elementHandle();
+  const before = await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(makeDocument());
+    inspectorIdentity.generation++;
+    inspector.renderFrame();
+    return editorHistory.read();
+  });
+  await button.evaluate((node) => node.dispatchEvent(new Event("click")));
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+  assert.deepEqual(await page.evaluate(() => errors), ["选择已变化，请重新调整属性"]);
 });

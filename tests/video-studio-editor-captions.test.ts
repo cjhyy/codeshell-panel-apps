@@ -376,6 +376,76 @@ test("generated captions retain words/styles and reruns preserve corrected text 
   );
 });
 
+test("separator-only corrections retain proven ordered word times and highlight while clearing old translations", () => {
+  const doc = generated(), caption = captions(doc)[0]!;
+  caption.translation = { original: caption.text, language: "en", mode: "translated" };
+  const before = structuredClone(doc),
+    operations = planCaptionText(doc, "main", caption.id, "你好，\n世界！"),
+    after = applyEditorOperations(doc, operations, doc.revision),
+    corrected = captions(after)[0]!;
+  assert.deepEqual(corrected.words, caption.words);
+  assert.equal(corrected.style.animation, "word-highlight");
+  assert.equal(corrected.translation, undefined);
+  assert.deepEqual(corrected.sourceBinding, caption.sourceBinding);
+  assert.deepEqual(doc, before);
+  assert.notEqual((operations[0] as any).patch.words, caption.words);
+  const plan = planCaptionReplace(doc, "main", " ", "，");
+  assert.deepEqual(captions(applyEditorOperations(doc, plan.operations, doc.revision))[0]!.words, caption.words);
+  assert.ok(plan.notices.some((notice) => /已保留真实词时间/.test(notice)));
+});
+
+test("ASR token edge whitespace may move between separators while exact spoken word times remain unchanged", () => {
+  const doc = generated(), caption = captions(doc)[0]!;
+  caption.text = "Hello world";
+  caption.words = [{ text: "Hello", start: 0, end: T }, { text: " world", start: T, end: 2 * T }];
+  const after = applyEditorOperations(doc, planCaptionText(doc, "main", caption.id, "Hello,\nworld!"), doc.revision),
+    corrected = captions(after)[0]!;
+  assert.deepEqual(corrected.words, [{ text: "Hello", start: 0, end: T }, { text: "world", start: T, end: 2 * T }]);
+  assert.equal(corrected.style.animation, "word-highlight");
+  assert.equal(caption.words[1]!.text, " world");
+});
+
+test("new wording, changed timed tokens, missing coverage and ambiguous joiners never reuse stale word alignment", () => {
+  for (const [oldText, nextText, wordTexts] of [
+    ["你好 世界", "您好 世界", ["你好", "世界"]],
+    ["你好， 世界", "你好！ 世界", ["你好，", "世界"]],
+    ["你好 未对齐 世界", "你好，未对齐 世界", ["你好", "世界"]],
+    ["hello world", "helloworld", ["hello", "world"]],
+    ["άλφα βήτα", "άλφαβήτα", ["άλφα", "βήτα"]],
+    ["два слова", "дваслова", ["два", "слова"]],
+    ["caf\u0065\u0301 noir", "caf\u0065\u0301noir", ["caf\u0065\u0301", "noir"]],
+    ["we're", "we re", ["we", "re"]],
+    ["state-of", "state of", ["state", "of"]],
+    ["1.0", "10", ["1", "0"]],
+    ["١.٠", "١ ٠", ["١", "٠"]],
+    ["a/b", "a b", ["a", "b"]],
+    ["你好 世界", "你好🙂世界", ["你好", "世界"]],
+  ] as const) {
+    const doc = generated(), caption = captions(doc)[0]!;
+    caption.text = oldText;
+    caption.words = wordTexts.map((text, index) => ({ text, start: index * T, end: (index + 1) * T }));
+    const after = applyEditorOperations(doc, planCaptionText(doc, "main", caption.id, nextText), doc.revision),
+      corrected = captions(after)[0]!;
+    assert.deepEqual(corrected.words, [], `${oldText} -> ${nextText}`);
+    assert.equal(corrected.style.animation, "none");
+  }
+});
+
+test("repeated words and Unicode separators retain their exact original token times without guessing", async (t) => {
+  const doc = generated(), caption = captions(doc)[0]!;
+  caption.text = "你好 你好";
+  caption.words[1]!.text = "你好";
+  const { session, controller, store } = await harness(t, {}, doc), before = session.read();
+  controller.previewReplace({ sequenceId: "main", query: " ", text: "，\n" });
+  assert.equal(store.writes, 0);
+  await controller.apply();
+  assert.equal(store.writes, 1);
+  assert.deepEqual(captions(session.read())[0]!.words, caption.words);
+  assert.equal(captions(session.read())[0]!.text, "你好，\n你好");
+  session.undo();
+  assert.deepEqual(captions(session.read())[0], captions(before)[0]);
+});
+
 test("literal caption search and replacement support Chinese, newlines and special characters without changing titles or another sequence", () => {
   let doc = generated();
   const first = captions(doc)[0]!;

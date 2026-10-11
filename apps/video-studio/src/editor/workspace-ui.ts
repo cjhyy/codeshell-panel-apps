@@ -114,6 +114,7 @@ export class EditorWorkspace {
   private selected: string[] = [];
   private sequenceId: string;
   private revision = "";
+  private documentIdentity = "";
   private playhead = 0;
   /** The playhead sits on an exact clip start (not a frame boundary) that re-seeks keep. */
   private exactPlayhead = false;
@@ -130,6 +131,8 @@ export class EditorWorkspace {
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
+  /** Shared only during the synchronous, read-only view update for one preview frame. */
+  private frameDocument?: EditorDocument;
 
   constructor(
     private readonly container: HTMLElement,
@@ -183,13 +186,14 @@ export class EditorWorkspace {
       this.get(".ew-tools").append(more);
     }
     const selection = () => ({ sequenceId: this.sequenceId, clipIds: [...this.selected] });
-    const read = () => options.session.read();
+    const read = () => this.frameDocument ?? options.session.read();
     const apply = (operations: EditorOperation[], label: string) => {
       this.apply(operations, label);
     };
     const editVoiceover = options.editVoiceover;
     this.inspector = new EditorInspector(this.get("[data-ew-inspector]"), {
       read,
+      identity: () => options.session.getState().identity,
       selection,
       apply,
       time: () => this.playhead,
@@ -268,10 +272,7 @@ export class EditorWorkspace {
         this.playhead = time;
         this.updateTime();
         this.timeline.updatePlayhead();
-        this.inspector.render();
-        this.timing.render();
-        this.sequences.render();
-        this.canvasEditor?.render();
+        this.renderFrameViews();
       },
       onPlaybackChange: (playing) => this.updatePlayButton(playing),
       onBuffering: (buffering) => {
@@ -334,6 +335,19 @@ export class EditorWorkspace {
     this.unsubscribe = options.session.subscribe((state) => this.refresh(state));
   }
 
+  private renderFrameViews(): void {
+    const previous = this.frameDocument;
+    this.frameDocument = this.options.session.read();
+    try {
+      this.inspector.renderFrame();
+      this.timing.render();
+      this.sequences.render();
+      this.canvasEditor?.render();
+    } finally {
+      this.frameDocument = previous;
+    }
+  }
+
   private get<T extends HTMLElement = HTMLElement>(selector: string): T {
     return this.container.querySelector<T>(selector)!;
   }
@@ -386,6 +400,9 @@ export class EditorWorkspace {
     const signature = `${state.identity.documentId}:${state.identity.generation}:${state.identity.revision}`;
     if (signature === this.revision) return;
     this.revision = signature;
+    const documentIdentity = JSON.stringify([state.identity.documentId, state.identity.generation]),
+      opened = this.documentIdentity !== documentIdentity;
+    this.documentIdentity = documentIdentity;
     this.canvasEditor.cancel();
     const doc = this.options.session.read();
     this.sequenceId = doc.activeSequenceId;
@@ -399,7 +416,7 @@ export class EditorWorkspace {
     this.preview.setDocument(doc, sequence.id);
     this.playhead = Math.min(this.playhead, Math.max(0, sequenceDuration(sequence) - 1));
     const name = this.get<HTMLInputElement>("[data-ew-project-name]");
-    if (document.activeElement !== name) name.value = doc.name;
+    if (opened || document.activeElement !== name) name.value = doc.name;
     this.get("[data-ew-sequence]").innerHTML = doc.sequences
       .map(
         (s) =>

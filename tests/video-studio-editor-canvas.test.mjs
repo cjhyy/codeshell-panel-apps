@@ -232,6 +232,7 @@ async function fixture(t, options = {}) {
       void preview.seek(time).catch((error) => errors.push(String(error)));
     });
     globalThis.f = {
+      internals: { session, preview, controls },
       read: () => session.read(),
       stored: () => stored,
       writes,
@@ -569,4 +570,46 @@ test("text selection follows measured content and lets the user select a lower p
     "picture",
   );
   assert.equal((await page.evaluate(() => f.read())).revision, 1);
+});
+
+test("canvas evaluator cache follows a new session generation even for identical document id and revision", async (t) => {
+  const page = await fixture(t);
+  const result = await page.evaluate(async () => {
+    const { session, controls, preview } = f.internals,
+      before = session.getState().identity,
+      prepared = controls.prepared.evaluator,
+      next = session.read();
+    next.sequences[0].clips[0].transform.x = 0.25;
+    const replacement = await api.EditorSession.open({
+      read: async () => ({ data: next, revision: 1 }),
+      write: async () => ({ revision: 2 }),
+    });
+    try {
+      controls.context.read = () => replacement.read();
+      controls.context.identity = () => replacement.getState().identity;
+      preview.setDocument(replacement.read());
+      await preview.seek(0);
+      controls.render();
+      const changed = controls.prepared.evaluator;
+      await preview.seek(240000);
+      controls.render();
+      return {
+        before,
+        after: replacement.getState().identity,
+        rebuilt: changed !== prepared,
+        reused: changed === controls.prepared.evaluator,
+        x: controls.targets[0].layer.transform.x,
+        errors: f.errors,
+      };
+    } finally {
+      await replacement.close({ save: false });
+    }
+  });
+  assert.equal(result.after.documentId, result.before.documentId);
+  assert.equal(result.after.revision, result.before.revision);
+  assert.notEqual(result.after.generation, result.before.generation);
+  assert.equal(result.rebuilt, true);
+  assert.equal(result.reused, true);
+  assert.equal(result.x, 0.25);
+  assert.deepEqual(result.errors, []);
 });

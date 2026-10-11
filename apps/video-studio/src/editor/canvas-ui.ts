@@ -13,6 +13,7 @@ import type { SessionIdentity } from "./session";
 import type { Tick } from "./time";
 import { visualPointToCanvas, type VisualPoint } from "./visual-layout";
 import { icon } from "../icons";
+import { prepareEvaluator, type PreparedEvaluator } from "./evaluate";
 
 export interface EditorCanvasContext {
   read(): EditorDocument;
@@ -80,6 +81,7 @@ export class EditorCanvas {
   private targets: CanvasTarget[] = [];
   private target?: CanvasTarget;
   private view?: { width: number; height: number };
+  private prepared?: { identity: string; evaluator: PreparedEvaluator };
   private box = { left: 0, top: 0, width: 1, height: 1, ratio: 1 };
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -283,7 +285,23 @@ export class EditorCanvas {
       document = this.context.read(),
       sequence = document.sequences.find((item) => item.id === selection.sequenceId);
     this.view = sequence ? { width: sequence.width, height: sequence.height } : undefined;
-    this.targets = canvasTargets(document, selection.sequenceId, this.context.time());
+    const identity = JSON.stringify([
+      this.context.identity(),
+      document.id,
+      document.revision,
+      selection.sequenceId,
+    ]);
+    if (this.prepared?.identity !== identity)
+      this.prepared = { identity, evaluator: prepareEvaluator(document) };
+    const time = this.context.time();
+    this.targets = sequence
+      ? canvasTargets(
+          document,
+          selection.sequenceId,
+          time,
+          this.prepared.evaluator.evaluate(selection.sequenceId, time),
+        )
+      : [];
     this.target =
       selection.clipIds.length === 1
         ? this.targets.find((item) => item.clip.id === selection.clipIds[0])
@@ -487,6 +505,7 @@ export class EditorCanvas {
   };
   dispose(): void {
     this.disposed = true;
+    this.prepared = undefined;
     this.clear();
     this.observer.disconnect();
     window.removeEventListener("blur", this.cancelEvent);

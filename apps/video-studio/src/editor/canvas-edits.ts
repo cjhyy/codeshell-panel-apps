@@ -1,5 +1,5 @@
 import { evaluateAnimatedNumber, type AnimatedNumber } from "./animation";
-import { evaluateFrame, type EvaluatedVisualLayer } from "./evaluate";
+import { evaluateFrame, type EvaluatedFrame, type EvaluatedVisualLayer } from "./evaluate";
 import type { EditorOperation } from "./operations";
 import type { EditorClip, EditorDocument, Mask } from "./types";
 import type { Tick } from "./time";
@@ -27,10 +27,11 @@ export function canvasTargets(
   document: EditorDocument,
   sequenceId: string,
   time: Tick,
+  frame?: EvaluatedFrame,
 ): CanvasTarget[] {
   const sequence = document.sequences.find((item) => item.id === sequenceId);
   if (!sequence) return [];
-  const frame = evaluateFrame(document, sequenceId, time);
+  frame ??= evaluateFrame(document, sequenceId, time);
   const layers = frame.layers.flatMap((layer) => {
     if (layer.kind !== "transition") return [layer];
     const direction =

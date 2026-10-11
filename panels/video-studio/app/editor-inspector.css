@@ -73,6 +73,16 @@
   padding: 0;
   min-width: 0;
 }
+.editor-inspector .ei-alignment-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.editor-inspector .ei-alignment-actions .ei-button {
+  min-width: 0;
+  padding-inline: 4px;
+  white-space: normal;
+}
 .editor-inspector .ei-section {
   padding-bottom: 16px;
   margin-bottom: 16px;

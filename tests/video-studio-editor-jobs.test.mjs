@@ -866,3 +866,22 @@ test("export titles stay readable after a reload instead of showing the internal
   );
   assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
 });
+
+
+test("recovered range export titles retain their precise interval without a remembered project title", async (t) => {
+  const make = (id, range) => job(id, 10, "succeeded", {
+    input: { request: { action: "render", sequenceId: "internal-sequence", profile: { name: "审核版" }, range } },
+  });
+  const page = await fixture(t, [
+    make("review-range", { start: 80085, duration: 240240 }),
+    make("tiny-range", { start: 0, duration: 1 }),
+    make("invalid-range", { start: 0, duration: 0 }),
+  ]);
+  await page.evaluate(() => fixture.load());
+  await open(page);
+  assert.equal(await row(page, "review-range").locator("strong").textContent(), "视频导出 · 0.333688–1.334688 秒 · 审核版");
+  assert.equal(await row(page, "tiny-range").locator("strong").textContent(), "视频导出 · 0–0.000004 秒 · 审核版");
+  assert.equal(await row(page, "invalid-range").locator("strong").textContent(), "视频导出 · 审核版");
+  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /internal-sequence/);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});

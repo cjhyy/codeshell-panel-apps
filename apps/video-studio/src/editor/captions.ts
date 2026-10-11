@@ -806,6 +806,46 @@ export function planCaptionStyle(
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
+/** Only separators between unchanged, ordered spoken words may retain their alignment.
+ * Never infer timestamps for new wording or rewrite a timed token to fit the edit. */
+function retainedCaptionWords(clip: TextClip, text: string): TextClip["words"] | undefined {
+  if (clip.role !== "subtitle" || !clip.words.length) return undefined;
+  const gaps = (value: string, words: TextClip["words"]): string[] | undefined => {
+    let cursor = 0;
+    const result: string[] = [];
+    for (const word of words) {
+      if (!word.text) return undefined;
+      const start = value.indexOf(word.text, cursor);
+      if (start < 0) return undefined;
+      const gap = value.slice(cursor, start);
+      if (!/^[\s\p{P}]*$/u.test(gap)) return undefined;
+      result.push(gap);
+      cursor = start + word.text.length;
+    }
+    const tail = value.slice(cursor);
+    if (!/^[\s\p{P}]*$/u.test(tail)) return undefined;
+    return [...result, tail];
+  };
+  // ASR tokens may own leading/trailing spaces. Their timing can still be retained
+  // when that whitespace moves into the separators, without changing spoken text.
+  for (const words of [clip.words, clip.words.map((word) => ({ ...word, text: word.text.trim() }))]) {
+    const before = gaps(clip.text, words), after = gaps(text, words);
+    if (!before || !after) continue;
+    const safe = before.every((gap, index) => {
+      if (gap === after[index]) return true;
+      // Apostrophes, hyphens and slashes can change a word's reading. Numeric
+      // separators and joining written word tokens are equally ambiguous, so clear them.
+      if (/['’ʼ‐‑/\\-]/u.test(gap + after[index]!)) return false;
+      const left = words[index - 1]?.text ?? "", right = words[index]?.text ?? "";
+      if (/\p{N}$/u.test(left) && /^\p{N}/u.test(right)) return false;
+      return !(/[\p{L}\p{N}\p{M}]$/u.test(left) && /^[\p{L}\p{N}\p{M}]/u.test(right) &&
+        (!gap || !after[index]));
+    });
+    if (safe) return structuredClone(words);
+  }
+  return undefined;
+}
+
 /** Build from an already validated, detached snapshot; the caller validates the complete batch. */
 function captionTextOperations(
   sequenceId: string,
@@ -814,6 +854,7 @@ function captionTextOperations(
 ): EditorOperation[] {
   cleanText(text, "字幕文字");
   if (text === clip.text) return [];
+  const retained = retainedCaptionWords(clip, text);
   return [
     {
       type: "clip.update",
@@ -821,11 +862,11 @@ function captionTextOperations(
       clipId: clip.id,
       patch: {
         text,
-        words: [],
+        words: retained ?? [],
         translation: null,
         style: {
           ...clip.style,
-          animation: clip.style.animation === "word-highlight" ? "none" : clip.style.animation,
+          animation: !retained && clip.style.animation === "word-highlight" ? "none" : clip.style.animation,
         },
       },
     },
@@ -879,7 +920,7 @@ export function findCaptionText(
   return captionTextMatches(clips, query);
 }
 
-/** Uses the ordinary text-edit semantics, including clearing stale word timing and translation. */
+/** Uses ordinary text-edit semantics: retain proven unchanged words, clear stale alignment and translation. */
 export function planCaptionReplace(
   value: EditorDocument,
   sequenceId: string,
@@ -900,6 +941,10 @@ export function planCaptionReplace(
     );
   if (!matches.length) throw new Error("当前范围没有匹配的字幕");
   applyEditorOperations(doc, operations, doc.revision);
+  const retained = operations.filter((operation) =>
+    operation.type === "clip.update" && "words" in operation.patch &&
+      Array.isArray(operation.patch.words) && operation.patch.words.length,
+  ).length;
   return {
     sequenceId,
     operations,
@@ -907,7 +952,11 @@ export function planCaptionReplace(
     skipped: 0,
     matched: matches.length,
     occurrences: matches.reduce((count, match) => count + match.occurrences, 0),
-    notices: ["修改字幕内容会清除旧词时间与译文，逐字高亮将关闭；请按需要重新对齐声音。"],
+    notices: [
+      ...(retained ? [`${retained} 条字幕只修改词间标点或空白，已保留真实词时间与逐字高亮设置。`] : []),
+      ...(retained < matches.length ? ["其余字幕的旧词时间已清除，逐字高亮已关闭；请按需要重新对齐声音。"] : []),
+      "已清除修改字幕的旧译文；保留来源绑定。",
+    ],
   };
 }
 
