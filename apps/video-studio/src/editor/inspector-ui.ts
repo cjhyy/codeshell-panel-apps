@@ -10,6 +10,8 @@ import { unavailableFontFamilies, fontWarningMessage } from "./font-availability
 import type { EditorClipPatch, EditorOperation } from "./operations";
 import type { EditorClip, EditorDocument, EditorSequence, Mask } from "./types";
 import type { SessionIdentity } from "./session";
+import { clipCanReceiveColor, copyClipColor, pasteClipColor, resetClipColor } from "./color-edits";
+import type { ResolvedColorAdjustment } from "./color";
 import {
   canvasAlignmentReason,
   planCanvasAlignment,
@@ -160,6 +162,12 @@ export class EditorInspector {
   private renderedSignature = "";
   private renderedAnimation = false;
   private replacingControls = false;
+  private copiedColor?: {
+    documentId: string;
+    generation?: number;
+    label: string;
+    value: ResolvedColorAdjustment;
+  };
   constructor(
     container: HTMLElement,
     private readonly context: EditorInspectorContext,
@@ -191,6 +199,7 @@ export class EditorInspector {
     this.expanded.clear();
     this.individuals.clear();
     this.pages.clear();
+    this.copiedColor = undefined;
   }
   private scope(): Scope | undefined {
     const selection = this.context.selection();
@@ -828,6 +837,10 @@ export class EditorInspector {
   private renderView(playheadOnly: boolean): void {
     if (this.disposed || this.replacingControls) return;
     const scope = this.scope();
+    if (this.copiedColor &&
+      (this.copiedColor.documentId !== scope?.document.id ||
+        this.copiedColor.generation !== scope?.identity?.generation))
+      this.copiedColor = undefined;
     this.followSelection(scope);
     const signature = JSON.stringify([
       scope?.identity,
@@ -1162,6 +1175,7 @@ export class EditorInspector {
     }
   }
   private color(parent: HTMLElement, scope: Scope): void {
+    this.colorClipboard(parent, scope);
     const basic = this.section(
       parent,
       "基础调色",
@@ -1186,6 +1200,76 @@ export class EditorInspector {
       this.colorCurves(advanced, selected);
       this.hsl(advanced, selected);
     });
+  }
+  private colorScopeCurrent(scope: Scope): boolean {
+    if (this.disposed) return false;
+    const fresh = this.scope();
+    return !!fresh && fresh.document.id === scope.document.id &&
+      fresh.identity?.generation === scope.identity?.generation &&
+      fresh.sequence.id === scope.sequence.id && equal(fresh.selectionIds, scope.selectionIds);
+  }
+  private async applyColorClipboard(scope: Scope, reset: boolean): Promise<void> {
+    if (this.pending || this.replacingControls || !this.colorScopeCurrent(scope)) return;
+    try {
+      const fresh = this.scope()!;
+      if (this.locked(fresh)) throw new Error("所选片段包含已锁定轨道，请先解锁轨道");
+      const copied = this.copiedColor;
+      if (!reset && (!copied || copied.documentId !== fresh.document.id || copied.generation !== fresh.identity?.generation))
+        throw new Error("请先从当前工程的单个片段复制调色");
+      const operations = reset
+        ? resetClipColor(fresh.document, fresh.sequence.id, fresh.selectionIds)
+        : pasteClipColor(fresh.document, fresh.sequence.id, fresh.selectionIds, this.context.time(), copied!.value);
+      this.pending = true;
+      this.error = "";
+      this.render();
+      await this.context.apply(operations, reset ? "重置全部调色" : "粘贴当前调色");
+    } catch (error) {
+      if (this.colorScopeCurrent(scope)) this.report(error);
+    } finally {
+      this.pending = false;
+      this.render();
+    }
+  }
+  private colorClipboard(parent: HTMLElement, scope: Scope): void {
+    const section = this.section(parent, "调色复用", "复制单个片段在播放头处的调色（片段外取最近边界），包含曲线与 HSL。粘贴到多选片段时，已有调色动画只写当前关键帧；曲线与 HSL 整体替换。"),
+      controls = el("div", "ei-color-actions"),
+      visual = scope.clips.every((clip) => clipCanReceiveColor(scope.document, scope.sequence, clip)),
+      copyReason = !visual ? "声音片段不能应用调色" : scope.clips.length !== 1 ? "请选择一个画面或文字片段作为来源" : "",
+      pasteReason = !visual ? "请只选择画面或文字片段" : !this.copiedColor ? "请先复制当前调色" : "";
+    section.append(controls);
+    const copy = this.action(controls, "复制当前调色", () => {
+      if (!this.root.contains(copy) || !this.colorScopeCurrent(scope)) return;
+      const fresh = this.scope()!;
+      this.copiedColor = {
+        documentId: fresh.document.id,
+        generation: fresh.identity?.generation,
+        label: fresh.clips[0]!.label || "未命名片段",
+        value: copyClipColor(fresh.document, fresh.sequence.id, fresh.clips[0]!.id, this.context.time()),
+      };
+      this.error = "";
+      this.root.querySelector(".ei-error")?.remove();
+      paste.disabled = !visual;
+      paste.title = "应用到所选片段并覆盖未提交的调色草稿，可一次撤销";
+      status.textContent = `已复制「${this.copiedColor.label}」的调色，可在本工程其他序列粘贴。`;
+      status.hidden = false;
+    }, Boolean(copyReason));
+    // Copy is read-only: do not blur and commit a native input's unfinished draft.
+    copy.addEventListener("pointerdown", (event) => event.preventDefault());
+    copy.title = copyReason || "复制播放头处已保存的调色；未提交的输入草稿不会计入";
+    const paste = this.action(controls, "粘贴当前调色", () => {
+      if (this.root.contains(paste)) void this.applyColorClipboard(scope, false);
+    }, Boolean(pasteReason));
+    paste.addEventListener("pointerdown", (event) => event.preventDefault());
+    paste.title = pasteReason || "应用到所选片段并覆盖未提交的调色草稿，可一次撤销";
+    const reset = this.action(controls, "重置全部调色", () => {
+      if (this.root.contains(reset)) void this.applyColorClipboard(scope, true);
+    }, !visual);
+    reset.addEventListener("pointerdown", (event) => event.preventDefault());
+    reset.title = visual ? "恢复默认并移除全部调色关键帧、曲线和 HSL，覆盖未提交的调色草稿；可一次撤销" : "请只选择画面或文字片段";
+    const status = el("p", "ei-hint", this.copiedColor ? `已复制「${this.copiedColor.label}」的调色，可在本工程其他序列粘贴。` : "");
+    status.hidden = !this.copiedColor;
+    status.setAttribute("role", "status");
+    section.append(status);
   }
   private colorCurves(parent: HTMLElement, scope: Scope): void {
     const clip = scope.clips[0]!;
@@ -1694,6 +1778,35 @@ export class EditorInspector {
       "声音",
       `应用于 ${scope.clips.length} 个含声音属性的片段。声像 -100% 为左，100% 为右。`,
     );
+    const audibleAssets = new Set(
+      scope.document.assets
+        .filter((asset) => asset.kind === "audio" || asset.kind === "video")
+        .map((asset) => asset.id),
+    );
+    const audibleClips = scope.clips.filter(
+      (clip) => clip.kind !== "media" || audibleAssets.has(clip.assetId),
+    );
+    const trackCounts = new Map<string, number>();
+    for (const clip of audibleClips)
+      trackCounts.set(clip.trackId, (trackCounts.get(clip.trackId) ?? 0) + 1);
+    const silentTracks = scope.sequence.tracks.filter(
+      (track) => trackCounts.has(track.id) && (track.muted || track.volume === 0),
+    );
+    if (silentTracks.length) {
+      const affected = silentTracks.reduce((count, track) => count + trackCounts.get(track.id)!, 0);
+      const reasons = silentTracks.map((track) => {
+        const states = [track.muted ? "已静音" : "", track.volume === 0 ? "音量为 0%" : ""];
+        return `“${track.name}”${states.filter(Boolean).join("且")}`;
+      });
+      const notice = el(
+        "p",
+        "ei-notice ei-hint",
+        `所选 ${audibleClips.length} 个音视频片段中，${affected} 个所在轨道无声：${reasons.join("；")}。片段声音设置仍会保存；播放和导出时，这些轨道保持无声。请在时间轴取消轨道静音或提高轨道音量。`,
+      );
+      notice.dataset.audioTrackNotice = "";
+      notice.setAttribute("role", "status");
+      section.append(notice);
+    }
     this.number(section, scope, {
       label: "音量（%）",
       path: ["audio", "volume"],

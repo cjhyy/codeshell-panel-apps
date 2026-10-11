@@ -192,7 +192,8 @@ function resolveTransform(value: Transform, local: Tick): ResolvedTransform {
   };
 }
 
-function resolveColor(value: ColorAdjustment, local: Tick): ResolvedColor {
+/** Resolve a validated clip's grade exactly as displayed, including easing overshoot clamps. */
+export function resolveColor(value: ColorAdjustment, local: Tick): ResolvedColor {
   const number = (
     key: "exposure" | "brightness" | "contrast" | "saturation" | "temperature" | "tint" | "hue",
   ) => evaluateAnimatedNumber(value[key], local);

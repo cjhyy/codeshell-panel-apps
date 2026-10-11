@@ -240,3 +240,33 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
   只复制真实当前值，目标既有动画仅写当前关键帧；尚未交付，需视觉/领域/UI验证。
 
 本聊天仍持续工作至11:00，不提前结束goal；automation11保留。
+
+## 第六批整合验证（03:03 左右）
+
+- 已整合b2ad2d2、dd141e9/f59f6b4、b5b4f52、c91eec9、c385188：
+  时间轴媒体代际/资源重连缓存、SRT读取顺序与可重新导出的分隔行保护、
+  静音/零轨道音量原因、当前调色复制/批量粘贴/明确重置、冻结导出批次归属。
+- 调色复制使用与实际画面相同的resolveColor，包括自定义缓动过冲钳制；
+  只取当前已保存数值，保留目标动画其余关键帧，曲线/HSL整体替换，批量一次撤销。
+  真实原生输入复现paste/reset失焦先重建面板造成首击丢失；修复后首击执行所选操作，
+  不另存未提交调色草稿。280/360px真实视觉检查无横向溢出，root已查看截图。
+- SRT只允许可无歧义重读的cue正文，归一CRLF/CR和外围空白后拒绝中间空白行，
+  提示具体字幕序号；不改工程正文、不伪造词时间/来源。真实下载再导入毫秒范围一致。
+  旧文件慢读、取消/关闭/换轨/换序列/修订/新generation结果和错误均不覆盖新预览。
+- 同ID/rev恢复的真实红→蓝视频缩略图与波形缓存已隔离；refreshMedia同代际资源重连
+  会清理时间轴缓存并重新绘制。迟到owned resolver释放自己的URL，不撤销借用URL。
+- 冻结批次只豁免同工程普通revision变化，绝不豁免session/documentId/generation。
+  失败后恢复/切工程及第一项await期间切工程的六项真实replace回归，均不再提交下一项；
+  已接受任务不重复提交或自动取消。旧快照的普通revision重试语义保留。
+- 整合UI297/297，加归属修复后的完整workspace80/80；媒体链73/73；领域109/109。
+  完整离线1119项：1116通过3可选跳过，native voice5通过1可选跳过，workspace docs5/5。
+  typecheck/build/build:check/validate/diffcheck通过，39文件生成包同步。
+  日志`/tmp/video-studio-morning-sixth-{ui,media,domain,workspace,unit}.log`。
+- 第五批b5f0197的push/PR两套CI14项已全部通过。最新origin/main仍为b85dfc8。
+  本批固定后继续完整UI/媒体回归，独立树继续精确定位、导出实际输出摘要和快捷操作审查。
+- 时间轴warm scroll热点已定位partial audio compile。拒绝仅凭可伪造identity/rev的cache：
+  会漏拒非法source bounds、缺trackId及getter。descriptor精确比较护栏只改善13.2→10.7ms，
+  跨root退化13.1→24.6ms且增加5.33MB，故不纳入产品；研究分支61f7bea留可重跑证据。
+  owned snapshot能力仍在独立原型阶段，尚未承诺或交付新性能。
+
+11:00截止与automation11继续有效；未发布、未安装，不提前结束goal。

@@ -704,7 +704,10 @@ export function exportEditorSrt(
       .map((clip, index) => {
         if (Math.round(clip.start / 240) >= Math.round((clip.start + clip.duration) / 240))
           throw new Error("字幕短于SRT毫秒精度，请先调整时长");
-        return `${index + 1}\n${time(clip.start)} --> ${time(clip.start + clip.duration)}\n${clip.text}`;
+        const body = clip.text.replace(/\r\n?/g, "\n").trim();
+        if (/\n[^\S\n]*\n/.test(body))
+          throw new Error(`第${index + 1}条字幕含空白分隔行，请删除中间空白行后导出 SRT`);
+        return `${index + 1}\n${time(clip.start)} --> ${time(clip.start + clip.duration)}\n${body}`;
       })
       .join("\n\n") + (clips.length ? "\n" : "")
   );

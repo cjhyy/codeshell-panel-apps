@@ -12,6 +12,7 @@ import { evaluateAnimatedNumber } from "./animation";
 import { type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence } from "./types";
 import { waveformEnvelope, type EditorWaveform } from "./waveform";
+import type { SessionIdentity } from "./session";
 export type { EditorWaveform } from "./waveform";
 export interface EditorTimelineMediaOptions {
   resolveAsset?: EditorMediaPoolOptions["resolveAsset"];
@@ -167,6 +168,7 @@ export class EditorTimelineMedia {
   private work: Promise<void> = Promise.resolve();
   private evaluator?: PreparedEvaluator;
   private documentKey = "";
+  private lifetimeKey = "";
   private disposed = false;
   constructor(private readonly options: EditorTimelineMediaOptions = {}) {
     this.pool = new EditorMediaPool({
@@ -190,23 +192,45 @@ export class EditorTimelineMedia {
     this.pending = undefined;
     this.pool.reset();
   }
+  private clearCaches(): void {
+    for (const canvas of this.thumbnails.values()) disposeCanvas(canvas);
+    this.thumbnails.clear();
+    this.waveforms.clear();
+    this.waveformBytes = 0;
+    this.errors.clear();
+    this.evaluator = undefined;
+    this.documentKey = "";
+    this.lifetimeKey = "";
+  }
+  /** Resource reconnection can change bytes without changing the document revision. */
+  reset(): void {
+    this.cancel();
+    this.clearCaches();
+  }
   render(
     document: EditorDocument,
     sequenceId: string,
     strips: readonly TimelineMediaStrip[],
+    identity?: SessionIdentity,
   ): Promise<void> {
     this.cancel();
     if (this.disposed) return Promise.resolve();
     const controller = new AbortController();
     this.pending = controller;
     const requests = strips.slice(0, TIMELINE_MEDIA_LIMITS.strips);
+    // Capture values before asynchronous work; callers own the identity object.
+    const lifetimeKey = JSON.stringify([document.id, identity?.generation ?? null]);
     this.work = this.work
       .catch(() => {})
       .then(async () => {
         aborted(controller.signal);
         const sequence = document.sequences.find((item) => item.id === sequenceId);
         if (!sequence) throw new Error("时间轴序列不存在");
-        const key = `${document.id}:${document.revision}`;
+        if (this.lifetimeKey !== lifetimeKey) {
+          this.clearCaches();
+          this.lifetimeKey = lifetimeKey;
+        }
+        const key = JSON.stringify([lifetimeKey, document.revision]);
         if (this.documentKey !== key) {
           this.evaluator = prepareEvaluator(document);
           this.documentKey = key;
@@ -499,13 +523,8 @@ export class EditorTimelineMedia {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.cancel();
+    this.reset();
     this.pool.dispose();
     this.compositor.dispose();
-    for (const canvas of this.thumbnails.values()) disposeCanvas(canvas);
-    this.thumbnails.clear();
-    this.waveforms.clear();
-    this.waveformBytes = 0;
-    this.evaluator = undefined;
   }
 }

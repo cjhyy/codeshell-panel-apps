@@ -690,6 +690,7 @@ export class EditorWorkspace {
     this.preparedRevision = "";
     // Resource URLs may change while the document identity stays exactly the same.
     this.preview.setDocument(this.options.session.read(), this.sequenceId);
+    this.timeline.refreshMedia();
     if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
   }
   /** Browsing source footage replaces the monitor, while the canonical timeline stays mounted. */
@@ -1233,9 +1234,20 @@ export class EditorWorkspace {
       throw new Error("请在已连接本地媒体任务的 CodeShell 视频面板中导出");
     if (this.pendingExport) throw new Error("导出任务正在提交，请稍候");
     const sequence = this.sequence(),
-      doc = this.options.session.read(),
-      openedIdentity = this.options.session.getState().identity;
+      session = this.options.session,
+      doc = session.read(),
+      openedIdentity = session.getState().identity;
+    const assertOwner = () => {
+      const current = this.options.session.getState().identity;
+      if (
+        this.options.session !== session ||
+        openedIdentity.documentId !== current.documentId ||
+        openedIdentity.generation !== current.generation
+      )
+        throw new Error("工程已切换或恢复，请关闭并重新打开导出设置");
+    };
     const assertSnapshot = () => {
+      assertOwner();
       if (
         JSON.stringify(openedIdentity) !== JSON.stringify(this.options.session.getState().identity)
       )
@@ -1300,6 +1312,7 @@ export class EditorWorkspace {
         progressOutput.textContent = "正在保存工程并准备导出…";
         progressOutput.dataset.submitting = "true";
         try {
+          assertOwner();
           if (!batch) {
             assertSnapshot();
             const data = new FormData(form),
@@ -1320,14 +1333,21 @@ export class EditorWorkspace {
             form.querySelector<HTMLFieldSetElement>("[data-export-settings]")!.disabled = true;
           }
           form.querySelector("[data-ew-close]")!.textContent = "取消剩余提交";
-          await batch.submit(this.options.exportSequence!, signal, (progress) => {
-            if (!form.isConnected) return;
-            progressOutput.textContent =
-              `已提交 ${progress.completed}/${progress.total} · ${progress.sequence} · ${progress.profile}` +
-              (progress.completed < progress.total
-                ? " · 正在准备导出素材并提交任务，大素材可能需要一些时间。取消仅停止剩余提交，已开始的素材复制可能仍会完成。"
-                : "");
-          });
+          await batch.submit(
+            (document, sequenceId, profile, signal, range) => {
+              assertOwner();
+              return this.options.exportSequence!(document, sequenceId, profile, signal, range);
+            },
+            signal,
+            (progress) => {
+              if (!form.isConnected) return;
+              progressOutput.textContent =
+                `已提交 ${progress.completed}/${progress.total} · ${progress.sequence} · ${progress.profile}` +
+                (progress.completed < progress.total
+                  ? " · 正在准备导出素材并提交任务，大素材可能需要一些时间。取消仅停止剩余提交，已开始的素材复制可能仍会完成。"
+                  : "");
+            },
+          );
         } catch (error) {
           if (form.isConnected && !signal.aborted)
             progressOutput.textContent = batch

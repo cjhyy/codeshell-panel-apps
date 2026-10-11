@@ -1256,3 +1256,249 @@ test("a detached alignment button cannot modify a restored generation with match
   assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
   assert.deepEqual(await page.evaluate(() => errors), ["选择已变化，请重新调整属性"]);
 });
+
+
+test("audio inspector explains a muted track while volume and fades stay editable and undoable", async () => {
+  await page.evaluate(() => {
+    editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v1", patch: { muted: true } }], editorHistory.revision, "静音轨道");
+    inspector.render();
+  });
+  await tab("音频");
+  const notice = page.locator("[data-audio-track-notice]");
+  assert.match(await notice.innerText(), /所选 1 个音视频片段中，1 个所在轨道无声.*主视频.*已静音/);
+  assert.match(await notice.innerText(), /播放和导出.*时间轴取消轨道静音或提高轨道音量/);
+  assert.equal(await page.getByLabel("音量（%）", { exact: true }).isDisabled(), false);
+  await change("音量（%）", 400);
+  await change("声音淡入（秒）", 0.25);
+  await change("声音淡出（秒）", 0.75);
+  assert.equal((await read()).audio.volume, 4);
+  assert.equal((await read()).audio.fadeIn, 60000);
+  assert.equal((await read()).audio.fadeOut, 180000);
+  assert.equal(await page.evaluate(() => editorHistory.read().sequences[0].tracks[0].muted), true);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.equal((await read()).audio.fadeOut, 0);
+  assert.equal((await read()).audio.fadeIn, 60000);
+  assert.equal(await notice.count(), 1);
+  await page.evaluate(() => {
+    editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v1", patch: { muted: false } }], editorHistory.revision, "恢复声音");
+    inspector.render();
+  });
+  assert.equal(await notice.count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("mixed audio selection counts only audible media kinds and lists only affected tracks", async () => {
+  await page.evaluate(() => {
+    const doc = editorHistory.read();
+    doc.assets.push({ id: "still", name: "静态图片", kind: "image", duration: 0, width: 100, height: 100 });
+    const image = { ...structuredClone(doc.sequences[0].clips[0]), id: "image", label: "图片", assetId: "still", trackId: "still-track", timeMap: { points: [{ time: 0, source: 0 }, { time: 4 * 240000, source: 0 }] } };
+    doc.sequences[0].clips.push(image);
+    doc.sequences[0].tracks.push({ ...api.createTrack("still-track", "video", "图片轨道"), muted: true });
+    doc.sequences[0].tracks.find((track) => track.id === "v1").muted = true;
+    doc.sequences[0].tracks.find((track) => track.id === "v3").muted = true;
+    doc.sequences[0].tracks.find((track) => track.id === "txt").volume = 0;
+    editorHistory = new api.EditorHistory(doc);
+    select(["a", "b", "image", "s", "t"]);
+  });
+  await tab("音频");
+  const text = await page.locator("[data-audio-track-notice]").innerText();
+  assert.match(text, /所选 2 个音视频片段中，1 个所在轨道无声/);
+  assert.match(text, /主视频.*已静音/);
+  assert.doesNotMatch(text, /副视频|图形轨道|图片轨道|字幕/);
+  await page.evaluate(() => select(["image", "s", "t"]));
+  assert.equal(await page.locator("[data-audio-track-notice]").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("zero track gain explains silence separately from clip gain and muted reasons render safely", async () => {
+  await page.evaluate(() => {
+    editorHistory.apply([
+      { type: "track.update", sequenceId: "main", trackId: "v1", patch: { volume: 0, name: '<img src=x onerror="window.badAudioTrack=1">' } },
+      { type: "track.update", sequenceId: "main", trackId: "v2", patch: { muted: true, volume: 0 } },
+    ], editorHistory.revision, "轨道无声设置");
+    select(["a", "b"]);
+  });
+  await tab("音频");
+  const notice = page.locator("[data-audio-track-notice]");
+  assert.match(await notice.innerText(), /所选 2 个音视频片段中，2 个所在轨道无声/);
+  assert.match(await notice.innerText(), /副视频.*已静音且音量为 0%/);
+  assert.match(await notice.innerText(), /<img src=x/);
+  assert.equal(await notice.locator("img").count(), 0);
+  assert.equal(await page.evaluate(() => window.badAudioTrack), undefined);
+  await page.getByLabel("音量（%）", { exact: true }).fill("125");
+  await page.evaluate(() => { now += 8000; inspector.render(); });
+  assert.equal(await page.getByLabel("音量（%）", { exact: true }).inputValue(), "125");
+  await page.getByLabel("音量（%）", { exact: true }).dispatchEvent("change");
+  assert.equal((await read()).audio.volume, 1.25);
+  assert.equal((await read("b")).audio.volume, 1.25);
+  assert.equal(await notice.count(), 1);
+  await page.evaluate(() => {
+    editorHistory.apply([
+      { type: "track.update", sequenceId: "main", trackId: "v1", patch: { volume: 1 } },
+      { type: "track.update", sequenceId: "main", trackId: "v2", patch: { muted: false, volume: 1 } },
+    ], editorHistory.revision, "恢复轨道声音");
+    inspector.render();
+  });
+  assert.equal(await notice.count(), 0);
+  await change("音量（%）", 0);
+  assert.equal(await notice.count(), 0, "The clip field already shows its chosen zero; do not mislabel its track");
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("muted track feedback does not enable locked audio controls and wraps at narrow widths", async () => {
+  await page.evaluate(() => {
+    editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v1", patch: { muted: true, locked: true, name: "超长轨道名称".repeat(20) } }], editorHistory.revision, "锁定静音轨道");
+    document.querySelector("#mount").style.width = "280px";
+    inspector.render();
+  });
+  await tab("音频");
+  assert.match(await page.locator(".ei-notice").first().innerText(), /已锁定轨道/);
+  assert.equal(await page.getByLabel("音量（%）", { exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("声音淡入（秒）", { exact: true }).isDisabled(), true);
+  assert.equal(await page.locator("[data-audio-track-notice]").count(), 1);
+  assert.equal(await page.locator("[data-audio-track-notice]").evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  await page.locator("#mount").screenshot({ path: "/tmp/video-studio-audio-track-feedback.png" });
+  await page.evaluate(() => document.querySelector("#mount").style.width = "360px");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("copy current color samples one saved grade and pastes to multiple clips with one undo", async () => {
+  const before = await page.evaluate(() => {
+    now = 480013;
+    const a = clip("a"), b = clip("b");
+    a.color.exposure = { keyframes: [{ time: 0, value: 0, easing: "linear" }, { time: 960000, value: 2 }] };
+    a.color.curves = [{ channel: "blue", points: [{ x: 0, y: 0 }, { x: 0.4, y: 0.7 }, { x: 1, y: 1 }] }];
+    a.color.hsl = [{ hue: 0, width: 90, hueShift: 20, saturation: 0.1, lightness: -0.2 }];
+    b.color.exposure = { keyframes: [{ time: 0, value: -1, easing: "ease-in" }, { time: 960000, value: -2, easing: "hold" }] };
+    update("a", { color: a.color }); update("b", { color: b.color }); inspector.render();
+    return editorHistory.read();
+  });
+  await tab("调色");
+  assert.equal(await page.getByRole("button", { name: "粘贴当前调色", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "复制当前调色", exact: true }).click();
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await page.evaluate(() => select(["b", "s"]));
+  assert.equal(await page.getByRole("button", { name: "复制当前调色", exact: true }).isDisabled(), true);
+  await page.getByRole("button", { name: "粘贴当前调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+  const b = await read("b"), s = await read("s"), expected = 480013 * 2 / 960000;
+  assert.equal(b.color.exposure.keyframes[1].time, 240013);
+  assert.equal(b.color.exposure.keyframes[1].value, expected);
+  assert.deepEqual(b.color.exposure.keyframes[0], before.sequences[0].clips[1].color.exposure.keyframes[0]);
+  assert.deepEqual(b.color.exposure.keyframes[2], before.sequences[0].clips[1].color.exposure.keyframes[1]);
+  assert.equal(s.color.exposure, expected);
+  assert.deepEqual(b.color.curves, before.sequences[0].clips[0].color.curves);
+  assert.deepEqual(s.color.hsl, before.sequences[0].clips[0].color.hsl);
+  assert.deepEqual(b.transform, before.sequences[0].clips[1].transform);
+  assert.deepEqual(await read("a"), before.sequences[0].clips[0]);
+  const undone = await page.evaluate(() => { editorHistory.undo(); inspector.render(); return editorHistory.read(); });
+  undone.revision = before.revision;
+  assert.deepEqual(undone, before);
+  await page.getByRole("button", { name: "重置全部调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 2 && !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual((await read("b")).color, await page.evaluate(() => api.defaultColorAdjustment()));
+  assert.deepEqual((await read("s")).color, await page.evaluate(() => api.defaultColorAdjustment()));
+});
+
+test("read-only color copy preserves a focused native draft and copies the saved value", async () => {
+  await tab("调色");
+  const field = page.getByLabel("曝光（档）", { exact: true });
+  await field.fill("2.75");
+  const handle = await field.elementHandle();
+  await page.getByRole("button", { name: "复制当前调色", exact: true }).click();
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await field.inputValue(), "2.75");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read("a")).color.exposure, 0);
+  assert.equal(await page.getByRole("button", { name: "粘贴当前调色", exact: true }).isDisabled(), false);
+  assert.match(await page.getByRole("status").innerText(), /主镜头/);
+  await page.evaluate(() => select(["b"]));
+  await page.getByRole("button", { name: "粘贴当前调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+  assert.equal((await read("b")).color.exposure, 0);
+  assert.equal((await read("a")).color.exposure, 0);
+});
+
+test("paste and reset execute on their first click over an unfinished color draft with one undo", async () => {
+  await page.evaluate(() => {
+    const color = clip("a").color;
+    color.temperature = 0.5;
+    update("a", { color });
+    inspector.render();
+  });
+  await tab("调色");
+  await page.getByRole("button", { name: "复制当前调色", exact: true }).click();
+  await page.getByLabel("曝光（档）", { exact: true }).fill("3.5");
+  await page.getByRole("button", { name: "粘贴当前调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length > 0 && !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual(await page.evaluate(() => calls.map((call) => call.label)), ["粘贴当前调色"]);
+  assert.equal((await read("a")).color.exposure, 0);
+  assert.equal((await read("a")).color.temperature, 0.5);
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  await page.getByLabel("曝光（档）", { exact: true }).fill("2.75");
+  await page.getByRole("button", { name: "重置全部调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length > 1 && !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual(await page.evaluate(() => calls.map((call) => call.label)), ["粘贴当前调色", "重置全部调色"]);
+  assert.deepEqual((await read("a")).color, await page.evaluate(() => api.defaultColorAdjustment()));
+  await page.evaluate(() => { editorHistory.undo(); inspector.render(); });
+  assert.equal((await read("a")).color.exposure, 0);
+  assert.equal((await read("a")).color.temperature, 0.5);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("color clipboard survives ordinary edits and cross-sequence use but clears on generation replacement", async () => {
+  await page.evaluate(() => {
+    globalThis.colorSequenceId = "main";
+    globalThis.colorGeneration = 1;
+    inspector.context.identity = () => ({ documentId: "project", revision: editorHistory.revision, generation: colorGeneration });
+    inspector.context.selection = () => ({ sequenceId: colorSequenceId, clipIds: selected });
+    inspector.render();
+  });
+  await tab("调色");
+  await page.getByRole("button", { name: "复制当前调色", exact: true }).click();
+  await page.evaluate(() => {
+    const document = editorHistory.read(), sequence = structuredClone(document.sequences[0]);
+    sequence.id = "other"; sequence.name = "另一序列";
+    editorHistory.apply([{ type: "sequence.add", sequence }], editorHistory.revision);
+    colorSequenceId = "other"; selected = ["b"]; inspector.render();
+  });
+  assert.equal(await page.getByRole("button", { name: "粘贴当前调色", exact: true }).isDisabled(), false);
+  await page.getByRole("button", { name: "粘贴当前调色", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+  assert.equal(await page.evaluate(() => editorHistory.read().sequences[1].clips.find((clip) => clip.id === "b").color.temperature), 0.1);
+  const stale = await page.getByRole("button", { name: "粘贴当前调色", exact: true }).elementHandle();
+  const before = await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(editorHistory.read()); colorGeneration++; inspector.render();
+    return editorHistory.read();
+  });
+  assert.equal(await page.getByRole("button", { name: "粘贴当前调色", exact: true }).isDisabled(), true);
+  await stale.evaluate((button) => button.click());
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("a late color apply failure cannot add old errors to a successor and a locked batch stays disabled", async () => {
+  await page.evaluate(() => {
+    globalThis.colorGeneration = 1;
+    inspector.context.identity = () => ({ documentId: "project", revision: editorHistory.revision, generation: colorGeneration });
+    inspector.context.apply = async () => { await new Promise((_resolve, reject) => globalThis.rejectColor = reject); };
+    inspector.render();
+  });
+  await tab("调色");
+  await page.getByRole("button", { name: "复制当前调色", exact: true }).click();
+  await page.evaluate(() => select(["b"]));
+  await page.getByRole("button", { name: "粘贴当前调色", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".ei-panel").disabled);
+  await page.evaluate(() => { colorGeneration++; editorHistory = new api.EditorHistory(makeDocument()); inspector.render(); rejectColor(new Error("旧调色失败")); });
+  await page.waitForFunction(() => !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  await page.evaluate(() => {
+    editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v1", patch: { locked: true } }], editorHistory.revision);
+    select(["a", "b"]);
+  });
+  assert.equal(await page.getByRole("button", { name: "重置全部调色", exact: true }).isDisabled(), true);
+  assert.match(await page.locator(".ei-notice").innerText(), /锁定/);
+});

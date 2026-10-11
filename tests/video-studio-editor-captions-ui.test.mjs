@@ -253,6 +253,39 @@ async function generate(page) {
   await page.getByRole("button", { name: "生成所选声音字幕" }).click();
   await page.locator(".ec-preview").waitFor({ state: "visible" });
 }
+async function selectSrt(page, name = "等待.srt", text = "等待内容") {
+  await page.locator("[data-caption-srt-input]").setInputFiles({
+    name,
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from(`1\n00:00:00,033 --> 00:00:01,067\n${text}\n`),
+  });
+}
+async function holdSrtRead(page) {
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    globalThis.fileReadStarted = false;
+    globalThis.fileReadFinished = false;
+    File.prototype.text = async function () {
+      if (this.name !== "等待.srt" || globalThis.fileReadStarted) return original.call(this);
+      globalThis.fileReadStarted = true;
+      try {
+        const fail = await new Promise((resolve) => (globalThis.releaseFileRead = resolve));
+        if (fail) throw new Error("旧文件读取失败");
+        return await original.call(this);
+      } finally {
+        globalThis.fileReadFinished = true;
+      }
+    };
+  });
+  await selectSrt(page);
+  await page.waitForFunction(() => fileReadStarted);
+}
+async function releaseSrtRead(page, fail = false) {
+  await page.evaluate((fail) => releaseFileRead(fail), fail);
+  await page.waitForFunction(() => fileReadFinished);
+  // Allow the async file handler and its guarded error callback to finish before observing state.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+}
 
 test("real source checkboxes preview then apply one saved transaction, with one Undo", async (t) => {
   const page = await fixture(t);
@@ -316,6 +349,197 @@ test("translation shows original and bilingual preview before applying, preserve
   await page.waitForFunction(() => !captions()[0].translation);
 });
 
+test("a late earlier SRT file read cannot replace the newest selected file preview", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  await page.evaluate(() => {
+    const original = File.prototype.text;
+    globalThis.oldFileStarted = false;
+    globalThis.oldFileFinished = false;
+    File.prototype.text = async function () {
+      if (this.name === "较早.srt") {
+        globalThis.oldFileStarted = true;
+        await new Promise((resolve) => (globalThis.releaseOldFile = resolve));
+        try {
+          return await original.call(this);
+        } finally {
+          globalThis.oldFileFinished = true;
+        }
+      }
+      return original.call(this);
+    };
+  });
+  const input = page.locator("[data-caption-srt-input]");
+  await input.setInputFiles({
+    name: "较早.srt",
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from("1\n00:00:00,033 --> 00:00:01,067\n较早内容\n"),
+  });
+  await page.waitForFunction(() => oldFileStarted);
+  await input.setInputFiles({
+    name: "最新.srt",
+    mimeType: "application/x-subrip",
+    buffer: Buffer.from("1\n00:00:02,033 --> 00:00:03,067\n最新内容\n"),
+  });
+  await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "最新内容");
+  await page.evaluate(() => releaseOldFile());
+  await page.waitForFunction(() => oldFileFinished);
+  assert.equal(
+    await page.evaluate(() => controller.getState().candidate?.rows[0]?.text),
+    "最新内容",
+  );
+  assert.equal(await page.evaluate(() => captions().length), 0);
+});
+
+for (const action of [
+  "cancel",
+  "close",
+  "escape",
+  "open",
+  "inline-close",
+  "sequence",
+  "track",
+  "revision",
+  "restore",
+  "session",
+  "dispose",
+]) {
+  for (const fail of [false, true]) {
+    test(`late SRT read ${fail ? "failure" : "success"} is retired by ${action} without publishing or changing status`, async (t) => {
+      const page = await fixture(t, { disabled: true, inline: action === "inline-close" });
+      if (action === "sequence" || action === "track") {
+        await page.evaluate((action) => {
+          if (action === "sequence") {
+            const sequence = structuredClone(session.read().sequences[0]);
+            sequence.id = "second";
+            session.dispatch([{ type: "sequence.add", sequence }], session.getState().identity);
+          } else {
+            session.dispatch(
+              [
+                {
+                  type: "track.add",
+                  sequenceId: "main",
+                  track: editor.createTrack("second-text", "text"),
+                },
+              ],
+              session.getState().identity,
+            );
+          }
+        }, action);
+      }
+      await holdSrtRead(page);
+      if (action === "cancel")
+        await page.getByRole("button", { name: "取消任务 / 丢弃预览" }).click();
+      else if (action === "escape") await page.keyboard.press("Escape");
+      else if (action === "track") {
+        await page.getByLabel("目标字幕轨").selectOption("second-text");
+        await page.getByLabel("目标字幕轨").selectOption("");
+      } else {
+        await page.evaluate(async (action) => {
+          if (action === "close" || action === "inline-close") {
+            ui.close();
+            ui.open();
+          } else if (action === "open") ui.open();
+          else if (action === "sequence") {
+            ui.open("second");
+            ui.open("main");
+          } else if (action === "revision")
+            session.dispatch(
+              [{ type: "project.rename", name: "读取期间的新版本" }],
+              session.getState().identity,
+            );
+          else if (action === "restore") await session.replace(session.read());
+          else if (action === "session") {
+            const before = session.read();
+            session = await editor.EditorSession.open({
+              read: async () => ({ data: before, revision: 1 }),
+              write: async () => ({ revision: 2 }),
+              backupLegacy: async () => {},
+            });
+            ui.open();
+          } else if (action === "dispose") ui.dispose();
+        }, action);
+      }
+      const before = await page.evaluate(() => ({
+        document: session.read(),
+        controller: controller.getState(),
+        status: document.querySelector(".ec-status")?.textContent,
+      }));
+      assert.equal(before.controller.candidate, undefined);
+      await releaseSrtRead(page, fail);
+      assert.deepEqual(
+        await page.evaluate(() => ({
+          document: session.read(),
+          controller: controller.getState(),
+          status: document.querySelector(".ec-status")?.textContent,
+        })),
+        before,
+      );
+      assert.deepEqual(await page.evaluate(() => errors), []);
+    });
+  }
+}
+
+test("late older file read failure cannot overwrite the newer SRT preview or its status", async (t) => {
+  const page = await fixture(t, { disabled: true });
+  await holdSrtRead(page);
+  await selectSrt(page, "最新.srt", "最新内容");
+  await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "最新内容");
+  const before = await page.evaluate(() => ({
+    controller: controller.getState(),
+    status: document.querySelector(".ec-status").textContent,
+  }));
+  await releaseSrtRead(page, true);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      controller: controller.getState(),
+      status: document.querySelector(".ec-status").textContent,
+    })),
+    before,
+  );
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("same SRT file can retry after a current read error and after a revision retires its read", async (t) => {
+  for (const retire of ["error", "revision"]) {
+    const page = await fixture(t, { disabled: true });
+    await holdSrtRead(page);
+    if (retire === "revision")
+      await page.evaluate(() =>
+        session.dispatch([{ type: "project.rename", name: "新版本" }], session.getState().identity),
+      );
+    await releaseSrtRead(page, retire === "error");
+    assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+    assert.deepEqual(
+      await page.evaluate(() => errors),
+      retire === "error" ? ["旧文件读取失败"] : [],
+    );
+    assert.equal(await page.locator("[data-caption-srt-input]").inputValue(), "");
+    await selectSrt(page);
+    await page.waitForFunction(() => controller.getState().candidate?.rows[0]?.text === "等待内容");
+    await page.getByRole("button", { name: "应用预览" }).click();
+    await page.waitForFunction(() => captions().length === 1);
+    assert.equal(await page.evaluate(() => captions()[0].start), 7920);
+    assert.equal(await page.evaluate(() => captions()[0].duration), 248160);
+    await page.evaluate(() => session.undo());
+    assert.equal(await page.evaluate(() => captions().length), 0);
+  }
+});
+
+test("same inline open and mount preserve a pending SRT read when its version and target are unchanged", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  await holdSrtRead(page);
+  await page.evaluate(() => {
+    ui.mount(document.querySelector("#mount"));
+    ui.open("main");
+  });
+  await releaseSrtRead(page);
+  assert.equal(
+    await page.evaluate(() => controller.getState().candidate?.rows[0]?.text),
+    "等待内容",
+  );
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
 test("SRT file input and real browser download preserve multiline exact millisecond cues", async (t) => {
   const page = await fixture(t, { disabled: true });
   await page.locator("[data-caption-srt-input]").setInputFiles({
@@ -327,12 +551,84 @@ test("SRT file input and real browser download preserve multiline exact millisec
   await page.getByRole("button", { name: "应用预览" }).click();
   await page.waitForFunction(() => captions().length === 1);
   await page.getByRole("button", { name: "全选字幕" }).click();
+  const before = await page.evaluate(() => session.read());
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出所选 SRT" }).click();
   const download = await downloadPromise;
   const result = await readFile(await download.path(), "utf8");
   assert.match(result, /00:00:00,033 --> 00:00:01,067/);
   assert.match(result, /你好🙂\nHello/);
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 7920, end: 256080, text: "你好🙂\nHello" },
+  ]);
+  assert.deepEqual(
+    await page.evaluate(() => session.read()),
+    before,
+    "Export never mutates the project",
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      words: captions()[0].words,
+      binding: captions()[0].sourceBinding,
+      translation: captions()[0].translation,
+    })),
+    {
+      words: [],
+      binding: undefined,
+      translation: undefined,
+    },
+    "A plain SRT does not invent word timing, source provenance or translation metadata",
+  );
+});
+
+test("SRT export explains an internal blank line without downloading; corrected text then downloads and reimports", async (t) => {
+  const page = await fixture(t, { inline: true, disabled: true });
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  const id = await page.evaluate(() =>
+    controller.add("main", { start: 7920, duration: 248160, text: "第一段\n \t\n第二段" }),
+  );
+  await page.getByRole("button", { name: "全选字幕" }).click();
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "第1条字幕含空白分隔行，请删除中间空白行后导出 SRT" })
+    .waitFor();
+  assert.equal(downloads, 0);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  const row = page.locator(`[data-caption-id="${id}"]`);
+  await row.getByLabel("字幕文字", { exact: true }).fill("第一段\n第二段");
+  await row.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions()[0].text === "第一段\n第二段");
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "导出所选 SRT" }).click();
+  const result = await readFile(await (await downloadPromise).path(), "utf8");
+  assert.equal(downloads, 1);
+  assert.deepEqual(await page.evaluate((text) => editor.parseEditorSrt(text), result), [
+    { start: 7920, end: 256080, text: "第一段\n第二段" },
+  ]);
+  await page.evaluate(async (id) => {
+    session.dispatch(
+      [{ type: "clip.remove", sequenceId: "main", clipIds: [id] }],
+      session.getState().identity,
+    );
+    await session.flush();
+  }, id);
+  await page
+    .locator("[data-caption-srt-input]")
+    .setInputFiles({
+      name: "修正.srt",
+      mimeType: "application/x-subrip",
+      buffer: Buffer.from(result),
+    });
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "应用预览" }).click();
+  await page.waitForFunction(() => captions().length === 1);
+  assert.deepEqual(
+    await page.evaluate(() => [captions()[0].text, captions()[0].start, captions()[0].duration]),
+    ["第一段\n第二段", 7920, 248160],
+  );
 });
 
 test("failed save leaves preview and original document intact; retry saves once", async (t) => {

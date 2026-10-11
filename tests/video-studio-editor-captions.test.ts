@@ -791,6 +791,80 @@ test("SRT roundtrip preserves Unicode/multiline and explicit millisecond quantiz
   assert.throws(() => parseEditorSrt("1\n00:00:01,000 --> 00:00:01,000\n坏"), /正时长/);
 });
 
+test("SRT export rejects only internal blank separator lines with a cue number and preserves the source", () => {
+  const base = fixture(),
+    doc = applyEditorOperations(
+      base,
+      planSrtImport(
+        base,
+        "main",
+        "1\n00:00:00,033 --> 00:00:01,067\n第一条\n\n2\n00:00:02,001 --> 00:00:03,234\n第二条\n",
+      ).operations,
+      base.revision,
+    );
+  for (const body of [
+    "第一段\n\n第二段",
+    "第一段\r\n \t\r\n第二段",
+    "第一段\r \r第二段",
+    "第一段\n\u00a0\n第二段",
+  ]) {
+    const source = structuredClone(doc);
+    captions(source)[1]!.text = body;
+    const before = structuredClone(source);
+    assert.throws(() => exportEditorSrt(source, "main"), /第2条字幕.*空白分隔行.*删除中间空白行/);
+    assert.deepEqual(source, before);
+  }
+  captions(doc)[1]!.text = "\r\n \t\r\n第一行🙂\r\n第二行\r\n\t\r\n";
+  const before = structuredClone(doc),
+    output = exportEditorSrt(doc, "main");
+  assert.equal(output.includes("\r"), false);
+  assert.deepEqual(parseEditorSrt(output), [
+    { start: 7920, end: 256080, text: "第一条" },
+    { start: 480240, end: 776160, text: "第一行🙂\n第二行" },
+  ]);
+  assert.deepEqual(doc, before, "File normalization never rewrites stored subtitle text");
+});
+
+test("SRT carries visible bilingual or translated text and cue times without inventing lost word or source metadata", () => {
+  for (const mode of ["bilingual", "translated"] as const) {
+    const original = generated(),
+      id = captions(original)[0]!.id,
+      translated = applyEditorOperations(
+        original,
+        planCaptionTranslation(original, "main", [id], "en", mode, [{ id, text: "Hello world" }])
+          .operations,
+        original.revision,
+      ),
+      before = structuredClone(translated),
+      text = exportEditorSrt(translated, "main"),
+      target = fixture(),
+      result = applyEditorOperations(
+        target,
+        planSrtImport(target, "main", text).operations,
+        target.revision,
+      ),
+      imported = captions(result)[0]!;
+    assert.ok(captions(translated)[0]!.sourceBinding);
+    assert.ok(captions(translated)[0]!.translation?.originalWords?.length);
+    assert.deepEqual(parseEditorSrt(text), [
+      {
+        start: T,
+        end: 3 * T,
+        text: mode === "bilingual" ? "你好 世界\nHello world" : "Hello world",
+      },
+    ]);
+    assert.equal(imported.text, mode === "bilingual" ? "你好 世界\nHello world" : "Hello world");
+    assert.deepEqual(imported.words, []);
+    assert.equal(imported.sourceBinding, undefined);
+    assert.equal(imported.translation, undefined);
+    assert.deepEqual(
+      translated,
+      before,
+      "SRT output leaves all authoritative caption metadata intact",
+    );
+  }
+});
+
 test("translation preserves original timed words through translated-only and bilingual modes; unmatched results never apply", () => {
   const doc = generated(),
     caption = captions(doc)[0]!,

@@ -578,9 +578,15 @@ export class EditorTimeline {
           height: stripHeight,
         });
       }
-      void this.media.render(document, sequence.id, strips);
+      void this.media.render(document, sequence.id, strips, this.context.identity?.());
     });
   };
+  /** Retry visible media after resource bytes or availability change without an edit. */
+  refreshMedia(): void {
+    if (this.destroyed) return;
+    this.media.reset();
+    this.scheduleMedia();
+  }
   /** Scrolls a clip into view, drawing it first when it lies outside the drawn time window. */
   reveal(clipId: string): void {
     const clip = this.current().sequence.clips.find((item) => item.id === clipId);

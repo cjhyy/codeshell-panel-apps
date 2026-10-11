@@ -510,6 +510,34 @@ test(
     );
 
     await t.test(
+      "muted and zero-gain tracks stay silent at 400 percent clip gain and restore the saved fades",
+      async () => {
+        const seq = sequence(), media = clip();
+        media.audio.volume = 4;
+        media.audio.fadeIn = T / 4;
+        media.audio.fadeOut = T / 2;
+        seq.clips = [media];
+        const savedMix = structuredClone(media.audio);
+        seq.tracks[0].muted = true;
+        const muted = await render(seq);
+        assert.equal(muted.result.peak, 0);
+        assert.ok(muted.pcm.every((sample) => sample === 0));
+        seq.tracks[0].muted = false;
+        seq.tracks[0].volume = 0;
+        const zero = await render(seq);
+        assert.equal(zero.result.peak, 0);
+        assert.ok(zero.pcm.every((sample) => sample === 0));
+        seq.tracks[0].volume = 1;
+        const restored = await render(seq);
+        near(restored.result.peak, 0.8, 0.0001);
+        near(rms(restored.pcm, 0.4, 1.4), 0.8 / Math.sqrt(2), 0.001);
+        assert.ok(rms(restored.pcm, 0, 0.02) < rms(restored.pcm, 0.4, 0.5) / 10);
+        assert.ok(rms(restored.pcm, 1.98, 2) < rms(restored.pcm, 0.4, 0.5) / 10);
+        assert.deepEqual(media.audio, savedMix);
+      },
+    );
+
+    await t.test(
       "two real sine tracks warn about overload and clear after lowering gain",
       async () => {
         const seq = sequence();

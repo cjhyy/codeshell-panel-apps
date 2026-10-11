@@ -1877,6 +1877,88 @@ test("partial export failure retries remaining combinations from the original fr
   assert.notEqual((await documentState(page)).revision, snapshot.revision);
 });
 
+async function replaceExportProject(page, replacement) {
+  await page.evaluate(async (replacement) => {
+    const next = fixture.read();
+    next.name = "新的工程会话";
+    if (replacement === "same-id-same-revision-reopen")
+      // A direct same-ID restore deliberately increments revision. Opening B then reopening
+      // the saved A version is the public workflow that returns to A's original ID/revision.
+      await fixture.internals.session.replace({ ...next, id: "intermediate-project" });
+    else if (replacement === "other-project") next.id = "successor-project";
+    await fixture.internals.session.replace(next);
+  }, replacement);
+  return page.evaluate(() => fixture.state().identity);
+}
+
+for (const replacement of ["same-id-restore", "same-id-same-revision-reopen", "other-project"]) {
+  test(`a frozen partial export cannot retry into ${replacement}`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2, exportFailAt: 2 });
+    await selectExportMatrix(page);
+    await page.locator("dialog button[type=submit]").click();
+    await page.waitForFunction(() =>
+      document.querySelector(".ew-form-error").textContent.includes("第二项任务提交失败"),
+    );
+    assert.equal(await page.evaluate(() => fixture.exports.length), 1);
+    const identity = await page.evaluate(() => fixture.state().identity);
+    const successor = await replaceExportProject(page, replacement);
+    assert.notEqual(successor.generation, identity.generation);
+    assert.equal(
+      successor.revision,
+      identity.revision + (replacement === "same-id-restore" ? 1 : 0),
+    );
+    assert.equal(successor.documentId === identity.documentId, replacement !== "other-project");
+    await page.locator("dialog button[type=submit]").click();
+    await settle(page);
+    assert.equal(
+      await page.evaluate(() => fixture.exports.length),
+      1,
+      "A generation change must fence the frozen batch before another adapter call",
+    );
+    assert.match(
+      await page.locator(".ew-form-error").textContent(),
+      /工程已变化|工程.*切换|重新打开/,
+    );
+  });
+}
+
+for (const replacement of ["same-id-restore", "same-id-same-revision-reopen", "other-project"]) {
+  test(`a batch awaiting an accepted receipt starts no next item after ${replacement}`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2, exportHeldAt: 1 });
+    const before = await documentState(page);
+    await selectExportMatrix(page);
+    await page.locator("dialog button[type=submit]").click();
+    await page.waitForFunction(() => fixture.exportAttempts().length === 1);
+    const identity = await page.evaluate(() => fixture.state().identity);
+    const successor = await replaceExportProject(page, replacement);
+    assert.equal(
+      successor.revision,
+      identity.revision + (replacement === "same-id-restore" ? 1 : 0),
+    );
+    assert.notEqual(successor.generation, identity.generation);
+    await page.evaluate(() => fixture.releaseExport());
+    await page.waitForFunction(() =>
+      document.querySelector(".ew-form-error").textContent.includes("工程已切换或恢复"),
+    );
+    assert.equal(await page.evaluate(() => fixture.exportAttempts().length), 1);
+    const accepted = await page.evaluate(() => fixture.exports);
+    assert.equal(accepted.length, 1, "The already accepted receipt is kept exactly once");
+    assert.deepEqual(accepted[0].doc, before);
+    assert.match(await page.locator("[data-export-progress]").textContent(), /已提交 1\/4/);
+    await page.locator("dialog button[type=submit]").click();
+    await settle(page);
+    assert.equal(await page.evaluate(() => fixture.exportAttempts().length), 1);
+    await page.locator("[data-ew-close]").click();
+    await action(page, "export").click();
+    await saveDialog(page);
+    const current = await page.evaluate(() => fixture.exports);
+    assert.equal(current.length, 2);
+    assert.equal(current[1].doc.name, "新的工程会话");
+    assert.equal(current[1].doc.id, successor.documentId);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
 test("cancel remaining submissions keeps a late accepted receipt and starts no further combinations", async (t) => {
   const page = await fixture(t, { sequenceCount: 2, exportHeldAt: 1 });
   await selectExportMatrix(page);

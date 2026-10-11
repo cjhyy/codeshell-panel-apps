@@ -101,6 +101,8 @@ export class EditorCaptionsUI {
   private revision = "";
   private opened = false;
   private disposed = false;
+  /** File.text() cannot be aborted; retired reads must never publish a candidate or an error. */
+  private fileReadSerial = 0;
   private focused: HTMLElement | undefined;
   private rowSession?: EditorSession;
   private rowScope = "";
@@ -159,6 +161,7 @@ export class EditorCaptionsUI {
     sources.open = true;
     sources.append(element("summary", "声音来源"), this.sourceList);
     this.track.setAttribute("aria-label", "目标字幕轨");
+    this.track.addEventListener("change", () => this.cancelFileRead());
     this.generateButton.dataset.captionGenerate = "";
     this.recheckButton.dataset.captionRecheck = "";
     this.recheckButton.hidden = true;
@@ -270,6 +273,7 @@ export class EditorCaptionsUI {
     for (const button of this.root.querySelectorAll("button")) button.type = "button";
     close.addEventListener("click", () => this.close());
     this.root.addEventListener("cancel", () => {
+      this.cancelFileRead();
       context.controller.cancel();
     });
     // Rebuilding the surrounding panel detaches this section; remember focus so mount() restores it.
@@ -282,7 +286,10 @@ export class EditorCaptionsUI {
           this.focused = undefined;
       }),
     );
-    this.cancelButton.addEventListener("click", () => context.controller.cancel());
+    this.cancelButton.addEventListener("click", () => {
+      this.cancelFileRead();
+      context.controller.cancel();
+    });
     this.applyButton.addEventListener("click", () => {
       const session = context.session(), identity = session.getState().identity,
         sequenceId = this.sequenceId;
@@ -377,27 +384,34 @@ export class EditorCaptionsUI {
     });
     importButton.addEventListener("click", () => this.file.click());
     this.file.addEventListener("change", () => {
-      const chosen = this.file.files?.[0];
+      const chosen = this.file.files?.[0],
+        serial = ++this.fileReadSerial,
+        session = context.session(),
+        identity = session.getState().identity,
+        sequenceId = this.sequenceId,
+        trackId = this.track.value;
       this.file.value = "";
+      const owns = () =>
+        !this.disposed &&
+        serial === this.fileReadSerial &&
+        context.session() === session &&
+        sameIdentity(session.getState().identity, identity) &&
+        this.sequenceId === sequenceId &&
+        this.track.value === trackId;
       if (chosen)
-        this.run(async () => {
-          const session = context.session(),
-            identity = session.getState().identity,
-            sequenceId = this.sequenceId;
-          if (chosen.size > 4 * 1024 * 1024) throw new Error("SRT 文件超过4 MiB");
-          const text = await chosen.text();
-          if (this.disposed) return;
-          if (
-            context.session() !== session ||
-            JSON.stringify(context.session().getState().identity) !== JSON.stringify(identity)
-          )
-            throw new Error("读取SRT期间工程已切换，请重新选择文件");
-          context.controller.importSrt({
-            sequenceId,
-            text,
-            ...(this.track.value ? { trackId: this.track.value } : {}),
-          });
-        });
+        this.run(
+          async () => {
+            if (chosen.size > 4 * 1024 * 1024) throw new Error("SRT 文件超过4 MiB");
+            const text = await chosen.text();
+            if (!owns()) return;
+            context.controller.importSrt({
+              sequenceId,
+              text,
+              ...(trackId ? { trackId } : {}),
+            });
+          },
+          owns,
+        );
     });
     this.exportButton.addEventListener("click", () =>
       this.run(async () => {
@@ -416,11 +430,16 @@ export class EditorCaptionsUI {
     );
     this.disposers.push(context.controller.subscribe((state) => this.renderState(state)));
   }
-  private run(task: () => void | Promise<void>): void {
+  private cancelFileRead(): void {
+    this.fileReadSerial++;
+  }
+  private run(task: () => void | Promise<void>, owns: () => boolean = () => true): void {
     void Promise.resolve()
-      .then(() => { if (!this.disposed) return task(); })
+      .then(() => {
+        if (!this.disposed && owns()) return task();
+      })
       .catch((error) => {
-        if (this.disposed) return;
+        if (this.disposed || !owns()) return;
         this.status.textContent = (error as Error).message ?? String(error);
         this.context.onError?.(error instanceof Error ? error : new Error(String(error)));
       });
@@ -913,6 +932,7 @@ export class EditorCaptionsUI {
     if (this.disposed) throw new Error("字幕面板已关闭");
     // Inline panels are reopened after every host render; keep selection for the same sequence.
     const reopened = this.inline && this.opened && sequenceId === this.sequenceId;
+    if (!reopened || this.watchedSession !== this.context.session()) this.cancelFileRead();
     this.sequenceId = sequenceId;
     if (!reopened) this.selected = new Set(this.captions().map((clip) => clip.id));
     if (this.inline) this.opened = true;
@@ -926,6 +946,7 @@ export class EditorCaptionsUI {
   }
   close() {
     if (this.disposed) return;
+    this.cancelFileRead();
     this.unwatch?.();
     this.unwatch = undefined;
     if (this.inline) {
@@ -938,6 +959,7 @@ export class EditorCaptionsUI {
   }
   dispose() {
     if (this.disposed) return;
+    this.cancelFileRead();
     this.disposed = true;
     this.context.controller.cancel();
     this.unwatch?.();
