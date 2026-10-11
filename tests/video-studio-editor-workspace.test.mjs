@@ -5701,3 +5701,352 @@ test("an invalid focused curve node remains correctable without blurring or appl
   await node.fill("1.5"); await page.getByRole("button", { name: "应用分段曲线", exact: true }).click(); await settle(page);
   assert.equal((await documentState(page)).sequences[0].clips[0].duration, 1.5 * 240000);
 });
+
+async function playbackFollowFixture(t, width = 620) {
+  const page = await fixture(t, { width, duration: 20 * 240000, layout: "embedded" });
+  await page.evaluate(() => {
+    // The real production shell selects the visible dock on narrow panels.
+    document.querySelector(".workspace").dataset.narrowPanel = "viewer";
+    fixture.internals.workspace.selectClips("main", ["a"]);
+  });
+  await page.locator("[data-et-zoom]").focus();
+  await page.locator("[data-et-zoom]").press("End");
+  await page.evaluate(async () => {
+    const { workspace } = fixture.internals, timeline = workspace.timeline,
+      width = document.querySelector(".et-scroll").clientWidth;
+    await workspace.seek(Math.round((width - 60) / timeline.scale * 240000), true);
+  });
+  return page;
+}
+
+for (const width of [620, 390]) test(`real demo playback follows the clock by pages at ${width}px without editing`, async (t) => {
+  const page = await playbackFollowFixture(t, width), before = await documentState(page);
+  const control = page.locator("[data-et-follow]"), bounds = await control.boundingBox();
+  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width, "Following is reachable without scrolling the toolbar");
+  assert.equal(await control.getAttribute("aria-pressed"), "true");
+  await action(page, "play").click();
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft > 0);
+  await action(page, "play").click();
+  const state = await page.evaluate(() => {
+    const viewport = document.querySelector(".et-scroll"), rect = viewport.getBoundingClientRect(),
+      line = document.querySelector(".et-playhead").getBoundingClientRect();
+    return { left: viewport.scrollLeft, width: viewport.clientWidth, head: line.left, min: rect.left, max: rect.right };
+  });
+  assert.ok(state.left > 0);
+  assert.ok(state.head >= state.min && state.head <= state.max, JSON.stringify(state));
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("manual horizontal scrolling suspends one playback episode and resume, disable and paused seeks keep their meaning", async (t) => {
+  const page = await playbackFollowFixture(t), before = await documentState(page);
+  await action(page, "play").click();
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft > 0);
+  const viewport = await page.locator(".et-scroll").boundingBox();
+  await page.mouse.move(viewport.x + viewport.width / 2, viewport.y + 30);
+  await page.keyboard.down("Shift"); await page.mouse.wheel(0, 200); await page.keyboard.up("Shift");
+  await page.getByRole("button", { name: "恢复播放跟随", exact: true }).waitFor();
+  const manual = await page.evaluate(() => ({ left: document.querySelector(".et-scroll").scrollLeft, time: fixture.playhead() }));
+  await page.waitForFunction((time) => fixture.playhead() >= time + 120000, manual.time);
+  assert.equal(await page.locator(".et-scroll").evaluate((el) => el.scrollLeft), manual.left);
+  await page.getByRole("button", { name: "恢复播放跟随", exact: true }).click();
+  await page.waitForFunction(() => !fixture.internals.workspace.timeline.followSuspended);
+  await page.mouse.move(viewport.x + viewport.width / 2, viewport.y + 30);
+  await page.keyboard.down("Shift"); await page.mouse.wheel(0, 200); await page.keyboard.up("Shift");
+  await page.getByRole("button", { name: "恢复播放跟随", exact: true }).waitFor();
+  await action(page, "play").click();
+  const paused = await page.locator(".et-scroll").evaluate((el) => el.scrollLeft);
+  await page.evaluate(() => fixture.internals.workspace.seek(15 * 240000, true));
+  assert.equal(await page.locator(".et-scroll").evaluate((el) => el.scrollLeft), paused, "A paused seek leaves the view where the user put it");
+  await action(page, "play").click();
+  await page.waitForFunction((left) => document.querySelector(".et-scroll").scrollLeft > left, paused);
+  await page.locator("[data-et-follow]").click();
+  assert.equal(await page.locator("[data-et-follow]").getAttribute("aria-pressed"), "false");
+  const disabled = await page.evaluate(() => ({ left: document.querySelector(".et-scroll").scrollLeft, time: fixture.playhead() }));
+  await page.waitForFunction((time) => fixture.playhead() >= time + 120000, disabled.time);
+  assert.equal(await page.locator(".et-scroll").evaluate((el) => el.scrollLeft), disabled.left);
+  await action(page, "play").click();
+  await page.locator("[data-et-follow]").focus(); await page.keyboard.press("Space");
+  assert.equal(await page.locator("[data-et-follow]").getAttribute("aria-pressed"), "true");
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.equal(await page.locator(".et-scroll").evaluate((el) => el.scrollLeft), disabled.left);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const field of ["inspector", "track"]) test(`playback following is a view preference and keeps an unfinished ${field} field focused`, async (t) => {
+  const page = await fixture(t);
+  await clip(page).click();
+  const input = field === "inspector" ? page.getByLabel("水平位置（%）", { exact: true }) : page.locator('[data-et-track-name="video"]');
+  const before = await documentState(page), value = field === "inspector" ? "25" : "仍在编辑的名称";
+  await input.fill(value);
+  await page.locator("[data-et-follow]").click();
+  assert.equal(await input.inputValue(), value);
+  assert.equal(await input.evaluate((el) => document.activeElement === el), true);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.locator("[data-et-follow]").getAttribute("aria-pressed"), "false");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("in-page playback frames do not read or render the timeline and a page turn reuses its toolbar", async (t) => {
+  const page = await playbackFollowFixture(t);
+  await action(page, "play").focus();
+  const result = await page.evaluate(() => {
+    const { workspace } = fixture.internals, timeline = workspace.timeline,
+      read = timeline.context.read, render = timeline.render,
+      toolbar = document.querySelector(".et-toolbar");
+    let reads = 0, renders = 0;
+    timeline.context.read = () => { reads++; return read(); };
+    timeline.render = function (...args) { renders++; return render.apply(this, args); };
+    timeline.setPlaybackActive(true);
+    for (let index = 0; index < 100; index++) timeline.updatePlayhead();
+    const inPage = { reads, renders };
+    workspace.playhead += 240000;
+    timeline.updatePlayhead();
+    const pageTurn = { reads, renders, sameToolbar: toolbar === document.querySelector(".et-toolbar") };
+    for (let index = 0; index < 100; index++) timeline.updatePlayhead();
+    timeline.setPlaybackActive(false);
+    return { inPage, pageTurn, after: { reads, renders } };
+  });
+  assert.deepEqual(result.inPage, { reads: 0, renders: 0 });
+  assert.equal(result.pageTurn.renders, 1);
+  assert.equal(result.pageTurn.sameToolbar, true);
+  assert.deepEqual(result.after, { reads: result.pageTurn.reads, renders: 1 });
+});
+
+
+test("playback following preserves a manual horizontal position before its queued scroll handler and ignores the replaced scroller", async (t) => {
+  const page = await playbackFollowFixture(t);
+  await action(page, "play").focus();
+  const result = await page.evaluate(() => {
+    const { workspace } = fixture.internals,
+      timeline = workspace.timeline,
+      original = document.querySelector(".et-scroll");
+    timeline.setPlaybackActive(true);
+    workspace.playhead += 240000;
+    timeline.updatePlayhead();
+    const afterPage = {
+      suspended: timeline.followSuspended,
+      left: document.querySelector(".et-scroll").scrollLeft,
+    };
+    original.dispatchEvent(new Event("scroll"));
+    const afterStale = timeline.followSuspended,
+      current = document.querySelector(".et-scroll");
+    current.scrollLeft += 200;
+    const manual = current.scrollLeft;
+    timeline.updatePlayhead();
+    const manualGuard = { suspended: timeline.followSuspended, left: current.scrollLeft };
+    timeline.setPlaybackActive(false);
+    timeline.setPlaybackActive(true);
+    timeline.updatePlayhead();
+    const resumed = {
+      suspended: timeline.followSuspended,
+      left: document.querySelector(".et-scroll").scrollLeft,
+    };
+    timeline.setPlaybackActive(false);
+    return { afterPage, afterStale, manual, manualGuard, resumed };
+  });
+  assert.equal(result.afterPage.suspended, false);
+  assert.equal(result.afterStale, false);
+  assert.equal(result.manualGuard.suspended, true);
+  assert.equal(result.manualGuard.left, result.manual);
+  assert.equal(result.resumed.suspended, false);
+  assert.notEqual(result.resumed.left, result.manual);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("playback following actual workspace replay cannot be suspended by the previous episode's queued manual scroll", async (t) => {
+  const page = await playbackFollowFixture(t, 390);
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  const state = await page.evaluate(async () => {
+    const { workspace } = fixture.internals,
+      viewport = document.querySelector(".et-scroll");
+    viewport.scrollLeft += 500;
+    const manual = viewport.scrollLeft;
+    await workspace.togglePlayback();
+    await workspace.togglePlayback();
+    return {
+      manual,
+      playing: fixture.playing(),
+      suspended: workspace.timeline.followSuspended,
+      time: fixture.playhead(),
+    };
+  });
+  await page.waitForFunction((time) => fixture.playhead() > time + 160000, state.time);
+  const after = await page.evaluate(() => ({
+    playing: fixture.playing(),
+    suspended: fixture.internals.workspace.timeline.followSuspended,
+    left: document.querySelector(".et-scroll").scrollLeft,
+  }));
+  await action(page, "play").click();
+  assert.equal(state.playing, true);
+  assert.equal(after.playing, true);
+  assert.equal(after.suspended, false);
+  assert.notEqual(after.left, state.manual);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+async function timingTrimFixture(t, mode = "left") {
+  const page = await timingSubmitFixture(t, mode);
+  // Keep the sequence longer than the selected clip, so its end is a reachable playhead tick.
+  await page.evaluate(() => fixture.dispatch([{ type: "clip.add", sequenceId: "main", clip: { ...fixture.read().sequences[0].clips[0], id: "later", start: 4 * 240000 } }], "添加后续画面")); await settle(page);
+  if (mode === "curve") await page.locator(".editor-timing").getByText("分段速度曲线", { exact: true }).click();
+  return page;
+}
+for (const side of ["左", "右"]) for (const seconds of [0, 4]) {
+  test(`Timing trim ${side} stays disabled at the selected clip's ${seconds === 0 ? "start" : "end"}`, async (t) => {
+    const page = await timingTrimFixture(t), before = await documentState(page);
+    await page.evaluate((seconds) => fixture.internals.workspace.seek(seconds * 240000, true), seconds); await settle(page);
+    const button = page.getByRole("button", { name: `保留播放头${side}侧`, exact: true });
+    assert.equal(await button.isDisabled(), true);
+    assert.match(await page.locator("[data-trim-reason]").innerText(), /每个所选片段内部/);
+    await button.evaluate((node) => node.click()); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("Timing trim requires the playhead inside every selected clip", async (t) => {
+  const page = await timingSubmitFixture(t, "left");
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "clip.add", sequenceId: "main", clip: { ...fixture.read().sequences[0].clips[0], id: "b", start: 4 * 240000 } }], "添加稍后片段");
+    fixture.internals.workspace.selectClips("main", ["a", "b"]);
+  }); await settle(page);
+  const before = await documentState(page);
+  for (const side of ["左", "右"]) assert.equal(await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).isDisabled(), true);
+  assert.match(await page.locator("[data-trim-reason]").innerText(), /每个所选片段内部/);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("Timing trim clock eligibility updates keep the focused speed and curve drafts in the same DOM", async (t) => {
+  const page = await timingTrimFixture(t, "curve"), before = await documentState(page),
+    speed = page.getByLabel("恒定速度（倍）", { exact: true }), point = page.getByLabel("节点 2 输出（秒）", { exact: true });
+  await speed.fill("1.75"); await point.fill("3.25");
+  const oldSpeed = await speed.elementHandle(), oldPoint = await point.elementHandle();
+  for (const seconds of [0, 4, 2]) {
+    await page.evaluate((seconds) => fixture.internals.workspace.seek(seconds * 240000, true), seconds); await settle(page);
+    assert.equal(await oldSpeed.evaluate((input) => input.isConnected && input.value === "1.75"), true);
+    assert.equal(await oldPoint.evaluate((input) => input.isConnected && input.value === "3.25" && input === document.activeElement), true);
+    for (const side of ["左", "右"]) assert.equal(await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).isDisabled(), seconds !== 2);
+    assert.equal(await page.locator("[data-trim-reason]").isVisible(), seconds !== 2);
+  }
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const side of ["左", "右"]) for (const seconds of [0, 4]) {
+  test(`an awaited Timing trim ${side} cannot act after the playhead reaches ${seconds === 0 ? "start" : "end"}`, async (t) => {
+    const page = await timingTrimFixture(t), before = await documentState(page);
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).click(); await settle(page);
+    const savedField = await documentState(page);
+    assert.equal(savedField.revision, before.revision + 1); assert.equal(savedField.sequences[0].clips.find((clip) => clip.id === "a").transform.x, 0.25);
+    await page.evaluate((seconds) => fixture.internals.workspace.seek(seconds * 240000, true), seconds); await settle(page);
+    await releaseCanvasField(page);
+    assert.deepEqual(await documentState(page), savedField);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+    for (const label of ["左", "右"]) assert.equal(await page.getByRole("button", { name: `保留播放头${label}侧`, exact: true }).isDisabled(), true);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("Timing trim reports locked tracks and becomes eligible after unlocking", async (t) => {
+  const page = await timingSubmitFixture(t, "left");
+  await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], "锁轨")); await settle(page);
+  for (const side of ["左", "右"]) assert.equal(await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).isDisabled(), true);
+  assert.match(await page.locator("[data-trim-reason]").innerText(), /锁定/);
+  await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: false } }], "解锁")); await settle(page);
+  for (const side of ["左", "右"]) assert.equal(await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).isDisabled(), false);
+  assert.equal(await page.locator("[data-trim-reason]").isVisible(), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("Timing trim rechecks the playhead if a fresh submit read synchronously seeks to the edge", async (t) => {
+  const page = await timingSubmitFixture(t, "left"), before = await documentState(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timing.context, read = context.read;
+    globalThis.trimSubmitReads = 0;
+    context.read = () => {
+      const saved = read();
+      if (++trimSubmitReads === 4) { context.read = read; fixture.internals.workspace.seek(0, true); }
+      return saved;
+    };
+  });
+  await page.getByRole("button", { name: "保留播放头左侧", exact: true }).click(); await settle(page);
+  assert.equal(await page.evaluate(() => trimSubmitReads), 4);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.getByRole("button", { name: "保留播放头左侧", exact: true }).isDisabled(), true);
+  assert.match((await page.evaluate(() => fixture.errors))[0], /播放头已变化/);
+});
+
+for (const side of ["左", "右"]) {
+  test(`a legal Timing trim ${side} preserves source captions in one undo`, async (t) => {
+    const page = await timingSubmitFixture(t, "left");
+    await page.evaluate(() => {
+      fixture.dispatch([{ type: "clip.add", sequenceId: "main", clip: {
+        id: "bound-caption", kind: "text", role: "subtitle", label: "来源字幕", trackId: "text", start: 0, duration: 4 * 240000,
+        text: "你好世界", words: [{ text: "你好", start: 0, end: 2 * 240000 }, { text: "世界", start: 2 * 240000, end: 4 * 240000 }],
+        sourceBinding: { clipId: "a", sourceStart: 0, sourceEnd: 4 * 240000 }, style: editor.defaultTextStyle(),
+        transform: editor.defaultTransform(), color: editor.defaultColorAdjustment(), blendMode: "normal",
+      } }], "添加来源字幕");
+      fixture.internals.workspace.seek(2 * 240000, true);
+    }); await settle(page);
+    const before = await documentState(page);
+    await page.getByRole("button", { name: `保留播放头${side}侧`, exact: true }).click(); await settle(page);
+    const after = await documentState(page), picture = after.sequences[0].clips.find((clip) => clip.id === "a"), caption = after.sequences[0].clips.find((clip) => clip.id === "bound-caption");
+    assert.equal(after.revision, before.revision + 1); assert.equal(picture.duration, 2 * 240000);
+    assert.equal(picture.start, side === "左" ? 0 : 2 * 240000);
+    assert.deepEqual(picture.timeMap.points.map((point) => point.source), side === "左" ? [0, 2 * 240000] : [2 * 240000, 4 * 240000]);
+    assert.equal(caption.text, side === "左" ? "你好" : "世界"); assert.equal(caption.start, picture.start); assert.equal(caption.duration, picture.duration);
+    assert.deepEqual(caption.words, [{ text: caption.text, start: 0, end: 2 * 240000 }]);
+    assert.deepEqual(caption.sourceBinding, { clipId: "a", sourceStart: side === "左" ? 0 : 2 * 240000, sourceEnd: side === "左" ? 2 * 240000 : 4 * 240000 });
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+
+for (const draft of ["track", "inspector", "invalid"]) {
+  test(`fixed gain first drag finishes an actual ${draft} field without losing its pointer intent`, async (t) => {
+    const page = await fixture(t, { audio: true }); await clip(page, "sound").click(); await settle(page);
+    const before = await documentState(page);
+    if (draft === "track") await page.getByLabel("声音轨 音量百分比", { exact: true }).fill("37.5");
+    else await page.getByLabel("声像（%）", { exact: true }).fill(draft === "invalid" ? "101" : "-30");
+    const handle = clip(page, "sound").locator('[data-et-gain]'), b = await handle.boundingBox(), p = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 25, { steps: 3 }); await page.mouse.up(); await settle(page);
+    const after = await documentState(page), sound = after.sequences[0].clips.find((item) => item.id === "sound");
+    if (draft === "invalid") {
+      assert.deepEqual(after, before); assert.equal(await page.getByLabel("声像（%）", { exact: true }).inputValue(), "101");
+      assert.equal(await page.getByLabel("声像（%）", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    } else {
+      assert.equal(sound.audio.volume, 1.25); assert.equal(after.revision, before.revision + 2);
+      assert.equal(sound.audio.pan, draft === "inspector" ? -.3 : 0);
+      assert.equal(after.sequences[0].tracks.find((track) => track.id === "audio").volume, draft === "track" ? .375 : 1);
+      await action(page, "undo").click(); await settle(page);
+      const undone = await documentState(page); assert.equal(undone.sequences[0].clips.find((item) => item.id === "sound").audio.volume, 1);
+      assert.equal(undone.sequences[0].clips.find((item) => item.id === "sound").audio.pan, sound.audio.pan);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    }
+  });
+}
+
+for (const width of [280, 390]) {
+  test(`fixed gain is visible and operable in a ${width}px workspace without horizontal page overflow`, async (t) => {
+    const page = await fixture(t, { audio: true, width, duration: 120 * 240000 });
+    await clip(page, "sound").click({ position: { x: 40, y: 19 } }); await settle(page);
+    await page.locator(".et-scroll").evaluate((node) => node.scrollLeft = 3000); await settle(page);
+    const handle = clip(page, "sound").locator('[data-et-gain]'); await handle.focus(); await settle(page);
+    const h = await handle.boundingBox(), v = await page.locator(".et-scroll").boundingBox();
+    assert.ok(h.x >= v.x + 7 && h.x + h.width <= v.x + v.width); assert.equal(h.width, 44);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await page.keyboard.press("ArrowDown"); await settle(page);
+    assert.equal((await documentState(page)).sequences[0].clips.find((item) => item.id === "sound").audio.volume, .99);
+    await mkdir("/tmp/video-studio-audio-gain", { recursive: true });
+    await page.screenshot({ path: `/tmp/video-studio-audio-gain/workspace-${width}.png` });
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}

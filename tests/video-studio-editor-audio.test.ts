@@ -5,6 +5,9 @@ import {
   sampleAudioLane,
   TICKS_PER_AUDIO_SAMPLE,
 } from "../apps/video-studio/src/editor/audio-plan";
+import { trimClip } from "../apps/video-studio/src/editor/clip-edits";
+import { planClipAudioGain } from "../apps/video-studio/src/editor/audio-gain-edits";
+import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
 import { prepareEvaluator } from "../apps/video-studio/src/editor/evaluate";
 import {
   createTrack,
@@ -298,4 +301,39 @@ test("a prepared plan owns frozen data, rejects invalid graphs, and fails instea
   root.clips.push(media("second", 1000, "sound"));
   assert.throws(() => compileAudioPlan(doc, "main", { maxLanes: 1 }), /capacity/);
   assert.throws(() => sampleAudioLane(plan.lanes[0]!, -1));
+});
+
+
+test("fixed timeline gain edits only the target and preserve mix, mapping and groups", () => {
+  const seq = sequence(), a = media("a"), b = media("b", 1000, "sound");
+  a.groupId = b.groupId = "group"; a.linkGroupId = b.linkGroupId = "link";
+  a.audio = { ...a.audio, pan: -.4, fadeIn: 100, fadeOut: 150, preservePitch: false,
+    ducking: { sidechainTrackIds: ["sound"], thresholdDb: -24, attenuationDb: 8, attack: 50, release: 100 } };
+  seq.clips = [a, b]; const doc = document(seq), before = structuredClone(doc);
+  const operations = planClipAudioGain(doc, "main", "a", 2), next = applyEditorOperations(doc, operations, doc.revision);
+  const expected = structuredClone(before); expected.revision++; (expected.sequences[0]!.clips[0] as MediaClip).audio.volume = 2;
+  assert.deepEqual(next, expected); assert.deepEqual(doc, before);
+  assert.deepEqual(planClipAudioGain(next, "main", "a", 2), []);
+  for (const volume of [0, 4]) assert.equal((applyEditorOperations(doc, planClipAudioGain(doc, "main", "a", volume), 0).sequences[0]!.clips[0] as MediaClip).audio.volume, volume);
+});
+
+test("fixed gain keeps the public validation boundary and refuses automation, locked tracks and invalid values", () => {
+  const seq = sequence(), a = media("a"); seq.clips = [a]; const doc = document(seq);
+  for (const volume of [-.01, 4.01, NaN, Infinity]) assert.throws(() => planClipAudioGain(doc, "main", "a", volume), /0%.*400%/);
+  a.audio.volume = { keyframes: [{ time: 0, value: 1, easing: "linear" }, { time: 1000, value: .5, easing: "linear" }] };
+  assert.throws(() => planClipAudioGain(doc, "main", "a", 1), /自动化/);
+  a.audio.volume = 1; seq.tracks[0]!.locked = true;
+  assert.throws(() => planClipAudioGain(doc, "main", "a", 1), /锁定/);
+  seq.tracks[0]!.locked = false; seq.clips[0]!.duration = -1;
+  assert.throws(() => planClipAudioGain(doc, "main", "a", 2));
+  let calls = 0; const getter = { ...doc, get sequences() { calls++; return []; } };
+  assert.throws(() => planClipAudioGain(getter, "main", "a", 2)); assert.equal(calls, 0);
+});
+
+
+test("gain handles never flatten a volume curve automatically baked by a fade trim", () => {
+  const seq = sequence(), a = media("a"); a.audio.fadeIn = 500; seq.clips = [a]; const doc = document(seq);
+  const trimmed = applyEditorOperations(doc, trimClip(doc, "main", "a", 100, 1000), doc.revision);
+  assert.equal(typeof (trimmed.sequences[0]!.clips[0] as MediaClip).audio.volume, "object");
+  assert.throws(() => planClipAudioGain(trimmed, "main", "a", .5), /自动化/);
 });

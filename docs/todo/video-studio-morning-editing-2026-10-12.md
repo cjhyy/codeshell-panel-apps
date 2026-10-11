@@ -465,7 +465,7 @@ goal仍active至11:00，automation11继续保留。
 - 独立实际复核发现并修复两项P2：初次fresh read同步切序列后，旧warning不得写到
   后继序列；异步finish完成时单次read故障必须释放自己的owner/fieldset并报告，
   不留下未处理拒绝或清掉新owner。固定97dd源的独立10/10通过，最终curve仅4行
-  输入采集增量另做源审，未回退这些边界。
+  输入采集增量独立源审通过，未回退这些边界。
 - main保存状态通知先检查完整identity签名，未变时不再复制工程；revision更新只读
   一次并把该detached document用于数量及导出按钮。默认helper调用仍fresh read。
   62项main完整UI及typecheck通过，另2项durable持有阶段/同步read重入实际回归通过。
@@ -483,5 +483,41 @@ goal仍active至11:00，automation11继续保留。
   日志`/tmp/video-studio-morning-twelfth-{affected-ui,typecheck,build,build-check,validate}.log`。
   此批未改领域/渲染/原生工具，离线与媒体仍以前一批成功结果为基线；完整浏览器与
   推送CI随后继续检查，不能提前宣称通过。播放follow及Timing边界裁剪另树后续处理。
+
+继续优化至11:00；goal与automation11保持active，未发布、未安装。
+
+
+## 第十二批后续完整验收与第十三批整合
+
+- 固定c20b847第十二批本地完整浏览器1090/1090通过，日志
+  `/tmp/video-studio-morning-twelfth-full-ui.log`；本批push与PR两套CI均已成功，
+  PR38176269720与push38176265917对应同一c20b847源。
+- 第十三批源码整合7a9be71播放跟随、59e7990 Timing裁剪边界保护、99c3d57固定片段
+  音量手柄。b175等依赖未重复挑选；测试append冲突逐项核对并保留两边新增用例。
+- 播放跟随只改时间轴视图：播放头出界时翻页到当前页四分之一位置，页内帧不重读工程
+  或重建时间轴；手动横滚暂停本轮，显式恢复或暂停重播会重新跟随。选区、工程和历史
+  保持，暂停seek不移动视图；菜单、gesture及未完成输入期间不翻页，toolbar控制在
+  280/390px原生横滚后仍可见可点。独立发现并修复旧scroll事件跨episode再次暂停的新
+  轮次；替换scroller前同步真实offset并更新虚拟窗口。代理最终471/471、typecheck、
+  8目标及独立6项通过；两个队列反例旧源0/2，新源2/2。相关日志
+  `/tmp/video-studio-playback-follow-{final-ui,final-typecheck,queued-baseline,final-targeted}.log`。
+- Timing左右保留统一要求每个所选片段strict inside，边界/外部禁用及显示原因，提交
+  时fresh重新核对捕获的clock及选择。原先在片段起点“保留左侧”会删掉整段的实证
+  P2已关闭；通用range planner的remove语义保持。clock-only刷新保留其他Timing草稿
+  DOM。代理329/329、14实际回归、typecheck及独立49行源审通过。
+- 固定音量手柄仅写当前clip既有audio.volume，0–400%，垂直1px=1%，键盘1%/Shift10%
+  及Home/End，44px握柄保持在长片段可见左侧；不足68px提示放大。自动化音量只读，
+  不覆盖用户曲线或裁剪生成的曲线。保留pan/fades/pitch/ducking/time map/group。
+  拖动只预览音量线，保存后再试听，不宣称实时试听。选择固定音量时用DOM线替换
+  canvas旧线；取消选择/自动化后恢复canvas线，waveform source缓存保持。
+  代理timeline/workspace479/479、media47/47、领域11/11、真实PCM20/20、最终18目标
+  与typecheck通过；首次旧媒体新增轮询predicate曾失败，修测试后全47通过，生产源
+  未改。独立源审通过。50%音量每个真实浮点sample等于原样本*0.5。
+- 根最终五文件affected UI684/684、完整真实媒体229/229通过；offline1129项：1126通过、
+  3可选跳过，native voice5通过1可选跳过，workspace docs5/5。typecheck/build/确定性
+  build:check/validate39通过，source与安装包同步。日志
+  `/tmp/video-studio-morning-thirteenth-{affected-ui,media,offline,typecheck,build,build-check,validate}.log`。
+  第十三批完整浏览器现已启动，源冻结到完成前不加入新feature；后续方向呈现、关键帧
+  定位及属性到◇/◆衔接在独立树开发。
 
 继续优化至11:00；goal与automation11保持active，未发布、未安装。

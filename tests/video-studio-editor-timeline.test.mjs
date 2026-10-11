@@ -251,6 +251,8 @@ async function fixture(t, options = {}) {
         drops: structuredClone(drops),
         errors: [...errors],
       }),
+      updateClip: (clipId, patch) => { history.apply([{ type: "clip.update", sequenceId: activeSequenceId, clipId, patch }], history.revision); timeline.render(); },
+      select: (ids) => { selection = [...ids]; timeline.render(); },
       externalChange: () => {
         history.apply([{ type: "project.rename", name: "外部更新" }], history.revision);
       },
@@ -320,7 +322,7 @@ async function captureOwnedPreviews(page) {
       ownedPlanCalls++;
       try { return plan.apply(this, args); }
       finally {
-        const drag = args[2], preview = drag.movePreview ?? drag.trimPreview;
+        const drag = args[2], preview = drag.movePreview ?? drag.trimPreview ?? drag.fadePreview;
         if (preview && !ownedPreviews.includes(preview)) ownedPreviews.push(preview);
       }
     };
@@ -4090,4 +4092,179 @@ test("audio fade handles support native touch and cancellation leaves no partial
   assert.deepEqual((await state(page)).document, afterUndo);
   assert.deepEqual((await state(page)).errors, []);
   assert.equal((await page.evaluate(() => fixture.gestureState())).drag, false);
+});
+
+
+test("fixed gain grip previews without modifying PCM state, commits one target and undoes once", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: [
+    { id: "a", trackId: "v1", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "b", trackId: "audio", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "c", trackId: "v1", start: 2, duration: 2 },
+  ] });
+  await captureOwnedPreviews(page);
+  await clip(page, "a").click(); await settle(page); const before = (await state(page)).document;
+  const handle = clip(page, "a").locator('[data-et-gain]'), p = await center(handle);
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 0);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 50, { steps: 4 }); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.equal(await page.evaluate(() => ownedPreviews.length), 1);
+  assert.equal(await handle.getAttribute("aria-valuenow"), "150"); assert.match(await handle.getAttribute("aria-valuetext"), /3.5 dB/);
+  assert.match(await page.locator(".et-notice").textContent(), /仅预览.*松开保存/);
+  const line = clip(page, "a").locator('[data-et-gain-line]'); assert.match(await line.getAttribute("style"), /37.5%/);
+  await page.mouse.up(); await settle(page); const after = await state(page), expected = structuredClone(before);
+  expected.revision++; expected.sequences[0].clips[0].audio.volume = 1.5;
+  assert.deepEqual(after.document, expected); assert.equal(after.applied.length, 1); assert.deepEqual(after.errors, []);
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  assert.equal(await page.evaluate(() => { try { ownedPreviews[0].read(); return false; } catch (error) { return /预览已结束/.test(error.message); } }), true);
+  await undo(page, before);
+});
+
+test("fixed gain release uses final coordinates and Escape, horizontal/noop drags do not create undo", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page); const before = (await state(page)).document;
+  let p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 20);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.select(["a"])); p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 40, p.y); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).applied.length, 0);
+  p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 10);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p.x, y: p.y - 33, button: "left", buttons: 0 });
+  await cdp.detach(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.33);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("fixed gain keyboard supports fine steps, 0/400 limits, focus and no-op limits", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const handle = clip(page, "a").locator('[data-et-gain]'); await handle.focus();
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.keyboard.press("Shift+ArrowDown"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, .91);
+  await page.keyboard.press("Home"); await settle(page); assert.match(await handle.getAttribute("aria-valuetext"), /0%.*−∞/);
+  await page.keyboard.press("Home"); await page.keyboard.press("ArrowDown"); await settle(page);
+  assert.equal((await state(page)).applied.length, 3);
+  await page.keyboard.press("End"); await settle(page); assert.match(await handle.getAttribute("aria-valuetext"), /400%.*12.0 dB/);
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).applied.length, 4); assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+});
+
+test("fixed gain is read only for automation, locked tracks refuse, mute stays editable with a warning", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { muted: true }));
+  let handle = clip(page, "a").locator('[data-et-gain]'); assert.equal(await handle.getAttribute("aria-disabled"), "false");
+  await handle.focus(); assert.match(await page.locator(".et-notice").textContent(), /静音.*无声/);
+  await page.keyboard.press("ArrowUp"); await settle(page); assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { locked: true }));
+  assert.equal(await handle.getAttribute("aria-disabled"), "true"); assert.match(await handle.getAttribute("title"), /锁定/);
+  const before = (await state(page)).document, p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 30); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => { const doc = fixture.read().document, audio = doc.sequences[0].clips[0].audio;
+    fixture.externalTrackEdit("v1", { locked: false });
+    fixture.updateClip("a", { audio: { ...audio, volume: { keyframes: [{ time: 0, value: 1, easing: "linear" }, { time: 480000, value: .2, easing: "linear" }] } } }); });
+  assert.equal(await handle.count(), 0); assert.match(await clip(page, "a").locator(".et-gain-status").textContent(), /自动化.*属性/);
+  assert.equal(await clip(page, "a").locator('[data-et-gain-line]').count(), 0);
+});
+
+test("fixed gain old owners and generation changes cannot edit a successor", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const stale = await clip(page, "a").locator('[data-et-gain]').elementHandle(), before = (await state(page)).document;
+  await page.evaluate(() => fixture.replaceGeneration());
+  await stale.evaluate((node) => document.querySelector('[data-et-clip="a"]').append(node));
+  await stale.focus(); await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.render());
+  const p = await center(clip(page, "a").locator('[data-et-gain]'));
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 40);
+  await page.evaluate(() => fixture.replaceGeneration()); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.equal((await state(page)).applied.length, 0);
+});
+
+test("fixed gain remains reachable in the visible middle of a long clip and leaves trim/fade/move targets", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 120 }] });
+  await page.evaluate(() => fixture.select(["a"]));
+  await page.locator(".et-scroll").evaluate((node) => node.scrollLeft = 3000); await settle(page);
+  const handle = clip(page, "a").locator('[data-et-gain]'), h = await handle.boundingBox(), view = await page.locator(".et-scroll").boundingBox();
+  assert.ok(h.x >= view.x + 7 && h.x + h.width <= view.x + view.width); assert.equal(h.width, 44);
+  const p = await center(handle); await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 20); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.2);
+  await page.evaluate(() => fixture.select([])); assert.equal(await handle.count(), 0);
+});
+
+test("fixed gain supports native touch and cancellation without changing the document", async (t) => {
+  const page = await fixture(t, { touch: true }); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, input = await touchInput(page, "#timeline");
+  let p = { ...await center(clip(page, "a").locator('[data-et-gain]')), id: 1 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, y: p.y - 25 }]); await input.send("touchEnd");
+  await settle(page); await input.assertNative(); assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.25);
+  const after = (await state(page)).document;
+  p = { ...await center(clip(page, "a").locator('[data-et-gain]')), id: 2 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, y: p.y - 25 }]); await input.send("touchCancel"); await settle(page);
+  assert.deepEqual((await state(page)).document, after); assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+});
+
+test("fixed gain pointer clamps at 0/400 and a return to the original value adds no undo", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]');
+  for (const [dy, expected, count] of [[400, 0, 1], [400, 0, 1], [-500, 4, 2], [-500, 4, 2]]) {
+    const p = await center(handle); await page.mouse.move(p.x, p.y); await page.mouse.down();
+    await page.mouse.move(p.x, p.y + dy); await page.mouse.up(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, expected);
+    assert.equal((await state(page)).applied.length, count);
+  }
+  const before = (await state(page)).document, p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y + 30); await settle(page);
+  await page.mouse.move(p.x, p.y); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.equal((await state(page)).applied.length, 2);
+});
+
+test("fixed gain leaves a short clip's move and trim areas usable and appears after zooming", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 1, duration: 1 }] });
+  await clip(page, "a").click(); await settle(page);
+  assert.equal(await clip(page, "a").locator('[data-et-gain]').count(), 0);
+  assert.match(await clip(page, "a").locator('.et-gain-status').textContent(), /放大可调/);
+  const p = await center(clip(page, "a")); await page.mouse.move(p.x, p.y); await page.mouse.down();
+  await page.mouse.move(p.x + 64, p.y); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].start, 480000);
+  await page.locator('[data-et-action="zoom-in"]').click(); await settle(page);
+  assert.equal(await clip(page, "a").locator('[data-et-gain]').count(), 1);
+  const edge = await center(clip(page, "a").locator('[data-et-edge="right"]'));
+  await page.mouse.move(edge.x, edge.y); await page.mouse.down(); await page.mouse.move(edge.x - 20, edge.y); await page.mouse.up(); await settle(page);
+  assert.ok((await state(page)).document.sequences[0].clips[0].duration < 240000, JSON.stringify(await state(page)));
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1);
+});
+
+test("fixed gain waits for a save, permits correction after rejection, and checks fresh read ownership", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]'), before = (await state(page)).document;
+  await handle.focus(); await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.press("ArrowUp"); await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal(await handle.getAttribute("aria-disabled"), "true"); assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.finishEdit(true)); await settle(page);
+  assert.equal(await handle.getAttribute("aria-disabled"), "false"); assert.deepEqual((await state(page)).errors, ["Error: 保存失败"]);
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  await page.evaluate(() => {
+    const original = editor.EditorTimeline.prototype.current; let armed = true;
+    editor.EditorTimeline.prototype.current = function (...args) { const result = original.apply(this, args);
+      if (armed) { armed = false; fixture.externalChange(); } return result; };
+  });
+  await page.keyboard.press("ArrowUp"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.01);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("fixed gain uses the fully validated public planner without a session identity context", async (t) => {
+  const page = await fixture(t, { noIdentity: true }); await page.evaluate(() => fixture.select(["a"]));
+  const handle = clip(page, "a").locator('[data-et-gain]'), p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x, p.y - 10); await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.1);
+  await handle.focus(); await page.keyboard.press("ArrowDown"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.09);
+  assert.deepEqual((await state(page)).errors, []);
 });

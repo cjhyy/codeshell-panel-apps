@@ -33,6 +33,8 @@ export interface TimelineMediaStrip {
   localEnd: Tick;
   width: number;
   height: number;
+  /** A selected fixed-gain control draws its own preview line above the source waveform. */
+  hideVolumeLine?: boolean;
 }
 export const TIMELINE_MEDIA_LIMITS = Object.freeze({
   strips: 96,
@@ -619,6 +621,7 @@ export class EditorTimelineMedia {
       ctx.stroke();
       strip.canvas.title ||= `源音频包络（混音前，分辨率 ${Math.max(...[...waveforms.values()].map((waveform) => waveform.samplesPerBin / waveform.sampleRate)).toFixed(3)} 秒）；音量线 0–400%，关键帧可在属性面板编辑`;
     }
+    if (strip.hideVolumeLine) return;
     const y = (value: number) => height - 2 - (Math.max(0, Math.min(4, value)) / 4) * (height - 4);
     ctx.strokeStyle = "#e5ed97";
     ctx.lineWidth = 1.5;

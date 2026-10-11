@@ -2165,3 +2165,39 @@ test("owned render handoff preserves single-RAF behavior through reentry, refres
     document.querySelector("#mount").style.height = "";
   });
 });
+
+
+test("selected fixed gain owns exactly one visible line while selection, automation and scrolling reuse real waveforms", async (t) => {
+  const priorWidth = await page.evaluate(() => { const node = document.querySelector("#mount"), prior = node.style.width; node.style.width = "900px"; return prior; });
+  t.after(() => page.evaluate((prior) => document.querySelector("#mount").style.width = prior, priorWidth));
+  await page.evaluate(() => { const future = structuredClone(doc.sequences[0].clips[0]); future.id = "future"; future.start = 120 * 240000; doc.sequences[0].clips.push(future); return mountWorkspace(); });
+  const ready = async () => page.waitForFunction(() => document.querySelector('[data-et-clip="a"] canvas')?.dataset.etMediaState === "ready");
+  const yellow = () => page.evaluate(() => {
+    const canvas = document.querySelector('[data-et-clip="a"] canvas'), pixels = canvas.getContext("2d").getImageData(40, 0, 1, canvas.height).data;
+    let count = 0; for (let y = 0; y < canvas.height; y++) if (pixels[y * 4] > 150 && pixels[y * 4 + 1] > 150 && pixels[y * 4 + 2] > 80 && pixels[y * 4 + 2] < 190) count++;
+    return count;
+  });
+  await page.evaluate(() => { workspace.timeline.context.select([]); workspace.timeline.render(); });
+  await ready(); assert.ok(await yellow() > 0);
+  await page.locator('[data-et-clip="a"]').click(); await ready();
+  assert.equal(await yellow(), 0); assert.equal(await page.locator('[data-et-gain-line]').count(), 1);
+  assert.ok(await page.evaluate(() => {
+    const canvas = document.querySelector('[data-et-clip="a"] canvas'), pixels = canvas.getContext("2d").getImageData(Math.floor(canvas.width * .75), 0, 1, canvas.height).data;
+    return Array.from({ length: canvas.height }, (_, y) => y).some((y) => pixels[y * 4] < 190 && pixels[y * 4 + 1] > 100 && pixels[y * 4 + 2] > 120);
+  }));
+  const waveRequests = await page.evaluate(() => requests.filter((request) => request.kind === "audio").length);
+  await page.evaluate(() => workspace.timeline.render()); await ready(); assert.equal(await yellow(), 0);
+  await page.locator(".et-scroll").evaluate((node) => node.scrollLeft = 20);
+  await page.waitForFunction(() => document.querySelector(".et-scroll").scrollLeft === 20 && parseFloat(document.querySelector('[data-et-clip="a"] canvas')?.style.left ?? "0") > 10);
+  await ready(); assert.equal(await yellow(), 0);
+  await page.locator('[data-et-gain]').focus(); await page.keyboard.press("Escape"); await ready();
+  assert.equal(await page.locator('[data-et-gain-line]').count(), 0); assert.ok(await yellow() > 0);
+  await page.locator('[data-et-clip="a"]').click(); await ready();
+  assert.equal(await page.evaluate(() => requests.filter((request) => request.kind === "audio").length), waveRequests);
+  await page.evaluate(async () => { const clip = session.read().sequences[0].clips[0];
+    await session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { audio: { ...clip.audio,
+      volume: { keyframes: [{ time: 0, value: .5, easing: "linear" }, { time: 480000, value: 2, easing: "linear" }] } } } }], session.getState().identity, "音量自动化"); });
+  await ready(); assert.equal(await page.locator('[data-et-gain]').count(), 0);
+  assert.match(await page.locator('.et-gain-status').textContent(), /自动化/); assert.ok(await yellow() > 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});

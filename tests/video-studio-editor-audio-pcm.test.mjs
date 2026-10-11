@@ -67,6 +67,8 @@ test(
     export {renderEditorAudio} from "./apps/video-studio/native/media/editor-audio-renderer.ts";
     export {createTrack,defaultAudioMix,defaultTransform,defaultColorAdjustment} from "./apps/video-studio/src/editor/defaults.ts";
     export {constantTimeMap,freezeTimeMap} from "./apps/video-studio/src/editor/time.ts";
+    export {planClipAudioGain} from "./apps/video-studio/src/editor/audio-gain-edits.ts";
+    export {applyEditorOperations} from "./apps/video-studio/src/editor/operations.ts";
     export {audioMixWarning} from "./apps/video-studio/src/editor/audio-mix-report.ts";
   `,
       },
@@ -493,6 +495,21 @@ test(
         assert.ok(tiny.pcm.every(Number.isFinite));
       },
     );
+
+    await t.test("a fixed clip gain edit scales real PCM and preserves pan, fades, pitch and ducking", async () => {
+      const seq = sequence(), media = clip();
+      media.audio = { ...media.audio, pan: -.4, fadeIn: T / 4, fadeOut: T / 2, pitchSemitones: 3,
+        preservePitch: false, ducking: { sidechainTrackIds: ["sound"], thresholdDb: -24,
+          attenuationDb: 8, attack: T / 100, release: T / 10 } };
+      seq.clips = [media]; const doc = document(seq), original = await render(seq);
+      const next = api.applyEditorOperations(doc, api.planClipAudioGain(doc, "main", media.id, .5), doc.revision),
+        edited = await render(next.sequences[0]);
+      assert.deepEqual(next.sequences[0].clips[0].audio, { ...media.audio, volume: .5 });
+      assert.equal(edited.pcm.length, original.pcm.length);
+      for (let sample = 0; sample < original.pcm.length; sample++) near(edited.pcm[sample], original.pcm[sample] * .5, 1e-6);
+      near(edited.result.peak, original.result.peak * .5, 1e-6);
+      assert.ok(rms(edited.pcm, .4, 1.4) > rms(edited.pcm, .4, 1.4, 1));
+    });
 
     await t.test(
       "float WAV preserves chosen gain and reports overload instead of normalizing it",

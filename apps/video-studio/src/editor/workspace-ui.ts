@@ -310,11 +310,14 @@ export class EditorWorkspace {
       onFrame: (time) => {
         if (time !== this.playhead) this.exactPlayhead = false;
         this.playhead = time;
-        this.updateTime();
         this.timeline.updatePlayhead();
+        this.updateTime();
         this.renderFrameViews();
       },
-      onPlaybackChange: (playing) => this.updatePlayButton(playing),
+      onPlaybackChange: (playing) => {
+        this.timeline.setPlaybackActive(playing);
+        this.updatePlayButton(playing);
+      },
       onBuffering: (buffering) => {
         if (this.disposed || this.preparing) return;
         const output = this.get("[data-ew-preview-error]");

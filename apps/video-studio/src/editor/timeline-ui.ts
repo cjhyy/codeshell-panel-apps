@@ -1,5 +1,6 @@
 import { randomId } from "../ids.js";
 import { planClipAudioFade, type AudioFadeSide } from "./audio-fade-edits";
+import { planClipAudioGain } from "./audio-gain-edits";
 import {
   EditorTimelineMedia,
   TIMELINE_MEDIA_LIMITS,
@@ -67,7 +68,7 @@ export interface EditorTimelineContext {
   onError(error: unknown): void;
 }
 type Drag = {
-  kind: "move" | "left" | "right" | "seek" | "box" | "fadeIn" | "fadeOut";
+  kind: "move" | "left" | "right" | "seek" | "box" | "fadeIn" | "fadeOut" | "gain";
   pointerId: number;
   x: number;
   y: number;
@@ -85,6 +86,7 @@ type Drag = {
   ids: string[];
   targetTrack?: string;
   delta: Tick;
+  gain?: number;
   time: Tick;
   moved: boolean;
   additive: boolean;
@@ -189,6 +191,8 @@ type FadeOwner = {
   clipId: string;
   side: AudioFadeSide;
 };
+const gainPercent = (volume: number) => Number((volume * 100).toFixed(2));
+const gainText = (volume: number) => `${gainPercent(volume)}% · ${volume === 0 ? "−∞" : (20 * Math.log10(volume)).toFixed(1)} dB`;
 const gesturePointer = (event: GesturePointer): GesturePointer => ({
   pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, altKey: event.altKey,
 });
@@ -243,6 +247,9 @@ export class EditorTimeline {
   private renderedWidth = 0;
   private scale = 64;
   private snapping = true;
+  private followPlayback = true;
+  private playbackActive = false;
+  private followSuspended = false;
   /** One persistent live region; rendering keeps the node so text changes are announced. */
   private readonly notice = globalThis.document.createElement("p");
   private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
@@ -261,6 +268,8 @@ export class EditorTimeline {
   private canvasFieldFinish?: object;
   private pendingControl?: PendingControl;
   private suppressedControlClick?: number;
+  private readonly gainOwners = new WeakMap<HTMLElement, Omit<FadeOwner, "side">>();
+  private currentGainControls = new WeakSet<HTMLElement>();
   private readonly fadeOwners = new WeakMap<HTMLElement, FadeOwner>();
   private currentFadeControls = new WeakSet<HTMLElement>();
   private fadePending = false;
@@ -299,6 +308,7 @@ export class EditorTimeline {
     container.classList.add("editor-timeline");
     container.tabIndex = 0;
     container.setAttribute("aria-label", "剪辑时间轴");
+    container.addEventListener("focusin", this.gainFocus);
     container.addEventListener("click", this.click);
     container.addEventListener("change", this.change);
     container.addEventListener("change", this.replacementChange, true);
@@ -480,6 +490,7 @@ export class EditorTimeline {
         ? focused.closest<HTMLElement>("[data-et-clip]")?.dataset.etClip
         : undefined;
     const focusedFade = focused instanceof HTMLElement ? focused.dataset.etFade : undefined;
+    const focusedGain = focused instanceof HTMLElement && focused.hasAttribute("data-et-gain");
     const renderIdentityValue = this.context.identity?.(), renderIdentity = renderIdentityValue ? { ...renderIdentityValue } : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
     // Only the explicit session-owned hook permits holding this detached read until RAF.
@@ -593,6 +604,7 @@ export class EditorTimeline {
     const addTrack = (action: string, label: string, icon: string) =>
       `<button type="button" data-et-action="${action}" class="et-tool" aria-label="${label}" title="${label}">${timelineIcon("plus", 10)}${timelineIcon(icon, 13)}<span class="et-add-label">${label}</span></button>`;
     const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
+        <button type="button" class="et-tool et-follow" data-et-follow aria-label="播放跟随" aria-pressed="${this.followPlayback}"><span>播放跟随</span></button>
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", !selected.size, "S", false, "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size || this.clipboardPending, "⌘/Ctrl C", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("cut", "剪切", "cut", !selected.size || this.clipboardPending, "⌘/Ctrl X", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("paste", "粘贴", "paste", !this.clipboard || this.clipboardPending, "⌘/Ctrl V · 粘贴到播放头；跨序列按第 N 条同类轨道对应", false, this.clipboardPending ? "正在保存剪贴板操作" : "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size || this.clipboardPending, "⌘/Ctrl D · 为副本新建平行轨", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
@@ -655,7 +667,7 @@ export class EditorTimeline {
               )
               .map(
                 (clip) =>
-                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}${selected.has(clip.id) ? this.fadeMarkup(clip, track, audibleAssets) : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
+                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}${selected.has(clip.id) ? this.fadeMarkup(clip, track, audibleAssets) + this.gainMarkup(clip, track, audibleAssets, left, right) : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -721,6 +733,12 @@ export class EditorTimeline {
       sequenceId: sequence.id, clipId: control.closest<HTMLElement>("[data-et-clip]")!.dataset.etClip!,
       side: control.dataset.etFade as AudioFadeSide,
     });
+    const gains = this.container.querySelectorAll<HTMLElement>("[data-et-gain]");
+    this.currentGainControls = new WeakSet(gains);
+    for (const control of gains) this.gainOwners.set(control, {
+      documentId: project.id, revision: project.revision, generation: renderIdentity?.generation,
+      sequenceId: sequence.id, clipId: control.closest<HTMLElement>("[data-et-clip]")!.dataset.etClip!,
+    });
     this.container.querySelector(".et-toolbar")!.after(this.notice);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;
@@ -733,6 +751,7 @@ export class EditorTimeline {
         // A scroll event queued for a scroller this render replaced still fires after it is
         // detached, where scrollLeft reads 0. Rendering for it would queue the next stale event.
         if (scroll !== this.viewport() || scroll.scrollLeft === this.scrollPosition) return;
+        if (this.playbackActive) this.suspendPlaybackFollow();
         this.scrollPosition = scroll.scrollLeft;
         if (!this.drag) this.render({ preserveToolbar: true });
       },
@@ -743,10 +762,11 @@ export class EditorTimeline {
       .addEventListener("scroll", this.syncVerticalScroll, { passive: true });
     this.syncVerticalPosition(this.container.querySelector<HTMLElement>(".et-body")!);
     this.scheduleMedia(mediaScope);
+    this.updateFollowControl();
     if (this.drag?.kind === "box") this.createBox();
     if (restoreFocus && !(focused instanceof HTMLElement && focused.isConnected)) {
       const next = focusedClip
-        ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(focusedClip)}"]${focusedFade ? ` [data-et-fade="${CSS.escape(focusedFade)}"]` : ""}`)
+        ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(focusedClip)}"]${focusedFade ? ` [data-et-fade="${CSS.escape(focusedFade)}"]` : focusedGain ? " [data-et-gain]" : ""}`)
         : undefined;
       (next ?? this.container).focus({ preventScroll: true });
     }
@@ -829,6 +849,7 @@ export class EditorTimeline {
           localEnd,
           width: right - left,
           height: stripHeight,
+          hideVolumeLine: !!node.querySelector("[data-et-gain-line]"),
         });
       }
       // Measure every clip before inserting strips so each next bounds read does not
@@ -866,8 +887,56 @@ export class EditorTimeline {
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   updatePlayhead(): void {
+    const x = ticksToSeconds(this.context.time()) * this.scale;
+    if (
+      this.playbackActive && this.followPlayback && !this.followSuspended &&
+      !this.drag && !this.menu && !this.confirmTrack && !this.pendingControl &&
+      !this.pendingTrackGesture && !this.canvasFieldFinish && !this.trackControlPending &&
+      !this.fadePending && !this.clipboardPending && !editableTarget(globalThis.document.activeElement)
+    ) {
+      // Read the viewport before writing the moving line. A page turn puts the clock
+      // well inside the next page, so ordinary playback never re-renders each frame.
+      const viewport = this.viewport(), left = viewport.scrollLeft, width = viewport.clientWidth;
+      if (left !== this.scrollPosition) this.suspendPlaybackFollow();
+      else if (width > 0 && (x < left || x >= left + width - Math.min(24, width / 8))) {
+        this.render({ preserveToolbar: true, scrollLeft: Math.max(0, x - width / 4) });
+        return;
+      }
+    }
     const line = this.container.querySelector<HTMLElement>(".et-playhead");
-    if (line) line.style.left = `${ticksToSeconds(this.context.time()) * this.scale}px`;
+    if (line) line.style.left = `${x}px`;
+  }
+  /** Playback following changes only the view; seeking and pausing keep its position. */
+  setPlaybackActive(playing: boolean): void {
+    if (this.destroyed) return;
+    if (playing && !this.playbackActive) {
+      // Finish a scroll queued by the previous playback episode before resuming.
+      // Rendering also updates the virtual window and detaches its stale scroller.
+      const viewport = this.viewport();
+      if (viewport.scrollLeft !== this.scrollPosition)
+        this.render({ preserveToolbar: true, scrollLeft: viewport.scrollLeft });
+      this.followSuspended = false;
+    }
+    this.playbackActive = playing;
+    this.updateFollowControl();
+  }
+  private suspendPlaybackFollow(): void {
+    if (!this.followPlayback || this.followSuspended) return;
+    this.followSuspended = true;
+    this.updateFollowControl();
+  }
+  private updateFollowControl(): void {
+    const control = this.container.querySelector<HTMLButtonElement>("[data-et-follow]");
+    if (!control) return;
+    const suspended = this.followPlayback && this.followSuspended;
+    control.setAttribute("aria-pressed", String(this.followPlayback));
+    control.setAttribute("aria-label", suspended ? "恢复播放跟随" : "播放跟随");
+    control.querySelector("span")!.textContent = suspended ? "恢复跟随" : "播放跟随";
+    control.title = suspended
+      ? "手动横滚已暂停本轮跟随；点击恢复，或暂停后再次播放"
+      : this.followPlayback
+        ? "播放头越界时自动翻页；手动横滚可暂停本轮跟随"
+        : "开启播放跟随；只影响时间轴视图";
   }
   /** Keyboard navigation reveals the current result without changing the document or selection. */
   private async seekVisible(time: Tick, exact = false): Promise<void> {
@@ -905,6 +974,13 @@ export class EditorTimeline {
     }
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target) return;
+    if (target.closest("[data-et-follow]")) {
+      this.followPlayback = !this.followPlayback || this.followSuspended;
+      this.followSuspended = false;
+      this.updateFollowControl();
+      this.updatePlayhead();
+      return;
+    }
     const control = target.closest<HTMLElement>("[data-et-action]");
     const action = control?.dataset.etAction;
     if (action) {
@@ -1359,6 +1435,13 @@ export class EditorTimeline {
       event.preventDefault();
       event.stopPropagation();
       if (event.key === "Escape") this.cancelControl();
+      return;
+    }
+    const gain = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-et-gain]") : undefined;
+    if (gain && !event.ctrlKey && !event.metaKey && !event.altKey &&
+      ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      if (!this.drag && !this.pendingTrackGesture && !this.fadePending) this.run(() => this.keyGain(gain, event));
       return;
     }
     const fade =
@@ -1859,6 +1942,11 @@ export class EditorTimeline {
       event.preventDefault();
       return;
     }
+    if (event.button === 0 && event.target instanceof Element && event.target.closest("[data-et-follow]")) {
+      // A view preference must not blur or submit an unrelated property draft.
+      event.preventDefault();
+      return;
+    }
     if (event.button === 0 && this.context.beforeGesture && event.target instanceof Element) {
       const button = event.target.closest<HTMLButtonElement>("button"),
         intent = button && this.controlIntent(button);
@@ -1873,13 +1961,15 @@ export class EditorTimeline {
     const node = target.closest<HTMLElement>("[data-et-clip]"), intent: GestureIntent = {
       pointer: gesturePointer(event),
       clipId: node?.dataset.etClip,
-      kind: node ? (target.closest<HTMLElement>("[data-et-fade]")?.dataset.etFade as AudioFadeSide | undefined) ?? (target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as "left" | "right" | undefined) ?? "move"
+      kind: node ? target.closest("[data-et-gain]") ? "gain" : (target.closest<HTMLElement>("[data-et-fade]")?.dataset.etFade as AudioFadeSide | undefined) ?? (target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as "left" | "right" | undefined) ?? "move"
         : target.closest(".et-ruler,.et-marker-lane,.et-playhead") ? "seek" : "box",
       additive: event.shiftKey || event.ctrlKey || event.metaKey,
       scroll: this.viewport().scrollLeft,
       verticalScroll: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
     };
     event.preventDefault();
+    const gain = target.closest<HTMLElement>("[data-et-gain]");
+    if (gain && (!this.gainCurrent(gain) || gain.getAttribute("aria-disabled") === "true")) return;
     const fade = target.closest<HTMLElement>("[data-et-fade]");
     if (fade && (!this.fadeCurrent(fade) || fade.getAttribute("aria-disabled") === "true")) return;
     const input = globalThis.document.activeElement;
@@ -2210,6 +2300,9 @@ export class EditorTimeline {
     if (intent.clipId && (!clip || (intent.clipKind && (clip.kind !== intent.clipKind || clip.trackId !== intent.trackId)) ||
       !this.container.querySelector(`[data-et-clip="${CSS.escape(intent.clipId)}"]`)))
       throw new Error("片段已变化，请重新选择或拖动");
+    if (kind === "gain" && (!clip || !("audio" in clip) || typeof clip.audio.volume !== "number" ||
+      sequence.tracks.find((track) => track.id === clip.trackId)?.locked))
+      throw new Error("片段音量已变化，请重新选择音量手柄");
     let ids = new Set(selected);
     if (clip) {
       const group = this.expanded(sequence, [clip.id]);
@@ -2260,7 +2353,8 @@ export class EditorTimeline {
       altKey: pointer.altKey,
     };
     this.drag = drag;
-    this.container.focus({ preventScroll: true });
+    const gainControl = kind === "gain" && clip ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clip.id)}"] [data-et-gain]`) : undefined;
+    (gainControl || this.container).focus({ preventScroll: true });
     const identity = this.context.identity?.(), current = identity ? undefined : this.current().document,
       selection = this.context.selection();
     if (this.drag !== drag || this.destroyed || serial !== this.gestureSerial ||
@@ -2278,6 +2372,63 @@ export class EditorTimeline {
         element.classList.toggle("selected", ids.has(element.dataset.etClip!));
         element.setAttribute("aria-selected", String(ids.has(element.dataset.etClip!)));
       }
+  }
+  private gainMarkup(clip: EditorClip, track: EditorTrack, audibleAssets: Set<string>, left: number, right: number): string {
+    if (!("audio" in clip) || (clip.kind === "media" && !audibleAssets.has(clip.assetId))) return "";
+    const start = ticksToSeconds(clip.start) * this.scale, width = ticksToSeconds(clip.duration) * this.scale,
+      visible = Math.min(start + width, right) - Math.max(start, left),
+      position = Math.max(12, Math.min(width - 56, left - start + 12));
+    if (typeof clip.audio.volume !== "number")
+      return `<span class="et-gain-status" style="left:${position}px;max-width:${Math.max(16, visible - 24)}px" title="音量已自动化（含裁剪生成的曲线），请在属性面板编辑关键帧">音量自动化 · 属性编辑</span>`;
+    if (visible < 68) return `<span class="et-gain-status" style="left:${Math.max(8, left - start + 8)}px" title="${gainText(clip.audio.volume)} · 放大时间轴可调整片段音量">音量 · 放大可调</span>`;
+    const volume = this.drag?.kind === "gain" && this.drag.clip?.id === clip.id ? this.drag.gain ?? clip.audio.volume : clip.audio.volume,
+      disabled = track.locked || this.fadePending,
+      hint = `${gainText(volume)}${track.locked ? " · 轨道已锁定" : " · 上下拖动；方向键 1%，Shift 10%，Home/End 0/400%"}${track.muted || track.volume === 0 ? " · 轨道静音，调整后仍无声" : ""} · 仅预览音量线，松开保存后试听`;
+    return `<span class="et-gain-lines"><span data-et-gain-line style="bottom:calc(${volume * 25}% + ${2 - volume}px)"></span></span><span class="et-gain-handle" data-et-gain role="slider" tabindex="${disabled ? -1 : 0}" aria-label="片段音量 ${esc(clipLabel(clip))}" aria-valuemin="0" aria-valuemax="400" aria-valuenow="${gainPercent(volume)}" aria-valuetext="${esc(gainText(volume))}" aria-disabled="${disabled}" title="${esc(hint)}" style="left:${position}px">${gainPercent(volume)}%</span>`;
+  }
+  private gainFocus = (event: FocusEvent): void => {
+    const control = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-et-gain]") : undefined;
+    if (control && this.gainCurrent(control)) this.notice.textContent = control.title;
+  };
+  private gainCurrent(control: HTMLElement): boolean {
+    const owner = this.gainOwners.get(control);
+    if (!owner || !this.currentGainControls.has(control) || !this.container.contains(control)) return false;
+    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document;
+    return !this.destroyed && (identity?.documentId ?? document?.id) === owner.documentId &&
+      (identity?.revision ?? document?.revision) === owner.revision && identity?.generation === owner.generation &&
+      this.context.selection().sequenceId === owner.sequenceId && this.context.selection().clipIds.includes(owner.clipId);
+  }
+  private paintGain(node: HTMLElement, volume: number): void {
+    const line = node.querySelector<HTMLElement>("[data-et-gain-line]"), handle = node.querySelector<HTMLElement>("[data-et-gain]");
+    if (line) line.style.bottom = `calc(${volume * 25}% + ${2 - volume}px)`;
+    if (handle) {
+      handle.textContent = `${gainPercent(volume)}%`;
+      handle.setAttribute("aria-valuenow", String(gainPercent(volume)));
+      handle.setAttribute("aria-valuetext", gainText(volume));
+      handle.title = `${gainText(volume)} · ${handle.title.split(" · ").slice(2).join(" · ")}`;
+    }
+  }
+  private async keyGain(control: HTMLElement, event: KeyboardEvent): Promise<void> {
+    if (!this.gainCurrent(control)) throw new Error("工程已变化，请重新选择音量手柄");
+    if (control.getAttribute("aria-disabled") === "true") return;
+    const owner = this.gainOwners.get(control)!, { document, sequence } = this.current();
+    if (!this.gainCurrent(control) || document.id !== owner.documentId || document.revision !== owner.revision) return;
+    const clip = sequence.clips.find((item) => item.id === owner.clipId);
+    if (!clip || !("audio" in clip) || typeof clip.audio.volume !== "number") return;
+    const step = event.shiftKey ? 10 : 1,
+      percent = event.key === "Home" ? 0 : event.key === "End" ? 400 : Math.max(0, Math.min(400,
+        clip.audio.volume * 100 + (["ArrowUp", "ArrowRight"].includes(event.key) ? step : -step))),
+      operations = planClipAudioGain(document, sequence.id, clip.id, percent / 100);
+    if (!operations.length || !this.gainCurrent(control)) return;
+    this.fadePending = true;
+    for (const handle of this.container.querySelectorAll<HTMLElement>("[data-et-fade],[data-et-gain]"))
+      handle.setAttribute("aria-disabled", "true");
+    try { await this.apply(operations, "调整片段音量"); }
+    catch (error) {
+      const identity = this.context.identity?.(), current = identity ? undefined : this.current().document;
+      if (!this.destroyed && (identity?.documentId ?? current?.id) === owner.documentId && identity?.generation === owner.generation &&
+        this.context.selection().sequenceId === owner.sequenceId) this.context.onError(error);
+    } finally { this.fadePending = false; if (!this.destroyed) this.render(); }
   }
   private fadeMarkup(clip: EditorClip, track: EditorTrack, audibleAssets: Set<string>): string {
     if (!("audio" in clip) || (clip.kind === "media" && !audibleAssets.has(clip.assetId)) ||
@@ -2391,7 +2542,7 @@ export class EditorTimeline {
       body = this.container.querySelector<HTMLElement>(".et-body")!;
     const dx = drag.lastX - drag.x + viewport.scrollLeft - drag.scroll,
       dy = drag.lastY - drag.y + body.scrollTop - drag.verticalScroll;
-    drag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
+    drag.moved ||= drag.kind === "gain" ? Math.abs(drag.lastY - drag.y) >= 1 : Math.abs(dx) + Math.abs(dy) > 3;
     const identity = this.context.identity?.(),
       { document, sequence } = identity
         ? { document: drag.document, sequence: drag.sequence }
@@ -2456,6 +2607,17 @@ export class EditorTimeline {
       return;
     }
     const clip = drag.clip!;
+    if (drag.kind === "gain") {
+      if (!("audio" in clip) || typeof clip.audio.volume !== "number") return;
+      drag.gain = Math.max(0, Math.min(4, clip.audio.volume - Math.round(drag.lastY - drag.y) / 100));
+      if (drag.moved) {
+        if (planNow) this.previewPlan(document, sequence, drag); else this.scheduleDragPlan();
+      }
+      const node = this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clip.id)}"]`);
+      if (node) this.paintGain(node, drag.gain);
+      if (!drag.plan?.reason) this.notice.textContent = `${gainText(drag.gain)} · 仅预览音量线，松开保存后试听`;
+      return;
+    }
     if (drag.kind === "fadeIn" || drag.kind === "fadeOut") {
       if (!("audio" in clip)) return;
       const desired = clip.audio[drag.kind] + Math.round(dx / this.scale * 240000) * (drag.kind === "fadeIn" ? 1 : -1);
@@ -2528,7 +2690,7 @@ export class EditorTimeline {
   }
   /** Preview and release share the exact planners; only changed frame/track results are validated. */
   private previewPlan(document: EditorDocument, sequence: EditorSequence, drag: Drag): void {
-    const key = `${drag.kind}:${drag.delta}:${drag.kind === "move" ? drag.targetTrack : ""}`;
+    const key = `${drag.kind}:${drag.kind === "gain" ? drag.gain : drag.delta}:${drag.kind === "move" ? drag.targetTrack : ""}`;
     if (drag.plan?.key === key) return;
     try {
       drag.plan = { key, operations: this.planDrag(document, sequence, drag) };
@@ -2548,6 +2710,17 @@ export class EditorTimeline {
     drag: Drag,
   ): EditorOperation[] {
     const clip = drag.clip!;
+    if (drag.kind === "gain") {
+      const volume = drag.gain!;
+      if (!this.context.identity) return planClipAudioGain(document, sequence.id, clip.id, volume);
+      if (!("audio" in clip) || typeof clip.audio.volume !== "number") throw new Error("音量已自动化，请在属性面板编辑关键帧");
+      if (clip.audio.volume === volume) return [];
+      const operations: EditorOperation[] = [{ type: "clip.update", sequenceId: sequence.id, clipId: clip.id,
+        patch: { audio: { ...clip.audio, volume } } }];
+      drag.fadePreview ??= prepareEditorOperationPreview(document);
+      drag.fadePreview.preview(operations);
+      return operations;
+    }
     if (drag.kind === "fadeIn" || drag.kind === "fadeOut") {
       if (!this.context.identity) return planClipAudioFade(document, sequence.id, clip.id, drag.kind, drag.delta);
       if (!("audio" in clip)) throw new Error("片段不含声音属性");
@@ -2600,7 +2773,7 @@ export class EditorTimeline {
   /** Keep scrolling bounded by pixels per second, never by callback count or elapsed background time. */
   private scrollVelocity(): { x: number; y: number } {
     const drag = this.drag;
-    if (!drag?.moved || this.destroyed) return { x: 0, y: 0 };
+    if (!drag?.moved || this.destroyed || drag.kind === "gain") return { x: 0, y: 0 };
     const viewport = this.viewport(),
       body = this.container.querySelector<HTMLElement>(".et-body")!;
     const view = viewport.getBoundingClientRect(),
@@ -2739,7 +2912,7 @@ export class EditorTimeline {
         if (drag.kind === "move" && sequence.timelineMode === "magnetic")
           await this.applyMagneticMove(operations!, "移动片段");
         else if (operations?.length) await this.apply(operations, drag.kind === "move" ? "移动片段"
-          : drag.kind === "fadeIn" ? "调整声音淡入" : drag.kind === "fadeOut" ? "调整声音淡出" : "裁剪片段");
+          : drag.kind === "gain" ? "调整片段音量" : drag.kind === "fadeIn" ? "调整声音淡入" : drag.kind === "fadeOut" ? "调整声音淡出" : "裁剪片段");
       }
       this.render();
     });
@@ -2768,6 +2941,7 @@ export class EditorTimeline {
       clip.style.pointerEvents = "";
       const source = clips.find((item) => item.id === clip.dataset.etClip);
       if (source && "audio" in source) {
+        if (typeof source.audio.volume === "number") this.paintGain(clip, source.audio.volume);
         this.paintFade(clip, "fadeIn", source.audio.fadeIn, source.duration);
         this.paintFade(clip, "fadeOut", source.audio.fadeOut, source.duration);
       }
@@ -2812,6 +2986,7 @@ export class EditorTimeline {
     if (this.mediaFrame !== undefined) cancelAnimationFrame(this.mediaFrame);
     this.resizeObserver?.disconnect();
     this.media.dispose();
+    this.container.removeEventListener("focusin", this.gainFocus);
     this.container.removeEventListener("click", this.click);
     this.container.removeEventListener("change", this.change);
     this.container.removeEventListener("input", this.input);

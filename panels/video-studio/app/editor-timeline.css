@@ -105,6 +105,17 @@
   color: var(--et-accent);
   background: #75ddcf0d;
 }
+.et-toolbar .et-follow {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex-shrink: 0;
+  background: #202124;
+}
+.et-toolbar .et-follow[aria-pressed="true"] {
+  color: var(--et-accent);
+  background: #263633;
+}
 .et-snap:hover {
   background: #35363a;
 }
@@ -782,3 +793,11 @@
 .editor-clip-menu button:disabled {
   opacity: 0.45;
 }
+
+/* The fixed-gain grip stays in the visible part of a selected clip, away from edge/fade grips. */
+.et-gain-lines { position:absolute; left:0; right:0; bottom:1px; height:calc(100% - 2px); max-height:32px; pointer-events:none; z-index:2; }
+.et-gain-lines > span { position:absolute; left:0; right:0; height:1.5px; background:#e5ed97; }
+.et-gain-handle { position:absolute; bottom:0; width:44px; height:16px; box-sizing:border-box; border:1px solid #e5ed97; border-radius:5px; background:#222a22ed; color:#fff5ad; font:10px/14px system-ui; text-align:center; cursor:ns-resize; touch-action:none; z-index:4; }
+.et-gain-handle:focus-visible { outline:2px solid white; outline-offset:1px; }
+.et-gain-handle[aria-disabled="true"] { opacity:.65; cursor:not-allowed; }
+.et-gain-status { position:absolute; bottom:2px; max-width:calc(100% - 16px); color:#fff5ad; font:10px/15px system-ui; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; z-index:2; background:#222a22d9; }

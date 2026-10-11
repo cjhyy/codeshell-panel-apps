@@ -247,6 +247,7 @@ export class EditorTiming {
     if (signature === this.signature) {
       const clock = this.root.querySelector("[data-clock]");
       if (clock) clock.textContent = `播放头 ${seconds(this.context.time())} 秒`;
+      this.refreshTrims(scope);
       return;
     }
     this.signature = signature;
@@ -265,6 +266,23 @@ export class EditorTiming {
     this.drawTiming(scope, this.section("片段时间"));
     this.drawTransitions(scope, this.section("相邻转场"));
     this.drawArrangement(scope, this.section("时间线排列"));
+  }
+  private trimReason(scope: Scope, time: Tick): string {
+    if (scope.clips.some((clip) => scope.sequence.tracks.find((track) => track.id === clip.trackId)?.locked))
+      return "所选轨道已锁定，请先解锁。";
+    if (!scope.clips.length || scope.clips.some((clip) => time <= clip.start || time >= clip.start + clip.duration))
+      return "请把播放头移到每个所选片段内部；片段起点、终点或范围外不能保留左侧或右侧。";
+    return "";
+  }
+  /** Clock-only updates preserve the speed and curve fields, including focused drafts. */
+  private refreshTrims(scope: Scope): void {
+    const reason = this.trimReason(scope, this.context.time()),
+      notice = this.root.querySelector<HTMLElement>("[data-trim-reason]");
+    if (notice) { notice.textContent = reason; notice.hidden = !reason; }
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("[data-trim-action]")) {
+      button.disabled = !!reason;
+      button.title = reason;
+    }
   }
   private drawTiming(scope: Scope, body: HTMLElement): void {
     if (!scope.clips.length) {
@@ -307,9 +325,14 @@ export class EditorTiming {
     });
     const edit = (label: string, action: () => ClipTimingAction) => {
       const choice = action(), capturedOptions = options();
-      return (current: Scope) => this.submit(current, label, (fresh) =>
-        planClipTiming(fresh.document, fresh.sequence.id, fresh.selectedIds, choice, capturedOptions),
-      );
+      return (current: Scope) => this.submit(current, label, (fresh) => {
+        if (choice.kind === "keep-left" || choice.kind === "keep-right") {
+          if (this.context.time() !== choice.time) throw new Error("播放头已变化，请检查当前片段后重试");
+          const reason = this.trimReason(fresh, choice.time);
+          if (reason) throw new Error(reason);
+        }
+        return planClipTiming(fresh.document, fresh.sequence.id, fresh.selectedIds, choice, capturedOptions);
+      });
     };
     const source = scope.clips.filter(
       (clip): clip is Extract<EditorClip, { timeMap: TimeMap }> => "timeMap" in clip,
@@ -372,15 +395,17 @@ export class EditorTiming {
       );
     }
     const trims = element("div", "etime-actions");
-    trims.append(
-      this.editButton(scope, "保留播放头左侧", () =>
-        edit("保留播放头左侧", () => ({ kind: "keep-left", time: this.context.time() })),
-      ),
-      this.editButton(scope, "保留播放头右侧", () =>
-        edit("保留播放头右侧", () => ({ kind: "keep-right", time: this.context.time() })),
-      ),
-    );
-    controls.append(trims);
+    for (const [kind, label] of [["keep-left", "保留播放头左侧"], ["keep-right", "保留播放头右侧"]] as const) {
+      const button = this.editButton(scope, label, () => edit(label, () => ({ kind, time: this.context.time() })));
+      button.dataset.trimAction = kind;
+      button.setAttribute("aria-describedby", "timing-trim-reason");
+      trims.append(button);
+    }
+    const trimNotice = element("p", "etime-note");
+    trimNotice.id = "timing-trim-reason";
+    trimNotice.dataset.trimReason = "";
+    controls.append(trims, trimNotice);
+    this.refreshTrims(scope);
     if (scope.clips.length === 1 && source.length === 1)
       this.drawCurve(scope, source[0]!, controls, options);
     else if (source.length)
