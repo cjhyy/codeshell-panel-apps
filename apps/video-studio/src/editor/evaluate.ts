@@ -19,6 +19,8 @@ import type {
   VisualProperties,
 } from "./types";
 import { sequenceDuration, validateEditorDocument } from "./validation";
+import { compileAudioPlan, type AudioPlanLane } from "./audio-plan";
+import type { SessionIdentity } from "./session";
 
 export interface ResolvedTransform extends Omit<
   Transform,
@@ -282,7 +284,11 @@ function audioContext(
 
 /** Validate and take ownership once; output mutation cannot alter this saved evaluator. */
 export function prepareEvaluator(value: unknown): PreparedEvaluator {
-  const document: EditorDocument = validateEditorDocument(value);
+  return createEvaluator(validateEditorDocument(value));
+}
+
+/** Only callers in this module can provide the already detached, validated document. */
+function createEvaluator(document: EditorDocument): PreparedEvaluator {
   const assets = new Map(document.assets.map((asset) => [asset.id, asset]));
   const sequences = new Map(document.sequences.map((sequence) => [sequence.id, sequence]));
   const durations = new Map(
@@ -519,6 +525,191 @@ export function prepareEvaluator(value: unknown): PreparedEvaluator {
       );
     },
   };
+}
+
+export type TimelineStripClip = Pick<
+  EditorClip,
+  "id" | "kind" | "start" | "duration" | "trackId"
+> & {
+  assetId?: string;
+  audio?: Pick<AudioMix, "volume">;
+};
+/** Detached display data, deliberately insufficient to serve as an editable document. */
+export interface TimelineStripInfo {
+  id: string;
+  revision: number;
+  assets: Pick<EditorAsset, "id" | "kind" | "duration" | "resourceId" | "fingerprint">[];
+  sequences: {
+    id: string;
+    width: number;
+    height: number;
+    tracks: Pick<EditorTrack, "id" | "kind" | "hidden">[];
+    clips: TimelineStripClip[];
+  }[];
+}
+export interface PreparedTimelineSnapshot extends PreparedEvaluator {
+  readonly documentId: string;
+  readonly generation: number;
+  readonly revision: number;
+  stripInfo(sequenceId: string, clipIds: readonly string[]): TimelineStripInfo;
+  /** Each call compiles through the public validator and returns independent mutable lanes. */
+  compileVisibleAudio(sequenceId: string, clipIds: readonly string[]): AudioPlanLane[];
+  onDispose(listener: () => void): () => void;
+  dispose(): void;
+}
+
+const timelineSnapshots = new WeakSet<object>();
+export function isPreparedTimelineSnapshot(value: unknown): value is PreparedTimelineSnapshot {
+  return typeof value === "object" && value !== null && timelineSnapshots.has(value);
+}
+function freezeTimelineDocument(value: unknown): void {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeTimelineDocument(child);
+    Object.freeze(value);
+  }
+}
+interface TimelineSnapshotState {
+  document: EditorDocument;
+  evaluator: PreparedEvaluator;
+  generation: number;
+}
+function createTimelineSnapshot(
+  initial: TimelineSnapshotState | undefined,
+): PreparedTimelineSnapshot {
+  let state = initial;
+  initial = undefined;
+  const documentId = state!.document.id,
+    revision = state!.document.revision,
+    generation = state!.generation,
+    listeners = new Set<() => void>();
+  const active = (): TimelineSnapshotState => {
+    if (!state) throw new Error("时间线快照已释放");
+    return state;
+  };
+  const snapshot: PreparedTimelineSnapshot = Object.freeze({
+    documentId,
+    revision,
+    generation,
+    evaluate(sequenceId: string, time: Tick) {
+      return active().evaluator.evaluate(sequenceId, time);
+    },
+    stripInfo(sequenceId: string, clipIds: readonly string[]): TimelineStripInfo {
+      const document = active().document,
+        sequence = document.sequences.find((item) => item.id === sequenceId);
+      if (!sequence) throw new Error("时间轴序列不存在");
+      const selected = new Set(clipIds);
+      return {
+        id: document.id,
+        revision: document.revision,
+        assets: document.assets.map(({ id, kind, duration, resourceId, fingerprint }) => ({
+          id,
+          kind,
+          duration,
+          resourceId,
+          fingerprint,
+        })),
+        sequences: [
+          {
+            id: sequence.id,
+            width: sequence.width,
+            height: sequence.height,
+            tracks: sequence.tracks.map(({ id, kind, hidden }) => ({ id, kind, hidden })),
+            clips: sequence.clips
+              .filter((clip) => selected.has(clip.id))
+              .map((clip) => ({
+                id: clip.id,
+                kind: clip.kind,
+                start: clip.start,
+                duration: clip.duration,
+                trackId: clip.trackId,
+                ...("assetId" in clip ? { assetId: clip.assetId } : {}),
+                ...("audio" in clip
+                  ? { audio: { volume: structuredClone(clip.audio.volume) } }
+                  : {}),
+              })),
+          },
+        ],
+      };
+    },
+    compileVisibleAudio(sequenceId: string, clipIds: readonly string[]): AudioPlanLane[] {
+      const document = active().document,
+        selected = new Set(clipIds);
+      const plan = compileAudioPlan(
+        {
+          ...document,
+          sequences: document.sequences.map((sequence) =>
+            sequence.id === sequenceId
+              ? {
+                  ...sequence,
+                  clips: sequence.clips.filter(
+                    (clip) =>
+                      selected.has(clip.id) &&
+                      ["media", "sequence", "multicam"].includes(clip.kind),
+                  ),
+                  transitions: [],
+                }
+              : sequence,
+          ),
+        },
+        sequenceId,
+        { maxLanes: 256 },
+      );
+      return structuredClone(plan.lanes);
+    },
+    onDispose(listener: () => void): () => void {
+      if (typeof listener !== "function") throw new Error("释放回调无效");
+      if (!state) {
+        listener();
+        return () => {};
+      }
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    dispose(): void {
+      if (!state) return;
+      state = undefined;
+      timelineSnapshots.delete(snapshot);
+      const pending = [...listeners];
+      listeners.clear();
+      // A caller's observer must not prevent another owner from releasing media resources.
+      for (const listener of pending) {
+        try {
+          listener();
+        } catch {}
+      }
+    },
+  });
+  timelineSnapshots.add(snapshot);
+  return snapshot;
+}
+
+/** An explicit owned capability; identity never substitutes for complete input validation. */
+export function prepareTimelineSnapshot(
+  value: unknown,
+  identity: SessionIdentity,
+): PreparedTimelineSnapshot {
+  const document = validateEditorDocument(value),
+    fields = identity && Object.getOwnPropertyDescriptors(identity);
+  if (
+    !fields ||
+    ["documentId", "revision", "generation"].some(
+      (key) => !fields[key] || !("value" in fields[key]!),
+    )
+  )
+    throw new Error("时间线快照身份无效");
+  const generation = fields.generation!.value;
+  if (
+    fields.documentId!.value !== document.id ||
+    fields.revision!.value !== document.revision ||
+    typeof generation !== "number" ||
+    !Number.isSafeInteger(generation) ||
+    generation < 0
+  )
+    throw new Error("时间线快照身份不匹配");
+  freezeTimelineDocument(document);
+  return createTimelineSnapshot({ document, generation, evaluator: createEvaluator(document) });
 }
 
 /** Convenience for one-off inspection; playback should retain a prepared evaluator. */

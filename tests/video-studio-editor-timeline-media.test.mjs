@@ -153,7 +153,7 @@ before(async () => {
   const bundle = await build({
     stdin: {
       resolveDir: root,
-      contents: `export * from './apps/video-studio/src/editor/timeline-media.ts';export * from './apps/video-studio/src/editor/timeline-ui.ts';export * from './apps/video-studio/src/editor/defaults.ts';export * from './apps/video-studio/src/editor/waveform.ts';export * from './apps/video-studio/src/editor/audio-plan.ts';export {EditorHistory} from './apps/video-studio/src/editor/history.ts';export {EditorWorkspace} from './apps/video-studio/src/editor/workspace-ui.ts';export {EditorSession} from './apps/video-studio/src/editor/session.ts';`,
+      contents: `export * from './apps/video-studio/src/editor/timeline-media.ts';export * from './apps/video-studio/src/editor/timeline-ui.ts';export * from './apps/video-studio/src/editor/defaults.ts';export * from './apps/video-studio/src/editor/waveform.ts';export * from './apps/video-studio/src/editor/audio-plan.ts';export {prepareTimelineSnapshot,isPreparedTimelineSnapshot} from './apps/video-studio/src/editor/evaluate.ts';export {EditorHistory} from './apps/video-studio/src/editor/history.ts';export {EditorWorkspace} from './apps/video-studio/src/editor/workspace-ui.ts';export {EditorSession} from './apps/video-studio/src/editor/session.ts';`,
     },
     bundle: true,
     format: "iife",
@@ -271,14 +271,43 @@ before(async () => {
             .getContext("2d")
             .getImageData(x, y, 1, 1).data,
         );
+      globalThis.timelineIdentity = () => ({
+        documentId: doc.id,
+        revision: doc.revision,
+        generation: mediaGeneration,
+      });
+      globalThis.preparedDraw = async (
+        snapshot,
+        ids = ["a"],
+        { sequenceId = "main", start = 0, end = 480000, width = 288, height = 32, identity } = {},
+      ) => {
+        const strips = ids.map((id) => {
+          const canvas = document.createElement("canvas");
+          canvas.dataset.clip = id;
+          document.querySelector("#mount").appendChild(canvas);
+          return { clipId: id, canvas, localStart: start, localEnd: end, width, height };
+        });
+        await media.renderPrepared(
+          snapshot,
+          sequenceId,
+          strips,
+          identity ?? {
+            documentId: snapshot.documentId,
+            revision: snapshot.revision,
+            generation: snapshot.generation,
+          },
+        );
+        return strips.map((strip) => strip.canvas.dataset.etMediaState);
+      };
       globalThis.mountWorkspace = async ({ blocked = false } = {}) => {
         media.dispose();
+        let storageRevision = 0;
         globalThis.timelineResource = sourceUrl;
         globalThis.timelineWave = wave;
         globalThis.timelineBlocked = blocked;
         globalThis.session = await api.EditorSession.open({
           read: async () => ({ data: structuredClone(doc), revision: 0 }),
-          write: async () => ({ revision: 1 }),
+          write: async () => ({ revision: ++storageRevision }),
           backupLegacy: async () => {},
         });
         globalThis.workspace = new api.EditorWorkspace(document.querySelector("#mount"), {
@@ -935,6 +964,575 @@ test("changed asset fingerprints reject stale waveform results even when the log
   });
   assert.equal(await page.locator("canvas").getAttribute("data-et-media-state"), "error");
   assert.match(await page.locator("canvas").getAttribute("title"), /当前素材不匹配/);
+});
+
+test("prepared timeline rejects fake caps and stale identities while public rendering still rejects malformed documents", async () => {
+  const result = await page.evaluate(async () => {
+    const snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    let getterCalls = 0;
+    const failures = [];
+    for (const fake of [
+      { ...snapshot },
+      Object.create(snapshot),
+      new Proxy(snapshot, {
+        get() {
+          getterCalls++;
+          throw new Error("proxy");
+        },
+      }),
+      {
+        get documentId() {
+          getterCalls++;
+          throw new Error("getter");
+        },
+      },
+    ]) {
+      try {
+        await media.renderPrepared(fake, "main", [], timelineIdentity());
+        failures.push("accepted");
+      } catch (error) {
+        failures.push(error.message);
+      }
+    }
+    for (const identity of [
+      undefined,
+      { ...timelineIdentity(), generation: 2 },
+      { ...timelineIdentity(), revision: 1 },
+      { ...timelineIdentity(), documentId: "other" },
+    ]) {
+      try {
+        await media.renderPrepared(snapshot, "main", [], identity);
+        failures.push("accepted");
+      } catch (error) {
+        failures.push(error.message);
+      }
+    }
+    snapshot.dispose();
+    const malformed = [];
+    for (const kind of ["source", "missing", "getter"]) {
+      reset();
+      const inactive = structuredClone(doc.sequences[0]);
+      inactive.id = "inactive";
+      doc.sequences.push(inactive);
+      await draw();
+      if (kind === "source") inactive.clips[0].timeMap.points[1].source = 480001;
+      if (kind === "missing") delete inactive.clips[0].trackId;
+      if (kind === "getter")
+        Object.defineProperty(inactive.clips[0], "duration", {
+          enumerable: true,
+          get() {
+            getterCalls++;
+            return 480000;
+          },
+        });
+      document.querySelector("#mount").replaceChildren();
+      await draw();
+      malformed.push(document.querySelector("canvas").dataset.etMediaState);
+    }
+    return { failures, malformed, getterCalls };
+  });
+  assert.ok(result.failures.every((message) => /快照/.test(message)));
+  assert.equal(result.failures.length, 8);
+  assert.deepEqual(result.malformed, ["error", "error", "error"]);
+  assert.equal(result.getterCalls, 0);
+});
+
+test("prepared timeline isolates caller data and reuses root sets across order, duplicate and viewport changes", async () => {
+  const result = await page.evaluate(async () => {
+    const other = structuredClone(doc.sequences[0].clips[0]);
+    other.id = "b";
+    other.start = 480000;
+    doc.sequences[0].clips.push(other);
+    const snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity()),
+      lanes = snapshot.compileVisibleAudio("main", ["a", "b"]),
+      info = snapshot.stripInfo("main", ["a"]);
+    lanes[0].stages[0].audio.volume = 0;
+    lanes[0].spans.length = 0;
+    info.sequences[0].clips[0].start = 9999;
+    const first = await preparedDraw(snapshot, ["a", "b"]);
+    document.querySelector("#mount").replaceChildren();
+    doc.sequences[0].clips[0].timeMap.points[1].source = 480001;
+    const second = await preparedDraw(snapshot, ["b", "a", "a"], { width: 216, start: 120000 });
+    const color = pixel("a", 20, 8),
+      fresh = snapshot.compileVisibleAudio("main", ["a"]);
+    document.querySelector("#mount").replaceChildren();
+    await draw();
+    return {
+      first,
+      second,
+      color,
+      volume: fresh[0].stages[0].audio.volume,
+      spans: fresh[0].spans.length,
+      publicState: document.querySelector("canvas").dataset.etMediaState,
+      active: api.isPreparedTimelineSnapshot(snapshot),
+      waves: requests.filter((request) => request.kind === "audio").length,
+    };
+  });
+  assert.deepEqual(result.first, ["ready", "ready"]);
+  assert.deepEqual(result.second, ["ready", "ready", "ready"]);
+  assert.ok(red(result.color));
+  assert.equal(result.volume, 1);
+  assert.ok(result.spans);
+  assert.equal(result.publicState, "error");
+  assert.equal(result.active, false);
+  assert.equal(result.waves, 1);
+});
+
+test("prepared timeline retries failed waveforms and honors existing mutable loader options", async () => {
+  const result = await page.evaluate(async () => {
+    media.dispose();
+    const snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    let enabled = false,
+      loads = 0;
+    const options = {
+      resolveAsset: () => sourceUrl,
+      canLoadWaveform: () => enabled,
+      loadWaveform: async () => {
+        if (++loads === 1) throw new Error("临时波形失败");
+        return wave;
+      },
+      onError: (error) => errors.push(error.message),
+    };
+    media = new api.EditorTimelineMedia(options);
+    const render = async () => {
+      document.querySelector("#mount").replaceChildren();
+      const state = await preparedDraw(snapshot, ["a"], { height: 48 });
+      const data = document
+        .querySelector("canvas")
+        .getContext("2d")
+        .getImageData(20, 0, 1, 48).data;
+      let count = 0;
+      for (let y = 27; y < 48; y++)
+        if (data[y * 4] < 190 && data[y * 4 + 1] > 100 && data[y * 4 + 2] > 100) count++;
+      return { state, loads, tonePixels: count };
+    };
+    const deferred = await render();
+    enabled = true;
+    const failed = await render(),
+      retry = await render();
+    options.loadWaveform = async () => {
+      loads++;
+      return reversedWave;
+    };
+    const changed = await render();
+    enabled = false;
+    const disabled = await render();
+    enabled = true;
+    const resumed = await render();
+    return { deferred, failed, retry, changed, disabled, resumed, errors: [...errors] };
+  });
+  assert.deepEqual(result.deferred.state, ["ready"]);
+  assert.equal(result.deferred.loads, 0);
+  assert.deepEqual(result.failed.state, ["error"]);
+  assert.deepEqual(result.retry.state, ["ready"]);
+  assert.equal(result.retry.loads, 2);
+  assert.equal(result.changed.loads, 3);
+  assert.ok(result.changed.tonePixels > result.retry.tonePixels);
+  assert.equal(result.disabled.loads, 3);
+  assert.equal(result.resumed.loads, 3);
+  assert.deepEqual(result.resumed.state, ["ready"]);
+  assert.deepEqual(result.errors, ["临时波形失败"]);
+});
+
+test("prepared timeline retains partial nested lane budgets, retries failed plans and replaces same-id snapshots", async () => {
+  const result = await page.evaluate(async () => {
+    const nested = structuredClone(doc.sequences[0]);
+    nested.id = "nested";
+    nested.tracks = [api.createTrack("nested-audio", "audio")];
+    nested.clips = Array.from({ length: 257 }, (_, index) => ({
+      ...structuredClone(doc.sequences[0].clips[0]),
+      id: "sound-" + index,
+      trackId: "nested-audio",
+      start: index * 480000,
+    }));
+    doc.sequences.push(nested);
+    const root = {
+      ...structuredClone(doc.sequences[0].clips[0]),
+      id: "nested-root",
+      kind: "sequence",
+      sequenceId: "nested",
+      start: 480000,
+    };
+    delete root.assetId;
+    doc.sequences[0].clips.push(root);
+    let snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    const render = async (id) => {
+      document.querySelector("#mount").replaceChildren();
+      return preparedDraw(snapshot, [id]);
+    };
+    const offscreen = await render("a"),
+      excess = await render("nested-root"),
+      retry = await render("nested-root"),
+      back = await render("a");
+    doc.sequences[1].clips.length = 1;
+    doc.revision++;
+    const old = snapshot;
+    snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    const revision = await render("nested-root");
+    const replaced = snapshot;
+    doc.sequences[0].clips[0].timeMap.points = [
+      { time: 0, source: 480000 },
+      { time: 480000, source: 0 },
+    ];
+    snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    const sameIdentity = await render("a"),
+      color = pixel("a", 20, 8);
+    media.reset();
+    return {
+      offscreen,
+      excess,
+      retry,
+      back,
+      revision,
+      sameIdentity,
+      color,
+      old: api.isPreparedTimelineSnapshot(old),
+      replaced: api.isPreparedTimelineSnapshot(replaced),
+      active: api.isPreparedTimelineSnapshot(snapshot),
+      stats: media.stats,
+    };
+  });
+  assert.deepEqual(result.offscreen, ["ready"]);
+  assert.deepEqual(result.excess, ["error"]);
+  assert.deepEqual(result.retry, ["error"]);
+  assert.deepEqual(result.back, ["ready"]);
+  assert.deepEqual(result.revision, ["ready"]);
+  assert.deepEqual(result.sameIdentity, ["ready"]);
+  assert.ok(blue(result.color));
+  assert.equal(result.old, false);
+  assert.equal(result.replaced, false);
+  assert.equal(result.active, false);
+  assert.deepEqual(result.stats, { thumbnails: 0, waveformBytes: 0, waveforms: 0 });
+});
+
+test("prepared timeline external disposal cancels pending resolver and reclaims only its late owned URL", async () => {
+  const result = await page.evaluate(async () => {
+    media.dispose();
+    const old = api.prepareTimelineSnapshot(doc, timelineIdentity()),
+      next = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    const url = URL.createObjectURL(
+        new Blob([await (await fetch(sourceUrl)).arrayBuffer()], { type: "video/mp4" }),
+      ),
+      revoke = URL.revokeObjectURL.bind(URL),
+      revoked = [];
+    URL.revokeObjectURL = (value) => {
+      revoked.push(value);
+      revoke(value);
+    };
+    let release,
+      calls = 0,
+      signal;
+    try {
+      media = new api.EditorTimelineMedia({
+        resolveAsset: (id, current) => {
+          if (++calls === 1) {
+            signal = current;
+            return new Promise((resolve) => (release = resolve));
+          }
+          return sourceUrl.replace("source.mp4", "reversed.mp4");
+        },
+        onError: (error) => errors.push(error.message),
+      });
+      const pending = preparedDraw(old);
+      while (!release) await new Promise((resolve) => setTimeout(resolve, 0));
+      old.dispose();
+      document.querySelector("#mount").replaceChildren();
+      const fresh = await preparedDraw(next);
+      release({ url, owned: true });
+      await pending;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const color = pixel("a", 20, 8);
+      let stale;
+      try {
+        await preparedDraw(old);
+        stale = "accepted";
+      } catch (error) {
+        stale = error.message;
+      }
+      media.dispose();
+      return {
+        fresh,
+        color,
+        stale,
+        aborted: signal.aborted,
+        revoked: revoked.filter((value) => value === url).length,
+        borrowed: revoked.includes(sourceUrl.replace("source.mp4", "reversed.mp4")),
+        errors: [...errors],
+        stats: media.stats,
+        active: api.isPreparedTimelineSnapshot(next),
+      };
+    } finally {
+      URL.revokeObjectURL = revoke;
+      revoke(url);
+    }
+  });
+  assert.deepEqual(result.fresh, ["ready"]);
+  assert.ok(blue(result.color));
+  assert.match(result.stale, /释放/);
+  assert.equal(result.aborted, true);
+  assert.equal(result.revoked, 1);
+  assert.equal(result.borrowed, false);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.active, false);
+  assert.deepEqual(result.stats, { thumbnails: 0, waveformBytes: 0, waveforms: 0 });
+});
+
+test("prepared timeline loader replacement cancels old pending waveform and ignores its late error", async () => {
+  const result = await page.evaluate(async () => {
+    media.dispose();
+    const snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    let reject,
+      calls = 0,
+      signal;
+    const options = {
+      resolveAsset: () => sourceUrl,
+      loadWaveform: (id, current) => {
+        calls++;
+        signal = current;
+        return new Promise((resolve, fail) => (reject = fail));
+      },
+      onError: (error) => errors.push(error.message),
+    };
+    media = new api.EditorTimelineMedia(options);
+    const pending = preparedDraw(snapshot, ["a"], { height: 48 });
+    while (!reject) await new Promise((resolve) => setTimeout(resolve, 0));
+    options.loadWaveform = async () => {
+      calls++;
+      return reversedWave;
+    };
+    document.querySelector("#mount").replaceChildren();
+    const fresh = await preparedDraw(snapshot, ["a"], { height: 48 });
+    const before = pixel("a", 20, 34);
+    reject(new Error("旧加载迟到失败"));
+    await pending;
+    const after = pixel("a", 20, 34);
+    return {
+      fresh,
+      before,
+      after,
+      aborted: signal.aborted,
+      calls,
+      errors: [...errors],
+      stats: media.stats,
+    };
+  });
+  assert.deepEqual(result.fresh, ["ready"]);
+  assert.deepEqual(result.after, result.before);
+  assert.equal(result.aborted, true);
+  assert.equal(result.calls, 2);
+  assert.equal(result.stats.waveforms, 1);
+  assert.deepEqual(result.errors, []);
+});
+
+test("prepared timeline idle and synchronous canvas disposal cannot retain resources or publish ready", async () => {
+  for (const phase of ["thumbnail", "audio", "idle"]) {
+    const result = await page.evaluate(async (phase) => {
+      reset();
+      const snapshot = api.prepareTimelineSnapshot(doc, timelineIdentity()),
+        next = api.prepareTimelineSnapshot(doc, timelineIdentity());
+      let notifications = 0;
+      snapshot.onDispose(() => {
+        notifications++;
+        throw new Error("用户监听失败");
+      });
+      snapshot.onDispose(() => {
+        notifications++;
+        snapshot.dispose();
+      });
+      const prototype = CanvasRenderingContext2D.prototype,
+        key = phase === "thumbnail" ? "drawImage" : "stroke",
+        original = prototype[key];
+      let disposed = false;
+      if (phase !== "idle")
+        prototype[key] = function (...args) {
+          if (!disposed && (phase === "thumbnail" || this.canvas.dataset.clip === "a")) {
+            disposed = true;
+            snapshot.dispose();
+          }
+          return original.apply(this, args);
+        };
+      let states;
+      try {
+        states = await preparedDraw(snapshot);
+      } finally {
+        prototype[key] = original;
+      }
+      if (phase === "idle") snapshot.dispose();
+      const released = media.stats,
+        active = api.isPreparedTimelineSnapshot(snapshot);
+      document.querySelector("#mount").replaceChildren();
+      const fresh = await preparedDraw(next);
+      return {
+        states,
+        released,
+        active,
+        fresh,
+        notifications,
+        color: pixel("a", 20, 8),
+        errors: [...errors],
+      };
+    }, phase);
+    if (phase !== "idle") assert.notDeepEqual(result.states, ["ready"]);
+    assert.deepEqual(result.released, { thumbnails: 0, waveformBytes: 0, waveforms: 0 });
+    assert.equal(result.active, false);
+    assert.equal(result.notifications, 2);
+    assert.deepEqual(result.fresh, ["ready"]);
+    assert.ok(red(result.color));
+    assert.deepEqual(result.errors, []);
+  }
+});
+
+test("prepared timeline reset cannot adopt a second cap reentrantly from a disposal observer", async () => {
+  const result = await page.evaluate(async () => {
+    const old = api.prepareTimelineSnapshot(doc, timelineIdentity()), next = api.prepareTimelineSnapshot(doc, timelineIdentity()), reentrant = api.prepareTimelineSnapshot(doc, timelineIdentity());
+    await preparedDraw(old); let attempted;
+    old.onDispose(() => { try { media.renderPrepared(reentrant, "main", [], timelineIdentity()); attempted = "accepted"; } catch (error) { attempted = error.message; } });
+    document.querySelector("#mount").replaceChildren(); const state = await preparedDraw(next); media.reset();
+    const active = api.isPreparedTimelineSnapshot(next); reentrant.dispose();
+    return { attempted, state, active, stats: media.stats, errors: [...errors] };
+  });
+  assert.match(result.attempted, /重置/); assert.deepEqual(result.state, ["ready"]); assert.equal(result.active, false);
+  assert.deepEqual(result.stats, { thumbnails: 0, waveformBytes: 0, waveforms: 0 }); assert.deepEqual(result.errors, []);
+});
+
+test("workspace prepared media restores same-id same-revision bytes and keeps public reads detached", async () => {
+  await page.evaluate(() => mountWorkspace());
+  await page.waitForFunction(
+    () => document.querySelector('[data-et-clip="a"] canvas')?.dataset.etMediaState === "ready",
+  );
+  assert.ok(red(await page.evaluate(() => timelinePixel())));
+  const identities = await page.evaluate(async () => {
+    const before = session.getState().identity,
+      next = session.read();
+    next.sequences[0].clips[0].timeMap.points = [
+      { time: 0, source: 480000 },
+      { time: 480000, source: 0 },
+    ];
+    await session.replace({ ...next, id: "intermediate" });
+    await session.replace(next);
+    const detached = session.read();
+    detached.sequences[0].clips[0].timeMap.points[0].source = 0;
+    return {
+      before,
+      after: session.getState().identity,
+      source: session.read().sequences[0].clips[0].timeMap.points[0].source,
+    };
+  });
+  await page.waitForFunction(
+    () => document.querySelector('[data-et-clip="a"] canvas')?.dataset.etMediaState === "ready",
+  );
+  assert.ok(blue(await page.evaluate(() => timelinePixel())));
+  assert.equal(identities.after.documentId, identities.before.documentId);
+  assert.equal(identities.after.revision, identities.before.revision);
+  assert.notEqual(identities.after.generation, identities.before.generation);
+  assert.equal(identities.source, 480000);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("production prepared media benchmark separates same-root reuse from graph changes on 5000 legal clips", async (t) => {
+  const results = [],
+    cdp = await page.context().newCDPSession(page);
+  const heap = async () => {
+    await cdp.send("HeapProfiler.collectGarbage");
+    return (await cdp.send("Runtime.getHeapUsage")).usedSize;
+  };
+  for (const prepared of [false, true]) {
+    const result = await page.evaluate(async (prepared) => {
+      reset();
+      doc.id = "production-five-thousand";
+      const template = structuredClone(doc.sequences[0]),
+        clip = template.clips[0];
+      doc.sequences = [];
+      for (let offset = 0; offset < 5000; offset += 2000) {
+        const sequence = structuredClone(template);
+        sequence.id = offset ? "inactive-" + offset : "main";
+        sequence.clips = Array.from({ length: Math.min(2000, 5000 - offset) }, (_, index) => ({
+          ...structuredClone(clip),
+          id: offset + index ? "clip-" + (offset + index) : "a",
+          start: index * clip.duration,
+        }));
+        doc.sequences.push(sequence);
+      }
+      const beginning = performance.now();
+      globalThis.benchmarkSnapshot = prepared
+        ? api.prepareTimelineSnapshot(doc, timelineIdentity())
+        : undefined;
+      const factoryMs = performance.now() - beginning;
+      const render = async (ids, options = {}) => {
+        document.querySelector("#mount").replaceChildren();
+        const start = performance.now();
+        if (prepared) await preparedDraw(benchmarkSnapshot, ids, options);
+        else {
+          const strips = ids.map((clipId) => {
+            const canvas = document.createElement("canvas");
+            canvas.dataset.clip = clipId;
+            document.querySelector("#mount").appendChild(canvas);
+            return {
+              clipId,
+              canvas,
+              localStart: options.start ?? 0,
+              localEnd: 480000,
+              width: options.width ?? 288,
+              height: 32,
+            };
+          });
+          await media.render(doc, options.sequenceId ?? "main", strips, timelineIdentity());
+        }
+        return performance.now() - start;
+      };
+      const firstMs = factoryMs + (await render(["a"]));
+      await render(["clip-1"]);
+      await render(["clip-2000"], { sequenceId: "inactive-2000" });
+      await render(["a"]);
+      const phases = [];
+      for (const kind of ["same-roots", "cross-roots", "seq-switch"]) {
+        const times = [];
+        for (let index = 0; index < 32; index++) {
+          const otherSequence = kind === "seq-switch" && index % 2,
+            ids = otherSequence
+              ? ["clip-2000"]
+              : kind === "cross-roots" && index % 2
+                ? ["clip-1"]
+                : ["a"];
+          times.push(
+            await render(ids, {
+              sequenceId: otherSequence ? "inactive-2000" : "main",
+              ...(index % 2 ? {} : { width: 216, start: 120000 }),
+            }),
+          );
+        }
+        times.sort((a, b) => a - b);
+        phases.push({ kind, medianMs: times[16], p95Ms: times[30] });
+      }
+      return {
+        prepared,
+        factoryMs,
+        firstMs,
+        phases,
+        stats: media.stats,
+        errors: [...errors],
+        publicPlanProperty: Object.getOwnPropertyNames(media).some((name) =>
+          /audioPlan|renderStrips/.test(name),
+        ),
+      };
+    }, prepared);
+    result.heldHeap = await heap();
+    result.released = await page.evaluate(() => {
+      media.reset();
+      return { active: api.isPreparedTimelineSnapshot(benchmarkSnapshot), stats: media.stats };
+    });
+    result.resetHeap = await heap();
+    await page.evaluate(() => media.dispose());
+    result.disposedHeap = await heap();
+    results.push(result);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.publicPlanProperty, false);
+    assert.ok(result.stats.thumbnails <= 160);
+    assert.equal(result.stats.waveforms, 1);
+    assert.equal(result.released.active, false);
+    assert.deepEqual(result.released.stats, { thumbnails: 0, waveformBytes: 0, waveforms: 0 });
+  }
+  t.diagnostic(JSON.stringify(results));
 });
 
 test("actual ProRes passes the single-source native proxy task and the timeline decodes its distinct frames", async () => {

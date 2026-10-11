@@ -483,6 +483,89 @@ const action = (page, value) => page.locator(`[data-ew-action="${value}"]`);
 const documentState = (page) => page.evaluate(() => fixture.read());
 const clip = (page, id = "a") => page.locator(`[data-et-clip="${id}"]`);
 
+test("actual session replacement never commits focused track drafts into the successor", async (t) => {
+  for (const [label, draft] of [
+    ["轨道名称 画面轨", "旧工程轨道草稿"],
+    ["画面轨 音量百分比", "37.5"],
+    ["画面轨 声像", "-80"],
+  ]) {
+    const page = await fixture(t), before = await documentState(page), identity = await page.evaluate(() => fixture.state().identity);
+    await page.getByLabel(label, { exact: true }).fill(draft);
+    await page.evaluate(() => fixture.replaceGeneration());
+    await settle(page);
+    const after = await documentState(page);
+    assert.deepEqual(after.sequences, before.sequences);
+    assert.equal(after.revision, before.revision + 1);
+    assert.notEqual((await page.evaluate(() => fixture.state().identity)).generation, identity.generation);
+    assert.deepEqual(await page.evaluate(() => fixture.writes.map((write) => write.label)), ["打开工程"]);
+    assert.equal(await page.evaluate(() => fixture.state().canUndo), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  }
+});
+
+test("a same-id same-revision reopened session rejects the previous track input draft", async (t) => {
+  const page = await fixture(t), before = await documentState(page), identity = await page.evaluate(() => fixture.state().identity);
+  await page.getByLabel("轨道名称 画面轨", { exact: true }).fill("旧草稿");
+  const stale = await page.getByLabel("轨道名称 画面轨", { exact: true }).elementHandle();
+  await page.evaluate(async (before) => {
+    const session = fixture.internals.session;
+    await session.replace({ ...before, id: "intermediate-document" });
+    await session.replace(before);
+  }, before);
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.notEqual((await page.evaluate(() => fixture.state().identity)).generation, identity.generation);
+  await stale.evaluate((node) => node.dispatchEvent(new Event("change", { bubbles: true })));
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.writes.map((write) => write.label)), ["打开工程", "打开工程"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a first track mute click retains both edits through actual autosave failure and retry", async (t) => {
+  const page = await fixture(t), before = await documentState(page);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("37.5");
+  await page.getByLabel("静音画面轨", { exact: true }).click();
+  await page.waitForFunction(() => fixture.state().saveState === "failed");
+  const after = await documentState(page), track = after.sequences[0].tracks.find((item) => item.id === "video");
+  assert.equal(track.volume, 0.375); assert.equal(track.muted, true);
+  assert.equal(after.revision, before.revision + 2);
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, before.sequences);
+  await page.evaluate(() => fixture.writeMode("normal"));
+  await action(page, "retry-save").click();
+  await page.waitForFunction(() => fixture.state().saveState === "saved");
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, after.sequences);
+  assert.equal((await documentState(page)).revision, after.revision);
+  await action(page, "undo").click(); await settle(page);
+  const firstUndo = (await documentState(page)).sequences[0].tracks.find((item) => item.id === "video");
+  assert.equal(firstUndo.volume, 0.375); assert.equal(firstUndo.muted, false);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("an awaited actual session replacement prevents a captured track toggle from entering the new project", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    const { workspace, session } = fixture.internals, original = workspace.timeline.context.apply;
+    workspace.timeline.context.apply = async (operations, label) => {
+      original(operations, label);
+      if (label === "调整轨道音量") {
+        const successor = fixture.read(); successor.id = "track-successor";
+        successor.sequences[0].tracks.find((item) => item.id === "video").volume = 1;
+        await session.replace(successor);
+      }
+    };
+  });
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("37.5");
+  await page.getByLabel("静音画面轨", { exact: true }).click();
+  await page.waitForFunction(() => fixture.read().id === "track-successor" && fixture.state().phase === "ready");
+  await settle(page);
+  const track = (await documentState(page)).sequences[0].tracks.find((item) => item.id === "video");
+  assert.equal(track.volume, 1); assert.equal(track.muted, false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  assert.equal(await page.evaluate(() => fixture.writes.some((write) => write.label === "调整轨道")), false);
+});
+
 test("separation opens only the selected real media and stops pending preview without changing the project", async (t) => {
   const page = await fixture(t, { audio: true, separation: true }),
     before = await documentState(page);

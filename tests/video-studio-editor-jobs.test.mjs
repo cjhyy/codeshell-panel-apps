@@ -836,7 +836,7 @@ test("an export first seen already finished also refreshes readiness, once", asy
   ]);
 });
 
-test("export titles stay readable after a reload instead of showing the internal sequence id", async (t) => {
+test("remembered export titles survive reload while older receipts use their real sequence ID", async (t) => {
   const exported = job("export-a", 10, "succeeded", {
     input: {
       request: { action: "render", sequenceId: "sequence-main", profile: { name: "自定义导出" } },
@@ -859,12 +859,12 @@ test("export titles stay readable after a reload instead of showing the internal
     await row(page, "export-a").locator("strong").textContent(),
     "未命名项目 · 自定义导出",
   );
-  // Without a remembered title the preset still names it; the internal id never shows.
+  // Old receipts contain an ID, so show that fact instead of inventing a sequence name.
   assert.equal(
     await row(page, "export-b").locator("strong").textContent(),
-    "视频导出 · 1080p 横屏",
+    "视频导出 · 序列 ID：sequence-main · 1080p 横屏",
   );
-  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /sequence-main/);
+  assert.match(await row(page, "export-b").textContent(), /序列 ID：sequence-main/);
 });
 
 
@@ -879,9 +879,49 @@ test("recovered range export titles retain their precise interval without a reme
   ]);
   await page.evaluate(() => fixture.load());
   await open(page);
-  assert.equal(await row(page, "review-range").locator("strong").textContent(), "视频导出 · 0.333688–1.334688 秒 · 审核版");
-  assert.equal(await row(page, "tiny-range").locator("strong").textContent(), "视频导出 · 0–0.000004 秒 · 审核版");
-  assert.equal(await row(page, "invalid-range").locator("strong").textContent(), "视频导出 · 审核版");
-  assert.doesNotMatch(await page.locator(".editor-export-jobs").textContent(), /internal-sequence/);
+  assert.equal(await row(page, "review-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 0.333688–1.334688 秒 · 审核版");
+  assert.equal(await row(page, "tiny-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 0–0.000004 秒 · 审核版");
+  assert.equal(await row(page, "invalid-range").locator("strong").textContent(), "视频导出 · 序列 ID：internal-sequence · 审核版");
+  assert.match(await page.locator(".editor-export-jobs").textContent(), /序列 ID：internal-sequence/);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+for (const width of [390, 620])
+  test(`complete legal export names survive title persistence and wrap at ${width}px`, async (t) => {
+    const title =
+        '<项目>&"' +
+        "P".repeat(194) +
+        " · " +
+        "S".repeat(200) +
+        " · 0.333688–1.334688 秒 · " +
+        "F".repeat(200),
+      first = await fixture(t, [job("long", 1)], { width });
+    await first.evaluate((title) => fixture.track("long", title), title);
+    await first.waitForFunction(() => fixture.savedTitles()?.long);
+    const titles = await first.evaluate(() => fixture.savedTitles()),
+      page = await fixture(t, [job("long", 1)], { width, titles });
+    await page.evaluate(() => fixture.load());
+    await open(page);
+    assert.equal(await row(page, "long").locator("strong").textContent(), title);
+    assert.equal(await row(page, "long").locator("img,script").count(), 0);
+    const bounds = await row(page, "long").evaluate((node) => {
+      const rect = node.getBoundingClientRect(),
+        dialog = node.closest('[role="dialog"]');
+      return {
+        left: rect.left,
+        right: rect.right,
+        width: innerWidth,
+        scroll: dialog.scrollWidth,
+        client: dialog.clientWidth,
+      };
+    });
+    assert.ok(bounds.left >= 0 && bounds.right <= width, JSON.stringify(bounds));
+    assert.ok(bounds.scroll <= bounds.client + 1, JSON.stringify(bounds));
+    const save = row(page, "long").getByRole("button", { name: "保存视频", exact: true });
+    await save.scrollIntoViewIfNeeded();
+    await save.click();
+    assert.deepEqual(
+      (await calls(page, "media.export")).map((item) => item.args),
+      [{ assetId }],
+    );
+  });

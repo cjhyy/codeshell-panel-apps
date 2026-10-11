@@ -28,6 +28,7 @@ import {
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, EditorTrack } from "./types";
 import type { SessionIdentity } from "./session";
+import type { PreparedTimelineSnapshot } from "./evaluate";
 import { sequenceDuration } from "./validation";
 import {
   magneticMovementIds,
@@ -42,6 +43,11 @@ export interface EditorTimelineContext {
   media?: EditorTimelineMediaOptions;
   read(): EditorDocument;
   identity?(): SessionIdentity;
+  /** Explicitly opts a session-owned context into immutable timeline media snapshots. */
+  prepareMediaSnapshot?(
+    document: EditorDocument,
+    identity: SessionIdentity,
+  ): PreparedTimelineSnapshot;
   selection(): { sequenceId: string; clipIds: string[] };
   select(clipIds: string[]): void;
   selectedMarker?(): string | undefined;
@@ -98,6 +104,15 @@ const TIMELINE_MODES = [
 ] as const;
 const editableTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
+const TRACK_INPUTS = "[data-et-track-name],[data-et-track-mix]";
+const TRACK_BUTTONS = "[data-et-toggle],[data-et-up],[data-et-down],[data-et-delete-track],[data-et-delete-confirm],[data-et-delete-cancel]";
+type TrackInputOwner = {
+  documentId: string;
+  generation?: number;
+  sequenceId: string;
+  trackId: string;
+  kind: EditorTrack["kind"];
+};
 const lastFrameTime = (sequence: EditorSequence) =>
   frameToTicks(
     ticksToFrame(Math.max(0, sequenceDuration(sequence) - 1), sequence.frameRate, "floor"),
@@ -156,6 +171,12 @@ export class EditorTimeline {
   private drag?: Drag;
   private dragPlanFrame?: number;
   private destroyed = false;
+  private replacingControls = false;
+  private readonly trackInputs = new WeakMap<HTMLInputElement, TrackInputOwner>();
+  private currentTrackInputs = new WeakSet<HTMLInputElement>();
+  private readonly trackButtons = new WeakMap<HTMLButtonElement, TrackInputOwner>();
+  private currentTrackButtons = new WeakSet<HTMLButtonElement>();
+  private trackControlPending = false;
   private box?: HTMLElement;
   private scrollPosition = 0;
   private verticalPosition = 0;
@@ -179,6 +200,7 @@ export class EditorTimeline {
     sequenceId: string;
     clipId: string;
     selected: string[];
+    time: Tick;
   };
   constructor(
     private readonly container: HTMLElement,
@@ -192,6 +214,7 @@ export class EditorTimeline {
     container.setAttribute("aria-label", "剪辑时间轴");
     container.addEventListener("click", this.click);
     container.addEventListener("change", this.change);
+    container.addEventListener("change", this.replacementChange, true);
     container.addEventListener("input", this.input);
     container.addEventListener("wheel", this.wheel, { passive: false });
     container.addEventListener("keydown", this.keydown);
@@ -302,8 +325,67 @@ export class EditorTimeline {
   private viewport() {
     return this.container.querySelector<HTMLElement>(".et-scroll")!;
   }
+  private trackInputCurrent(input: HTMLInputElement): boolean {
+    const owner = this.trackInputs.get(input);
+    if (this.destroyed || !owner || !this.currentTrackInputs.has(input) || !this.container.contains(input)) return false;
+    return this.trackOwnerCurrent(owner);
+  }
+  private trackOwnerCurrent(owner: TrackInputOwner): boolean {
+    if (this.destroyed) return false;
+    const { document, sequence } = this.current();
+    return document.id === owner.documentId && sequence.id === owner.sequenceId &&
+      this.context.identity?.().generation === owner.generation &&
+      sequence.tracks.some((track) => track.id === owner.trackId && track.kind === owner.kind);
+  }
+  private replacementChange = (event: Event): void => {
+    if (this.replacingControls && event.target instanceof HTMLInputElement && event.target.matches(TRACK_INPUTS))
+      event.stopImmediatePropagation();
+  };
+  /** Keep the focused input and every ancestor connected, including during native IME composition. */
+  private patchFocusedTrackHead(current: HTMLElement, next: HTMLElement, focused: HTMLInputElement, replacement: HTMLInputElement): void {
+    for (const attribute of [...current.attributes])
+      if (!(current === focused && attribute.name === "value") && !next.hasAttribute(attribute.name))
+        current.removeAttribute(attribute.name);
+    for (const attribute of [...next.attributes])
+      if (!(current === focused && attribute.name === "value")) current.setAttribute(attribute.name, attribute.value);
+    if (current === focused) {
+      if (replacement.disabled) focused.value = replacement.value;
+      return;
+    }
+    const branch = [...current.children].find((child) => child.contains(focused)) as HTMLElement,
+      nextBranch = [...next.children].find((child) => child.contains(replacement)) as HTMLElement;
+    this.patchFocusedTrackHead(branch, nextBranch, focused, replacement);
+    const children = [...next.childNodes], pivot = children.indexOf(nextBranch);
+    for (const child of [...current.childNodes]) if (child !== branch) child.remove();
+    for (const child of children.slice(0, pivot)) current.insertBefore(child, branch);
+    for (const child of children.slice(pivot + 1)) current.append(child);
+  }
+  private retainTrackInput(markup: string, focused: HTMLInputElement, preserveToolbar: boolean): boolean {
+    const next = globalThis.document.createElement("div");
+    next.innerHTML = markup;
+    const oldHead = focused.closest<HTMLElement>("[data-track-head]")!,
+      oldHeads = oldHead.parentElement!,
+      nextHeads = next.querySelector<HTMLElement>(".et-track-heads")!,
+      nextHead = nextHeads.querySelector<HTMLElement>(`[data-track-head="${CSS.escape(oldHead.dataset.trackHead!)}"]`)!,
+      selector = focused.dataset.etTrackName
+        ? `[data-et-track-name="${CSS.escape(focused.dataset.etTrackName)}"]`
+        : `[data-et-track-id="${CSS.escape(focused.dataset.etTrackId!)}"][data-et-track-mix="${focused.dataset.etTrackMix}"]`,
+      nextInput = nextHead.querySelector<HTMLInputElement>(selector);
+    if (!nextInput) return false;
+    this.patchFocusedTrackHead(oldHead, nextHead, focused, nextInput);
+    const children = [...nextHeads.childNodes], pivot = children.indexOf(nextHead);
+    for (const child of [...oldHeads.childNodes]) if (child !== oldHead) child.remove();
+    for (const child of children.slice(0, pivot)) oldHeads.insertBefore(child, oldHead);
+    for (const child of children.slice(pivot + 1)) oldHeads.append(child);
+    this.container.querySelector(".et-scroll")!.replaceWith(next.querySelector(".et-scroll")!);
+    if (!preserveToolbar)
+      this.container.querySelector(".et-toolbar")!.replaceWith(next.querySelector(".et-toolbar")!);
+    if (nextInput.disabled)
+      this.notice.textContent = "轨道已锁定，未提交的轨道输入已取消，请解锁后重新编辑";
+    return true;
+  }
   render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.replacingControls) return;
     this.media.cancel();
     const focused = globalThis.document.activeElement;
     const focusedClip =
@@ -474,16 +556,55 @@ export class EditorTimeline {
         .join(
           "",
         )}<div class="et-playhead" style="left:${ticksToSeconds(this.context.time()) * this.scale}px"><i></i></div></div></div></div>`;
-    if (options.preserveToolbar && this.container.querySelector(".et-toolbar")) {
-      // A native range drag must keep its original input and pointer ownership alive.
-      // Only the time viewport changes during zoom; toolbar state is unchanged.
-      const next = globalThis.document.createElement("div");
-      next.innerHTML = markup;
-      this.container.querySelector(".et-body")!.replaceWith(next.querySelector(".et-body")!);
-      this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(
-        Math.log10(this.scale),
-      );
-    } else this.container.innerHTML = markup;
+    const focusedTrack = focused instanceof HTMLInputElement && focused.matches(TRACK_INPUTS) &&
+      this.trackInputCurrent(focused) ? focused : undefined,
+      oldHeads = this.container.querySelector<HTMLElement>(".et-track-heads"),
+      headIds = [...(oldHeads?.querySelectorAll<HTMLElement>("[data-track-head]") ?? [])].map((head) => head.dataset.trackHead),
+      preserveTrack = focusedTrack && headIds.join("\0") === sequence.tracks.slice().reverse().map((track) => track.id).join("\0");
+    // Removing or disabling a focused native input can synchronously fire change. It must
+    // never commit an old draft while a restored project or another sequence is rendering.
+    let retainedTrack = false;
+    this.replacingControls = true;
+    try {
+      if (preserveTrack)
+        retainedTrack = this.retainTrackInput(markup, focusedTrack, !!options.preserveToolbar);
+      if (!retainedTrack) {
+        if (options.preserveToolbar && this.container.querySelector(".et-toolbar")) {
+          // A native range drag must keep its original input and pointer ownership alive.
+          // Only the time viewport changes during zoom; toolbar state is unchanged.
+          const next = globalThis.document.createElement("div");
+          next.innerHTML = markup;
+          this.container.querySelector(".et-body")!.replaceWith(next.querySelector(".et-body")!);
+        } else this.container.innerHTML = markup;
+      }
+      if (options.preserveToolbar)
+        this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(Math.log10(this.scale));
+      if (this.trackControlPending)
+        for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>(`${TRACK_INPUTS},${TRACK_BUTTONS}`))
+          control.disabled = true;
+    } finally {
+      this.replacingControls = false;
+    }
+    if (focusedTrack && !retainedTrack)
+      this.notice.textContent = "轨道结构已变化，未提交的轨道输入已取消，请重新编辑";
+    const trackInputs = this.container.querySelectorAll<HTMLInputElement>(TRACK_INPUTS);
+    this.currentTrackInputs = new WeakSet(trackInputs);
+    for (const input of trackInputs) {
+      if (this.trackInputs.has(input)) continue;
+      const trackId = input.dataset.etTrackName ?? input.dataset.etTrackId!,
+        track = sequence.tracks.find((item) => item.id === trackId)!;
+      this.trackInputs.set(input, { documentId: project.id, generation: this.context.identity?.().generation,
+        sequenceId: sequence.id, trackId, kind: track.kind });
+    }
+    const trackButtons = this.container.querySelectorAll<HTMLButtonElement>(TRACK_BUTTONS);
+    this.currentTrackButtons = new WeakSet(trackButtons);
+    for (const button of trackButtons) {
+      if (this.trackButtons.has(button)) continue;
+      const trackId = button.closest<HTMLElement>("[data-track-head]")!.dataset.trackHead!,
+        track = sequence.tracks.find((item) => item.id === trackId)!;
+      this.trackButtons.set(button, { documentId: project.id, generation: this.context.identity?.().generation,
+        sequenceId: sequence.id, trackId, kind: track.kind });
+    }
     this.container.querySelector(".et-toolbar")!.after(this.notice);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;
@@ -578,7 +699,15 @@ export class EditorTimeline {
           height: stripHeight,
         });
       }
-      void this.media.render(document, sequence.id, strips, this.context.identity?.());
+      const identity = this.context.identity?.();
+      try {
+        const snapshot = identity && this.context.prepareMediaSnapshot?.(document, identity);
+        void (snapshot
+          ? this.media.renderPrepared(snapshot, sequence.id, strips, identity!)
+          : this.media.render(document, sequence.id, strips, identity));
+      } catch (error) {
+        this.context.onError(error);
+      }
     });
   };
   /** Retry visible media after resource bytes or availability change without an edit. */
@@ -638,52 +767,11 @@ export class EditorTimeline {
       this.run(() => this.setMode(mode));
       return;
     }
-    const toggle = target.closest<HTMLElement>("[data-et-toggle]");
-    if (toggle)
-      this.run(async () => {
-        const { sequence } = this.current();
-        const track = sequence.tracks.find((item) => item.id === toggle.dataset.etTrack)!;
-        const key = toggle.dataset.etToggle as "locked" | "hidden" | "muted";
-        await this.apply(
-          [
-            {
-              type: "track.update",
-              sequenceId: sequence.id,
-              trackId: track.id,
-              patch: { [key]: !track[key] },
-            },
-          ],
-          "调整轨道",
-        );
-      });
-    const remove = target.closest<HTMLElement>(
-      "[data-et-delete-track],[data-et-delete-confirm],[data-et-delete-cancel]",
-    );
-    if (remove) {
-      if (remove.hasAttribute("data-et-delete-cancel")) {
-        this.confirmTrack = undefined;
-        this.render();
-        return;
-      }
-      const confirmed = remove.dataset.etDeleteConfirm;
-      this.run(() => this.removeTrack(confirmed ?? remove.dataset.etDeleteTrack!, !!confirmed));
+    const trackButton = target.closest<HTMLButtonElement>(TRACK_BUTTONS);
+    if (trackButton) {
+      this.run(() => this.trackControl(trackButton));
       return;
     }
-    const direction = target.closest<HTMLElement>("[data-et-up],[data-et-down]");
-    if (direction)
-      this.run(async () => {
-        const { sequence } = this.current();
-        const ids = sequence.tracks.map((track) => track.id),
-          id = direction.dataset.etUp ?? direction.dataset.etDown!,
-          from = ids.indexOf(id),
-          to = from + (direction.dataset.etUp ? 1 : -1);
-        if (to < 0 || to >= ids.length) return;
-        [ids[from], ids[to]] = [ids[to]!, ids[from]!];
-        await this.apply(
-          [{ type: "track.reorder", sequenceId: sequence.id, trackIds: ids }],
-          "轨道排序",
-        );
-      });
     const marker = target.closest<HTMLElement>("[data-et-marker]");
     if (marker)
       this.run(() => {
@@ -697,46 +785,108 @@ export class EditorTimeline {
   };
   private change = (event: Event) => {
     const target = event.target as HTMLInputElement;
+    if (target.matches(TRACK_INPUTS)) {
+      if (this.replacingControls || this.trackControlPending || !this.trackInputCurrent(target)) return;
+      this.run(async () => {
+        const edit = this.trackInputEdit(target);
+        if (edit) await this.apply([edit.operation], edit.label);
+      });
+      return;
+    }
     if (target.matches("[data-et-snap]")) this.snapping = target.checked;
     if (target.matches("[data-et-zoom]")) {
       this.zoom(10 ** Number(target.value));
     }
-    if (target.dataset.etTrackMix)
-      this.run(async () => {
-        if (
-          !target.value.trim() ||
-          !Number.isFinite(target.valueAsNumber) ||
-          !target.checkValidity()
-        )
-          throw new Error("轨道音量必须为 0–400%，声像必须在左 100 到右 100 之间");
-        const key = target.dataset.etTrackMix as "volume" | "pan";
-        await this.apply(
-          [
-            {
-              type: "track.update",
-              sequenceId: this.current().sequence.id,
-              trackId: target.dataset.etTrackId!,
-              patch: { [key]: target.valueAsNumber / 100 },
-            },
-          ],
-          key === "volume" ? "调整轨道音量" : "调整轨道声像",
-        );
-      });
-    if (target.dataset.etTrackName)
-      this.run(() =>
-        this.apply(
-          [
-            {
-              type: "track.update",
-              sequenceId: this.current().sequence.id,
-              trackId: target.dataset.etTrackName!,
-              patch: { name: target.value },
-            },
-          ],
-          "重命名轨道",
-        ),
-      );
   };
+  private trackInputEdit(input: HTMLInputElement): { operation: EditorOperation; label: string } | undefined {
+    if (!this.trackInputCurrent(input)) return;
+    const { sequence } = this.current(), trackId = input.dataset.etTrackName ?? input.dataset.etTrackId!,
+      track = sequence.tracks.find((item) => item.id === trackId)!;
+    let patch: { name: string } | { volume: number } | { pan: number }, label: string;
+    if (input.dataset.etTrackName) {
+      if (input.value === track.name) return;
+      patch = { name: input.value };
+      label = "重命名轨道";
+    } else {
+      if (!input.value.trim() || !Number.isFinite(input.valueAsNumber) || !input.checkValidity())
+        throw new Error("轨道音量必须为 0–400%，声像必须在左 100 到右 100 之间");
+      const key = input.dataset.etTrackMix as "volume" | "pan", value = input.valueAsNumber / 100;
+      if (track[key] === value) return;
+      patch = { [key]: value } as { volume: number } | { pan: number };
+      label = key === "volume" ? "调整轨道音量" : "调整轨道声像";
+    }
+    return { operation: { type: "track.update", sequenceId: sequence.id, trackId, patch }, label };
+  }
+  /** Preserve the user's two explicit edits even when the first render replaces the clicked button. */
+  private async trackControl(button: HTMLButtonElement): Promise<void> {
+    const owner = this.trackButtons.get(button);
+    if (this.trackControlPending || button.disabled || !owner || !this.currentTrackButtons.has(button) ||
+      !this.container.contains(button)) return;
+    if (!this.trackOwnerCurrent(owner)) {
+      this.render();
+      if (button.dataset.etDeleteConfirm) this.notice.textContent = "工程或序列已变化，请重新确认删除轨道";
+      return;
+    }
+    const { document, sequence } = this.current(), data = { ...button.dataset },
+      key = data.etToggle as "locked" | "hidden" | "muted" | undefined,
+      desired = key ? !sequence.tracks.find((track) => track.id === owner.trackId)![key] : undefined,
+      confirmed = !!data.etDeleteConfirm && this.trackConfirmationCurrent(document, sequence, owner.trackId),
+      input = globalThis.document.activeElement instanceof HTMLInputElement &&
+        globalThis.document.activeElement.matches(TRACK_INPUTS) ? globalThis.document.activeElement : undefined,
+      draft = input && this.trackInputCurrent(input) ? {
+        value: input.value,
+        selector: input.dataset.etTrackName ? `[data-et-track-name="${CSS.escape(input.dataset.etTrackName)}"]`
+          : `[data-et-track-id="${CSS.escape(input.dataset.etTrackId!)}"][data-et-track-mix="${input.dataset.etTrackMix}"]`,
+      } : undefined;
+    let draftSaved = false, edit: ReturnType<EditorTimeline["trackInputEdit"]>;
+    try {
+      if (input && draft) {
+        // Finish native IME and blur without its change handler racing the captured intent.
+        this.replacingControls = true;
+        try { input.blur(); } finally { this.replacingControls = false; }
+        draft.value = input.value;
+        edit = this.trackInputEdit(input);
+      }
+      this.trackControlPending = true;
+      this.render();
+      if (edit) await this.apply([edit.operation], edit.label);
+      draftSaved = true;
+      if (!this.trackOwnerCurrent(owner)) return;
+      const current = this.current(), track = current.sequence.tracks.find((item) => item.id === owner.trackId)!;
+      if (track.locked && key !== "locked" && !Object.hasOwn(data, "etDeleteCancel"))
+        throw new Error("轨道已锁定，请先解锁再操作");
+      if (key) {
+        if (track[key] !== desired)
+          await this.apply([{ type: "track.update", sequenceId: owner.sequenceId, trackId: owner.trackId, patch: { [key]: desired } }], "调整轨道");
+      } else if (Object.hasOwn(data, "etDeleteCancel")) this.confirmTrack = undefined;
+      else if (data.etDeleteTrack || data.etDeleteConfirm) {
+        if (confirmed && edit && current.document.revision === document.revision + 1)
+          this.confirmTrack = { trackId: owner.trackId, documentId: owner.documentId, generation: owner.generation,
+            sequenceId: owner.sequenceId, revision: current.document.revision };
+        await this.removeTrack(owner.trackId, !!data.etDeleteConfirm);
+      } else {
+        const ids = current.sequence.tracks.map((item) => item.id), from = ids.indexOf(owner.trackId),
+          to = from + (data.etUp ? 1 : -1);
+        if (to < 0 || to >= ids.length) return;
+        [ids[from], ids[to]] = [ids[to]!, ids[from]!];
+        await this.apply([{ type: "track.reorder", sequenceId: owner.sequenceId, trackIds: ids }], "轨道排序");
+      }
+    } catch (error) {
+      if (this.trackOwnerCurrent(owner)) {
+        this.context.onError(error);
+        this.notice.textContent = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      this.trackControlPending = false;
+      this.render();
+      if (!draftSaved && draft && this.trackOwnerCurrent(owner)) {
+        const field = this.container.querySelector<HTMLInputElement>(draft.selector);
+        if (field && !field.disabled) { field.value = draft.value; field.focus({ preventScroll: true }); }
+      }
+      if (data.etDeleteTrack && this.trackOwnerCurrent(owner) && this.confirmTrack?.trackId === owner.trackId)
+        this.container.querySelector<HTMLButtonElement>(`[data-et-delete-confirm="${CSS.escape(owner.trackId)}"]`)?.focus({ preventScroll: true });
+    }
+  }
   private input = (event: Event): void => {
     const target = event.target;
     if (target instanceof HTMLInputElement && target.matches("[data-et-zoom]"))
@@ -863,7 +1013,7 @@ export class EditorTimeline {
       "切换时间线排列",
     );
   }
-  async action(action: string): Promise<void> {
+  async action(action: string, at = this.context.time()): Promise<void> {
     if (action === "zoom-in" || action === "zoom-out") {
       this.zoom(this.scale * (action === "zoom-in" ? 1.5 : 1 / 1.5));
       return;
@@ -878,7 +1028,7 @@ export class EditorTimeline {
     }
     const { document, sequence, selected } = this.current(),
       ids = [...selected],
-      time = this.context.time(),
+      time = at,
       scope = {
         documentId: document.id,
         sequenceId: sequence.id,
@@ -948,6 +1098,14 @@ export class EditorTimeline {
         generation === this.context.identity?.().generation
       )
         this.select(plan.rightClipIds);
+      return;
+    }
+    if (action === "keep-left" || action === "keep-right") {
+      if (!ids.length || sequence.clips.some((clip) =>
+        selected.has(clip.id) && (time <= clip.start || time >= clip.start + clip.duration)))
+        throw new Error("请把播放头移到每个所选片段内部，再保留左侧或右侧");
+      const operations = planClipTiming(document, sequence.id, ids, { kind: action, time });
+      await this.apply(operations, action === "keep-left" ? "保留播放头左侧" : "保留播放头右侧");
       return;
     }
     if (action === "group") {
@@ -1211,17 +1369,31 @@ export class EditorTimeline {
       current.selected.has(clipId) ? current.selected : this.expanded(current.sequence, [clipId]),
     );
     const { document, sequence, selected } = this.current();
+    this.clearStaleClipboard(document);
+    const time = this.context.time(),
+      chosen = sequence.clips.filter((clip) => selected.has(clip.id)),
+      inside = chosen.every((clip) => time > clip.start && time < clip.start + clip.duration),
+      pending = this.clipboardPending ? "正在保存剪贴板操作，请稍候" : "";
     const locked = sequence.clips.some(
       (clip) =>
         selected.has(clip.id) && sequence.tracks.find((track) => track.id === clip.trackId)?.locked,
     );
     const element = globalThis.document.createElement("div");
     element.id = "timeline-context-menu";
-    element.className = "timeline-context-menu";
+    element.className = "timeline-context-menu editor-clip-menu";
     element.setAttribute("role", "menu");
     element.setAttribute("aria-label", "时间轴片段操作");
     element.setAttribute("aria-describedby", "timeline-context-menu-note");
-    element.innerHTML = `<div class="timeline-context-menu-title">${esc(clip.label)}</div><button type="button" role="menuitem" class="danger" data-timeline-menu-action="remove"${locked ? " disabled" : ""}>从时间轴删除${selected.size > 1 ? ` ${selected.size} 个片段` : ""}</button><button type="button" role="menuitem" data-timeline-menu-action="cancel">取消</button><p id="timeline-context-menu-note">素材库与原文件保留，可撤销</p>`;
+    const item = (action: string, label: string, shortcut = "", reason = "", danger = false) =>
+      `<button type="button" role="menuitem" data-timeline-menu-action="${action}"${danger ? ' class="danger"' : ""}${reason ? ` disabled title="${esc(reason)}"` : ""}><span>${label}</span>${shortcut ? `<kbd aria-hidden="true">${shortcut}</kbd>` : ""}</button>`,
+      lockReason = locked ? "所选片段的轨道已锁定，请先解锁" : "",
+      timeReason = inside ? "" : "请把播放头移到每个所选片段内部";
+    element.innerHTML = `<div class="timeline-context-menu-title">${esc(clipLabel(clip))}${selected.size > 1 ? ` · ${selected.size} 个片段` : ""}</div>
+      ${item("copy", "复制", "⌘/Ctrl C", pending)}${item("cut", "剪切", "⌘/Ctrl X", pending || lockReason)}${item("paste", "粘贴到播放头", "⌘/Ctrl V", pending || (!this.clipboard ? "请先复制片段" : ""))}${item("duplicate", "原位复制", "⌘/Ctrl D", pending)}
+      <div role="separator"></div>${item("split", "在播放头切分", "S", lockReason || timeReason)}${item("keep-left", "保留播放头左侧", "", lockReason || timeReason)}${item("keep-right", "保留播放头右侧", "", lockReason || timeReason)}
+      <div role="separator"></div>${item("group", "分组", "⌘/Ctrl G", lockReason || (selected.size < 2 ? "至少选择两个片段" : ""))}${item("ungroup", "解组", "⇧ ⌘/Ctrl G", lockReason || (!chosen.some((clip) => clip.groupId) ? "所选片段没有分组" : ""))}
+      <div role="separator"></div>${item("remove", `从时间轴删除${selected.size > 1 ? ` ${selected.size} 个片段` : ""}`, "⌫", lockReason, true)}${item("cancel", "取消")}
+      <p id="timeline-context-menu-note">播放头：${ticksToSeconds(time).toFixed(6)} 秒（打开菜单时）。${lockReason || timeReason || ""} 编辑可撤销；磁吸主画面轨的裁剪会联动后续片段。</p>`;
     const lifetime = new AbortController();
     this.menu = {
       element,
@@ -1232,6 +1404,7 @@ export class EditorTimeline {
       sequenceId: sequence.id,
       clipId,
       selected: [...selected],
+      time,
     };
     element.addEventListener("click", (event) => {
       if (this.menu?.element !== element) return;
@@ -1241,9 +1414,10 @@ export class EditorTimeline {
       if (!button || button.disabled) return;
       if (button.dataset.timelineMenuAction === "cancel") return this.closeMenu(true);
       const current = this.menuCurrent();
-      this.closeMenu();
+      const action = button.dataset.timelineMenuAction!, at = this.menu.time;
+      this.closeMenu(current);
       if (!current) return this.context.onError(new Error("工程或选择已变化，请重新打开片段菜单"));
-      this.run(() => this.action("delete"));
+      this.run(() => this.action(action === "remove" ? "delete" : action, at));
     });
     element.addEventListener("contextmenu", (event) => event.preventDefault());
     globalThis.document.body.append(element);
@@ -1278,7 +1452,15 @@ export class EditorTimeline {
             : event.key === "End"
               ? buttons.length - 1
               : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
-        buttons[next]?.focus({ preventScroll: true });
+        const button = buttons[next];
+        button?.focus({ preventScroll: true });
+        if (button) {
+          const item = button.getBoundingClientRect(),
+            top = element.getBoundingClientRect().top + element.clientTop + 4,
+            bottom = top + element.clientHeight - 8;
+          if (item.top < top) element.scrollTop -= top - item.top;
+          else if (item.bottom > bottom) element.scrollTop += item.bottom - bottom;
+        }
       },
       { capture: true, signal: lifetime.signal },
     );
@@ -1421,6 +1603,12 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
+    if (event.button === 0 && event.target instanceof Element && event.target.closest(TRACK_BUTTONS) &&
+      globalThis.document.activeElement instanceof HTMLInputElement &&
+      globalThis.document.activeElement.matches(TRACK_INPUTS)) {
+      event.preventDefault();
+      return;
+    }
     if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
@@ -1882,6 +2070,7 @@ export class EditorTimeline {
     this.container.removeEventListener("input", this.input);
     this.container.removeEventListener("wheel", this.wheel);
     this.container.removeEventListener("keydown", this.keydown);
+    this.container.removeEventListener("change", this.replacementChange, true);
     this.container.removeEventListener("keyup", this.keyup);
     this.container.removeEventListener("pointerdown", this.pointerdown);
     this.container.removeEventListener("pointermove", this.pointermove);

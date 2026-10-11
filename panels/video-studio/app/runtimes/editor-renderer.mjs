@@ -1906,7 +1906,9 @@
     };
   }
   function prepareEvaluator(value) {
-    const document2 = validateEditorDocument(value);
+    return createEvaluator(validateEditorDocument(value));
+  }
+  function createEvaluator(document2) {
     const assets = new Map(document2.assets.map((asset2) => [asset2.id, asset2]));
     const sequences = new Map(document2.sequences.map((sequence2) => [sequence2.id, sequence2]));
     const durations = new Map(

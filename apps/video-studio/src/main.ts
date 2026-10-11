@@ -5565,6 +5565,10 @@ async function submitEditorExport(
   if (origin === "production") assertProductionPublicationEditable();
   else assertEditorEditable();
   if (!editorTasks) throw new Error("本地媒体任务尚未连接");
+  const sequence = doc.sequences.find((item) => item.id === sequenceId);
+  if (!sequence) throw new Error("所选导出序列不存在");
+  // Keep the submitted names even if editing continues while media is being prepared.
+  const title = `${doc.name} · ${sequence.name}${range ? ` · ${exportRangeLabel(range)}` : ""} · ${profile.name}`;
   const prepared =
     preparedNative?.key === editorDocumentKey(doc, sequenceId) ? preparedNative : undefined;
   const key = editorDocumentKey(doc, sequenceId);
@@ -5586,10 +5590,7 @@ async function submitEditorExport(
     onProgress: (item) => toast(`准备导出 · ${item.completed}/${item.total}`),
   });
   transfer.snapshot = snapshot;
-  const rangeLabel = range
-    ? ` · ${exportRangeLabel(range)}`
-    : "";
-  editorExportJobs?.track(job, `${doc.name}${rangeLabel} · ${profile.name}`);
+  editorExportJobs?.track(job, title);
   toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");
   return { jobId: job.id, job };
 }

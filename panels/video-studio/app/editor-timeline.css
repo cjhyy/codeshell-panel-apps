@@ -723,3 +723,20 @@
     display: none;
   }
 }
+.editor-clip-menu button {
+  justify-content: space-between;
+}
+.editor-clip-menu kbd {
+  flex: none;
+  color: #a9bbaf;
+  font: inherit;
+  font-size: 10px;
+}
+.editor-clip-menu [role="separator"] {
+  height: 1px;
+  margin: 4px 7px;
+  background: #3d4d43;
+}
+.editor-clip-menu button:disabled {
+  opacity: 0.45;
+}

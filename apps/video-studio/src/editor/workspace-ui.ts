@@ -4,7 +4,17 @@ import { EditorMarkers } from "./marker-ui";
 import { EditorInspector } from "./inspector-ui";
 import { EditorTimeline } from "./timeline-ui";
 import { EditorPreview, type PreviewAudio } from "./preview";
-import { EditorSession, type EditorSessionState } from "./session";
+import {
+  EditorSession,
+  sameIdentity,
+  type SessionIdentity,
+  type EditorSessionState,
+} from "./session";
+import {
+  prepareTimelineSnapshot,
+  isPreparedTimelineSnapshot,
+  type PreparedTimelineSnapshot,
+} from "./evaluate";
 import {
   createTrack,
   defaultAudioMix,
@@ -135,6 +145,8 @@ export class EditorWorkspace {
   private pendingExport = false;
   /** Shared only during the synchronous, read-only view update for one preview frame. */
   private frameDocument?: EditorDocument;
+  private timelineSnapshot?: PreparedTimelineSnapshot;
+  private timelineSnapshotIdentity?: SessionIdentity;
 
   constructor(
     private readonly container: HTMLElement,
@@ -244,6 +256,7 @@ export class EditorWorkspace {
     this.timeline = new EditorTimeline(this.get("[data-ew-timeline]"), {
       read,
       identity: () => options.session.getState().identity,
+      prepareMediaSnapshot: (document, identity) => this.prepareTimelineMedia(document, identity),
       selection,
       apply,
       applyClipboard: async (operations, label) => {
@@ -386,6 +399,28 @@ export class EditorWorkspace {
       label,
     );
   }
+  private releaseTimelineMedia(): void {
+    const snapshot = this.timelineSnapshot;
+    this.timelineSnapshot = undefined;
+    this.timelineSnapshotIdentity = undefined;
+    snapshot?.dispose();
+  }
+  private prepareTimelineMedia(
+    document: EditorDocument,
+    identity: SessionIdentity,
+  ): PreparedTimelineSnapshot {
+    if (!sameIdentity(identity, this.options.session.getState().identity))
+      throw new Error("时间线工程已变更，请重试媒体预览");
+    if (
+      !sameIdentity(identity, this.timelineSnapshotIdentity) ||
+      !isPreparedTimelineSnapshot(this.timelineSnapshot)
+    ) {
+      this.releaseTimelineMedia();
+      this.timelineSnapshot = prepareTimelineSnapshot(document, identity);
+      this.timelineSnapshotIdentity = { ...identity };
+    }
+    return this.timelineSnapshot;
+  }
   private refresh(state: EditorSessionState): void {
     if (this.disposed) return;
     const save = this.get("[data-ew-save]");
@@ -414,6 +449,7 @@ export class EditorWorkspace {
       state.saveState !== "failed" || state.error?.stage === "commit";
     const signature = `${state.identity.documentId}:${state.identity.generation}:${state.identity.revision}`;
     if (signature === this.revision) return;
+    this.releaseTimelineMedia();
     this.revision = signature;
     const documentIdentity = JSON.stringify([state.identity.documentId, state.identity.generation]),
       opened = this.documentIdentity !== documentIdentity;
@@ -689,6 +725,7 @@ export class EditorWorkspace {
   /** Called after an imported/reconnected resource becomes available without a document edit. */
   refreshMedia(): void {
     if (this.disposed) return;
+    this.releaseTimelineMedia();
     this.cancelPreparation();
     this.clearAudioWarning();
     this.audio?.stream?.dispose();
@@ -1557,6 +1594,7 @@ export class EditorWorkspace {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.releaseTimelineMedia();
     this.unsubscribe();
     this.cancelPreparation();
     this.audio?.stream?.dispose();

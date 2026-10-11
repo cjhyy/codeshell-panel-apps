@@ -697,14 +697,14 @@ test("the 任务 page lists video exports beside production tasks and opens thei
   const exports = page.locator("#studio .export-job-list");
   await exports.locator("[data-export-job-id]").first().waitFor();
   const running = exports.locator('[data-export-job-id="export-running"]');
-  assert.match(await running.textContent(), /视频导出 · 自定义导出/);
+  assert.match(await running.textContent(), /视频导出 · 序列 ID：sequence-main · 自定义导出/);
   assert.match(await running.textContent(), /进行中/);
   assert.equal(await running.locator("progress").getAttribute("value"), "40");
   assert.match(
     await exports.locator('[data-export-job-id="export-failed"]').textContent(),
     /失败.*磁盘空间不足/s,
   );
-  assert.doesNotMatch(await exports.textContent(), /sequence-main/);
+  assert.match(await exports.textContent(), /序列 ID：sequence-main/);
   await running.getByRole("button", { name: "在导出记录中查看" }).click();
   const record = page.getByRole("dialog", { name: "导出任务", exact: true });
   assert.equal(await record.isVisible(), true);
@@ -4227,4 +4227,93 @@ test("stable project scope keeps actual editor saves across chat selection and f
   assert.match(outcome.error, /重新打开视频面板/);
   assert.deepEqual(await saved(page), stored);
   assert.deepEqual(await page.evaluate(() => window.__mainHost.calls), []);
+});
+
+
+test("main freezes distinguishable sequence export titles through range export, later renames and reload", async (t) => {
+  const page = await openPage(t, { automatic: true });
+  await waitSaved(page);
+  const projectName = '批量工程 <项目>&"',
+    firstName = '横屏 <正式>&"',
+    secondName = '竖屏 <社交>&"';
+  await page.locator("#project-name").fill(projectName);
+  await page.locator("#project-name").press("Tab");
+  await waitSaved(page);
+  const dialog = page.locator("#editor-workspace .ew-dialog[open]");
+  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await dialog.locator('[name="name"]').fill(firstName);
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  await page.locator('[data-ew-action="new-sequence"]').click();
+  await dialog.locator('[name="name"]').fill(secondName);
+  await dialog.locator('[name="width"]').fill("360");
+  await dialog.locator('[name="height"]').fill("640");
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  await page.locator('[data-add-asset="demo"]').click();
+  await waitSaved(page);
+  await oldAction(page, "export").click();
+  await dialog.locator('[name="custom"]').uncheck();
+  await dialog.locator('[name="profiles"][value="landscape-1080p"]').check();
+  const choices = dialog.locator('[name="sequences"]');
+  for (let index = 0; index < (await choices.count()); index++) await choices.nth(index).check();
+  await dialog.locator('[type="submit"]').click();
+  await page.waitForFunction(() => window.__editorRenderRequests.length === 2);
+  await dialog.waitFor({ state: "detached" });
+  const submitted = await page.evaluate(() => window.__editorRenderRequests);
+  assert.equal(new Set(submitted.map((item) => item.request.sequenceId)).size, 2);
+  assert.deepEqual(
+    submitted.map((item) => item.request.profile.name),
+    ["横屏 1080p", "横屏 1080p"],
+  );
+  const titles = page.locator(".editor-export-job-list section strong");
+  assert.deepEqual(
+    (await titles.allTextContents()).sort(),
+    [
+      `${projectName} · ${firstName} · 横屏 1080p`,
+      `${projectName} · ${secondName} · 横屏 1080p`,
+    ].sort(),
+  );
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+  await page.locator('[data-ew-action="marker"]').click();
+  await page.getByRole("button", { name: "添加范围", exact: true }).click();
+  await page.getByLabel("开始（秒）", { exact: true }).fill("0.3336875");
+  await page.getByLabel("结束（秒）", { exact: true }).fill("1.3346875");
+  await page.getByLabel("标记名称", { exact: true }).fill("审核范围");
+  await page.getByRole("button", { name: "添加标记", exact: true }).click();
+  const beforeRange = await waitSaved(page),
+    current = beforeRange.sequences.find((item) => item.id === beforeRange.activeSequenceId);
+  await oldAction(page, "export").click();
+  await dialog.locator('[name="range"]').selectOption(current.markers[0].id);
+  await dialog.locator('[name="presetName"]').fill("审核版");
+  await dialog.locator('[type="submit"]').click();
+  await page.waitForFunction(() => window.__editorRenderRequests.length === 3);
+  await dialog.waitFor({ state: "detached" });
+  const rangeTitle = `${projectName} · ${secondName} · 0.333688–1.334688 秒 · 审核版`;
+  assert.ok((await titles.allTextContents()).includes(rangeTitle));
+  const frozen = await titles.allTextContents();
+  assert.equal(
+    await page.locator(".editor-export-job-list img,.editor-export-job-list script").count(),
+    0,
+  );
+  await page.getByRole("button", { name: "关闭导出任务", exact: true }).click();
+  await page.locator("#project-name").fill("继续编辑工程");
+  await page.locator("#project-name").press("Tab");
+  await waitSaved(page);
+  await page.locator('[data-ew-action="sequence-settings"]').click();
+  await dialog.locator('[name="name"]').fill("继续编辑序列");
+  await dialog.locator('[type="submit"]').click();
+  await dialog.waitFor({ state: "detached" });
+  assert.deepEqual(await titles.allTextContents(), frozen);
+  await page.reload();
+  await waitSaved(page);
+  await page.waitForFunction(
+    () => document.querySelectorAll(".editor-export-job-list section").length === 3,
+  );
+  assert.deepEqual((await titles.allTextContents()).sort(), [...frozen].sort());
+  assert.equal(
+    await page.evaluate(() => window.__editorRenderRequests.length),
+    0,
+    "Reload never submits duplicates",
+  );
 });

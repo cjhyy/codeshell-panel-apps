@@ -305,3 +305,33 @@ goal仍active至11:00，automation11继续保留。
   独立13项边界复核无阻断，已批准四文件最小正式实现，研究提交ff32d42不直接纳入产品。
 
 继续优化至11:00，未发布、未安装、未提前完成goal。
+
+## 第八批整合验证（03:38 左右）
+
+- 已整合1ce6ab8轨道输入归属、52c8357轨道按钮首击、c36f8c0导出序列名称、
+  2e42e4e片段菜单及b66a946短屏键盘滚动、49e8cb0 owned timeline-media正式实现。
+  所有delta无冲突合并后，冻结源码完成affected UI331/331、完整真实媒体228/228、
+  完整离线1124项中1121通过3可选跳过；native voice5通过1可选跳过、workspace docs5/5。
+  typecheck/build/build:check/validate39通过。
+  日志`/tmp/video-studio-morning-eighth-{ui,media,unit,typecheck,build,build-check,validate}.log`。
+- 轨道输入在同scope普通revision保留真实DOM祖先及IME；恢复、换代、换序列、旧重挂
+  控件均不写入后继工程。合法草稿与静音/隐藏/锁定/删除/排序各自可撤销；原生首击
+  不再被失焦重建吞掉。真实autosave失败遵循dirty/retry，未扩展存储协议。
+- 菜单显示打开时精确播放头并用该时点执行粘贴/切分/左右裁剪，所有所选片段需跨过
+  播放头才允许左右裁剪。复用原planner与锁轨/来源字幕/磁吸检查。
+  独立复核发现短屏End只改变焦点不滚动，已修为仅调整菜单scrollTop；原280/390/620×340
+  三项失败全部复验通过，其他独立12项无P1/P2。root已查看280px菜单截图。
+- 导出记录冻结工程/序列/预设名称及精确范围，700字加载上限覆盖三个合法200字名称；
+  缺失旧名称仅显示真实sequence ID。29 jobs及3 actual main回归、长名390/620px截图通过，
+  root已查看390px截图。第七批b2b0e7b的push/PR两套CI均成功。
+- owned快照完整校验并冻结私有图，公共render/prepareEvaluator/compileAudioPlan的完整
+  验证保留。真正#private单plan、generation/revision/seq/root/loader失效、reset/refresh/
+  dispose/observer与canvas重入均有正式生产回归；独立6项真实媒体复核无阻断。
+  合法5000片段生产采样：同可见roots14.0→0.4ms，跨roots14.0→14.0、切序列13.7→13.7；
+  首次factory33.3ms，冷首帧60.2vs42.8ms（增加17.4ms的明确取舍）。这些仅media渲染
+  成本，不包含session.read及时间轴DOM/layout，不能宣称整次滚动或冷启动提速。
+- 后续独立已复现：轨道草稿→首次clip拖动/标尺seek会被旧revision gesture取消；
+  长按S/Delete/剪切会反复报错，长按原位复制/分组会重复新增undo。均在独立树修复中，
+  此批未包含，不能称已解决。真实workspace滚动总成本也正在独立分解审查。
+
+11:00截止和automation11保留，goal仍active。
