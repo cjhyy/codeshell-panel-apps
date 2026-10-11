@@ -25,10 +25,10 @@
     "app/editor-sequences.css": "a0c868734dc1e5e10a7c0707a69e4a7e2f87416cb228c5c74182f3cc35fec79a",
     "app/editor-timeline.css": "9721a8be927eac9708b387b398201da57c151cf087d19f625a841936de490bef",
     "app/editor-timing.css": "a2d08830d059916e41aaa2bc9dce94d0be3c89d22e1db1c33a2fd2e30f1cf3ea",
-    "app/editor-workspace.css": "0032cbfe6de158668c08fb91c3d798b0347acc9f1da11cc7c0428373aec3aa41",
+    "app/editor-workspace.css": "06a738659d1be0ab63cac54cdd48b26413a59255a542e9c3f44b772d751ea31d",
     "app/index.html": "d8a6e7c3a8cca976c3040430f35f2d64c43b15d317cc449ffab040f6cd1af334",
     "app/main.css": "cbad0ccc7e4b88a16b50c6a195d6aef19d592be9793ae90d54f83db1ebd3743d",
-    "app/main.mjs": "fe729297721719e2fce7322cc012b5377b03cd8d8a98ceba7e9ab07ab3ced836",
+    "app/main.mjs": "0dfbc360432e1be48f94b41e3ffcb2449ca3ee3026910b1c0b6d642b7aaa3dad",
     "app/panel-select.css": "33fdaafa5b361003b553c86e1b18b41a36e9ec3d9dd80e2e7fab6020bcf7bae2",
     "app/panel-select.js": "761d4ba289275ae7deeefee2804c0c995dbb01e2d1e302e1ad4ac2d34bdb29d6",
     "app/rough-cut.css": "b70a117467b919bf5c27cc93db53c569a8b58d6bd8f1646c19f67e846c29c6af",
@@ -40,6 +40,6 @@
     "app/tools/folder-scan.mjs": "524b085b5cbb4c5750ba7345b22711fb314ea5338a67822752a95cc150613d25",
     "app/tools/media-runtime.mjs": "3763726d176e1c72515c364f253a876b2945fcd1c8b11497bcd038dc584c5a49",
     "app/tools/voice-runtime.mjs": "b031343db0f19e6a1b85c7410f41ea762edf5cd9f47b3e5410fdee4eb694410d",
-    "README.md": "a6629c666640b6ea6331baeeaba518c6a6efb968d01d7f0e302bc27b64959f13"
+    "README.md": "d0e4e51ae2d88601dd70a4360cd8b4262b8db0a112789c17c392eac667c4bd0c"
   }
 }

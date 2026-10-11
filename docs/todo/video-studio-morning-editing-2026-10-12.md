@@ -270,3 +270,38 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
   owned snapshot能力仍在独立原型阶段，尚未承诺或交付新性能。
 
 11:00截止与automation11继续有效；未发布、未安装，不提前结束goal。
+
+## 第六批完整验证与后续审查（03:12 左右）
+
+- 固定提交edfa791的完整UI666/666、真实媒体228/228全部通过。
+  日志`/tmp/video-studio-morning-sixth-full-{ui,media}.log`，测试期间未修改被测源。
+- 已交付独立e4c0316导出实际输出摘要，与首次提交共用readSelection，显示真正生效的
+  帧率/分辨率/容器/编码/范围/成片数。固定预设不会展示成禁用自定义字段的旧帧率。
+  84 workspace UI、16相关单测及390/620px真实视觉检查通过；root已查看长名称截图。
+- 已交付独立6b19747精确定位：点击当前时间，输入秒数或从0开始的帧序号，暂停播放并
+  滚入可见范围，保持选择与工程历史。真实NTSC帧时钟、1tick与分钟进位、越界拒绝、
+  输入单位转换、取消、恢复/切序列/空序列均覆盖。17时间单测、232相关UI通过；
+  opaque iframe中的Enter定向回归通过。独立5项键盘/280/390/620px视觉复核无P1/P2，
+  root已查看`video-studio-playhead-review/`截图。
+- 新P1已在真正EditorSession.replace复现：focused轨道名称/音量未提交草稿被render移除
+  触发原生change，继任工程错误追加重命名/调整音量保存。editing_audit独立修复轨道输入
+  所有权、重建guard及合法同scope草稿保留；此问题尚未整合修复，不能称已解决。
+- owned timeline-media原型same-root warm14.0→0.20ms、跨root/切序列约13ms、首次与heap
+  基本持平，单plan约22.8KiB。公共恶意输入与伪/失效cap拒绝、外部dispose及canvas重入
+  继续审查；尚未纳入正式产品代码。
+
+goal仍active至11:00，automation11继续保留。
+
+## 第七批整合验证（03:18 左右）
+
+- e4c0316导出实际输出摘要和6b19747精确播放头定位已整合，浏览器workspace/timeline/main
+  合计242/242通过；领域34项中33通过、1可选环境跳过；完整离线1121项中1118通过、
+  3可选跳过，native voice5通过1可选跳过，workspace docs5/5。
+  日志`/tmp/video-studio-morning-seventh-{ui,domain,unit}.log`。
+- 第六批edfa791的push和PR两套CI均已完成且全部成功，完整本地UI666/666与媒体228/228
+  作为当前已通过基线保留。第七批受影响测试期间被测源码固定。
+- README补充未发布功能的实际入口和使用限制，保持0.7.2版本，不声称已更新设备安装。
+- 轨道草稿P1独立修复定向8项通过，完整回归尚在运行；owned timeline-media原型20项及
+  独立13项边界复核无阻断，已批准四文件最小正式实现，研究提交ff32d42不直接纳入产品。
+
+继续优化至11:00，未发布、未安装、未提前完成goal。

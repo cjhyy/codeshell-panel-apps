@@ -608,6 +608,10 @@ export class EditorTimeline {
   /** Keyboard navigation reveals the current result without changing the document or selection. */
   private async seekVisible(time: Tick, exact = false): Promise<void> {
     await this.context.seek(time, exact);
+    this.revealPlayhead();
+  }
+  /** Reveal the current clock without changing selection, zoom or document history. */
+  revealPlayhead(): void {
     if (this.destroyed) return;
     const viewport = this.viewport(),
       x = ticksToSeconds(this.context.time()) * this.scale,

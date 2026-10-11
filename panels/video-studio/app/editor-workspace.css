@@ -244,6 +244,13 @@
   font-size: 11px;
   white-space: nowrap;
 }
+.ew-player [data-ew-time] {
+  padding: 4px 6px;
+  min-height: 28px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .ew-player input {
   flex: 1;
   width: 60px;
@@ -581,6 +588,23 @@
 }
 .ew-dialog fieldset label {
   margin-bottom: 8px;
+}
+.ew-export-summary {
+  padding: 10px 12px;
+  border: 1px solid #426755;
+  border-radius: 8px;
+  background: #1b2c23;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ew-export-summary output {
+  display: block;
+  margin-top: 4px;
+  white-space: pre-line;
+}
+.ew-export-summary [data-pending] {
+  color: #edc183;
 }
 .ew-dialog [hidden],
 .editor-import-status[hidden],

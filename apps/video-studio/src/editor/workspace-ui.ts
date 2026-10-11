@@ -18,6 +18,7 @@ import {
   formatFrameRate,
   freezeTimeMap,
   secondsToTicks,
+  ticksToFrame,
   ticksToSeconds,
   type Tick,
 } from "./time";
@@ -28,7 +29,7 @@ import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./
 import { MAX_EDITOR_TICK, sequenceDuration } from "./validation";
 import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./placement";
 import { EditorExportBatch } from "./export-batch";
-import type { ExportRange } from "./export-range";
+import { exportRangeLabel, validateExportRange, type ExportRange } from "./export-range";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";
 import { EditorSequences } from "./sequences-ui";
@@ -37,6 +38,7 @@ import type { EditorTimelineContext } from "./timeline-ui";
 import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
 import { audioMixWarning } from "./audio-mix-report";
 import type { PreviewResolution } from "./compositor";
+import { resolvePlayheadPosition } from "./playhead-position";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
@@ -94,10 +96,10 @@ function assetLimitations(asset: EditorAsset): string[] {
 const button = (action: string, label: string, extra = "") =>
   `<button type="button" data-ew-action="${action}" ${extra}>${label}</button>`;
 const timeLabel = (tick: Tick) => {
-  const value = ticksToSeconds(tick);
-  return `${Math.floor(value / 60)
+  const value = Math.round(ticksToSeconds(tick) * 100);
+  return `${Math.floor(value / 6000)
     .toString()
-    .padStart(2, "0")}:${(value % 60).toFixed(2).padStart(5, "0")}`;
+    .padStart(2, "0")}:${((value % 6000) / 100).toFixed(2).padStart(5, "0")}`;
 };
 
 /** The shell only keeps selection and view state; every edit belongs to its injected session. */
@@ -144,7 +146,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select></div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select></div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -437,6 +439,7 @@ export class EditorWorkspace {
       )
       .join("");
     this.get("[data-ew-duration]").textContent = timeLabel(sequenceDuration(sequence));
+    this.get<HTMLButtonElement>("[data-ew-time]").disabled = !sequenceDuration(sequence);
     this.get<HTMLInputElement>("[data-ew-seek]").max = String(
       Math.max(0, sequenceDuration(sequence) - 1),
     );
@@ -473,7 +476,10 @@ export class EditorWorkspace {
       : '<p class="ew-empty">导入视频、音频或图片后，点击素材加入当前序列。</p>';
   }
   private updateTime(): void {
-    this.get("[data-ew-time]").textContent = timeLabel(this.playhead);
+    const control = this.get("[data-ew-time]"),
+      label = timeLabel(this.playhead);
+    control.textContent = label;
+    control.setAttribute("aria-label", `定位播放头，当前 ${label}`);
     this.get<HTMLInputElement>("[data-ew-seek]").value = String(this.playhead);
   }
   private updatePlayButton(playing: boolean): void {
@@ -1095,7 +1101,48 @@ export class EditorWorkspace {
     }
     if (action === "new-sequence" || action === "sequence-settings")
       return this.sequenceDialog(action === "new-sequence");
+    if (action === "jump-playhead") return this.playheadDialog();
     if (action === "export") return this.exportDialog();
+  }
+  private playheadDialog(): void {
+    this.cancelPreparation();
+    const sequence = this.sequence(),
+      duration = sequenceDuration(sequence),
+      identity = this.options.session.getState().identity,
+      current = Math.min(this.playhead, Math.max(0, duration - 1));
+    const owns = () => !this.disposed && this.sequenceId === sequence.id &&
+      JSON.stringify(this.options.session.getState().identity) === JSON.stringify(identity);
+    const form = this.form(
+      "定位播放头",
+      `<p>在「${esc(sequence.name)}」中定位；帧序号从 0 开始，按 ${formatFrameRate(sequence.frameRate)} fps 计算。</p><label>定位单位<select name="positionUnit" aria-label="定位单位"><option value="seconds">秒数</option><option value="frames">帧序号</option></select></label><label>定位位置<input name="position" type="number" min="0" step="any" value="${ticksToSeconds(current).toFixed(6)}" required></label><p data-position-hint>秒数支持小数。定位会暂停播放，不改变片段或选择。</p>`,
+      async (form, signal) => {
+        if (!owns()) throw new Error("工程或序列已变化，请重新打开定位设置");
+        const data = new FormData(form),
+          time = resolvePlayheadPosition(String(data.get("position")), String(data.get("positionUnit")), sequence.frameRate, duration);
+        await this.seek(time, true);
+        if (!signal.aborted && owns()) this.timeline.revealPlayhead();
+      },
+      "定位",
+    );
+    const input = form.querySelector<HTMLInputElement>('[name="position"]')!,
+      unit = form.querySelector<HTMLSelectElement>('[name="positionUnit"]')!,
+      hint = form.querySelector<HTMLElement>("[data-position-hint]")!;
+    let previousUnit = unit.value;
+    unit.addEventListener("change", () => {
+      try {
+        const target = resolvePlayheadPosition(input.value, previousUnit, sequence.frameRate, duration);
+        input.value = unit.value === "frames"
+          ? String(ticksToFrame(target, sequence.frameRate, "floor"))
+          : ticksToSeconds(target).toFixed(6);
+      } catch { /* Keep an invalid draft visible so the user can correct it. */ }
+      previousUnit = unit.value;
+      input.step = unit.value === "frames" ? "1" : "any";
+      hint.textContent = unit.value === "frames"
+        ? `帧序号从 0 开始；切换单位取输入时间所在帧。当前帧 ${ticksToFrame(current, sequence.frameRate, "floor")}，末帧 ${duration ? ticksToFrame(duration - 1, sequence.frameRate, "floor") : "无"}。定位会暂停播放。`
+        : "秒数支持小数。定位会暂停播放，不改变片段或选择。";
+    });
+    input.focus();
+    input.select();
   }
   private form(
     title: string,
@@ -1287,9 +1334,39 @@ export class EditorWorkspace {
         includeCaptions: data.has("captions"),
       });
     };
+    // The preview and submission read one selection, including range-only sequence ownership.
+    const readSelection = (form: HTMLFormElement) => {
+      const data = new FormData(form),
+        profiles = presets.filter((item) => data.getAll("profiles").includes(item.id)),
+        marker = ranges.find((item) => item.id === data.get("range"));
+      if (data.has("custom")) profiles.unshift(readProfile(form));
+      if (data.get("range") && !marker) throw new Error("所选导出范围已不存在");
+      const sequenceIds = marker ? [sequence.id] : data.getAll("sequences").map(String),
+        selectedSequences = sequenceIds.map((id) => {
+          const item = doc.sequences.find((sequence) => sequence.id === id);
+          if (!item) throw new Error("所选序列已不存在");
+          if (!sequenceDuration(item)) throw new Error(`序列“${item.name}”没有可导出的内容`);
+          return item;
+        });
+      if (!sequenceIds.length) throw new Error("请选择要导出的序列");
+      if (new Set(sequenceIds).size !== sequenceIds.length) throw new Error("请选择不同的导出序列");
+      if (!profiles.length) throw new Error("请选择上方设置或至少一种导出预设");
+      if (new Set(profiles.map((profile) => profile.id)).size !== profiles.length)
+        throw new Error("请选择不同的导出预设");
+      if (sequenceIds.length * profiles.length > 512)
+        throw new Error("每批最多提交 512 个成片，请分批选择");
+      const range = marker
+        ? validateExportRange(
+            { start: marker.time, duration: marker.duration },
+            sequenceDuration(sequence),
+          )
+        : undefined;
+      return { sequenceIds, selectedSequences, profiles, marker, range };
+    };
     const form = this.form(
       "导出视频",
       `
+      <section class="ew-export-summary"><strong>本次导出</strong><output data-export-summary role="status" aria-label="导出摘要"></output></section>
       <fieldset data-export-settings><legend>成片设置</legend><fieldset data-export-custom>
       <label>载入预设<select name="preset"><option value="">自定义</option>${presets.map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("")}</select></label>
       <label>预设名称<input name="presetName" maxlength="200" value="自定义导出" required></label>
@@ -1315,16 +1392,12 @@ export class EditorWorkspace {
           assertOwner();
           if (!batch) {
             assertSnapshot();
-            const data = new FormData(form),
-              profiles = presets.filter((item) => data.getAll("profiles").includes(item.id));
-            if (data.has("custom")) profiles.unshift(readProfile(form));
-            const marker = ranges.find((item) => item.id === data.get("range"));
-            if (data.get("range") && !marker) throw new Error("所选导出范围已不存在");
+            const selected = readSelection(form);
             const proposed = new EditorExportBatch(
               doc,
-              marker ? [sequence.id] : data.getAll("sequences").map(String),
-              profiles,
-              marker ? { start: marker.time, duration: marker.duration } : undefined,
+              selected.sequenceIds,
+              selected.profiles,
+              selected.range,
             );
             await this.options.session.flush();
             if (signal.aborted) return;
@@ -1367,6 +1440,39 @@ export class EditorWorkspace {
     ) => form.elements.namedItem(name) as T;
     let rangeActive = false;
     let fullSequenceSelection = new Set([sequence.id]);
+    const updateSummary = () => {
+      if (batch) return;
+      const summary = form.querySelector<HTMLElement>("[data-export-summary]")!;
+      try {
+        const invalid = [...form.elements].find(
+          (field) =>
+            (field instanceof HTMLInputElement || field instanceof HTMLSelectElement) &&
+            field.willValidate &&
+            !field.validity.valid,
+        ) as HTMLInputElement | HTMLSelectElement | undefined;
+        if (invalid)
+          throw new Error(
+            `请检查${invalid.labels?.[0]?.firstChild?.textContent?.trim() || "导出设置"}`,
+          );
+        const selected = readSelection(form);
+        summary.textContent = [
+          `${selected.sequenceIds.length} 个序列：${selected.selectedSequences.map((item) => item.name).join("、")}`,
+          selected.range
+            ? `范围：${sequence.name} · ${selected.marker!.name} · ${exportRangeLabel(selected.range)}`
+            : "范围：完整所选序列",
+          "每个序列输出：",
+          ...selected.profiles.map(
+            (profile) =>
+              `${profile.name} · ${profile.width} × ${profile.height} · ${profile.container.toUpperCase()} / ${profile.videoCodec.toUpperCase()} · ${formatFrameRate(profile.frameRate)} fps`,
+          ),
+          `共 ${selected.sequenceIds.length * selected.profiles.length} 个成片`,
+        ].join("\n");
+        delete summary.dataset.pending;
+      } catch (error) {
+        summary.textContent = `待补充：${error instanceof Error ? error.message : String(error)}`;
+        summary.dataset.pending = "true";
+      }
+    };
     const updateControls = () => {
       const selectedRange = Boolean(input("range").value);
       const choices = [...form.querySelectorAll<HTMLInputElement>('input[name="sequences"]')];
@@ -1396,7 +1502,9 @@ export class EditorWorkspace {
       form.querySelector<HTMLElement>("[data-export-pcm]")!.hidden = !pcm;
       form.querySelector<HTMLButtonElement>("[data-remove-export-preset]")!.disabled =
         !doc.exportProfiles.some((item) => item.id === input("preset").value);
+      updateSummary();
     };
+    form.addEventListener("input", updateSummary);
     form.addEventListener("change", (event) => {
       if ((event.target as HTMLElement).getAttribute("name") === "preset") {
         const chosen = presets.find((item) => item.id === input("preset").value);

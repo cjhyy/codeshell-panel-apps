@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -136,7 +136,7 @@ async function fixture(t, options = {}) {
           name: "主序列",
           width: 320,
           height: 180,
-          frameRate: { numerator: 30, denominator: 1 },
+          frameRate: options.frameRate ?? { numerator: 30, denominator: 1 },
           background: "#000000",
           timelineMode: "free",
           tracks: options.textBelow
@@ -1840,6 +1840,114 @@ test("cancelling export while saving never starts a task and clears the pending 
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 
+test("export summary uses effective profile rates across different sequences, custom toggles and multiple presets", async (t) => {
+  const page = await fixture(t, { sequenceCount: 2 });
+  await page.evaluate(() =>
+    fixture.dispatch(
+      [
+        {
+          type: "sequence.update",
+          sequenceId: "main",
+          patch: { frameRate: { numerator: 60000, denominator: 1001 } },
+        },
+        {
+          type: "sequence.update",
+          sequenceId: "sequence-2",
+          patch: { width: 1080, height: 1920, frameRate: { numerator: 30000, denominator: 1001 } },
+        },
+      ],
+      "序列参数",
+    ),
+  );
+  await settle(page);
+  const before = await documentState(page);
+  await action(page, "export").click();
+  const summary = page.getByLabel("导出摘要", { exact: true });
+  assert.match(await summary.textContent(), /1 个序列：主序列.*59\.94 fps.*共 1 个成片/s);
+  await page.locator('dialog [name="custom"]').uncheck();
+  assert.match(await summary.textContent(), /待补充：.*选择.*导出预设/);
+  await page.locator('dialog [name="profiles"][value="landscape-1080p"]').check();
+  await page.locator('dialog [name="sequences"][value="sequence-2"]').check();
+  const presetOnly = await summary.textContent();
+  assert.match(presetOnly, /2 个序列：主序列、序列 2/);
+  assert.match(presetOnly, /横屏 1080p · 1920 × 1080 · MP4 \/ H264 · 30 fps/);
+  assert.match(presetOnly, /共 2 个成片/);
+  assert.doesNotMatch(presetOnly, /59\.94|29\.97|自定义导出/);
+  assert.equal(await page.locator('dialog [name="rate"]').inputValue(), "60000/1001");
+  assert.equal(await page.locator('dialog [name="rate"]').isDisabled(), true);
+  await page.locator('dialog [name="profiles"][value="portrait-1080p"]').check();
+  assert.match(await summary.textContent(), /共 4 个成片/);
+  await page.locator('dialog [name="custom"]').check();
+  await page.locator('dialog [name="presetName"]').fill("网页发送版");
+  await page.locator('dialog [name="width"]').fill("640");
+  await page.locator('dialog [name="height"]').fill("360");
+  await page.locator('dialog [name="rate"]').selectOption("24000/1001");
+  await page.locator('dialog [name="format"]').selectOption("webm:vp9:opus");
+  const selected = await summary.textContent();
+  assert.match(selected, /网页发送版 · 640 × 360 · WEBM \/ VP9 · 23\.976 fps/);
+  assert.match(selected, /竖屏 1080p · 1080 × 1920 · MP4 \/ H264 · 30 fps/);
+  assert.match(selected, /共 6 个成片/);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.exportAttempts().length), 0);
+  await saveDialog(page);
+  const exports = await page.evaluate(() => fixture.exports);
+  assert.equal(exports.length, 6);
+  for (const item of exports) {
+    const rate = Number(
+      (item.profile.frameRate.numerator / item.profile.frameRate.denominator).toFixed(3),
+    );
+    assert.ok(
+      selected.includes(
+        `${item.profile.name} · ${item.profile.width} × ${item.profile.height} · ${item.profile.container.toUpperCase()} / ${item.profile.videoCodec.toUpperCase()} · ${rate} fps`,
+      ),
+    );
+    assert.deepEqual(item.doc, before);
+  }
+  assert.deepEqual(
+    exports
+      .filter((item) => item.profile.id === "interactive-custom-export")
+      .map((item) => item.profile.frameRate),
+    [
+      { numerator: 24000, denominator: 1001 },
+      { numerator: 24000, denominator: 1001 },
+    ],
+  );
+});
+
+test("invalid export summary gives actionable pending fields without writes and ignores disabled custom values", async (t) => {
+  const page = await fixture(t);
+  await action(page, "export").click();
+  const before = await documentState(page),
+    writes = await page.evaluate(() => fixture.writes.length),
+    summary = page.getByLabel("导出摘要", { exact: true }),
+    width = page.locator('dialog [name="width"]');
+  await width.fill("");
+  assert.match(await summary.textContent(), /待补充：请检查宽度/);
+  await page.locator("dialog button[type=submit]").click();
+  await width.fill("321");
+  assert.match(await summary.textContent(), /待补充：.*宽度/);
+  await width.fill("320");
+  await page.locator('dialog [name="qualityMode"]').selectOption("bitrate");
+  await page.locator('dialog [name="videoBitrate"]').fill("12.1234");
+  assert.match(await summary.textContent(), /待补充：.*视频码率/);
+  await page.locator('dialog [name="custom"]').uncheck();
+  assert.match(await summary.textContent(), /待补充：.*导出预设/);
+  await page.locator('dialog [name="profiles"][value="landscape-1080p"]').check();
+  assert.doesNotMatch(await summary.textContent(), /待补充/);
+  await page.locator('dialog [name="sequences"][value="main"]').uncheck();
+  assert.match(await summary.textContent(), /待补充：请选择要导出的序列/);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.writes.length), writes);
+  assert.equal(await page.evaluate(() => fixture.exportAttempts().length), 0);
+  await page.locator('dialog [name="sequences"][value="main"]').check();
+  await saveDialog(page);
+  assert.equal(await page.evaluate(() => fixture.exports.length), 1);
+  assert.deepEqual(await page.evaluate(() => fixture.exports[0].profile.frameRate), {
+    numerator: 30,
+    denominator: 1,
+  });
+});
+
 test("partial export failure retries remaining combinations from the original frozen document", async (t) => {
   const page = await fixture(t, { sequenceCount: 2, exportFailAt: 2 });
   const snapshot = await documentState(page);
@@ -2011,24 +2119,33 @@ test("range marker export submits only the current sequence window and restores 
   await action(page, "export").click();
   const range = page.locator('dialog [name="range"]'),
     main = page.locator('dialog [name="sequences"][value="main"]'),
-    other = page.locator('dialog [name="sequences"][value="sequence-2"]');
+    other = page.locator('dialog [name="sequences"][value="sequence-2"]'),
+    summary = page.getByLabel("导出摘要", { exact: true });
   assert.equal(await range.locator('[value="point"]').count(), 0);
   assert.equal(await range.locator('[value="outside"]').getAttribute("disabled"), "", JSON.stringify(before.sequences[0]));
   assert.match(await range.locator('[value="review"]').textContent(), /<审核>&"/);
   assert.equal(await page.locator("[data-export-range-hint]").isVisible(), false);
   await other.check();
+  assert.match(await summary.textContent(), /2 个序列：主序列、序列 2.*完整所选序列.*共 2 个成片/s);
   await range.selectOption("review");
+  assert.match(
+    await summary.textContent(),
+    /1 个序列：主序列.*范围：主序列 · <审核>&" · 0\.333688–1\.334688 秒.*共 1 个成片/s,
+  );
+  assert.doesNotMatch(await summary.textContent(), /序列 2/);
   assert.equal(await page.locator("[data-export-range-hint]").isVisible(), true);
   assert.equal(await main.isChecked(), true);
   assert.equal(await main.isDisabled(), true);
   assert.equal(await other.isChecked(), false);
   assert.equal(await other.isDisabled(), true);
   await range.selectOption("");
+  assert.match(await summary.textContent(), /2 个序列：主序列、序列 2.*完整所选序列.*共 2 个成片/s);
   assert.equal(await page.locator("[data-export-range-hint]").isVisible(), false);
   assert.equal(await other.isChecked(), true);
   assert.equal(await other.isEnabled(), true);
   await range.selectOption("review");
   await page.locator('dialog [name="profiles"]').first().check();
+  assert.match(await summary.textContent(), /1 个序列：主序列.*共 2 个成片/s);
   await page.locator('dialog [type="submit"]').click();
   await page.waitForFunction(() => fixture.exports.length === 2);
   const exports = await page.evaluate(() => fixture.exports);
@@ -2042,6 +2159,63 @@ test("range marker export submits only the current sequence window and restores 
   assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+for (const width of [620, 390])
+  test(`export summary at ${width}px wraps long sequence and profile names without blocking the bottom actions`, async (t) => {
+    const page = await fixture(t, { width, sequenceCount: 2 });
+    await page.evaluate(() =>
+      fixture.dispatch(
+        [
+          {
+            type: "sequence.rename",
+            sequenceId: "main",
+            name: '<序列>&"' + "很长的名称".repeat(28),
+          },
+          { type: "sequence.rename", sequenceId: "sequence-2", name: "另一条竖屏序列".repeat(20) },
+        ],
+        "序列名称",
+      ),
+    );
+    await settle(page);
+    await action(page, "export").click();
+    await page.locator('dialog [name="presetName"]').fill("发送版".repeat(40));
+    await page.locator('dialog [name="sequences"][value="sequence-2"]').check();
+    await page.locator('dialog [name="profiles"][value="landscape-1080p"]').check();
+    const summary = page.getByLabel("导出摘要", { exact: true });
+    await summary.scrollIntoViewIfNeeded();
+    assert.match(await summary.textContent(), /2 个序列：<序列>&".*共 4 个成片/s);
+    assert.equal(await summary.locator("img,script").count(), 0);
+    const bounds = await summary.evaluate((node) => {
+      const rect = node.getBoundingClientRect(),
+        dialog = node.closest("dialog");
+      return {
+        left: rect.left,
+        right: rect.right,
+        width: innerWidth,
+        scrollWidth: dialog.scrollWidth,
+        clientWidth: dialog.clientWidth,
+      };
+    });
+    assert.ok(bounds.left >= -1 && bounds.right <= bounds.width + 1, JSON.stringify(bounds));
+    assert.ok(bounds.scrollWidth <= bounds.clientWidth + 1, JSON.stringify(bounds));
+    if (process.env.VIDEO_STUDIO_EXPORT_EVIDENCE_DIR) {
+      await mkdir(process.env.VIDEO_STUDIO_EXPORT_EVIDENCE_DIR, { recursive: true });
+      await page.screenshot({
+        path: join(process.env.VIDEO_STUDIO_EXPORT_EVIDENCE_DIR, `summary-${width}.png`),
+      });
+    }
+    const submit = page.locator('dialog [type="submit"]');
+    await submit.scrollIntoViewIfNeeded();
+    assert.equal(
+      await submit.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.top >= 0 && rect.bottom <= innerHeight;
+      }),
+      true,
+    );
+    await saveDialog(page);
+    assert.equal(await page.evaluate(() => fixture.exports.length), 4);
+  });
 
 for (const width of [620, 390])
   test(`long export form at ${width}px keeps bitrate fields and bottom actions inside its scrollable dialog`, async (t) => {
@@ -2582,4 +2756,100 @@ test("a late old marker seek failure does not report against a replacement sessi
   });
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
   assert.equal(await page.getByLabel("标记名称", { exact: true }).count(), 0);
+});
+
+test("playhead jump uses the actual NTSC frame clock and reveals a long timeline without editing", async (t) => {
+  const page = await fixture(t, { duration: 120 * 240000, frameRate: { numerator: 60000, denominator: 1001 } });
+  await clip(page).click();
+  const before = await documentState(page), selection = await page.evaluate(() => fixture.selection());
+  await action(page, "jump-playhead").click();
+  await page.getByLabel("定位单位", { exact: true }).selectOption("frames");
+  await page.getByLabel("定位位置", { exact: true }).fill("1800");
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector("dialog"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 1800 * 4004);
+  assert.equal(await page.locator("[data-ew-time]").innerText(), "00:30.03");
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), selection);
+  const bounds = await page.locator(".et-scroll").evaluate((node) => {
+    const viewport = node.getBoundingClientRect(), line = node.querySelector(".et-playhead").getBoundingClientRect();
+    return { scroll: node.scrollLeft, left: viewport.left, right: viewport.right, clock: line.left };
+  });
+  assert.ok(bounds.scroll > 0);
+  assert.ok(bounds.clock >= bounds.left && bounds.clock <= bounds.right, JSON.stringify(bounds));
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("seconds jump preserves exact ticks and minute carry while cancel and invalid entries leave the clock alone", async (t) => {
+  const page = await fixture(t, { duration: 120 * 240000, sandbox: true });
+  const before = await documentState(page);
+  await action(page, "jump-playhead").click();
+  await page.getByLabel("定位位置", { exact: true }).fill("0.000004");
+  await page.getByLabel("定位位置", { exact: true }).press("Enter");
+  await page.waitForFunction(() => !document.querySelector("dialog"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 1);
+  await action(page, "jump-playhead").click();
+  assert.equal(await page.getByLabel("定位位置", { exact: true }).inputValue(), "0.000004");
+  await page.getByLabel("定位位置", { exact: true }).fill("59.999996");
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector("dialog"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 60 * 240000 - 1);
+  assert.equal(await page.locator("[data-ew-time]").innerText(), "01:00.00");
+  await action(page, "jump-playhead").click();
+  await page.getByLabel("定位位置", { exact: true }).fill("120");
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".ew-form-error").textContent.includes("超出"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 60 * 240000 - 1);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("jump unit conversion uses the containing frame and opening the dialog pauses playback", async (t) => {
+  const page = await fixture(t, { frameRate: { numerator: 30000, denominator: 1001 } });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing() && fixture.playhead() > 0);
+  await action(page, "jump-playhead").click();
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  await page.getByLabel("定位位置", { exact: true }).fill("1.02");
+  await page.getByLabel("定位单位", { exact: true }).selectOption("frames");
+  assert.equal(await page.getByLabel("定位位置", { exact: true }).inputValue(), "30");
+  await page.getByLabel("定位单位", { exact: true }).selectOption("seconds");
+  assert.equal(await page.getByLabel("定位位置", { exact: true }).inputValue(), "1.001000");
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => !document.querySelector("dialog"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 240240);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("jump controls cannot seek a replacement generation or a different viewed sequence", async (t) => {
+  const page = await fixture(t);
+  await action(page, "jump-playhead").click();
+  await page.getByLabel("定位位置", { exact: true }).fill("1");
+  const before = await page.evaluate(async () => {
+    const { session } = fixture.internals;
+    await session.replace(session.read());
+    return session.read();
+  });
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".ew-form-error").textContent.includes("重新打开"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 0);
+  assert.deepEqual(await documentState(page), before);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.evaluate(() => {
+    const next = structuredClone(fixture.read().sequences[0]);
+    next.id = "other"; next.name = "另一序列";
+    fixture.dispatch([{ type: "sequence.add", sequence: next }], "添加序列");
+  });
+  await action(page, "jump-playhead").click();
+  await page.getByLabel("定位位置", { exact: true }).fill("2");
+  await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "other" }], "切换序列"));
+  await page.getByRole("button", { name: "定位", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector(".ew-form-error").textContent.includes("重新打开"));
+  assert.equal(await page.evaluate(() => fixture.playhead()), 0);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.evaluate(() => fixture.dispatch([{ type: "clip.remove", sequenceId: "other", clipIds: ["a"] }], "删除片段"));
+  await page.evaluate(() => fixture.internals.workspace.selectClips("other", []));
+  assert.equal(await action(page, "jump-playhead").isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
