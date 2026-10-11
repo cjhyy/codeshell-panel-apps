@@ -5,7 +5,7 @@ import { createWorkspaceDocumentBridge } from "../apps/video-studio/src/workspac
 
 // Match the public Host binding fields. Both project directories may be
 // /workspace; projectId/environmentId are not part of the real Host contract.
-function fixture() {
+function fixture(stable = false) {
   let time = 0,
     sessionId = "session-a",
     armed = false,
@@ -23,6 +23,7 @@ function fixture() {
         cwd: "/workspace",
         sessionId,
         host: "hub",
+        ...(stable ? { projectScope: { version: 1 as const, environmentId: "host-a", projectId: "project-a", rootId: "root-a" } } : {}),
         availableMethods: ["workspace.list", "workspace.readText", "workspace.writeText"],
         capabilities: {
           bridge: { rateWindowMs: 1000, maxCallsPerWindow: 2, maxTransferCallsPerWindow: 2 },
@@ -57,7 +58,7 @@ function fixture() {
         changeBinding();
       }
     },
-    beforeDispatch: () => documents.assertActive(),
+    beforeDispatch: (method) => documents.assertActive(method),
   });
   const documents = createWorkspaceDocumentBridge(traffic.bridge);
   return {
@@ -119,5 +120,35 @@ for (const method of ["workspace.writeText", "tasks.start", "context.get", "reso
     } finally {
       f.traffic.dispose();
     }
+  });
+}
+
+for (const method of ["agent.submitPrompt", "automations.create", "automations.runNow"]) {
+  test(`stable scope does not re-route queued ${method} after a chat change`, async () => {
+    const f = fixture(true);
+    try {
+      await f.documents.getContext();
+      f.armAfterNextContextRead();
+      await assert.rejects(f.documents.call(method, {}), { code: "SESSION_CHANGED" });
+      assert.equal(f.calls.filter((call) => call.method === method).length, 0);
+      assert.ok(f.time >= 1000);
+      await f.documents.call("tasks.start", {});
+      assert.equal(f.calls.filter((call) => call.method === "tasks.start").length, 1);
+    } finally { f.traffic.dispose(); }
+  });
+}
+
+for (const method of ["workspace.writeText", "tasks.start", "resources.read", "agent.task.start"]) {
+  test(`stable project allows queued ${method} across a same-project chat change`, async () => {
+    const f = fixture(true);
+    try {
+      await f.documents.getContext();
+      if (method === "resources.read") await f.documents.call(method, { id: "project-resource" });
+      if (method === "workspace.writeText") f.armAfterNextContextRead();
+      else f.arm();
+      await f.documents.call(method, { path: "draft.json", content: "saved" });
+      assert.ok(f.time >= 1000);
+      assert.equal(f.calls.filter((call) => call.method === method).length, method === "resources.read" ? 2 : 1);
+    } finally { f.traffic.dispose(); }
   });
 }

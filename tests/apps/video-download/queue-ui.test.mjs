@@ -2521,3 +2521,53 @@ test("an already open device discovers another device's admitted download withou
   await page.locator('[data-tab="history"]').click();
   assert.match(await page.locator("#history-list").innerText(), /另一设备的下载/);
 });
+
+test("stable project scope keeps narrow-screen saves and native downloads across chat selection", async (t) => {
+  const page = await openPanel(t, 390, "", null, {
+    durable: true, versionedStorage: true,
+    initialContext: {
+      sessionId: "session-a", host: "hub", appId: "video-download",
+      projectScope: { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-a" },
+    },
+  });
+  await addDownload(page, firstUrl, { start: false });
+  await page.evaluate(() => window.__emit("context.changed", { sessionId: "session-b" }));
+  await addDownload(page, secondUrl, { start: false });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.__hostStorage["video-download.library.v2"].queue.length), 2);
+  await page.locator("#url-input").fill(thirdUrl);
+  await page.locator("#download-button").click();
+  // Enqueued links stay manual until their own Start action is selected.
+  await page.locator('#queue-list [data-queue-action="resume"]').first().click();
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 2);
+  await page.locator('#queue-list [data-queue-action="resume"]').first().click();
+  await page.waitForFunction(() => Object.keys(window.__nativeJobs).length === 3).catch(async (error) => {
+    console.error("stable-scope queue fixture", await page.evaluate(() => ({ jobs: window.__nativeJobs, calls: window.__calls, form: document.querySelector("#form-error")?.textContent, status: document.querySelector("#library-status")?.textContent, queue: document.querySelector("#queue-list")?.innerText })));
+    throw error;
+  });
+  await page.waitForFunction(() => {
+    const queue = window.__hostStorage["video-download.library.v2"].queue;
+    return queue.length === 3 && queue.every((item) => item.nativeTaskId) &&
+      !document.querySelector("#download-button").textContent.includes("正在添加");
+  });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.__calls.filter((call) => call.method === "tasks.start").length), 3);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: resolve(artifacts, "project-scope-stable-390.png"), fullPage: true });
+  await page.evaluate(() => {
+    window.__calls = [];
+    window.__emit("context.changed", {
+      projectScope: { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-b" },
+    });
+    window.__emit("context.changed", {
+      projectScope: { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-a" },
+    });
+  });
+  assert.equal(await page.locator("#project-binding-notice").isVisible(), true);
+  const error = await page.evaluate(async () => {
+    try { await window.__panelTools.start_video_download(); }
+    catch (error) { return error.code; }
+  });
+  assert.equal(error, "PROJECT_CHANGED");
+  assert.deepEqual(await page.evaluate(() => window.__calls), []);
+});

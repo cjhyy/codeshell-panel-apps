@@ -172,6 +172,7 @@ async function openPage(t, options = {}) {
         },
         latestStorageRevision: () => records["video-studio-current"][0].revision,
       };
+      window.__projectContext = structuredClone(options.projectContext ?? {});
       window.codeshellPanel = {
         getContext: async () => {
           // Tests can hold context discovery to keep a media import in progress.
@@ -179,6 +180,7 @@ async function openPage(t, options = {}) {
             await new Promise((resolve) => (window.__releaseContext = resolve));
           return {
             cwd: "/isolated/editor-main",
+            ...structuredClone(window.__projectContext),
             theme: "dark",
             visible: true,
             capabilities: {
@@ -4174,4 +4176,47 @@ test("cloud camera inspection preserves a real non-frame video duration once acr
     sourceSha256: asset.id.slice(6), probe, ticks: duration, imported: readAsset(doc)[0],
     captureCallsBeforeCold: 1, captureCallsAfterCold: 0,
   }, null, 2));
+});
+
+
+test("stable project scope keeps actual editor saves across chat selection and fences root changes", async (t) => {
+  const page = await openPage(t, {
+    viewport: { width: 390, height: 844 },
+    projectContext: {
+      appId: "video-studio", host: "hub", sessionId: "session-a",
+      projectScope: { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-a" },
+    },
+  });
+  await page.evaluate(() => {
+    window.__projectContext.sessionId = "session-b";
+    for (const listener of window.__mainHost.events["context.changed"] ?? [])
+      listener({ sessionId: "session-b" });
+  });
+  await page.locator("#project-name").fill("换会话后仍保存到同一项目");
+  await page.locator("#project-name").press("Tab");
+  await page.waitForFunction(() => window.__mainHost.current().name === "换会话后仍保存到同一项目");
+  await waitSaved(page);
+  const stored = await saved(page);
+  const evidence = resolve("artifacts/video-studio/project-scope");
+  await mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: resolve(evidence, "stable-project-390.png"), fullPage: true });
+  await page.evaluate(() => {
+    const original = structuredClone(window.__projectContext.projectScope);
+    window.__projectContext.projectScope.rootId = "root-b";
+    for (const listener of window.__mainHost.events["context.changed"] ?? [])
+      listener({ projectScope: structuredClone(window.__projectContext.projectScope) });
+    window.__projectContext.projectScope = original;
+    for (const listener of window.__mainHost.events["context.changed"] ?? [])
+      listener({ projectScope: original });
+    window.__mainHost.calls.length = 0;
+  });
+  const outcome = await page.evaluate(async () => {
+    try {
+      await window.__mainHost.tools.read_video_project({});
+      return { accepted: true };
+    } catch (error) { return { error: error.message }; }
+  });
+  assert.match(outcome.error, /重新打开视频面板/);
+  assert.deepEqual(await saved(page), stored);
+  assert.deepEqual(await page.evaluate(() => window.__mainHost.calls), []);
 });

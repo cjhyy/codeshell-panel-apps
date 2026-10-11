@@ -561,3 +561,164 @@ test("cancellation bypasses queued mutations and disposal prevents their dispatc
   await refused;
   assert.equal(calls.length, 1);
 });
+
+function stableCloud() {
+  const f = cloud();
+  const listeners = new Set<(payload: unknown) => void>();
+  let scope: any = { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-a" };
+  const getContext = f.raw.getContext;
+  f.raw.getContext = async () => ({ ...await getContext(), ...(scope === undefined ? {} : { projectScope: structuredClone(scope) }) });
+  f.raw.on = (name: string, listener: (payload: unknown) => void) => {
+    if (name === "context.changed") listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  return {
+    ...f,
+    emit(payload: unknown) { for (const listener of listeners) listener(payload); },
+    get scope() { return scope; },
+    set scope(value) { scope = value; },
+  };
+}
+
+test("stable project storage and native tasks remain usable across a selected-chat change", async () => {
+  const f = stableCloud(), bridge = createWorkspaceDocumentBridge(f.raw);
+  await bridge.call("media.document.set", { key: "draft", baseRevision: 0, data: { saved: 1 }, label: "before-chat-change" });
+  f.state.sessionId = "session-b";
+  f.emit({ sessionId: "session-b", visible: false });
+  await bridge.call("media.document.set", { key: "draft", baseRevision: 1, data: { saved: 2 }, label: "after-chat-change" });
+  assert.deepEqual((await bridge.call("media.document.get", { key: "draft" }) as any).data, { saved: 2 });
+  await bridge.call("tasks.start", { entry: "media-runtime", input: { request: { params: { assetId: sourceId } } } });
+  assert.equal((await bridge.call("tasks.list") as any[]).length, 1);
+  const original = f.raw.call;
+  f.raw.call = async (method, input) => method === "agent.task.start" ? { id: "independent-project-task" } : original(method, input);
+  assert.deepEqual(await bridge.call("agent.task.start", {}), { id: "independent-project-task" });
+  assert.ok([...f.files.keys()].every((key) => key.startsWith("a:")));
+});
+
+for (const method of ["agent.submitPrompt", "automations.create", "automations.list"]) {
+  test(`stable-project ${method} cannot publish a late chat-bound result after A -> B -> A`, async () => {
+    const f = stableCloud();
+    let started!: () => void, finish!: (value: unknown) => void;
+    const accepted = new Promise<void>((resolve) => { started = resolve; });
+    f.raw.call = async () => { started(); return new Promise((resolve) => { finish = resolve; }); };
+    const bridge = createWorkspaceDocumentBridge(f.raw);
+    await bridge.getContext();
+    const work = bridge.call(method, {});
+    await accepted;
+    f.state.sessionId = "session-b";
+    f.emit({ sessionId: "session-b" });
+    f.state.sessionId = "session-a";
+    f.emit({ sessionId: "session-a" });
+    finish({ ok: true });
+    await assert.rejects(work, { code: "SESSION_CHANGED" });
+    await assert.rejects(bridge.call(method, {}), { code: "SESSION_CHANGED" });
+    bridge.assertActive();
+  });
+}
+
+for (const change of [
+  { projectScope: { version: 1, environmentId: "host-b", projectId: "project-a", rootId: "root-a" } },
+  { projectScope: { version: 1, environmentId: "host-a", projectId: "project-b", rootId: "root-a" } },
+  { projectScope: { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-b" } },
+  { projectScope: { version: 1, environmentId: "host-a", projectId: "project-a" } },
+  { projectScope: { version: 2, environmentId: "host-a", projectId: "project-a", rootId: "root-a" } },
+  { projectScope: null },
+  { cwd: "/different-root" },
+  { host: "desktop" },
+  { appId: "another-panel" },
+]) {
+  test(`stable video project cannot revive after scope changes: ${JSON.stringify(change)}`, async () => {
+    const f = stableCloud(), bridge = createWorkspaceDocumentBridge(f.raw);
+    const initial = await bridge.getContext();
+    f.emit(change);
+    f.emit(initial);
+    const before = f.calls.length;
+    await assert.rejects(bridge.call("tasks.start", {}), /重新打开视频面板/);
+    assert.equal(f.calls.length, before);
+  });
+}
+
+for (const invalidScope of [undefined, null, {}, { version: 2 }, { version: 1, environmentId: "host-a", projectId: "a" }]) {
+  test(`a complete video context cannot lose or degrade stable proof: ${JSON.stringify(invalidScope)}`, async () => {
+    const f = stableCloud(), bridge = createWorkspaceDocumentBridge(f.raw);
+    await bridge.getContext();
+    f.scope = invalidScope;
+    await assert.rejects(bridge.getContext(), /重新打开视频面板/);
+    f.scope = { version: 1, environmentId: "host-a", projectId: "project-a", rootId: "root-a" };
+    await assert.rejects(bridge.call("workspace.writeText", { path: "must-not-write", content: "old" }), /重新打开视频面板/);
+    assert.equal(f.files.size, 0);
+  });
+}
+
+test("initial malformed video proof remains in conservative legacy mode", async () => {
+  const f = stableCloud();
+  f.scope = { version: 1, environmentId: "host-a", projectId: "project-a" };
+  const bridge = createWorkspaceDocumentBridge(f.raw);
+  await bridge.getContext();
+  f.scope = { ...f.scope, rootId: "root-a" };
+  f.state.sessionId = "session-b";
+  f.emit({ sessionId: "session-b", projectScope: f.scope });
+  await assert.rejects(bridge.call("tasks.start", {}), /重新打开视频面板/);
+});
+
+for (const method of ["agent.submitPrompt", "automations.create"]) {
+  test(`stable video ${method} refreshes a chat change even without a context event`, async () => {
+    const f = stableCloud(), bridge = createWorkspaceDocumentBridge(f.raw);
+    await bridge.getContext();
+    const before = f.calls.length;
+    f.state.sessionId = "session-b";
+    await assert.rejects(bridge.call(method, {}), { code: "SESSION_CHANGED" });
+    assert.equal(f.calls.length, before, "a stale chat must not receive the sensitive method");
+    bridge.assertActive();
+  });
+}
+
+test("stable video storage backend changes remain invalid after switching back", async () => {
+  const f = stableCloud(), bridge = createWorkspaceDocumentBridge(f.raw);
+  const original = await bridge.getContext();
+  f.emit({ availableMethods: ["media.document.get", "media.document.set", "media.document.versions"] });
+  f.emit({ availableMethods: original.availableMethods });
+  await assert.rejects(bridge.call("tasks.start", {}), /重新打开视频面板/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("video tools preserve synchronous project identities and original synchronous/asynchronous errors", async () => {
+  const f = stableCloud(), tools = new Map<string, (args: Record<string, unknown>) => unknown>();
+  (f.raw as any).registerTool = (name: string, handler: (args: Record<string, unknown>) => unknown) => {
+    tools.set(name, handler);
+    return () => tools.delete(name);
+  };
+  const bridge = createWorkspaceDocumentBridge(f.raw);
+  await bridge.getContext();
+  const receipt = { identity: "current-project" }, failure = new Error("owned tool failure");
+  bridge.registerTool("read", () => receipt);
+  bridge.registerTool("fail", () => { throw failure; });
+  bridge.registerTool("fail-async", () => Promise.reject(failure));
+  assert.equal(tools.get("read")!({}), receipt, "read_video_project identity is consumed synchronously");
+  assert.throws(() => tools.get("fail")!({}), (error) => error === failure);
+  await assert.rejects(tools.get("fail-async")!({}) as Promise<unknown>, (error) => error === failure);
+  f.emit({ sessionId: "session-b" });
+  assert.equal(tools.get("read")!({}), receipt);
+});
+
+for (const outcome of ["resolve", "reject"]) {
+  test(`video tool ${outcome} cannot publish a late project identity after root A -> B -> A`, async () => {
+    const f = stableCloud();
+    let invoke!: (args: Record<string, unknown>) => unknown;
+    (f.raw as any).registerTool = (_name: string, handler: typeof invoke) => {
+      invoke = handler;
+      return () => {};
+    };
+    const bridge = createWorkspaceDocumentBridge(f.raw), original = await bridge.getContext();
+    let resolve!: (value: unknown) => void, reject!: (error: Error) => void;
+    const pending = new Promise((accept, decline) => { resolve = accept; reject = decline; });
+    bridge.registerTool("read-async", () => pending);
+    const work = invoke({}) as Promise<unknown>;
+    f.emit({ projectScope: { ...original.projectScope, rootId: "root-b" } });
+    f.emit({ projectScope: original.projectScope });
+    if (outcome === "resolve") resolve({ identity: "old-project" });
+    else reject(new Error("old failure"));
+    await assert.rejects(work, /重新打开视频面板/);
+    assert.throws(() => invoke({}), /重新打开视频面板/);
+  });
+}
