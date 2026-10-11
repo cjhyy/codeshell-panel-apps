@@ -401,3 +401,43 @@ goal仍active至11:00，automation11继续保留。
   Canvas空白/非手柄选择仍有草稿丢失，已明确记录后续最小修复，不冒称本批覆盖。
 
 继续优化至11:00；goal及automation11保持active，未发布、未安装。
+
+
+## 第十一批整合验证
+
+- 第十批90142aa完整浏览器843/843通过，push与PR两套CI均成功。
+  日志`/tmp/video-studio-morning-tenth-full-ui.log`。
+- 此批源码整合79f3e0c音频fade手柄、0a783fc7属性到timeline gesture、d77cfe9快捷键
+  说明、effdcc10转场pair连续编辑、f7a30ce标记背景revision草稿，以及8a61d86画布
+  selection-only草稿与fresh render身份边界。代理依赖905/4738/ed479未重复挑选。
+- 声音淡入/淡出手柄只改当前clip的既有fade字段；分组、链接、磁吸邻居、source map、
+  音量与pan保持。逐帧键盘/Shift十帧/Home/End、最终release坐标、一次undo、无操作
+  不新增历史、取消与异步失败有回归。短于48px的片段需先缩放或使用音频属性。
+  独立48kHz真实PCM与同字段原混音逐样本差0，重叠fade和非整帧边界、静音及nested
+  parent均通过；390/280px原生触屏实际改变120000tick并可取消。截图、JSON和可重跑
+  脚本保留于`/Users/admin/.codex/visualizations/2026/10/12/video-studio-audio-fades/`。
+- 属性有效草稿先finish，再以原点击的clip/handle/ruler/fade语义开始timeline gesture；
+  失败保留correctable draft。等待时保留首次up/latest move，取消、二次触摸、scope/
+  selection/time/viewport变化均不回放旧intent。begin/select/focus同步重入及旧finisher
+  不能采用新gesture，独立29项复核通过；代理最终冻结389/389受影响UI通过。
+- Canvas空白及crop/mask非手柄选择复用相同finish边界；成功后fresh解析原目标ID，仅
+  改选择，不建立gesture；无draft同步路径保留。locked图层可选择但不可修改；原目标
+  移除不重新命中其他图层。fresh render期间同步dispatch/selection/dispose会取消旧
+  intent，避免用旧几何覆盖新revision。正式48新增回归、代理245/245受影响UI及独立
+  19/19实际Chromium检查通过；905基线valid/invalid选择6项及render重入3项实际失败。
+- 转场添加/调整/撤销后保持同一仍相邻pair，选择、seq/gen或相邻关系改变时再回退。
+  删除只使用已有转场kind/duration，不受未填写duration输入影响。代理184 UI+22领域
+  测试通过，280/360px截图已持久查看；Inspector草稿到首转场button仍是下一批，不能
+  将此批pair保持写成该问题已修。
+- 标记原生IME及dirty/new form在普通外部revision保持connected DOM；旧save不自动
+  换成新身份，用户显式选择载入最新或保存当前草稿。fresh save要求目标六字段仍等于
+  baseline，修改/删除/同ID碰撞禁止覆盖或复活。gen/seq/目标变化不复用；A→B→A旧
+  detached form及read中同步选B再commitA两项独立P2已修并通过。代理142 UI+4领域
+  测试与390px视觉复核通过。
+- root离线1126项：1123通过、3可选跳过；native voice5通过1可选模型跳过；workspace
+  docs5/5。领域clip-edits/timing-edits/markers58/58，main快捷键说明1/1通过。
+  最终冻结timeline/timeline-media/workspace/canvas/inspector/timing六文件UI541/541通过；
+  typecheck/build/build:check/validate39均通过。日志
+  `/tmp/video-studio-morning-eleventh-{affected-ui,offline,typecheck,build,build-check,validate}.log`。
+
+继续至11:00；goal与automation11保持active，未发布、未安装。

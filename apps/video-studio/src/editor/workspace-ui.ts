@@ -254,6 +254,7 @@ export class EditorWorkspace {
       onError: options.onError,
     });
     this.timeline = new EditorTimeline(this.get("[data-ew-timeline]"), {
+      beforeGesture: (signal) => this.inspector.finishFocusedField(signal) ?? true,
       read,
       identity: () => options.session.getState().identity,
       prepareMediaSnapshot: (document, identity) => this.prepareTimelineMedia(document, identity),

@@ -533,6 +533,134 @@ const action = (page, value) => page.locator(`[data-ew-action="${value}"]`);
 const documentState = (page) => page.evaluate(() => fixture.read());
 const clip = (page, id = "a") => page.locator(`[data-et-clip="${id}"]`);
 
+async function focusedTimelineIntent(page, kind, release = true) {
+  const node = kind === "fade" ? clip(page, "sound").locator('[data-et-fade="fadeIn"]')
+    : kind === "trim" ? clip(page).locator('[data-et-edge="left"]')
+    : kind === "seek" ? page.locator(".et-ruler") : clip(page, kind === "select-other" ? "sound" : "a"),
+    bounds = await node.boundingBox(),
+    point = { x: bounds.x + (kind === "seek" ? 32 : bounds.width / 2), y: bounds.y + bounds.height / 2 };
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  if (!["seek", "select-other"].includes(kind)) await page.mouse.move(point.x + 32, point.y, { steps: 4 });
+  if (release) await page.mouse.up();
+  await settle(page);
+  return point;
+}
+for (const kind of ["select-other", "drag", "trim", "seek", "fade"]) {
+  test(`a focused inspector draft completes before the first timeline ${kind} and retains separate undo`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate((kind) => fixture.internals.workspace.selectClips("main", [kind === "fade" ? "sound" : "a"]), kind);
+    const before = await documentState(page), label = kind === "fade" ? "音量（%）" : "水平位置（%）";
+    await page.getByLabel(label, { exact: true }).fill(kind === "fade" ? "35" : "25");
+    await focusedTimelineIntent(page, kind);
+    const after = await documentState(page), a = after.sequences[0].clips[0], sound = after.sequences[0].clips[1],
+      editsTimeline = ["drag", "trim", "fade"].includes(kind);
+    assert.equal(after.revision, before.revision + 1 + Number(editsTimeline));
+    if (kind === "fade") { assert.equal(sound.audio.volume, 0.35); assert.equal(sound.audio.fadeIn, 120000); }
+    else assert.equal(a.transform.x, 0.25);
+    assert.equal(a.start, ["drag", "trim"].includes(kind) ? 120000 : 0);
+    assert.equal(a.duration, kind === "trim" ? before.sequences[0].clips[0].duration - 120000 : before.sequences[0].clips[0].duration);
+    assert.equal(await page.evaluate(() => fixture.playhead()), kind === "seek" ? 120000 : 0);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), kind === "select-other" || kind === "fade" ? ["sound"] : ["a"]);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    if (editsTimeline) {
+      await action(page, "undo").click(); await settle(page);
+      const firstUndo = await documentState(page);
+      assert.equal(firstUndo.sequences[0].clips[0].start, 0);
+      assert.equal(firstUndo.sequences[0].clips[1].audio.fadeIn, 0);
+      assert.equal(kind === "fade" ? firstUndo.sequences[0].clips[1].audio.volume : firstUndo.sequences[0].clips[0].transform.x,
+        kind === "fade" ? 0.35 : 0.25);
+    }
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  });
+}
+for (const [kind, label, value] of [["drag", "水平位置（%）", "1001"], ["fade", "音量（%）", "401"]]) {
+  test(`invalid inspector input blocks timeline ${kind} and retains a correctable draft`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate((kind) => fixture.internals.workspace.selectClips("main", [kind === "fade" ? "sound" : "a"]), kind);
+    const before = await documentState(page), selected = await page.evaluate(() => fixture.selection());
+    await page.getByLabel(label, { exact: true }).fill(value); await focusedTimelineIntent(page, kind);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    assert.equal(await page.getByLabel(label, { exact: true }).inputValue(), value);
+    assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingTrackGesture || !!fixture.internals.workspace.timeline.drag), false);
+    await page.getByLabel(label, { exact: true }).fill("25"); await focusedTimelineIntent(page, kind);
+    assert.equal((await documentState(page)).revision, before.revision + 2);
+  });
+}
+test("a rejected focused inspector apply cannot continue its captured timeline drag", async (t) => {
+  const page = await fixture(t); await clip(page).click(); const before = await documentState(page);
+  await page.evaluate(() => {
+    fixture.internals.workspace.inspector.context.apply = () => new Promise((_resolve, reject) =>
+      globalThis.rejectTimelineField = () => reject(new Error("属性应用失败")));
+  });
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25"); await focusedTimelineIntent(page, "drag");
+  await page.evaluate(() => rejectTimelineField()); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "25");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), ["Error: 属性应用失败"]);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingTrackGesture || !!fixture.internals.workspace.timeline.drag), false);
+});
+test("an awaited inspector field retains the first timeline release through a second physical click", async (t) => {
+  const page = await fixture(t); await clip(page).click(); const before = await documentState(page);
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const point = await focusedTimelineIntent(page, "drag");
+  await page.mouse.click(point.x + 96, point.y); await releaseCanvasField(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2); assert.equal(after.sequences[0].clips[0].start, 120000);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingTrackGesture || !!fixture.internals.workspace.timeline.drag), false);
+});
+for (const ending of ["escape", "blur", "generation", "revision", "seek", "selection", "resize", "dispose"]) {
+  test(`an awaited inspector field cannot revive a timeline gesture after ${ending}`, async (t) => {
+    const page = await fixture(t); await clip(page).click();
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await focusedTimelineIntent(page, "drag", false);
+    if (ending === "escape") {
+      assert.equal(await page.locator("[data-ew-timeline]").evaluate((node) => node === document.activeElement), true);
+      await page.keyboard.press("Escape");
+    }
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (ending === "revision") await page.evaluate(() => fixture.externalEdit());
+    if (ending === "seek") await page.evaluate(() => fixture.internals.workspace.seek(240000));
+    if (ending === "selection") await page.evaluate(() => fixture.internals.workspace.selectClips("main", []));
+    if (ending === "resize") await page.setViewportSize({ width: 1100, height: 900 });
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    await settle(page); const beforeRelease = await documentState(page);
+    await page.mouse.up(); await releaseCanvasField(page);
+    assert.deepEqual(await documentState(page), beforeRelease);
+    assert.equal((await documentState(page)).sequences[0].clips[0].start, 0);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingTrackGesture || !!fixture.internals.workspace.timeline.drag), false);
+  });
+}
+for (const replacement of ["selection", "time", "dispose"]) {
+  test(`a synchronous timeline selection callback cannot revive its old drag after ${replacement}`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await page.evaluate((replacement) => {
+      const workspace = fixture.internals.workspace, select = workspace.timeline.context.select;
+      let once = false;
+      workspace.timeline.context.select = (ids) => {
+        select(ids);
+        if (once) return;
+        once = true;
+        if (replacement === "selection") workspace.selectClips("main", ["sound"]);
+        if (replacement === "time") void workspace.seek(240000);
+        if (replacement === "dispose") workspace.dispose();
+      };
+    }, replacement);
+    const before = await documentState(page); await focusedTimelineIntent(page, "drag");
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingTrackGesture || !!fixture.internals.workspace.timeline.drag), false);
+    if (replacement === "selection") assert.deepEqual(await page.evaluate(() => fixture.selection()), ["sound"]);
+    if (replacement === "time") assert.equal(await page.evaluate(() => fixture.playhead()), 240000);
+  });
+}
+
 // Exercise the native focus/change boundary through EditorWorkspace and EditorSession.
 async function canvasDraftFixture(t, label, options = {}) {
   const page = await fixture(t, { ...(label === "图形填充颜色" ? { clipCount: 1 } : {}), ...options });
@@ -3545,3 +3673,637 @@ test("jump controls cannot seek a replacement generation or a different viewed s
   assert.equal(await action(page, "jump-playhead").isDisabled(), true);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+async function transitionWorkflowFixture(t, options = {}) {
+  const page = await fixture(t, options);
+  await page.evaluate(() => {
+    const operations = fixture.read().sequences.flatMap((sequence) => ["b", "c"].map((id, index) => ({
+      type: "clip.add", sequenceId: sequence.id,
+      clip: { ...sequence.clips[0], id, label: id, start: (index + 1) * 4 * 240000 },
+    })));
+    fixture.dispatch(operations, "添加相邻画面");
+  });
+  await settle(page);
+  await page.locator(".editor-timing").getByText("相邻转场", { exact: true }).click();
+  return page;
+}
+
+test("an explicitly chosen transition pair stays selected across add, adjust, remove and each undo", async (t) => {
+  const page = await transitionWorkflowFixture(t), before = await documentState(page),
+    pair = page.getByLabel("相邻片段", { exact: true }), duration = page.getByLabel("转场时长（秒）", { exact: true });
+  await pair.selectOption("1"); await duration.fill("0.75");
+  await page.getByLabel("转场效果", { exact: true }).selectOption("wipe-right");
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1");
+  assert.equal(await duration.inputValue(), "0.75");
+  assert.equal(await page.getByLabel("转场效果", { exact: true }).inputValue(), "wipe-right");
+  let transition = (await documentState(page)).sequences[0].transitions[0];
+  assert.equal(transition.fromClipId, "b"); assert.equal(transition.toClipId, "c");
+  await duration.fill("0.5"); await page.getByRole("button", { name: "应用转场调整", exact: true }).click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1"); assert.equal(await duration.inputValue(), "0.5");
+  // Removing a saved transition does not validate an unrelated unfinished duration edit.
+  await duration.fill(""); await page.getByRole("button", { name: "移除转场并接成硬切", exact: true }).click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1");
+  assert.equal((await documentState(page)).sequences[0].transitions.length, 0);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  await action(page, "undo").click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1"); assert.equal(await duration.inputValue(), "0.5");
+  await action(page, "undo").click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1"); assert.equal(await duration.inputValue(), "0.75");
+  await action(page, "undo").click(); await settle(page);
+  assert.equal(await pair.inputValue(), "1");
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("transition pair ownership survives ordinary revisions but resets for real selection, sequence and generation changes", async (t) => {
+  const page = await transitionWorkflowFixture(t, { sequenceCount: 2 }), pair = page.getByLabel("相邻片段", { exact: true });
+  await pair.selectOption("1"); await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  assert.equal(await pair.inputValue(), "1");
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"])); await settle(page);
+  assert.equal(await pair.inputValue(), "0");
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", [])); await settle(page);
+  await pair.selectOption("1");
+  await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列")); await settle(page);
+  assert.equal(await pair.inputValue(), "0");
+  await pair.selectOption("1");
+  await page.evaluate(() => fixture.replaceGeneration()); await settle(page);
+  assert.equal(await pair.inputValue(), "0");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a restored same-id same-revision generation cannot inherit transition pair state or detached picker changes", async (t) => {
+  const page = await transitionWorkflowFixture(t), before = await documentState(page),
+    pair = page.getByLabel("相邻片段", { exact: true });
+  await pair.selectOption("1"); const old = await pair.elementHandle(), identity = await page.evaluate(() => fixture.state().identity);
+  await page.evaluate(async (before) => {
+    await fixture.internals.session.replace({ ...before, id: "temporary-transition-document" });
+    await fixture.internals.session.replace(before);
+  }, before); await settle(page);
+  assert.equal(await pair.inputValue(), "0");
+  assert.notEqual((await page.evaluate(() => fixture.state().identity)).generation, identity.generation);
+  assert.deepEqual(await documentState(page), before);
+  await pair.selectOption("1");
+  await old.evaluate((node) => { node.value = "0"; node.dispatchEvent(new Event("change", { bubbles: true })); });
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  assert.equal(await pair.inputValue(), "1");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a remembered transition pair is discarded when adjacency changes and locking remains atomic", async (t) => {
+  const page = await transitionWorkflowFixture(t), pair = page.getByLabel("相邻片段", { exact: true });
+  await pair.selectOption("1");
+  await page.evaluate(() => fixture.dispatch([{ type: "clip.move", sequenceId: "main", clipIds: ["b"], delta: 8 * 240000 }], "移动画面"));
+  await settle(page);
+  assert.equal(await pair.inputValue(), "0");
+  assert.match(await pair.locator("option:checked").textContent(), /a → c/);
+  const stale = await page.getByRole("button", { name: "添加转场", exact: true }).elementHandle();
+  await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], "锁定画面轨"));
+  await settle(page); const before = await documentState(page);
+  assert.equal(await page.getByRole("button", { name: "添加转场", exact: true }).isDisabled(), true);
+  await stale.evaluate((node) => node.click()); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+async function markerDraftFixture(t, options = {}) {
+  const page = await fixture(t, options);
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: {
+    id: "draft-review", time: 80085, duration: 240240, name: "审核范围", note: "原始备注", color: "#ffcc0088",
+  } }], "添加审核范围"));
+  await page.locator('[data-et-marker="draft-review"]').click();
+  await settle(page);
+  return page;
+}
+for (const creating of [false, true]) {
+  test(`an external revision preserves the connected ${creating ? "new" : "selected"} marker draft until an explicit save`, async (t) => {
+    const page = await markerDraftFixture(t);
+    if (creating) await page.getByRole("button", { name: "添加范围", exact: true }).click();
+    await page.getByLabel("标记备注", { exact: true }).fill("第一行未保存\n第二行中文，[*]$");
+    await page.getByLabel("标记颜色", { exact: true }).fill("#1234");
+    await page.getByLabel("标记名称", { exact: true }).fill("待保存的校对范围");
+    const form = await page.locator(".emarker-form").elementHandle(), before = await documentState(page);
+    await page.evaluate(() => fixture.externalEdit()); await settle(page);
+    const updated = await documentState(page);
+    assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+    assert.equal(await page.getByLabel("标记名称", { exact: true }).evaluate((node) => document.activeElement === node), true);
+    assert.equal(await page.getByLabel("标记备注", { exact: true }).inputValue(), "第一行未保存\n第二行中文，[*]$");
+    assert.equal(await page.getByRole("button", { name: creating ? "添加标记" : "保存标记", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isEnabled(), true);
+    assert.match(await page.locator('.emarker-form [role="status"]').innerText(), /工程已更新，草稿已保留/);
+    await page.getByLabel("标记名称", { exact: true }).press("Enter");
+    assert.deepEqual(await documentState(page), updated);
+    await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+    const saved = await documentState(page), marker = saved.sequences[0].markers.find((item) => item.name === "待保存的校对范围");
+    assert.equal(saved.revision, updated.revision + 1);
+    assert.equal(marker.note, "第一行未保存\n第二行中文，[*]$");
+    assert.equal(marker.color, "#1234");
+    if (!creating) assert.deepEqual([marker.time, marker.duration], [80085, 240240]);
+    assert.equal(saved.name, updated.name);
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.equal((await documentState(page)).name, updated.name);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const creating of [false, true]) {
+  test(`native IME survives a background revision in a ${creating ? "new" : "selected"} marker form`, async (t) => {
+    const page = await markerDraftFixture(t);
+    if (creating) await page.getByRole("button", { name: "添加范围", exact: true }).click();
+    await page.getByLabel("标记备注", { exact: true }).fill("保持多行\n未提交备注");
+    const input = page.getByLabel("标记名称", { exact: true }), form = await page.locator(".emarker-form").elementHandle(),
+      cdp = await page.context().newCDPSession(page);
+    await input.fill("");
+    await input.evaluate((node) => {
+      globalThis.markerDraftIme = { starts: [], ends: [], input: node };
+      node.addEventListener("compositionstart", (event) => markerDraftIme.starts.push(event.isTrusted));
+      node.addEventListener("compositionend", (event) => markerDraftIme.ends.push(event.data));
+    });
+    await cdp.send("Input.imeSetComposition", { text: "正在中文校对", selectionStart: 6, selectionEnd: 6 });
+    await page.evaluate(() => fixture.externalEdit()); await settle(page);
+    assert.equal(await form.evaluate((node) => node === document.querySelector(".emarker-form")), true);
+    assert.deepEqual(await page.evaluate(() => ({ starts: markerDraftIme.starts, ends: markerDraftIme.ends,
+      focused: document.activeElement === markerDraftIme.input })), { starts: [true], ends: [], focused: true });
+    await cdp.send("Input.imeSetComposition", { text: "中文校对完成", selectionStart: 6, selectionEnd: 6 });
+    await cdp.send("Input.insertText", { text: "中文校对完成" });
+    await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+    assert.deepEqual(await page.evaluate(() => markerDraftIme.ends), ["中文校对完成"]);
+    const marker = (await documentState(page)).sequences[0].markers.find((item) => item.name === "中文校对完成");
+    assert.ok(marker, JSON.stringify({ document: await documentState(page), errors: await page.evaluate(() => fixture.errors), value: await input.inputValue() }));
+    assert.equal(marker.note, "保持多行\n未提交备注");
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const patch of [{ name: "外部名称" }, { note: "外部备注" }, { time: 80086 }, { duration: 240241 }, { color: "#123456" }]) {
+  test(`a retained marker draft cannot overwrite an externally changed ${Object.keys(patch)[0]}`, async (t) => {
+    const page = await markerDraftFixture(t);
+    await page.getByLabel("标记名称", { exact: true }).fill("本地未保存名称");
+    const form = await page.locator(".emarker-form").elementHandle();
+    await page.evaluate((patch) => fixture.dispatch([{ type: "marker.update", sequenceId: "main", markerId: "draft-review", patch }], "外部标记修改"), patch);
+    await settle(page);
+    assert.equal(await form.evaluate((node) => node.isConnected), true);
+    assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "本地未保存名称");
+    assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "定位结束", exact: true }).isDisabled(), true);
+    assert.match(await page.locator('.emarker-form [role="status"]').innerText(), /标记已被其他编辑修改/);
+    const current = await documentState(page);
+    await page.getByRole("button", { name: "保存当前草稿", exact: true }).evaluate((node) => node.dispatchEvent(new Event("click")));
+    assert.deepEqual(await documentState(page), current);
+    await page.getByRole("button", { name: "载入最新（放弃草稿）", exact: true }).click();
+    assert.equal(await form.evaluate((node) => node.isConnected), false);
+    assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), patch.name ?? "审核范围");
+    assert.equal(await page.getByRole("button", { name: "保存标记", exact: true }).isEnabled(), true);
+    assert.deepEqual(await documentState(page), current);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("an externally deleted marker keeps its draft available to discard without resurrecting it", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByLabel("标记备注", { exact: true }).fill("删除后仍保留的草稿\n第二行");
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.remove", sequenceId: "main", markerId: "draft-review" }], "外部删除"));
+  await settle(page);
+  assert.match(await page.locator('.emarker-form [role="status"]').innerText(), /标记已删除/);
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("标记备注", { exact: true }).inputValue(), "删除后仍保留的草稿\n第二行");
+  await page.getByRole("button", { name: "载入最新（放弃草稿）", exact: true }).click();
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  assert.deepEqual((await documentState(page)).sequences[0].markers, []);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("a new marker draft cannot overwrite an ID claimed by another editor", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByRole("button", { name: "添加范围", exact: true }).click();
+  await page.getByLabel("标记名称", { exact: true }).fill("本地新范围");
+  await page.evaluate(() => {
+    const marker = fixture.internals.workspace.markers.draft;
+    fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: { ...marker, name: "其他编辑先保存" } }], "外部添加");
+  });
+  await settle(page);
+  assert.match(await page.locator('.emarker-form [role="status"]').innerText(), /同一标记 ID 已存在/);
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "本地新范围");
+  await page.getByRole("button", { name: "载入最新（放弃草稿）", exact: true }).click();
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  assert.equal((await documentState(page)).sequences[0].markers.at(-1).name, "其他编辑先保存");
+});
+test("an explicit marker draft save rechecks a revision that changes synchronously during its fresh read", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByLabel("标记名称", { exact: true }).fill("保留待重试");
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.markers.context, read = context.read;
+    context.read = () => {
+      context.read = read;
+      const before = read(); fixture.externalEdit(); return before;
+    };
+  });
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].markers[0].name, "审核范围");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "保留待重试");
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /工程已变化/);
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].markers[0].name, "保留待重试");
+});
+for (const scope of ["generation", "sequence"]) {
+  test(`retained marker drafts and detached explicit-save actions end at a ${scope} boundary`, async (t) => {
+    const page = await markerDraftFixture(t, { sequenceCount: 2 });
+    await page.getByLabel("标记名称", { exact: true }).fill("不能迁移的草稿");
+    await page.evaluate(() => fixture.externalEdit()); await settle(page);
+    const form = await page.locator(".emarker-form").elementHandle(), save = await page.getByRole("button", { name: "保存当前草稿", exact: true }).elementHandle();
+    if (scope === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    else await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列"));
+    await settle(page);
+    const before = await documentState(page);
+    assert.equal(await form.evaluate((node) => node.isConnected), false);
+    await save.evaluate((node) => node.dispatchEvent(new Event("click")));
+    await form.evaluate((node) => node.dispatchEvent(new Event("submit", { cancelable: true })));
+    await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.locator(".emarker-form").count(), 0);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("a rejected explicit marker save retains a correctable draft for one successful retry", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByLabel("标记名称", { exact: true }).fill("失败后重试草稿");
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  const before = await documentState(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.markers.context;
+    globalThis.restoreMarkerApply = context.apply;
+    context.apply = async () => { throw new Error("标记提交失败"); };
+  });
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "失败后重试草稿");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isEnabled(), true);
+  await page.evaluate(() => fixture.internals.workspace.markers.context.apply = restoreMarkerApply);
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.equal((await documentState(page)).sequences[0].markers[0].name, "失败后重试草稿");
+});
+test("a retained marker draft at 390px keeps its notice and explicit choices inside the pane", async (t) => {
+  const page = await markerDraftFixture(t, { width: 390 });
+  await page.getByLabel("标记备注", { exact: true }).fill("长备注第一行\n长备注第二行");
+  await page.getByLabel("标记名称", { exact: true }).fill("窄屏校对中的长标记草稿名称");
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  await page.locator('.emarker-form [role="status"]').scrollIntoViewIfNeeded();
+  const bounds = await page.locator(".editor-markers").evaluate((root) => ({ client: root.clientWidth, scroll: root.scrollWidth,
+    actions: [...root.querySelectorAll('.emarker-form button')].map((button) => ({ left: button.getBoundingClientRect().left, right: button.getBoundingClientRect().right })),
+    left: root.getBoundingClientRect().left, right: root.getBoundingClientRect().right }));
+  assert.ok(bounds.scroll <= bounds.client + 1, JSON.stringify(bounds));
+  assert.ok(bounds.actions.every((button) => button.left >= bounds.left && button.right <= bounds.right), JSON.stringify(bounds));
+  await page.screenshot({ path: join(tmpdir(), "video-studio-marker-draft-390.png") });
+});
+
+test("a restored full marker baseline allows an explicit save after an external undo", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByLabel("标记名称", { exact: true }).fill("本地草稿仍在");
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.update", sequenceId: "main", markerId: "draft-review", patch: { color: "#123456" } }], "外部调色"));
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isDisabled(), true);
+  await page.evaluate(() => fixture.internals.session.undo()); await settle(page);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "本地草稿仍在");
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).isEnabled(), true);
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences[0].markers[0], {
+    id: "draft-review", time: 80085, duration: 240240, name: "本地草稿仍在", note: "原始备注", color: "#ffcc0088",
+  });
+});
+test("same marker navigation after a background revision keeps its retained form and exact ticks", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByLabel("标记名称", { exact: true }).fill("导航也不丢的草稿");
+  const form = await page.locator(".emarker-form").elementHandle();
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  for (const [button, tick] of [["定位结束", 320325], ["定位开始", 80085]]) {
+    await page.getByRole("button", { name: button, exact: true }).click(); await settle(page);
+    assert.equal(await page.evaluate(() => fixture.playhead()), tick);
+    assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+    assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "导航也不丢的草稿");
+  }
+});
+test("an untouched new range draft remains available through a background revision", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.getByRole("button", { name: "添加范围", exact: true }).click();
+  const form = await page.locator(".emarker-form").elementHandle();
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  assert.equal(await form.evaluate((node) => node.isConnected), true);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新范围");
+  await page.getByRole("button", { name: "载入最新（放弃草稿）", exact: true }).click();
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  assert.equal((await documentState(page)).sequences[0].markers.length, 1);
+});
+test("an unchanged marker form refreshes normally when another editor updates that marker", async (t) => {
+  const page = await markerDraftFixture(t), form = await page.locator(".emarker-form").elementHandle();
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.update", sequenceId: "main", markerId: "draft-review", patch: { name: "最新名称" } }], "外部更新"));
+  await settle(page);
+  assert.equal(await form.evaluate((node) => node.isConnected), false);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "最新名称");
+  assert.equal(await page.getByRole("button", { name: "保存当前草稿", exact: true }).count(), 0);
+});
+
+test("native composition preserves an existing marker form even before its text differs from baseline", async (t) => {
+  const page = await markerDraftFixture(t), input = page.getByLabel("标记名称", { exact: true }),
+    form = await page.locator(".emarker-form").elementHandle(), cdp = await page.context().newCDPSession(page);
+  await input.focus(); await input.evaluate((node) => {
+    node.select(); globalThis.unchangedMarkerImeEnds = [];
+    node.addEventListener("compositionend", (event) => unchangedMarkerImeEnds.push(event.data));
+  });
+  await cdp.send("Input.imeSetComposition", { text: "审核范围", selectionStart: 4, selectionEnd: 4 });
+  assert.equal(await input.inputValue(), "审核范围");
+  await page.evaluate(() => fixture.externalEdit()); await settle(page);
+  assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+  assert.deepEqual(await page.evaluate(() => unchangedMarkerImeEnds), []);
+  assert.equal(await input.evaluate((node) => document.activeElement === node), true);
+  await cdp.send("Input.insertText", { text: "审核完成" });
+  await page.getByRole("button", { name: "保存当前草稿", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].markers[0].name, "审核完成");
+  assert.deepEqual(await page.evaluate(() => unchangedMarkerImeEnds), ["审核完成"]);
+});
+
+test("a detached marker form cannot overwrite a new draft after reselecting the same marker", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: {
+    id: "other-review", time: 480000, duration: 0, name: "其他标记", note: "", color: "#ffffff",
+  } }], "第二标记"));
+  await page.getByLabel("标记名称", { exact: true }).fill("已脱离的旧草稿");
+  const oldForm = await page.locator(".emarker-form").elementHandle();
+  await page.evaluate(() => fixture.internals.workspace.markers.select("other-review"));
+  await page.evaluate(() => fixture.internals.workspace.markers.select("draft-review"));
+  await page.getByLabel("标记名称", { exact: true }).fill("当前草稿");
+  const before = await documentState(page);
+  await oldForm.evaluate((node) => node.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "当前草稿");
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /标记选择已变化/);
+});
+
+test("a marker save rejects a target changed synchronously during its fresh read", async (t) => {
+  const page = await markerDraftFixture(t);
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: {
+    id: "other-review", time: 480000, duration: 0, name: "其他标记", note: "", color: "#ffffff",
+  } }], "第二标记"));
+  await page.getByLabel("标记名称", { exact: true }).fill("不应应用的旧目标草稿");
+  const before = await documentState(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.markers.context, read = context.read;
+    context.read = () => {
+      context.read = read;
+      const document = read();
+      fixture.internals.workspace.markers.select("other-review");
+      return document;
+    };
+  });
+  await page.getByRole("button", { name: "保存标记", exact: true }).click(); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.selected), "other-review");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "其他标记");
+  assert.match((await page.evaluate(() => fixture.errors)).at(-1), /标记选择已变化/);
+});
+async function canvasSelectionFixture(t, mode = "empty", label, options = {}) {
+  const page = await canvasDraftFixture(t, label, options);
+  await page.evaluate(() => {
+    const a = fixture.read().sequences[0].clips[0];
+    fixture.dispatch([
+      { type: "track.add", sequenceId: "main", track: editor.createTrack("other-video", "video", "另一画面轨") },
+      { type: "clip.add", sequenceId: "main", clip: { ...a, id: "b", trackId: "other-video",
+        transform: { ...a.transform, x: -0.25, scaleX: 0.3, scaleY: 0.3 } } },
+    ], "添加可选择画面");
+    fixture.internals.workspace.selectClips("main", ["a"]);
+  });
+  await settle(page);
+  if (mode !== "empty") await page.getByRole("button", { name: mode === "crop" ? "画布裁切工具" : "画布蒙版工具", exact: true }).click();
+  return page;
+}
+async function canvasSelectionPoint(page, mode = "empty") {
+  return page.evaluate((mode) => {
+    const box = fixture.internals.workspace.canvasEditor.box;
+    return mode === "empty" ? { x: box.left + 8, y: box.top + 8 } :
+      { x: box.left + box.width * 0.25, y: box.top + box.height * 0.5 };
+  }, mode);
+}
+async function canvasSelectionClick(page, mode = "empty") {
+  const { x, y } = await canvasSelectionPoint(page, mode); await page.mouse.click(x, y); await settle(page);
+}
+for (const mode of ["empty", "crop", "mask"]) {
+  for (const draft of [undefined, ["水平位置（%）", "25"], ["轨道名称 画面轨", "选择前保存轨道名"]]) {
+    test(`the first ${mode} canvas selection preserves ${draft?.[0] ?? "the synchronous no-draft path"} without a gesture`, async (t) => {
+      const page = await canvasSelectionFixture(t, mode), before = await documentState(page);
+      if (draft) await page.getByLabel(draft[0], { exact: true }).fill(draft[1]);
+      if (!draft) await page.evaluate(() => {
+        globalThis.canvasSelectionAtDown = undefined;
+        fixture.internals.workspace.canvasEditor.overlay.addEventListener("pointerdown", () => {
+          canvasSelectionAtDown = { ids: fixture.selection(), pending: !!fixture.internals.workspace.canvasEditor.pendingGesture };
+        });
+      });
+      await canvasSelectionClick(page, mode);
+      const after = await documentState(page), expected = mode === "empty" ? [] : ["b"];
+      assert.deepEqual(await page.evaluate(() => fixture.selection()), expected);
+      assert.equal(after.revision, before.revision + Number(!!draft));
+      assert.equal(after.sequences[0].clips[0].transform.x, draft?.[0] === "水平位置（%）" ? 0.25 : 0);
+      assert.equal(after.sequences[0].tracks[0].name, draft?.[0].startsWith("轨道名称") ? draft[1] : "画面轨");
+      assert.deepEqual(after.sequences[0].clips[1], before.sequences[0].clips[1]);
+      assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.gesture || !!fixture.internals.workspace.canvasEditor.pendingGesture), false);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+      if (draft) { await action(page, "undo").click(); await settle(page); assert.deepEqual((await documentState(page)).sequences, before.sequences); }
+      else assert.deepEqual(await page.evaluate(() => canvasSelectionAtDown), { ids: expected, pending: false });
+    });
+  }
+  test(`an invalid inspector draft retains the old selection on a ${mode} canvas click`, async (t) => {
+    const page = await canvasSelectionFixture(t, mode), before = await documentState(page);
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("1001"); await canvasSelectionClick(page, mode);
+    assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "1001");
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    assert.equal(await page.evaluate(() => fixture.errors.length), 1);
+  });
+  test(`a rejected inspector field cannot clear or change the ${mode} canvas selection`, async (t) => {
+    const page = await canvasSelectionFixture(t, mode), before = await documentState(page);
+    await page.evaluate(() => fixture.internals.workspace.inspector.context.apply = () => new Promise((_resolve, reject) => {
+      globalThis.rejectSelectionField = () => reject(new Error("选择前属性提交失败"));
+    }));
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25"); await canvasSelectionClick(page, mode);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+    await page.evaluate(() => rejectSelectionField()); await settle(page);
+    assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "25");
+    assert.deepEqual(await page.evaluate(() => fixture.errors), ["Error: 选择前属性提交失败"]);
+  });
+  test(`an awaiting ${mode} canvas click keeps its original selection intent through release and a second click`, async (t) => {
+    const page = await canvasSelectionFixture(t, mode), before = await documentState(page);
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await canvasSelectionClick(page, mode);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+    const other = await canvasSelectionPoint(page, mode === "empty" ? "crop" : "empty");
+    await page.mouse.click(other.x, other.y); await releaseCanvasField(page);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), mode === "empty" ? [] : ["b"]);
+    assert.equal((await documentState(page)).revision, before.revision + 1);
+    assert.equal((await documentState(page)).sequences[0].clips[0].transform.x, 0.25);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.gesture || !!fixture.internals.workspace.canvasEditor.pendingGesture), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const [mode, label, composition] of [["empty", "图形填充颜色", "#00ff00"], ["crop", "轨道名称 画面轨", "选择前完成输入"]]) {
+  test(`native IME finishes once before the ${mode} canvas selection`, async (t) => {
+    const page = await canvasSelectionFixture(t, mode, label), before = await documentState(page),
+      input = page.getByLabel(label, { exact: true }), cdp = await page.context().newCDPSession(page);
+    await input.fill(""); await input.evaluate((node) => {
+      globalThis.selectionCompositionStarts = []; globalThis.selectionCompositionEnds = [];
+      node.addEventListener("compositionstart", (event) => selectionCompositionStarts.push(event.isTrusted));
+      node.addEventListener("compositionend", (event) => selectionCompositionEnds.push(event.data));
+    });
+    await cdp.send("Input.imeSetComposition", { text: composition, selectionStart: composition.length, selectionEnd: composition.length });
+    await canvasSelectionClick(page, mode);
+    assert.equal((await documentState(page)).revision, before.revision + 1);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), mode === "empty" ? [] : ["b"]);
+    assert.deepEqual(await page.evaluate(() => selectionCompositionStarts), [true]);
+    assert.deepEqual(await page.evaluate(() => selectionCompositionEnds), [composition]);
+    assert.equal(label.startsWith("轨道名称") ? (await documentState(page)).sequences[0].tracks[0].name :
+      (await documentState(page)).sequences[0].clips[0].fill, composition);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const mode of ["empty", "crop"]) for (const ending of ["Escape", "generation", "same-id-revision", "sequence", "selection", "mode", "resize", "dispose"]) {
+  test(`an awaited ${mode} canvas selection stays canceled after ${ending}`, async (t) => {
+    const page = await canvasSelectionFixture(t, mode, undefined, { sequenceCount: 2 }), before = await documentState(page);
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    const { x, y } = await canvasSelectionPoint(page, mode); await page.mouse.move(x, y); await page.mouse.down();
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.pendingGesture), true);
+    if (ending === "Escape") await page.keyboard.press("Escape");
+    if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (ending === "same-id-revision") await page.evaluate(async (before) => {
+      await fixture.internals.session.replace({ ...before, id: "temporary-selection-document" });
+      await fixture.internals.session.replace(before);
+    }, before);
+    if (ending === "sequence") await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列"));
+    if (ending === "selection") await page.evaluate((mode) => fixture.internals.workspace.selectClips("main", mode === "empty" ? ["b"] : []), mode);
+    if (ending === "mode") await page.getByRole("button", { name: mode === "empty" ? "画布裁切工具" : "画布蒙版工具", exact: true }).evaluate((node) => node.click());
+    if (ending === "resize") await page.setViewportSize({ width: 1000, height: 780 });
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    await page.mouse.up(); await settle(page);
+    const canceled = await documentState(page), selected = await page.evaluate(() => fixture.selection());
+    await releaseCanvasField(page);
+    assert.deepEqual(await documentState(page), canceled); assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.gesture || !!fixture.internals.workspace.canvasEditor.pendingGesture), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("a native touch canvas selection waits for its field and commits no gesture", async (t) => {
+  const page = await canvasSelectionFixture(t, "crop"), before = await documentState(page),
+    input = await touchInput(page, ".editor-canvas-controls"), { x, y } = await canvasSelectionPoint(page, "crop");
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await input.send("touchStart", [{ id: 1, x, y }]); await input.send("touchMove", [{ id: 1, x: x + 10, y }]);
+  await input.send("touchEnd");
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  await releaseCanvasField(page); await input.assertNative();
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["b"]);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.gesture), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a native touch canceled canvas selection ignores the field's late completion", async (t) => {
+  const page = await canvasSelectionFixture(t, "crop"), input = await touchInput(page, ".editor-canvas-controls"),
+    { x, y } = await canvasSelectionPoint(page, "crop");
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await input.send("touchStart", [{ id: 1, x, y }]); await input.send("touchCancel");
+  const before = await documentState(page); await releaseCanvasField(page);
+  assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.pendingGesture), false);
+  assert.ok(await page.evaluate(() => touchTrace.some((event) => event.type === "pointercancel" && event.trusted)));
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("an old selection finisher cannot release the next selection's mouse capture", async (t) => {
+  const page = await canvasSelectionFixture(t, "crop"); await holdCanvasField(page, "timeline");
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("37.5");
+  let point = await canvasSelectionPoint(page, "empty"); await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("50");
+  point = await canvasSelectionPoint(page, "crop"); await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await releaseCanvasField(page, 0);
+  assert.equal(await page.evaluate(() => {
+    const canvas = fixture.internals.workspace.canvasEditor;
+    return !!canvas.pendingGesture && canvas.overlay.hasPointerCapture(canvas.pendingGesture.start.pointerId);
+  }), true);
+  await page.mouse.up(); await releaseCanvasField(page, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["b"]);
+  assert.equal((await documentState(page)).sequences[0].tracks[0].volume, 0.5);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.gesture), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a no-handle canvas click may select a locked layer after saving another layer's field", async (t) => {
+  const page = await canvasSelectionFixture(t, "crop");
+  await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "other-video", patch: { locked: true } }], "锁定另一画面"));
+  await settle(page); const before = await documentState(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25"); await canvasSelectionClick(page, "crop");
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["b"]);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.deepEqual((await documentState(page)).sequences[0].clips[1], before.sequences[0].clips[1]);
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).isDisabled(), true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a removed original canvas selection target never falls through to a different hit layer", async (t) => {
+  const page = await canvasSelectionFixture(t, "crop");
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.inspector.context, original = context.apply;
+    context.apply = (operations, label) => original([...operations, { type: "clip.remove", sequenceId: "main", clipIds: ["b"] }], label);
+  });
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25"); await canvasSelectionClick(page, "crop");
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  assert.equal((await documentState(page)).sequences[0].clips.length, 1);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.pendingGesture || !!fixture.internals.workspace.canvasEditor.gesture), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a synchronous selection disposer cannot focus a detached canvas after an empty click", async (t) => {
+  const page = await canvasSelectionFixture(t);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.canvasEditor.context, original = context.select;
+    context.select = (ids) => { original(ids); fixture.dispose(); };
+  });
+  await canvasSelectionClick(page);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.canvasEditor.disposed), true);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.pendingGesture || !!fixture.internals.workspace.canvasEditor.gesture), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const intent of ["selection", "move"]) for (const change of ["selection", "dispose", "revision"]) {
+  test(`a canvas ${intent} rechecks ownership after a synchronous render ${change}`, async (t) => {
+    const page = await canvasSelectionFixture(t), before = await documentState(page);
+    await page.evaluate((change) => {
+      const context = fixture.internals.workspace.canvasEditor.context, read = context.read, select = context.select;
+      globalThis.selectionRenderCalls = [];
+      context.select = (ids) => { selectionRenderCalls.push(ids); select(ids); };
+      context.beforeGesture = () => {
+        context.read = () => {
+          context.read = read;
+          const saved = read();
+          if (change === "selection") fixture.internals.workspace.selectClips("main", ["b"]);
+          else if (change === "dispose") fixture.dispose();
+          else fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { transform: { ...saved.sequences[0].clips[0].transform, x: 0.3 } } }], "读取画布期间外部编辑");
+          return saved;
+        };
+        return true;
+      };
+    }, change);
+    if (intent === "selection") await canvasSelectionClick(page);
+    else await canvasDrag(page);
+    assert.deepEqual(await page.evaluate(() => selectionRenderCalls), []);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), [change === "selection" ? "b" : "a"]);
+    if (change === "revision") {
+      const after = await documentState(page);
+      assert.equal(after.revision, before.revision + 1);
+      assert.equal(after.sequences[0].clips[0].transform.x, 0.3);
+      await action(page, "undo").click(); await settle(page);
+      assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    } else assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.canvasEditor.pendingGesture || !!fixture.internals.workspace.canvasEditor.gesture), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}

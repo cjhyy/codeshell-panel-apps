@@ -1,4 +1,5 @@
 import { randomId } from "../ids.js";
+import { planClipAudioFade, type AudioFadeSide } from "./audio-fade-edits";
 import {
   EditorTimelineMedia,
   TIMELINE_MEDIA_LIMITS,
@@ -50,6 +51,8 @@ export interface EditorTimelineContext {
   ): PreparedTimelineSnapshot;
   selection(): { sequenceId: string; clipIds: string[] };
   select(clipIds: string[]): void;
+  /** Finish an owned focused field before changing selection or taking a drag snapshot. */
+  beforeGesture?(signal: AbortSignal): boolean | Promise<boolean>;
   selectedMarker?(): string | undefined;
   selectMarker?(markerId: string): void;
   time(): Tick;
@@ -64,7 +67,7 @@ export interface EditorTimelineContext {
   onError(error: unknown): void;
 }
 type Drag = {
-  kind: "move" | "left" | "right" | "seek" | "box";
+  kind: "move" | "left" | "right" | "seek" | "box" | "fadeIn" | "fadeOut";
   pointerId: number;
   x: number;
   y: number;
@@ -88,6 +91,7 @@ type Drag = {
   altKey: boolean;
   movePreview?: EditorOperationPreview;
   trimPreview?: ClipTrimPreview;
+  fadePreview?: EditorOperationPreview;
   plan?: { key: string; operations?: EditorOperation[]; error?: unknown; reason?: string };
 };
 type RenderedMediaScope = {
@@ -130,10 +134,25 @@ type GestureIntent = {
   verticalScroll: number;
 };
 type PendingTrackGesture = {
-  owner: TrackInputOwner;
+  owner?: TrackInputOwner;
+  field?: {
+    controller: AbortController;
+    identity: { documentId: string; revision: number; generation?: number };
+    selection: string;
+    time: Tick;
+    viewport: string;
+  };
   intent: GestureIntent;
   last: GesturePointer;
   up?: GesturePointer;
+};
+type FadeOwner = {
+  documentId: string;
+  revision: number;
+  generation?: number;
+  sequenceId: string;
+  clipId: string;
+  side: AudioFadeSide;
 };
 const gesturePointer = (event: GesturePointer): GesturePointer => ({
   pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, altKey: event.altKey,
@@ -194,6 +213,7 @@ export class EditorTimeline {
   private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
   private clipboardPending = false;
   private drag?: Drag;
+  private gestureSerial = 0;
   private dragPlanFrame?: number;
   private destroyed = false;
   private replacingControls = false;
@@ -204,6 +224,9 @@ export class EditorTimeline {
   private trackControlPending = false;
   private pendingTrackGesture?: PendingTrackGesture;
   private canvasFieldFinish?: object;
+  private readonly fadeOwners = new WeakMap<HTMLElement, FadeOwner>();
+  private currentFadeControls = new WeakSet<HTMLElement>();
+  private fadePending = false;
   private box?: HTMLElement;
   private scrollPosition = 0;
   private verticalPosition = 0;
@@ -419,6 +442,8 @@ export class EditorTimeline {
       focused instanceof HTMLElement
         ? focused.closest<HTMLElement>("[data-et-clip]")?.dataset.etClip
         : undefined;
+    const focusedFade = focused instanceof HTMLElement ? focused.dataset.etFade : undefined;
+    const renderIdentityValue = this.context.identity?.(), renderIdentity = renderIdentityValue ? { ...renderIdentityValue } : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
     // Only the explicit session-owned hook permits holding this detached read until RAF.
     const before = this.context.prepareMediaSnapshot && this.context.identity?.(),
@@ -429,7 +454,9 @@ export class EditorTimeline {
       identity && sequenceId === sequence.id ? { document: project, sequence, identity } : undefined;
     const mediaScope = candidate && this.mediaScopeCurrent(candidate) ? candidate : undefined;
     this.clearStaleClipboard(project);
-    if (this.pendingTrackGesture && !this.trackOwnerCurrent(this.pendingTrackGesture.owner))
+    const audibleAssets = new Set(project.assets.filter((asset) => asset.kind === "audio" || asset.kind === "video").map((asset) => asset.id));
+    if (this.pendingTrackGesture && (this.pendingTrackGesture.owner
+      ? !this.trackOwnerCurrent(this.pendingTrackGesture.owner) : !this.fieldGestureCurrent(this.pendingTrackGesture)))
       this.cancelTrackGesture();
     if (
       this.drag && (
@@ -585,7 +612,7 @@ export class EditorTimeline {
               )
               .map(
                 (clip) =>
-                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
+                  `<div role="option" aria-selected="${selected.has(clip.id)}" tabindex="0" class="et-clip et-${clip.kind} et-clip-${track.kind}${selected.has(clip.id) ? " selected" : ""}" data-et-clip="${esc(clip.id)}" style="left:${ticksToSeconds(clip.start) * this.scale}px;width:${Math.max(3, ticksToSeconds(clip.duration) * this.scale)}px" title="${esc(clipLabel(clip))} · ${stamp(clip.start)} — ${stamp(clip.start + clip.duration)}"><span class="et-edge left" data-et-edge="left" aria-label="裁剪开头"></span><span class="et-clip-label">${esc(clipLabel(clip))}</span>${clip.groupId ? '<span class="et-group">▣</span>' : ""}${selected.has(clip.id) ? this.fadeMarkup(clip, track, audibleAssets) : ""}<span class="et-edge right" data-et-edge="right" aria-label="裁剪结尾"></span></div>`,
               )
               .join("")}</div>`,
         )
@@ -644,6 +671,13 @@ export class EditorTimeline {
       this.trackButtons.set(button, { documentId: project.id, generation: this.context.identity?.().generation,
         sequenceId: sequence.id, trackId, kind: track.kind });
     }
+    const fades = this.container.querySelectorAll<HTMLElement>("[data-et-fade]");
+    this.currentFadeControls = new WeakSet(fades);
+    for (const control of fades) this.fadeOwners.set(control, {
+      documentId: project.id, revision: project.revision, generation: renderIdentity?.generation,
+      sequenceId: sequence.id, clipId: control.closest<HTMLElement>("[data-et-clip]")!.dataset.etClip!,
+      side: control.dataset.etFade as AudioFadeSide,
+    });
     this.container.querySelector(".et-toolbar")!.after(this.notice);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;
@@ -669,7 +703,7 @@ export class EditorTimeline {
     if (this.drag?.kind === "box") this.createBox();
     if (restoreFocus && !(focused instanceof HTMLElement && focused.isConnected)) {
       const next = focusedClip
-        ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(focusedClip)}"]`)
+        ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(focusedClip)}"]${focusedFade ? ` [data-et-fade="${CSS.escape(focusedFade)}"]` : ""}`)
         : undefined;
       (next ?? this.container).focus({ preventScroll: true });
     }
@@ -1264,6 +1298,13 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
+    const fade = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-et-fade]") : undefined;
+    if (fade && !event.ctrlKey && !event.metaKey && !event.altKey &&
+      ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault(); event.stopPropagation();
+      if (!this.drag && !this.pendingTrackGesture && !this.fadePending) this.run(() => this.keyFade(fade, event));
+      return;
+    }
     if (this.pendingTrackGesture) {
       event.preventDefault();
       if (event.key === "Escape") { this.cancel(); this.render(); }
@@ -1728,20 +1769,22 @@ export class EditorTimeline {
       event.preventDefault();
       return;
     }
-    if (this.pendingTrackGesture || this.trackControlPending) { event.preventDefault(); return; }
+    if (this.pendingTrackGesture || this.trackControlPending || this.canvasFieldFinish || this.fadePending) { event.preventDefault(); return; }
     if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
     const node = target.closest<HTMLElement>("[data-et-clip]"), intent: GestureIntent = {
       pointer: gesturePointer(event),
       clipId: node?.dataset.etClip,
-      kind: node ? (target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as "left" | "right" | undefined) ?? "move"
+      kind: node ? (target.closest<HTMLElement>("[data-et-fade]")?.dataset.etFade as AudioFadeSide | undefined) ?? (target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as "left" | "right" | undefined) ?? "move"
         : target.closest(".et-ruler,.et-marker-lane,.et-playhead") ? "seek" : "box",
       additive: event.shiftKey || event.ctrlKey || event.metaKey,
       scroll: this.viewport().scrollLeft,
       verticalScroll: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
     };
     event.preventDefault();
+    const fade = target.closest<HTMLElement>("[data-et-fade]");
+    if (fade && (!this.fadeCurrent(fade) || fade.getAttribute("aria-disabled") === "true")) return;
     const input = globalThis.document.activeElement;
     if (input instanceof HTMLInputElement && input.matches(TRACK_INPUTS) && this.trackInputCurrent(input)) {
       const clip = this.current().sequence.clips.find((item) => item.id === intent.clipId);
@@ -1750,8 +1793,84 @@ export class EditorTimeline {
       this.run(() => this.trackDraftGesture(input, intent));
       return;
     }
-    this.run(() => this.beginGesture(intent));
+    this.run(() => this.context.beforeGesture ? this.focusedFieldGesture(intent) : this.beginGesture(intent));
   };
+  private gestureViewport(): string {
+    const bounds = this.container.getBoundingClientRect();
+    return JSON.stringify([bounds.left, bounds.top, bounds.width, bounds.height, this.scale]);
+  }
+  private fieldGestureCurrent(pending: PendingTrackGesture, exactRevision = false): boolean {
+    const field = pending.field;
+    if (!field || this.destroyed || field.controller.signal.aborted) return false;
+    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document,
+      revision = identity?.revision ?? document!.revision;
+    return (identity?.documentId ?? document!.id) === field.identity.documentId &&
+      identity?.generation === field.identity.generation &&
+      revision >= field.identity.revision && revision <= field.identity.revision + Number(!exactRevision) &&
+      JSON.stringify(this.context.selection()) === field.selection && this.context.time() === field.time &&
+      this.gestureViewport() === field.viewport;
+  }
+  /** Keep the physical pointer intent while a different view finishes its field. */
+  private focusedFieldGesture(intent: GestureIntent): void {
+    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document,
+      pending: PendingTrackGesture = { intent, last: { ...intent.pointer }, field: {
+        controller: new AbortController(),
+        identity: { documentId: identity?.documentId ?? document!.id, revision: identity?.revision ?? document!.revision,
+          generation: identity?.generation },
+        selection: JSON.stringify(this.context.selection()), time: this.context.time(), viewport: this.gestureViewport(),
+      } };
+    this.pendingTrackGesture = pending;
+    let ready: boolean | Promise<boolean>;
+    try { ready = this.context.beforeGesture!(pending.field!.controller.signal); }
+    catch (error) { this.cancelTrackGesture(); throw error; }
+    if (this.pendingTrackGesture !== pending || !this.fieldGestureCurrent(pending, true)) {
+      if (this.pendingTrackGesture === pending) this.cancelTrackGesture();
+      else pending.field!.controller.abort();
+      if (ready instanceof Promise) void ready.catch(() => {});
+      return;
+    }
+    if (typeof ready === "boolean") {
+      this.pendingTrackGesture = undefined;
+      if (ready) this.beginGesture(intent);
+      else pending.field!.controller.abort();
+      return;
+    }
+    // The finisher has blurred the old field, but dispatch begins after this microtask.
+    const clip = this.current().sequence.clips.find((item) => item.id === intent.clipId);
+    intent.clipKind = clip?.kind; intent.trackId = clip?.trackId;
+    this.container.focus({ preventScroll: true });
+    if (this.pendingTrackGesture !== pending || !this.fieldGestureCurrent(pending, true)) {
+      if (this.pendingTrackGesture === pending) this.cancelTrackGesture();
+      else pending.field!.controller.abort();
+      void ready.catch(() => {});
+      return;
+    }
+    this.container.setPointerCapture(intent.pointer.pointerId);
+    void this.finishFieldGesture(pending, ready);
+  }
+  private async finishFieldGesture(pending: PendingTrackGesture, ready: Promise<boolean>): Promise<void> {
+    let finishing = false;
+    try {
+      if (!await ready || this.pendingTrackGesture !== pending || !this.fieldGestureCurrent(pending)) return;
+      this.pendingTrackGesture = undefined;
+      finishing = true;
+      const serial = this.gestureSerial + 1;
+      this.beginGesture(pending.intent, !pending.up);
+      if (!this.drag || this.gestureSerial !== serial) return;
+      const last = pending.up ?? pending.last;
+      this.drag.lastX = last.clientX; this.drag.lastY = last.clientY; this.drag.altKey = last.altKey;
+      if (pending.up) this.pointerup(pending.up);
+      else { this.updateDrag(); this.startAutoScroll(); }
+    } catch (error) {
+      if (!pending.field!.controller.signal.aborted && this.fieldGestureCurrent(pending)) this.context.onError(error);
+    } finally {
+      const active = this.pendingTrackGesture === pending;
+      if (active) this.cancelTrackGesture();
+      if ((active || finishing) && !pending.field!.controller.signal.aborted && !this.pendingTrackGesture && !this.drag &&
+        this.container.hasPointerCapture(pending.intent.pointer.pointerId))
+        this.container.releasePointerCapture(pending.intent.pointer.pointerId);
+    }
+  }
   /** A track draft must finish before the gesture takes its revision-bound document snapshot. */
   private async trackDraftGesture(input: HTMLInputElement, intent: GestureIntent): Promise<void> {
     const owner = this.trackInputs.get(input)!, pending: PendingTrackGesture = {
@@ -1777,8 +1896,9 @@ export class EditorTimeline {
       this.pendingTrackGesture = undefined;
       this.render();
       if (!this.trackOwnerCurrent(owner)) return;
+      const serial = this.gestureSerial + 1;
       this.beginGesture(intent, !pending.up);
-      if (!this.drag) return;
+      if (!this.drag || this.gestureSerial !== serial) return;
       const last = pending.up ?? pending.last;
       this.drag.lastX = last.clientX;
       this.drag.lastY = last.clientY;
@@ -1803,9 +1923,11 @@ export class EditorTimeline {
     }
   }
   private beginGesture(intent: GestureIntent, capture = true): void {
+    if (this.destroyed) return;
+    const serial = ++this.gestureSerial, time = this.context.time(), viewport = this.gestureViewport();
     this.notice.textContent = "";
     const { document, sequence, selected } = this.current(), { pointer, kind, additive } = intent,
-      clip = sequence.clips.find((item) => item.id === intent.clipId);
+      clip = sequence.clips.find((item) => item.id === intent.clipId), generation = this.context.identity?.().generation;
     if (intent.clipId && (!clip || (intent.clipKind && (clip.kind !== intent.clipKind || clip.trackId !== intent.trackId)) ||
       !this.container.querySelector(`[data-et-clip="${CSS.escape(intent.clipId)}"]`)))
       throw new Error("片段已变化，请重新选择或拖动");
@@ -1818,9 +1940,16 @@ export class EditorTimeline {
         for (const id of group) ids.add(id);
       }
       this.context.select([...ids]);
+      const identity = this.context.identity?.(), current = identity ? undefined : this.current().document,
+        selection = this.context.selection();
+      if (this.destroyed || (identity?.documentId ?? current!.id) !== document.id ||
+        (identity?.revision ?? current!.revision) !== document.revision || identity?.generation !== generation ||
+        selection.sequenceId !== sequence.id || selection.clipIds.length !== ids.size ||
+        selection.clipIds.some((id) => !ids.has(id)) || time !== this.context.time() ||
+        serial !== this.gestureSerial || viewport !== this.gestureViewport() || this.pendingTrackGesture) return;
       if (!ids.has(clip.id)) { this.render(); return; }
     }
-    this.drag = {
+    const drag: Drag = {
       kind,
       pointerId: pointer.pointerId,
       x: pointer.clientX,
@@ -1831,7 +1960,7 @@ export class EditorTimeline {
       lastY: pointer.clientY,
       documentId: document.id,
       revision: document.revision,
-      generation: this.context.identity?.().generation,
+      generation,
       sequenceId: sequence.id,
       document,
       sequence,
@@ -1851,7 +1980,18 @@ export class EditorTimeline {
       additive,
       altKey: pointer.altKey,
     };
+    this.drag = drag;
     this.container.focus({ preventScroll: true });
+    const identity = this.context.identity?.(), current = identity ? undefined : this.current().document,
+      selection = this.context.selection();
+    if (this.drag !== drag || this.destroyed || serial !== this.gestureSerial ||
+      (identity?.documentId ?? current!.id) !== document.id || (identity?.revision ?? current!.revision) !== document.revision ||
+      identity?.generation !== generation || selection.sequenceId !== sequence.id ||
+      selection.clipIds.length !== ids.size || selection.clipIds.some((id) => !ids.has(id)) ||
+      time !== this.context.time() || viewport !== this.gestureViewport()) {
+      if (this.drag === drag) this.cancel();
+      return;
+    }
     if (capture) this.container.setPointerCapture(pointer.pointerId);
     if (kind === "box") this.createBox();
     if (clip)
@@ -1860,10 +2000,71 @@ export class EditorTimeline {
         element.setAttribute("aria-selected", String(ids.has(element.dataset.etClip!)));
       }
   }
+  private fadeMarkup(clip: EditorClip, track: EditorTrack, audibleAssets: Set<string>): string {
+    if (!("audio" in clip) || (clip.kind === "media" && !audibleAssets.has(clip.assetId)) ||
+      ticksToSeconds(clip.duration) * this.scale < 48) return "";
+    return (["fadeIn", "fadeOut"] as const).map((side) => {
+      const value = clip.audio[side], label = side === "fadeIn" ? "声音淡入" : "声音淡出", disabled = track.locked || this.fadePending;
+      const boundary = side === "fadeIn" ? value : clip.duration - value;
+      const position = Math.max(12, Math.min(ticksToSeconds(clip.duration) * this.scale - 12, ticksToSeconds(boundary) * this.scale));
+      return `<span class="et-fade-area et-${side}" data-et-fade-area="${side}" style="width:${ticksToSeconds(value) * this.scale}px"></span><span class="et-fade-handle et-${side}" data-et-fade="${side}" role="slider" tabindex="${disabled ? -1 : 0}" aria-label="${label}${side === "fadeOut" ? "开始" : "结束"} ${esc(clipLabel(clip))}" aria-valuemin="0" aria-valuemax="${ticksToSeconds(clip.duration)}" aria-valuenow="${ticksToSeconds(boundary)}" aria-valuetext="${label}时长 ${ticksToSeconds(value).toFixed(6)} 秒" aria-disabled="${disabled}" aria-busy="${this.fadePending}" title="${label} ${ticksToSeconds(value).toFixed(6)} 秒${track.locked ? " · 轨道已锁定" : " · 拖动调整；←/→ 一帧，Shift 十帧，Home/End 片段边缘"}" style="left:${position}px"></span>`;
+    }).join("");
+  }
+  private paintFade(node: HTMLElement, side: AudioFadeSide, value: Tick, duration: Tick): void {
+    const handle = node.querySelector<HTMLElement>(`[data-et-fade="${side}"]`),
+      area = node.querySelector<HTMLElement>(`[data-et-fade-area="${side}"]`),
+      boundary = side === "fadeIn" ? value : duration - value,
+      label = side === "fadeIn" ? "声音淡入" : "声音淡出";
+    if (handle) {
+      handle.style.left = `${Math.max(12, Math.min(ticksToSeconds(duration) * this.scale - 12, ticksToSeconds(boundary) * this.scale))}px`;
+      handle.setAttribute("aria-valuenow", String(ticksToSeconds(boundary)));
+      handle.setAttribute("aria-valuetext", `${label}时长 ${ticksToSeconds(value).toFixed(6)} 秒`);
+      handle.title = `${label} ${ticksToSeconds(value).toFixed(6)} 秒`;
+    }
+    if (area) area.style.width = `${ticksToSeconds(value) * this.scale}px`;
+  }
+  private fadeCurrent(control: HTMLElement): boolean {
+    const owner = this.fadeOwners.get(control);
+    if (!owner || !this.currentFadeControls.has(control) || !this.container.contains(control)) return false;
+    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document;
+    return (identity?.documentId ?? document?.id) === owner.documentId &&
+      (identity?.revision ?? document?.revision) === owner.revision &&
+      identity?.generation === owner.generation && this.context.selection().sequenceId === owner.sequenceId;
+  }
+  private async keyFade(control: HTMLElement, event: KeyboardEvent): Promise<void> {
+    if (!this.fadeCurrent(control)) throw new Error("工程已变化，请重新选择声音淡入淡出手柄");
+    if (control.getAttribute("aria-disabled") === "true") return;
+    const owner = this.fadeOwners.get(control)!, { document, sequence } = this.current(),
+      clip = sequence.clips.find((item) => item.id === owner.clipId);
+    if (!clip || !("audio" in clip)) return;
+    const boundary = owner.side === "fadeIn" ? clip.audio.fadeIn : clip.duration - clip.audio.fadeOut,
+      step = event.shiftKey ? 10 : 1,
+      next = event.key === "Home" ? 0 : event.key === "End" ? clip.duration
+        : frameToTicks(Math.max(0, ticksToFrame(boundary, sequence.frameRate) + (event.key === "ArrowRight" ? step : -step)), sequence.frameRate),
+      duration = owner.side === "fadeIn" ? Math.min(clip.duration, next) : clip.duration - Math.min(clip.duration, next),
+      operations = planClipAudioFade(document, sequence.id, clip.id, owner.side, duration);
+    if (!operations.length) return;
+    this.fadePending = true;
+    for (const handle of this.container.querySelectorAll<HTMLElement>("[data-et-fade]")) {
+      handle.setAttribute("aria-disabled", "true"); handle.setAttribute("aria-busy", "true");
+    }
+    try {
+      await this.apply(operations, owner.side === "fadeIn" ? "调整声音淡入" : "调整声音淡出");
+    } catch (error) {
+      const identity = this.context.identity?.(), current = identity ? undefined : this.current().document;
+      if (!this.destroyed && (identity?.documentId ?? current?.id) === owner.documentId &&
+        identity?.generation === owner.generation && this.context.selection().sequenceId === owner.sequenceId)
+        this.context.onError(error);
+    } finally {
+      this.fadePending = false;
+      if (!this.destroyed) this.render();
+    }
+  }
   private cancelTrackGesture(): void {
     const pending = this.pendingTrackGesture;
     if (!pending) return;
     this.pendingTrackGesture = undefined;
+    pending.field?.controller.abort();
     if (this.container.hasPointerCapture(pending.intent.pointer.pointerId))
       this.container.releasePointerCapture(pending.intent.pointer.pointerId);
   }
@@ -1971,8 +2172,24 @@ export class EditorTimeline {
       }
       return;
     }
-    const clip = drag.clip!,
-      edge = clip.start + (drag.kind === "right" ? clip.duration : 0);
+    const clip = drag.clip!;
+    if (drag.kind === "fadeIn" || drag.kind === "fadeOut") {
+      if (!("audio" in clip)) return;
+      const desired = clip.audio[drag.kind] + Math.round(dx / this.scale * 240000) * (drag.kind === "fadeIn" ? 1 : -1);
+      drag.delta = Math.min(clip.duration, Math.max(0,
+        frameToTicks(ticksToFrame(Math.max(0, desired), sequence.frameRate), sequence.frameRate)));
+      if (drag.moved) {
+        if (planNow) this.previewPlan(document, sequence, drag);
+        else this.scheduleDragPlan();
+      }
+      const node = this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clip.id)}"]`);
+      if (node) {
+        node.classList.toggle("drag-invalid", !!drag.plan?.reason);
+        this.paintFade(node, drag.kind, drag.delta, clip.duration);
+      }
+      return;
+    }
+    const edge = clip.start + (drag.kind === "right" ? clip.duration : 0);
     const desired = Math.round((dx / this.scale) * 240000);
     drag.delta =
       drag.kind === "move"
@@ -2048,6 +2265,16 @@ export class EditorTimeline {
     drag: Drag,
   ): EditorOperation[] {
     const clip = drag.clip!;
+    if (drag.kind === "fadeIn" || drag.kind === "fadeOut") {
+      if (!this.context.identity) return planClipAudioFade(document, sequence.id, clip.id, drag.kind, drag.delta);
+      if (!("audio" in clip)) throw new Error("片段不含声音属性");
+      if (clip.audio[drag.kind] === drag.delta) return [];
+      const operations: EditorOperation[] = [{ type: "clip.update", sequenceId: sequence.id, clipId: clip.id,
+        patch: { audio: { ...clip.audio, [drag.kind]: drag.delta } } }];
+      drag.fadePreview ??= prepareEditorOperationPreview(document);
+      drag.fadePreview.preview(operations);
+      return operations;
+    }
     if (drag.kind === "move") {
       if (sequence.timelineMode === "magnetic")
         return planMagneticMove(document, sequence.id, drag.ids, {
@@ -2216,7 +2443,8 @@ export class EditorTimeline {
         }
         if (drag.kind === "move" && sequence.timelineMode === "magnetic")
           await this.applyMagneticMove(operations!, "移动片段");
-        else await this.apply(operations!, drag.kind === "move" ? "移动片段" : "裁剪片段");
+        else if (operations?.length) await this.apply(operations, drag.kind === "move" ? "移动片段"
+          : drag.kind === "fadeIn" ? "调整声音淡入" : drag.kind === "fadeOut" ? "调整声音淡出" : "裁剪片段");
       }
       this.render();
     });
@@ -2231,6 +2459,7 @@ export class EditorTimeline {
     const drag = this.drag;
     drag?.movePreview?.dispose();
     drag?.trimPreview?.dispose();
+    drag?.fadePreview?.dispose();
     this.drag = undefined;
     if (drag && this.container.hasPointerCapture(drag.pointerId))
       this.container.releasePointerCapture(drag.pointerId);
@@ -2242,6 +2471,10 @@ export class EditorTimeline {
       clip.style.transform = "";
       clip.style.pointerEvents = "";
       const source = clips.find((item) => item.id === clip.dataset.etClip);
+      if (source && "audio" in source) {
+        this.paintFade(clip, "fadeIn", source.audio.fadeIn, source.duration);
+        this.paintFade(clip, "fadeOut", source.audio.fadeOut, source.duration);
+      }
       if (source)
         clip.style.width = `${Math.max(3, ticksToSeconds(source.duration) * this.scale)}px`;
     }

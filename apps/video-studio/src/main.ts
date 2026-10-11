@@ -3986,7 +3986,9 @@ async function action(name: string, id?: string): Promise<void> {
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
         <dt>一屏看全</dt><dd>Shift + Z</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
         <dt>以鼠标位置缩放</dt><dd>⌘/Ctrl + 滚轮</dd><dt>横向滚动时间轴</dt><dd>Shift + 滚轮</dd>
-        <dt>开关边缘吸附</dt><dd>N</dd><dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd></dl>
+        <dt>开关边缘吸附</dt><dd>N</dd><dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd>
+        <dt>调整声音淡化边界（手柄聚焦时）</dt><dd>← / → · Shift 十帧 · Home / End</dd></dl>
+        <p>选中有声音的片段后，可拖动上角的淡入手柄和下角的淡出手柄。片段太短时先放大时间轴，也可在音频属性里输入秒数。</p>
         <p>复制保留分组、关联声音与来源字幕。粘贴从播放头开始，跨序列按第 N 条同类轨道对应；缺轨时先添加对应轨道。原位复制会为副本新建平行轨。剪切关联字幕时须同时选择来源片段。</p><p>时间轴快捷键在时间轴获得焦点时生效。磁吸主画面轨用移动键调整片段顺序；自由模式及声音、文字轨逐帧移动。输入文字和编辑数字时暂停生效；片段获得键盘焦点时，Space 用于选中片段。按 ? 可打开此说明。</p>` : `
         <dl class="shortcut-list"><dt>播放 / 暂停</dt><dd>Space</dd>
         <dt>前 / 后一帧</dt><dd>← / →</dd><dt>前 / 后 5 秒</dt><dd>Shift + ← / →</dd>

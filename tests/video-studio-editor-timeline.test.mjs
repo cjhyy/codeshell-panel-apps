@@ -3968,3 +3968,126 @@ test("the magnetic main track keeps its delete button disabled with a reason", a
   assert.match(await button.getAttribute("title"), /磁吸主轨/);
   assert.equal(await page.locator('[data-et-delete-track="v3"]').isDisabled(), false);
 });
+
+
+test("audio fade handles edit only the chosen grouped clip with one undo and keep timeline timing", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: [
+    { id: "a", trackId: "v1", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "b", trackId: "audio", start: 0, duration: 2, groupId: "pair", linkGroupId: "pair" },
+    { id: "c", trackId: "v1", start: 2, duration: 2 },
+  ] });
+  await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document;
+  const handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  assert.equal(await handle.count(), 1);
+  const p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down();
+  await page.mouse.move(p.x + 32, p.y, { steps: 4 }); await settle(page);
+  assert.match(await handle.getAttribute("aria-valuetext"), /0.500000/);
+  await page.mouse.up(); await settle(page);
+  const after = await state(page), expected = structuredClone(before);
+  expected.revision++; expected.sequences[0].clips[0].audio.fadeIn = 120000;
+  assert.deepEqual(after.document, expected);
+  assert.equal(after.applied.length, 1); assert.equal(after.applied[0].label, "调整声音淡入");
+  assert.deepEqual(after.errors, []);
+  await undo(page, before);
+});
+
+test("audio fade out uses the final release coordinate and Escape restores its visual preview", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, handle = clip(page, "a").locator('[data-et-fade="fadeOut"]'), p = await center(handle);
+  await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x - 32, p.y); await settle(page);
+  assert.match(await handle.getAttribute("aria-valuetext"), /0.500000/);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await clip(page, "a").click(); await settle(page);
+  const q = await center(clip(page, "a").locator('[data-et-fade="fadeOut"]'));
+  await page.mouse.move(q.x, q.y); await page.mouse.down(); await page.mouse.move(q.x - 16, q.y);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: q.x - 32, y: q.y, button: "left", buttons: 0 });
+  await cdp.detach(); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeOut, 120000);
+  assert.deepEqual((await state(page)).errors, []); await undo(page, before);
+});
+
+test("audio fade keyboard boundaries use the actual NTSC frame clock and retain slider focus", async (t) => {
+  const page = await fixture(t, { ntsc: true }); await clip(page, "a").click(); await settle(page);
+  let handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  await handle.focus(); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 8008);
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("Shift+ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 88088);
+  handle = clip(page, "a").locator('[data-et-fade="fadeOut"]'); await handle.focus();
+  await page.keyboard.press("ArrowLeft"); await settle(page);
+  const after = await state(page); assert.equal(after.document.sequences[0].clips[0].audio.fadeOut, 7528);
+  assert.deepEqual(after.errors, []);
+  await page.keyboard.press("End"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeOut, 0);
+});
+
+test("audio fade controls reject old generations and locked tracks without editing", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const stale = await clip(page, "a").locator('[data-et-fade="fadeIn"]').elementHandle(), before = (await state(page)).document;
+  await page.evaluate(() => fixture.replaceGeneration());
+  await stale.evaluate((node) => document.querySelector('[data-et-clip="a"]').append(node));
+  await stale.focus(); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.externalTrackEdit("v1", { locked: true })); await settle(page);
+  const locked = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  assert.equal(await locked.getAttribute("aria-disabled"), "true");
+  const p = await center(locked); await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.move(p.x + 32, p.y); await page.mouse.up(); await settle(page);
+  const after = await state(page); assert.equal(after.document.sequences[0].clips[0].audio.fadeIn, 0);
+  assert.equal(after.applied.length, 0);
+});
+
+test("audio fade drags clamp to clip duration and repeating the boundary adds no undo", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const p = await center(clip(page, "a").locator('[data-et-fade="fadeIn"]'));
+    await page.mouse.move(p.x, p.y); await page.mouse.down();
+    await page.mouse.move(p.x + 200, p.y, { steps: 4 }); await page.mouse.up(); await settle(page);
+    const result = await state(page);
+    assert.equal(result.document.sequences[0].clips[0].audio.fadeIn, 480000);
+    assert.equal(result.applied.length, 1);
+    assert.deepEqual(result.errors, []);
+  }
+  await undo(page, before);
+});
+
+test("audio fade keyboard waits for apply and remains correctable after a rejected save", async (t) => {
+  const page = await fixture(t); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, handle = clip(page, "a").locator('[data-et-fade="fadeIn"]');
+  await handle.focus(); await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.press("ArrowRight"); await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal(await handle.getAttribute("aria-busy"), "true");
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(() => fixture.finishEdit(true)); await settle(page);
+  assert.deepEqual((await state(page)).document, before);
+  assert.deepEqual((await state(page)).errors, ["Error: 保存失败"]);
+  assert.equal(await handle.getAttribute("aria-busy"), "false");
+  assert.equal(await handle.evaluate((node) => node === document.activeElement), true);
+  await page.keyboard.press("ArrowRight"); await settle(page);
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 8000);
+  assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+});
+
+test("audio fade handles support native touch and cancellation leaves no partial edit", async (t) => {
+  const page = await fixture(t, { touch: true }); await clip(page, "a").click(); await settle(page);
+  const before = (await state(page)).document, input = await touchInput(page, "#timeline");
+  let p = { ...await center(clip(page, "a").locator('[data-et-fade="fadeIn"]')), id: 1 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, x: p.x + 32 }]);
+  await input.send("touchEnd"); await settle(page); await input.assertNative();
+  assert.equal((await state(page)).document.sequences[0].clips[0].audio.fadeIn, 120000);
+  assert.equal((await state(page)).applied.length, 1);
+  await undo(page, before);
+  const afterUndo = (await state(page)).document;
+  p = { ...await center(clip(page, "a").locator('[data-et-fade="fadeOut"]')), id: 2 };
+  await input.send("touchStart", [p]); await input.send("touchMove", [{ ...p, x: p.x - 32 }]);
+  await input.send("touchCancel"); await settle(page);
+  assert.deepEqual((await state(page)).document, afterUndo);
+  assert.deepEqual((await state(page)).errors, []);
+  assert.equal((await page.evaluate(() => fixture.gestureState())).drag, false);
+});

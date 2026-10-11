@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { planClipAudioFade } from "../apps/video-studio/src/editor/audio-fade-edits";
 import test from "node:test";
 import { planTimelinePaste } from "../apps/video-studio/src/editor/timeline-paste";
 import {
@@ -1258,4 +1259,35 @@ test("owned trim retains locked-caption and nested-sequence source limits withou
   assert.throws(() => prepareClipTrim(before, main, source.id), /访问器/);
   assert.throws(() => trimClip(before, main, source.id, sec(1), sec(3)), /访问器/);
   assert.equal(getterCalls, 0);
+});
+
+
+test("audio fade changes one clip only and preserves exact maps, bindings and the other mix properties", () => {
+  const owner = picture(), other = picture("other", sec(6));
+  owner.groupId = other.groupId = "visual-group";
+  owner.linkGroupId = other.linkGroupId = "linked-sound";
+  owner.audio.volume = { keyframes: [{ time: 0, value: 0.6, easing: "ease-in" }, { time: sec(4), value: 1.4, easing: "linear" }] };
+  owner.audio.fadeOut = sec(2);
+  owner.audio.pan = -0.25;
+  const before = document([owner, other, caption(owner)]), original = structuredClone(before);
+  const operations = planClipAudioFade(before, main, owner.id, "fadeIn", 720001), after = apply(before, operations);
+  assert.equal(operations.length, 1);
+  const expected = structuredClone(original); expected.revision++;
+  (expected.sequences[0]!.clips[0] as MediaClip).audio.fadeIn = 720001;
+  assert.deepEqual(after, expected);
+  assert.deepEqual(before, original);
+  assert.deepEqual(planClipAudioFade(after, main, owner.id, "fadeIn", 720001), []);
+});
+
+test("audio fades reject locked tracks, silent image clips and invalid unrelated document state", () => {
+  const before = document();
+  before.sequences[0]!.tracks[0]!.locked = true;
+  assert.throws(() => planClipAudioFade(before, main, "owner", "fadeIn", 1), /锁定/);
+  before.sequences[0]!.tracks[0]!.locked = false;
+  for (const duration of [-1, 0.5, sec(4) + 1, Infinity])
+    assert.throws(() => planClipAudioFade(before, main, "owner", "fadeOut", duration));
+  const invalid = structuredClone(before); invalid.sequences[0]!.tracks[1]!.volume = 5;
+  assert.throws(() => planClipAudioFade(invalid, main, "owner", "fadeIn", 1));
+  const image = structuredClone(before); image.assets[0]!.kind = "image";
+  assert.throws(() => planClipAudioFade(image, main, "owner", "fadeIn", 1), /请选择/);
 });

@@ -481,6 +481,48 @@
 .et-edge:hover {
   background: #75ddcf66;
 }
+.et-fade-area {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: #d4fff826;
+  pointer-events: none;
+  z-index: 2;
+}
+.et-fade-area.et-fadeIn {
+  left: 0;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+.et-fade-area.et-fadeOut {
+  right: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+}
+.et-fade-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border: 1px solid #152e29;
+  border-radius: 50%;
+  background: #c2f4df;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.et-fade-handle.et-fadeIn {
+  top: 2px;
+}
+.et-fade-handle.et-fadeOut {
+  bottom: 2px;
+}
+.et-fade-handle:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.et-fade-handle[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .et-playhead {
   position: absolute;
   top: 0;

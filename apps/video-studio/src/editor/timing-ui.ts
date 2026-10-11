@@ -98,6 +98,7 @@ export class EditorTiming {
   private error = "";
   private activeDetails = new Set(["片段时间"]);
   private curvePage = 0;
+  private transitionPair?: { scope: string; from: string; to: string };
   constructor(
     container: HTMLElement,
     private readonly context: EditorTimingContext,
@@ -108,6 +109,7 @@ export class EditorTiming {
   }
   dispose(): void {
     this.disposed = true;
+    this.transitionPair = undefined;
     this.root.remove();
   }
   private scope(): Scope | undefined {
@@ -540,6 +542,10 @@ export class EditorTiming {
     };
     render();
   }
+  private transitionScope(scope: Scope): string {
+    return JSON.stringify([scope.identity?.documentId, scope.identity?.generation, scope.document.id,
+      scope.sequence.id, scope.selectedIds]);
+  }
   private drawTransitions(scope: Scope, parent: HTMLElement): void {
     const pairs: Array<{ from: EditorClip; to: EditorClip; label: string }> = [];
     for (const track of scope.sequence.tracks.filter((track) => track.kind === "video")) {
@@ -554,17 +560,22 @@ export class EditorTiming {
         });
     }
     if (!pairs.length) {
+      this.transitionPair = undefined;
       parent.append(element("p", "etime-note", "在同一画面轨放置两个片段后，即可添加转场。"));
       return;
     }
-    const initial = Math.max(
-      0,
-      pairs.findIndex(
-        (pair) =>
-          scope.selectedIds.includes(pair.from.id) &&
-          (scope.selectedIds.length === 1 || scope.selectedIds.includes(pair.to.id)),
-      ),
-    );
+    const owner = this.transitionScope(scope),
+      remembered = this.transitionPair?.scope === owner
+        ? pairs.findIndex((pair) => pair.from.id === this.transitionPair?.from && pair.to.id === this.transitionPair?.to)
+        : -1,
+      initial = remembered >= 0 ? remembered : Math.max(
+        0,
+        pairs.findIndex(
+          (pair) =>
+            scope.selectedIds.includes(pair.from.id) &&
+            (scope.selectedIds.length === 1 || scope.selectedIds.includes(pair.to.id)),
+        ),
+      );
     const pairInput = select(
         "相邻片段",
         pairs.map((pair, index) => [String(index), pair.label]),
@@ -574,10 +585,11 @@ export class EditorTiming {
     parent.append(field("相邻片段", pairInput), body);
     const render = () => {
       body.replaceChildren();
-      const pair = pairs[Number(pairInput.value)]!,
-        existing = scope.sequence.transitions.find(
-          (item) => item.fromClipId === pair.from.id && item.toClipId === pair.to.id,
-        );
+      const pair = pairs[Number(pairInput.value)]!;
+      this.transitionPair = { scope: owner, from: pair.from.id, to: pair.to.id };
+      const existing = scope.sequence.transitions.find(
+        (item) => item.fromClipId === pair.from.id && item.toClipId === pair.to.id,
+      );
       const controls = element("fieldset");
       controls.disabled = [pair.from, pair.to].some(
         (clip) => scope.sequence.tracks.find((track) => track.id === clip.trackId)?.locked,
@@ -630,21 +642,30 @@ export class EditorTiming {
         this.submit(
           scope,
           remove ? "移除转场并接成硬切" : existing ? "调整转场" : "添加转场",
-          (fresh) =>
-            planTransition(fresh.document, fresh.sequence.id, pair.from.id, pair.to.id, {
+          (fresh) => {
+            const saved = fresh.sequence.transitions.find(
+              (item) => item.fromClipId === pair.from.id && item.toClipId === pair.to.id,
+            );
+            return planTransition(fresh.document, fresh.sequence.id, pair.from.id, pair.to.id, {
               id:
-                existing?.id ??
+                saved?.id ??
                 `transition-${Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16).padStart(8, "0")).join("")}`,
-              kind: kind.value as Transition["kind"],
-              duration: secondsToTicks(numeric(duration)),
+              kind: remove ? saved?.kind ?? "dissolve" : (kind.value as Transition["kind"]),
+              duration: remove ? saved?.duration ?? 0 : secondsToTicks(numeric(duration)),
               placement: placement.value as "ripple" | "overlap",
               remove,
-            }),
+            });
+          },
         );
       controls.append(this.button(existing ? "应用转场调整" : "添加转场", () => plan(false), true));
       if (existing) controls.append(this.button("移除转场并接成硬切", () => plan(true)));
     };
-    pairInput.addEventListener("change", render);
+    pairInput.addEventListener("change", () => {
+      if (this.disposed || this.pending || !this.root.contains(pairInput)) return;
+      const fresh = this.scope();
+      if (!fresh || this.transitionScope(fresh) !== owner || fresh.document.revision !== scope.document.revision) return;
+      render();
+    });
     render();
   }
   private drawArrangement(scope: Scope, parent: HTMLElement): void {

@@ -47,7 +47,8 @@ interface PendingGesture {
   selection: string;
   time: Tick;
   mode: CanvasEditMode;
-  target: CanvasTarget;
+  target?: CanvasTarget;
+  selectOnly: boolean;
   handle: string;
   start: CanvasPointer;
   last: CanvasPointer;
@@ -374,11 +375,10 @@ export class EditorCanvas {
       const start = this.point(event), handle = (event.target as Element)
         .closest("[data-canvas-handle]")?.getAttribute("data-canvas-handle"),
         chosen = handle ? this.target : [...this.targets].reverse().find((target) => canvasTargetHit(target, start));
-      if (!chosen) { this.context.select([]); this.render(); return; }
-      if (!handle && this.mode !== "transform") { this.context.select([chosen.clip.id]); this.render(); return; }
       const pending: PendingGesture = { controller: new AbortController(), identity: { ...this.context.identity() },
         selection: JSON.stringify(this.context.selection()), time: this.context.time(), mode: this.mode,
-        target: chosen, handle: handle ?? "move", start: pointer(event), last: pointer(event), viewport: this.viewportSignature() };
+        target: chosen, selectOnly: !chosen || (!handle && this.mode !== "transform"),
+        handle: handle ?? "move", start: pointer(event), last: pointer(event), viewport: this.viewportSignature() };
       event.preventDefault();
       event.stopPropagation();
       this.pendingGesture = pending;
@@ -391,8 +391,10 @@ export class EditorCanvas {
       }
       if (typeof ready === "boolean") {
         this.pendingGesture = undefined;
-        if (ready) this.beginGesture(pending, true);
-        else pending.controller.abort();
+        if (ready) {
+          if (pending.selectOnly) this.finishSelection(pending);
+          else this.beginGesture(pending, true);
+        } else pending.controller.abort();
         return;
       }
       this.overlay.setPointerCapture(event.pointerId);
@@ -408,6 +410,7 @@ export class EditorCanvas {
       if (!await ready || this.pendingGesture !== pending || !this.pendingCurrent(pending) ||
         this.viewportSignature() !== pending.viewport) return;
       this.pendingGesture = undefined;
+      if (pending.selectOnly) { this.finishSelection(pending); return; }
       this.beginGesture(pending, !pending.up);
       if (pending.up) this.up(pending.up);
       else this.move(pending.last);
@@ -418,6 +421,18 @@ export class EditorCanvas {
       if (!this.pendingGesture && !this.gesture && !pending.controller.signal.aborted &&
         this.overlay.hasPointerCapture(pending.start.pointerId)) this.overlay.releasePointerCapture(pending.start.pointerId);
     }
+  }
+  private finishSelection(pending: PendingGesture): void {
+    if (!this.pendingCurrent(pending)) return;
+    this.context.assertEditable?.();
+    const identity = this.identity();
+    this.render();
+    if (identity !== this.identity() || !this.pendingCurrent(pending) || this.viewportSignature() !== pending.viewport) return;
+    // Resolve the saved target id; a completed field must never change what the click meant.
+    const original = pending.target, target = original && this.targets.find((item) => item.clip.id === original.clip.id);
+    if (original && (!target || target.clip.kind !== original.clip.kind || target.clip.trackId !== original.clip.trackId)) return;
+    this.context.select(target ? [target.clip.id] : []);
+    if (!this.disposed) { this.render(); this.overlay.focus(); }
   }
   private handlePoint(target: CanvasTarget, mode: CanvasEditMode, handle: string): VisualPoint {
     const corners = mode === "mask" && target.layer.mask
@@ -443,19 +458,21 @@ export class EditorCanvas {
     return center;
   }
   private beginGesture(pending: PendingGesture, capture: boolean): void {
-    if (!this.pendingCurrent(pending)) return;
+    const original = pending.target;
+    if (!original || pending.selectOnly || !this.pendingCurrent(pending)) return;
     this.context.assertEditable?.();
+    const identity = this.identity();
     this.render();
-    const target = this.targets.find((item) => item.clip.id === pending.target.clip.id);
-    if (!target || target.clip.kind !== pending.target.clip.kind || target.clip.trackId !== pending.target.clip.trackId)
+    if (identity !== this.identity() || !this.pendingCurrent(pending) || this.viewportSignature() !== pending.viewport) return;
+    const target = this.targets.find((item) => item.clip.id === original.clip.id);
+    if (!target || target.clip.kind !== original.clip.kind || target.clip.trackId !== original.clip.trackId)
       throw new Error("片段已变化，请重新调整画布");
     if (target.locked) throw new Error("轨道已锁定，不能调整画面");
     if (pending.mode === "mask" && !target.layer.mask) return;
-    const oldAnchor = this.handlePoint(pending.target, pending.mode, pending.handle),
+    const oldAnchor = this.handlePoint(original, pending.mode, pending.handle),
       newAnchor = this.handlePoint(target, pending.mode, pending.handle),
       offset = { x: newAnchor.x - oldAnchor.x, y: newAnchor.y - oldAnchor.y }, start = this.point(pending.start);
     // Keep the original handle and pointer delta when the saved field moves its geometry.
-    const identity = this.identity();
     this.context.select([target.clip.id]);
     const selection = this.context.selection();
     if (this.disposed || pending.controller.signal.aborted || identity !== this.identity() ||
