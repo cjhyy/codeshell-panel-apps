@@ -894,6 +894,154 @@ test("subframe pointer movement reuses the validated plan without cloning the pr
   assert.deepEqual((await state(page)).errors, []);
 });
 
+test("a burst of changed drag coordinates validates once before paint and release synchronously checks its final position", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.evaluate(() => {
+    globalThis.dragPlanCalls = 0;
+    const plan = editor.EditorTimeline.prototype.planDrag;
+    editor.EditorTimeline.prototype.planDrag = function (...args) {
+      dragPlanCalls++;
+      return plan.apply(this, args);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+      globalThis.dragPointerId = event.pointerId;
+    }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  const duringBurst = await page.evaluate(({ x, y }) => {
+    const timeline = document.querySelector("#timeline");
+    for (let step = 1; step <= 40; step++)
+      timeline.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true, pointerId: dragPointerId, buttons: 1,
+        clientX: x + step * 4, clientY: y,
+      }));
+    return dragPlanCalls;
+  }, point);
+  assert.equal(duringBurst, 0, "Pointer events only queue the latest candidate before paint");
+  await settle(page);
+  assert.equal(await page.evaluate(() => dragPlanCalls), 1);
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(({ x, y }) => {
+    // The release coordinate differs from the pending candidate and must be checked immediately.
+    document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true, pointerId: dragPointerId, buttons: 0,
+      clientX: x + 64, clientY: y,
+    }));
+  }, point);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal(await page.evaluate(() => dragPlanCalls), 2);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 480000);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+});
+
+test("release validates a pending collision synchronously and Escape or stale identity cancels queued planning", async (t) => {
+  for (const ending of ["release", "escape", "stale"]) {
+    const page = await fixture(t),
+      before = (await state(page)).document,
+      point = await center(clip(page, "a"));
+    await page.evaluate(() => {
+      globalThis.dragPlanCalls = 0;
+      const plan = editor.EditorTimeline.prototype.planDrag;
+      editor.EditorTimeline.prototype.planDrag = function (...args) {
+        dragPlanCalls++;
+        return plan.apply(this, args);
+      };
+      document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+        globalThis.dragPointerId = event.pointerId;
+      }, { once: true });
+    });
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.down();
+    const result = await page.evaluate(({ point, ending }) => {
+      const timeline = document.querySelector("#timeline");
+      timeline.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true, pointerId: dragPointerId, buttons: 1,
+        clientX: point.x + 256, clientY: point.y,
+      }));
+      if (ending === "escape")
+        timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+      if (ending === "stale") fixture.externalChange();
+      timeline.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true, pointerId: dragPointerId, buttons: 0,
+        clientX: point.x + 256, clientY: point.y,
+      }));
+      return { plans: dragPlanCalls, errors: fixture.read().errors };
+    }, { point, ending });
+    await page.mouse.up();
+    await settle(page);
+    assert.equal((await state(page)).applied.length, 0);
+    assert.equal(await page.evaluate(() => dragPlanCalls), ending === "release" ? 1 : 0);
+    if (ending === "release") {
+      assert.equal(result.plans, 1);
+      assert.equal((await state(page)).errors.length, 1);
+      assert.match((await state(page)).errors[0], /同轨画面重叠/);
+    } else if (ending === "escape") {
+      assert.deepEqual((await state(page)).document, before);
+      assert.deepEqual((await state(page)).errors, []);
+      assert.equal(await page.locator(".et-notice").textContent(), "");
+    } else {
+      assert.equal((await state(page)).document.name, "外部更新");
+      assert.equal((await state(page)).errors.length, 1);
+      assert.match((await state(page)).errors[0], /工程已变化/);
+    }
+    assert.equal(await page.locator(".drag-invalid,.drop-target-invalid").count(), 0);
+  }
+});
+
+test("stationary Alt flushes pending movement before paint and restores its snapped plan synchronously", async (t) => {
+  const page = await fixture(t),
+    before = (await state(page)).document,
+    point = await center(clip(page, "a"));
+  await page.evaluate(() => {
+    globalThis.dragPlanDeltas = [];
+    const plan = editor.EditorTimeline.prototype.planDrag;
+    editor.EditorTimeline.prototype.planDrag = function (document, sequence, drag) {
+      dragPlanDeltas.push(drag.delta);
+      return plan.call(this, document, sequence, drag);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => {
+      globalThis.dragPointerId = event.pointerId;
+    }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  const deltas = await page.evaluate(({ x, y }) => {
+    const timeline = document.querySelector("#timeline");
+    timeline.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true, pointerId: dragPointerId, buttons: 1,
+      clientX: x + 64 * 2.94, clientY: y,
+    }));
+    timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Alt", altKey: true }));
+    const bypassed = [...dragPlanDeltas];
+    timeline.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Alt" }));
+    return { bypassed, restored: [...dragPlanDeltas] };
+  }, point);
+  assert.deepEqual(deltas.bypassed, [704000]);
+  assert.deepEqual(deltas.restored, [704000, 720000]);
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => dragPlanDeltas), [704000, 720000],
+    "The canceled frame must not revalidate either stationary modifier result");
+  assert.deepEqual((await state(page)).document, before);
+  await page.evaluate(({ x, y }) => {
+    document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true, pointerId: dragPointerId, buttons: 0,
+      clientX: x + 64 * 2.94, clientY: y,
+    }));
+  }, point);
+  await page.mouse.up();
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+  assert.equal((await state(page)).document.sequences[0].clips.find((value) => value.id === "a").start, 960000);
+  assert.deepEqual((await state(page)).errors, []);
+  await undo(page, before);
+});
+
 test("left and right handles preview actual trim geometry and preserve source time with one undo", async (t) => {
   const page = await fixture(t),
     before = (await state(page)).document;

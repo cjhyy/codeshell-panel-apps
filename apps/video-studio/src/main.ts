@@ -5409,8 +5409,8 @@ function mountEditorCaptions(root: HTMLElement): void {
         ? (editorWorkspace?.currentTime() ?? 0)
         : frame * LEGACY_FRAME_TICKS,
     select: (sequenceId, ids) => editorWorkspace?.selectClips(sequenceId, ids),
-    seek: (time) =>
-      editorVisible ? editorWorkspace?.seek(time) : seek(Math.floor(time / LEGACY_FRAME_TICKS)),
+    seek: (time, exact) =>
+      editorVisible ? editorWorkspace?.seek(time, exact) : seek(Math.floor(time / LEGACY_FRAME_TICKS)),
     onError: fail,
     ...(editorCaptionServices
       ? {

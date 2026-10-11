@@ -1,4 +1,5 @@
 import type { CaptionController, CaptionControllerState } from "./caption-controller";
+import { CaptionFindUI } from "./caption-find-ui";
 import { exportEditorSrt, listCaptions } from "./captions";
 import { CAPTION_PRESETS, currentCaptionPreset, type CaptionPreset } from "./caption-presets";
 import { narrationDraftClipIds } from "./narration-edits";
@@ -13,7 +14,7 @@ export interface EditorCaptionsUIContext {
   /** Playhead of the shown sequence; enables “在播放头添加字幕”. */
   currentTime?(): Tick;
   select?(sequenceId: string, clipIds: string[]): void;
-  seek?(tick: number): void | Promise<void>;
+  seek?(tick: number, exact?: boolean): void | Promise<void>;
   onError?(error: Error): void;
   /** Explains why local transcription is unavailable, naming the missing piece. */
   transcriptionHint?(): string;
@@ -79,6 +80,7 @@ export class EditorCaptionsUI {
   private readonly newText = element("textarea");
   private readonly addButton = element("button", "在播放头添加字幕");
   private readonly exportButton = element("button", "导出所选 SRT");
+  private readonly find: CaptionFindUI;
   private readonly disposers: Array<() => void> = [];
   private unwatch: (() => void) | undefined;
   private selected = new Set<string>();
@@ -106,6 +108,27 @@ export class EditorCaptionsUI {
     this.status.className = "ec-status";
     this.narrationNote.className = "ec-narration";
     this.narrationNote.hidden = true;
+    this.find = new CaptionFindUI({
+      session: context.session,
+      controller: context.controller,
+      sequenceId: () => this.sequenceId,
+      selected: () => [...this.selected],
+      assertSaved: (ids) => this.assertSavedRows(ids),
+      run: (task) => this.run(task),
+      reveal: async (match, query) => {
+        const row = [...this.rows.querySelectorAll<HTMLElement>("[data-caption-id]")]
+          .find((item) => item.dataset.captionId === match.clipId);
+        row?.scrollIntoView({ block: "nearest" });
+        const input = row?.querySelector<HTMLTextAreaElement>('[data-caption-field="text"]');
+        if (input) {
+          input.focus({ preventScroll: true });
+          const index = input.value.indexOf(query);
+          if (index >= 0) input.setSelectionRange(index, index + query.length);
+        }
+        context.select?.(this.sequenceId, [match.clipId]);
+        await context.seek?.(match.start, true);
+      },
+    });
     const adding = element("section");
     adding.className = "ec-add";
     this.newText.rows = 2;
@@ -207,6 +230,7 @@ export class EditorCaptionsUI {
       this.narrationNote,
       presetRow,
       adding,
+      this.find.element,
       this.rows,
       tools,
       this.preview,
@@ -235,7 +259,9 @@ export class EditorCaptionsUI {
     this.cancelButton.addEventListener("click", () => context.controller.cancel());
     this.applyButton.addEventListener("click", () =>
       this.edit(async () => {
-        const ids = context.controller.getState().candidate?.rows.map((row) => row.id) ?? [];
+        const candidate = context.controller.getState().candidate,
+          ids = candidate?.rows.map((row) => row.id) ?? [];
+        if (candidate?.replacement) this.assertSavedRows(ids);
         await context.controller.apply();
         if (this.disposed) return;
         this.selected = new Set(ids.filter((id) => this.captions().some((clip) => clip.id === id)));
@@ -390,6 +416,7 @@ export class EditorCaptionsUI {
   }
   private selectionChanged() {
     this.syncStyles();
+    this.find.selectionChanged();
     this.context.select?.(this.sequenceId, [...this.selected]);
   }
   private syncStyles() {
@@ -455,6 +482,18 @@ export class EditorCaptionsUI {
     if (!draft) return;
     for (const field of fields) delete draft[field];
     if (!Object.keys(draft).length) this.drafts.delete(clipId);
+  }
+  private assertSavedRows(ids: string[]): void {
+    if (this.captions().some((clip) => {
+      if (!ids.includes(clip.id)) return false;
+      const draft = this.drafts.get(clip.id);
+      return draft && (
+        (draft.text !== undefined && draft.text !== clip.text) ||
+        (draft.start !== undefined && draft.start !== seconds(clip.start)) ||
+        (draft.end !== undefined && draft.end !== seconds(clip.start + clip.duration))
+      );
+    }))
+      throw new Error("匹配字幕含未保存的文字或时间，请先保存再替换；草稿已保留。");
   }
   private renderRows() {
     const clips = this.captions(),
@@ -653,12 +692,14 @@ export class EditorCaptionsUI {
     this.syncStyles();
     this.syncPreset();
     this.renderNarration();
+    this.find.render();
   }
   private renderState(state: CaptionControllerState) {
     if (this.disposed) return;
     this.status.textContent =
       state.message + (state.total ? ` · ${state.completed}/${state.total}` : "");
     const busy = ["preparing", "transcribing", "translating", "applying"].includes(state.phase);
+    this.find.render(busy);
     this.generateButton.disabled = busy || !state.canTranscribe;
     this.translateButton.disabled = busy || !state.canTranslate;
     // An empty hint means local media support is unavailable, so installing tools cannot help.
@@ -678,6 +719,11 @@ export class EditorCaptionsUI {
     this.preview.hidden = !state.candidate;
     this.candidateRows.replaceChildren();
     if (state.candidate) {
+      if (state.candidate.replacement) {
+        const change = state.candidate.replacement;
+        const scope = { sequence: "当前序列全部字幕", selected: "仅所选字幕", current: "当前匹配字幕" }[change.scope];
+        this.candidateRows.append(element("p", `${scope}：将替换 ${change.matched} 条字幕中的 ${change.occurrences} 处匹配。检查预览后应用；可一次撤销。`));
+      }
       for (const notice of state.candidate.notices) this.candidateRows.append(element("p", notice));
       for (const row of state.candidate.rows) {
         const item = element("article");

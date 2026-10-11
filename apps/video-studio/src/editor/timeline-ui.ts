@@ -142,6 +142,7 @@ export class EditorTimeline {
   private readonly notice = globalThis.document.createElement("p");
   private clipboard?: ClipClipboard;
   private drag?: Drag;
+  private dragPlanFrame?: number;
   private destroyed = false;
   private box?: HTMLElement;
   private scrollPosition = 0;
@@ -884,7 +885,7 @@ export class EditorTimeline {
     if (event.key === "Alt" && this.drag) {
       event.preventDefault();
       this.drag.altKey = true;
-      this.run(() => this.updateDrag());
+      this.run(() => this.updateDrag(true));
       return;
     }
     if (event.key === "Escape" && this.confirmTrack) {
@@ -1043,7 +1044,7 @@ export class EditorTimeline {
     if (event.key !== "Alt" || !this.drag) return;
     event.preventDefault();
     this.drag.altKey = false;
-    this.run(() => this.updateDrag());
+    this.run(() => this.updateDrag(true));
   };
   private menuCurrent(): boolean {
     const menu = this.menu;
@@ -1395,9 +1396,13 @@ export class EditorTimeline {
     this.box.className = "et-selection-box";
     this.container.append(this.box);
   }
-  private updateDrag(): void {
+  private updateDrag(planNow = false): void {
     const drag = this.drag;
     if (!drag) return;
+    if (planNow && this.dragPlanFrame !== undefined) {
+      cancelAnimationFrame(this.dragPlanFrame);
+      this.dragPlanFrame = undefined;
+    }
     const viewport = this.viewport(),
       body = this.container.querySelector<HTMLElement>(".et-body")!;
     const dx = drag.lastX - drag.x + viewport.scrollLeft - drag.scroll,
@@ -1477,7 +1482,10 @@ export class EditorTimeline {
       .elementFromPoint(drag.lastX, drag.lastY)
       ?.closest<HTMLElement>("[data-et-lane]");
     drag.targetTrack = hit?.dataset.etLane ?? clip.trackId;
-    if (drag.moved) this.previewPlan(document, sequence, drag);
+    if (drag.moved) {
+      if (planNow) this.previewPlan(document, sequence, drag);
+      else this.scheduleDragPlan();
+    }
     const sourceLane = this.container.querySelector<HTMLElement>(
       `[data-et-lane="${CSS.escape(clip.trackId)}"]`,
     );
@@ -1509,6 +1517,14 @@ export class EditorTimeline {
         element.style.width = `${Math.max(3, ticksToSeconds(clip.duration) * this.scale + (drag.kind === "left" ? -deltaPx : deltaPx))}px`;
       }
     }
+  }
+  /** Several pointer events can arrive before paint; validate only their latest quantized result. */
+  private scheduleDragPlan(): void {
+    if (this.dragPlanFrame !== undefined) return;
+    this.dragPlanFrame = requestAnimationFrame(() => {
+      this.dragPlanFrame = undefined;
+      if (!this.destroyed && this.drag) this.run(() => this.updateDrag(true));
+    });
   }
   /** Preview and release share the exact planners; only changed frame/track results are validated. */
   private previewPlan(document: EditorDocument, sequence: EditorSequence, drag: Drag): void {
@@ -1661,7 +1677,7 @@ export class EditorTimeline {
     drag.lastY = event.clientY;
     drag.altKey = event.altKey;
     try {
-      this.updateDrag();
+      this.updateDrag(true);
     } catch (error) {
       this.cancel();
       this.context.onError(error);
@@ -1698,6 +1714,8 @@ export class EditorTimeline {
   };
   private cancel = () => {
     this.notice.textContent = "";
+    if (this.dragPlanFrame !== undefined) cancelAnimationFrame(this.dragPlanFrame);
+    this.dragPlanFrame = undefined;
     if (this.autoScrollFrame !== undefined) cancelAnimationFrame(this.autoScrollFrame);
     this.autoScrollFrame = undefined;
     const drag = this.drag;

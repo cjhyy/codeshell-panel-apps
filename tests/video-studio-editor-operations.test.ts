@@ -84,6 +84,26 @@ test("asset import/reconnection and sequence settings use the same atomic revisi
   assert.equal(removed.production, undefined);
 });
 const main = "sequence-main";
+test("operation results and caller patches remain detached after validation's graph copy", () => {
+  const original = document();
+  original.sequences[0]!.clips.push(picture("detached"));
+  const before = structuredClone(original),
+    color = defaultColorAdjustment();
+  const operations: EditorOperation[] = [{
+    type: "clip.update",
+    sequenceId: main,
+    clipId: "detached",
+    patch: { color },
+  }];
+  const after = applyEditorOperations(original, operations, original.revision);
+  color.curves.push({ channel: "rgb", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
+  const result = after.sequences[0]!.clips[0] as MediaClip;
+  result.transform.crop.left = 0.1;
+  result.timeMap.points[0]!.source = 100;
+  result.color.hsl.push({ hue: 0, width: 10, hueShift: 0, saturation: 1, lightness: 0 });
+  assert.deepEqual(original, before);
+  assert.equal(result.color.curves.length, 0, "Mutating a caller patch cannot alter the committed graph");
+});
 function sequence(id = main): EditorSequence {
   return {
     id,

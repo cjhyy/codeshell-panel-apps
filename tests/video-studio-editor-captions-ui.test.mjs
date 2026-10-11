@@ -56,6 +56,7 @@ async function fixture(t, options = {}) {
     globalThis.abortSignal = null;
     globalThis.selection = [];
     globalThis.sought = [];
+    globalThis.soughtExact = [];
     globalThis.playhead = 0;
     const clip = (id, assetId, start) => ({
       id,
@@ -211,7 +212,7 @@ async function fixture(t, options = {}) {
       controller,
       ...(options.inline ? { presentation: "inline", currentTime: () => playhead } : {}),
       select: (sequenceId, ids) => (selection = ids),
-      seek: (tick) => sought.push(tick),
+      seek: (tick, exact) => { sought.push(tick); soughtExact.push(Boolean(exact)); },
       onError: (error) => errors.push(error.message),
       ...(options.recheck
         ? {
@@ -630,4 +631,140 @@ test("unsaved text and times in one row survive rebuilds caused by other edits",
     "A saved draft is not kept over Undo",
   );
   assert.equal(await a.getByLabel("开始（秒）").inputValue(), "0.5", "Unsaved time is kept");
+});
+
+test("literal multiline caption search navigates preview, replaces one row or all rows, and undoes once on a narrow screen", async (t) => {
+  const page = await fixture(t, { width: 390 }),
+    query = "中文.*[$&]\\\n下一行",
+    replacement = "$&\\校对";
+  const [first, second] = await page.evaluate(async (query) => [
+    await controller.add("main", { start: 0, text: `${query} ${query}` }),
+    await controller.add("main", { start: 6 * 240000, text: query }),
+  ], query);
+  await page.getByLabel("查找字幕文字", { exact: true }).fill(query);
+  await page.getByLabel("替换为", { exact: true }).fill(replacement);
+  assert.match(await page.locator(".ec-find-count").textContent(), /2 条字幕 \/ 3 处匹配/);
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1)]), [[first], 0]);
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1)]), [[second], 6 * 240000]);
+  await page.getByRole("button", { name: "上一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => selection), [first]);
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览替换此条", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /当前匹配字幕.*1 条字幕中的 2 处匹配/);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction((text) => captions()[0].text === `${text} ${text}`, replacement);
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  assert.equal(await page.evaluate(() => captions()[1].text), query);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction((text) => captions()[0].text === `${text} ${text}`, query);
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /当前序列全部字幕.*2 条字幕中的 3 处匹配/);
+  const allBefore = await page.evaluate(() => session.read().revision);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction((text) => captions().every((clip) => clip.text.includes(text)), replacement);
+  assert.equal(await page.evaluate(() => session.read().revision), allBefore + 1);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction((text) => captions().every((clip) => clip.text.includes(text)), query);
+  const bounds = await page.locator(".editor-captions").evaluate((node) => ({
+    left: node.getBoundingClientRect().left,
+    right: node.getBoundingClientRect().right,
+    inner: node.querySelector(".ec-body").scrollWidth,
+    width: node.querySelector(".ec-body").clientWidth,
+  }));
+  assert.ok(bounds.left >= 0 && bounds.right <= 390 && bounds.inner <= bounds.width + 1);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("find navigation requests the exact original tick of an off-frame caption", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 1_234_567, duration: 480_001, text: "帧间字幕" }));
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("帧间");
+  await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1), soughtExact.at(-1)]), [[id], 1_234_567, true]);
+  await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+  assert.equal(await page.evaluate(() => soughtExact.at(-1)), false, "Other existing seek controls keep their default behavior");
+});
+
+test("selected-caption replacement preserves other drafts and refuses affected drafts before preview and before apply", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "目标 第一" }),
+    await controller.add("main", { start: 6 * 240000, text: "目标 第二" }),
+  ]);
+  const a = page.locator(`[data-caption-id="${first}"]`),
+    b = page.locator(`[data-caption-id="${second}"]`);
+  await a.locator('input[type="checkbox"]').check();
+  await b.getByLabel("字幕文字", { exact: true }).fill("保留的未保存字幕");
+  await b.getByLabel("开始（秒）").fill("6.2");
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.getByLabel("替换为", { exact: true }).fill("已改");
+  await page.getByLabel("查找替换范围", { exact: true }).selectOption("selected");
+  assert.match(await page.locator(".ec-find-count").textContent(), /仅所选 1 条字幕 · 1 条字幕 \/ 1 处匹配/);
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  assert.match(await page.locator(".ec-candidates").innerText(), /仅所选字幕/);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "已改 第一"));
+  assert.equal(await b.getByLabel("字幕文字", { exact: true }).inputValue(), "保留的未保存字幕");
+  assert.equal(await b.getByLabel("开始（秒）").inputValue(), "6.2");
+  assert.equal(await page.evaluate((id) => captions().find((clip) => clip.id === id).text, second), "目标 第二");
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("已改");
+  await page.getByLabel("替换为", { exact: true }).fill("最终");
+  await a.getByLabel("字幕文字", { exact: true }).fill("正在校对的草稿");
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /未保存.*草稿已保留/);
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await a.getByLabel("字幕文字", { exact: true }).fill("已改 第一");
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await a.getByLabel("字幕文字", { exact: true }).fill("预览后的新草稿");
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.getByRole("button", { name: "取消任务 / 丢弃预览", exact: true }).click();
+  assert.equal(await page.evaluate(() => controller.getState().candidate), undefined);
+  assert.equal(await a.getByLabel("字幕文字", { exact: true }).inputValue(), "预览后的新草稿");
+});
+
+test("replacement rejects stale and locked previews, retries a failed save, and narration approval undoes with the replacement", async (t) => {
+  const page = await fixture(t, { narration: true });
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("字幕");
+  await page.getByLabel("替换为", { exact: true }).fill("文句");
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  await page.evaluate(() => session.dispatch([{ type: "project.rename", name: "新版本" }], session.getState().identity));
+  await page.waitForFunction(() => controller.getState().phase === "stale");
+  assert.equal(await page.locator(".ec-preview button").isDisabled(), true);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity));
+  const locked = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  assert.deepEqual(await page.evaluate(() => session.read()), locked);
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  await page.locator(".ec-preview").waitFor({ state: "visible" });
+  const before = await page.evaluate(() => session.read());
+  await page.evaluate(() => { globalThis.fail = true; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 2);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  assert.ok(await page.evaluate(() => controller.getState().candidate));
+  await page.evaluate(() => { globalThis.fail = false; });
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().every((clip) => clip.text.includes("文句")));
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "review");
+  assert.match(await page.locator(".ec-status").textContent(), /回到待确认/);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().every((clip) => clip.text.includes("字幕")));
+  assert.equal(await page.evaluate(() => session.read().production.narration.phase), "approved");
 });

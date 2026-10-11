@@ -839,6 +839,60 @@ export function planCaptionText(
   return operations;
 }
 
+export interface CaptionTextMatch {
+  clipId: string;
+  start: Tick;
+  text: string;
+  occurrences: number;
+}
+/** Case-sensitive, non-overlapping literal matches; titles and other sequences are excluded. */
+export function findCaptionText(
+  value: EditorDocument,
+  sequenceId: string,
+  query: string,
+  clipIds?: readonly string[],
+): CaptionTextMatch[] {
+  if (typeof query !== "string" || !query.length || query.length > 10000 || query.includes("\0"))
+    throw new Error("请输入 1–10000 字的查找文字");
+  const doc = validateEditorDocument(value),
+    clips = selectedCaptions(sequence(doc, sequenceId), clipIds);
+  return clips
+    .flatMap((clip) => {
+      const occurrences = clip.text.split(query).length - 1;
+      return occurrences ? [{ clipId: clip.id, start: clip.start, text: clip.text, occurrences }] : [];
+    })
+    .sort((a, b) => a.start - b.start || a.clipId.localeCompare(b.clipId));
+}
+
+/** Uses the ordinary text-edit semantics, including clearing stale word timing and translation. */
+export function planCaptionReplace(
+  value: EditorDocument,
+  sequenceId: string,
+  query: string,
+  replacement: string,
+  clipIds?: readonly string[],
+): CaptionPlan & { matched: number; occurrences: number } {
+  if (typeof replacement !== "string" || replacement.length > 10000 || replacement.includes("\0"))
+    throw new Error("替换文字须在 10000 字以内");
+  if (query === replacement) throw new Error("查找与替换文字相同，无需修改");
+  const doc = validateEditorDocument(value),
+    matches = findCaptionText(doc, sequenceId, query, clipIds),
+    operations = matches.flatMap((match) =>
+      planCaptionText(doc, sequenceId, match.clipId, match.text.split(query).join(replacement)),
+    );
+  if (!matches.length) throw new Error("当前范围没有匹配的字幕");
+  applyEditorOperations(doc, operations, doc.revision);
+  return {
+    sequenceId,
+    operations,
+    added: 0,
+    skipped: 0,
+    matched: matches.length,
+    occurrences: matches.reduce((count, match) => count + match.occurrences, 0),
+    notices: ["修改字幕内容会清除旧词时间与译文，逐字高亮将关闭；请按需要重新对齐声音。"],
+  };
+}
+
 /** An explicit user edit preserves text/words/style while ending automatic source following. */
 export function planDetachCaptions(
   value: EditorDocument,

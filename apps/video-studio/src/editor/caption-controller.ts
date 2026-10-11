@@ -11,6 +11,7 @@ import {
   planDetachCaptions,
   planRemoveCaptions,
   planCaptionText,
+  planCaptionReplace,
   planCaptionTranslation,
   planSrtImport,
   planTranscriptCaptions,
@@ -68,6 +69,8 @@ export interface CaptionCandidate {
   notices: string[];
   added: number;
   skipped: number;
+  /** Lets the workbench guard against row drafts created after preparing a replacement. */
+  replacement?: { query: string; text: string; matched: number; occurrences: number; scope: "sequence" | "selected" | "current" };
 }
 export interface CaptionControllerState {
   phase:
@@ -149,7 +152,12 @@ export function createCaptionController(context: CaptionControllerContext) {
     state.candidate = undefined;
     return { snapshot, controller, token };
   };
-  const preview = (snapshot: ReturnType<typeof read>, plan: CaptionPlan, label: string) => {
+  const preview = (
+    snapshot: ReturnType<typeof read>,
+    plan: CaptionPlan,
+    label: string,
+    replacement?: CaptionCandidate["replacement"],
+  ) => {
     const after = applyEditorOperations(
       snapshot.document,
       plan.operations,
@@ -186,6 +194,7 @@ export function createCaptionController(context: CaptionControllerContext) {
             ]
           : [],
       ),
+      ...(replacement ? { replacement } : {}),
     };
     set({
       phase: "preview",
@@ -378,6 +387,36 @@ export function createCaptionController(context: CaptionControllerContext) {
           }),
           "导入 SRT 字幕",
         );
+      } catch (error) {
+        failure(error, running.token);
+        throw error;
+      } finally {
+        work = undefined;
+      }
+    },
+    previewReplace(options: {
+      sequenceId: string;
+      query: string;
+      text: string;
+      clipIds?: readonly string[];
+      scope?: "sequence" | "selected" | "current";
+    }) {
+      const running = start();
+      try {
+        const plan = planCaptionReplace(
+          running.snapshot.document,
+          options.sequenceId,
+          options.query,
+          options.text,
+          options.clipIds,
+        );
+        preview(running.snapshot, plan, "替换字幕文字", {
+          query: options.query,
+          text: options.text,
+          matched: plan.matched,
+          occurrences: plan.occurrences,
+          scope: options.scope ?? (options.clipIds ? "selected" : "sequence"),
+        });
       } catch (error) {
         failure(error, running.token);
         throw error;

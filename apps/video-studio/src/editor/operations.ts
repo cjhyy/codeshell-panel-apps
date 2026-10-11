@@ -325,7 +325,8 @@ export function applyEditorOperations(
   operations: readonly EditorOperation[],
   baseRevision: number,
 ): EditorDocument {
-  const next = structuredClone(validateEditorDocument(document));
+  // Validation already deep-copies the entire JSON graph before reading it.
+  const next = validateEditorDocument(document);
   if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || next.revision !== baseRevision)
     throw new Error(`工程已更新（当前修订 ${next.revision}），请刷新后重试`);
   for (const raw of array(operations, 0, 10000, "编辑操作")) {

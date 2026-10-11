@@ -72,6 +72,36 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
 - 当前 Video Studio 离线套件：1033 项（1030 通过、3 项可选环境跳过）；
   native voice 6 项（5 通过、1 项可选模型跳过）；workspace documents 5/5。
 - typecheck、构建、确定性 build:check、validate 通过，包 39 文件。
-- 完整真实媒体回归正在运行，日志 `/tmp/video-studio-morning-media.log`。
+- 完整真实媒体回归已通过 213/213，日志 `/tmp/video-studio-morning-media.log`。
 - 新一批整合后须再次构建并验证，刷新并正常合并最新 origin/main；
-  当前发现上游已前进至 b85dfc8（稳定工程上下文），尚待合并。
+  已正常合并上游 b85dfc8（稳定工程上下文），生成冲突已按源重新构建。
+
+## 第二批及持续工作（凌晨）
+
+- 草稿 PR 已建立并附加本聊天：<https://github.com/cjhyy/codeshell-panel-apps/pull/70>。
+  最终完成前持续更新，不代表已经发布或更新用户安装。
+- 合上游后的主入口 UI 59/59 及离线套件通过。
+- 已集成字幕字面查找/替换、前后定位和范围；替换走候选预览、一次 durable apply，
+  受影响行的未保存文字/时间草稿在预览前与应用前都受保护；其他草稿保留。
+  查找导航以原始 tick 精确定位，main.ts 已转发 exact 参数。
+- 已集成手势规划每帧合并及移除冗余 clone，最终释放和静止 Alt 仍同步完整校验。
+  同机 11 次采样中位：1000 片段移动 11.8→9.1ms、裁剪 15.9→14.0ms；
+  5000 片段移动 56.0→42.4ms、裁剪 76.2→62.3ms，仍不能承诺 60fps。
+- 合并后的字幕/时间轴浏览器回归 103/103 通过。
+
+正在开展：
+
+- 字幕批量性能，`codex/video-studio/caption-replace-batching`：1000 条批量替换初测
+  12.81s，正去除每条字幕反复全图验证。1000 字幕整页刷新约 158ms 含布局，
+  后续再评估稳定行。
+- 预览质量代理：原始/半/四分之一合成，默认原始，保持逻辑坐标；不得缩小导出。
+- 范围导出根工作树：
+  `/Users/admin/.codex/worktrees/video-studio-range-export/codeshell-panel-apps`，
+  `codex/video-studio/range-export`，已有 UI、batch、receipt 范围绑定，尚未全部提交；
+  contract 提交 3d645a1。native/bridge 由 `codex/video-studio/range-export-native` 完成。
+  按现有范围标记导出，范围外素材仍保守完整准备并提示成本。
+  保留原始序列及全混音，编码时裁音频、原 tick 求画面；不能使用临时 compound 包装：
+  它会重置 ducking attack，实测前 10ms BGM RMS 变为原混音切片的 3.63 倍，
+  半透明背景也与导出 matting 不一致。失败实验已从源代码移除。
+
+11:00 截止要求仍有效；不要因任何一批提交完成而提前标记整个 goal 完成。

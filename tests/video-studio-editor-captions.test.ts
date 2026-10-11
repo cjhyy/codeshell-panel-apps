@@ -11,6 +11,8 @@ import {
   captionTranslationItems,
   planCaptionStyle,
   planCaptionText,
+  findCaptionText,
+  planCaptionReplace,
   listCaptions,
   planAddCaption,
   planCaptionTiming,
@@ -372,6 +374,67 @@ test("generated captions retain words/styles and reruns preserve corrected text 
     () => planCaptionStyle(corrected, "main", [caption.id], { animation: "word-highlight" }),
     /真实词时间/,
   );
+});
+
+test("literal caption search and replacement support Chinese, newlines and special characters without changing titles or another sequence", () => {
+  let doc = generated();
+  const first = captions(doc)[0]!;
+  first.text = "中文.*[$&]\\\n下一行 中文.*[$&]\\\n下一行";
+  doc = applyEditorOperations(doc, planAddCaption(doc, "main", { start: 3 * T, text: "中文.*[$&]\\\n下一行", idFactory: () => "second" }), doc.revision);
+  const title = { ...structuredClone(first), id: "title", role: "title" as const };
+  doc.sequences[0]!.clips.push(title);
+  const other = { ...structuredClone(doc.sequences[0]!), id: "other", clips: [{ ...structuredClone(first), id: "other-caption" }] };
+  delete other.clips[0]!.sourceBinding;
+  doc.sequences.push(other);
+  const query = "中文.*[$&]\\\n下一行",
+    matches = findCaptionText(doc, "main", query),
+    before = structuredClone(doc),
+    plan = planCaptionReplace(doc, "main", query, "$&\\替换"),
+    after = applyEditorOperations(doc, plan.operations, doc.revision);
+  assert.deepEqual(matches.map((match) => [match.clipId, match.occurrences]), [[first.id, 2], ["second", 1]]);
+  assert.equal(plan.matched, 2);
+  assert.equal(plan.occurrences, 3);
+  assert.equal(captions(after).find((clip) => clip.id === first.id)!.text, "$&\\替换 $&\\替换");
+  assert.equal(captions(after).find((clip) => clip.id === first.id)!.words.length, 0);
+  assert.equal(captions(after).find((clip) => clip.id === first.id)!.style.animation, "none");
+  assert.deepEqual(after.sequences[1], doc.sequences[1]);
+  assert.deepEqual(after.sequences[0]!.clips.find((clip) => clip.id === title.id), title);
+  assert.deepEqual(doc, before);
+  const selected = planCaptionReplace(doc, "main", query, "已校对", ["second"]);
+  assert.equal(selected.matched, 1);
+  assert.deepEqual(selected.operations.map((operation) => operation.type === "clip.update" && operation.clipId), ["second"]);
+  assert.throws(() => findCaptionText(doc, "main", ""), /查找文字/);
+  assert.throws(() => planCaptionReplace(doc, "main", query, "", ["second"]), /字幕文字/);
+});
+
+test("replacement preview cancels or goes stale without writes, saves once and undoes all matches, and rejects locked scope atomically", async (t) => {
+  let doc = generated();
+  doc = applyEditorOperations(doc, planAddCaption(doc, "main", { start: 3 * T, text: "你好 第二条", idFactory: () => "second" }), doc.revision);
+  const { controller, session, store } = await harness(t, {}, doc),
+    before = session.read();
+  controller.previewReplace({ sequenceId: "main", query: "你好", text: "$& 校对" });
+  assert.equal(controller.getState().candidate?.replacement?.matched, 2);
+  assert.equal(store.writes, 0);
+  controller.cancel();
+  await assert.rejects(controller.apply(), /没有待应用/);
+  assert.deepEqual(session.read(), before);
+  controller.previewReplace({ sequenceId: "main", query: "你好", text: "$& 校对" });
+  session.dispatch([{ type: "project.rename", name: "外部修改" }], session.getState().identity);
+  assert.equal(controller.getState().phase, "stale");
+  await assert.rejects(controller.apply());
+  assert.ok(captions(session.read()).every((clip) => clip.text.includes("你好")));
+  await session.flush();
+  controller.previewReplace({ sequenceId: "main", query: "你好", text: "$& 校对" });
+  const writes = store.writes;
+  await controller.apply();
+  assert.equal(store.writes, writes + 1, "All replacements share one durable write");
+  assert.ok(captions(session.read()).every((clip) => clip.text.startsWith("$& 校对")));
+  session.undo();
+  assert.ok(captions(session.read()).every((clip) => clip.text.includes("你好")));
+  session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "t", patch: { locked: true } }], session.getState().identity);
+  const locked = session.read();
+  assert.throws(() => controller.previewReplace({ sequenceId: "main", query: "你好", text: "变化" }), /锁定/);
+  assert.deepEqual(session.read(), locked);
 });
 
 test("SRT roundtrip preserves Unicode/multiline and explicit millisecond quantization without 30fps conversion", () => {
