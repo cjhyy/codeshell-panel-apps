@@ -9,7 +9,7 @@ export function createBridgeTraffic(
   timing: {
     now?: () => number;
     sleep?: (ms: number) => Promise<void>;
-    beforeDispatch?: () => void;
+    beforeDispatch?: (method?: string) => void;
   } = {},
 ): { bridge: PanelBridge; dispose(): void } {
   const now = timing.now ?? Date.now;
@@ -25,21 +25,21 @@ export function createBridgeTraffic(
     limits = context?.capabilities?.bridge ?? context?.capabilities?.limits ?? {};
     return context;
   };
-  const check = () => {
+  const check = (method?: string) => {
     if (disposed) throw runtimeCancelled();
-    timing.beforeDispatch?.();
+    timing.beforeDispatch?.(method);
   };
-  async function initialize() {
-    check();
+  async function initialize(method: string) {
+    check(method);
     boot ??= raw.getContext().then((value) => {
       ordinary.push(now());
       return learn(value);
     });
     await boot;
-    check();
+    check(method);
   }
   async function reserve(method: string) {
-    await initialize();
+    await initialize(method);
     const starts = [
       "resources.read",
       "resources.upload.write",
@@ -54,7 +54,7 @@ export function createBridgeTraffic(
       .catch(() => {})
       .then(async () => {
         for (;;) {
-          check();
+          check(method);
           const windowMs = limits.rateWindowMs;
           const advertised =
             starts === transfer ? limits.maxTransferCallsPerWindow : limits.maxCallsPerWindow;
@@ -80,15 +80,15 @@ export function createBridgeTraffic(
     if (starts === transfer) transferAdmission = operation;
     else ordinaryAdmission = operation;
     await operation;
-    check();
+    check(method);
   }
   async function send<T>(method: string, action: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       if (method === "tasks.cancel" || method === "process.cancel") {
-        check();
+        check(method);
         ordinary.push(now());
       } else await reserve(method);
-      check();
+      check(method);
       try {
         return await action();
       } catch (error) {
@@ -105,7 +105,7 @@ export function createBridgeTraffic(
           throw error;
         const end = now() + refusal.retryAfterMs!;
         while (now() < end) {
-          check();
+          check(method);
           await sleep(Math.min(250, end - now()));
         }
       }

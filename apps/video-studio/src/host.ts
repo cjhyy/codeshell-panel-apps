@@ -23,6 +23,7 @@ export interface PanelBridge {
     sessionId?: string | null;
     environmentId?: string;
     projectId?: string;
+    projectScope?: { version: 1; environmentId: string; projectId: string; rootId: string };
     theme?: string;
     visible?: boolean;
     availableMethods?: string[];
