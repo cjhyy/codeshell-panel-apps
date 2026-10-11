@@ -517,7 +517,38 @@ goal仍active至11:00，automation11继续保留。
   3可选跳过，native voice5通过1可选跳过，workspace docs5/5。typecheck/build/确定性
   build:check/validate39通过，source与安装包同步。日志
   `/tmp/video-studio-morning-thirteenth-{affected-ui,media,offline,typecheck,build,build-check,validate}.log`。
-  第十三批完整浏览器现已启动，源冻结到完成前不加入新feature；后续方向呈现、关键帧
-  定位及属性到◇/◆衔接在独立树开发。
+  第十三批a6b0c2c完整浏览器1129/1129通过，日志
+  `/tmp/video-studio-morning-thirteenth-full-ui.log`，663486ms。push38177820166和
+  PR38177825026仍在运行。后续方向呈现、关键帧定位及属性到◇/◆衔接均先在独立树开发。
+
+继续优化至11:00；goal与automation11保持active，未发布、未安装。
+
+## 第十四批：变速信息、关键帧操作与历史提示
+
+- 纯新增量15fa8f9、712f554、4cf3d8c、63cfa9d、8b8772b整合；既有父依赖没有重复挑选。
+  关键帧两处源码冲突保留各自token、finisher自身signal及过期owner清理；workspace
+  append测试先核对incoming以parent开头再追加，保留当前已有用例。
+- 播放方向检查每段来源时间变化，区分正放、倒放、静帧、往返及含静帧段；混合选择
+  使用逐片段反转说明，倒放选择提供恢复正放。曲线来源范围显示真实素材或子序列上限，
+  原生输入max与展示一致；多机位保留同步时钟约束，不使用错误的统一最短素材上限。
+  输入修正后清除旧customValidity，最终仍由fresh planner校验。
+- 关键帧每行可精确定位；保留原tick，末端定位至duration−1，真实预览及时间轴reveal
+  同步。锁轨仅提供当前展开属性、individual及当前20行的只读定位。定位先完成合法
+  草稿，目标时间被改动后要求重新定位，不使用排序后的旧行号跳到其他关键帧。
+- ◇/◆首击先完成合法参数草稿，再执行点击时原来的增删意图，各自可撤销；旧版本原生
+  blur重建DOM会丢掉第一击的2个实证回归已修。取点击时最新精确clock，静态Inspector
+  DOM无需重建也不会沿用旧播放位置。无效草稿保留，旧owner/重复/换代/锁轨隔离。
+- 两类关键帧动作互斥，render在public read及clock getter前后核对两种owner，旧外层
+  read不能取消或重建新动作。独立源码复核无阻断；四组实际组合4/4通过，涵盖双向
+  pending互斥、旧abort finisher后新selection及read/clock同步重入，日志
+  `/tmp/video-studio-keyframe-combined-review.log`。
+- Undo/redo提示显示实际下一项历史名称，状态读取仅返回字符串，不复制工程；失败的
+  durable proposal及未提交候选不提前改变提示。独立history/session28/28、Workspace
+  435/435及类型检查通过；真实两次属性修改、两次撤销/重做对应名称与实际结果一致。
+- 根合并源码typecheck、Inspector/Timing74/74、Workspace462/462（合计受影响UI536/536）、
+  offline1126通过3可选跳过、native voice5通过1可选跳过、workspace docs5/5、build/
+  build:check/validate39均通过；源码及生成安装包同步。日志
+  `/tmp/video-studio-morning-fourteenth-{inspector-timing-ui,workspace-ui,offline,typecheck,build,build-check,validate}.log`。
+  渲染及原生工具未改，真实媒体基线为第十三批229/229；本批完整浏览器随后检查。
 
 继续优化至11:00；goal与automation11保持active，未发布、未安装。

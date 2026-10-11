@@ -11,6 +11,7 @@ import type { EditorOperation } from "./operations";
 import { sameIdentity, type SessionIdentity } from "./session";
 import { secondsToTicks, TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, Transition } from "./types";
+import { sequenceDuration } from "./validation";
 
 export type EditorTimingContext = EditorInspectorContext & {
   beforeEdit?: (signal: AbortSignal) => boolean | Promise<boolean>;
@@ -81,6 +82,16 @@ function numeric(input: HTMLInputElement): number {
   if (!input.value.trim() || !Number.isFinite(input.valueAsNumber))
     throw new Error("请填写有效的数字");
   return input.valueAsNumber;
+}
+function playbackDirection(mapping: TimeMap): { kind: "forward" | "reverse" | "held" | "roundtrip"; held: boolean } {
+  let forward = false, reverse = false, held = false;
+  for (let index = 1; index < mapping.points.length; index++) {
+    const delta = mapping.points[index]!.source - mapping.points[index - 1]!.source;
+    if (delta > 0) forward = true;
+    else if (delta < 0) reverse = true;
+    else held = true;
+  }
+  return { kind: forward && reverse ? "roundtrip" : forward ? "forward" : reverse ? "reverse" : "held", held };
 }
 interface Scope {
   identity?: SessionIdentity;
@@ -338,6 +349,25 @@ export class EditorTiming {
       (clip): clip is Extract<EditorClip, { timeMap: TimeMap }> => "timeMap" in clip,
     );
     if (source.length) {
+      const directions = source.map((clip) => playbackDirection(clip.timeMap)),
+        counts = new Map<string, number>();
+      for (const direction of directions) {
+        const label = { forward: "正放", reverse: "倒放", held: "静帧", roundtrip: "往返" }[direction.kind] +
+          (direction.held && direction.kind !== "held" ? "（含静帧段）" : "");
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      const unsupported = scope.clips.some((clip) => !("timeMap" in clip) && !(clip.kind === "text" && clip.sourceBinding)),
+        forward = directions.every((direction) => direction.kind === "forward"),
+        reverse = directions.every((direction) => direction.kind === "reverse"),
+        reverseLabel = unsupported || (!forward && !reverse) ? "反转所选片段播放顺序" : reverse ? "恢复正放" : "倒放所选片段",
+        reverseHint = unsupported ? "所选独立文字或图形不支持反转来源时间，请先取消这些片段的选择。" :
+          reverse ? "将所选来源片段改为正放，按相反次序播放当前来源范围。" : forward ?
+          "将所选来源片段改为倒放，按相反次序播放当前来源范围。" :
+          "逐片段反转：正放变倒放，倒放变正放，往返段按相反次序播放；静帧段的来源时间不变。";
+      const directionNote = element("p", "etime-note",
+        `所选来源片段（${source.length} 个）的播放方向：${[...counts].map(([label, count]) => `${label} ${count}`).join("、")}。`);
+      directionNote.dataset.playbackDirection = "";
+      controls.append(directionNote);
       const rates = source.map(
         (clip) =>
           Math.abs(clip.timeMap.points.at(-1)!.source - clip.timeMap.points[0]!.source) /
@@ -373,8 +403,10 @@ export class EditorTiming {
         ),
       );
       const row = element("div", "etime-actions");
-      row.append(this.editButton(scope, "倒放所选片段", () => edit("倒放片段", () => ({ kind: "reverse" }))));
-      controls.append(row);
+      const reverseButton = this.editButton(scope, reverseLabel, () => edit(reverse ? "恢复正放" : "反转片段播放顺序", () => ({ kind: "reverse" })));
+      reverseButton.title = reverseHint;
+      row.append(reverseButton);
+      controls.append(row, element("p", "etime-note", reverseHint));
       const freeze = numberInput("定格时长（秒）", "2", 0.000005);
       controls.append(
         field("定格时长（秒）", freeze),
@@ -421,7 +453,10 @@ export class EditorTiming {
     section.append(element("summary", "", "分段速度曲线"));
     parent.append(section);
     const draft = structuredClone(clip.timeMap.points),
-      content = element("div", "etime-curve-body");
+      content = element("div", "etime-curve-body"),
+      asset = clip.kind === "media" ? scope.document.assets.find((item) => item.id === clip.assetId)! : undefined,
+      sourceLimit = asset?.duration ?? (clip.kind === "sequence" ?
+        sequenceDuration(scope.document.sequences.find((item) => item.id === clip.sequenceId)!) : undefined);
     section.append(content);
     let rendering = false;
     const owns = () =>
@@ -445,10 +480,15 @@ export class EditorTiming {
         graph.setAttribute("aria-label", "输出时间与素材时间曲线");
         const maxTime = draft.reduce((max, point) => Math.max(max, point.time), 1),
           minSource = draft.reduce((min, point) => Math.min(min, point.source), Infinity),
-          sourceSpan = Math.max(
-            1,
-            draft.reduce((max, point) => Math.max(max, point.source), 0) - minSource,
-          );
+          maxSource = draft.reduce((max, point) => Math.max(max, point.source), 0),
+          sourceSpan = Math.max(1, maxSource - minSource);
+        const sourceRange = element("p", "etime-note",
+          (clip.kind === "multicam" ? "多机位来源秒是同步时钟，实际范围受切换机位、同步偏移及主声音机位共同约束，应用时统一校验。" :
+            asset?.kind === "image" ? `静态图片源范围 0—${seconds(sourceLimit!)} 秒，片段长度由输出时长决定。` :
+            `${clip.kind === "sequence" ? "子序列" : "素材源"}范围 0—${seconds(sourceLimit!)} 秒。`) +
+          `当前曲线来源范围 ${seconds(minSource)}—${seconds(maxSource)} 秒。`);
+        sourceRange.dataset.sourceRange = "";
+        content.append(sourceRange);
         const path = document.createElementNS(graph.namespaceURI, "polyline");
         const stride = Math.max(1, Math.ceil(draft.length / 500));
         path.setAttribute(
@@ -466,7 +506,7 @@ export class EditorTiming {
         path.setAttribute("stroke-width", "2");
         graph.append(path);
         for (const [x, y, text] of [
-          [5, 12, `源 ${seconds(minSource)}—${seconds(minSource + sourceSpan)} 秒`],
+          [5, 12, `源 ${seconds(minSource)}—${seconds(maxSource)} 秒`],
           [155, 146, `输出 0—${seconds(maxTime)} 秒`],
         ] as const) {
           const label = document.createElementNS(graph.namespaceURI, "text");
@@ -494,12 +534,14 @@ export class EditorTiming {
             row = element("tr"),
             time = numberInput(`节点 ${index + 1} 输出（秒）`, seconds(point.time), 0, "any"),
             source = numberInput(`节点 ${index + 1} 来源（秒）`, seconds(point.source), 0, "any");
+          if (sourceLimit !== undefined) source.max = seconds(sourceLimit);
           pointInputs.push([time, index, "time"], [source, index, "source"]);
           time.disabled = index === 0;
           for (const [input, key] of [
             [time, "time"],
             [source, "source"],
-          ] as const)
+          ] as const) {
+            input.addEventListener("input", () => input.setCustomValidity(""));
             input.addEventListener("change", () => {
               if (!owns()) return;
               try {
@@ -511,6 +553,7 @@ export class EditorTiming {
                 input.reportValidity();
               }
             });
+          }
           const timeCell = element("td"),
             sourceCell = element("td"),
             rateCell = element("td"),

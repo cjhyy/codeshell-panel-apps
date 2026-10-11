@@ -131,6 +131,59 @@ test("editable source/output seconds and graph produce a real nonlinear time map
   ]);
   assert.equal((await read("ca")).words[0].end, 240000);
   assert.equal((await read("b")).start, 6 * 240000);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /正放 1/);
+});
+
+test("playback direction describes every source segment, including holds and a net-reverse round trip", async () => {
+  for (const { points, direction, button } of [
+    { points: [[0, 0], [4, 4]], direction: "正放 1", button: "倒放所选片段" },
+    { points: [[0, 4], [4, 0]], direction: "倒放 1", button: "恢复正放" },
+    { points: [[0, 2], [4, 2]], direction: "静帧 1", button: "反转所选片段播放顺序" },
+    { points: [[0, 4], [1, 1], [2, 3], [4, 0]], direction: "往返 1", button: "反转所选片段播放顺序" },
+    { points: [[0, 4], [1, 3], [2, 3], [4, 0]], direction: "倒放（含静帧段） 1", button: "恢复正放" },
+  ]) {
+    await page.evaluate((points) => {
+      const doc = fixture();
+      doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+      doc.sequences[0].clips[0].timeMap.points = points.map(([time, source]) => ({ time: time * T, source: source * T }));
+      reset(["a"], doc);
+    }, points);
+    assert.equal(await page.locator("[data-playback-direction]").innerText(), `所选来源片段（1 个）的播放方向：${direction}。`);
+    assert.equal(await page.getByRole("button", { name: button, exact: true }).count(), 1);
+    if (direction.startsWith("倒放")) assert.match(await page.getByRole("button", { name: button, exact: true }).getAttribute("title"), /改为正放/);
+    if (direction === "静帧 1") assert.match(await page.getByRole("button", { name: button, exact: true }).getAttribute("title"), /来源时间不变/);
+  }
+});
+
+test("mixed playback directions reverse each source once and exclude unsupported text from the source count", async () => {
+  await page.evaluate(() => {
+    const doc = fixture();
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => ["a", "b"].includes(clip.id));
+    const b = doc.sequences[0].clips[1]; delete b.linkGroupId;
+    b.timeMap.points = [{ time: 0, source: 4 * T }, { time: 4 * T, source: 0 }];
+    reset(["a", "b"], doc);
+    globalThis.beforeDirections = editorHistory.read();
+  });
+  assert.equal(await page.locator("[data-playback-direction]").innerText(), "所选来源片段（2 个）的播放方向：正放 1、倒放 1。");
+  await click("反转所选片段播放顺序");
+  assert.deepEqual((await read("a")).timeMap.points.map((point) => point.source), [960000, 0]);
+  assert.deepEqual((await read("b")).timeMap.points.map((point) => point.source), [0, 960000]);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await page.evaluate(() => { editorHistory.undo(); timing.render(); });
+  assert.equal(await page.evaluate(() => JSON.stringify(editorHistory.read().sequences) === JSON.stringify(beforeDirections.sequences)), true);
+  await page.evaluate(() => {
+    const doc = fixture();
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => ["a", "ca"].includes(clip.id));
+    delete doc.sequences[0].clips[1].sourceBinding;
+    reset(["a", "ca"], doc);
+  });
+  assert.equal(await page.locator("[data-playback-direction]").innerText(), "所选来源片段（1 个）的播放方向：正放 1。");
+  const reverse = page.getByRole("button", { name: "反转所选片段播放顺序", exact: true });
+  assert.match(await reverse.getAttribute("title"), /独立文字或图形不支持/);
+  await click("反转所选片段播放顺序");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read("a")).timeMap.points[0].source, 0);
+  assert.match(await page.getByRole("alert").innerText(), /媒体或嵌套序列/);
 });
 
 test("invalid point ordering cannot save and playhead renders preserve in-progress curve fields", async () => {
@@ -175,6 +228,82 @@ test("source/output fields retain tick precision finer than a millisecond", asyn
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
 
+test("source range shows retained media bounds, accepts the final subframe tick and recovers from an invalid native change", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(); doc.assets[0].duration = 10 * T + 3;
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 2 * T }, { time: 4 * T, source: 6 * T }];
+    reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  const source = page.getByLabel("节点 2 来源（秒）", { exact: true });
+  assert.equal(await source.getAttribute("max"), "10.000013");
+  assert.equal(await page.locator("[data-source-range]").innerText(), "素材源范围 0—10.000013 秒。当前曲线来源范围 2—6 秒。");
+  await source.fill("10.000017"); await source.press("Tab");
+  assert.equal(await source.evaluate((input) => input.validity.rangeOverflow), true);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).timeMap.points[1].source, 6 * 240000);
+  await source.fill("10.000013");
+  assert.equal(await source.evaluate((input) => input.validity.valid), true);
+  await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 10 * 240000 + 3);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+});
+
+test("nested source range uses child sequence length rather than the underlying media length", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(), sequence = doc.sequences[0], original = structuredClone(sequence.clips[0]);
+    const child = { ...structuredClone(sequence), id: "child", name: "子序列", clips: [{ ...original, duration: 10 * T, timeMap: { points: [{ time: 0, source: 0 }, { time: 10 * T, source: 10 * T }] } }] };
+    const parent = { ...original, kind: "sequence", sequenceId: "child", timeMap: { points: [{ time: 0, source: 2 * T }, { time: 4 * T, source: 6 * T }] } };
+    delete parent.assetId; sequence.clips = [parent]; doc.sequences.push(child); reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  const source = page.getByLabel("节点 2 来源（秒）", { exact: true });
+  assert.equal(await source.getAttribute("max"), "10");
+  assert.equal(await page.locator("[data-source-range]").innerText(), "子序列范围 0—10 秒。当前曲线来源范围 2—6 秒。");
+  await source.fill("11"); await click("应用分段曲线");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await source.fill("10"); await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 10 * 240000);
+});
+
+test("held source labels show one actual coordinate and static images can extend their output length", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(); doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 2 * T }, { time: 4 * T, source: 2 * T }]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.getByRole("img", { name: "输出时间与素材时间曲线" }).textContent(), /源 2—2 秒/);
+  assert.match(await page.locator("[data-source-range]").innerText(), /当前曲线来源范围 2—2 秒/);
+  assert.doesNotMatch(await page.getByRole("img", { name: "输出时间与素材时间曲线" }).locator("polyline").getAttribute("points"), /NaN|Infinity/);
+  await page.evaluate(() => {
+    const doc = fixture(); doc.assets[0].kind = "image"; doc.assets[0].duration = 0;
+    doc.sequences[0].clips = doc.sequences[0].clips.filter((clip) => clip.id === "a");
+    doc.sequences[0].clips[0].timeMap.points = [{ time: 0, source: 0 }, { time: 4 * T, source: 0 }]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.locator("[data-source-range]").innerText(), /静态图片源范围 0—0 秒，片段长度由输出时长决定/);
+  assert.equal(await page.getByLabel("节点 2 来源（秒）", { exact: true }).getAttribute("max"), "0");
+  await set("节点 2 输出（秒）", 6); await click("应用分段曲线");
+  assert.equal((await read()).duration, 6 * 240000);
+  assert.deepEqual((await read()).timeMap.points.map((point) => point.source), [0, 0]);
+});
+
+test("multicam range describes angle constraints without capping a valid edit to an unused short angle", async () => {
+  await page.evaluate(() => {
+    const doc = fixture(), sequence = doc.sequences[0];
+    doc.assets.push({ ...doc.assets[0], id: "short", duration: 2 * T });
+    const camera = { ...sequence.clips[0], kind: "multicam", angles: [{ id: "long", name: "长机位", assetId: "asset", offset: 0 }, { id: "short", name: "短机位", assetId: "short", offset: 0 }], switches: [{ time: 0, angleId: "long" }], audioAngleId: "long" };
+    delete camera.assetId; sequence.clips = [camera]; reset(["a"], doc);
+  });
+  await details("分段速度曲线");
+  assert.match(await page.locator("[data-source-range]").innerText(), /切换机位、同步偏移及主声音机位共同约束/);
+  assert.equal(await page.getByLabel("节点 2 来源（秒）", { exact: true }).getAttribute("max"), null);
+  await set("节点 2 来源（秒）", 8); await click("应用分段曲线");
+  assert.equal((await read()).timeMap.points[1].source, 8 * 240000);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
 test("reverse and held frames require explicit caption detachment and retain caption wording", async () => {
   await click("倒放所选片段");
   assert.match(await page.getByRole("alert").innerText(), /解除字幕绑定/);
@@ -186,6 +315,8 @@ test("reverse and held frames require explicit caption detachment and retain cap
   );
   assert.equal((await read("ca")).text, "你好世界");
   assert.equal((await read("ca")).sourceBinding, undefined);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /倒放 1/);
+  assert.equal(await page.getByRole("button", { name: "恢复正放", exact: true }).count(), 1);
   await page.evaluate(() => reset());
   await page.getByLabel("联动后续片段", { exact: true }).check();
   await page.getByLabel("保留字幕时间并解除来源绑定", { exact: true }).check();
@@ -197,6 +328,7 @@ test("reverse and held frames require explicit caption detachment and retain cap
     [240000, 240000],
   );
   assert.equal((await read("b")).start, 360000);
+  assert.match(await page.locator("[data-playback-direction]").innerText(), /静帧 1/);
 });
 
 test("keep-right button trims source, wording and animation then moves the retained caption exactly once", async () => {
@@ -279,6 +411,8 @@ test("locked direct selection disables controls and a locked linked track blocks
   await page.evaluate(() => {
     const doc = fixture();
     doc.sequences[0].tracks[0].locked = true;
+    doc.sequences[0].clips[0].timeMap.points.reverse();
+    doc.sequences[0].clips[0].timeMap.points.forEach((point, index) => point.time = index * 960000);
     reset(["a"], doc);
   });
   assert.equal(
@@ -286,6 +420,7 @@ test("locked direct selection disables controls and a locked linked track blocks
     true,
   );
   assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal(await page.getByRole("button", { name: "恢复正放", exact: true }).isDisabled(), true);
   await page.evaluate(() => {
     const doc = fixture();
     doc.sequences[0].tracks[1].locked = true;

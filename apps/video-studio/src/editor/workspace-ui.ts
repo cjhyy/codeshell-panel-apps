@@ -219,6 +219,12 @@ export class EditorWorkspace {
       selection,
       apply,
       time: () => this.playhead,
+      seek: async (time) => {
+        const identity = { ...options.session.getState().identity }, sequenceId = this.sequenceId;
+        await this.seek(time, true);
+        if (!this.disposed && sameIdentity(identity, options.session.getState().identity) &&
+          this.sequenceId === sequenceId && this.playhead === time) this.timeline.revealPlayhead();
+      },
       onError: options.onError,
       ...(editVoiceover
         ? {
@@ -480,15 +486,15 @@ export class EditorWorkspace {
       } as const
     )[state.saveState];
     save.title = state.error?.message ?? "";
-    for (const [name, label, available, shortcut] of [
-      ["undo", "撤销", state.canUndo, "⌘/Ctrl Z"],
-      ["redo", "重做", state.canRedo, "⇧ ⌘/Ctrl Z"],
+    for (const [name, label, available, shortcut, actionLabel] of [
+      ["undo", "撤销", state.canUndo, "⌘/Ctrl Z", state.undoLabel],
+      ["redo", "重做", state.canRedo, "⇧ ⌘/Ctrl Z", state.redoLabel],
     ] as const) {
       const control = this.get<HTMLButtonElement>(`[data-ew-action="${name}"]`);
       control.disabled = !available || state.phase !== "ready";
       control.title = control.disabled
         ? `${label}（${state.phase !== "ready" ? "工程正在保存或切换，请稍候" : `没有可${label}的操作`}）`
-        : `${label} · ${shortcut}`;
+        : `${label}${actionLabel ? `：${actionLabel}` : ""} · ${shortcut}`;
     }
     if (state.error?.stage === "commit") save.textContent = "候选保存失败，请重试原操作";
     this.get('[data-ew-action="retry-save"]').hidden =

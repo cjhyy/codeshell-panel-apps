@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 import { build } from "esbuild";
 import { chromium } from "playwright";
+import { touchInput } from "./helpers/video-studio-touch.mjs";
 
 let browser, page, source;
 before(async () => {
@@ -1501,4 +1502,214 @@ test("a late color apply failure cannot add old errors to a successor and a lock
   });
   assert.equal(await page.getByRole("button", { name: "重置全部调色", exact: true }).isDisabled(), true);
   assert.match(await page.locator(".ei-notice").innerText(), /锁定/);
+});
+
+
+for (const remove of [false, true]) {
+  test(`the first keyframe ${remove ? "remove" : "add"} click finishes a property draft and leaves separate undo`, async () => {
+    if (remove) await page.evaluate(() => {
+      const transform = clip("a").transform;
+      transform.opacity = { keyframes: [{ time: 0, value: 0.7 }, { time: now, value: 0.9 }] };
+      update("a", { transform });
+      inspector.render();
+    });
+    const before = await page.evaluate(() => editorHistory.read());
+    await page.getByLabel("不透明度（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: `${remove ? "移除" : "添加"}不透明度（%）当前关键帧`, exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector(".ei-panel").disabled);
+    const after = await page.evaluate(() => editorHistory.read());
+    assert.equal(after.revision, before.revision + 2);
+    const keys = (await read()).transform.opacity.keyframes;
+    assert.deepEqual(keys, remove ? [{ time: 0, value: 0.7 }] : [{ time: 480000, value: 0.25, easing: "linear" }]);
+    await page.evaluate(() => editorHistory.undo());
+    const firstUndo = (await read()).transform.opacity;
+    assert.equal(remove ? firstUndo.keyframes.find((key) => key.time === 480000).value : firstUndo, 0.25);
+    await page.evaluate(() => editorHistory.undo());
+    assert.deepEqual((await page.evaluate(() => editorHistory.read())).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => errors), []);
+  });
+}
+
+test("a keyframe add keeps its original intent when finishing an animated draft creates that key", async () => {
+  await page.evaluate(() => {
+    const transform = clip("a").transform;
+    transform.opacity = { keyframes: [{ time: 0, value: 0.7 }, { time: 960000, value: 0.9 }] };
+    update("a", { transform }); inspector.render();
+  });
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 2 && !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual(await page.evaluate(() => calls.map((call) => call.label)), ["修改不透明度（%）", "添加不透明度（%）当前关键帧"]);
+  assert.deepEqual((await read()).transform.opacity.keyframes, [
+    { time: 0, value: 0.7 }, { time: 480000, value: 0.25, easing: "linear" }, { time: 960000, value: 0.9 },
+  ]);
+});
+
+test("a keyframe click retains an invalid focused draft and can retry after correcting it", async () => {
+  const before = await page.evaluate(() => editorHistory.read());
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("101");
+  await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.equal(await page.getByLabel("不透明度（%）", { exact: true }).inputValue(), "101");
+  assert.equal(await page.getByLabel("不透明度（%）", { exact: true }).evaluate((input) => document.activeElement === input), true);
+  assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  await page.getByLabel("不透明度（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 2 && !document.querySelector(".ei-panel").disabled);
+  assert.equal((await read()).transform.opacity.keyframes[0].value, 0.25);
+});
+
+test("a held keyframe draft cannot continue after selection or clock ABA, generation replacement, lock or disposal", async () => {
+  for (const boundary of ["selection", "clock", "generation", "lock", "dispose"]) {
+    await page.evaluate(() => {
+      reset(); globalThis.keyGeneration = 1;
+      inspector.context.identity = () => ({ documentId: "project", revision: editorHistory.revision, generation: keyGeneration });
+      inspector.context.apply = async (ops, label) => {
+        calls.push({ ops, label }); const owner = editorHistory, revision = owner.revision;
+        await new Promise((resolve) => globalThis.finishKeyDraft = resolve);
+        owner.apply(ops, revision, label);
+      };
+      inspector.render();
+    });
+    await page.getByLabel("不透明度（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+    await page.waitForFunction(() => calls.length === 1 && document.querySelector(".ei-panel").disabled);
+    await page.evaluate((boundary) => {
+      if (boundary === "selection") { select(["b"]); select(["a"]); }
+      if (boundary === "clock") { now++; inspector.renderFrame(); now--; inspector.renderFrame(); }
+      if (boundary === "generation") { keyGeneration++; editorHistory = new api.EditorHistory(editorHistory.read()); inspector.render(); }
+      if (boundary === "lock") {
+        editorHistory.apply([{ type: "track.update", sequenceId: "main", trackId: "v1", patch: { locked: true } }], editorHistory.revision);
+        inspector.render();
+      }
+      if (boundary === "dispose") inspector.dispose();
+      finishKeyDraft();
+    }, boundary);
+    await page.waitForFunction(() => !inspector.pending && !inspector.fieldFinish);
+    assert.equal(await page.evaluate(() => calls.length), 1, boundary);
+    assert.equal(typeof (await read()).transform.opacity, "number", boundary);
+    assert.deepEqual(await page.evaluate(() => errors), [], boundary);
+    if (boundary === "generation") assert.equal((await read()).transform.opacity, 0.9);
+    if (boundary === "lock") assert.equal(await page.evaluate(() => editorHistory.read().sequences[0].tracks[0].locked), true);
+  }
+});
+
+test("ordinary keyframe clicks stay synchronous and ignore detached buttons and repeated keyboard activation", async () => {
+  const button = await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).elementHandle();
+  const synchronous = await button.evaluate((button) => { button.click(); return calls.length; });
+  assert.equal(synchronous, 1);
+  await page.waitForFunction(() => !document.querySelector(".ei-panel").disabled);
+  await button.evaluate((button) => button.click());
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  const remove = page.getByRole("button", { name: "移除不透明度（%）当前关键帧", exact: true });
+  await remove.focus();
+  assert.equal(await remove.evaluate((button) => button.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", repeat: true, cancelable: true, bubbles: true }))), false);
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await remove.press("Enter");
+  await page.waitForFunction(() => calls.length === 2 && !document.querySelector(".ei-panel").disabled);
+  assert.equal((await read()).transform.opacity, 0.9);
+});
+
+test("a static inspector's first keyframe click uses the latest exact preview clock without rebuilding its buttons", async () => {
+  const button = await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).elementHandle();
+  await page.evaluate(() => { now = 240013; inspector.renderFrame(); });
+  assert.equal(await button.evaluate((button) => button.isConnected), true);
+  await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+  await page.waitForFunction(() => calls.length === 1 && !document.querySelector(".ei-panel").disabled);
+  assert.deepEqual((await read()).transform.opacity.keyframes, [{ time: 240013, value: 0.9, easing: "linear" }]);
+});
+
+test("a keyframe action rejects fresh read reentry before it can submit a stale patch", async () => {
+  await page.evaluate(() => {
+    globalThis.keyGeneration = 1;
+    inspector.context.identity = () => ({ documentId: "project", revision: editorHistory.revision, generation: keyGeneration });
+    inspector.render();
+    const read = inspector.context.read;
+    let once = true;
+    inspector.context.read = () => {
+      const document = read();
+      if (once) { once = false; select(["b"]); select(["a"]); }
+      return document;
+    };
+  });
+  await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).click();
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).transform.opacity, 0.9);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("an outer inspector read cannot overwrite the newer keyframe owner's rendered fields", async () => {
+  await page.evaluate(() => {
+    inspector.context.apply = async (ops, label) => {
+      calls.push({ ops, label }); const revision = editorHistory.revision;
+      await new Promise((resolve) => globalThis.releaseNewKey = resolve);
+      editorHistory.apply(ops, revision, label);
+    };
+    const read = inspector.context.read;
+    let once = true;
+    inspector.context.read = () => {
+      const document = read();
+      if (once) {
+        once = false;
+        const transform = clip("a").transform; transform.opacity = 0.3; update("a", { transform });
+        inspector.render();
+        inspector.root.querySelector('[aria-label="添加不透明度（%）当前关键帧"]').click();
+      }
+      return document;
+    };
+    inspector.render();
+  });
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  assert.equal(await page.getByLabel("不透明度（%）", { exact: true }).inputValue(), "30");
+  assert.equal(await page.evaluate(() => inspector.keyframeAction.scope.revision), 1);
+  await page.evaluate(() => releaseNewKey());
+  await page.waitForFunction(() => !document.querySelector(".ei-panel").disabled);
+  assert.equal((await read()).transform.opacity.keyframes[0].value, 0.3);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("a native touch keyframe click finishes its draft once through actual session render notifications", async () => {
+  await page.evaluate(async () => {
+    inspector.dispose();
+    globalThis.keySession = await api.EditorSession.open({
+      read: async () => ({ data: null, revision: 0 }),
+      write: async (_document, revision) => ({ revision: revision + 1 }),
+      backupLegacy: async () => {},
+    }, {
+      initialDocument: makeDocument(), autosaveDelayMs: 60000,
+    });
+    globalThis.inspector = api.mountEditorInspector(document.querySelector("#mount"), {
+      read: () => keySession.read(), identity: () => keySession.getState().identity,
+      selection: () => ({ sequenceId: "main", clipIds: ["a"] }), time: () => now,
+      onError: (error) => errors.push(error.message),
+      apply: (ops, label) => { calls.push({ ops, label }); keySession.dispatch(ops, keySession.getState().identity, label); },
+    });
+    globalThis.unsubscribeKey = keySession.subscribe(() => inspector.render());
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.getByLabel("不透明度（%）", { exact: true }).fill("25");
+    const input = await touchInput(page, ".editor-inspector"),
+      box = await page.getByRole("button", { name: "添加不透明度（%）当前关键帧", exact: true }).boundingBox(),
+      point = { id: 1, x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await input.send("touchStart", [point]);
+    await input.send("touchMove", [{ ...point, x: point.x + 1 }]);
+    await input.send("touchEnd");
+    await page.waitForFunction(() => calls.length === 2 && !document.querySelector(".ei-panel").disabled);
+    await input.assertNative();
+    const result = await page.evaluate(() => ({ document: keySession.read(), errors, calls }));
+    assert.equal(result.document.revision, 2);
+    assert.deepEqual(result.document.sequences[0].clips[0].transform.opacity.keyframes,
+      [{ time: 480000, value: 0.25, easing: "linear" }]);
+    assert.deepEqual(result.errors, []);
+    await page.evaluate(() => keySession.undo());
+    assert.equal(await page.evaluate(() => keySession.read().sequences[0].clips[0].transform.opacity), 0.25);
+    await page.evaluate(() => keySession.undo());
+    assert.equal(await page.evaluate(() => keySession.read().sequences[0].clips[0].transform.opacity), 0.9);
+  } finally {
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await cdp.detach();
+    await page.evaluate(async () => { unsubscribeKey(); inspector.dispose(); await keySession.close({ save: false }); });
+  }
 });
