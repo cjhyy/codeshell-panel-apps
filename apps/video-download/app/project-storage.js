@@ -20,6 +20,20 @@ function snapshot(value) {
   return value;
 }
 
+export function projectStorageMode(context, hasPanel = true) {
+  const methods = context.availableMethods;
+  const has = (...names) =>
+    Array.isArray(methods) && names.every((method) => methods.includes(method));
+  const versioned = hasPanel && has("storage.getSnapshot", "storage.compareAndSet");
+  const host =
+    hasPanel &&
+    (versioned ||
+      (Array.isArray(methods)
+        ? has("storage.get", "storage.set")
+        : Number(context.apiVersion) >= 14));
+  return versioned ? "versioned" : host ? "legacy-host" : "browser";
+}
+
 export function createProjectStorage({ panel, key, ready, getContext, getScope, envelope = true }) {
   let initialScope;
   let storageMode;
@@ -44,17 +58,9 @@ export function createProjectStorage({ panel, key, ready, getContext, getScope, 
   async function location() {
     await ready;
     const { scope, context } = scopeNow();
-    const methods = context.availableMethods;
-    const has = (...names) =>
-      Array.isArray(methods) && names.every((method) => methods.includes(method));
-    const versioned = Boolean(panel) && has("storage.getSnapshot", "storage.compareAndSet");
-    const host =
-      Boolean(panel) &&
-      (versioned ||
-        (Array.isArray(methods)
-          ? has("storage.get", "storage.set")
-          : Number(context.apiVersion) >= 14));
-    const mode = versioned ? "versioned" : host ? "legacy-host" : "browser";
+    const mode = projectStorageMode(context, Boolean(panel));
+    const versioned = mode === "versioned",
+      host = mode !== "browser";
     if (storageMode && storageMode !== mode)
       throw storageError("Host 存储能力已变化，请重新打开面板。", "STORAGE_MODE_CHANGED");
     storageMode = mode;

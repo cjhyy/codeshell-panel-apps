@@ -207,8 +207,8 @@ if (
 }
 
 if (panel) {
-  let checkBinding = () => {};
-  const traffic = createBridgeTraffic(panel, { beforeDispatch: () => checkBinding() });
+  let checkBinding = (_method?: string) => {};
+  const traffic = createBridgeTraffic(panel, { beforeDispatch: (method) => checkBinding(method) });
   const documents = createWorkspaceDocumentBridge(traffic.bridge);
   checkBinding = documents.assertActive;
   const mediaBridge = createMediaTaskBridge(documents);
