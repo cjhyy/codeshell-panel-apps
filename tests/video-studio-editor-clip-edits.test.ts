@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { planTimelinePaste } from "../apps/video-studio/src/editor/timeline-paste";
 import {
   duplicateClipsInPlace,
   planCutClips,
@@ -17,6 +18,7 @@ import {
   setClipSpeedCurve,
   splitClip,
   trimClip,
+  prepareClipTrim,
   ungroupClips,
   type ClipIdFactory,
 } from "../apps/video-studio/src/editor/clip-edits";
@@ -709,6 +711,131 @@ test("paste offsets multiple video tracks and duplicate appends without ripple; 
   );
 });
 
+test("cross-sequence paste maps full same-kind track ordinals and preserves exact graph offsets", () => {
+  const a = picture("a", sec(1) + 3, sec(2)),
+    b = picture("b", sec(2) + 3, sec(2)),
+    voice = picture("voice", a.start, sec(3), "a1"),
+    text = caption(a),
+    original = document([]),
+    target = sequence("target");
+  voice.assetId = "audio";
+  a.groupId = b.groupId = "group";
+  a.linkGroupId = voice.linkGroupId = "av";
+  a.audio.ducking = {
+    sidechainTrackIds: ["a2"],
+    thresholdDb: -30,
+    attenuationDb: 12,
+    attack: 123,
+    release: 456,
+  };
+  original.sequences[0]!.clips = [a, b, voice, text];
+  original.sequences[0]!.transitions = [
+    {
+      id: "dissolve",
+      fromClipId: a.id,
+      toClipId: b.id,
+      start: b.start,
+      duration: sec(1),
+      kind: "dissolve",
+    },
+  ];
+  target.tracks = [
+    createTrack("target-t", "text"),
+    createTrack("target-a1", "audio"),
+    createTrack("target-v1", "video"),
+    createTrack("target-a2", "audio"),
+    createTrack("target-v2", "video"),
+  ];
+  original.sequences.push(target);
+  const copied = copyClips(original, main, [a.id]),
+    before = structuredClone(original),
+    snapshot = structuredClone(copied),
+    at = sec(8) + 7,
+    after = apply(
+      original,
+      planTimelinePaste(original, target.id, copied, { at, idFactory: ids() }),
+    ),
+    added = after.sequences[1]!.clips,
+    owner = added.find((item) => item.label === a.label) as MediaClip,
+    sound = added.find((item) => item.label === voice.label)!,
+    subtitle = added.find((item) => item.kind === "text") as TextClip;
+  assert.equal(added.length, 4);
+  assert.equal(owner.start, at);
+  assert.equal(added.find((item) => item.label === b.label)!.start, at + sec(1));
+  assert.equal(owner.trackId, "target-v1");
+  assert.equal(sound.trackId, "target-a1");
+  assert.equal(subtitle.trackId, "target-t");
+  assert.equal(subtitle.sourceBinding!.clipId, owner.id);
+  assert.equal(owner.linkGroupId, sound.linkGroupId);
+  assert.notEqual(owner.groupId, a.groupId);
+  assert.equal(owner.groupId, added.find((item) => item.label === b.label)!.groupId);
+  assert.deepEqual(owner.audio.ducking!.sidechainTrackIds, ["target-a2"]);
+  const missingSidechain = structuredClone(original);
+  missingSidechain.sequences[1]!.tracks = missingSidechain.sequences[1]!.tracks.filter(
+    (track) => track.id !== "target-a2",
+  );
+  assert.throws(
+    () => planTimelinePaste(missingSidechain, target.id, copied, { at, idFactory: ids() }),
+    /第 2 条声音轨.*添加/,
+  );
+  const transition = after.sequences[1]!.transitions[0]!;
+  assert.equal(transition.start, at + sec(1));
+  assert.equal(transition.fromClipId, owner.id);
+  assert.notEqual(transition.id, "dissolve");
+  assert.deepEqual(owner.timeMap, a.timeMap);
+  assert.deepEqual(original, before);
+  assert.deepEqual(copied, snapshot);
+});
+
+test("cross-sequence paste refuses missing ordinals, locks and collisions without changing source or payload", () => {
+  const source = picture("a", 3, sec(2), "v2"),
+    original = document([source]),
+    target = sequence("target");
+  target.tracks = [createTrack("target-v1", "video"), createTrack("target-v2", "video")];
+  original.sequences.push(target);
+  const copied = copyClips(original, main, [source.id]),
+    before = structuredClone(original),
+    snapshot = structuredClone(copied);
+  const run = (value: EditorDocument) =>
+    planTimelinePaste(value, target.id, copied, { at: 11, idFactory: ids() });
+  const missing = structuredClone(original);
+  missing.sequences[1]!.tracks.pop();
+  assert.throws(() => run(missing), /第 2 条画面轨.*添加/);
+  const locked = structuredClone(original);
+  locked.sequences[1]!.tracks[1]!.locked = true;
+  assert.throws(() => run(locked), /锁定/);
+  const collision = structuredClone(original);
+  collision.sequences[1]!.clips.push(picture("occupied", 0, sec(2), "target-v2"));
+  assert.throws(() => run(collision), /重叠/);
+  const added = apply(original, run(original)).sequences[1]!.clips[0]!;
+  assert.equal(added.start, 11);
+  assert.equal(added.trackId, "target-v2");
+  assert.deepEqual(original, before);
+  assert.deepEqual(copied, snapshot);
+  assert.throws(
+    () =>
+      planTimelinePaste(
+        original,
+        target.id,
+        { ...copied, extra: true },
+        { at: 0, idFactory: ids() },
+      ),
+    /剪贴板格式/,
+  );
+});
+
+test("same-sequence timeline paste keeps the original track semantics", () => {
+  const source = picture("a", 3, sec(2), "v2"),
+    original = document([source]),
+    copied = copyClips(original, main, [source.id]);
+  const after = apply(
+    original,
+    planTimelinePaste(original, main, copied, { at: sec(8) + 1, idFactory: ids() }),
+  );
+  assert.equal(after.sequences[0]!.clips[1]!.trackId, source.trackId);
+  assert.equal(after.sequences[0]!.clips[1]!.start, sec(8) + 1);
+});
+
 test("cross-project clipboard requires imported assets, remaps compatible asset IDs, and strictly rejects malformed payloads", () => {
   const original = document(),
     payload = copyClips(original, main, ["owner"]),
@@ -1093,4 +1220,42 @@ test("property bounds are preserved when trimming overshooting cubic animation",
     );
     near(evaluateAnimatedNumber(clip(trimmed).transform.opacity, time - 123), expected, 1.05e-6);
   }
+});
+
+test("owned trim keeps word, animation and caption slicing identical while detaching caller and returned patches", () => {
+  const source = picture(), text = caption(source), before = document([source, text]),
+    original = structuredClone(before), preview = prepareClipTrim(before, main, source.id);
+  before.sequences[0]!.clips[0]!.duration = 1;
+  const operations = preview.plan(sec(1), sec(3));
+  assert.deepEqual(operations, trimClip(original, main, source.id, sec(1), sec(3)));
+  const patch = operations.find((operation) => operation.type === "clip.update" && operation.clipId === source.id)!;
+  assert.equal(patch.type, "clip.update");
+  if (patch.type === "clip.update" && "timeMap" in patch.patch) patch.patch.timeMap!.points[1]!.source = 999999;
+  assert.deepEqual(preview.plan(sec(1), sec(3)), trimClip(original, main, source.id, sec(1), sec(3)));
+  assert.deepEqual(preview.plan(0, source.duration), []);
+  assert.throws(() => preview.plan(-1, source.duration), /裁剪|非负/);
+  assert.deepEqual(preview.plan(sec(1), sec(3)), trimClip(original, main, source.id, sec(1), sec(3)));
+  preview.dispose(); preview.dispose();
+  assert.throws(() => preview.plan(0, source.duration), /预览已结束/);
+});
+
+test("owned trim retains locked-caption and nested-sequence source limits without weakening public trim validation", () => {
+  const source = picture(), text = caption(source), locked = document([source, text]);
+  locked.sequences[0]!.tracks.find((track) => track.id === "t1")!.locked = true;
+  const lockedTrim = prepareClipTrim(locked, main, source.id);
+  assert.throws(() => lockedTrim.plan(sec(1), sec(3)), /锁定/);
+  lockedTrim.dispose();
+  const before = document([source]), outer = sequence("outer"),
+    { assetId: _assetId, ...base } = picture("nested", 0, sec(6));
+  outer.clips.push({ ...base, kind: "sequence", sequenceId: main,
+    timeMap: { points: [{ time: 0, source: 0 }, { time: sec(6), source: sec(6) }] } });
+  before.sequences.push(outer);
+  const preview = prepareClipTrim(before, main, source.id);
+  assert.throws(() => preview.plan(sec(1), sec(3)), /来源|素材|超出|映射/);
+  preview.dispose();
+  let getterCalls = 0;
+  Object.defineProperty(before, "name", { enumerable: true, get() { getterCalls++; return "unsafe"; } });
+  assert.throws(() => prepareClipTrim(before, main, source.id), /访问器/);
+  assert.throws(() => trimClip(before, main, source.id, sec(1), sec(3)), /访问器/);
+  assert.equal(getterCalls, 0);
 });

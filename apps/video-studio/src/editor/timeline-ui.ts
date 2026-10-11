@@ -9,15 +9,22 @@ import { escapeHtml as esc, icon as sharedIcon } from "../icons";
 import { createTrack } from "./defaults";
 import {
   copyClips,
-  pasteClips,
   planSplitClips,
+  prepareClipTrim,
   trimClip,
   groupClips,
   ungroupClips,
   type ClipClipboard,
+  type ClipTrimPreview,
 } from "./clip-edits";
 import { planCutClips, duplicateClipsInPlace } from "./clipboard-edits";
-import { applyEditorOperations, type EditorOperation } from "./operations";
+import { planTimelinePaste } from "./timeline-paste";
+import {
+  applyEditorOperations,
+  prepareEditorOperationPreview,
+  type EditorOperation,
+  type EditorOperationPreview,
+} from "./operations";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, EditorTrack } from "./types";
 import type { SessionIdentity } from "./session";
@@ -42,6 +49,8 @@ export interface EditorTimelineContext {
   time(): Tick;
   seek(time: Tick, exact?: boolean): void | Promise<void>;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
+  /** Persist destructive clipboard edits before consuming their copy snapshot or selection. */
+  applyClipboard?(operations: EditorOperation[], label: string): Promise<void>;
   addAsset?(assetId: string, placement: { at: Tick; trackId: string }): void | Promise<void>;
   /** Adds a visible title at the playhead; shown as the 添加文字 tool when provided. */
   addText?(): void | Promise<void>;
@@ -71,6 +80,8 @@ type Drag = {
   moved: boolean;
   additive: boolean;
   altKey: boolean;
+  movePreview?: EditorOperationPreview;
+  trimPreview?: ClipTrimPreview;
   plan?: { key: string; operations?: EditorOperation[]; error?: unknown; reason?: string };
 };
 const uid = (kind: string) => `${kind}-${randomId()}`;
@@ -140,7 +151,8 @@ export class EditorTimeline {
   private snapping = true;
   /** One persistent live region; rendering keeps the node so text changes are announced. */
   private readonly notice = globalThis.document.createElement("p");
-  private clipboard?: ClipClipboard;
+  private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
+  private clipboardPending = false;
   private drag?: Drag;
   private dragPlanFrame?: number;
   private destroyed = false;
@@ -151,7 +163,13 @@ export class EditorTimeline {
   private autoScrollTime = 0;
   private autoScrollRemainder = { x: 0, y: 0 };
   /** A track whose deletion waits for confirmation because it still holds clips. */
-  private confirmTrack?: { trackId: string; documentId: string; revision: number };
+  private confirmTrack?: {
+    trackId: string;
+    documentId: string;
+    revision: number;
+    sequenceId: string;
+    generation?: number;
+  };
   private menu?: {
     element: HTMLElement;
     lifetime: AbortController;
@@ -226,6 +244,45 @@ export class EditorTimeline {
     this.context.select([...ids]);
     this.render();
   }
+  private clearStaleClipboard(document: EditorDocument): void {
+    if (
+      this.clipboard &&
+      (this.clipboard.documentId !== document.id ||
+        this.clipboard.generation !== this.context.identity?.().generation)
+    ) {
+      this.clipboard = undefined;
+      this.notice.textContent = "";
+    }
+  }
+  private async applyClipboard(
+    operations: EditorOperation[],
+    label: string,
+    scope: { documentId: string; sequenceId: string; revision: number; generation?: number },
+    committed: () => void,
+  ): Promise<void> {
+    if (this.clipboardPending) return;
+    const current = (before = false) => {
+      if (this.destroyed) return false;
+      const { document, sequence } = this.current();
+      return (
+        document.id === scope.documentId &&
+        (!before || document.revision === scope.revision) &&
+        sequence.id === scope.sequenceId &&
+        this.context.identity?.().generation === scope.generation
+      );
+    };
+    this.clipboardPending = true;
+    this.render();
+    try {
+      if (!current(true)) throw new Error("工程或序列已变化，请重新操作剪贴板");
+      this.notice.textContent = "";
+      await (this.context.applyClipboard ?? this.context.apply)(operations, label);
+      if (current()) committed();
+    } finally {
+      this.clipboardPending = false;
+      this.render();
+    }
+  }
   private expanded(sequence: EditorSequence, ids: Iterable<string>): Set<string> {
     const selected = new Set(ids);
     for (;;) {
@@ -255,6 +312,18 @@ export class EditorTimeline {
         : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
     const { document: project, sequence, selected } = this.current();
+    this.clearStaleClipboard(project);
+    if (
+      this.drag && (
+        project.id !== this.drag.documentId || project.revision !== this.drag.revision ||
+        this.context.identity?.().generation !== this.drag.generation || sequence.id !== this.drag.sequenceId
+      )
+    ) {
+      this.cancel();
+      this.context.onError(new Error("工程已变化，请重新拖动片段"));
+    }
+    if (this.confirmTrack && !this.trackConfirmationCurrent(project, sequence))
+      this.confirmTrack = undefined;
     if (this.menu && !this.menuCurrent()) this.closeMenu();
     for (const id of selected)
       if (!sequence.clips.some((clip) => clip.id === id)) selected.delete(id);
@@ -338,7 +407,7 @@ export class EditorTimeline {
     const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", !selected.size, "S", false, "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
-        <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C", false, needSelection)}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V", false, "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D", false, needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
+        <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size || this.clipboardPending, "⌘/Ctrl C", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("cut", "剪切", "cut", !selected.size || this.clipboardPending, "⌘/Ctrl X", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("paste", "粘贴", "paste", !this.clipboard || this.clipboardPending, "⌘/Ctrl V · 粘贴到播放头；跨序列按第 N 条同类轨道对应", false, this.clipboardPending ? "正在保存剪贴板操作" : "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size || this.clipboardPending, "⌘/Ctrl D · 为副本新建平行轨", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
         <div class="et-tool-group et-mode" role="group" aria-label="时间线模式">${TIMELINE_MODES.map(([mode, label, title]) => {
           const blocked =
             mode === "magnetic" &&
@@ -367,7 +436,7 @@ export class EditorTimeline {
           const mix = `<div class="et-track-mix">${track.kind !== "text" ? `<label>音量<input type="number" min="0" max="400" step="any" value="${track.volume * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="volume" aria-label="${esc(track.name)} 音量百分比" title="轨道音量（%）${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label><label>声像<input type="number" min="-100" max="100" step="any" value="${track.pan * 100}" data-et-track-id="${esc(track.id)}" data-et-track-mix="pan" aria-label="${esc(track.name)} 声像" title="左 -100 · 居中 0 · 右 100${track.locked ? "（轨道已锁定，先解锁）" : ""}"${track.locked ? " disabled" : ""}></label>` : ""}<span class="et-spacer"></span><button type="button" data-et-up="${esc(track.id)}" aria-label="上移${esc(track.name)}" title="上移轨道${index === 0 ? "（已在最上方）" : ""}"${index === 0 ? " disabled" : ""}>${timelineIcon("up", 14)}</button><button type="button" data-et-down="${esc(track.id)}" aria-label="下移${esc(track.name)}" title="下移轨道${index === sequence.tracks.length - 1 ? "（已在最下方）" : ""}"${index === sequence.tracks.length - 1 ? " disabled" : ""}>${timelineIcon("down", 14)}</button><button type="button" data-et-delete-track="${esc(track.id)}" aria-label="删除轨道${esc(track.name)}" title="${deleteBlocked || "删除轨道"}"${deleteBlocked ? " disabled" : ""}>${timelineIcon("trash", 14)}</button></div>`;
           return `<div class="et-track-head et-track-${track.kind}${track.locked ? " is-locked" : ""}${track.hidden ? " is-hidden" : ""}" data-track-head="${esc(track.id)}">
             <div class="et-track-title"><span class="et-track-kind" title="${{ video: "画面轨道", audio: "声音轨道", text: "文字轨道" }[track.kind]}">${timelineIcon(kindIcon, 14)}</span><input value="${esc(track.name)}" data-et-track-name="${esc(track.id)}" aria-label="轨道名称 ${esc(track.name)}" title="重命名轨道"><span class="et-track-controls">${toggle("locked", track.locked ? "解锁" : "锁定", track.locked ? "locked" : "unlocked")}${toggle("hidden", track.hidden ? "显示" : "隐藏", track.hidden ? "hidden" : "visible")}${toggle("muted", track.muted ? "取消静音" : "静音", track.muted ? "muted" : "volume")}</span></div>
-            ${this.trackConfirmation(project.id, project.revision, sequence, track) || mix}
+            ${this.trackConfirmation(project, sequence, track) || mix}
           </div>`;
         })
         .join("")}</div>
@@ -711,19 +780,28 @@ export class EditorTimeline {
       viewport.scrollLeft += delta;
     }
   };
+  private trackConfirmationCurrent(
+    document: EditorDocument,
+    sequence: EditorSequence,
+    trackId?: string,
+  ): boolean {
+    const pending = this.confirmTrack;
+    return (
+      !!pending &&
+      (trackId === undefined || pending.trackId === trackId) &&
+      pending.documentId === document.id &&
+      pending.revision === document.revision &&
+      pending.sequenceId === sequence.id &&
+      pending.generation === this.context.identity?.().generation &&
+      sequence.tracks.some((track) => track.id === pending.trackId)
+    );
+  }
   private trackConfirmation(
-    documentId: string,
-    revision: number,
+    document: EditorDocument,
     sequence: EditorSequence,
     track: EditorTrack,
   ): string {
-    const pending = this.confirmTrack;
-    if (
-      pending?.trackId !== track.id ||
-      pending.documentId !== documentId ||
-      pending.revision !== revision
-    )
-      return "";
+    if (!this.trackConfirmationCurrent(document, sequence, track.id)) return "";
     const count = sequence.clips.filter((clip) => clip.trackId === track.id).length;
     return `<div class="et-track-confirm" role="alert"><span>删除轨道和 ${count} 个片段？</span><button type="button" class="danger" data-et-delete-confirm="${esc(track.id)}">删除</button><button type="button" data-et-delete-cancel>取消</button></div>`;
   }
@@ -732,9 +810,21 @@ export class EditorTimeline {
     const { document, sequence } = this.current();
     const track = sequence.tracks.find((item) => item.id === trackId);
     if (!track) return;
+    if (confirmed && !this.trackConfirmationCurrent(document, sequence, trackId)) {
+      this.confirmTrack = undefined;
+      this.render();
+      this.notice.textContent = "工程或序列已变化，请重新确认删除轨道";
+      return;
+    }
     const count = sequence.clips.filter((clip) => clip.trackId === trackId).length;
     if (count && !confirmed) {
-      this.confirmTrack = { trackId, documentId: document.id, revision: document.revision };
+      this.confirmTrack = {
+        trackId,
+        documentId: document.id,
+        revision: document.revision,
+        sequenceId: sequence.id,
+        generation: this.context.identity?.().generation,
+      };
       this.render();
       this.container
         .querySelector<HTMLElement>(`[data-et-delete-confirm="${CSS.escape(trackId)}"]`)
@@ -778,33 +868,52 @@ export class EditorTimeline {
     }
     const { document, sequence, selected } = this.current(),
       ids = [...selected],
-      time = this.context.time();
+      time = this.context.time(),
+      scope = {
+        documentId: document.id,
+        sequenceId: sequence.id,
+        revision: document.revision,
+        generation: this.context.identity?.().generation,
+      };
+    this.clearStaleClipboard(document);
+    if (this.clipboardPending && ["copy", "cut", "paste", "duplicate"].includes(action)) return;
     if (action === "copy") {
-      this.clipboard = copyClips(document, sequence.id, ids);
+      this.clipboard = {
+        payload: copyClips(document, sequence.id, ids),
+        documentId: document.id,
+        generation: scope.generation,
+      };
       this.render();
       return;
     }
     if (action === "cut") {
       const plan = planCutClips(document, sequence.id, ids);
-      await this.apply(plan.operations, "剪切片段");
-      this.clipboard = plan.payload;
-      this.select([]);
+      await this.applyClipboard(plan.operations, "剪切片段", scope, () => {
+        this.clipboard = {
+          payload: plan.payload,
+          documentId: document.id,
+          generation: scope.generation,
+        };
+        this.select([]);
+      });
       return;
     }
     if (action === "paste") {
       if (!this.clipboard) return;
-      const operations = pasteClips(document, sequence.id, this.clipboard, {
+      const operations = planTimelinePaste(document, sequence.id, this.clipboard.payload, {
         at: time,
         idFactory: uid,
       });
-      await this.apply(operations, "粘贴片段");
-      this.select(operations.flatMap((op) => (op.type === "clip.add" ? [op.clip.id] : [])));
+      await this.applyClipboard(operations, "粘贴片段", scope, () =>
+        this.select(operations.flatMap((op) => (op.type === "clip.add" ? [op.clip.id] : []))),
+      );
       return;
     }
     if (action === "duplicate") {
       const operations = duplicateClipsInPlace(document, sequence.id, ids, { idFactory: uid });
-      await this.apply(operations, "原位复制片段");
-      this.select(operations.flatMap((op) => (op.type === "clip.add" ? [op.clip.id] : [])));
+      await this.applyClipboard(operations, "原位复制片段", scope, () =>
+        this.select(operations.flatMap((op) => (op.type === "clip.add" ? [op.clip.id] : []))),
+      );
       return;
     }
     if (action === "delete") {
@@ -1564,28 +1673,28 @@ export class EditorTimeline {
           trackId: drag.targetTrack,
         },
       ];
-      // Free movement has no planner, so use the same detached validation as session dispatch.
-      applyEditorOperations(document, operations, document.revision);
-      return operations;
+      if (this.context.identity) {
+        drag.movePreview ??= prepareEditorOperationPreview(document);
+        drag.movePreview.preview(operations);
+      } else applyEditorOperations(document, operations, document.revision);
+      return structuredClone(operations);
     }
-    return isMagneticTrack(sequence, clip.trackId)
-      ? planClipTiming(
-          document,
-          sequence.id,
-          [clip.id],
-          {
-            kind: drag.kind === "left" ? "keep-right" : "keep-left",
-            time: clip.start + (drag.kind === "left" ? drag.delta : clip.duration + drag.delta),
-          },
-          { ripple: true },
-        )
-      : trimClip(
-          document,
-          sequence.id,
-          clip.id,
-          drag.kind === "left" ? drag.delta : 0,
-          drag.kind === "right" ? clip.duration + drag.delta : clip.duration,
-        );
+    if (isMagneticTrack(sequence, clip.trackId))
+      return planClipTiming(
+        document,
+        sequence.id,
+        [clip.id],
+        {
+          kind: drag.kind === "left" ? "keep-right" : "keep-left",
+          time: clip.start + (drag.kind === "left" ? drag.delta : clip.duration + drag.delta),
+        },
+        { ripple: true },
+      );
+    const start = drag.kind === "left" ? drag.delta : 0,
+      end = drag.kind === "right" ? clip.duration + drag.delta : clip.duration;
+    if (!this.context.identity) return trimClip(document, sequence.id, clip.id, start, end);
+    drag.trimPreview ??= prepareClipTrim(document, sequence.id, clip.id);
+    return drag.trimPreview.plan(start, end);
   }
   /** Keep scrolling bounded by pixels per second, never by callback count or elapsed background time. */
   private scrollVelocity(): { x: number; y: number } {
@@ -1676,8 +1785,13 @@ export class EditorTimeline {
     drag.lastX = event.clientX;
     drag.lastY = event.clientY;
     drag.altKey = event.altKey;
+    let operations: EditorOperation[] | undefined;
     try {
       this.updateDrag(true);
+      if (drag.moved && !["seek", "box"].includes(drag.kind) && !drag.plan?.reason)
+        operations = structuredClone(
+          drag.plan?.operations ?? this.planDrag(drag.document, drag.sequence, drag),
+        );
     } catch (error) {
       this.cancel();
       this.context.onError(error);
@@ -1704,10 +1818,9 @@ export class EditorTimeline {
           this.notice.textContent = drag.plan.reason;
           throw drag.plan.error;
         }
-        const operations = drag.plan?.operations ?? this.planDrag(document, sequence, drag);
         if (drag.kind === "move" && sequence.timelineMode === "magnetic")
-          await this.applyMagneticMove(operations, "移动片段");
-        else await this.apply(operations, drag.kind === "move" ? "移动片段" : "裁剪片段");
+          await this.applyMagneticMove(operations!, "移动片段");
+        else await this.apply(operations!, drag.kind === "move" ? "移动片段" : "裁剪片段");
       }
       this.render();
     });
@@ -1719,6 +1832,8 @@ export class EditorTimeline {
     if (this.autoScrollFrame !== undefined) cancelAnimationFrame(this.autoScrollFrame);
     this.autoScrollFrame = undefined;
     const drag = this.drag;
+    drag?.movePreview?.dispose();
+    drag?.trimPreview?.dispose();
     this.drag = undefined;
     if (drag && this.container.hasPointerCapture(drag.pointerId))
       this.container.releasePointerCapture(drag.pointerId);

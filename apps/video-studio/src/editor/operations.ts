@@ -326,7 +326,60 @@ export function applyEditorOperations(
   baseRevision: number,
 ): EditorDocument {
   // Validation already deep-copies the entire JSON graph before reading it.
-  const next = validateEditorDocument(document);
+  return applyOperationsToDraft(document, validateEditorDocument(document), operations, baseRevision);
+}
+
+/** One gesture owns its validated base; every result is detached and still fully graph-validated. */
+export interface EditorOperationPreview {
+  read(): EditorDocument;
+  preview(operations: readonly EditorOperation[]): EditorDocument;
+  dispose(): void;
+}
+
+function freezePreviewData<T>(value: T): T {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezePreviewData(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Only our private validated JSON graph enters this copier; caller data always enters the validator. */
+function clonePreviewData<T>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((child) => clonePreviewData(child)) as T;
+  const data = value as Record<string, unknown>,
+    result: Record<string, unknown> = {};
+  for (const key of Object.keys(data)) result[key] = clonePreviewData(data[key]);
+  return result as T;
+}
+
+export function prepareEditorOperationPreview(value: EditorDocument): EditorOperationPreview {
+  let base: EditorDocument | undefined = freezePreviewData(validateEditorDocument(value));
+  const current = () => {
+    if (!base) throw new Error("片段预览已结束，请重新拖动");
+    return base;
+  };
+  return Object.freeze({
+    read: () => clonePreviewData(current()),
+    preview: (operations: readonly EditorOperation[]) => {
+      const document = current(),
+        result = applyOperationsToDraft(document, clonePreviewData(document), operations, document.revision);
+      // Nested operation values can invoke getters while being copied by the existing mutation core.
+      if (base !== document) throw new Error("片段预览已结束，请重新拖动");
+      return result;
+    },
+    dispose: () => { base = undefined; },
+  });
+}
+
+function applyOperationsToDraft(
+  document: EditorDocument,
+  next: EditorDocument,
+  operations: readonly EditorOperation[],
+  baseRevision: number,
+): EditorDocument {
+  "use strict";
   if (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || next.revision !== baseRevision)
     throw new Error(`工程已更新（当前修订 ${next.revision}），请刷新后重试`);
   for (const raw of array(operations, 0, 10000, "编辑操作")) {

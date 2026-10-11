@@ -215,3 +215,28 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
   旧确认必须失效且不能绕过当前确认；正在修复，不修改完整回归被测a31源码。
 
 11:00截止仍有效。未发布、未安装新版本；不改变用户工程、不调用付费模型。
+
+## 第五批整合验证（02:37 左右）
+
+- 已整合21f09a5跨序列剪贴板、80300cf/94babb3其他面板代际与切序列异步隔离、
+  8fd92ff私有手势快照、8fbda07删轨确认隔离、1a4664d真实预览耐久回归。
+  冲突只在共用fixture、追加测试及timeline import/render，保留每批新增行为与反例。
+- 第五批相关UI279/279（timeline/timing/workspace/sequences/multicam/main），
+  媒体链81/81（preview/pool/compositor/render），领域142/142；完整离线1112项，
+  1109通过3可选跳过、native voice5通过1可选跳过、workspace documents5/5。
+  typecheck/build/build:check/validate/diffcheck通过，生成包39文件同步。
+- 合并后的真实Chromium5000片段：prepareMove24.78ms/prepareTrim29.85ms，
+  持续ownedMove26.25ms/ownedTrim25.08ms，public free42.53/64.47ms。
+  私有能力仅用于有identity的拖动预览，最终公共session提交仍完整校验。
+- 18次真实play/pause/seek/quality后资源基线稳定；refresh/同ID打开/dispose后
+  VideoFrame、video、ownedURL、compositor surface、connectedAudio、activeReads全0。
+  PCM stream各dispose一次，AudioContext closed，无重复或借用URL误撤销。
+  仅说明可观测资源释放，不能推出浏览器RSS或系统解码器GC时刻。
+- 追加审查发现timeline-media仅按docID/rev缓存，真实红→蓝视频同ID/rev重开
+  会保留旧缩略图；同代际refreshMedia也未刷新时间线缓存，正在单独修复。
+- SRT文件读取已证实旧慢文件覆盖新快文件的P2，正在隔离文件选择顺序、取消、
+  工程/序列/轨道/修订；不新增VTT功能。静音轨音量调整无提示的P2正在补UI原因。
+- root新树codex/video-studio/color-clipboard补当前调色复制/多选粘贴与明确重置，
+  只复制真实当前值，目标既有动画仅写当前关键帧；尚未交付，需视觉/领域/UI验证。
+
+本聊天仍持续工作至11:00，不提前结束goal；automation11保留。

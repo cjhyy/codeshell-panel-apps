@@ -1673,6 +1673,10 @@ test("composition shortcut help matches the active editor and cut navigation pre
   assert.match(await dialog.innerText(), /Alt/);
   assert.match(await dialog.innerText(), /以鼠标位置缩放/);
   assert.match(await dialog.innerText(), /横向滚动时间轴/);
+  assert.match(await dialog.innerText(), /复制 \/ 剪切 \/ 粘贴 \/ 原位复制/);
+  assert.match(await dialog.innerText(), /Ctrl C · X · V · D/);
+  assert.match(await dialog.innerText(), /粘贴从播放头开始，跨序列按第 N 条同类轨道对应/);
+  assert.match(await dialog.innerText(), /原位复制会为副本新建平行轨/);
   assert.doesNotMatch(await dialog.innerText(), /5 秒|切换磁吸/);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });

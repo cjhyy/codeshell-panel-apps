@@ -210,6 +210,7 @@ export class EditorWorkspace {
     });
     this.timing = new EditorTiming(this.get("[data-ew-timing]"), {
       read,
+      identity: () => options.session.getState().identity,
       selection,
       apply,
       time: () => this.playhead,
@@ -217,6 +218,7 @@ export class EditorWorkspace {
     });
     this.sequences = new EditorSequences(this.get("[data-ew-sequences]"), {
       read,
+      identity: () => options.session.getState().identity,
       selection,
       apply,
       time: () => this.playhead,
@@ -242,6 +244,17 @@ export class EditorWorkspace {
       identity: () => options.session.getState().identity,
       selection,
       apply,
+      applyClipboard: async (operations, label) => {
+        this.options.assertEditable?.();
+        const identity = options.session.getState().identity,
+          before = options.session.read(),
+          after = applyEditorOperations(before, operations, identity.revision);
+        await options.session.dispatchDurable(
+          [...operations, ...reconcileEditorProduction(before, after)],
+          identity,
+          label,
+        );
+      },
       time: () => this.playhead,
       seek: (time, exact) => this.seek(time, exact),
       select: (ids) => {
@@ -940,6 +953,7 @@ export class EditorWorkspace {
       section.hidden = !section.hidden;
       if (!section.hidden && !this.multicam)
         this.multicam = new EditorMulticam(section, {
+          identity: () => this.options.session.getState().identity,
           read: () => this.options.session.read(),
           selection: () => ({ sequenceId: this.sequenceId, clipIds: [...this.selected] }),
           time: () => this.playhead,

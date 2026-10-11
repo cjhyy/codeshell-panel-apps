@@ -9,12 +9,14 @@ import {
   type SequenceEditPlan,
 } from "./sequence-edits";
 import type { EditorOperation } from "./operations";
+import { sameIdentity, type SessionIdentity } from "./session";
 import { TICKS_PER_SECOND, type Tick } from "./time";
 import type { EditorDocument } from "./types";
 import { sequenceDuration } from "./validation";
 
 export interface EditorSequencesContext {
   read(): EditorDocument;
+  identity?(): SessionIdentity;
   selection(): { sequenceId: string; clipIds: string[] };
   time(): Tick;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
@@ -77,6 +79,7 @@ function select(label: string, choices: Array<[string, string]>, value: string):
 export class EditorSequences {
   private readonly root = element("section", "editor-sequences");
   private signature = "";
+  private renderedIdentity?: SessionIdentity;
   private managedId = "";
   private pending = false;
   private disposed = false;
@@ -106,9 +109,22 @@ export class EditorSequences {
     navigate = false,
   ): Promise<void> {
     if (this.pending || this.disposed) return;
-    const before = this.context.read();
+    const before = this.context.read(),
+      identity = this.context.identity?.(),
+      sequenceId = this.context.selection().sequenceId;
+    let activatedSequenceId: string | undefined;
+    const owns = () => {
+      const current = this.context.selection().sequenceId;
+      return (
+        !this.disposed &&
+        (!identity || sameIdentity(identity, this.context.identity?.(), false)) &&
+        (current === sequenceId || current === activatedSequenceId)
+      );
+    };
     try {
       const plan = make(before);
+      for (const operation of plan.operations)
+        if (operation.type === "sequence.activate") activatedSequenceId = operation.sequenceId;
       this.pending = true;
       this.error = "";
       this.status = "";
@@ -116,12 +132,13 @@ export class EditorSequences {
         node.disabled = true;
       });
       await this.context.apply(plan.operations, label);
-      if (this.disposed) return;
+      if (!owns()) return;
       const after = this.context.read();
       if (
         after.id !== before.id ||
         after.revision !== before.revision + 1 ||
-        !after.sequences.some((seq) => seq.id === plan.sequenceId)
+        !after.sequences.some((seq) => seq.id === plan.sequenceId) ||
+        (navigate && after.activeSequenceId !== plan.sequenceId)
       )
         return;
       if (plan.createdSequenceId) this.managedId = plan.createdSequenceId;
@@ -132,7 +149,7 @@ export class EditorSequences {
         ? `已将 ${plan.includedClipIds.length} 个相关片段放入复合序列，可打开继续编辑。`
         : `${label}已完成，可在工程历史中撤销。`;
     } catch (error) {
-      if (!this.disposed) this.report(error);
+      if (owns()) this.report(error);
     } finally {
       this.pending = false;
       if (!this.disposed) {
@@ -150,7 +167,16 @@ export class EditorSequences {
     const node = element("button", prominent ? "eseq-primary" : "", text);
     node.type = "button";
     node.disabled = disabled;
-    node.addEventListener("click", action);
+    const identity = this.context.identity?.();
+    node.addEventListener("click", () => {
+      if (
+        !this.pending &&
+        !this.disposed &&
+        this.root.contains(node) &&
+        (!identity || sameIdentity(identity, this.context.identity?.(), false))
+      )
+        action();
+    });
     return node;
   }
   private section(title: string): HTMLDivElement {
@@ -167,7 +193,16 @@ export class EditorSequences {
     return body;
   }
   render(): void {
-    if (this.disposed || this.pending) return;
+    if (this.disposed) return;
+    const identity = this.context.identity?.();
+    if (this.renderedIdentity && !sameIdentity(this.renderedIdentity, identity, false)) {
+      this.managedId = "";
+      this.error = "";
+      this.status = "";
+      this.signature = "";
+    }
+    this.renderedIdentity = identity;
+    if (this.pending) return;
     const doc = this.context.read(),
       selection = this.context.selection(),
       current =
@@ -176,6 +211,8 @@ export class EditorSequences {
     const managed = doc.sequences.find((seq) => seq.id === this.managedId) ?? current;
     this.managedId = managed.id;
     const signature = JSON.stringify([
+      identity?.documentId,
+      identity?.generation,
       doc.id,
       doc.revision,
       selection,
@@ -198,6 +235,11 @@ export class EditorSequences {
         managed.id,
       );
     picker.addEventListener("change", () => {
+      if (
+        !this.root.contains(picker) ||
+        (identity && !sameIdentity(identity, this.context.identity?.(), false))
+      )
+        return;
       this.managedId = picker.value;
       this.error = "";
       this.status = "";

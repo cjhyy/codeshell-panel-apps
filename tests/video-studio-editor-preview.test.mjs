@@ -552,11 +552,76 @@ test(
       assert.equal(generated.status, 0, generated.stderr || String(generated.error));
       videos.push([...(await readFile(path))]);
     }
-    async function realWorkspace(t) {
+    async function realWorkspace(t, options = {}) {
       const page = await pageFixture(t);
-      await page.evaluate(async (videos) => {
+      const uncaught = [];
+      page.on("pageerror", (error) => uncaught.push(String(error)));
+      t.after(() => assert.deepEqual(uncaught, [], "Cancelled media must not emit uncaught errors"));
+      await page.evaluate(async ({ videos, options }) => {
         await preview.dispose();
         document.body.innerHTML = '<main id="workspace"></main>';
+        const ownedUrls = [],
+          revoked = [],
+          liveFrames = new Set(),
+          surfaces = [],
+          audioContexts = [],
+          audioNodes = [],
+          streams = [],
+          pendingResolves = [],
+          pendingReads = [];
+        if (options.endurance) {
+          const NativeFrame = VideoFrame,
+            NativeCanvas = OffscreenCanvas,
+            NativeAudioContext = AudioContext,
+            revoke = URL.revokeObjectURL.bind(URL);
+          globalThis.VideoFrame = class extends NativeFrame {
+            constructor(...args) {
+              super(...args);
+              liveFrames.add(this);
+            }
+            close() {
+              liveFrames.delete(this);
+              super.close();
+            }
+          };
+          globalThis.OffscreenCanvas = class extends NativeCanvas {
+            constructor(...args) {
+              super(...args);
+              surfaces.push(this);
+            }
+          };
+          globalThis.AudioContext = class extends NativeAudioContext {
+            constructor(...args) {
+              super(...args);
+              audioContexts.push(this);
+            }
+            createBufferSource() {
+              const source = super.createBufferSource(),
+                node = { connected: false, stopped: false },
+                connect = source.connect.bind(source),
+                disconnect = source.disconnect.bind(source),
+                stop = source.stop.bind(source);
+              source.connect = (...args) => {
+                node.connected = true;
+                return connect(...args);
+              };
+              source.disconnect = (...args) => {
+                node.connected = false;
+                return disconnect(...args);
+              };
+              source.stop = (...args) => {
+                node.stopped = true;
+                return stop(...args);
+              };
+              audioNodes.push(node);
+              return source;
+            }
+          };
+          URL.revokeObjectURL = (url) => {
+            revoked.push(url);
+            revoke(url);
+          };
+        }
         const urls = videos.map((bytes) =>
           URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "video/mp4" })),
         );
@@ -597,7 +662,7 @@ test(
                 { time: 720000, source: 720000 },
               ],
             },
-            audio: { ...api.defaultAudioMix(), volume: 0 },
+            audio: { ...api.defaultAudioMix(), volume: options.endurance ? 1 : 0 },
             transform: api.defaultTransform(),
             color: api.defaultColorAdjustment(),
             blendMode: "normal",
@@ -609,7 +674,16 @@ test(
           sourceIndex = 0,
           proxyIndex,
           preparations = 0,
-          resolves = 0;
+          resolves = 0,
+          holdResolve = false,
+          holdRead = false;
+        const ownedResource = (index) => {
+          const url = URL.createObjectURL(
+            new Blob([new Uint8Array(videos[index])], { type: "video/mp4" }),
+          );
+          ownedUrls.push(url);
+          return { url, owned: true };
+        };
         const session = await api.EditorSession.open(
           {
             read: async () => ({ data: stored, revision: storageRevision }),
@@ -624,13 +698,63 @@ test(
         const workspaceErrors = [];
         const workspace = new api.EditorWorkspace(document.querySelector("#workspace"), {
           session,
-          resolveAsset: () => {
+          resolveAsset: (_id, signal) => {
             resolves++;
+            if (options.endurance) {
+              const index = sourceIndex;
+              if (holdResolve) {
+                holdResolve = false;
+                return new Promise((resolve, reject) =>
+                  pendingResolves.push({
+                    signal,
+                    finish: (failed) =>
+                      failed ? reject(new Error("过期素材解析失败")) : resolve(ownedResource(index)),
+                  }),
+                );
+              }
+              return ownedResource(index);
+            }
             return urls[sourceIndex];
           },
-          prepareAudio: async () => {
+          prepareAudio: async (document, sequenceId) => {
             preparations++;
             if (proxyIndex !== undefined) sourceIndex = proxyIndex;
+            if (options.endurance) {
+              const owner = { disposed: 0, reads: [] };
+              streams.push(owner);
+              return {
+                documentId: document.id,
+                revision: document.revision,
+                sequenceId,
+                stream: {
+                  sampleRate: 48000,
+                  numberOfChannels: 2,
+                  sampleCount: 3 * 48000,
+                  async read(start, count, signal) {
+                    owner.reads.push(signal);
+                    if (signal.aborted) throw new DOMException("取消", "AbortError");
+                    if (holdRead) {
+                      holdRead = false;
+                      await new Promise((resolve, reject) =>
+                        pendingReads.push({
+                          signal,
+                          finish: (failed) =>
+                            failed ? reject(new Error("过期声音读取失败")) : resolve(),
+                        }),
+                      );
+                    }
+                    const tone = Float32Array.from(
+                      { length: count },
+                      (_, i) => Math.sin(((start + i) * 2 * Math.PI * 440) / 48000) * 0.02,
+                    );
+                    return [tone, tone.slice()];
+                  },
+                  dispose() {
+                    owner.disposed++;
+                  },
+                },
+              };
+            }
             return undefined;
           },
           importMedia() {},
@@ -647,10 +771,43 @@ test(
           setProxy: (index) => {
             proxyIndex = index;
           },
-          reconnect: () => {
-            sourceIndex = 1;
+          reconnect: (index = 1) => {
+            sourceIndex = index;
             workspace.refreshMedia();
           },
+          setSource: (index) => {
+            sourceIndex = index;
+          },
+          holdResolve: () => {
+            holdResolve = true;
+          },
+          pendingResolves: () => pendingResolves.map(({ signal }) => ({ aborted: signal.aborted })),
+          releaseResolve: (index, failed = false) => pendingResolves[index].finish(failed),
+          holdRead: () => {
+            holdRead = true;
+          },
+          pendingReads: () => pendingReads.map(({ signal }) => ({ aborted: signal.aborted })),
+          releaseRead: (index, failed = false) => pendingReads[index].finish(failed),
+          resources: () => ({
+            frames: liveFrames.size,
+            videos: createdVideos.filter((node) => node.hasAttribute("src")).length,
+            ownedUrls: ownedUrls.length,
+            unreleasedUrls: ownedUrls.filter((url) => !revoked.includes(url)).length,
+            duplicateRevocations: revoked.length - new Set(revoked).size,
+            borrowedRevoked: urls.some((url) => revoked.includes(url)),
+            surfaces: surfaces.filter((canvas) => canvas.width > 1 || canvas.height > 1).length,
+            surfacePixels: surfaces
+              .filter((canvas) => canvas.width > 1 || canvas.height > 1)
+              .reduce((sum, canvas) => sum + canvas.width * canvas.height, 0),
+            audioContexts: audioContexts.map((context) => context.state),
+            connectedAudio: audioNodes.filter((node) => node.connected).length,
+            stoppedAudio: audioNodes.filter((node) => node.stopped).length,
+            audioNodes: audioNodes.length,
+            streams: streams.length,
+            disposedStreams: streams.map((stream) => stream.disposed),
+            activeReads: streams.flatMap((stream) => stream.reads).filter((signal) => !signal.aborted)
+              .length,
+          }),
           rebind: () => {
             sourceIndex = 1;
             session.dispatch(
@@ -673,7 +830,7 @@ test(
           errors: workspaceErrors,
         };
         await workspace.seek(288000);
-      }, videos);
+      }, { videos, options });
       return page;
     }
     const dominant = (pixel, channel) => {
@@ -808,6 +965,246 @@ test(
         assert.deepEqual(await page.evaluate(() => mediaFixture.counts()), before.counts);
       },
     );
+    await t.test(
+      "repeated real playback and quality changes keep bounded resources, then refresh, replace and dispose release their owners",
+      async (t) => {
+        const page = await realWorkspace(t, { endurance: true });
+        await page.locator('[data-ew-action="play"]').click();
+        await page.waitForFunction(() => mediaFixture.workspace.playing);
+        await page.locator('[data-ew-action="play"]').click();
+        const baseline = await page.evaluate(() => mediaFixture.resources());
+        for (let cycle = 0; cycle < 18; cycle++) {
+          const tick = 24000 + cycle * 8000 + 3,
+            [quality, width, height] = [
+              ["0.5", 48, 32],
+              ["0.25", 24, 16],
+              ["1", 96, 64],
+            ][cycle % 3];
+          await page.evaluate(async (tick) => {
+            const f = mediaFixture;
+            await f.workspace.seek(tick, true);
+            await f.workspace.togglePlayback();
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            await f.workspace.togglePlayback();
+            await f.workspace.seek(tick, true);
+          }, tick);
+          await page.getByLabel("预览质量", { exact: true }).selectOption(quality);
+          await page.waitForFunction(
+            ({ width, height }) => {
+              const canvas = document.querySelector("[data-ew-canvas]");
+              return canvas.width === width && canvas.height === height;
+            },
+            { width, height },
+          );
+          const state = await page.evaluate(() => ({
+            resources: mediaFixture.resources(),
+            time: mediaFixture.workspace.getPlayhead(),
+            counts: mediaFixture.counts(),
+            pixel: mediaFixture.pixel(),
+            errors: mediaFixture.errors,
+          }));
+          assert.equal(state.time, tick);
+          assert.equal(state.resources.frames, 1);
+          assert.equal(state.resources.videos, 1);
+          assert.equal(state.resources.unreleasedUrls, 1);
+          assert.equal(state.resources.connectedAudio, 0);
+          assert.equal(state.resources.activeReads, 0);
+          assert.deepEqual(state.resources.disposedStreams, [0]);
+          assert.ok(state.resources.surfaces <= 4);
+          assert.ok(state.resources.surfacePixels <= 4 * 96 * 64);
+          assert.equal(state.counts.preparations, 1);
+          dominant(state.pixel, 1);
+          assert.deepEqual(state.errors, []);
+        }
+        const afterCycles = await page.evaluate(() => mediaFixture.resources());
+        assert.equal(
+          afterCycles.ownedUrls,
+          baseline.ownedUrls,
+          "Pause, seek and quality reuse the same owned resource",
+        );
+        for (const change of ["refresh", "generation"]) {
+          await page.evaluate(async (change) => {
+            const f = mediaFixture;
+            if (change === "refresh") f.reconnect(1);
+            else await f.session.replace(f.session.read());
+            await f.workspace.seek(288003, true);
+            await f.workspace.togglePlayback();
+            await f.workspace.togglePlayback();
+          }, change);
+          const current = await page.evaluate(() => ({
+            resources: mediaFixture.resources(),
+            pixel: mediaFixture.pixel(),
+            errors: mediaFixture.errors,
+          }));
+          assert.equal(current.resources.frames, 1);
+          assert.equal(current.resources.videos, 1);
+          assert.equal(current.resources.unreleasedUrls, 1);
+          assert.deepEqual(
+            current.resources.disposedStreams,
+            change === "refresh" ? [1, 0] : [1, 1, 0],
+          );
+          dominant(current.pixel, 2);
+          assert.deepEqual(current.errors, []);
+        }
+        const destroyed = await page.evaluate(async () => {
+          await mediaFixture.workspace.togglePlayback();
+          await mediaFixture.workspace.dispose();
+          return mediaFixture.resources();
+        });
+        for (const key of [
+          "frames",
+          "videos",
+          "unreleasedUrls",
+          "surfaces",
+          "surfacePixels",
+          "connectedAudio",
+          "activeReads",
+          "duplicateRevocations",
+        ])
+          assert.equal(destroyed[key], 0, key);
+        assert.equal(destroyed.borrowedRevoked, false);
+        assert.deepEqual(destroyed.audioContexts, ["closed"]);
+        assert.deepEqual(destroyed.disposedStreams, [1, 1, 1]);
+        t.diagnostic(JSON.stringify({ baseline, afterCycles, destroyed }));
+      },
+    );
+
+    await t.test(
+      "late owned resources and resolver failures after quality cancellation or disposal cannot repaint or report stale errors",
+      async (t) => {
+        const page = await realWorkspace(t, { endurance: true });
+        for (const [index, failed, quality, channel, width] of [
+          [0, false, "0.5", 2, 48],
+          [1, true, "0.25", 1, 24],
+        ]) {
+          await page.evaluate((index) => {
+            mediaFixture.holdResolve();
+            mediaFixture.reconnect(index);
+          }, index);
+          await page.waitForFunction(
+            (length) => mediaFixture.pendingResolves().length === length,
+            index + 1,
+          );
+          await page.evaluate((index) => mediaFixture.setSource(1 - index), index);
+          await page.getByLabel("预览质量", { exact: true }).selectOption(quality);
+          await page.waitForFunction(
+            (width) => document.querySelector("[data-ew-canvas]").width === width,
+            width,
+          );
+          await page.evaluate(({ index, failed }) => mediaFixture.releaseResolve(index, failed), {
+            index,
+            failed,
+          });
+          await page.evaluate(
+            () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          );
+          const state = await page.evaluate(() => ({
+            resources: mediaFixture.resources(),
+            pending: mediaFixture.pendingResolves(),
+            pixel: mediaFixture.pixel(),
+            errors: mediaFixture.errors,
+            notice: document.querySelector("[data-ew-preview-error]").hidden,
+          }));
+          assert.ok(state.pending.every((request) => request.aborted));
+          assert.equal(state.resources.unreleasedUrls, 1);
+          assert.equal(state.resources.frames, 1);
+          assert.equal(state.resources.videos, 1);
+          assert.equal(state.resources.duplicateRevocations, 0);
+          assert.equal(state.notice, true);
+          dominant(state.pixel, channel);
+          assert.deepEqual(state.errors, []);
+        }
+        await page.evaluate(() => {
+          globalThis.retiredCanvas = document.querySelector("[data-ew-canvas]");
+          mediaFixture.holdResolve();
+          mediaFixture.reconnect(0);
+        });
+        await page.waitForFunction(() => mediaFixture.pendingResolves().length === 3);
+        await page.evaluate(() => mediaFixture.workspace.dispose());
+        await page.evaluate(() => mediaFixture.releaseResolve(2));
+        await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+        const result = await page.evaluate(() => ({
+          resources: mediaFixture.resources(),
+          size: [retiredCanvas.width, retiredCanvas.height],
+          errors: mediaFixture.errors,
+        }));
+        for (const key of [
+          "frames",
+          "videos",
+          "unreleasedUrls",
+          "surfaces",
+          "surfacePixels",
+          "connectedAudio",
+          "activeReads",
+          "duplicateRevocations",
+        ])
+          assert.equal(result.resources[key], 0, key);
+        assert.deepEqual(result.size, [1, 1]);
+        assert.deepEqual(result.errors, []);
+      },
+    );
+    for (const boundary of ["quality", "generation"])
+      await t.test(
+        `late streamed PCM failures after ${boundary} cancellation cannot stop a successor and disposed reads cannot create audio nodes`,
+        async (t) => {
+          const page = await realWorkspace(t, { endurance: true });
+          await page.locator('[data-ew-action="play"]').click();
+          await page.waitForFunction(() => mediaFixture.workspace.playing);
+          await page.locator('[data-ew-action="play"]').click();
+          await page.evaluate(() => {
+            mediaFixture.holdRead();
+            globalThis.stalePlay = mediaFixture.workspace.togglePlayback();
+          });
+          await page.waitForFunction(() => mediaFixture.pendingReads().length === 1);
+          if (boundary === "quality") {
+            await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+            await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 48);
+          } else {
+            await page.evaluate(async () => {
+              await mediaFixture.session.replace(mediaFixture.session.read());
+              await mediaFixture.workspace.seek(288000);
+            });
+          }
+          assert.equal(await page.evaluate(() => mediaFixture.pendingReads()[0].aborted), true);
+          await page.evaluate(() => mediaFixture.workspace.togglePlayback());
+          await page.waitForFunction(() => mediaFixture.workspace.playing);
+          await page.evaluate(async () => {
+            mediaFixture.releaseRead(0, true);
+            await stalePlay;
+          });
+          const continued = await page.evaluate(() => ({
+            playing: mediaFixture.workspace.playing,
+            resources: mediaFixture.resources(),
+            errors: mediaFixture.errors,
+          }));
+          assert.equal(continued.playing, true);
+          assert.ok(continued.resources.connectedAudio > 0);
+          assert.equal(continued.resources.streams, boundary === "quality" ? 1 : 2);
+          assert.deepEqual(continued.errors, []);
+          await page.evaluate(async () => {
+            await mediaFixture.workspace.togglePlayback();
+            mediaFixture.holdRead();
+            globalThis.disposedPlay = mediaFixture.workspace.togglePlayback();
+          });
+          await page.waitForFunction(() => mediaFixture.pendingReads().length === 2);
+          await page.evaluate(() => mediaFixture.workspace.dispose());
+          const beforeLate = await page.evaluate(() => mediaFixture.resources());
+          await page.evaluate(async () => {
+            mediaFixture.releaseRead(1);
+            await disposedPlay;
+          });
+          const afterLate = await page.evaluate(() => ({
+            resources: mediaFixture.resources(),
+            errors: mediaFixture.errors,
+          }));
+          assert.deepEqual(afterLate.resources, beforeLate);
+          assert.equal(afterLate.resources.connectedAudio, 0);
+          assert.equal(afterLate.resources.activeReads, 0);
+          assert.deepEqual(afterLate.resources.audioContexts, ["closed"]);
+          assert.ok(afterLate.resources.disposedStreams.every((count) => count === 1));
+          assert.deepEqual(afterLate.errors, []);
+        },
+      );
     for (const change of ["asset", "generation", "sequence"]) {
       await t.test(
         `${change} changes invalidate prepared media and cannot reuse a previous decoder`,

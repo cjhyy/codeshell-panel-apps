@@ -64,7 +64,18 @@ export class EditorMarkers {
     const button = element("button", text);
     button.type = "button";
     button.disabled = disabled || this.pending;
-    button.addEventListener("click", action);
+    const identity = this.context.identity(),
+      sequenceId = this.context.selection().sequenceId;
+    button.addEventListener("click", () => {
+      if (
+        !this.disposed &&
+        !this.pending &&
+        this.root.contains(button) &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        action();
+    });
     return button;
   }
   begin(kind: "point" | "range" = "point"): void {
@@ -106,10 +117,20 @@ export class EditorMarkers {
     this.context.onSelection(markerId);
     this.signature = "";
     this.render();
+    const identity = this.context.identity(),
+      sequenceId = this.context.selection().sequenceId;
+    const report = (error: unknown) => {
+      if (
+        !this.disposed &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        this.report(error);
+    };
     try {
-      void Promise.resolve(this.context.seek(marker.time)).catch((error) => this.report(error));
+      void Promise.resolve(this.context.seek(marker.time)).catch(report);
     } catch (error) {
-      this.report(error);
+      report(error);
     }
   }
   private async commit(request: MarkerEditRequest, identity: SessionIdentity, sequenceId: string) {
@@ -148,7 +169,12 @@ export class EditorMarkers {
       this.selectedId = request.action === "remove" ? undefined : plan.markerId;
       this.context.onSelection(this.selectedId);
     } catch (error) {
-      if (!this.disposed) this.report(error);
+      if (
+        !this.disposed &&
+        sameIdentity(identity, this.context.identity(), false) &&
+        sequenceId === this.context.selection().sequenceId
+      )
+        this.report(error);
     } finally {
       this.pending = false;
       if (!this.disposed) {
@@ -243,6 +269,9 @@ export class EditorMarkers {
     identity: SessionIdentity,
     sequenceId: string,
   ) {
+    const owns = () =>
+      !this.disposed && sameIdentity(identity, this.context.identity(), false) &&
+      sequenceId === this.context.selection().sequenceId;
     const form = element("form");
     form.className = "emarker-form";
     const kind = element("select");
@@ -332,10 +361,12 @@ export class EditorMarkers {
               this.button("定位结束", () => {
                 try {
                   void Promise.resolve(this.context.seek(marker.time + marker.duration)).catch(
-                    (error) => this.report(error),
+                    (error) => {
+                      if (owns()) this.report(error);
+                    },
                   );
                 } catch (error) {
-                  this.report(error);
+                  if (owns()) this.report(error);
                 }
               }),
             ]
@@ -356,6 +387,12 @@ export class EditorMarkers {
     form.append(footer);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (
+        this.disposed ||
+        !sameIdentity(identity, this.context.identity(), false) ||
+        sequenceId !== this.context.selection().sequenceId
+      )
+        return;
       try {
         const time = readTime(start, originalStart, marker.time);
         const stop =

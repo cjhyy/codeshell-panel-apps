@@ -10,6 +10,7 @@ import {
 import { createExportPresets } from "../apps/video-studio/src/editor/export-settings";
 import {
   applyEditorOperations,
+  prepareEditorOperationPreview,
   type EditorOperation,
 } from "../apps/video-studio/src/editor/operations";
 import { TICKS_PER_SECOND } from "../apps/video-studio/src/editor/time";
@@ -604,4 +605,89 @@ test("stale revisions, invalid selections and duplicate identifiers never apply 
   assert.throws(() => apply(original, tooMany as EditorOperation[]));
   assert.equal(original.revision, 4);
   assert.equal(original.sequences[0]!.clips[0]!.start, 0);
+});
+
+test("owned previews detach caller input, empty results, nested reads and every later candidate", async () => {
+  const value = document();
+  value.sequences[0]!.clips = [picture("a")];
+  value.sequences[0]!.clips[0]!.transform.x = -0;
+  value.assets[0]!.metadata = { z: -0, a: { empty: [], none: null, enabled: false, text: "中文😀\n第二行" } };
+  const original = structuredClone(value), preview = prepareEditorOperationPreview(value);
+  Object.freeze(value);
+  value.sequences[0]!.tracks[0]!.locked = true;
+  value.assets.length = 0;
+  assert.throws(() => apply(value, []), /素材|来源/);
+  const empty = preview.preview([]), read = preview.read();
+  assert.deepEqual(empty, original);
+  assert.equal(empty.revision, original.revision);
+  assert.notEqual(empty, read);
+  assert.notEqual(empty.sequences[0]!.clips[0]!.transform, read.sequences[0]!.clips[0]!.transform);
+  empty.sequences[0]!.clips[0]!.transform.x = 9;
+  empty.assets.length = 0;
+  read.sequences[0]!.tracks[0]!.locked = true;
+  assert.deepEqual(preview.read(), original);
+  assert(Object.is(preview.read().sequences[0]!.clips[0]!.transform.x, -0));
+  assert(Object.is(preview.read().assets[0]!.metadata!.z, -0));
+  assert.deepEqual(Object.keys(preview.read().assets[0]!.metadata!), ["z", "a"]);
+  const operations: EditorOperation[] = [{ type: "clip.move", sequenceId: main, clipIds: ["a"], delta: seconds(1) }],
+    result = preview.preview(operations);
+  assert.deepEqual(result, apply(original, operations));
+  queueMicrotask(() => {
+    (operations[0] as Extract<EditorOperation, { type: "clip.move" }>).clipIds.push("missing");
+    result.sequences[0]!.clips.length = 0;
+  });
+  await Promise.resolve();
+  assert.deepEqual(preview.read(), original);
+  assert.equal(preview.preview([]).sequences[0]!.clips.length, 1);
+  preview.dispose();
+  preview.dispose();
+  assert.throws(() => preview.read(), /预览已结束/);
+  assert.throws(() => preview.preview([]), /预览已结束/);
+});
+
+test("owned previews isolate reentrant nested operation getters and reentrant disposal", () => {
+  const value = document();
+  value.sequences[0]!.clips = [picture("a")];
+  const preview = prepareEditorOperationPreview(value), transform = defaultTransform();
+  let calls = 0;
+  Object.defineProperty(transform, "x", { enumerable: true, get() {
+    calls++;
+    const nested = preview.preview([{ type: "clip.move", sequenceId: main, clipIds: ["a"], delta: seconds(1) }]);
+    nested.sequences[0]!.tracks[0]!.locked = true;
+    return 0;
+  } });
+  const result = preview.preview([{ type: "clip.update", sequenceId: main, clipId: "a", patch: { transform } }]);
+  assert.equal(calls, 1);
+  assert.equal(result.sequences[0]!.clips[0]!.start, 0);
+  assert.deepEqual(preview.read(), value);
+  Object.defineProperty(transform, "y", { enumerable: true, get() { preview.dispose(); return 0; } });
+  assert.throws(() => preview.preview([{ type: "clip.update", sequenceId: main, clipId: "a", patch: { transform } }]), /预览已结束/);
+  assert.throws(() => preview.preview([]), /预览已结束/);
+});
+
+test("owned factory and candidates retain strict malformed data, locks, collision and graph rejection", () => {
+  const value = document();
+  value.sequences[0]!.clips = [picture("a"), picture("b", "v1", seconds(2))];
+  const malformed = structuredClone(value);
+  let getterCalls = 0;
+  Object.defineProperty(malformed, "name", { enumerable: true, get() { getterCalls++; return "unsafe"; } });
+  assert.throws(() => prepareEditorOperationPreview(malformed), /访问器/);
+  assert.throws(() => apply(malformed, []), /访问器/);
+  assert.equal(getterCalls, 0);
+  const undefinedData = structuredClone(value);
+  undefinedData.assets[0]!.metadata = { missing: undefined } as any;
+  assert.throws(() => prepareEditorOperationPreview(undefinedData), /JSON/);
+  const preview = prepareEditorOperationPreview(value), badOp = { type: "clip.move" };
+  Object.defineProperty(badOp, "type", { enumerable: true, get() { getterCalls++; return "clip.move"; } });
+  assert.throws(() => preview.preview([badOp as EditorOperation]), /格式/);
+  assert.equal(getterCalls, 0);
+  assert.throws(() => preview.preview([{ type: "clip.move", sequenceId: main, clipIds: ["a"], delta: seconds(2) }]), /重叠/);
+  assert.throws(() => preview.preview([{ type: "asset.remove", assetId: "source-video" }]), /素材|来源/);
+  assert.deepEqual(preview.read(), value);
+  const locked = structuredClone(value);
+  locked.sequences[0]!.tracks[0]!.locked = true;
+  const lockedPreview = prepareEditorOperationPreview(locked);
+  assert.throws(() => lockedPreview.preview([{ type: "clip.move", sequenceId: main, clipIds: ["a"], delta: 1 }]), /锁定/);
+  assert.deepEqual(lockedPreview.read(), locked);
+  preview.dispose(); lockedPreview.dispose();
 });

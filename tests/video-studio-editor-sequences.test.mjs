@@ -42,7 +42,7 @@ before(async () => {
     content: `
     const T=240000;let counter=0;
     globalThis.fixture=()=>{const v=()=>({transform:api.defaultTransform(),color:api.defaultColorAdjustment(),blendMode:'normal'});const a={id:'a',kind:'media',label:'开场镜头',trackId:'v',start:T+5,duration:2*T,assetId:'asset',timeMap:{points:[{time:0,source:0},{time:T,source:2*T},{time:2*T,source:3*T}]},audio:api.defaultAudioMix(),...v()};a.transform.x={keyframes:[{time:0,value:0,easing:'linear'},{time:2*T,value:.2,easing:'ease-in'}]};const sound={...structuredClone(a),id:'sound',label:'同期声',trackId:'audio'};a.linkGroupId=sound.linkGroupId='linked';const caption={id:'caption',kind:'text',role:'subtitle',label:'中文字幕',trackId:'text',start:T+5,duration:2*T,text:'你好\\n世界',style:api.defaultTextStyle(),words:[{text:'你好',start:0,end:T},{text:'世界',start:T,end:2*T}],sourceBinding:{clipId:'a',sourceStart:0,sourceEnd:3*T,provenance:{path:[],assetId:'asset',start:0,end:3*T}},...v()};return{schemaVersion:2,timebase:T,id:'project',name:'多序列交互',revision:0,activeSequenceId:'main',exportProfiles:[],assets:[{id:'asset',name:'素材',kind:'video',duration:10*T,width:160,height:90}],sequences:[{id:'main',name:'主序列',width:160,height:90,frameRate:{numerator:30000,denominator:1001},background:'#102030',timelineMode:'free',tracks:[api.createTrack('v','video','画面'),api.createTrack('audio','audio','同期声'),api.createTrack('text','text','字幕')],clips:[a,sound,caption],transitions:[],markers:[]}]};};
-    globalThis.mount=()=>{globalThis.sequences?.dispose();globalThis.sequences=api.mountEditorSequences(document.querySelector('#mount'),{read:()=>session.read(),selection:()=>selected,time:()=>now,onError:error=>errors.push(error.message),select:value=>{selected=value;selectCalls.push(value);},activate:id=>navigation.push(id),apply:async(ops,label)=>{const identity=session.getState().identity;calls.push({ops,label});if(waitApply)await waitApply;session.dispatch(ops,identity,label);}});};
+    globalThis.mount=()=>{globalThis.sequences?.dispose();globalThis.sequences=api.mountEditorSequences(document.querySelector('#mount'),{read:()=>session.read(),identity:()=>session.getState().identity,selection:()=>selected,time:()=>now,onError:error=>errors.push(error.message),select:value=>{selected=value;selectCalls.push(value);},activate:id=>navigation.push(id),apply:async(ops,label)=>{const identity=session.getState().identity;calls.push({ops,label});if(waitApply)await waitApply;session.dispatch(ops,identity,label);}});};
     globalThis.reset=async(initial=fixture(),ids=['a'])=>{sequences?.dispose();if(globalThis.session)await session.close({save:false});globalThis.scope='sequences-test-'+(++counter);globalThis.storage=await api.createEditorHostStorage(undefined,{persistent:true,scopeKey:scope});globalThis.session=await api.EditorSession.open(storage,{initialDocument:initial,autosaveDelayMs:60000});globalThis.selected={sequenceId:initial.activeSequenceId,clipIds:ids};globalThis.now=T;globalThis.errors=[];globalThis.calls=[];globalThis.selectCalls=[];globalThis.navigation=[];globalThis.waitApply=null;mount();};
   `.replace(
       "sequences?.dispose();if(globalThis.session)",
@@ -278,4 +278,102 @@ test("narrow panel stays within its bounds and screenshot shows readable compoun
       .evaluate((node) => node.scrollWidth <= node.clientWidth),
     true,
   );
+});
+
+
+test("same-id revision successor cannot inherit a focused sequence draft or detached rename", async () => {
+  await page.getByLabel("序列名称", { exact: true }).fill("旧工程草稿");
+  await page.evaluate(async () => {
+    const old = [...document.querySelectorAll(".editor-sequences button")].find((button) => button.textContent === "重命名序列");
+    const next = fixture();
+    const slot = await api.createEditorHostStorage(undefined, { persistent: false });
+    session = await api.EditorSession.open(slot, { initialDocument: next, autosaveDelayMs: 60000 });
+    sequences.render();
+    old.click();
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  assert.equal(await page.getByLabel("序列名称", { exact: true }).inputValue(), "主序列");
+  assert.equal((await documentValue()).sequences[0].name, "主序列");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("a completed old sequence apply cannot navigate a same-id successor with the expected next revision", async () => {
+  await page.evaluate(() => {
+    const target = session;
+    sequences.context.apply = async (ops, label) => {
+      target.dispatch(ops, target.getState().identity, label);
+      await new Promise((resolve) => globalThis.releaseCompletedSequence = resolve);
+    };
+  });
+  await page.getByRole("button", { name: "复制完整序列", exact: true }).click();
+  await page.evaluate(async () => {
+    const next = session.read();
+    const slot = await api.createEditorHostStorage(undefined, { persistent: false });
+    session = await api.EditorSession.open(slot, { initialDocument: next, autosaveDelayMs: 60000 });
+    sequences.render();
+    releaseCompletedSequence();
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-sequences fieldset").disabled);
+  assert.equal(await page.evaluate(() => navigation.length), 0);
+  assert.equal(await page.evaluate(() => selectCalls.length), 0);
+  assert.equal(await page.getByRole("status").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("same-generation unrelated revisions still merge a connected sequence name form into fresh data", async () => {
+  await page.getByLabel("序列名称", { exact: true }).fill("日常重命名草稿");
+  await page.evaluate(() => session.dispatch([{ type: "project.rename", name: "同时修改的工程名称" }], session.getState().identity, "外部修改"));
+  await click("重命名序列");
+  const result = await documentValue();
+  assert.equal(result.name, "同时修改的工程名称");
+  assert.equal(result.sequences[0].name, "日常重命名草稿");
+  await page.evaluate(() => session.undo());
+  assert.equal((await documentValue()).sequences[0].name, "主序列");
+  assert.equal((await documentValue()).name, "同时修改的工程名称");
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("sequence duplication finishing after an external scope switch does not navigate or announce the old operation", async () => {
+  await page.evaluate(async () => {
+    const doc = fixture();
+    doc.sequences.push({ ...structuredClone(doc.sequences[0]), id: "other", name: "另一个序列", clips: [] });
+    await reset(doc);
+    const target = session;
+    sequences.context.apply = async (ops, label) => {
+      target.dispatch(ops, target.getState().identity, label);
+      await new Promise((resolve) => globalThis.finishOldSequenceNavigation = resolve);
+    };
+  });
+  await page.getByRole("button", { name: "复制完整序列", exact: true }).click();
+  await page.evaluate(() => {
+    selected = { sequenceId: "other", clipIds: [] };
+    finishOldSequenceNavigation();
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-sequences fieldset").disabled);
+  assert.equal(await page.evaluate(() => navigation.length), 0);
+  assert.equal(await page.evaluate(() => selectCalls.length), 0);
+  assert.equal(await page.getByRole("status").count(), 0);
+  assert.deepEqual(await page.evaluate(() => selected), { sequenceId: "other", clipIds: [] });
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("late sequence persistence errors are not reported inside a different same-generation scope", async () => {
+  await page.evaluate(async () => {
+    const doc = fixture();
+    doc.sequences.push({ ...structuredClone(doc.sequences[0]), id: "other", name: "另一个序列", clips: [] });
+    await reset(doc);
+    sequences.context.apply = () => new Promise((_resolve, reject) => globalThis.failOldSequence = reject);
+  });
+  await page.getByRole("button", { name: "重命名序列", exact: true }).click();
+  await page.evaluate(() => {
+    selected = { sequenceId: "other", clipIds: [] };
+    failOldSequence(new Error("旧序列写入失败"));
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-sequences fieldset").disabled);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
 });

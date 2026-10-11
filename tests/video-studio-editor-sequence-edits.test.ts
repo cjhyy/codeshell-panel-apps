@@ -18,7 +18,7 @@ import {
   defaultTextStyle,
   defaultTransform,
 } from "../apps/video-studio/src/editor/defaults";
-import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
+import { applyEditorOperations, prepareEditorOperationPreview } from "../apps/video-studio/src/editor/operations";
 import { EditorHistory } from "../apps/video-studio/src/editor/history";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
 import type {
@@ -430,4 +430,21 @@ test("renaming a just-created project names its empty sequence too, never an exi
   assert.deepEqual(planProjectRename(existing, "新名字"), [
     { type: "project.rename", name: "新名字" },
   ]);
+});
+
+test("owned preview reconciles outside provenance from the frozen before graph and respects its locked caption track", () => {
+  const before = external(fixture()), preview = prepareEditorOperationPreview(before),
+    operations = [{ type: "clip.move" as const, sequenceId: "main", clipIds: ["a", "b"], delta: T }],
+    expected = applyEditorOperations(before, operations, before.revision),
+    actual = preview.preview(operations);
+  assert.deepEqual(actual, expected);
+  assert.equal(actual.sequences[1]!.clips.find((clip) => clip.id === "outer-caption")!.start, 2 * T + 5);
+  assert.deepEqual(preview.read(), before);
+  preview.dispose();
+  const locked = structuredClone(before);
+  locked.sequences[1]!.tracks.find((track) => track.id === "ot")!.locked = true;
+  const lockedPreview = prepareEditorOperationPreview(locked);
+  assert.throws(() => lockedPreview.preview(operations), /字幕轨已锁定/);
+  assert.deepEqual(lockedPreview.read(), locked);
+  lockedPreview.dispose();
 });

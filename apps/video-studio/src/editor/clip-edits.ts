@@ -4,7 +4,12 @@ import {
   type AnimatedNumber,
   type Keyframe,
 } from "./animation";
-import { applyEditorOperations, type EditorClipPatch, type EditorOperation } from "./operations";
+import {
+  applyEditorOperations,
+  prepareEditorOperationPreview,
+  type EditorClipPatch,
+  type EditorOperation,
+} from "./operations";
 import {
   assertTick,
   constantTimeMap,
@@ -376,7 +381,49 @@ export function trimClip(
   localEnd: Tick,
 ): EditorOperation[] {
   const { document, sequence } = context(value, sequenceId),
-    before = findClip(sequence, clipId);
+    operations = trimOperations(sequence, sequenceId, clipId, localStart, localEnd);
+  return operations.length ? finish(document, operations) : operations;
+}
+
+export interface ClipTrimPreview {
+  plan(localStart: Tick, localEnd: Tick): EditorOperation[];
+  dispose(): void;
+}
+
+/** A detached sequence supplies geometry; the owned full graph still checks every candidate. */
+export function prepareClipTrim(value: EditorDocument, sequenceId: string, clipId: string): ClipTrimPreview {
+  const preview = prepareEditorOperationPreview(value);
+  let sequence = preview.read().sequences.find((item) => item.id === sequenceId);
+  if (!sequence) {
+    preview.dispose();
+    throw new Error("时间线不存在，请刷新后重试");
+  }
+  findClip(sequence, clipId);
+  const freeze = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const child of Object.values(value)) freeze(child);
+    Object.freeze(value);
+  };
+  freeze(sequence);
+  return Object.freeze({
+    plan: (localStart: Tick, localEnd: Tick) => {
+      if (!sequence) throw new Error("片段预览已结束，请重新拖动");
+      const operations = trimOperations(sequence, sequenceId, clipId, localStart, localEnd);
+      preview.preview(operations);
+      return structuredClone(operations);
+    },
+    dispose: () => { sequence = undefined; preview.dispose(); },
+  });
+}
+
+function trimOperations(
+  sequence: EditorSequence,
+  sequenceId: string,
+  clipId: string,
+  localStart: Tick,
+  localEnd: Tick,
+): EditorOperation[] {
+  const before = findClip(sequence, clipId);
   if (localStart === 0 && localEnd === before.duration) return [];
   assertNoTransition(sequence, new Set([clipId]));
   const after = sliceClip(before, localStart, localEnd);
@@ -398,7 +445,7 @@ export function trimClip(
       operations.push(update(sequenceId, caption, trimmed));
     }
   }
-  return finish(document, operations);
+  return operations;
 }
 
 /** Split the selected instance and its bound subtitles at one exact timeline tick. Group/link labels are retained. */
@@ -648,7 +695,7 @@ export function copyClips(
     document: snapshot,
   };
 }
-function clipboard(value: unknown): ClipClipboard {
+export function validateClipClipboard(value: unknown): ClipClipboard {
   if (
     !value ||
     typeof value !== "object" ||
@@ -707,7 +754,7 @@ export function pasteClips(
   options: PasteClipOptions,
 ): EditorOperation[] {
   const { document, sequence } = context(value, sequenceId),
-    copied = clipboard(payload);
+    copied = validateClipClipboard(payload);
   assertTick(options.at);
   const source = copied.document.sequences.find((sequence) => sequence.id === copied.sequenceId)!;
   const sameDocument = document.id === copied.document.id,

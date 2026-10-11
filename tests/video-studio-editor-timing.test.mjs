@@ -8,7 +8,7 @@ let browser, page;
 before(async () => {
   const bundle = await build({
     stdin: {
-      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';export * from './apps/video-studio/src/editor/timing-edits';export {applyEditorOperations} from './apps/video-studio/src/editor/operations';export {trimClip} from './apps/video-studio/src/editor/clip-edits';export {validateEditorDocument} from './apps/video-studio/src/editor/validation';`,
+      contents: `export * from './apps/video-studio/src/editor/timing-ui';export * from './apps/video-studio/src/editor/defaults';export {EditorHistory} from './apps/video-studio/src/editor/history';export * from './apps/video-studio/src/editor/timing-edits';export {applyEditorOperations,prepareEditorOperationPreview} from './apps/video-studio/src/editor/operations';export {trimClip,prepareClipTrim} from './apps/video-studio/src/editor/clip-edits';export {validateEditorDocument} from './apps/video-studio/src/editor/validation';`,
       resolveDir: fileURLToPath(new URL("../", import.meta.url)),
     },
     bundle: true,
@@ -41,7 +41,7 @@ before(async () => {
       const caption=(id,owner,start)=>({id,kind:'text',role:'subtitle',label:'中文字幕',trackId:'text',start:start*T,duration:4*T,text:'你好世界',style:api.defaultTextStyle(),words:[{text:'你好',start:0,end:2*T},{text:'世界',start:2*T,end:4*T}],sourceBinding:{clipId:owner,sourceStart:0,sourceEnd:4*T},transform:api.defaultTransform(),color:api.defaultColorAdjustment(),blendMode:'normal'});
       return {schemaVersion:2,timebase:T,id:'project',name:'交互时序',revision:0,activeSequenceId:'main',exportProfiles:[],assets:[{id:'asset',name:'素材',kind:'video',duration:20*T,width:1920,height:1080}],sequences:[{id:'main',name:'主序列',width:1920,height:1080,frameRate:{numerator:30,denominator:1},background:'#000000',timelineMode:'free',tracks:[api.createTrack('v','video','主画面'),api.createTrack('audio','audio','同期声'),api.createTrack('text','text','字幕')],clips:[a,b,c,sound,caption('ca','a',0),caption('cb','b',4)],transitions:[],markers:[]}]};
     };
-    globalThis.reset=(ids=['a'],initial=fixture())=>{globalThis.timing?.dispose();globalThis.editorHistory=new api.EditorHistory(initial);globalThis.selected=ids;globalThis.now=T;globalThis.errors=[];globalThis.calls=[];globalThis.waitApply=null;globalThis.timing=api.mountEditorTiming(document.querySelector('#mount'),{read:()=>editorHistory.read(),selection:()=>({sequenceId:'main',clipIds:selected}),time:()=>now,onError:error=>errors.push(error.message),apply:async(ops,label)=>{calls.push({ops,label});if(waitApply)await waitApply;editorHistory.apply(ops,editorHistory.revision,label);}});};
+    globalThis.reset=(ids=['a'],initial=fixture())=>{globalThis.timing?.dispose();globalThis.editorHistory=new api.EditorHistory(initial);globalThis.selected=ids;globalThis.generation=(globalThis.generation??0)+1;globalThis.now=T;globalThis.errors=[];globalThis.calls=[];globalThis.waitApply=null;globalThis.timing=api.mountEditorTiming(document.querySelector('#mount'),{read:()=>editorHistory.read(),identity:()=>({documentId:editorHistory.read().id,generation,revision:editorHistory.revision}),selection:()=>({sequenceId:'main',clipIds:selected}),time:()=>now,onError:error=>errors.push(error.message),apply:async(ops,label)=>{calls.push({ops,label});if(waitApply)await waitApply;editorHistory.apply(ops,editorHistory.revision,label);}});};
     globalThis.clip=id=>editorHistory.read().sequences[0].clips.find(clip=>clip.id===id);
     globalThis.select=ids=>{selected=ids;timing.render();};
   `,
@@ -389,7 +389,15 @@ for (const count of [1000, 5000]) {
       const free = make("free", 16000),
         magnetic = make("magnetic", 16000),
         contiguous = make("magnetic", 8000),
+        movePreview = api.prepareEditorOperationPreview(free),
+        trimPreview = api.prepareClipTrim(free, "main", "clip-0"),
         functions = {
+          prepareMove: () => api.prepareEditorOperationPreview(free).dispose(),
+          prepareTrim: () => api.prepareClipTrim(free, "main", "clip-0").dispose(),
+          ownedMove: () => movePreview.preview([{
+            type: "clip.move", sequenceId: "main", clipIds: ["clip-0"], delta: 4000,
+          }]),
+          ownedTrim: () => trimPreview.plan(1000, 7000),
           freeMove: () => api.applyEditorOperations(free, [{
             type: "clip.move", sequenceId: "main", clipIds: ["clip-0"], delta: 4000,
           }], free.revision),
@@ -412,8 +420,13 @@ for (const count of [1000, 5000]) {
       }
       const operations = functions.contiguousMagneticTrim(),
         result = api.applyEditorOperations(contiguous, operations, contiguous.revision);
+      movePreview.dispose(); trimPreview.dispose();
+      let disposedMove = false, disposedTrim = false;
+      try { movePreview.read(); } catch (error) { disposedMove = /预览已结束/.test(error.message); }
+      try { trimPreview.plan(1000, 7000); } catch (error) { disposedTrim = /预览已结束/.test(error.message); }
       return {
         timings,
+        disposedMove, disposedTrim,
         sequenceLengths: contiguous.sequences.map((sequence) => sequence.clips.length),
         movementCount: operations.filter((operation) => operation.type === "clip.move").length,
         afterStart: result.sequences[0].clips.at(-1).start,
@@ -425,6 +438,57 @@ for (const count of [1000, 5000]) {
     assert.equal(results.movementCount, 1);
     assert.equal(results.afterStart, results.expectedStart);
     assert.equal(results.inactiveUnchanged, true);
+    assert.equal(results.disposedMove, true);
+    assert.equal(results.disposedTrim, true);
     t.diagnostic(`${count} media clips: ${results.timings.map(({ name, mean }) => `${name} ${mean.toFixed(2)}ms`).join(", ")}`);
   });
 }
+
+test("same-id revision successor drops a focused speed draft and detached timing actions", async () => {
+  await set("恒定速度（倍）", 2);
+  await page.evaluate(() => {
+    globalThis.oldTimingAction = [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "应用恒定速度");
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    timing.render();
+    oldTimingAction.click();
+  });
+  assert.equal(await page.getByLabel("恒定速度（倍）", { exact: true }).inputValue(), "1");
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.equal((await read()).duration, 4 * 240000);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+
+test("old native curve changes and connected stale buttons stay inert before and after generation render", async () => {
+  await details("分段速度曲线");
+  const source = await page.getByLabel("节点 2 来源（秒）", { exact: true }).elementHandle();
+  await page.evaluate(() => {
+    globalThis.oldTimingButton = [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "倒放所选片段");
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    oldTimingButton.click();
+    timing.render();
+  });
+  await source.evaluate((input) => { input.value = "-1"; input.dispatchEvent(new Event("change", { bubbles: true })); });
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+  assert.equal((await read()).timeMap.points[1].source, 4 * 240000);
+});
+
+test("late timing persistence errors cannot add an alert to a replacement generation", async () => {
+  await page.evaluate(() => {
+    timing.context.apply = () => new Promise((_resolve, reject) => globalThis.rejectOldTiming = reject);
+  });
+  await set("恒定速度（倍）", 2);
+  await page.getByRole("button", { name: "应用恒定速度", exact: true }).click();
+  await page.evaluate(() => {
+    editorHistory = new api.EditorHistory(fixture());
+    generation++;
+    timing.render();
+    rejectOldTiming(new Error("旧工程写入失败"));
+  });
+  await page.waitForFunction(() => !document.querySelector(".editor-timing fieldset").disabled);
+  assert.equal(await page.getByRole("alert").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});

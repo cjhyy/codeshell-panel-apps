@@ -8,6 +8,7 @@ import {
   type ClipTimingOptions,
 } from "./timing-edits";
 import type { EditorOperation } from "./operations";
+import { sameIdentity, type SessionIdentity } from "./session";
 import { secondsToTicks, TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, Transition } from "./types";
 
@@ -80,6 +81,7 @@ function numeric(input: HTMLInputElement): number {
   return input.valueAsNumber;
 }
 interface Scope {
+  identity?: SessionIdentity;
   document: EditorDocument;
   sequence: EditorSequence;
   clips: EditorClip[];
@@ -90,6 +92,7 @@ interface Scope {
 export class EditorTiming {
   private root = element("section", "editor-timing");
   private signature = "";
+  private renderedIdentity?: SessionIdentity;
   private pending = false;
   private disposed = false;
   private error = "";
@@ -113,6 +116,7 @@ export class EditorTiming {
       sequence = document.sequences.find((item) => item.id === selection.sequenceId);
     if (!sequence) return;
     return {
+      identity: this.context.identity ? { ...this.context.identity() } : undefined,
       document,
       sequence,
       clips: sequence.clips.filter((item) => selection.clipIds.includes(item.id)),
@@ -134,6 +138,8 @@ export class EditorTiming {
       const fresh = this.scope();
       if (
         !fresh ||
+        (scope.identity && !sameIdentity(scope.identity, fresh.identity, false)) ||
+        fresh.document.id !== scope.document.id ||
         fresh.document.revision !== scope.document.revision ||
         fresh.sequence.id !== scope.sequence.id ||
         JSON.stringify(fresh.selectedIds) !== JSON.stringify(scope.selectedIds)
@@ -143,9 +149,14 @@ export class EditorTiming {
       this.pending = true;
       this.root.querySelectorAll("fieldset").forEach((node) => (node.disabled = true));
       if (operations.length) await this.context.apply(operations, label);
-      this.error = "";
+      if (!scope.identity || sameIdentity(scope.identity, this.context.identity?.(), false))
+        this.error = "";
     } catch (error) {
-      this.report(error);
+      if (
+        !this.disposed &&
+        (!scope.identity || sameIdentity(scope.identity, this.context.identity?.(), false))
+      )
+        this.report(error);
     } finally {
       this.pending = false;
       if (!this.disposed) {
@@ -157,8 +168,15 @@ export class EditorTiming {
   private button(label: string, action: () => unknown, primary = false): HTMLButtonElement {
     const button = element("button", primary ? "etime-primary" : "", label);
     button.type = "button";
+    const identity = this.context.identity?.();
     button.addEventListener("click", () => {
-      if (!this.pending && !this.disposed) action();
+      if (
+        !this.pending &&
+        !this.disposed &&
+        this.root.contains(button) &&
+        (!identity || sameIdentity(identity, this.context.identity?.(), false))
+      )
+        action();
     });
     return button;
   }
@@ -182,13 +200,23 @@ export class EditorTiming {
     return body;
   }
   render(): void {
-    if (this.disposed || this.pending) return;
+    if (this.disposed) return;
+    const identity = this.context.identity?.();
+    if (this.renderedIdentity && !sameIdentity(this.renderedIdentity, identity, false)) {
+      this.signature = this.error = "";
+      this.curvePage = 0;
+    }
+    this.renderedIdentity = identity;
+    if (this.pending) return;
     const scope = this.scope();
     if (!scope) {
       this.root.replaceChildren(element("p", "etime-note", "请选择一个时间线"));
       return;
     }
     const signature = JSON.stringify([
+      scope.identity?.documentId,
+      scope.identity?.generation,
+      scope.document.id,
       scope.document.revision,
       scope.sequence.id,
       scope.selectedIds,
@@ -346,8 +374,12 @@ export class EditorTiming {
       content = element("div", "etime-curve-body");
     section.append(content);
     let rendering = false;
+    const owns = () =>
+      !this.disposed &&
+      this.root.contains(section) &&
+      (!scope.identity || sameIdentity(scope.identity, this.context.identity?.(), false));
     const render = () => {
-      if (rendering) return;
+      if (rendering || !owns()) return;
       rendering = true;
       try {
         content.replaceChildren(
@@ -417,6 +449,7 @@ export class EditorTiming {
             [source, "source"],
           ] as const)
             input.addEventListener("change", () => {
+              if (!owns()) return;
               try {
                 point[key] = secondsToTicks(numeric(input));
                 render();

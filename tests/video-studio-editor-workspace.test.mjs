@@ -2338,3 +2338,166 @@ test("opening a new generation replaces an unfinished project-name draft instead
   assert.equal((await page.evaluate(() => fixture.stored())).name, "已打开的工程名称");
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+test("durable timeline cut retains the old clipboard and selection after storage failure, retries once and undoes once", async (t) => {
+  const page = await fixture(t, { narration: true });
+  await page.evaluate(async () => {
+    const b = structuredClone(fixture.read().sequences[0].clips[0]);
+    b.id = b.label = "b";
+    b.start = b.duration * 3;
+    fixture.dispatch([{ type: "clip.add", sequenceId: "main", clip: b }], "另一个片段");
+    await fixture.flush();
+  });
+  await clip(page, "b").click();
+  await page.keyboard.press("Control+c");
+  await clip(page, "a").click();
+  const before = await documentState(page),
+    writesBefore = await page.evaluate(() => fixture.writes.length);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.keyboard.press("Control+x");
+  await page.waitForFunction(
+    () => fixture.errors.length === 1 && fixture.state().phase === "ready",
+  );
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  assert.match(await page.locator("[data-ew-save]").textContent(), /保存失败.*重试原操作/);
+  assert.equal(await page.evaluate(() => fixture.writes.length), writesBefore + 1);
+  assert.equal(await page.locator('[data-et-action="paste"]').isDisabled(), false);
+  await page.evaluate(() => fixture.writeMode("normal"));
+  await page.evaluate(() => fixture.internals.workspace.seek(960001, true));
+  await page.locator('[data-et-action="paste"]').click();
+  await page.waitForFunction(() => fixture.read().sequences[0].clips.length === 3);
+  const copied = (await documentState(page)).sequences[0].clips.find(
+    (value) => !["a", "b"].includes(value.id),
+  );
+  assert.equal(copied.label, "b", "Failed cut must not replace the previous copy snapshot");
+  assert.equal(copied.start, 960001);
+  await action(page, "undo").click();
+  await page.evaluate(() => fixture.flush());
+  assert.deepEqual(semantic(await documentState(page)), semantic(before));
+  await clip(page, "a").click();
+  const retryBase = await documentState(page),
+    retryWrites = await page.evaluate(() => fixture.writes.length);
+  await page.evaluate(() => fixture.writeMode("hold"));
+  await page.keyboard.press("Control+x");
+  await page.waitForFunction(() => fixture.state().phase === "committing");
+  assert.deepEqual(await documentState(page), retryBase);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), retryBase);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  await page.keyboard.press("Control+x");
+  await page.keyboard.press("Control+d");
+  assert.equal(await page.evaluate(() => fixture.writes.length), retryWrites + 1);
+  await page.evaluate(() => fixture.releaseWrite());
+  await page.waitForFunction(
+    () => fixture.selection().length === 0 && fixture.state().phase === "ready",
+  );
+  const cut = await documentState(page);
+  assert.equal(cut.revision, retryBase.revision + 1);
+  assert.deepEqual(
+    cut.sequences[0].clips.map((value) => value.id),
+    ["b"],
+  );
+  assert.equal(cut.production.narration.phase, "review");
+  assert.equal(cut.production.narrationPreviousApproval.approvedFingerprint, "approved-original");
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), cut);
+  await action(page, "undo").click();
+  await page.evaluate(() => fixture.flush());
+  assert.deepEqual(semantic(await documentState(page)), semantic(retryBase));
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), await documentState(page));
+  assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+});
+
+for (const operation of ["paste", "duplicate"])
+  test(`durable timeline ${operation} keeps the real session unchanged on failure and persists one retry with one undo`, async (t) => {
+    const page = await fixture(t, { emptySequence: operation === "paste" });
+    await clip(page).click();
+    await page.keyboard.press("Control+c");
+    if (operation === "paste") {
+      await page.locator("[data-ew-sequence]").selectOption("empty");
+      await page.evaluate(() => fixture.flush());
+    }
+    const before = await documentState(page),
+      selected = await page.evaluate(() => fixture.selection()),
+      writes = await page.evaluate(() => fixture.writes.length);
+    await page.evaluate(() => fixture.writeMode("fail"));
+    await page.locator(`[data-et-action="${operation}"]`).click();
+    await page.waitForFunction(
+      () => fixture.errors.length === 1 && fixture.state().phase === "ready",
+    );
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    await page.evaluate(() => fixture.writeMode("hold"));
+    await page.locator(`[data-et-action="${operation}"]`).click();
+    await page.waitForFunction(() => fixture.state().phase === "committing");
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    await page.locator("[data-ew-timeline]").focus();
+    await page.keyboard.press(operation === "paste" ? "Control+v" : "Control+d");
+    assert.equal(await page.evaluate(() => fixture.writes.length), writes + 2);
+    await page.evaluate(() => fixture.releaseWrite());
+    await page.waitForFunction(
+      () => fixture.selection().length === 1 && fixture.state().phase === "ready",
+    );
+    const after = await documentState(page),
+      sequence = after.sequences.find((value) => value.id === after.activeSequenceId);
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(sequence.clips.length, operation === "paste" ? 1 : 2);
+    assert.notEqual((await page.evaluate(() => fixture.selection()))[0], "a");
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), after);
+    await action(page, "undo").click();
+    await page.evaluate(() => fixture.flush());
+    assert.deepEqual(semantic(await documentState(page)), semantic(before));
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), await documentState(page));
+    assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+  });
+
+test("detached marker navigation cannot move the playhead of a replacement generation", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: { id: "review-scope", time: 240000, duration: 240000, name: "旧范围", note: "", color: "#ffcc00" } }], "标记"));
+  await page.locator('[data-et-marker="review-scope"]').click();
+  const old = await page.getByRole("button", { name: "定位结束", exact: true }).elementHandle();
+  await page.evaluate(() => fixture.replaceGeneration());
+  const before = await page.evaluate(() => fixture.playhead());
+  await old.evaluate((button) => button.click());
+  assert.equal(await page.evaluate(() => fixture.playhead()), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+
+test("actual session replacement clears sequence and timing forms and fences their old buttons", async (t) => {
+  const page = await fixture(t);
+  await clip(page).click();
+  await action(page, "sequences").click();
+  await page.getByLabel("序列名称", { exact: true }).fill("旧工程序列草稿");
+  await page.getByLabel("恒定速度（倍）", { exact: true }).fill("2");
+  const rename = await page.getByRole("button", { name: "重命名序列", exact: true }).elementHandle();
+  const speed = await page.getByRole("button", { name: "应用恒定速度", exact: true }).elementHandle();
+  await page.evaluate(() => fixture.replaceGeneration());
+  const expected = await documentState(page);
+  await rename.evaluate((button) => button.click());
+  await speed.evaluate((button) => button.click());
+  await settle(page);
+  assert.deepEqual(await documentState(page), expected);
+  assert.equal(await page.getByLabel("序列名称", { exact: true }).inputValue(), expected.sequences[0].name);
+  assert.equal(await page.getByLabel("恒定速度（倍）", { exact: true }).inputValue(), "1");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a late old marker seek failure does not report against a replacement session", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: { id: "late-seek", time: 240000, duration: 0, name: "延迟定位", note: "", color: "#ffcc00" } }], "标记");
+    fixture.internals.workspace.markers.context.seek = () => new Promise((_resolve, reject) => globalThis.rejectOldMarkerSeek = reject);
+  });
+  await page.locator('[data-et-marker="late-seek"]').click();
+  await page.evaluate(async () => {
+    await fixture.replaceGeneration();
+    rejectOldMarkerSeek(new Error("旧定位失败"));
+    await Promise.resolve();
+  });
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).count(), 0);
+});
