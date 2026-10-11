@@ -221,6 +221,10 @@ async function fixture(t, options = {}) {
         timeline.render();
       },
       dispose: () => timeline.dispose(),
+      seek: (value) => {
+        time = value;
+        timeline.updatePlayhead();
+      },
     };
   }, options);
   return page;
@@ -1360,6 +1364,145 @@ test("long sequence wheel scroll and real zoom controls stay responsive with bou
   assert.equal(await clip(page, "late").count(), 1);
   assert.deepEqual((await state(page)).errors, []);
   assert.equal((await state(page)).document.revision, 3);
+});
+
+test("native slider zoom stays live throughout a drag and anchors the visible playhead", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 120 },
+      { id: "b", trackId: "v2", start: 1, duration: 2 },
+    ],
+  });
+  await clickClip(page, "b");
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.evaluate(() => fixture.seek(12 * 240000));
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = 200; });
+  await settle(page);
+  const before = await state(page);
+  const position = () => page.evaluate(() => {
+    const viewport = document.querySelector(".et-scroll").getBoundingClientRect();
+    return document.querySelector(".et-playhead").getBoundingClientRect().left - viewport.left;
+  });
+  const anchor = await position();
+  await page.evaluate(() => { globalThis.originalZoom = document.querySelector("[data-et-zoom]"); });
+  const bounds = await page.locator("[data-et-zoom]").boundingBox();
+  const x = bounds.x + 8 + (bounds.width - 16) * (Math.log10(64) + 2) / 5;
+  await page.mouse.move(x, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + 5, bounds.y + bounds.height / 2, { steps: 4 });
+  await settle(page);
+  const during = Number(await page.locator("[data-et-zoom]").inputValue());
+  assert.ok(during > Math.log10(64), "input events must zoom before the pointer is released");
+  assert.ok(Math.abs((await position()) - anchor) <= 2);
+  await page.mouse.move(x + 10, bounds.y + bounds.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await settle(page);
+  assert.ok(Number(await page.locator("[data-et-zoom]").inputValue()) > during);
+  assert.equal(await page.evaluate(() => originalZoom === document.querySelector("[data-et-zoom]")), true);
+  assert.equal(await page.locator("[data-et-zoom]").evaluate((element) => element === document.activeElement), true);
+  assert.ok(Math.abs((await position()) - anchor) <= 2);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).selected, before.selected);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("Ctrl and Meta wheel zoom around the pointer, with keyboard zoom and horizontal navigation", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 120 },
+      { id: "b", trackId: "v2", start: 1, duration: 2 },
+    ],
+  });
+  await clickClip(page, "b");
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = 1200; });
+  await settle(page);
+  const before = await state(page);
+  const snapshot = () => page.evaluate(() => ({
+    left: document.querySelector(".et-scroll").scrollLeft,
+    scale: parseFloat(document.querySelector('[data-et-clip="a"]').style.width) / 120,
+    width: document.querySelector(".et-scroll").clientWidth,
+  }));
+  let view = await snapshot();
+  const bounds = await page.locator(".et-scroll").boundingBox(),
+    offset = bounds.width * 0.4;
+  await page.mouse.move(bounds.x + offset, bounds.y + 70);
+  for (const modifier of ["Control", "Meta"]) {
+    const anchor = (view.left + offset) / view.scale;
+    await page.keyboard.down(modifier);
+    await page.mouse.wheel(0, -120);
+    await page.keyboard.up(modifier);
+    await settle(page);
+    const after = await snapshot();
+    assert.ok(after.scale > view.scale);
+    assert.ok(Math.abs((after.left + offset) / after.scale - anchor) < 0.03, JSON.stringify({ modifier, view, after, offset, anchor }));
+    view = after;
+  }
+  await page.locator("#timeline").focus();
+  await page.keyboard.press("-");
+  await settle(page);
+  const smaller = await snapshot();
+  assert.ok(smaller.scale < view.scale);
+  assert.ok(Math.abs((smaller.left + smaller.width / 2) / smaller.scale - (view.left + view.width / 2) / view.scale) < 0.03,
+    "keyboard zoom must keep the visible center when the playhead is off screen");
+  await page.keyboard.press("=");
+  await settle(page);
+  assert.ok((await snapshot()).scale > smaller.scale);
+  view = await snapshot();
+  await page.keyboard.down("Shift");
+  await page.mouse.wheel(0, 180);
+  await page.keyboard.up("Shift");
+  await settle(page);
+  assert.ok((await snapshot()).left > view.left);
+  assert.equal((await snapshot()).scale, view.scale);
+  await page.locator("#outside").focus();
+  await page.keyboard.press("-");
+  assert.equal(await page.locator("#outside").inputValue(), "-");
+  assert.equal((await snapshot()).scale, view.scale);
+  assert.deepEqual((await state(page)).document, before.document);
+  assert.deepEqual((await state(page)).selected, before.selected);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("zoom at the end of a long timeline clamps scroll and redraws the actual visible clips", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2 },
+      { id: "late", trackId: "v1", start: 3600, duration: 3 },
+    ],
+  });
+  await page.locator(".et-scroll").evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  await settle(page);
+  await page.locator("[data-et-zoom]").focus();
+  await page.keyboard.press("Home");
+  await settle(page);
+  assert.equal(await page.locator(".et-scroll").evaluate((element) => element.scrollLeft), 0);
+  assert.equal(await clip(page, "a").count(), 1);
+  assert.equal(await clip(page, "late").count(), 1);
+  assert.equal(await page.locator("[data-et-zoom]").evaluate((element) => element === document.activeElement), true);
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
+});
+
+test("a day-long timeline keeps its zoom slider truthful at the bounded pixel limit", async (t) => {
+  const page = await fixture(t, {
+    clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2 },
+      { id: "late", trackId: "v1", start: 86399, duration: 1 },
+    ],
+  });
+  const slider = page.locator("[data-et-zoom]"),
+    limit = Math.log10(12000000 / 86400);
+  await slider.focus();
+  for (const key of ["End", "End", "ArrowRight", "ArrowRight"]) {
+    await page.keyboard.press(key);
+    await settle(page);
+    assert.ok(Math.abs(Number(await slider.inputValue()) - limit) <= 0.025);
+    assert.ok(await page.locator(".et-content").evaluate((element) => parseFloat(element.style.width) <= 12000151));
+    assert.ok((await page.locator(".et-ruler > span").count()) <= 301);
+  }
+  assert.equal((await state(page)).applied.length, 0);
+  assert.deepEqual((await state(page)).errors, []);
 });
 
 test("resizing a docked timeline fills the expanded viewport and preserves selection and scroll", async (t) => {

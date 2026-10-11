@@ -169,6 +169,8 @@ export class EditorTimeline {
     container.setAttribute("aria-label", "剪辑时间轴");
     container.addEventListener("click", this.click);
     container.addEventListener("change", this.change);
+    container.addEventListener("input", this.input);
+    container.addEventListener("wheel", this.wheel, { passive: false });
     container.addEventListener("keydown", this.keydown);
     container.addEventListener("pointerdown", this.pointerdown);
     container.addEventListener("pointermove", this.pointermove);
@@ -237,7 +239,7 @@ export class EditorTimeline {
   private viewport() {
     return this.container.querySelector<HTMLElement>(".et-scroll")!;
   }
-  render(): void {
+  render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
     if (this.destroyed) return;
     this.media.cancel();
     const focused = globalThis.document.activeElement;
@@ -253,7 +255,8 @@ export class EditorTimeline {
     if (selected.size !== this.context.selection().clipIds.length)
       this.context.select([...selected]);
     const existing = this.container.querySelector<HTMLElement>(".et-scroll");
-    if (existing) this.scrollPosition = existing.scrollLeft;
+    if (options.scrollLeft !== undefined) this.scrollPosition = options.scrollLeft;
+    else if (existing) this.scrollPosition = existing.scrollLeft;
     this.verticalPosition =
       this.container.querySelector<HTMLElement>(".et-body")?.scrollTop ?? this.verticalPosition;
     this.renderedWidth = this.container.clientWidth;
@@ -261,9 +264,12 @@ export class EditorTimeline {
         sequenceDuration(sequence),
         ...sequence.markers.map((marker) => marker.time + marker.duration),
       ),
-      viewportWidth = Math.max(400, this.renderedWidth - 160);
+      viewportWidth = Math.ceil(
+        existing?.getBoundingClientRect().width || Math.max(1, this.renderedWidth - 176),
+      );
     this.scale = Math.min(this.scale, 12000000 / Math.max(1, ticksToSeconds(duration)));
     const width = Math.max(viewportWidth, ticksToSeconds(duration) * this.scale + 150);
+    this.scrollPosition = Math.max(0, Math.min(this.scrollPosition, width - viewportWidth));
     const left = this.scrollPosition,
       right = left + viewportWidth;
     let step = 1;
@@ -323,7 +329,7 @@ export class EditorTimeline {
     // Track creation sits in the sticky corner so it stays reachable however many tracks exist.
     const addTrack = (action: string, label: string, icon: string) =>
       `<button type="button" data-et-action="${action}" class="et-tool" aria-label="${label}" title="${label}">${timelineIcon("plus", 10)}${timelineIcon(icon, 13)}<span class="et-add-label">${label}</span></button>`;
-    this.container.innerHTML = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
+    const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", selected.size !== 1, "S", false, selected.size ? "一次只能切分一个片段" : "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size, "⌘/Ctrl C", false, needSelection)}${button("paste", "粘贴", "paste", !this.clipboard, "⌘/Ctrl V", false, "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size, "⌘/Ctrl D", false, needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
@@ -337,7 +343,7 @@ export class EditorTimeline {
         <label class="et-snap" title="吸附 · 自动对齐片段边缘 · N"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
         <output class="et-selection-status" aria-live="polite">${selected.size ? `已选 ${selected.size} 个片段` : ""}</output>
         <span class="et-spacer"></span>
-        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit", false, "Shift+Z")}<label class="et-zoom" title="时间轴缩放">${timelineIcon("minus", 14)}<input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放">${timelineIcon("plus", 14)}</label>${this.context.showShortcuts ? button("shortcuts", "剪辑快捷键", "keyboard", false, "?") : ""}</div>
+        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit", false, "Shift+Z")}${button("zoom-out", "缩小时间轴", "minus", false, "−")}<label class="et-zoom" title="时间轴缩放 · Ctrl/⌘ + 滚轮"><input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放"></label>${button("zoom-in", "放大时间轴", "plus", false, "+")}${this.context.showShortcuts ? button("shortcuts", "剪辑快捷键", "keyboard", false, "?") : ""}</div>
       </div>
       <div class="et-body"><div class="et-track-heads"><div class="et-track-top"><span>轨道</span><span class="et-track-count">${sequence.tracks.length}</span><div class="et-add" role="group" aria-label="添加轨道">${addTrack("track-video", "新建画面轨", "film")}${addTrack("track-audio", "新建声音轨", "audio")}${addTrack("track-text", "新建文字轨", "title")}</div></div>${sequence.tracks
         .slice()
@@ -393,9 +399,21 @@ export class EditorTimeline {
         .join(
           "",
         )}<div class="et-playhead" style="left:${ticksToSeconds(this.context.time()) * this.scale}px"><i></i></div></div></div></div>`;
+    if (options.preserveToolbar && this.container.querySelector(".et-toolbar")) {
+      // A native range drag must keep its original input and pointer ownership alive.
+      // Only the time viewport changes during zoom; toolbar state is unchanged.
+      const next = globalThis.document.createElement("div");
+      next.innerHTML = markup;
+      this.container.querySelector(".et-body")!.replaceWith(next.querySelector(".et-body")!);
+      this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(
+        Math.log10(this.scale),
+      );
+    } else this.container.innerHTML = markup;
     this.container.querySelector(".et-toolbar")!.after(this.notice);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;
+    // Store the browser's clamped, rounded position before its queued scroll event.
+    this.scrollPosition = scroll.scrollLeft;
     this.container.querySelector<HTMLElement>(".et-body")!.scrollTop = this.verticalPosition;
     scroll.addEventListener(
       "scroll",
@@ -413,7 +431,7 @@ export class EditorTimeline {
       .addEventListener("scroll", this.syncVerticalScroll, { passive: true });
     this.syncVerticalScroll();
     if (this.drag?.kind === "box") this.createBox();
-    if (restoreFocus) {
+    if (restoreFocus && !(focused instanceof HTMLElement && focused.isConnected)) {
       const next = focusedClip
         ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(focusedClip)}"]`)
         : undefined;
@@ -596,8 +614,7 @@ export class EditorTimeline {
     const target = event.target as HTMLInputElement;
     if (target.matches("[data-et-snap]")) this.snapping = target.checked;
     if (target.matches("[data-et-zoom]")) {
-      this.scale = 10 ** Number(target.value);
-      this.render();
+      this.zoom(10 ** Number(target.value));
     }
     if (target.dataset.etTrackMix)
       this.run(async () => {
@@ -634,6 +651,59 @@ export class EditorTimeline {
           "重命名轨道",
         ),
       );
+  };
+  private input = (event: Event): void => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement && target.matches("[data-et-zoom]"))
+      this.zoom(10 ** Number(target.value));
+  };
+  /** Keep the visible playhead in place, or the viewport's middle when it is off screen. */
+  private zoom(scale: number, offset?: number): void {
+    if (this.drag || this.destroyed || !Number.isFinite(scale)) return;
+    const viewport = this.viewport(),
+      { sequence } = this.current(),
+      duration = Math.max(
+        sequenceDuration(sequence),
+        ...sequence.markers.map((marker) => marker.time + marker.duration),
+      ),
+      next = Math.min(1000, 12000000 / Math.max(1, ticksToSeconds(duration)), Math.max(0.01, scale));
+    if (next === this.scale) {
+      // A long sequence can reach its pixel limit before the range reaches its end.
+      this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(
+        Math.log10(this.scale),
+      );
+      return;
+    }
+    const playhead = ticksToSeconds(this.context.time()) * this.scale - viewport.scrollLeft,
+      anchor =
+        offset ??
+        (playhead >= 0 && playhead <= viewport.clientWidth ? playhead : viewport.clientWidth / 2),
+      time = (viewport.scrollLeft + anchor) / this.scale;
+    this.scale = next;
+    this.render({ preserveToolbar: true, scrollLeft: time * next - anchor });
+  }
+  private wheel = (event: WheelEvent): void => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".et-scroll")) return;
+    const viewport = this.viewport();
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      if (this.drag || this.menu) return;
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientWidth : 1,
+        delta = (event.deltaY || event.deltaX) * units,
+        offset = Math.max(
+          0,
+          Math.min(viewport.clientWidth, event.clientX - viewport.getBoundingClientRect().left),
+        );
+      this.zoom(this.scale * Math.exp(-Math.max(-500, Math.min(500, delta)) * 0.002), offset);
+    } else if (event.shiftKey && !this.drag) {
+      // Browsers may already convert Shift+wheel to deltaX; handle either representation.
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientWidth : 1;
+      const delta = (event.deltaX || event.deltaY) * units;
+      if (!delta || viewport.scrollWidth <= viewport.clientWidth) return;
+      event.preventDefault();
+      viewport.scrollLeft += delta;
+    }
   };
   private trackConfirmation(
     documentId: string,
@@ -688,6 +758,10 @@ export class EditorTimeline {
     );
   }
   async action(action: string): Promise<void> {
+    if (action === "zoom-in" || action === "zoom-out") {
+      this.zoom(this.scale * (action === "zoom-in" ? 1.5 : 1 / 1.5));
+      return;
+    }
     if (action === "shortcuts") {
       await this.context.showShortcuts?.();
       return;
@@ -773,7 +847,7 @@ export class EditorTimeline {
         1000,
         Math.max(
           0.01,
-          (this.container.clientWidth - 220) /
+          (this.viewport().clientWidth - 60) /
             Math.max(
               1,
               ticksToSeconds(
@@ -871,6 +945,11 @@ export class EditorTimeline {
       if (event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         this.run(() => this.action("fit"));
+        return;
+      }
+      if (["+", "=", "-"].includes(event.key)) {
+        event.preventDefault();
+        this.run(() => this.action(event.key === "-" ? "zoom-out" : "zoom-in"));
         return;
       }
       if (!event.shiftKey && event.key.toLowerCase() === "n") {
@@ -1587,6 +1666,8 @@ export class EditorTimeline {
     this.media.dispose();
     this.container.removeEventListener("click", this.click);
     this.container.removeEventListener("change", this.change);
+    this.container.removeEventListener("input", this.input);
+    this.container.removeEventListener("wheel", this.wheel);
     this.container.removeEventListener("keydown", this.keydown);
     this.container.removeEventListener("pointerdown", this.pointerdown);
     this.container.removeEventListener("pointermove", this.pointermove);
