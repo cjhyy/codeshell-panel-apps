@@ -88,6 +88,7 @@ import { RoughCutAIController, type RoughCutAISnapshot } from "./rough-cut-ai";
 import type { EditReceipt } from "./editor/history";
 import { EditorSession, sameIdentity, type SessionIdentity } from "./editor/session";
 import { EditorWorkspace } from "./editor/workspace-ui";
+import type { PreviewResolution } from "./editor/compositor";
 import { migrateLegacyProject, readEditorDocument } from "./editor/migration";
 import {
   projectLegacyView,
@@ -256,6 +257,58 @@ const workspaceLayout = createWorkspaceLayout(studio, {
   },
 });
 window.addEventListener("pagehide", () => workspaceLayout.dispose(), { once: true });
+const previewQualityKey = "video-studio-preview-quality-v1";
+let previewQualityChoice: PreviewResolution | undefined;
+let previewQualityStamp = 0;
+let previewQualityChoiceStamp = 0;
+let previewQualityWrite = Promise.resolve();
+function readPreviewQuality(value: unknown): { value: PreviewResolution; updatedAt: number } | undefined {
+  if (typeof value === "number" && [1, 0.5, 0.25].includes(value))
+    return { value: value as PreviewResolution, updatedAt: 0 };
+  if (!value || typeof value !== "object") return;
+  const record = value as { value?: unknown; updatedAt?: unknown };
+  if (typeof record.value === "number" && [1, 0.5, 0.25].includes(record.value) &&
+      typeof record.updatedAt === "number" && Number.isSafeInteger(record.updatedAt) && record.updatedAt >= 0 &&
+      Number.isFinite(new Date(record.updatedAt).getTime()))
+    return { value: record.value as PreviewResolution, updatedAt: record.updatedAt };
+}
+const previewQualityPreference = {
+  async load(): Promise<unknown> {
+    if (previewQualityChoice !== undefined) return previewQualityChoice;
+    let host: ReturnType<typeof readPreviewQuality>, local: ReturnType<typeof readPreviewQuality>;
+    if (panel)
+      try {
+        host = readPreviewQuality(await panel.call("storage.get", { key: previewQualityKey }));
+      } catch { /* Browser storage remains available when Host storage is unavailable. */ }
+    try {
+      local = readPreviewQuality(JSON.parse(localStorage.getItem(previewQualityKey) ?? "null"));
+    } catch { /* Either valid copy can restore a viewer preference. */ }
+    const latest = host && (!local || host.updatedAt >= local.updatedAt) ? host : local;
+    previewQualityStamp = Math.max(previewQualityStamp, latest?.updatedAt ?? 0);
+    if (previewQualityChoice !== undefined) {
+      // A late older choice with a newer clock must not defeat this page's explicit selection.
+      if (latest && latest.updatedAt > previewQualityChoiceStamp && latest.value !== previewQualityChoice)
+        void previewQualityPreference.save(previewQualityChoice).catch(() => {});
+      return previewQualityChoice;
+    }
+    return latest?.value ?? null;
+  },
+  save(value: PreviewResolution): Promise<void> {
+    previewQualityChoice = value;
+    previewQualityStamp = Math.max(Date.now(), previewQualityStamp + 1);
+    previewQualityChoiceStamp = previewQualityStamp;
+    const record = { value, updatedAt: previewQualityStamp };
+    try { localStorage.setItem(previewQualityKey, JSON.stringify(record)); }
+    catch { /* A current Host copy remains useful if browser storage cannot be written. */ }
+    previewQualityWrite = previewQualityWrite.catch(() => {}).then(async () => {
+      if (panel)
+        try {
+          await panel.call("storage.set", { key: previewQualityKey, value: record });
+        } catch { /* A preference failure must never block the video document. */ }
+    });
+    return previewQualityWrite;
+  },
+};
 const library = new MediaLibrary({ resolveManagedUrl: (id) => resourcePreviewUrl(panel, id) });
 let panelVisible = true;
 let thumbnailObserver: IntersectionObserver | undefined;
@@ -403,6 +456,9 @@ let generation = 0;
 let inspectorDraftKey = "";
 let renderedProjectId = "";
 let renderedGeneration = -1;
+let mediaActionPress: { button: HTMLElement; pointerId: number; scope: string; timer?: number } | undefined;
+let deferredMediaRender: "full" | "library" | undefined;
+const cancelledMediaButtons = new WeakSet<HTMLElement>();
 const processedTasks = new Set<string>();
 let playback: AbortController | null = null;
 let exporting: AbortController | null = null;
@@ -2063,6 +2119,8 @@ function renderStudioShell(): void {
 }
 
 function render(): void {
+  if (deferMediaActionRender("full")) return;
+  deferredMediaRender = undefined;
   if (timelineGestures.deferRender()) return;
   if (renderedFeatureTab !== tab) {
     libraryView = "feature";
@@ -2337,12 +2395,48 @@ function refreshMediaLibrary(): void {
   // A feature page (e.g. 字幕) owns the panel; rewriting it in place would drop its mounted
   // content until the next full render, which background imports and job results defer.
   if (!showingMediaLibrary()) return;
+  if (deferMediaActionRender("library")) return;
+  if (deferredMediaRender === "library") deferredMediaRender = undefined;
   const restoreAssetFocus = rememberMediaAssetFocus();
   const scroll = $(".library-panel").scrollTop;
   $(".library-panel").innerHTML = views().renderLibrary();
   $(".library-panel").scrollTop = scroll;
   restoreAssetFocus?.();
   observeVisibleThumbnails();
+}
+
+/** Keep the native pressed button mounted through a presentation-only background refresh. */
+function mediaActionScope(): string {
+  return JSON.stringify([
+    project.id, project.revision, generation, editorSession?.getState().identity,
+    tab, libraryView, search, mediaPreferences, [...selectedMedia].sort(),
+  ]);
+}
+function mediaActionPressCurrent(press: NonNullable<typeof mediaActionPress>): boolean {
+  return press.button.isConnected && showingMediaLibrary() && press.scope === mediaActionScope();
+}
+function finishMediaActionPress(press: NonNullable<typeof mediaActionPress>, cancelled: boolean): void {
+  if (mediaActionPress !== press) return;
+  mediaActionPress = undefined;
+  clearTimeout(press.timer);
+  if (cancelled) cancelledMediaButtons.add(press.button);
+  // pointerup and its native click must finish before replacing the pressed element.
+  if (deferredMediaRender) window.setTimeout(() => {
+    const pending = deferredMediaRender;
+    deferredMediaRender = undefined;
+    if (pending === "full") render();
+    else if (pending === "library") refreshMediaLibrary();
+  }, 0);
+}
+function deferMediaActionRender(kind: "full" | "library"): boolean {
+  const press = mediaActionPress;
+  if (!press) return false;
+  if (!mediaActionPressCurrent(press)) {
+    finishMediaActionPress(press, true);
+    return false;
+  }
+  if (kind === "full" || !deferredMediaRender) deferredMediaRender = kind;
+  return true;
 }
 
 function observeVisibleThumbnails(): void {
@@ -3990,7 +4084,7 @@ async function action(name: string, id?: string): Promise<void> {
         <dt>同步切分所选片段，继续选中右侧</dt><dd>S</dd><dt>删除选中片段</dt><dd>Delete / Backspace</dd>
         <dt>复制 / 剪切 / 粘贴 / 原位复制</dt><dd>⌘/Ctrl C · X · V · D</dd><dt>分组 / 解组</dt><dd>⌘/Ctrl G · ⌘/Ctrl Shift G</dd>
         <dt>移动选中片段</dt><dd>⌘/Ctrl ← / →</dd><dt>撤销 / 重做</dt><dd>⌘/Ctrl Z · ⌘/Ctrl Shift Z</dd>
-        <dt>一屏看全</dt><dd>Shift + Z</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
+        <dt>一屏看全</dt><dd>Shift + Z</dd><dt>适合所选片段</dt><dd>Shift + F</dd><dt>放大 / 缩小时间轴</dt><dd>+ / −</dd>
         <dt>以鼠标位置缩放</dt><dd>⌘/Ctrl + 滚轮</dd><dt>横向滚动时间轴</dt><dd>Shift + 滚轮</dd>
         <dt>开关边缘吸附</dt><dd>N</dd><dt>拖动时临时关闭吸附</dt><dd>Alt</dd><dt>取消拖动 / 清空选择</dt><dd>Esc</dd>
         <dt>调整声音淡化边界（手柄聚焦时）</dt><dd>← / → · Shift 十帧 · Home / End</dd></dl>
@@ -4254,6 +4348,39 @@ studio.addEventListener(
   true,
 );
 
+studio.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
+  const button = (event.target as Element).closest<HTMLElement>(
+    '.library-panel [data-action="select-media"],.library-panel [data-action="delete-media"]',
+  );
+  if (!button || unavailable(button) || !showingMediaLibrary()) return;
+  cancelledMediaButtons.delete(button);
+  mediaActionPress = { button, pointerId: event.pointerId, scope: mediaActionScope() };
+}, true);
+document.addEventListener("pointerup", (event) => {
+  const press = mediaActionPress;
+  if (!press || press.pointerId !== event.pointerId) return;
+  const box = press.button.getBoundingClientRect();
+  if (!mediaActionPressCurrent(press) || event.clientX < box.left || event.clientX > box.right ||
+      event.clientY < box.top || event.clientY > box.bottom) finishMediaActionPress(press, true);
+  // Touch compatibility clicks can follow a browser double-tap delay; never synthesize them.
+  else press.timer = window.setTimeout(() => finishMediaActionPress(press, true), event.pointerType === "touch" ? 500 : 0);
+}, true);
+const cancelMediaActionPress = () => {
+  if (mediaActionPress) finishMediaActionPress(mediaActionPress, true);
+};
+document.addEventListener("pointercancel", (event) => {
+  if (mediaActionPress?.pointerId === event.pointerId) cancelMediaActionPress();
+}, true);
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") cancelMediaActionPress(); }, true);
+window.addEventListener("blur", cancelMediaActionPress);
+window.addEventListener("pagehide", () => {
+  deferredMediaRender = undefined;
+  cancelMediaActionPress();
+});
+document.addEventListener("visibilitychange", () => { if (document.hidden) cancelMediaActionPress(); });
+
 studio.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   const buttonTarget = target.closest<HTMLElement>("[data-action]");
@@ -4272,6 +4399,16 @@ studio.addEventListener("click", (event) => {
     return;
   }
   if (buttonTarget) {
+    if (event.detail !== 0 && cancelledMediaButtons.has(buttonTarget)) {
+      cancelledMediaButtons.delete(buttonTarget);
+      return;
+    }
+    const press = mediaActionPress;
+    if (press?.button === buttonTarget) {
+      const current = mediaActionPressCurrent(press);
+      finishMediaActionPress(press, !current);
+      if (!current) return;
+    }
     // A focusable but unavailable action explains itself through its description instead.
     if (unavailable(buttonTarget)) return;
     void action(buttonTarget.dataset.action!, buttonTarget.dataset.id).catch(fail);
@@ -5790,6 +5927,7 @@ function mountEditorWorkspace(): void {
   editorRoot = root;
   studio.querySelector(".workspace")!.append(root);
   editorWorkspace = new EditorWorkspace(root, {
+    previewQuality: previewQualityPreference,
     showShortcuts: () => action("timeline-shortcuts"),
     layout: "embedded",
     showComposition: showEditorWorkspace,

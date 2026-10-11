@@ -21,6 +21,7 @@ import {
 } from "./clip-edits";
 import { planCutClips, duplicateClipsInPlace } from "./clipboard-edits";
 import { planTimelinePaste } from "./timeline-paste";
+import { dragReadoutRange, dragReadoutSeconds } from "./timeline-drag-readout";
 import {
   applyEditorOperations,
   prepareEditorOperationPreview,
@@ -158,6 +159,7 @@ const CONTROL_ACTIONS = [
   "group",
   "ungroup",
   "fit",
+  "fit-selection",
   "zoom-in",
   "zoom-out",
   "shortcuts",
@@ -252,6 +254,8 @@ export class EditorTimeline {
   private followSuspended = false;
   /** One persistent live region; rendering keeps the node so text changes are announced. */
   private readonly notice = globalThis.document.createElement("p");
+  /** Stable, non-live feedback: pointer motion must not queue screen reader announcements. */
+  private readonly dragReadout = globalThis.document.createElement("div");
   private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
   private clipboardPending = false;
   private drag?: Drag;
@@ -305,6 +309,11 @@ export class EditorTimeline {
     this.media = new EditorTimelineMedia(context.media);
     this.notice.className = "et-notice";
     this.notice.setAttribute("role", "status");
+    this.dragReadout.className = "et-drag-readout";
+    this.dragReadout.hidden = true;
+    this.dragReadout.setAttribute("role", "group");
+    this.dragReadout.setAttribute("aria-label", "拖动片段读数");
+    this.dragReadout.innerHTML = "<span>开始 <b></b></span><span>结束 <b></b></span><span>时长 <b></b></span><span><i></i> <b></b></span>";
     container.classList.add("editor-timeline");
     container.tabIndex = 0;
     container.setAttribute("aria-label", "剪辑时间轴");
@@ -618,7 +627,7 @@ export class EditorTimeline {
         <label class="et-snap" title="吸附 · 自动对齐片段边缘 · N"><input type="checkbox" data-et-snap aria-label="吸附" ${this.snapping ? "checked" : ""}>${timelineIcon("snap")}<span>吸附</span></label>
         <output class="et-selection-status" aria-live="polite">${selected.size ? `已选 ${selected.size} 个片段` : ""}</output>
         <span class="et-spacer"></span>
-        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit", false, "Shift+Z")}${button("zoom-out", "缩小时间轴", "minus", false, "−")}<label class="et-zoom" title="时间轴缩放 · Ctrl/⌘ + 滚轮"><input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放"></label>${button("zoom-in", "放大时间轴", "plus", false, "+")}${this.context.showShortcuts ? button("shortcuts", "剪辑快捷键", "keyboard", false, "?") : ""}</div>
+        <div class="et-zoom-tools" role="group" aria-label="时间轴视图">${button("fit", "适合窗口", "fit", false, "Shift+Z")}${button("fit-selection", "适合所选片段", "fit", !selected.size, "Shift+F", true)}${button("zoom-out", "缩小时间轴", "minus", false, "−")}<label class="et-zoom" title="时间轴缩放 · Ctrl/⌘ + 滚轮"><input data-et-zoom type="range" min="-2" max="3" step="0.05" value="${Math.log10(this.scale)}" aria-label="时间轴缩放"></label>${button("zoom-in", "放大时间轴", "plus", false, "+")}${this.context.showShortcuts ? button("shortcuts", "剪辑快捷键", "keyboard", false, "?") : ""}</div>
       </div>
       <div class="et-body"><div class="et-track-heads"><div class="et-track-top"><span>轨道</span><span class="et-track-count">${sequence.tracks.length}</span><div class="et-add" role="group" aria-label="添加轨道">${addTrack("track-video", "新建画面轨", "film")}${addTrack("track-audio", "新建声音轨", "audio")}${addTrack("track-text", "新建文字轨", "title")}</div></div>${sequence.tracks
         .slice()
@@ -701,7 +710,7 @@ export class EditorTimeline {
         for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>(`${TRACK_INPUTS},${TRACK_BUTTONS}`))
           control.disabled = true;
       if (this.pendingTrackGesture)
-        for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('[data-et-zoom],[data-et-action="fit"],[data-et-action="zoom-in"],[data-et-action="zoom-out"]'))
+        for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('[data-et-zoom],[data-et-action="fit"],[data-et-action="fit-selection"],[data-et-action="zoom-in"],[data-et-action="zoom-out"]'))
           control.disabled = true;
     } finally {
       this.replacingControls = false;
@@ -740,6 +749,7 @@ export class EditorTimeline {
       sequenceId: sequence.id, clipId: control.closest<HTMLElement>("[data-et-clip]")!.dataset.etClip!,
     });
     this.container.querySelector(".et-toolbar")!.after(this.notice);
+    this.notice.after(this.dragReadout);
     const scroll = this.viewport();
     scroll.scrollLeft = this.scrollPosition;
     // Store the browser's clamped, rounded position before its queued scroll event.
@@ -1297,6 +1307,11 @@ export class EditorTimeline {
       await this.context.addText?.();
       return;
     }
+    const fitIdentity = action === "fit-selection" ? this.context.identity?.() : undefined;
+    const fitScope = action === "fit-selection" ? {
+      identity: fitIdentity ? { ...fitIdentity } : undefined,
+      selection: JSON.stringify(this.context.selection()), control: this.pendingControl,
+    } : undefined;
     const { document, sequence, selected } = this.current(),
       ids = [...selected],
       time = at,
@@ -1385,6 +1400,25 @@ export class EditorTimeline {
     }
     if (action === "ungroup") {
       await this.apply(ungroupClips(document, sequence.id, ids), "片段解组");
+      return;
+    }
+    if (action === "fit-selection") {
+      if (this.drag || this.pendingTrackGesture || this.destroyed ||
+        fitScope?.control !== this.pendingControl ||
+        fitScope?.selection !== JSON.stringify(this.context.selection()) ||
+        (fitScope?.identity && (!sameIdentity(fitScope.identity, this.context.identity?.()) ||
+          document.id !== fitScope.identity.documentId || document.revision !== fitScope.identity.revision)) ||
+        (fitScope?.control && !this.fieldScopeCurrent(fitScope.control.field))) return;
+      const clips = sequence.clips.filter((clip) => selected.has(clip.id));
+      if (!ids.length || clips.length !== ids.length) return;
+      const start = Math.min(...clips.map((clip) => clip.start)),
+        end = Math.max(...clips.map((clip) => clip.start + clip.duration)),
+        duration = Math.max(sequenceDuration(sequence), ...sequence.markers.map((marker) => marker.time + marker.duration)),
+        width = this.viewport().clientWidth;
+      this.scale = Math.min(1000, 12000000 / Math.max(1, ticksToSeconds(duration)),
+        Math.max(0.01, (width - 60) / ticksToSeconds(end - start)));
+      if (this.playbackActive) this.suspendPlaybackFollow();
+      this.render({ preserveToolbar: true, scrollLeft: Math.max(0, ticksToSeconds(start) * this.scale - 30) });
       return;
     }
     if (action === "fit") {
@@ -1529,6 +1563,11 @@ export class EditorTimeline {
           if (candidate !== undefined) target = candidate;
         }
         this.run(() => this.seekVisible(target, true));
+        return;
+      }
+      if (event.shiftKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        if (!event.repeat) this.run(() => this.action("fit-selection"));
         return;
       }
       if (event.shiftKey && event.key.toLowerCase() === "z") {
@@ -1947,7 +1986,8 @@ export class EditorTimeline {
       event.preventDefault();
       return;
     }
-    if (event.button === 0 && this.context.beforeGesture && event.target instanceof Element) {
+    if (event.button === 0 && event.target instanceof Element &&
+      (this.context.beforeGesture || event.target.closest('[data-et-action="fit-selection"]'))) {
       const button = event.target.closest<HTMLButtonElement>("button"),
         intent = button && this.controlIntent(button);
       if (intent) {
@@ -2071,7 +2111,9 @@ export class EditorTimeline {
     this.pendingControl = pending;
     let ready: boolean | Promise<boolean>;
     try {
-      ready = this.context.beforeGesture!(pending.field.controller.signal);
+      const signal = pending.field.controller.signal;
+      ready = (intent.kind === "action" && intent.action === "fit-selection"
+        ? this.finishFocusedField(signal) : undefined) ?? this.context.beforeGesture?.(signal) ?? true;
     } catch (error) {
       event.preventDefault();
       this.suppressedControlClick = event.pointerId;
@@ -2703,6 +2745,18 @@ export class EditorTimeline {
     }
     const reason = drag.plan.reason ?? "";
     if (this.notice.textContent !== reason) this.notice.textContent = reason;
+    const range = !reason && drag.clip && ["move", "left", "right"].includes(drag.kind)
+      ? dragReadoutRange(sequence.id, drag.clip, drag.plan.operations!) : undefined;
+    this.dragReadout.hidden = !range;
+    if (range) {
+      const values = [range.start, range.end, range.duration,
+        drag.kind === "move" ? range.start - drag.clip!.start : range.duration - drag.clip!.duration];
+      this.dragReadout.querySelector("i")!.textContent = drag.kind === "move" ? "位置变化" : "时长变化";
+      this.dragReadout.querySelectorAll("b").forEach((node, index) => {
+        const text = dragReadoutSeconds(values[index]!, index === 3);
+        if (node.textContent !== text) node.textContent = text;
+      });
+    }
   }
   private planDrag(
     document: EditorDocument,
@@ -2921,6 +2975,7 @@ export class EditorTimeline {
     this.cancelControl();
     this.cancelTrackGesture();
     this.notice.textContent = "";
+    this.dragReadout.hidden = true;
     if (this.dragPlanFrame !== undefined) cancelAnimationFrame(this.dragPlanFrame);
     this.dragPlanFrame = undefined;
     if (this.autoScrollFrame !== undefined) cancelAnimationFrame(this.autoScrollFrame);

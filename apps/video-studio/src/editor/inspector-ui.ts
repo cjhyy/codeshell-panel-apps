@@ -57,6 +57,7 @@ interface KeyframeNavigation {
   destination?: Tick;
   revision?: number;
 }
+type KeyframeDirection = "previous" | "next";
 type Tab = "visual" | "color" | "mask" | "text" | "audio";
 interface KeyframeAction {
   scope: Scope;
@@ -182,6 +183,9 @@ export class EditorInspector {
   private readonly fieldCommitters = new WeakMap<HTMLInputElement | HTMLTextAreaElement, { initial: string; signature: string; commit: () => void }>();
   private fieldFinish?: { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
   private keyframeNavigation?: KeyframeNavigation;
+  private keyframeNeighbors: Array<{
+    button: HTMLButtonElement; clipId: string; path: Path; direction: KeyframeDirection;
+  }> = [];
   private keyframeAction?: KeyframeAction;
   private copiedColor?: {
     documentId: string;
@@ -226,6 +230,7 @@ export class EditorInspector {
     this.disposed = true;
     this.cancelKeyframeNavigation();
     this.cancelKeyframeAction(this.keyframeAction);
+    this.keyframeNeighbors = [];
     this.root.remove();
     this.expanded.clear();
     this.individuals.clear();
@@ -401,6 +406,10 @@ export class EditorInspector {
     button.setAttribute("aria-label", `定位关键帧 ${index + 1}`);
     button.title = `${clip.label || "未命名片段"} · ${spec.label} · ${display(time / TICKS_PER_SECOND)} 秒` +
       (time === clip.duration ? "；末端关键帧定位到片段内最后时刻" : "");
+    this.bindKeyframeNavigation(button, scope, spec.path, time);
+    parent.append(button);
+  }
+  private bindKeyframeNavigation(button: HTMLButtonElement, scope: Scope, path: Path, target: Tick | KeyframeDirection): void {
     button.addEventListener("pointerdown", (event) => {
       if (event.button === 0 && event.isPrimary) event.preventDefault();
     });
@@ -408,19 +417,67 @@ export class EditorInspector {
       if (event.repeat && (event.key === "Enter" || event.key === " ")) event.preventDefault();
     });
     button.addEventListener("click", () => {
-      if (!this.root.contains(button) || this.disposed || this.pending ||
-        (this.fieldFinish && !this.fieldFinish.signal.aborted) || this.keyframeNavigation || this.keyframeAction) return;
-      const navigation: KeyframeNavigation = { scope, time: this.context.time(), tab: this.tab,
+      const blocked = () => !this.root.contains(button) || this.disposed || this.pending ||
+        (this.fieldFinish && !this.fieldFinish.signal.aborted) || this.keyframeNavigation || this.keyframeAction;
+      if (blocked()) return;
+      const clock = this.context.time();
+      if (blocked()) return; // A public clock getter can synchronously start a newer navigation.
+      const navigation: KeyframeNavigation = { scope, time: clock, tab: this.tab,
         revision: scope.revision, controller: new AbortController() };
       this.keyframeNavigation = navigation;
-      void this.locateKeyframe(navigation, spec.path, time);
+      void this.locateKeyframe(navigation, path, target);
     });
-    parent.append(button);
   }
-  private async locateKeyframe(navigation: KeyframeNavigation, path: Path, time: Tick): Promise<void> {
+  /** Keys are sorted; compare the reachable endpoint so Next cannot jump repeatedly to duration − 1. */
+  private neighboringKey(clip: EditorClip, path: Path, clock: Tick, direction: KeyframeDirection): Tick | undefined {
+    const value = at(clip, path) as AnimatedNumber;
+    if (typeof value === "number") return;
+    let left = 0, right = value.keyframes.length;
+    while (left < right) {
+      const middle = Math.floor((left + right) / 2), key = value.keyframes[middle]!,
+        position = clip.start + Math.min(key.time, clip.duration - 1);
+      if (position < clock || (direction === "next" && position === clock)) left = middle + 1;
+      else right = middle;
+    }
+    return value.keyframes[direction === "previous" ? left - 1 : left]?.time;
+  }
+  private refreshKeyframeNeighbors(scope: Scope | undefined, controls = this.keyframeNeighbors): void {
+    const owner = this.keyframeNeighbors, clock = this.context.time();
+    if (this.disposed || owner !== this.keyframeNeighbors) return;
+    for (const control of controls) {
+      const clip = scope?.clips.find((clip) => clip.id === control.clipId),
+        available = !!clip && this.neighboringKey(clip, control.path, clock, control.direction) !== undefined;
+      control.button.disabled = !available;
+      control.button.title = available ? "按当前播放头定位，可跨页；列表页码保持不变。末端关键帧定位到片段内最后时刻。"
+        : control.direction === "previous" ? "播放头之前没有关键帧" : "播放头之后没有关键帧";
+    }
+  }
+  private keyframeNeighborButtons(parent: HTMLElement, scope: Scope, spec: NumberField): void {
+    if (!this.context.seek) return;
+    const first = this.keyframeNeighbors.length;
+    const controls = el("div", "ei-actions");
+    controls.setAttribute("aria-label", `${spec.label}关键帧导航`);
+    parent.append(controls);
+    for (const direction of ["previous", "next"] as const) {
+      const button = el("button", "ei-button", direction === "previous" ? "上一个关键帧" : "下一个关键帧");
+      button.type = "button";
+      this.bindKeyframeNavigation(button, scope, spec.path, direction);
+      this.keyframeNeighbors.push({ button, clipId: scope.clips[0]!.id, path: spec.path, direction });
+      controls.append(button);
+    }
+    const neighbors = this.keyframeNeighbors.slice(first);
+    this.refreshKeyframeNeighbors(scope, neighbors);
+    if (parent instanceof HTMLDetailsElement) parent.addEventListener("toggle", () => {
+      if (this.root.contains(parent) && parent.open) this.refreshKeyframeNeighbors(scope, neighbors);
+    });
+  }
+  private async locateKeyframe(navigation: KeyframeNavigation, path: Path, target: Tick | KeyframeDirection): Promise<void> {
     let finish: typeof this.fieldFinish;
     try {
-      if (!this.navigationScope(navigation, navigation.scope.revision)) return;
+      const initial = this.navigationScope(navigation, navigation.scope.revision),
+        anchor = initial?.clips.find((clip) => clip.id === navigation.scope.clips[0]!.id),
+        time = typeof target === "number" ? target : anchor && this.neighboringKey(anchor, path, navigation.time, target);
+      if (!initial || time === undefined) return;
       const ready = this.finishFocusedField(navigation.controller.signal);
       finish = this.fieldFinish;
       if (ready instanceof Promise) {
@@ -434,7 +491,7 @@ export class EditorInspector {
       const clip = fresh.clips.find((item) => item.id === navigation.scope.clips[0]!.id),
         value = clip && at(clip, path) as AnimatedNumber;
       if (!clip || typeof value === "number" || !value?.keyframes.some((key) => key.time === time)) {
-        this.report(new Error("关键帧已变化，请点击当前行重新定位"));
+        this.report(new Error(typeof target === "number" ? "关键帧已变化，请点击当前行重新定位" : "关键帧已变化，请重新定位"));
         this.render();
         return;
       }
@@ -923,6 +980,8 @@ export class EditorInspector {
     if (locked && this.context.seek) {
       let group: HTMLElement | undefined;
       const drawLocations = () => {
+        if (this.disposed) return;
+        if (group) this.keyframeNeighbors = this.keyframeNeighbors.filter((control) => !group!.contains(control.button));
         group?.remove();
         group = undefined;
         let readonly = this.root.querySelector<HTMLElement>(".ei-keyframe-locations");
@@ -934,6 +993,7 @@ export class EditorInspector {
           group = el("div", "ei-card");
           group.append(el("h4", "ei-hint", `${clip.label || "未命名片段"} · ${spec.label}`));
           readonly.append(group);
+          this.keyframeNeighborButtons(group, scope, spec);
           value.keyframes.slice(page * 20, (page + 1) * 20).forEach((key, offset) =>
             this.keyframeLocation(group!, scope, spec, key.time, page * 20 + offset, true));
         }
@@ -943,6 +1003,7 @@ export class EditorInspector {
       // Render attaches the fieldset after its contents have been prepared.
       queueMicrotask(drawLocations);
     }
+    if (!locked) this.keyframeNeighborButtons(parent, scope, spec);
     parent.append(el("p", "ei-hint", "时间从片段起点计算；缓动控制它到下一关键帧的变化。"));
     value.keyframes.slice(page * 20, (page + 1) * 20).forEach((key, offset) => {
       const index = page * 20 + offset;
@@ -1136,6 +1197,7 @@ export class EditorInspector {
       !this.renderedAnimation
     ) {
       this.refreshAlignment(scope);
+      this.refreshKeyframeNeighbors(scope);
       return;
     }
     if (
@@ -1147,6 +1209,7 @@ export class EditorInspector {
       !focused.disabled
     ) {
       this.refreshAlignment(scope);
+      this.refreshKeyframeNeighbors(scope);
       return; // Playhead refreshes must not erase an in-progress text or number draft.
     }
     this.renderedSignature = signature;
@@ -1160,6 +1223,7 @@ export class EditorInspector {
     // commit its draft into a new selection or a newly opened project.
     this.replacingControls = true;
     try {
+      this.keyframeNeighbors = [];
       this.root.replaceChildren();
     } finally {
       this.replacingControls = false;

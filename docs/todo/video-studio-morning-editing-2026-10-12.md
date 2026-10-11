@@ -551,4 +551,72 @@ goal仍active至11:00，automation11继续保留。
   `/tmp/video-studio-morning-fourteenth-{inspector-timing-ui,workspace-ui,offline,typecheck,build,build-check,validate}.log`。
   渲染及原生工具未改，真实媒体基线为第十三批229/229；本批完整浏览器随后检查。
 
+第十四批完整浏览器1173/1173通过，668014ms，日志
+`/tmp/video-studio-morning-fourteenth-full-ui.log`。第十三批PR38177825026通过；
+push38177820166首次仅素材批量删除UI超时，其余job通过，已要求仅重跑失败job。
+同一素材用例本地独立检查也曾复现，不能仅凭重跑绿色认定修复。进一步使用真实
+pointer down → production restoreManagedMedia → pointer up稳定复现全选及删除
+两项丢失点击；背景列表重建会卸下按住的按钮。正在独立树修复此确定交互，原CI
+具体interleaving尚未精确归因。旧测试的timeout与retry保持不变。
+
+后续CI状态：第十四批push38179099798和PR38179103057均通过；第十三批push
+38177820166的失败UI job在attempt2通过。重跑通过不代替上述确定交互的修复。
+
+## 第十五批：拖动读数、偏好与序列删除
+
+- 已挑选纯新增量6b87b83、3194e00、fe3bcff、a518dd0、b501b90、c8ffd2a、c48f54a。
+- 拖动读数从已校验operation计划投影当前anchor的开始、结束和时长，显示磁吸
+  收拢后的真实结果；取消、无效计划或身份变化时隐藏。没有额外复制工程、重复
+  planner或全量应用；六位小数秒区分原始tick。390px读数可换行。
+- 预览质量偏好跨workspace重挂载串行保存，迟到读取不能暂停用户已经开始的播放；
+  偏好失败不阻塞工程保存。还在检查Host仅读取成功而写入失败的浏览器fallback。
+- 有片段或标记的序列删除先显示实际名称、直接内容数量和时长供确认；空序列
+  保持直接删除。精确revision及工程/代际/管理目标/当前序列变化使旧确认失效；
+  失败保留同scope重试，成功只撤销一次。代理23/23 UI、类型及独立源审通过。
+- 根初轮组合目标33/33、Timing领域24/24、typecheck通过。日志
+  `/tmp/video-studio-morning-fifteenth-{integration-targets,timing-domain,pre-typecheck}.log`。
+- 已追加纯新增量a518dd0、b501b90。素材按钮按住期间只延后同scope的呈现刷新，
+  工程持久化继续；revision、代际、选择、搜索或筛选变化立即取消旧动作，原生
+  keyboard不受影响，touch兼容click有限等待。代理完整素材库30/30及typecheck通过，
+  原生down/恢复/up双红已双绿，最终独立源审通过。
+- 当前展开属性支持按播放头精确定位上／下一个关键帧，可跨20行分页而不翻页，
+  锁轨保留只读入口。使用点击时clock及fresh keys，末端duration−1不重复跳同一点；
+  草稿合法完成后目标时间被修改则需重试。代理最终37/37目标与typecheck通过，
+  affected521/521在最终一行dispose guard之前通过；根须验证最终集成源。
+- 已追加纯新增量c8ffd2a、c48f54a。适合所选片段（Shift+F）按fresh精确所选范围
+  计算缩放及水平位置，沿总像素预算cap；不seek/select/apply。复用现有pendingControl，
+  Inspector或原生IME轨名草稿首击保存后继续视图意图，invalid保留。播放中沿现
+  手动滚动语义暂停本轮跟随，避免下一frame把所选范围立即拉回。代理641/641
+  affected在最终follow一行之前通过，最终24目标、类型及独立源审通过。
+- 偏好沿原key兼容旧number，Host与浏览器副本用{value,updatedAt}选择最新有效值；
+  本机立即保存，Host按队列顺序写入。两方向单边写失败reload已实证绿；迟到读取
+  发现未来旧clock时重新保存本页明确选择。损坏时间戳、NaN或不支持quality不恢复。
+  代理Main72/72在最终Date有效域一行前通过，最终8目标和typecheck通过。
+- Timeline/Workspace追加测试冲突按base prefix验证后保留双方新增内容；Timeline
+  另外保留3处UTF-8/fitView/disabled fixture增量。待根最终统一回归和构建后交付，
+  不变更0.7.2版本、工程格式、Host权限或用户安装。
+
+根最终源码已冻结并构建，typecheck、offline1128通过3可选跳过、native voice5通过
+1可选跳过、workspace docs5/5、build/build:check/validate39通过。完整浏览器
+1243/1243通过，711999ms，日志`/tmp/video-studio-morning-fifteenth-full-ui.log`；其他日志
+`/tmp/video-studio-morning-fifteenth-{offline,typecheck,build,build-check,validate}.log`。
+源与生成安装包同步提交；origin/main刷新仍为b85dfc8，尚未向用户安装或发布。
+
+另在独立separable-color-grading树评估RGB调色：只对无hue/saturation/HSL变化的
+通道独立操作用256×3 byte lookup。505设置、3,232,505像素初轮Chromium逐byte相同；
+初轮opaque4K基础268→19.4ms、RGB曲线649.3→19ms，只是调色计算，不是预览FPS。
+独立透明/稀疏阈值采样和源码复核无阻断，小型透明图额外成本最高约0.025ms/调用。
+颜色领域11/11、类型及完整真实媒体229/229通过（162735ms，
+`/tmp/video-studio-color-lut-media.log`）。尚未挑选到集成树，后续须单帧compositor
+组合验收及生成包检查，不能把候选当作交付。候选923d813已保存可复跑script和
+JSON原始交错样本：505设置、3,232,505像素相同，18组真实单帧compositor的最后
+完整像素均相同。4K全质量基础224.2→43.7ms、RGB曲线700.8→43.5ms；但非eligible
+饱和度对照707.9→757.8ms（约7%退化），不能声称HSL未受影响。继续验证独立HSL
+曲线refs外提和合法色带wrap简化后的组合；测量不含解码、音频、UI或代理准备。
+
+窄窗时间轴真实审计6/6通过：280/390px native move及左右trim，边缘自动横滚超过
+300px、NTSC最后松手额外13px坐标与Alt策略、一次提交/撤销、关联及绑定字幕移动、
+ghost最终style和停止均正确，未因没有发现问题而改源。
+日志`/tmp/video-studio-narrow-autoscroll-audit.log`。
+
 继续优化至11:00；goal与automation11保持active，未发布、未安装。

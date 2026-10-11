@@ -377,3 +377,198 @@ test("late sequence persistence errors are not reported inside a different same-
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
+
+async function deletionFixture({ markersOnly = false, blank = false, name = "未使用的剪辑序列" } = {}) {
+  await page.evaluate(async ({ markersOnly, blank, name }) => {
+    const doc = fixture(), other = structuredClone(doc.sequences[0]);
+    other.id = "other"; other.name = name;
+    if (markersOnly || blank) other.clips = [];
+    if (!blank) other.markers = [{ id: "note", time: 240000, duration: 0, name: "待核对", color: "#ffcc00", note: "保留标记" }];
+    doc.sequences.push(other);
+    await reset(doc);
+  }, { markersOnly, blank, name });
+  await page.getByLabel("待管理序列", { exact: true }).selectOption("other");
+}
+
+test("deleting an unused sequence with content first confirms its actual contents and cancels without changing history", async () => {
+  await deletionFixture();
+  const before = await documentValue();
+  await click("删除空闲序列");
+  assert.deepEqual(await documentValue(), before);
+  assert.match(await page.locator("[data-sequence-remove-confirmation]").innerText(), /未使用的剪辑序列.*3 个片段.*1 个标记.*3\.00 秒/s);
+  await click("取消删除");
+  assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 0);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.deepEqual(await documentValue(), before);
+});
+
+test("confirming sequence deletion removes only its target and one undo restores its contents and markers", async () => {
+  await deletionFixture();
+  const before = await documentValue(), selection = await page.evaluate(() => selected);
+  await click("删除空闲序列"); await click("确认删除");
+  const after = await documentValue();
+  assert.equal(after.revision, before.revision + 1);
+  assert.deepEqual(after.sequences, [before.sequences[0]]);
+  assert.deepEqual(after.assets, before.assets);
+  assert.deepEqual(await page.evaluate(() => selected), selection);
+  assert.equal(await page.evaluate(() => navigation.length), 0);
+  assert.match(await page.getByRole("status").innerText(), /已删除.*3 个片段.*1 个标记.*撤销/);
+  await page.evaluate(() => { session.undo(); sequences.render(); });
+  assert.deepEqual((await documentValue()).sequences, before.sequences);
+  assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 0);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("empty unused sequences delete directly but a marker-only sequence still requires confirmation", async () => {
+  await deletionFixture({ blank: true });
+  const before = await documentValue();
+  await click("删除空闲序列");
+  assert.equal((await documentValue()).revision, before.revision + 1);
+  assert.equal((await documentValue()).sequences.length, 1);
+  assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 0);
+  await deletionFixture({ markersOnly: true });
+  const marked = await documentValue();
+  await click("删除空闲序列");
+  assert.deepEqual(await documentValue(), marked);
+  assert.match(await page.locator("[data-sequence-remove-confirmation]").innerText(), /0 个片段.*1 个标记.*0\.00 秒/s);
+});
+
+test("sequence deletion confirmation expires across revision, generation, management ABA and active sequence changes", async () => {
+  for (const change of ["revision", "generation", "managed", "active"]) {
+    await deletionFixture(); await click("删除空闲序列");
+    const old = await page.getByRole("button", { name: "确认删除", exact: true }).elementHandle();
+    await page.evaluate(async (change) => {
+      if (change === "revision") session.dispatch([{ type: "project.rename", name: "后台更新" }], session.getState().identity);
+      if (change === "generation") {
+        const document = session.read(); await session.close({ save: false });
+        const slot = await api.createEditorHostStorage(undefined, { persistent: true, scopeKey: scope + "-replacement" });
+        session = await api.EditorSession.open(slot, { initialDocument: document, autosaveDelayMs: 60000 });
+      }
+      if (change === "active") {
+        session.dispatch([{ type: "sequence.activate", sequenceId: "other" }], session.getState().identity);
+        selected = { sequenceId: "other", clipIds: [] };
+      }
+      if (change !== "managed") sequences.render();
+    }, change);
+    if (change === "managed") {
+      await page.getByLabel("待管理序列").selectOption("main");
+      await page.getByLabel("待管理序列").selectOption("other");
+    }
+    const afterChange = await documentValue();
+    await old.evaluate((button) => { button.click(); button.dispatchEvent(new MouseEvent("click")); });
+    assert.deepEqual(await documentValue(), afterChange, change);
+    assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 0, change);
+    assert.equal(await page.evaluate(() => calls.length), 0, change);
+  }
+});
+
+test("a connected old delete button cannot delete newly added content without fresh confirmation", async () => {
+  await deletionFixture({ blank: true });
+  await page.evaluate(() => {
+    const sequence = session.read().sequences[0], clip = structuredClone(sequence.clips[0]);
+    session.dispatch([{ type: "clip.add", sequenceId: "other", clip }], session.getState().identity);
+  });
+  const before = await documentValue();
+  await click("删除空闲序列");
+  assert.deepEqual(await documentValue(), before);
+  assert.equal(await page.evaluate(() => calls.length), 0);
+  assert.match(await page.getByRole("alert").innerText(), /重新确认/);
+  await click("删除空闲序列");
+  assert.match(await page.locator("[data-sequence-remove-confirmation]").innerText(), /1 个片段/);
+});
+
+test("fresh locks and newly added nested references block an old sequence deletion confirmation atomically", async () => {
+  for (const change of ["lock", "reference"]) {
+    await deletionFixture(); await click("删除空闲序列");
+    await page.evaluate((change) => {
+      const doc = session.read();
+      session.dispatch(change === "lock" ? [{ type: "track.update", sequenceId: "other", trackId: "v", patch: { locked: true } }] :
+        api.planNestSequence(doc, "main", "other", { at: 4 * 240000 }).operations, session.getState().identity);
+    }, change);
+    const before = await documentValue();
+    await click("确认删除");
+    assert.deepEqual(await documentValue(), before, change);
+    assert.equal(await page.getByRole("button", { name: "删除空闲序列", exact: true }).isDisabled(), true, change);
+    assert.match(await page.locator(".editor-sequences").innerText(), change === "lock" ? /锁定轨道/ : /复合片段引用/);
+    assert.equal(await page.evaluate(() => calls.length), 0);
+  }
+});
+
+test("a held deletion ignores repeated confirmation, retries a failed apply and never navigates after a scope change", async () => {
+  await deletionFixture(); await click("删除空闲序列");
+  await page.evaluate(() => {
+    sequences.context.apply = (ops, label) => {
+      calls.push({ ops, label });
+      return new Promise((_resolve, reject) => { globalThis.rejectDeletion = reject; });
+    };
+  });
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).dispatchEvent("click");
+  assert.equal(await page.evaluate(() => calls.length), 1);
+  await page.evaluate(() => rejectDeletion(new Error("磁盘暂时不可写")));
+  await page.waitForFunction(() => !document.querySelector(".editor-sequences fieldset").disabled);
+  assert.match(await page.getByRole("alert").innerText(), /磁盘暂时不可写/);
+  assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 1);
+  await page.evaluate(() => {
+    const target = session;
+    sequences.context.apply = async (ops, label) => {
+      calls.push({ ops, label }); target.dispatch(ops, target.getState().identity, label);
+      await new Promise((resolve) => { globalThis.finishDeletion = resolve; });
+    };
+  });
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await page.evaluate(() => { selected = { sequenceId: "other", clipIds: [] }; finishDeletion(); });
+  await page.waitForFunction(() => !document.querySelector(".editor-sequences fieldset").disabled);
+  assert.equal(await page.evaluate(() => calls.length), 2);
+  assert.equal((await documentValue()).sequences.length, 1);
+  assert.equal(await page.evaluate(() => navigation.length), 0);
+  assert.equal(await page.getByRole("status").count(), 0);
+});
+
+test("deletion confirmation renders long names as text inside a 390 pixel panel", async () => {
+  await deletionFixture({ name: '<img src=x onerror="window.badSequence=1">' + "很长的剪辑序列名称".repeat(15) });
+  await page.setViewportSize({ width: 390, height: 980 });
+  await click("删除空闲序列");
+  const box = page.locator("[data-sequence-remove-confirmation]");
+  assert.equal(await box.locator("img").count(), 0);
+  assert.equal(await page.evaluate(() => window.badSequence), undefined);
+  assert.equal(await box.evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  assert.equal(await page.locator(".editor-sequences").evaluate((node) => node.scrollWidth <= node.clientWidth), true);
+  await box.screenshot({ path: "/tmp/video-studio-sequence-delete-confirm-390.png" });
+  await page.setViewportSize({ width: 760, height: 980 });
+});
+
+test("confirming deletion of the active sequence opens its planned replacement and one undo restores the original", async () => {
+  await deletionFixture(); await page.getByLabel("待管理序列").selectOption("main");
+  const before = await documentValue();
+  await click("删除空闲序列"); await click("确认删除");
+  assert.deepEqual((await documentValue()).sequences, [before.sequences[1]]);
+  assert.equal((await documentValue()).activeSequenceId, "other");
+  assert.deepEqual(await page.evaluate(() => selected), { sequenceId: "other", clipIds: [] });
+  assert.deepEqual(await page.evaluate(() => navigation), ["other"]);
+  await page.evaluate(() => { session.undo(); sequences.render(); });
+  assert.deepEqual((await documentValue()).sequences, before.sequences);
+  assert.equal((await documentValue()).activeSequenceId, "main");
+});
+
+test("an outer sequence render cannot discard a newer deletion confirmation created by read reentry", async () => {
+  await deletionFixture();
+  const result = await page.evaluate(() => {
+    const context = sequences.context, read = context.read;
+    let next;
+    context.read = () => {
+      const old = read(); context.read = read;
+      session.dispatch([{ type: "project.rename", name: "新确认所属版本" }], session.getState().identity);
+      sequences.render();
+      [...document.querySelectorAll(".editor-sequences button")].find((button) => button.textContent === "删除空闲序列").click();
+      next = sequences.removal;
+      return old;
+    };
+    sequences.render();
+    return { started: !!next, owned: sequences.removal === next };
+  });
+  assert.deepEqual(result, { started: true, owned: true });
+  assert.equal(await page.locator("[data-sequence-remove-confirmation]").count(), 1);
+  await click("确认删除");
+  assert.equal((await documentValue()).sequences.length, 1);
+});

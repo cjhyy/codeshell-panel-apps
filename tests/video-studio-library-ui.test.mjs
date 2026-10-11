@@ -7,7 +7,7 @@ import { before, after, test } from "node:test";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,10 @@ before(async () => {
   const isolatedOutput = join(directory, "package");
   await buildProject({ ...project, output: isolatedOutput }, { log: false });
   output = join(isolatedOutput, "app");
+  // Exercise the real background media restoration without adding a production test API.
+  const main = join(output, "main.mjs");
+  await writeFile(main, (await readFile(main, "utf8")) +
+    "\nglobalThis.__libraryPressAudit = { restore: restoreManagedMedia, render, session: () => editorSession, pressed: () => Boolean(mediaActionPress) };\n");
   const video = join(directory, "library-source.mp4");
   const made = spawnSync(
     "ffmpeg",
@@ -869,6 +873,141 @@ test(
     }
   },
 );
+
+async function pressLibraryAction(page, name) {
+  const button = page.locator(`.library-panel [data-action="${name}"]`).first();
+  await button.hover();
+  const box = await button.boundingBox(), element = await button.elementHandle();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  return { box, element };
+}
+
+for (const name of ["select-media", "delete-media"])
+  test(`a native ${name} click survives background media restoration without replaying the action`, async () => {
+    const page = await mixedPage();
+    try {
+      const before = (await state(page)).project;
+      await page.locator("#asset-search").fill("Library-");
+      if (name === "delete-media") await page.locator('[data-action="select-media"]').click();
+      const { element } = await pressLibraryAction(page, name);
+      await page.evaluate(() => __libraryPressAudit.restore());
+      assert.equal(await element.evaluate((button) => button.isConnected), true);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      if (name === "select-media") {
+        assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+        assert.deepEqual((await state(page)).project, before);
+      } else {
+        await page.waitForFunction(() => !__libraryTools.read_video_project().project.assets.some((asset) => asset.name.startsWith("Library-")));
+        await saved(page);
+        await page.locator('[data-ew-action="undo"]').click();
+        await saved(page);
+        assert.deepEqual((await state(page)).project.assets, before.assets);
+        await assertNoResourceDeletion(page);
+      }
+    } finally { await page.close(); }
+  });
+
+for (const cancellation of ["Escape", "blur", "visibility", "pointercancel", "outside release"])
+  test(`a ${cancellation} cancellation releases a deferred library render and consumes the old pointer click`, async () => {
+    const page = await mixedPage();
+    try {
+      await page.locator("#asset-search").fill("Library-");
+      const before = (await state(page)).project, { box, element } = await pressLibraryAction(page, "select-media");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      if (cancellation === "Escape") await page.keyboard.press("Escape");
+      else if (cancellation === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      else if (cancellation === "visibility") await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", { configurable: true, value: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+        delete document.hidden;
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      else if (cancellation === "pointercancel") await page.dispatchEvent(".library-panel", "pointercancel", { pointerId: 1, isPrimary: true });
+      else await page.mouse.move(box.x + box.width + 200, box.y + box.height / 2);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      await page.waitForFunction((button) => !button.isConnected, element);
+      assert.equal(await page.locator("[data-select-media]:checked").count(), 0);
+      assert.deepEqual((await state(page)).project, before);
+      await page.locator('[data-action="select-media"]').focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+    } finally { await page.close(); }
+  });
+
+for (const change of ["revision", "generation", "selection", "search", "filter"])
+  test(`a library delete press cannot survive a ${change} scope change`, async () => {
+    const page = await mixedPage();
+    try {
+      await page.locator("#asset-search").fill("Library-");
+      await page.locator('[data-action="select-media"]').click();
+      const { element } = await pressLibraryAction(page, "delete-media");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      if (change === "revision") await page.evaluate(() => {
+        const session = __libraryPressAudit.session();
+        session.dispatch([{ type: "project.rename", name: "后台编辑" }], session.getState().identity, "后台编辑");
+      });
+      else if (change === "generation") await page.evaluate(() => {
+        const session = __libraryPressAudit.session();
+        return session.replace(session.read());
+      });
+      else if (change === "selection") await page.locator("[data-select-media]").first().evaluate((input) => {
+        input.checked = false; input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      else if (change === "search") await page.locator("#asset-search").fill("Library-Bravo");
+      else await page.locator("[data-media-filter]").selectOption("image");
+      await page.evaluate(() => __libraryPressAudit.restore());
+      const changed = (await state(page)).project;
+      assert.equal(await element.evaluate((button) => button.isConnected), false);
+      await page.mouse.up();
+      await page.waitForFunction(() => !__libraryPressAudit.pressed());
+      assert.deepEqual((await state(page)).project, changed);
+      assert.equal(changed.assets.filter((asset) => asset.name.startsWith("Library-")).length, 3);
+    } finally { await page.close(); }
+  });
+
+test("a native touch click survives a deferred library refresh and releases its press", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator("#asset-search").fill("Library-");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const button = page.locator('[data-action="select-media"]');
+    await button.hover();
+    const box = await button.boundingBox();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    assert.equal(await page.evaluate(() => __libraryPressAudit.pressed()), true);
+    await page.evaluate(() => __libraryPressAudit.restore());
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForFunction(() => !__libraryPressAudit.pressed());
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+  } finally { await page.close(); }
+});
+
+test("a native touch release without a delivered click cannot hold library rendering indefinitely", async () => {
+  const page = await mixedPage();
+  try {
+    await page.locator("#asset-search").fill("Library-");
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    const button = page.locator('[data-action="select-media"]');
+    await button.hover();
+    const box = await button.boundingBox(), element = await button.elementHandle();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: box.x + box.width / 2, y: box.y + box.height / 2 }] });
+    await page.evaluate(async () => {
+      await __libraryPressAudit.restore();
+      document.addEventListener("click", (event) => event.stopPropagation(), { capture: true, once: true });
+    });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForFunction(() => !__libraryPressAudit.pressed());
+    await page.waitForFunction((button) => !button.isConnected, element);
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 0);
+    await button.click();
+    assert.equal(await page.locator("[data-select-media]:checked").count(), 3);
+  } finally { await page.close(); }
+});
 
 test(
   "failed project persistence leaves an unused image available for a safe deletion retry",

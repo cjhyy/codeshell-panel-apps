@@ -8,7 +8,7 @@ import {
   planMagneticRemove,
 } from "../apps/video-studio/src/editor/timing-edits";
 import { setClipTimeMap } from "../apps/video-studio/src/editor/clip-edits";
-import { applyEditorOperations } from "../apps/video-studio/src/editor/operations";
+import { applyEditorOperations, type EditorOperation } from "../apps/video-studio/src/editor/operations";
 import {
   createTrack,
   defaultAudioMix,
@@ -19,6 +19,7 @@ import {
 import { EditorHistory } from "../apps/video-studio/src/editor/history";
 import type { EditorDocument, MediaClip, TextClip } from "../apps/video-studio/src/editor/types";
 import { validateEditorDocument } from "../apps/video-studio/src/editor/validation";
+import { dragReadoutRange, dragReadoutSeconds } from "../apps/video-studio/src/editor/timeline-drag-readout";
 const T = 240000;
 function fixture(): EditorDocument {
   const media = (id: string, start: number, trackId = "video"): MediaClip => ({
@@ -612,4 +613,50 @@ test("indexed magnetic planning retains strict whole-document validation and nes
   const valid = validateEditorDocument(before), snapshot = structuredClone(valid);
   assert.throws(() => planClipTiming(valid, "main", ["a"], { kind: "keep-left", time: 2 * T }, { ripple: true }), /来源|素材|超出|映射/);
   assert.deepEqual(valid, snapshot);
+});
+
+test("drag readout follows validated magnetic operation order, trims and no-op ranges without changing the source", () => {
+  const document = fixture();
+  document.sequences[0]!.timelineMode = "magnetic";
+  document.sequences[0]!.magneticTrackId = "video";
+  const before = structuredClone(document), anchor = read(document, "b");
+  const plans = [
+    planMagneticMove(document, "main", ["b", "sound"], { delta: 5 * T, anchorClipId: "b" }),
+    planMagneticMove(document, "main", ["b", "sound"], { delta: 0, anchorClipId: "b" }),
+    planClipTiming(document, "main", ["b"], { kind: "keep-right", time: 5 * T + 13 }, { ripple: true }),
+    planClipTiming(document, "main", ["b"], { kind: "keep-left", time: 7 * T + 19 }, { ripple: true }),
+  ];
+  for (const operations of plans) {
+    const committed = read(apply(document, operations), "b");
+    assert.deepEqual(dragReadoutRange("main", anchor, operations), {
+      start: committed.start, end: committed.start + committed.duration, duration: committed.duration,
+    });
+  }
+  assert.deepEqual(document, before);
+});
+
+test("drag readout projects repeated moves and updates exactly and never invents a deleted clip range", () => {
+  const anchor = Object.freeze({ id: "a", start: 240013, duration: 480019 });
+  const operations: EditorOperation[] = [
+    { type: "clip.move", sequenceId: "main", clipIds: ["a", "b"], delta: 8008 },
+    { type: "clip.update", sequenceId: "main", clipId: "a", patch: { start: 12, duration: 240019 } },
+    { type: "clip.move", sequenceId: "main", clipIds: ["a"], delta: 240013 },
+    { type: "clip.move", sequenceId: "other", clipIds: ["a"], delta: 1 },
+    { type: "clip.update", sequenceId: "main", clipId: "other", patch: { start: 0 } },
+  ];
+  // The helper needs no document/evaluator, validation pass or structured clone.
+  const clone = globalThis.structuredClone;
+  globalThis.structuredClone = () => { throw new Error("unexpected copy"); };
+  try {
+    assert.deepEqual(dragReadoutRange("main", anchor, operations), {
+      start: 240025, end: 480044, duration: 240019,
+    });
+    assert.equal(dragReadoutRange("main", anchor, [
+      { type: "clip.remove", sequenceId: "main", clipIds: ["a"] },
+    ]), undefined);
+    assert.equal(dragReadoutSeconds(1), "0.000004 秒");
+    assert.equal(dragReadoutSeconds(-1, true), "-0.000004 秒");
+    assert.equal(dragReadoutSeconds(0, true), "+0.000000 秒");
+    assert.equal(dragReadoutSeconds(240013), "1.000054 秒");
+  } finally { globalThis.structuredClone = clone; }
 });

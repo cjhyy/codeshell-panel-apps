@@ -53,7 +53,7 @@ async function fixture(t, options = {}) {
   // A localhost origin supplies the same secure-context randomUUID API as the installed desktop document.
   await page.route("http://127.0.0.1:41789/**", (route) =>
     route.fulfill({
-      contentType: "text/html",
+      contentType: "text/html; charset=utf-8",
       body: '<!doctype html><html><body><div id="timeline"></div><button id="undo">撤销最后一步</button><button id="redo">重做最后一步</button><input id="outside" aria-label="外部输入"></body></html>',
     }),
   );
@@ -266,6 +266,7 @@ async function fixture(t, options = {}) {
         timeline.render();
       },
       render: () => timeline.render(),
+      fitView: () => ({ scale: timeline.scale, left: timeline.viewport().scrollLeft, width: timeline.viewport().clientWidth }),
       gestureState: () => {
         const pending = timeline.pendingTrackGesture, drag = timeline.drag,
           pointerId = pending?.intent.pointer.pointerId ?? drag?.pointerId;
@@ -759,7 +760,7 @@ test("pending track drafts retain stationary Alt and freeze zoom until their poi
     await page.mouse.move(point.x + 64 * 2.94, point.y);
     const zoom = await page.locator("[data-et-zoom]").inputValue();
     assert.equal(await page.locator("[data-et-zoom]").isDisabled(), true);
-    for (const action of ["fit", "zoom-in", "zoom-out"])
+    for (const action of ["fit", "fit-selection", "zoom-in", "zoom-out"])
       assert.equal(await page.locator(`[data-et-action="${action}"]`).isDisabled(), true);
     await page.keyboard.down("Control"); await page.mouse.wheel(0, 200); await page.keyboard.up("Control");
     assert.equal(await page.locator("[data-et-zoom]").inputValue(), zoom);
@@ -4267,4 +4268,244 @@ test("fixed gain uses the fully validated public planner without a session ident
   await handle.focus(); await page.keyboard.press("ArrowDown"); await settle(page);
   assert.equal((await state(page)).document.sequences[0].clips[0].audio.volume, 1.09);
   assert.deepEqual((await state(page)).errors, []);
+});
+
+async function readDragReadout(page) {
+  return page.locator(".et-drag-readout b").allTextContents().then((values) =>
+    values.map((value) => Math.round(parseFloat(value) * 240000)));
+}
+async function beginReadoutDrag(page, id, dx, edge) {
+  const target = edge ? clip(page, id).locator(`[data-et-edge="${edge}"]`) : clip(page, id),
+    point = await center(target);
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  await page.mouse.move(point.x + dx, point.y);
+  await settle(page);
+  return point;
+}
+
+test("drag readout shows the actual grouped free move range and leaves one undoable edit", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "a", trackId: "v1", start: 240013 / 240000, duration: 480019 / 240000, groupId: "pair" },
+    { id: "b", trackId: "v2", start: 2, duration: 2, groupId: "pair" },
+  ] }), before = (await state(page)).document;
+  await beginReadoutDrag(page, "a", 80);
+  const readout = await readDragReadout(page);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), true);
+  assert.match(await page.locator(".et-drag-readout").textContent(), /位置变化/);
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  assert.deepEqual((await state(page)).document, before);
+  await page.mouse.up(); await settle(page);
+  const after = await state(page), anchor = findStateClip(after, "a"), companion = findStateClip(after, "b");
+  assert.deepEqual(readout, [anchor.start, anchor.start + anchor.duration, anchor.duration,
+    anchor.start - before.sequences[0].clips[0].start]);
+  assert.equal(companion.start - before.sequences[0].clips[1].start, readout[3]);
+  assert.equal(after.applied.length, 1);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+  await undo(page, before);
+});
+
+test("drag readout shows packed magnetic position instead of the desired pointer delta", async (t) => {
+  const page = await fixture(t, { magnetic: true, clips: magneticClips, caption: true });
+  await beginReadoutDrag(page, "a", 256);
+  assert.deepEqual(await readDragReadout(page), [480000, 960000, 480000, 480000]);
+  assert.equal(await page.locator(".et-notice").textContent(), "");
+  await page.mouse.up(); await settle(page);
+  assert.equal(findStateClip(await state(page), "a").start, 480000);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+});
+
+test("drag readout follows left and right free or magnetic trims including exact nonframe endpoints", async (t) => {
+  for (const magnetic of [false, true]) for (const edge of ["left", "right"]) {
+    const page = await fixture(t, { magnetic, clips: [
+      { id: "a", trackId: "v1", start: magnetic ? 0 : 240013 / 240000, duration: 480019 / 240000 },
+      { id: "b", trackId: "v1", start: magnetic ? 480019 / 240000 : 6, duration: 2 },
+    ] }), before = (await state(page)).document, original = before.sequences[0].clips[0];
+    await beginReadoutDrag(page, "a", edge === "left" ? 32 : -32, edge);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    assert.match(await page.locator(".et-drag-readout").textContent(), /时长变化/);
+    const readout = await readDragReadout(page);
+    await page.mouse.up(); await settle(page);
+    const result = findStateClip(await state(page), "a");
+    assert.deepEqual(readout, [result.start, result.start + result.duration, result.duration,
+      result.duration - original.duration]);
+    assert.equal((await state(page)).applied.length, 1);
+  }
+});
+
+test("drag readout hides invalid candidates, recovers in the same DOM and clears on cancellation or owner changes", async (t) => {
+  for (const ending of ["escape", "revision", "generation", "document", "sequence", "dispose"]) {
+    const page = await fixture(t, { secondSequence: true }), before = (await state(page)).document;
+    const point = await beginReadoutDrag(page, "a", 32, "right"), readout = page.locator(".et-drag-readout");
+    assert.equal(await readout.isVisible(), false);
+    assert.match(await page.locator(".et-notice").textContent(), /裁剪范围/);
+    await page.mouse.move(point.x - 32, point.y); await settle(page);
+    assert.equal(await readout.isVisible(), true);
+    const node = await readout.elementHandle();
+    await page.mouse.move(point.x - 48, point.y); await settle(page);
+    assert.equal(await node.evaluate((node) => node === document.querySelector(".et-drag-readout")), true);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    if (ending === "escape") await page.keyboard.press("Escape");
+    else if (ending === "revision") await page.evaluate(() => { fixture.externalChange(); fixture.render(); });
+    else if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    else if (ending === "document") await page.evaluate(() => fixture.replaceDocument());
+    else if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    else await page.evaluate(() => fixture.dispose());
+    await page.mouse.up(); await settle(page);
+    assert.equal(await node.evaluate((node) => node.hidden), true);
+    assert.equal((await state(page)).applied.length, 0);
+    if (ending === "escape" || ending === "dispose") assert.deepEqual((await state(page)).document, before);
+  }
+});
+
+test("drag readout checks final release coordinates before clearing without extra plan or document copies", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await captureOwnedPreviews(page);
+  await page.evaluate(() => {
+    const preview = editor.EditorTimeline.prototype.previewPlan;
+    editor.EditorTimeline.prototype.previewPlan = function (...args) {
+      preview.apply(this, args);
+      globalThis.lastDragReadout = [...document.querySelectorAll(".et-drag-readout b")].map((node) => node.textContent);
+    };
+    document.querySelector("#timeline").addEventListener("pointerdown", (event) => { globalThis.readoutPointerId = event.pointerId; }, { once: true });
+  });
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y); await settle(page);
+  assert.equal(await page.evaluate(() => ownedPlanCalls), 1);
+  await page.evaluate(({ x, y }) => document.querySelector("#timeline").dispatchEvent(new PointerEvent("pointerup", {
+    bubbles: true, pointerId: readoutPointerId, buttons: 0, clientX: x + 64, clientY: y,
+  })), point);
+  await page.mouse.up(); await settle(page);
+  assert.equal(await page.evaluate(() => ownedPlanCalls), 2);
+  const range = await page.evaluate(() => lastDragReadout.map((value) => Math.round(parseFloat(value) * 240000)));
+  assert.deepEqual(range, [480000, 960000, 480000, 240000]);
+  assert.equal(findStateClip(await state(page), "a").start, range[0]);
+  assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+});
+
+test("drag readout wraps at 390 pixels without changing timeline height or intercepting handles", async (t) => {
+  const page = await fixture(t, { clips: [{ id: "a", trackId: "v1", start: 0, duration: 1.5 }] });
+  await page.setViewportSize({ width: 390, height: 620 });
+  await page.addStyleTag({ content: "#timeline{width:100%}body{padding:12px}" }); await settle(page);
+  const before = await page.locator("#timeline").boundingBox();
+  await beginReadoutDrag(page, "a", -20, "right");
+  const readout = page.locator(".et-drag-readout"), box = await readout.boundingBox();
+  assert.equal(await readout.isVisible(), true);
+  assert.ok(box.x >= 12 && box.x + box.width <= 378);
+  assert.ok(box.height > 36, "Narrow layout wraps the fixed readout instead of widening the timeline");
+  assert.equal((await page.locator("#timeline").boundingBox()).height, before.height);
+  assert.equal(await readout.evaluate((node) => getComputedStyle(node).pointerEvents), "none");
+  assert.equal(await readout.getAttribute("aria-live"), null);
+  assert.equal(await page.locator(".et-notice").getAttribute("role"), "status");
+  await page.locator("#timeline").screenshot({ path: "/tmp/video-studio-drag-readout-390.png" });
+  await page.mouse.up(); await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+});
+
+test("drag readout retains the original range for a packed no-op and hides a valid clip removal", async (t) => {
+  for (const remove of [false, true]) {
+    const page = await fixture(t, { magnetic: true, clips: magneticClips, caption: true });
+    await beginReadoutDrag(page, "a", remove ? 192 : 32, remove ? "left" : undefined);
+    assert.equal(await page.locator(".et-notice").textContent(), "");
+    assert.equal(await page.locator(".et-drag-readout").isVisible(), !remove);
+    if (!remove) assert.deepEqual(await readDragReadout(page), [0, 480000, 480000, 0]);
+    await page.mouse.up(); await settle(page);
+    const result = await state(page);
+    assert.equal(result.applied.length, remove ? 1 : 0);
+    assert.deepEqual(result.errors, []);
+    if (remove) assert.equal(findStateClip(result, "a"), undefined);
+    else assert.equal(findStateClip(result, "a").start, 0);
+    assert.equal(await page.locator(".et-drag-readout").isVisible(), false);
+  }
+});
+
+test("fit selection frames a distant exact-tick multi-selection without changing its locked clips, clock or history", async (t) => {
+  const page = await fixture(t, { ntsc: true, clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 7200 },
+    { id: "a", trackId: "v2", start: 3600 + 13 / 240000, duration: 2 + 7 / 240000 },
+    { id: "b", trackId: "v3", start: 3604 + 7 / 240000, duration: 3 + 19 / 240000 },
+  ] });
+  await page.evaluate(() => { fixture.externalTrackEdit("v2", { locked: true }); fixture.select(["b", "a"]); fixture.seek(13); });
+  const before = await state(page);
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const view = await page.evaluate(() => fixture.fitView()), a = await clip(page, "a").boundingBox(), b = await clip(page, "b").boundingBox(), viewport = await page.locator(".et-scroll").boundingBox();
+  assert.ok(a.x >= viewport.x + 28 && a.x <= viewport.x + 32);
+  assert.ok(b.x + b.width <= viewport.x + viewport.width - 28);
+  assert.ok(b.x + b.width - a.x > view.width - 64);
+  assert.deepEqual(await state(page), before);
+});
+
+test("fit selection Shift F runs once while held and leaves input, IME and unmodified F alone", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 7200 }, { id: "a", trackId: "v2", start: 3600, duration: 2 },
+  ] });
+  await page.evaluate(() => {
+    fixture.select(["a"]); globalThis.fitSelectionCalls = 0;
+    const action = editor.EditorTimeline.prototype.action;
+    editor.EditorTimeline.prototype.action = function (name, ...args) { if (name === "fit-selection") fitSelectionCalls++; return action.call(this, name, ...args); };
+  });
+  const before = await state(page);
+  await page.locator("#timeline").focus(); await page.keyboard.down("Shift");
+  await page.keyboard.down("f"); await page.keyboard.down("f"); await page.keyboard.down("f");
+  await page.keyboard.up("f"); await page.keyboard.up("Shift"); await settle(page);
+  assert.equal(await page.evaluate(() => fitSelectionCalls), 1);
+  const view = await page.evaluate(() => fixture.fitView());
+  await page.keyboard.press("f");
+  await page.locator("#timeline").dispatchEvent("keydown", { key: "F", shiftKey: true, isComposing: true });
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("中文草稿"); await page.keyboard.press("Shift+F");
+  assert.equal(await page.evaluate(() => fitSelectionCalls), 1);
+  assert.deepEqual(await page.evaluate(() => fixture.fitView()), view);
+  assert.deepEqual(await state(page), before);
+});
+
+test("fit selection is unavailable when empty and respects the full timeline pixel budget for a tiny selection", async (t) => {
+  const page = await fixture(t, { clips: [
+    { id: "long", trackId: "v1", start: 0, duration: 86400 },
+    { id: "a", trackId: "v2", start: 43200 + 13 / 240000, duration: 13 / 240000 },
+  ] });
+  assert.equal(await page.getByRole("button", { name: "适合所选片段", exact: true }).isDisabled(), true);
+  const empty = await page.evaluate(() => fixture.fitView());
+  await page.locator("#timeline").focus(); await page.keyboard.press("Shift+F");
+  assert.deepEqual(await page.evaluate(() => fixture.fitView()), empty);
+  await page.evaluate(() => fixture.select(["a"])); const before = await state(page);
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const view = await page.evaluate(() => fixture.fitView());
+  assert.equal(view.scale, 12000000 / 86400);
+  assert.ok((await clip(page, "a").boundingBox()).x >= (await page.locator(".et-scroll").boundingBox()).x);
+  assert.deepEqual(await state(page), before);
+  await page.evaluate(() => fixture.select(["unknown"]));
+  assert.equal(await page.getByRole("button", { name: "适合所选片段", exact: true }).isDisabled(), true);
+});
+
+for (const width of [280, 390]) {
+  test(`fit selection remains reachable in the ${width} pixel timeline toolbar`, async (t) => {
+    const page = await fixture(t, { clips: [
+      { id: "long", trackId: "v1", start: 0, duration: 7200 }, { id: "a", trackId: "v2", start: 3600, duration: 2 },
+    ] });
+    await page.setViewportSize({ width, height: 900 });
+    await page.locator("#timeline").evaluate((node, width) => { node.style.width = `${width - 24}px`; }, width);
+    await page.evaluate(() => { fixture.select(["a"]); fixture.render(); });
+    const before = await state(page);
+    await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+    const selected = await clip(page, "a").boundingBox(), viewport = await page.locator(".et-scroll").boundingBox(),
+      button = await page.getByRole("button", { name: "适合所选片段", exact: true }).boundingBox();
+    assert.ok(button.x >= 0 && button.x + button.width <= width, "The toolbar keeps the view button reachable after fitting");
+    assert.ok(selected.x >= viewport.x && selected.x + selected.width <= viewport.x + viewport.width);
+    assert.deepEqual(await state(page), before);
+    await page.screenshot({ path: `/tmp/video-studio-fit-selection-${width}.png` });
+  });
+}
+
+test("fit selection finishes its own track draft even without a parent property finisher", async (t) => {
+  const page = await fixture(t); await page.evaluate(() => fixture.select(["a"]));
+  const before = await state(page);
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("审核画面");
+  await page.getByRole("button", { name: "适合所选片段", exact: true }).click(); await settle(page);
+  const after = await state(page), view = await page.evaluate(() => fixture.fitView());
+  assert.equal(after.document.revision, before.document.revision + 1);
+  assert.equal(after.document.sequences[0].tracks[0].name, "审核画面");
+  assert.equal(view.scale, (view.width - 60) / 2);
+  assert.equal(after.applied.length, before.applied.length + 1);
+  await page.locator("#undo").click(); await settle(page);
+  assert.deepEqual((await state(page)).document.sequences, before.document.sequences);
 });

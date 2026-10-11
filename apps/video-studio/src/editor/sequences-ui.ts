@@ -25,6 +25,18 @@ export interface EditorSequencesContext {
   activate(sequenceId: string): void;
   onError(error: unknown): void;
 }
+interface SequenceRemoval {
+  identity?: SessionIdentity;
+  documentId: string;
+  revision: number;
+  targetId: string;
+  activeSequenceId: string;
+  viewedSequenceId: string;
+  name: string;
+  clips: number;
+  markers: number;
+  duration: Tick;
+}
 const rates: Array<[string, string]> = [
   ["24/1", "24"],
   ["25/1", "25"],
@@ -85,6 +97,7 @@ export class EditorSequences {
   private disposed = false;
   private error = "";
   private status = "";
+  private removal?: SequenceRemoval;
   private open = new Set(["序列管理", "复合片段"]);
   constructor(
     container: HTMLElement,
@@ -96,6 +109,7 @@ export class EditorSequences {
   }
   dispose(): void {
     this.disposed = true;
+    this.removal = undefined;
     this.root.remove();
   }
   private report(error: unknown): void {
@@ -192,6 +206,76 @@ export class EditorSequences {
     this.root.querySelector("fieldset")!.append(details);
     return body;
   }
+  private removalCurrent(request: SequenceRemoval, doc: EditorDocument, revision = request.revision,
+    active = request.activeSequenceId, viewed = [request.viewedSequenceId]): boolean {
+    const identity = this.context.identity?.(), selected = this.context.selection().sequenceId;
+    return !this.disposed && this.removal === request && this.managedId === request.targetId &&
+      doc.id === request.documentId && doc.revision === revision && doc.activeSequenceId === active && viewed.includes(selected) &&
+      (!request.identity || (request.identity.documentId === request.documentId && request.identity.revision === request.revision &&
+        sameIdentity(request.identity, identity, false))) &&
+      (!identity || (identity.documentId === doc.id && identity.revision === doc.revision));
+  }
+  private requestRemoval(request: SequenceRemoval): void {
+    if (this.pending || this.disposed) return;
+    this.removal = request;
+    try {
+      if (!this.removalCurrent(request, this.context.read())) throw new Error("序列或工程版本已变化，请重新确认删除");
+      this.error = this.status = "";
+      if (!request.clips && !request.markers) { void this.removeSequence(request); return; }
+      this.signature = "";
+      this.render();
+    } catch (error) {
+      if (this.removal !== request || this.disposed) return;
+      this.removal = undefined;
+      this.report(error);
+      this.signature = "";
+      this.render();
+    }
+  }
+  /** Deletion alone requires an exact version; ordinary sequence forms still merge as before. */
+  private async removeSequence(request: SequenceRemoval): Promise<void> {
+    if (this.pending || this.disposed || this.removal !== request) return;
+    let applying = false;
+    try {
+      const before = this.context.read();
+      if (!this.removalCurrent(request, before)) throw new Error("序列或工程版本已变化，请重新确认删除");
+      const plan = planRemoveSequence(before, request.targetId);
+      if (!this.removalCurrent(request, before)) return;
+      this.pending = applying = true;
+      this.error = this.status = "";
+      this.root.querySelectorAll("fieldset").forEach((node) => { node.disabled = true; });
+      await this.context.apply(plan.operations, "删除序列");
+      const after = this.context.read(), viewed = request.activeSequenceId === request.targetId
+        ? [request.viewedSequenceId, plan.sequenceId] : [request.viewedSequenceId];
+      if (!this.removalCurrent(request, after, request.revision + 1, plan.sequenceId, viewed) ||
+        after.sequences.some((seq) => seq.id === request.targetId)) return;
+      if (request.activeSequenceId === request.targetId) {
+        this.context.select({ sequenceId: plan.sequenceId, clipIds: [] });
+        if (!this.removalCurrent(request, this.context.read(), request.revision + 1, plan.sequenceId, viewed)) return;
+        this.context.activate(plan.sequenceId);
+        if (!this.removalCurrent(request, this.context.read(), request.revision + 1, plan.sequenceId, viewed)) return;
+      }
+      this.status = `已删除“${request.name}”（${request.clips} 个片段、${request.markers} 个标记），可在工程历史中撤销。`;
+      this.removal = undefined;
+    } catch (error) {
+      if (this.removal === request && !this.disposed) {
+        try {
+          const fresh = this.context.read();
+          if (this.removal !== request || this.disposed) return;
+          const current = this.removalCurrent(request, fresh);
+          if (this.removal !== request || this.disposed) return;
+          if (current) this.report(error);
+          else {
+            this.removal = undefined;
+            if (!applying) this.error = "序列或工程版本已变化，请重新确认删除";
+          }
+        } catch { if (this.removal === request) this.removal = undefined; }
+      }
+    } finally {
+      if (applying) this.pending = false;
+      if (!this.disposed) { this.signature = ""; this.render(); }
+    }
+  }
   render(): void {
     if (this.disposed) return;
     const identity = this.context.identity?.();
@@ -199,17 +283,22 @@ export class EditorSequences {
       this.managedId = "";
       this.error = "";
       this.status = "";
+      this.removal = undefined;
       this.signature = "";
     }
     this.renderedIdentity = identity;
     if (this.pending) return;
-    const doc = this.context.read(),
-      selection = this.context.selection(),
-      current =
+    const renderedRemoval = this.removal;
+    const doc = this.context.read(), selection = this.context.selection();
+    if (this.disposed || this.removal !== renderedRemoval) return;
+    const current =
         doc.sequences.find((seq) => seq.id === selection.sequenceId) ??
         doc.sequences.find((seq) => seq.id === doc.activeSequenceId)!;
     const managed = doc.sequences.find((seq) => seq.id === this.managedId) ?? current;
     this.managedId = managed.id;
+    const removalCurrent = !renderedRemoval || this.removalCurrent(renderedRemoval, doc);
+    if (this.disposed || this.removal !== renderedRemoval) return;
+    if (!removalCurrent) this.removal = undefined;
     const signature = JSON.stringify([
       identity?.documentId,
       identity?.generation,
@@ -219,6 +308,7 @@ export class EditorSequences {
       this.managedId,
       this.error,
       this.status,
+      !!this.removal,
     ]);
     if (signature === this.signature) return;
     this.signature = signature;
@@ -241,6 +331,7 @@ export class EditorSequences {
       )
         return;
       this.managedId = picker.value;
+      this.removal = undefined;
       this.error = "";
       this.status = "";
       this.signature = "";
@@ -306,14 +397,33 @@ export class EditorSequences {
       seq.clips.some((clip) => clip.kind === "sequence" && clip.sequenceId === managed.id),
     );
     const locked = managed.tracks.some((track) => track.locked);
+    const removal: SequenceRemoval = {
+      identity: identity ? { ...identity } : undefined, documentId: doc.id, revision: doc.revision,
+      targetId: managed.id, activeSequenceId: doc.activeSequenceId, viewedSequenceId: selection.sequenceId,
+      name: managed.name, clips: managed.clips.length, markers: managed.markers.length, duration: sequenceDuration(managed),
+    };
     manage.append(
       this.button(
         "删除空闲序列",
-        () =>
-          void this.run("删除序列", (document) => planRemoveSequence(document, managed.id), true),
+        () => this.requestRemoval(removal),
         doc.sequences.length === 1 || referenced || locked,
       ),
     );
+    if (this.removal && (this.removal.clips || this.removal.markers)) {
+      const request = this.removal, confirmation = element("div", "eseq-remove-confirmation"), actions = element("div", "eseq-actions");
+      confirmation.dataset.sequenceRemoveConfirmation = "";
+      confirmation.setAttribute("role", "group");
+      confirmation.setAttribute("aria-label", "确认删除序列");
+      confirmation.append(element("p", "", `删除“${request.name}”？`),
+        element("p", "eseq-meta", `${request.clips} 个片段 · ${request.markers} 个标记 · ${(request.duration / TICKS_PER_SECOND).toFixed(2)} 秒`),
+        element("p", "eseq-note", "确认后仅移除此序列，可在工程历史中撤销。"));
+      actions.append(this.button("取消删除", () => {
+        if (this.removal !== request) return;
+        this.removal = undefined; this.signature = ""; this.render();
+      }), this.button("确认删除", () => { void this.removeSequence(request); }));
+      confirmation.append(actions);
+      manage.append(confirmation);
+    }
     if (referenced)
       manage.append(element("p", "eseq-note", "此序列被复合片段引用，移除引用后才能删除。"));
     else if (locked) manage.append(element("p", "eseq-note", "序列含锁定轨道，解锁后才能删除。"));

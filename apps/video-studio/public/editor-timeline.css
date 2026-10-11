@@ -162,6 +162,32 @@
   background: #75ddcf14;
 }
 /* Anchored to the timeline, not the scrolling toolbar, so long wording can wrap. */
+.et-drag-readout {
+  position: absolute;
+  top: 46px;
+  left: 50%;
+  z-index: 19;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid #44635f;
+  border-radius: 6px;
+  color: #c4d5d2;
+  background: #182522f2;
+  box-shadow: 0 6px 20px #0006;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.et-drag-readout[hidden] { display: none; }
+.et-drag-readout span { white-space: nowrap; }
+.et-drag-readout b { color: #e6f8f4; font-weight: 500; }
+.et-drag-readout i { font-style: normal; }
 .et-notice {
   position: absolute;
   top: 46px;

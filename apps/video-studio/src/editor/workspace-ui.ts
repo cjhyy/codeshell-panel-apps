@@ -52,6 +52,11 @@ import { resolvePlayheadPosition } from "./playhead-position";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
+  /** View-only preference; the provider serializes saves across mounted workspaces. */
+  previewQuality?: {
+    load(): unknown | Promise<unknown>;
+    save(value: PreviewResolution): unknown | Promise<unknown>;
+  };
   showComposition?(): void;
   showShortcuts?(): void | Promise<void>;
   session: EditorSession;
@@ -142,6 +147,7 @@ export class EditorWorkspace {
   private visible = true;
   private sourcePreview = false;
   private disposed = false;
+  private previewQualityInteracted = false;
   private preparing?: AbortController;
   /** Task start can wait minutes without progress while the Host copies originals. */
   private preparationClock?: { started: number; timer: ReturnType<typeof setInterval> };
@@ -383,6 +389,36 @@ export class EditorWorkspace {
       for (const type of this.embeddedEvents)
         container.addEventListener(type, this.stopLegacyEvent);
     this.unsubscribe = options.session.subscribe((state) => this.refresh(state));
+    void this.restorePreviewQuality();
+  }
+  private async restorePreviewQuality(): Promise<void> {
+    try {
+      const value = await this.options.previewQuality?.load();
+      if (!this.disposed && !this.previewQualityInteracted && (value === 0.5 || value === 0.25))
+        this.setPreviewQuality(value);
+    } catch { /* A viewer preference must not prevent editing. */ }
+  }
+  private setPreviewQuality(value: PreviewResolution, remember = false): void {
+    if (this.disposed || ![1, 0.5, 0.25].includes(value)) return;
+    if (remember) {
+      this.previewQualityInteracted = true;
+      try {
+        void Promise.resolve(this.options.previewQuality?.save(value)).catch(() => {});
+      } catch { /* Storage is optional; the chosen preview quality still applies. */ }
+    }
+    this.get<HTMLSelectElement>("[data-ew-quality]").value = String(value);
+    this.run(async () => {
+      this.canvasEditor.cancel();
+      this.cancelPreparation();
+      try {
+        const drawn = await this.preview.setResolution(value, this.playhead);
+        if (drawn && !this.disposed && !this.preparing)
+          this.get("[data-ew-preview-error]").hidden = true;
+      } catch (error) {
+        this.previewError(error);
+        throw error;
+      }
+    });
   }
 
   private viewReadCurrent(scope: ViewReadScope): boolean {
@@ -676,6 +712,7 @@ export class EditorWorkspace {
   }
   async togglePlayback(): Promise<void> {
     if (this.disposed) return;
+    this.previewQualityInteracted = true;
     if (this.preparing) {
       this.cancelPreparation();
       return;
@@ -792,6 +829,7 @@ export class EditorWorkspace {
   /** Browsing source footage replaces the monitor, while the canonical timeline stays mounted. */
   setSourcePreview(active: boolean): void {
     if (this.sourcePreview === active || this.disposed) return;
+    this.previewQualityInteracted = true;
     this.sourcePreview = active;
     if (active) {
       this.cancelPreparation();
@@ -800,6 +838,7 @@ export class EditorWorkspace {
     } else if (this.visible) this.run(() => this.seek(this.playhead));
   }
   private activateComposition = (): void => {
+    this.previewQualityInteracted = true;
     if (this.sourcePreview) this.options.showComposition?.();
   };
   refreshTimelineMedia(): void {
@@ -990,7 +1029,10 @@ export class EditorWorkspace {
   private input = (event: Event) => {
     const target = event.target as HTMLInputElement;
     // seek() pauses immediately and supersedes older decodes, so playback cannot move the thumb.
-    if (target.matches("[data-ew-seek]")) this.run(() => this.seek(Number(target.value)));
+    if (target.matches("[data-ew-seek]")) {
+      this.previewQualityInteracted = true;
+      this.run(() => this.seek(Number(target.value)));
+    }
     if (target.matches("[data-ew-search]")) {
       this.search = target.value;
       this.renderAssets();
@@ -999,21 +1041,7 @@ export class EditorWorkspace {
   private change = (event: Event) => {
     const target = event.target as HTMLInputElement;
     if (target.matches("[data-ew-quality]"))
-      this.run(async () => {
-        this.canvasEditor.cancel();
-        this.cancelPreparation();
-        try {
-          const drawn = await this.preview.setResolution(
-            Number(target.value) as PreviewResolution,
-            this.playhead,
-          );
-          if (drawn && !this.disposed && !this.preparing)
-            this.get("[data-ew-preview-error]").hidden = true;
-        } catch (error) {
-          this.previewError(error);
-          throw error;
-        }
-      });
+      this.setPreviewQuality(Number(target.value) as PreviewResolution, true);
     if (target.matches("[data-ew-seek]")) this.run(() => this.seek(Number(target.value)));
     if (target.matches("[data-ew-project-name]"))
       this.run(() => this.apply([{ type: "project.rename", name: target.value }], "工程重命名"));
@@ -1027,6 +1055,7 @@ export class EditorWorkspace {
     if (this.visible && !this.disposed) this.keydown(event);
   }
   private keydown = (event: KeyboardEvent) => {
+    this.previewQualityInteracted = true;
     if (
       (event.target as Element).closest(
         "input,textarea,select,button,[contenteditable=true],dialog",

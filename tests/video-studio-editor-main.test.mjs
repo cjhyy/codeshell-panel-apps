@@ -40,7 +40,7 @@ before(async () => {
   // Expose the bundled class only in this isolated test output for real-session read budgets.
   const modulePath = resolve(output, "main.mjs");
   await writeFile(modulePath, (await readFile(modulePath, "utf8")) +
-    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project) };\n");
+    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project), remountWorkspace: async () => { const options = editorWorkspace.options; await editorWorkspace.dispose(); editorWorkspace = new EditorWorkspace(editorRoot, options); } };\n");
   server = createServer(async (request, response) => {
     const path = resolve(
       output,
@@ -148,7 +148,19 @@ async function openPage(t, options = {}) {
         "video-studio-current": [{ revision: 1, updatedAt: 1, label: "原始 V1", data: seed }],
         ...options.records,
       };
-      const preferences = JSON.parse(localStorage.getItem("editor-main-preferences") ?? "{}");
+      const preferences = { ...options.preferences, ...JSON.parse(localStorage.getItem("editor-main-preferences") ?? "{}") };
+      if (options.localQualityPreference !== undefined && localStorage.getItem("video-studio-preview-quality-v1") === null)
+        localStorage.setItem("video-studio-preview-quality-v1", JSON.stringify(options.localQualityPreference));
+      if (options.blockQualityLocalStorage || options.failQualityLocalWrite) {
+        for (const name of ["getItem", "setItem"]) {
+          const original = Storage.prototype[name];
+          Storage.prototype[name] = function (key, ...args) {
+            if (key === "video-studio-preview-quality-v1" && (options.blockQualityLocalStorage || name === "setItem"))
+              throw new Error("浏览器偏好存储不可用");
+            return original.call(this, key, ...args);
+          };
+        }
+      }
       let failCurrent = false;
       const calls = [],
         attempted = [],
@@ -164,6 +176,7 @@ async function openPage(t, options = {}) {
         attempted,
         tools,
         events,
+        preference: (key) => structuredClone(preferences[key]),
         current: () => {
           const value = records["video-studio-current"][0].data;
           return structuredClone(
@@ -442,8 +455,19 @@ async function openPage(t, options = {}) {
             if (method === "media.assets.get" && options.voiceover.assets?.[args.id])
               return { asset: structuredClone(options.voiceover.assets[args.id]) };
           }
-          if (method === "storage.get") return structuredClone(preferences[args.key] ?? null);
+          if (method === "storage.get") {
+            const saved = structuredClone(preferences[args.key] ?? null);
+            if (args.key === "video-studio-preview-quality-v1") {
+              if (options.failQualityStorage) throw new Error("Host偏好存储不可用");
+              if (options.holdQualityLoad) await new Promise((resolve) => globalThis.releaseMainQualityLoad = resolve);
+            }
+            return saved;
+          }
           if (method === "storage.set") {
+            if (args.key === "video-studio-preview-quality-v1") {
+              if (options.failQualityStorage || options.failQualityWritesOnly) throw new Error("Host偏好存储不可用");
+              if (options.holdQualityWrites) await new Promise((resolve) => (globalThis.mainQualityWrites ??= []).push({ value: args.value, resolve }));
+            }
             preferences[args.key] = structuredClone(args.value);
             persist();
             return true;
@@ -833,6 +857,100 @@ test("workspace dividers resize the fixed editor and keep their sizes across tab
   await page.locator("#editor-workspace").waitFor({ state: "visible" });
   assert.ok(Math.abs((await width(".library-panel")) - resizedLibrary) <= 1);
   assert.ok(Math.abs((await height("[data-ew-timeline]")) - resizedTimeline) <= 1);
+});
+
+test("main remembers an explicitly chosen preview quality across reopening without editing the project", async (t) => {
+  const page = await openPage(t), before = await saved(page), quality = page.getByLabel("预览质量", { exact: true });
+  assert.equal(await quality.inputValue(), "1");
+  await quality.selectOption("0.25");
+  await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  assert.deepEqual(await saved(page), before);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  assert.equal(await quality.inputValue(), "0.25");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("main serializes fast quality preference writes across remounts and the last manual value survives reload", async (t) => {
+  const page = await openPage(t, { holdQualityWrites: true }), quality = page.getByLabel("预览质量", { exact: true });
+  const before = await saved(page);
+  await quality.selectOption("1"); await quality.selectOption("0.5");
+  await page.evaluate(() => __mainReadAudit.remountWorkspace());
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  await quality.selectOption("0.25");
+  await page.waitForFunction(() => mainQualityWrites.length === 1);
+  assert.deepEqual(await page.evaluate(() => mainQualityWrites.map((write) => write.value.value)), [1]);
+  await page.evaluate(() => mainQualityWrites[0].resolve()); await page.waitForFunction(() => mainQualityWrites.length === 2);
+  assert.deepEqual(await page.evaluate(() => mainQualityWrites.map((write) => write.value.value)), [1, 0.5]);
+  await page.evaluate(() => mainQualityWrites[1].resolve()); await page.waitForFunction(() => mainQualityWrites.length === 3);
+  await page.evaluate(() => mainQualityWrites[2].resolve());
+  await page.waitForFunction(() => __mainHost.preference("video-studio-preview-quality-v1")?.value === 0.25);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("a late saved quality never pauses already started main playback", async (t) => {
+  const page = await openPage(t, { holdQualityLoad: true, preferences: { "video-studio-preview-quality-v1": 0.25 } });
+  await action(page, "play").click(); await page.waitForFunction(() => document.querySelector('[data-ew-action="play"]').getAttribute("aria-label") === "暂停");
+  await page.evaluate(() => releaseMainQualityLoad()); await settle(page);
+  assert.equal(await page.getByLabel("预览质量", { exact: true }).inputValue(), "1");
+  assert.equal(await action(page, "play").getAttribute("aria-label"), "暂停");
+  assert.equal(await page.locator("[data-ew-canvas]").evaluate((canvas) => canvas.width), 640);
+});
+
+test("main quality preferences fall back to browser storage and remain editable if both stores fail", async (t) => {
+  const page = await openPage(t, { failQualityStorage: true });
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1"))?.value === 0.5);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  const failed = await openPage(t, { failQualityStorage: true, blockQualityLocalStorage: true });
+  await failed.getByLabel("预览质量", { exact: true }).selectOption("0.25");
+  await failed.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  const name = failed.locator("#project-name");
+  await name.fill("偏好失败后继续剪辑"); await name.press("Tab");
+  await waitSaved(failed); assert.equal((await saved(failed)).name, "偏好失败后继续剪辑");
+});
+
+test("a failed Host preference write cannot make its older readable value defeat a newer browser choice", async (t) => {
+  const page = await openPage(t, { failQualityWritesOnly: true, preferences: { "video-studio-preview-quality-v1": 1 } });
+  const before = await saved(page);
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1"))?.value === 0.5);
+  assert.equal(await page.evaluate(() => __mainHost.preference("video-studio-preview-quality-v1")), 1);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("a failed browser preference write cannot make its older value defeat a newer Host choice", async (t) => {
+  const page = await openPage(t, { failQualityLocalWrite: true, localQualityPreference: { value: 0.25, updatedAt: 1 } });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => __mainHost.preference("video-studio-preview-quality-v1")?.value === 0.5);
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("video-studio-preview-quality-v1")).value), 0.25);
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.5");
+});
+
+test("quality records validate both value and clock before competing with a valid legacy preference", async (t) => {
+  for (const record of [{ value: 0.5, updatedAt: "later" }, { value: 0, updatedAt: 99999 }, { value: 0.5, updatedAt: -1 }, { value: 0.5, updatedAt: NaN }, { value: 0.5, updatedAt: Number.MAX_SAFE_INTEGER }]) {
+    const page = await openPage(t, { preferences: { "video-studio-preview-quality-v1": record }, localQualityPreference: 0.25 });
+    await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
+  }
+});
+
+test("a delayed valid preference with a later clock cannot defeat a manual choice after reload", async (t) => {
+  const updatedAt = Date.now() + 60000;
+  const page = await openPage(t, { holdQualityLoad: true, preferences: { "video-studio-preview-quality-v1": { value: 0.5, updatedAt } } });
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.25");
+  await page.evaluate(() => releaseMainQualityLoad());
+  await page.waitForFunction((stamp) => __mainHost.preference("video-studio-preview-quality-v1")?.updatedAt > stamp, updatedAt);
+  assert.equal(await page.getByLabel("预览质量", { exact: true }).inputValue(), "0.25");
+  await page.reload(); await page.locator("#editor-workspace").waitFor({ state: "visible" });
+  await page.evaluate(() => releaseMainQualityLoad());
+  await page.waitForFunction(() => document.querySelector("[data-ew-quality]").value === "0.25");
 });
 
 test("saved video and audio reopen without starting native proxies, waveforms or voice probes", async (t) => {
