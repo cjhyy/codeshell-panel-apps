@@ -6750,7 +6750,7 @@
     },
     "editor-runtime": {
       "entry": "app/tools/editor-runtime.mjs",
-      "sha256": "992b28337a6f4b9a2d04f89a2ba3888c2ffe62db8c068d8854e6681853f8ec1c"
+      "sha256": "3d95685719fc4fd8d7ec6e76f9810c520747980b26c247816b80a25386b222d6"
     },
     "editor-sync": {
       "entry": "app/tools/editor-sync.mjs",

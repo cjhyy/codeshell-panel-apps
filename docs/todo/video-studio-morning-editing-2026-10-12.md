@@ -620,3 +620,58 @@ ghost最终style和停止均正确，未因没有发现问题而改源。
 日志`/tmp/video-studio-narrow-autoscroll-audit.log`。
 
 继续优化至11:00；goal与automation11保持active，未发布、未安装。
+
+
+## 第十六批源码冻结：当前成片 PNG、字幕精确定位与调色
+
+- 已整合纯新增量923d813+其唯一子增量73ce93e、f874824、45afc4a；不重复ea659cd，
+  已被末帧一行修复替代的e79也未挑选。RGB/HSL组合源1debc256与独立复核一致。
+- 保存已应用画面PNG沿现Preview精确seek、媒体池、合成器及Main下载函数，不另建
+  renderer或导出工程。按当前预览质量保存，明确尺寸并暂停播放；受管属性/轨名合法
+  草稿首击完成后再取帧，无效草稿保留纠正，未应用Timing及工程名草稿保持。
+  目标解码完成、renderedTime、generation、doc/seq/quality全部核对后才编码；晚到
+  PNG在工程、选择、时间、质量、source preview、隐藏或dispose变化后丢弃。
+  首版真实pending新红图片时直接canvas下载会拿旧4386B demo，精确取帧后为新243B
+  红图；代理最终Main/Workspace/Preview affected579/579、30目标及类型通过。
+- 末尾13tick反例：PNG正确保存80013，但随后同clock刷新原先会floor回80000。
+  仅将capture目标标为exactPlayhead，真实同clock与1/2质量刷新仍80013红色；1目标
+  与类型通过，独立最终源审无阻断。280/390入口可见可点、能自然换行。
+- 字幕行时间原先默认floor：start240013时实际compositor的text layers为空，clock
+  240000；查找下一条则精确240013并出现该字幕。只改row seek exact，保留既有
+  owner与迟到选择保护；普通、锁轨、被父序列引用的子序列三个真实回归均保持原
+  tick、选中和工程/history不改。代理CaptionsUI71/71、5目标与类型通过。
+- Workspace append冲突按parent完整prefix核对，保留既有15批、字幕及PNG新增用例；
+  fixture两组imports/CSS/下载捕获逐项合并。源码播放分支同时保留quality用户交互
+  标志和PNG取消，不把两个生命周期二选一。
+- 根组合又实证一处提示交互：quality偏好恢复0.5、解码仍pending时，PNG标题仍称
+  320×180，实际160×90。取消与尺寸提示刷新集中到既有setPreviewQuality helper，
+  原native change重复块移除；1红→1绿，并验证最终PNG尺寸/红像素。日志
+  `/tmp/video-studio-frame-png-quality-integration-{red,green}.log`。
+- RGB可分离处理仅在无hue/saturation/HSL、至少1024pixels时构造调用内3×256 byte
+  LUT，保持gain/对比亮度/clamp/master/channel/round顺序与alpha=0原RGB。HSL只外提
+  本次调用的curve refs，并对合法色带hue简化重复mod；越界/NaN直接caller沿旧wrap
+  路径，mutable下次调用重读，没有全局缓存或新增拒绝规则。
+- 组合领域13/13、type、完整媒体229/229通过（153706ms）；126设置774144pixels对
+  f72 scalar逐byte相同。最终Chromium固定基准505设置3232505pixels+所有单帧最终
+  composite逐byte相同；原3preset各11交错样本，新增HSL各5，24色带只测1080。
+  raw饱和度1080 200.2→183.2ms，4K799.7→732；单帧全质量179.6→161.7及724.8→658.4。
+  6色带单帧1080 338.3→283.5、4K1330.4→1119.9；24色带+曲线1080 944.2→697.6。
+  最终各测量case均改善，修正此前RGB-only对照约7%退化；旧report完整保留，未覆盖。
+  RGB-only及最终组合JSON分别为docs/video-studio-color-{lut,combined}-benchmark.json，
+  可用scripts/bench-video-studio-color.mjs复跑，记录source/script/browser/system及
+  全部样本。计时排除素材解码、音频、UI、代理准备，不能当作整体预览FPS。
+
+根冻结源typecheck、build/build:check/validate39通过；offline1131通过3可选跳过，
+native voice5通过1可选跳过，workspace docs5/5。真实媒体230/230通过，154531ms，
+日志`/tmp/video-studio-morning-sixteenth-media.log`；完整浏览器1278/1278通过，728362ms，
+日志`/tmp/video-studio-morning-sixteenth-full-ui.log`。
+PNG+quality最终独立真实组合4/4通过，核对Workspace c3e25e5及Preview b1f547f一致：
+held toBlob与晚quality、自动恢复quarter后pending decode、旧blob不清新owner、末尾
+80013tick与质量刷新均正确。日志`/tmp/video-studio-png-quality-independent-review.log`。
+未变更0.7.2版本、工程格式、Host权限或用户安装。继续优化至11:00。
+
+第十五批4aa201a的push CI38182467460初次全部7jobs成功；PR CI38182471609出现
+两个超时：Video Studio library multi-select删除等待、另一面板Design Studio的
+native touch取消等待。根16整套UI包含前者且绿，不能据此宣称Linux PR失败已修复；
+后者不属于本轮Video Studio领域1131项。已派独立调查，保留原log与具体因果边界，
+不通过盲目重跑掩盖，最终交付仍须最新head门禁。

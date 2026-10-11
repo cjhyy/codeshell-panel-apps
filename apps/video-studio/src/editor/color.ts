@@ -94,12 +94,40 @@ export function applyColorToRgba(pixels: Uint8ClampedArray, color: ResolvedColor
   const greenGain = exposure * (1 - color.tint * 0.2);
   const blueGain = exposure * (1 - color.temperature * 0.25 + color.tint * 0.1);
   const curves = new Map(color.curves.map((curve) => [curve.channel, curve.points]));
-  const tone = (input: number, channel: "red" | "green" | "blue") => {
-    const master = curves.get("rgb");
-    const specific = curves.get(channel);
+  const master = curves.get("rgb"),
+    redCurve = curves.get("red"),
+    greenCurve = curves.get("green"),
+    blueCurve = curves.get("blue");
+  const tone = (input: number, specific: typeof master) => {
     const value = master ? evaluateColorCurve(master, input) : input;
     return specific ? evaluateColorCurve(specific, value) : value;
   };
+  // Without HSL, each channel depends only on its original byte. Preserve the scalar
+  // rounding exactly, and avoid repeating curve searches for every pixel in a frame.
+  if (color.hue === 0 && color.saturation === 1 && !color.hsl.length && pixels.length >= 4096) {
+    const red = new Uint8Array(256), green = new Uint8Array(256), blue = new Uint8Array(256);
+    for (let value = 0; value < 256; value++) {
+      const input = value / 255;
+      red[value] = Math.round(clamp(tone(
+        clamp((input * redGain - 0.5) * color.contrast + 0.5 + color.brightness), redCurve,
+      )) * 255);
+      green[value] = Math.round(clamp(tone(
+        clamp((input * greenGain - 0.5) * color.contrast + 0.5 + color.brightness), greenCurve,
+      )) * 255);
+      blue[value] = Math.round(clamp(tone(
+        clamp((input * blueGain - 0.5) * color.contrast + 0.5 + color.brightness), blueCurve,
+      )) * 255);
+    }
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index + 3] === 0) continue;
+      pixels[index] = red[pixels[index]!]!;
+      pixels[index + 1] = green[pixels[index + 1]!]!;
+      pixels[index + 2] = blue[pixels[index + 2]!]!;
+    }
+    return;
+  }
+  // Resolved bands are bounded; direct callers may still supply other hue turns.
+  const boundedHsl = color.hsl.every((band) => band.hue >= 0 && band.hue <= 360);
   for (let index = 0; index < pixels.length; index += 4) {
     if (pixels[index + 3] === 0) continue;
     let r = clamp(
@@ -118,7 +146,10 @@ export function applyColorToRgba(pixels: Uint8ClampedArray, color: ResolvedColor
         lightnessDelta = 0;
       if (s > 0)
         for (const band of color.hsl) {
-          const distance = Math.min(wrap(h - band.hue), wrap(band.hue - h));
+          // h is already in [0, 360). In this interval the inner remainder is redundant.
+          const distance = boundedHsl
+            ? Math.min((h - band.hue + 360) % 360, (band.hue - h + 360) % 360)
+            : Math.min(wrap(h - band.hue), wrap(band.hue - h));
           const weight =
             distance >= band.width / 2
               ? 0
@@ -132,8 +163,8 @@ export function applyColorToRgba(pixels: Uint8ClampedArray, color: ResolvedColor
       l = clamp(l + lightnessDelta);
       [r, g, b] = hslToRgb(h, s, l);
     }
-    pixels[index] = Math.round(clamp(tone(r, "red")) * 255);
-    pixels[index + 1] = Math.round(clamp(tone(g, "green")) * 255);
-    pixels[index + 2] = Math.round(clamp(tone(b, "blue")) * 255);
+    pixels[index] = Math.round(clamp(tone(r, redCurve)) * 255);
+    pixels[index + 1] = Math.round(clamp(tone(g, greenCurve)) * 255);
+    pixels[index + 2] = Math.round(clamp(tone(b, blueCurve)) * 255);
   }
 }

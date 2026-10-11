@@ -208,6 +208,30 @@ export class EditorPreview {
       if (!request.signal.aborted) throw error;
     }
   }
+  /** Capture one committed composition at the viewer resolution; superseded work never returns PNG. */
+  async captureFrame(time: Tick, signal: AbortSignal): Promise<{ blob: Blob; time: Tick; width: number; height: number }> {
+    const { document, sequence } = this.snapshot(), duration = sequenceDuration(sequence);
+    if (!duration) throw new Error("时间轴没有可保存的画面");
+    if (signal.aborted) throw new DOMException("已取消保存画面", "AbortError");
+    const target = Math.min(time, duration - 1), resolution = this.resolution,
+      work = this.seek(target, { exact: true }), generation = this.generation;
+    const abort = () => { if (generation === this.generation) this.pause(); };
+    signal.addEventListener("abort", abort, { once: true });
+    const current = () => !signal.aborted && !this.disposed && generation === this.generation &&
+      this.document === document && this.sequence === sequence && this.resolution === resolution &&
+      this.renderedTime === target;
+    try {
+      await work;
+      if (!current()) throw new DOMException("画面已变化，请重新保存", "AbortError");
+      const width = this.canvas.width, height = this.canvas.height,
+        blob = await new Promise<Blob>((resolve, reject) => this.canvas.toBlob(
+          (value) => value?.size ? resolve(value) : reject(new Error("无法编码画面 PNG")), "image/png"));
+      if (!current()) throw new DOMException("画面已变化，请重新保存", "AbortError");
+      return { blob, time: target, width, height };
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  }
   async play(audio?: PreviewAudio): Promise<void> {
     const { document, sequence } = this.snapshot();
     const duration = sequenceDuration(sequence);

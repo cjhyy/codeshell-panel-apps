@@ -4537,3 +4537,15 @@ test("main synchronous read reentry cannot publish the outer stale document", as
   assert.equal(state.revision, `rev ${after.revision}`);
   assert.equal(await page.evaluate(() => __mainReadAudit.project().name), after.name);
 });
+
+
+test("main downloads the current applied composition PNG at the selected viewer quality",async(t)=>{
+  const page=await openPage(t),before=await saved(page);
+  await page.getByLabel("预览质量",{exact:true}).selectOption("0.5");
+  const downloading=page.waitForEvent("download");await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();
+  const download=await downloading,bytes=await readFile(await download.path());
+  assert.deepEqual([...bytes.subarray(0,8)],[137,80,78,71,13,10,26,10]);
+  assert.equal(bytes.readUInt32BE(16),320);assert.equal(bytes.readUInt32BE(20),180);
+  assert.match(download.suggestedFilename(),/_t0_320x180\.png$/);assert.deepEqual(await saved(page),before);
+  assert.equal(await page.getByLabel("预览质量",{exact:true}).inputValue(),"0.5");
+});

@@ -81,6 +81,8 @@ export interface EditorWorkspaceOptions {
   openProject(): void | Promise<void>;
   newProject(): void | Promise<void>;
   downloadProject(document: EditorDocument): void | Promise<void>;
+  /** Download an already completed PNG; this does not export or mutate the project. */
+  downloadFrame?(blob: Blob, name: string): void;
   packProject?(): void | Promise<void>;
   importProjectBundle?(): void | Promise<void>;
   syncProject?(): void | Promise<void>;
@@ -124,6 +126,15 @@ interface ViewReadScope {
   selected: string[];
   time: Tick;
 }
+interface FrameCaptureOwner {
+  controller: AbortController;
+  identity: SessionIdentity;
+  sequenceId: string;
+  selection: string;
+  time: Tick;
+  quality: string;
+  finishing: boolean;
+}
 
 /** The shell only keeps selection and view state; every edit belongs to its injected session. */
 export class EditorWorkspace {
@@ -157,6 +168,8 @@ export class EditorWorkspace {
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
+  private frameCapture?: FrameCaptureOwner;
+  private frameCaptureSize?: { width: number; height: number; duration: Tick };
   /** One detached document for a synchronous, read-only batch; never retained between batches. */
   private viewReadScope?: ViewReadScope;
   private timelineSnapshot?: PreparedTimelineSnapshot;
@@ -172,7 +185,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select></div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select>${options.downloadFrame ? button("save-frame", "保存已应用画面 PNG", 'aria-label="保存已应用画面 PNG"') : ""}</div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -295,6 +308,7 @@ export class EditorWorkspace {
       time: () => this.playhead,
       seek: (time, exact) => this.seek(time, exact),
       select: (ids) => {
+        this.cancelFrameCapture();
         this.selected = ids;
         this.withReadSnapshot(() => {
           this.inspector.render();
@@ -324,6 +338,7 @@ export class EditorWorkspace {
         this.playhead = time;
         this.timeline.updatePlayhead();
         this.updateTime();
+        this.updateFrameCaptureControl();
         this.renderFrameViews();
       },
       onPlaybackChange: (playing) => {
@@ -364,6 +379,7 @@ export class EditorWorkspace {
       selection,
       time: () => this.playhead,
       select: (ids) => {
+        this.cancelFrameCapture();
         this.selected = ids;
         this.timeline.render();
         this.inspector.render();
@@ -384,6 +400,9 @@ export class EditorWorkspace {
     container.addEventListener("change", this.change);
     container.addEventListener("input", this.input);
     container.addEventListener("keydown", this.keydown);
+    window.addEventListener("keydown", this.frameCaptureKeydown, true);
+    window.addEventListener("blur", this.frameCaptureBlur);
+    container.addEventListener("pointerdown", this.frameCaptureDown, true);
     container.addEventListener("pointerdown", this.activateComposition, true);
     if (options.layout === "embedded")
       for (const type of this.embeddedEvents)
@@ -406,7 +425,9 @@ export class EditorWorkspace {
         void Promise.resolve(this.options.previewQuality?.save(value)).catch(() => {});
       } catch { /* Storage is optional; the chosen preview quality still applies. */ }
     }
+    this.cancelFrameCapture();
     this.get<HTMLSelectElement>("[data-ew-quality]").value = String(value);
+    this.updateFrameCaptureControl();
     this.run(async () => {
       this.canvasEditor.cancel();
       this.cancelPreparation();
@@ -535,6 +556,9 @@ export class EditorWorkspace {
     if (state.error?.stage === "commit") save.textContent = "候选保存失败，请重试原操作";
     this.get('[data-ew-action="retry-save"]').hidden =
       state.saveState !== "failed" || state.error?.stage === "commit";
+    const capture = this.frameCapture;
+    if (capture && (!sameIdentity(capture.identity, state.identity, false) ||
+        (!capture.finishing && capture.identity.revision !== state.identity.revision))) this.cancelFrameCapture();
     const signature = `${state.identity.documentId}:${state.identity.generation}:${state.identity.revision}`;
     if (signature === this.revision) return;
     this.releaseTimelineMedia();
@@ -546,6 +570,9 @@ export class EditorWorkspace {
     const doc = this.options.session.read();
     this.sequenceId = doc.activeSequenceId;
     const sequence = this.sequence();
+    if (this.frameCapture && this.frameCapture.sequenceId !== sequence.id) this.cancelFrameCapture();
+    this.frameCaptureSize = { width: sequence.width, height: sequence.height, duration: sequenceDuration(sequence) };
+    this.updateFrameCaptureControl();
     this.selected = this.selected.filter((id) => sequence.clips.some((clip) => clip.id === id));
     this.cancelPreparation();
     this.audio?.stream?.dispose();
@@ -577,7 +604,8 @@ export class EditorWorkspace {
     this.timeline.render();
     this.canvasEditor.render();
     this.updateTime();
-    if (this.visible && !this.sourcePreview) this.run(() => this.seek(this.playhead));
+    if (this.visible && !this.sourcePreview) this.run(() => this.frameCapture?.finishing
+      ? this.preview.seek(this.playhead, { exact: this.exactPlayhead }) : this.seek(this.playhead));
   }
 
   private renderAssets(): void {
@@ -697,6 +725,7 @@ export class EditorWorkspace {
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
     if (this.disposed) return;
+    this.cancelFrameCapture();
     if (time === this.playhead) this.canvasEditor?.refreshDocument();
     else this.canvasEditor?.cancel();
     this.cancelPreparation();
@@ -713,6 +742,7 @@ export class EditorWorkspace {
   async togglePlayback(): Promise<void> {
     if (this.disposed) return;
     this.previewQualityInteracted = true;
+    this.cancelFrameCapture();
     if (this.preparing) {
       this.cancelPreparation();
       return;
@@ -803,7 +833,9 @@ export class EditorWorkspace {
     this.visible = visible;
     this.container.hidden = !visible;
     this.multicam?.setVisible(visible && !this.get("[data-ew-multicam]").hidden);
+    this.updateFrameCaptureControl();
     if (!visible) {
+      this.cancelFrameCapture();
       this.canvasEditor.cancel();
       this.cancelPreparation();
       this.preview.pause();
@@ -831,6 +863,8 @@ export class EditorWorkspace {
     if (this.sourcePreview === active || this.disposed) return;
     this.previewQualityInteracted = true;
     this.sourcePreview = active;
+    this.cancelFrameCapture();
+    this.updateFrameCaptureControl();
     if (active) {
       this.cancelPreparation();
       this.clearAudioWarning();
@@ -846,6 +880,7 @@ export class EditorWorkspace {
   }
   selectClips(sequenceId: string, clipIds: string[]): void {
     if (this.disposed || sequenceId !== this.sequenceId) return;
+    this.cancelFrameCapture();
     this.canvasEditor.cancel();
     const existing = new Set(this.sequence().clips.map((clip) => clip.id));
     this.selected = [...new Set(clipIds)].filter((id) => existing.has(id));
@@ -994,6 +1029,91 @@ export class EditorWorkspace {
     this.activateComposition();
     this.run(() => this.seek(at, true));
     this.revealSelection();
+  }
+  private updateFrameCaptureControl(): void {
+    const control = this.container.querySelector<HTMLButtonElement>('[data-ew-action="save-frame"]');
+    if (!control || this.disposed) return;
+    const size = this.frameCaptureSize, quality = Number(this.get<HTMLSelectElement>("[data-ew-quality]").value);
+    control.disabled = !!this.frameCapture || !this.visible || this.sourcePreview || !size?.duration;
+    control.textContent = this.frameCapture ? "正在保存…" : "保存已应用画面 PNG";
+    control.title = this.sourcePreview ? "请返回成片预览后保存画面" : !size?.duration ? "当前序列没有可保存的片段" :
+      `保存已应用画面 PNG · ${Math.max(1, Math.round(size.width * quality))} × ${Math.max(1, Math.round(size.height * quality))}（按预览质量）· 会暂停播放；结束位置保存最后一帧。未应用的时间调整不会自动应用。`;
+  }
+  private frameCaptureDown = (event: PointerEvent): void => {
+    if (event.button === 0 && (event.target as Element).closest('[data-ew-action="save-frame"]'))
+      event.preventDefault(); // Retain field drafts until their owned finisher has validated them.
+  };
+  private frameCaptureKeydown = (event: KeyboardEvent): void => {
+    if (event.repeat && ["Enter", " "].includes(event.key) &&
+        event.target instanceof Element && event.target.closest('[data-ew-action="save-frame"]')) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (event.key === "Escape" && this.frameCapture) {
+      this.cancelFrameCapture();
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+  private frameCaptureBlur = (): void => { this.cancelFrameCapture(); };
+  private cancelFrameCapture(expected = this.frameCapture): void {
+    if (!expected || this.frameCapture !== expected) return;
+    this.frameCapture = undefined;
+    expected.controller.abort();
+    this.updateFrameCaptureControl();
+  }
+  private frameCaptureCurrent(owner: FrameCaptureOwner, allowFieldRevision = false): boolean {
+    const identity = this.options.session.getState().identity;
+    if (this.frameCapture !== owner || owner.controller.signal.aborted || this.disposed ||
+        !this.visible || this.sourcePreview || this.sequenceId !== owner.sequenceId ||
+        this.playhead !== owner.time || JSON.stringify(this.selected) !== owner.selection ||
+        this.get<HTMLSelectElement>("[data-ew-quality]").value !== owner.quality) return false;
+    return sameIdentity(owner.identity, identity, false) &&
+      (identity.revision === owner.identity.revision ||
+        (allowFieldRevision && identity.revision === owner.identity.revision + 1));
+  }
+  private async saveFrame(): Promise<void> {
+    if (this.frameCapture || this.disposed || !this.visible || this.sourcePreview || !this.options.downloadFrame) return;
+    this.canvasEditor.cancel();
+    this.cancelPreparation();
+    this.preview.pause();
+    const identity = this.options.session.getState().identity;
+    if (this.disposed || !this.visible || this.sourcePreview || this.frameCapture) return;
+    const owner: FrameCaptureOwner = {
+      controller: new AbortController(), identity,
+      sequenceId: this.sequenceId, selection: JSON.stringify(this.selected), time: this.playhead,
+      quality: this.get<HTMLSelectElement>("[data-ew-quality]").value, finishing: true,
+    };
+    this.frameCapture = owner;
+    this.updateFrameCaptureControl();
+    try {
+      const ready = this.inspector.finishFocusedField(owner.controller.signal) ??
+        this.timeline.finishFocusedField(owner.controller.signal);
+      if (!(ready === undefined || (typeof ready === "boolean" ? ready : await ready)) ||
+          !this.frameCaptureCurrent(owner, ready !== undefined)) return;
+      owner.identity = this.options.session.getState().identity;
+      owner.finishing = false;
+      const document = this.options.session.read(), sequence = document.sequences.find((item) => item.id === owner.sequenceId);
+      if (!this.frameCaptureCurrent(owner) || document.id !== owner.identity.documentId ||
+          document.revision !== owner.identity.revision || !sequence) return;
+      const duration = sequenceDuration(sequence);
+      if (!duration) return;
+      const name = [...`${document.name}_${sequence.name}`.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")].slice(0, 48).join("") || "成片";
+      // The natural end has no frame at duration itself. Capture the last valid tick.
+      owner.time = Math.min(owner.time, duration - 1);
+      this.playhead = owner.time;
+      this.exactPlayhead = true;
+      this.updateTime();
+      const frame = await this.preview.captureFrame(owner.time, owner.controller.signal);
+      if (!this.frameCaptureCurrent(owner)) return;
+      this.options.downloadFrame(frame.blob, `${name}_${ticksToSeconds(frame.time).toFixed(6)}s_t${frame.time}_${frame.width}x${frame.height}.png`);
+    } catch (error) {
+      if (this.frameCaptureCurrent(owner) && !(error instanceof DOMException && error.name === "AbortError"))
+        this.options.onError(error);
+    } finally {
+      this.cancelFrameCapture(owner);
+    }
   }
   private click = (event: MouseEvent) => {
     const target = (event.target as Element).closest<HTMLElement>(
@@ -1155,7 +1275,8 @@ export class EditorWorkspace {
       await this.options.syncProject?.();
       return;
     }
-    if (action === "play") return this.togglePlayback();
+    if (action === "save-frame") return this.saveFrame();
+    if (action === "play") { this.cancelFrameCapture(); return this.togglePlayback(); }
     if (action === "undo") {
       this.options.assertEditable?.();
       this.options.session.undo();
@@ -1676,6 +1797,7 @@ export class EditorWorkspace {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelFrameCapture();
     this.releaseTimelineMedia();
     this.unsubscribe();
     this.cancelPreparation();
@@ -1694,6 +1816,9 @@ export class EditorWorkspace {
     this.container.removeEventListener("change", this.change);
     this.container.removeEventListener("input", this.input);
     this.container.removeEventListener("keydown", this.keydown);
+    window.removeEventListener("keydown", this.frameCaptureKeydown, true);
+    window.removeEventListener("blur", this.frameCaptureBlur);
+    this.container.removeEventListener("pointerdown", this.frameCaptureDown, true);
     this.container.removeEventListener("pointerdown", this.activateComposition, true);
     for (const type of this.embeddedEvents)
       this.container.removeEventListener(type, this.stopLegacyEvent);

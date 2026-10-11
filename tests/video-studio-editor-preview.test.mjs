@@ -1250,3 +1250,21 @@ test(
     }
   },
 );
+
+
+test("PNG capture rejects superseded, aborted and disposed requests without returning the old canvas",async(t)=>{
+  const page=await pageFixture(t);
+  const result=await page.evaluate(async()=>{
+    await preview.seek(0);const canvas=document.querySelector("canvas"),original=canvas.toBlob.bind(canvas),callbacks=[];
+    canvas.toBlob=(callback,...args)=>original(blob=>callbacks.push(()=>callback(blob)),...args);
+    const controller=new AbortController(),first=preview.captureFrame(123,controller.signal).then(()=>"saved",error=>error.name);
+    while(callbacks.length<1)await new Promise(requestAnimationFrame);
+    await preview.seek(8000);callbacks[0]();const superseded=await first;
+    const secondController=new AbortController(),second=preview.captureFrame(16000,secondController.signal).then(()=>"saved",error=>error.name);
+    while(callbacks.length<2)await new Promise(requestAnimationFrame);
+    secondController.abort();callbacks[1]();const aborted=await second;
+    const third=preview.captureFrame(24000,new AbortController().signal).then(()=>"saved",error=>error.name);
+    while(callbacks.length<3)await new Promise(requestAnimationFrame);
+    await preview.dispose();callbacks[2]();return{superseded,aborted,disposed:await third};
+  });assert.deepEqual(result,{superseded:"AbortError",aborted:"AbortError",disposed:"AbortError"});
+});

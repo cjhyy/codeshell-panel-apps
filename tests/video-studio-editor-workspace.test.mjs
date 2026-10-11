@@ -14,6 +14,8 @@ before(async () => {
     stdin: {
       contents: `
         export { EditorWorkspace } from './apps/video-studio/src/editor/workspace-ui';
+        export { EditorCaptionsUI } from './apps/video-studio/src/editor/captions-ui';
+        export { createCaptionController } from './apps/video-studio/src/editor/caption-controller';
         export { EditorSession, EditorStorageConflictError } from './apps/video-studio/src/editor/session';
         export * from './apps/video-studio/src/editor/defaults';
         export { sequenceDuration } from './apps/video-studio/src/editor/validation';
@@ -37,6 +39,7 @@ before(async () => {
         "editor-timing.css",
         "editor-workspace.css",
         "editor-markers.css",
+        "editor-captions.css",
       ].map((name) =>
         readFile(new URL(`../apps/video-studio/public/${name}`, import.meta.url), "utf8"),
       ),
@@ -277,7 +280,8 @@ async function fixture(t, options = {}) {
       errors = [],
       exports = [],
       audioRequests = [],
-      imageRequests = [];
+      imageRequests = [],
+      frameDownloads = [];
     const session = await editor.EditorSession.open(
       {
         read: async () => ({ data: structuredClone(stored), revision: storageRevision }),
@@ -379,6 +383,7 @@ async function fixture(t, options = {}) {
       },
       openProject: () => events.push("open"),
       newProject: () => events.push("new"),
+      downloadFrame: options.frameCapture ? (blob, name) => frameDownloads.push({ blob, name }) : undefined,
       downloadProject: (doc) => events.push(`download:${doc.id}:${doc.revision}`),
       showSeparation: options.separation
         ? (sequenceId, clipId) => events.push(`separation:${sequenceId}:${clipId}`)
@@ -399,6 +404,7 @@ async function fixture(t, options = {}) {
       state: () => session.getState(),
       stored: () => structuredClone(stored),
       writes,
+      frameDownloads,
       events,
       errors,
       exports,
@@ -6932,4 +6938,304 @@ test("fit selection keeps the chosen view across playback frames without stoppin
   assert.equal(await page.evaluate(() => fixture.internals.workspace.timeline.playbackActive), true);
   assert.deepEqual(await documentState(page), selected);
   assert.ok(selected.revision > before.revision);
+});
+
+
+for (const scope of ["current", "locked", "nested"]) {
+  test(`caption row navigation shows the exact off-frame composition in a ${scope} sequence`, async (t) => {
+    const page = await fixture(t, { sequenceCount: scope === "nested" ? 2 : 1 }), start = 240013;
+    const id = await page.evaluate(async ({ scope, start }) => {
+      const { session, workspace } = fixture.internals,
+        sequenceId = scope === "nested" ? "sequence-2" : "main",
+        controller = editor.createCaptionController({
+          session: () => session,
+          apply: async (operations, identity, label) => session.dispatch(operations, identity, label),
+        }),
+        id = await controller.add(sequenceId, { start, duration: 240000, text: "帧间字幕" });
+      if (scope === "locked") fixture.dispatch([
+        { type: "track.update", sequenceId, trackId: "text", patch: { locked: true } },
+      ], "锁定字幕轨");
+      if (scope === "nested") {
+        const clip = structuredClone(session.read().sequences[0].clips[0]);
+        delete clip.assetId;
+        fixture.dispatch([
+          { type: "clip.remove", sequenceId: "main", clipIds: [clip.id] },
+          { type: "clip.add", sequenceId: "main", clip: { ...clip,
+            id: "nested", kind: "sequence", sequenceId, trackId: "video" } },
+          { type: "sequence.activate", sequenceId },
+        ], "打开被引用的子序列");
+      }
+      const host = document.createElement("section"); document.body.append(host);
+      const ui = new editor.EditorCaptionsUI(host, {
+        session: () => session, controller, presentation: "inline",
+        currentTime: () => workspace.currentTime(),
+        select: (sequenceId, ids) => workspace.selectClips(sequenceId, ids),
+        seek: (tick, exact) => workspace.seek(tick, exact),
+      });
+      ui.mount(host); ui.open();
+      const draw = workspace.preview.compositor.draw.bind(workspace.preview.compositor);
+      globalThis.captionFrames = [];
+      workspace.preview.compositor.draw = (canvas, frame, ...args) => {
+        captionFrames.push({ time: frame.time, captions: frame.layers.filter((layer) => layer.kind === "text").map((layer) => layer.clipId) });
+        return draw(canvas, frame, ...args);
+      };
+      return id;
+    }, { scope, start });
+    const before = await documentState(page);
+    await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
+    await page.waitForFunction(({ id, start }) => captionFrames.at(-1)?.time === start && captionFrames.at(-1).captions.includes(id), { id, start });
+    assert.equal(await page.evaluate(() => fixture.playhead()), start);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), [id]);
+    assert.deepEqual(await documentState(page), before, "Viewing a subtitle never edits or unlocks it");
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+
+async function framePng(page, index = 0) {
+  return page.evaluate(async (index) => {
+    const { blob, name } = fixture.frameDownloads[index], image = await createImageBitmap(blob), canvas = document.createElement("canvas");
+    canvas.width = image.width; canvas.height = image.height;
+    const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0); image.close();
+    return { name, type: blob.type, width: canvas.width, height: canvas.height,
+      center: [...ctx.getImageData(Math.floor(canvas.width/2),Math.floor(canvas.height/2),1,1).data],
+      corner: [...ctx.getImageData(0,0,1,1).data] };
+  }, index);
+}
+async function savedFrame(page, count = 1) {
+  await page.getByRole("button", { name: "保存已应用画面 PNG", exact: true }).click();
+  await page.waitForFunction((count) => fixture.frameDownloads.length === count, count);
+}
+async function holdFrameBlob(page) {
+  await page.evaluate(() => {
+    const canvas = document.querySelector("[data-ew-canvas]"), original = canvas.toBlob.bind(canvas);
+    globalThis.frameBlobCallbacks = [];
+    canvas.toBlob = (callback, ...args) => original((blob) => frameBlobCallbacks.push(() => callback(blob)), ...args);
+  });
+}
+
+test("PNG frame saves the exact applied composition at each viewer quality without changing project or selection", async (t) => {
+  const page = await fixture(t, { frameCapture: true });
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "clip.remove", sequenceId: "main", clipIds: ["a"] }, { type: "clip.add", sequenceId: "main", clip: {
+      id:"shape",label:"红色成片",kind:"shape",trackId:"video",start:123,duration:100000,shape:"rectangle",fill:"#ff0000",stroke:"#00000000",strokeWidth:0,
+      transform:{...editor.defaultTransform(),scaleX:0.5,scaleY:0.5},color:editor.defaultColorAdjustment(),blendMode:"normal"
+    } }], "精确画面");
+    fixture.internals.workspace.selectClips("main", ["shape"]);
+    return fixture.internals.workspace.seek(123,true);
+  });
+  const before = await documentState(page), selected = await page.evaluate(() => fixture.selection());
+  for (const [index, quality, width, height] of [[0,"1",320,180],[1,"0.5",160,90],[2,"0.25",80,45]]) {
+    await page.getByLabel("预览质量", {exact:true}).selectOption(quality);
+    await savedFrame(page,index+1);
+    const png = await framePng(page,index);
+    assert.equal(png.type,"image/png"); assert.equal(png.width,width); assert.equal(png.height,height);
+    assert.deepEqual(png.center,[255,0,0,255]); assert.deepEqual(png.corner,[0,0,0,255]);
+    assert.match(png.name,new RegExp(`_t123_${width}x${height}\\.png$`));
+    assert.equal(await page.getByLabel("预览质量",{exact:true}).inputValue(),quality);
+  }
+  assert.deepEqual(await documentState(page),before); assert.deepEqual(await page.evaluate(()=>fixture.selection()),selected);
+});
+
+test("PNG frame waits for the requested new composition instead of downloading the old pending-decode canvas", async (t) => {
+  const page = await fixture(t, { frameCapture: true });
+  await page.evaluate(() => fixture.pendingPicture());
+  await page.waitForFunction(() => fixture.imageRequests().length === 1);
+  await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();
+  await page.waitForFunction(() => fixture.imageRequests().length === 2);
+  assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);
+  await page.evaluate(()=>{fixture.resolveImage(0);fixture.resolveImage(1);});
+  await page.waitForFunction(()=>fixture.frameDownloads.length===1);
+  assert.deepEqual((await framePng(page)).center,[255,0,0,255]);
+});
+
+for (const [field,value,owner] of [["水平位置（%）","25","inspector"],["轨道名称 画面轨","已保存轨道名","timeline"]]) {
+  test(`PNG frame finishes a valid ${owner} draft on the first click with one independent undo`, async(t)=>{
+    const page=await fixture(t,{frameCapture:true}); await page.locator('[data-et-clip="a"]').click();
+    const before=await documentState(page); await page.getByLabel(field,{exact:true}).fill(value); await savedFrame(page);
+    const after=await documentState(page); assert.equal(after.revision,before.revision+1);
+    await action(page,"undo").click(); assert.deepEqual(semantic(await documentState(page)),semantic(before));
+    assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),1); assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+  });
+}
+
+test("PNG frame retains invalid focused input and unapplied Timing/project-name drafts", async(t)=>{
+  const page=await fixture(t,{frameCapture:true});await page.locator('[data-et-clip="a"]').click();
+  const before=await documentState(page),input=page.getByLabel("水平位置（%）",{exact:true});
+  await input.fill("1001");await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();
+  await page.waitForFunction(()=>!fixture.internals.workspace.frameCapture);
+  assert.equal(await input.inputValue(),"1001");assert.equal(await input.evaluate(node=>node===document.activeElement),true);
+  assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0); assert.deepEqual(await documentState(page),before);
+  await input.fill("0");await input.press("Tab");
+  const speed=page.getByLabel("恒定速度（倍）",{exact:true});await speed.fill("2");
+  const name=page.getByLabel("工程名称",{exact:true});await name.fill("名称尚未应用");await savedFrame(page);
+  assert.equal(await speed.inputValue(),"2");
+  assert.equal(await name.inputValue(),"名称尚未应用");assert.equal((await documentState(page)).name,before.name);
+  assert.ok((await framePng(page)).name.startsWith(before.name+"_"));
+});
+
+for (const change of ["revision","generation","sequence","selection","time","quality","source","hide","dispose"]) {
+  test(`PNG frame discards a late encoded frame after ${change} changes`,async(t)=>{
+    const page=await fixture(t,{frameCapture:true,sequenceCount:2});await holdFrameBlob(page);
+    await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();await page.waitForFunction(()=>frameBlobCallbacks.length===1);
+    await page.evaluate(async(change)=>{
+      if(change==="revision")fixture.externalEdit();
+      if(change==="generation")await fixture.replaceGeneration();
+      if(change==="sequence")fixture.dispatch([{type:"sequence.activate",sequenceId:"sequence-2"}],"切序列");
+      if(change==="selection")fixture.internals.workspace.selectClips("main",["a"]);
+      if(change==="time")await fixture.internals.workspace.seek(8000);
+      if(change==="quality") {const el=document.querySelector('[data-ew-quality]');el.value="0.5";el.dispatchEvent(new Event("change",{bubbles:true}));}
+      if(change==="source")fixture.sourcePreview(true);
+      if(change==="hide")fixture.hide();
+      if(change==="dispose")await fixture.dispose();
+      frameBlobCallbacks[0]();
+    },change);
+    await settle(page);assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);
+    assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+  });
+}
+
+test("PNG frame freezes playback, captures its latest completed tick and handles the natural end",async(t)=>{
+  const page=await fixture(t,{frameCapture:true,duration:24000});await action(page,"play").click();
+  await page.waitForFunction(()=>fixture.playing());await savedFrame(page);
+  assert.equal(await page.evaluate(()=>fixture.playing()),false);
+  const time=await page.evaluate(()=>fixture.playhead());assert.match((await framePng(page)).name,new RegExp(`_t${time}_`));
+  await page.evaluate(()=>{fixture.internals.workspace.playhead=24000;});await savedFrame(page,2);
+  assert.match((await framePng(page,1)).name,/_t23999_/);
+});
+
+for (const width of [280,390]) {
+  test(`PNG frame remains visible and operable at ${width}px`,async(t)=>{
+    const page=await fixture(t,{frameCapture:true,width,layout:"embedded"});
+    await page.evaluate(()=>{document.querySelector(".workspace").dataset.narrowPanel="viewer";});
+    await savedFrame(page);
+    const snapshot=page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}),quality=page.getByLabel("预览质量",{exact:true});
+    const a=await snapshot.boundingBox(),b=await quality.boundingBox();
+    assert.ok(a&&b);assert.ok(a.x+a.width<=b.x||b.x+b.width<=a.x||a.y+a.height<=b.y||b.y+b.height<=a.y);
+    await page.screenshot({path:`/tmp/video-studio-frame-png-${width}.png`,fullPage:true});
+  });
+}
+
+
+test("PNG frame supports text-only compositions and disables an actually empty sequence",async(t)=>{
+  const page=await fixture(t,{frameCapture:true,clipCount:1});
+  await page.evaluate(()=>fixture.dispatch([{type:"clip.remove",sequenceId:"main",clipIds:["a"]}],"清空片段"));
+  assert.equal(await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).isDisabled(),true);
+  await action(page,"title").click();await savedFrame(page);
+  assert.equal((await documentState(page)).assets.length,0);assert.equal((await framePng(page)).type,"image/png");
+});
+
+test("PNG frame failed draft dispatch is correctable and a later valid click still saves",async(t)=>{
+  const page=await fixture(t,{frameCapture:true});await page.locator('[data-et-clip="a"]').click();
+  const input=page.getByLabel("水平位置（%）",{exact:true});await input.fill("25");
+  await page.evaluate(()=>{const context=fixture.internals.workspace.inspector.context,original=context.apply;context.apply=()=>{context.apply=original;return Promise.reject(new Error("属性保存未完成"));};});
+  await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();
+  await page.waitForFunction(()=>!fixture.internals.workspace.frameCapture);
+  assert.equal(await input.inputValue(),"25");assert.equal(await input.evaluate(node=>node===document.activeElement),true);
+  assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);await savedFrame(page);
+  assert.equal((await documentState(page)).sequences[0].clips[0].transform.x,0.25);
+});
+
+for(const change of ["release","Escape","generation","selection","dispose"]){
+  test(`PNG frame async owned field handles ${change} before taking a snapshot`,async(t)=>{
+    const page=await fixture(t,{frameCapture:true});await page.locator('[data-et-clip="a"]').click();await holdCanvasField(page);
+    await page.getByLabel("水平位置（%）",{exact:true}).fill("25");
+    await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();await page.waitForFunction(()=>canvasFieldReleases.length===1);
+    if(change==="Escape")await page.keyboard.press("Escape");
+    if(change==="generation")await page.evaluate(()=>fixture.replaceGeneration());
+    if(change==="selection")await page.evaluate(()=>fixture.internals.workspace.selectClips("main",[]));
+    if(change==="dispose")await page.evaluate(()=>fixture.dispose());
+    await releaseCanvasField(page);if(change==="release")await page.waitForFunction(()=>fixture.frameDownloads.length===1);
+    else assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);
+    assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+  });
+}
+
+test("PNG frame an older toBlob completion cannot cancel a new save and keyboard activation works",async(t)=>{
+  const page=await fixture(t,{frameCapture:true});await holdFrameBlob(page);
+  const button=page.getByRole("button",{name:"保存已应用画面 PNG",exact:true});
+  await button.click();await page.waitForFunction(()=>frameBlobCallbacks.length===1);await page.keyboard.press("Escape");
+  await button.focus();await button.press("Enter");await page.waitForFunction(()=>frameBlobCallbacks.length===2);
+  await page.evaluate(()=>frameBlobCallbacks[0]());await settle(page);
+  assert.equal(await button.isDisabled(),true);assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);
+  await page.evaluate(()=>frameBlobCallbacks[1]());await page.waitForFunction(()=>fixture.frameDownloads.length===1);
+  assert.equal(await button.isDisabled(),false);
+});
+
+test("PNG frame native composition ends once and captures the committed track name without changing selection",async(t)=>{
+  const page=await fixture(t,{frameCapture:true});const input=page.getByLabel("轨道名称 画面轨",{exact:true});await input.fill("");await input.focus();
+  const cdp=await page.context().newCDPSession(page);await cdp.send("Input.imeSetComposition",{text:"成片画面轨",selectionStart:5,selectionEnd:5});
+  const before=await documentState(page);await savedFrame(page);
+  const after=await documentState(page);assert.equal(after.revision,before.revision+1);assert.equal(after.sequences[0].tracks[0].name,"成片画面轨");
+  assert.deepEqual(await page.evaluate(()=>fixture.selection()),[]);assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("PNG frame a fresh-read external session edit cannot attach an old document to the new revision",async(t)=>{
+  const page=await fixture(t,{frameCapture:true});
+  await page.evaluate(()=>{
+    const session=fixture.internals.session,original=session.read.bind(session);
+    session.read=()=>{const old=original();session.read=original;fixture.externalEdit();return old;};
+  });
+  await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();await settle(page);
+  assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);
+  assert.equal((await documentState(page)).name,"外部编辑 3");assert.deepEqual(await page.evaluate(()=>fixture.errors),[]);
+});
+
+test("PNG frame an identity getter cannot let an old completion clear a reentrant new capture",async(t)=>{
+  const page=await fixture(t,{frameCapture:true});await holdFrameBlob(page);
+  await page.getByRole("button",{name:"保存已应用画面 PNG",exact:true}).click();await page.waitForFunction(()=>frameBlobCallbacks.length===1);
+  await page.evaluate(()=>{
+    const {session,workspace}=fixture.internals,original=session.getState.bind(session);
+    session.getState=()=>{
+      const old=original();session.getState=original;workspace.cancelFrameCapture();void workspace.saveFrame();return old;
+    };
+    frameBlobCallbacks[0]();
+  });
+  await page.waitForFunction(()=>frameBlobCallbacks.length===2);
+  assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),0);assert.equal(await page.evaluate(()=>!!fixture.internals.workspace.frameCapture),true);
+  await page.evaluate(()=>frameBlobCallbacks[1]());await page.waitForFunction(()=>fixture.frameDownloads.length===1);
+});
+
+test("PNG frame holding Enter does not repeatedly download after an earlier PNG has completed",async(t)=>{
+  const page=await fixture(t,{frameCapture:true}),button=page.getByRole("button",{name:"保存已应用画面 PNG",exact:true});
+  await button.focus();await page.keyboard.down("Enter");await page.waitForFunction(()=>fixture.frameDownloads.length===1);
+  await button.focus();
+  for(let index=0;index<3;index++){await page.keyboard.down("Enter");await settle(page);}
+  await page.keyboard.up("Enter");assert.equal(await page.evaluate(()=>fixture.frameDownloads.length),1);
+  await button.focus();await page.keyboard.press("Enter");await page.waitForFunction(()=>fixture.frameDownloads.length===2);
+});
+
+test("PNG frame keeps an off-frame last tick through same-clock redraw and quality refresh",async(t)=>{
+  const page=await fixture(t,{frameCapture:true,duration:80001});
+  await page.evaluate(()=>{
+    fixture.dispatch([{type:"clip.add",sequenceId:"main",clip:{id:"last-thirteen",label:"最后13tick",kind:"shape",trackId:"video",start:80001,duration:13,
+      shape:"rectangle",fill:"#ff0000",stroke:"#00000000",strokeWidth:0,transform:editor.defaultTransform(),color:editor.defaultColorAdjustment(),blendMode:"normal"}}],"添加尾部精确画面");
+  });
+  await settle(page);await page.evaluate(()=>{fixture.internals.workspace.playhead=80014;});
+  await savedFrame(page);assert.equal(await page.evaluate(()=>fixture.playhead()),80013);
+  assert.deepEqual((await framePng(page)).center,[255,0,0,255]);
+  await page.evaluate(()=>fixture.internals.workspace.seek(fixture.playhead()));
+  assert.equal(await page.evaluate(()=>fixture.playhead()),80013);
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelector('[data-ew-canvas]').getContext("2d").getImageData(160,90,1,1).data]),[255,0,0,255]);
+  await page.getByLabel("预览质量",{exact:true}).selectOption("0.5");
+  await page.waitForFunction(()=>document.querySelector('[data-ew-canvas]').width===160);
+  assert.equal(await page.evaluate(()=>fixture.playhead()),80013);
+  assert.deepEqual(await page.evaluate(()=>[...document.querySelector('[data-ew-canvas]').getContext("2d").getImageData(80,45,1,1).data]),[255,0,0,255]);
+});
+
+test("PNG save hint follows restored preview quality while image decoding is pending", async (t) => {
+  const page = await fixture(t, { frameCapture: true, qualityPreference: true, holdQualityLoad: true });
+  await page.evaluate(() => fixture.pendingPicture());
+  await page.waitForFunction(() => fixture.imageRequests().length === 1);
+  await page.evaluate(() => releaseQualityLoad(0.5));
+  await page.waitForFunction(() => fixture.imageRequests().length === 2);
+  assert.equal(await page.getByLabel("预览质量", { exact: true }).inputValue(), "0.5");
+  assert.match(await page.getByRole("button", { name: "保存已应用画面 PNG", exact: true }).getAttribute("title"), /160 × 90/);
+  await page.evaluate(() => fixture.imageRequests().forEach((_, index) => fixture.resolveImage(index)));
+  await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  await savedFrame(page);
+  const png = await framePng(page);
+  assert.equal(png.width, 160); assert.equal(png.height, 90);
+  assert.deepEqual(png.center, [255, 0, 0, 255]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });

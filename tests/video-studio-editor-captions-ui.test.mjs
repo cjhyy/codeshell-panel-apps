@@ -981,14 +981,14 @@ test("literal multiline caption search navigates preview, replaces one row or al
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
 
-test("find navigation requests the exact original tick of an off-frame caption", async (t) => {
+test("find and row navigation request the exact original tick of an off-frame caption", async (t) => {
   const page = await fixture(t, { inline: true });
   const id = await page.evaluate(() => controller.add("main", { start: 1_234_567, duration: 480_001, text: "帧间字幕" }));
   await page.getByLabel("查找字幕文字", { exact: true }).fill("帧间");
   await page.getByRole("button", { name: "下一条匹配", exact: true }).click();
   assert.deepEqual(await page.evaluate(() => [selection, sought.at(-1), soughtExact.at(-1)]), [[id], 1_234_567, true]);
   await page.locator(`[data-caption-id="${id}"] .ec-seek`).click();
-  assert.equal(await page.evaluate(() => soughtExact.at(-1)), false, "Other existing seek controls keep their default behavior");
+  assert.deepEqual(await page.evaluate(() => [sought.at(-1), soughtExact.at(-1)]), [1_234_567, true]);
 });
 
 test("selected-caption replacement preserves other drafts and refuses affected drafts before preview and before apply", async (t) => {

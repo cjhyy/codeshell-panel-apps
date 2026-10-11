@@ -642,7 +642,7 @@ export class EditorCaptionsUI {
       seek.className = "ec-seek";
       seek.addEventListener("click", () =>
         runRow(async () => {
-          await this.context.seek?.(clip.start);
+          await this.context.seek?.(clip.start, true);
           if (owns()) this.context.select?.(sequenceId, [clip.id]);
         }),
       );

@@ -44,12 +44,37 @@
     const greenGain = exposure * (1 - color2.tint * 0.2);
     const blueGain = exposure * (1 - color2.temperature * 0.25 + color2.tint * 0.1);
     const curves = new Map(color2.curves.map((curve) => [curve.channel, curve.points]));
-    const tone = (input, channel) => {
-      const master = curves.get("rgb");
-      const specific = curves.get(channel);
+    const master = curves.get("rgb"), redCurve = curves.get("red"), greenCurve = curves.get("green"), blueCurve = curves.get("blue");
+    const tone = (input, specific) => {
       const value = master ? evaluateColorCurve(master, input) : input;
       return specific ? evaluateColorCurve(specific, value) : value;
     };
+    if (color2.hue === 0 && color2.saturation === 1 && !color2.hsl.length && pixels.length >= 4096) {
+      const red = new Uint8Array(256), green = new Uint8Array(256), blue = new Uint8Array(256);
+      for (let value = 0; value < 256; value++) {
+        const input = value / 255;
+        red[value] = Math.round(clamp(tone(
+          clamp((input * redGain - 0.5) * color2.contrast + 0.5 + color2.brightness),
+          redCurve
+        )) * 255);
+        green[value] = Math.round(clamp(tone(
+          clamp((input * greenGain - 0.5) * color2.contrast + 0.5 + color2.brightness),
+          greenCurve
+        )) * 255);
+        blue[value] = Math.round(clamp(tone(
+          clamp((input * blueGain - 0.5) * color2.contrast + 0.5 + color2.brightness),
+          blueCurve
+        )) * 255);
+      }
+      for (let index = 0; index < pixels.length; index += 4) {
+        if (pixels[index + 3] === 0) continue;
+        pixels[index] = red[pixels[index]];
+        pixels[index + 1] = green[pixels[index + 1]];
+        pixels[index + 2] = blue[pixels[index + 2]];
+      }
+      return;
+    }
+    const boundedHsl = color2.hsl.every((band) => band.hue >= 0 && band.hue <= 360);
     for (let index = 0; index < pixels.length; index += 4) {
       if (pixels[index + 3] === 0) continue;
       let r = clamp(
@@ -66,7 +91,7 @@
         let hueDelta = color2.hue, saturationDelta = 0, lightnessDelta = 0;
         if (s > 0)
           for (const band of color2.hsl) {
-            const distance = Math.min(wrap(h - band.hue), wrap(band.hue - h));
+            const distance = boundedHsl ? Math.min((h - band.hue + 360) % 360, (band.hue - h + 360) % 360) : Math.min(wrap(h - band.hue), wrap(band.hue - h));
             const weight = distance >= band.width / 2 ? 0 : (1 + Math.cos(2 * Math.PI * distance / band.width)) / 2;
             hueDelta += band.hueShift * weight;
             saturationDelta += band.saturation * weight;
@@ -77,9 +102,9 @@
         l = clamp(l + lightnessDelta);
         [r, g, b] = hslToRgb(h, s, l);
       }
-      pixels[index] = Math.round(clamp(tone(r, "red")) * 255);
-      pixels[index + 1] = Math.round(clamp(tone(g, "green")) * 255);
-      pixels[index + 2] = Math.round(clamp(tone(b, "blue")) * 255);
+      pixels[index] = Math.round(clamp(tone(r, redCurve)) * 255);
+      pixels[index + 1] = Math.round(clamp(tone(g, greenCurve)) * 255);
+      pixels[index + 2] = Math.round(clamp(tone(b, blueCurve)) * 255);
     }
   }
 
