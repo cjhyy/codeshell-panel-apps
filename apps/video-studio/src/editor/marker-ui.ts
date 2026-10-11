@@ -55,12 +55,20 @@ export class EditorMarkers {
   private error = "";
   private page = 0;
   private formState?: MarkerForm;
+  private shortcutKeyHeld = false;
   constructor(
     container: HTMLElement,
     private readonly context: EditorMarkersContext,
   ) {
     this.root.className = "editor-markers";
     this.root.setAttribute("aria-label", "标记与范围");
+    this.root.addEventListener("keydown", (event) => {
+      if (this.shortcutKeyHeld && event.repeat && !event.isComposing &&
+        event.key.toLowerCase() === "m" && !event.ctrlKey && !event.metaKey && !event.altKey)
+        event.preventDefault();
+    });
+    window.addEventListener("keyup", this.releaseShortcutKey);
+    window.addEventListener("blur", this.releaseShortcutKey);
     container.append(this.root);
     this.render();
   }
@@ -94,13 +102,45 @@ export class EditorMarkers {
     return button;
   }
   begin(kind: "point" | "range" = "point"): void {
+    this.beginDraft(kind, false);
+  }
+  /** Keyboard creation never replaces a retained form or invents an unselected range. */
+  beginShortcut(kind: "point" | "range"): void {
+    this.beginDraft(kind, true);
+  }
+  private releaseShortcutKey = (event: Event): void => {
+    if (!(event instanceof KeyboardEvent) || event.key.toLowerCase() === "m")
+      this.shortcutKeyHeld = false;
+  };
+  private beginDraft(kind: "point" | "range", shortcut: boolean): void {
     if (this.pending || this.disposed) return;
-    const selection = this.context.selection();
-    const clips = this.sequence().clips.filter((clip) => selection.clipIds.includes(clip.id));
+    const owner = this.formState, previousDraft = this.draft, previousSelected = this.selectedId,
+      identity = this.context.identity(), selection = this.context.selection(),
+      clock = this.context.time(), document = this.context.read(),
+      currentSelection = this.context.selection(), currentTime = this.context.time(),
+      currentIdentity = this.context.identity();
+    if (this.pending || this.disposed || this.formState !== owner || this.draft !== previousDraft ||
+      this.selectedId !== previousSelected || !sameIdentity(identity, currentIdentity) ||
+      document.id !== identity.documentId || document.revision !== identity.revision ||
+      selection.sequenceId !== currentSelection.sequenceId || clock !== currentTime ||
+      JSON.stringify(selection.clipIds) !== JSON.stringify(currentSelection.clipIds)) return;
+    const sequence = document.sequences.find((item) => item.id === selection.sequenceId);
+    if (!sequence) return;
+    const clips = sequence.clips.filter((clip) => selection.clipIds.includes(clip.id));
+    if (shortcut) {
+      const retained = this.formState && this.formOwned(this.formState, identity, sequence.id) && this.formState.dirty();
+      if (retained || (kind === "range" && !clips.length)) {
+        this.error = retained ? "已有未保存的标记草稿，请先保存或取消；快捷键不会覆盖草稿。"
+          : "请先在时间轴选择片段，再按 Shift+M 创建范围草稿。";
+        const notice = this.root.querySelector(".emarker-error");
+        if (notice) notice.textContent = this.error;
+        return;
+      }
+    }
     const time =
       kind === "range" && clips.length
         ? Math.min(...clips.map((clip) => clip.start))
-        : this.context.time();
+        : clock;
     const end =
       kind === "range"
         ? clips.length
@@ -108,7 +148,7 @@ export class EditorMarkers {
           : Math.min(MAX_EDITOR_TICK, time + 240000)
         : time;
     this.selectedId = undefined;
-    this.draft = {
+    const draft = this.draft = {
       id: `marker-${randomId()}`,
       time,
       duration: end - time,
@@ -120,6 +160,11 @@ export class EditorMarkers {
     this.context.onSelection(undefined);
     this.signature = "";
     this.render();
+    const form = this.formState, afterSelection = this.context.selection(), afterIdentity = this.context.identity();
+    if (this.disposed || this.draft !== draft || this.formState !== form || !form?.node.isConnected ||
+      !sameIdentity(identity, afterIdentity) || selection.sequenceId !== afterSelection.sequenceId) return;
+    if (shortcut && kind === "range") this.formState?.node.append(element("p", "范围覆盖所选片段的最早开始至最晚结束，包含中间空隙；保存后才会添加标记。"));
+    this.shortcutKeyHeld = shortcut;
     this.root.querySelector<HTMLInputElement>('[aria-label="标记名称"]')?.focus();
   }
   select(markerId: string): void {
@@ -519,6 +564,8 @@ export class EditorMarkers {
   }
   dispose(): void {
     this.disposed = true;
+    window.removeEventListener("keyup", this.releaseShortcutKey);
+    window.removeEventListener("blur", this.releaseShortcutKey);
     this.formState = undefined;
     this.root.remove();
   }

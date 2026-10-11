@@ -242,6 +242,7 @@ async function fixture(t, options = {}) {
       timeline.render();
     };
     globalThis.fixture = {
+      internals: { timeline },
       read: () => ({
         document: history.read(),
         audio: editor.evaluateFrame(history.read(), "main", 600000).audio,
@@ -1350,6 +1351,110 @@ test("clip menu trims exact free-clock boundaries and source captions in one und
     await page.locator("#undo").click();
     assert.deepEqual((await state(page)).document.sequences, before.sequences);
   }
+});
+
+for (const magnetic of [false, true]) for (const [key, side] of [["q", "right"], ["w", "left"]]) {
+  test(`timeline trim shortcut ${key} keeps the exact ${side} side and bound captions in ${magnetic ? "magnetic" : "free"} mode`, async (t) => {
+    const page = await fixture(t, { magnetic, caption: true, clips: [
+      { id: "a", trackId: "v1", start: 0, duration: 2, linkGroupId: "voice" },
+      { id: "voice", trackId: "audio", start: 0, duration: 2, linkGroupId: "voice" },
+      { id: "c", trackId: "v1", start: 2, duration: 2 },
+    ] }), before = (await state(page)).document, cut = 240013,
+      duration = side === "right" ? 480000 - cut : cut;
+    await clickClip(page, "a"); await page.evaluate((time) => fixture.seek(time), cut);
+    await page.locator("#timeline").focus(); await page.keyboard.press(key); await settle(page);
+    const result = await state(page), clips = result.document.sequences[0].clips;
+    assert.equal(result.applied.length, 1);
+    for (const id of ["a", "voice", "caption"]) {
+      assert.equal(clips.find((clip) => clip.id === id).duration, duration);
+      assert.equal(clips.find((clip) => clip.id === id).start, side === "right" && !magnetic ? cut : 0);
+    }
+    const caption = clips.find((clip) => clip.id === "caption");
+    assert.deepEqual(caption.sourceBinding, { clipId: "a", sourceStart: side === "right" ? cut : 0, sourceEnd: side === "right" ? 480000 : cut });
+    assert.equal(clips.find((clip) => clip.id === "c").start, magnetic ? duration : 480000);
+    assert.equal(result.time, cut);
+    assert.equal(result.applied[0].label, `保留播放头${side === "right" ? "右" : "左"}侧`);
+    await page.locator("#undo").click();
+    assert.deepEqual((await state(page)).document.sequences, before.sequences);
+  });
+}
+
+test("timeline trim shortcut rejects endpoints and a selection not wholly under the playhead", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a");
+  const before = (await state(page)).document;
+  for (const [time, key] of [[240000, "q"], [720000, "w"]]) {
+    await page.evaluate((time) => fixture.seek(time), time);
+    await page.locator("#timeline").focus(); await page.keyboard.press(key);
+  }
+  await page.evaluate(() => { fixture.select(["a", "c"]); fixture.seek(480013); });
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  const result = await state(page);
+  assert.deepEqual(result.document, before); assert.equal(result.applied.length, 0);
+  assert.equal(result.errors.length, 3); assert.match(result.errors[0], /每个所选片段内部/);
+});
+
+test("timeline trim shortcut atomically refuses a locked bound-caption dependency", async (t) => {
+  const page = await fixture(t, { caption: true });
+  await clickClip(page, "a");
+  await page.evaluate(() => { fixture.externalTrackEdit("text", { locked: true }); fixture.seek(480013); });
+  const before = (await state(page)).document;
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  const result = await state(page);
+  assert.deepEqual(result.document, before); assert.equal(result.applied.length, 0);
+  assert.match(result.errors[0], /锁定/);
+});
+
+test("timeline trim shortcut ignores modifiers, IME, fields, dialogs, menus and held repeats", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => fixture.seek(480013));
+  const before = (await state(page)).document;
+  for (const key of ["Shift+q", "Control+w", "Meta+q", "Alt+w"]) {
+    await page.locator("#timeline").focus(); await page.keyboard.press(key);
+  }
+  await page.locator('[data-et-track-name="v1"]').focus(); await page.keyboard.press("q");
+  // Stay in the same field so the unsubmitted name does not itself create an edit.
+  assert.match(await page.locator('[data-et-track-name="v1"]').inputValue(), /q/);
+  await page.locator('[data-et-track-name="v1"]').fill("v1");
+  await page.locator("#timeline").focus();
+  await page.locator("#timeline").dispatchEvent("keydown", { key: "q", isComposing: true });
+  await page.evaluate(() => { const dialog = document.createElement("dialog"); document.body.append(dialog); dialog.show(); });
+  await page.keyboard.press("w"); await page.evaluate(() => document.querySelector("dialog").remove());
+  await openClipMenu(page); assert.equal(await menuAction(page, "keep-left").locator("kbd").innerText(), "W");
+  assert.equal(await menuAction(page, "keep-right").locator("kbd").innerText(), "Q");
+  await page.keyboard.press("q"); await page.keyboard.press("Escape");
+  assert.deepEqual((await state(page)).document, before);
+  await page.locator("#timeline").focus(); await page.keyboard.down("w");
+  await page.keyboard.down("w"); await page.keyboard.down("w"); await page.keyboard.up("w"); await settle(page);
+  const result = await state(page); assert.equal(result.applied.length, 1); assert.deepEqual(result.errors, []);
+});
+
+test("timeline trim shortcut refuses a same-id same-revision generation replaced during its snapshot read", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => fixture.seek(480013));
+  const before = (await state(page)).document;
+  await page.evaluate(() => {
+    const context = fixture.internals.timeline.context, read = context.read;
+    context.read = () => { const old = read(); context.read = read; fixture.replaceGeneration(false); return old; };
+  });
+  await page.locator("#timeline").focus(); await page.keyboard.press("q"); await settle(page);
+  assert.deepEqual((await state(page)).document, before); assert.deepEqual((await state(page)).errors, []);
+});
+
+test("timeline trim shortcut blocks a second action while apply is pending and isolates a late error", async (t) => {
+  const page = await fixture(t);
+  await clickClip(page, "a"); await page.evaluate(() => { fixture.seek(480013); fixture.holdNextEdit(); });
+  await page.locator("#timeline").focus(); await page.keyboard.press("w"); await page.keyboard.press("q");
+  assert.equal(await page.evaluate(() => !!fixture.internals.timeline.trimShortcutPending), true);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  assert.equal((await state(page)).applied.length, 1);
+  await page.locator("#undo").click();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.locator("#timeline").focus(); await page.keyboard.press("w");
+  await page.evaluate(() => { fixture.replaceGeneration(); fixture.finishEdit(true); }); await settle(page);
+  assert.deepEqual((await state(page)).errors, []);
+  assert.equal(await page.evaluate(() => !!fixture.internals.timeline.trimShortcutPending), false);
 });
 
 test("clip menu magnetic trim keeps linked sound and captions with the following picture", async (t) => {
@@ -4508,4 +4613,71 @@ test("fit selection finishes its own track draft even without a parent property 
   assert.equal(after.applied.length, before.applied.length + 1);
   await page.locator("#undo").click(); await settle(page);
   assert.deepEqual((await state(page)).document.sequences, before.document.sequences);
+});
+
+const trackHeightButton = (page) => page.getByRole("button", { name: "加高轨道", exact: true });
+test("track height view preserves the vertical track fraction, horizontal view, clock and history", async (t) => {
+  const page = await fixture(t, { tracks: Array.from({ length: 16 }, (_, index) => `v${index + 1}`),
+    clips: [{ id: "a", trackId: "v1", start: 1, duration: 2 }, { id: "future", trackId: "v1", start: 600, duration: 2 }] });
+  await page.evaluate(() => { fixture.select(["a"]); fixture.seek(123457); document.querySelector(".et-scroll").scrollLeft = 500; });
+  await settle(page);
+  await page.locator(".et-body").evaluate((body) => body.scrollTop = 137);
+  await settle(page);
+  const before = await state(page);
+  await trackHeightButton(page).click(); await settle(page);
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 80);
+  assert.ok(Math.abs(await page.locator(".et-body").evaluate((body) => body.scrollTop) / 80 - 137 / 48) < .02);
+  assert.equal(await page.locator(".et-scroll").evaluate((node) => node.scrollLeft), 500);
+  await page.evaluate(() => fixture.render()); await settle(page);
+  assert.equal(await trackHeightButton(page).getAttribute("aria-pressed"), "true");
+  assert.deepEqual(await state(page), before);
+  await trackHeightButton(page).focus(); await page.keyboard.down("Enter"); await page.keyboard.down("Enter"); await page.keyboard.up("Enter");
+  await settle(page);
+  assert.equal(await trackHeightButton(page).getAttribute("aria-pressed"), "false", "A held activation toggles once");
+  assert.equal(await page.locator(".et-body").evaluate((body) => body.scrollTop), 137);
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 48);
+  assert.deepEqual(await state(page), before);
+  await trackHeightButton(page).click(); await page.evaluate(() => fixture.dispose());
+  assert.equal(await page.locator("#timeline").evaluate((node) => node.classList.contains("et-tall-tracks")), false);
+});
+
+for (const tall of [false, true]) {
+  test(`track height ${tall ? 80 : 48} uses actual lane coordinates for moves and trims`, async (t) => {
+    const page = await fixture(t, { tracks: ["v1", "v2"], clips: [{ id: "a", trackId: "v1", start: 1, duration: 2 }] });
+    if (tall) await trackHeightButton(page).click();
+    await drag(page, "a", 32, "v2");
+    const moved = (await state(page)).document.sequences[0].clips[0];
+    assert.equal(moved.start, 360000); assert.equal(moved.trackId, "v2");
+    await drag(page, "a", -32, undefined, "right");
+    const after = await state(page);
+    assert.equal(after.document.sequences[0].clips[0].duration, 360000);
+    assert.equal(after.applied.length, 2); assert.deepEqual(after.errors, []);
+    await page.getByRole("button", { name: "撤销最后一步", exact: true }).click();
+    assert.equal((await state(page)).document.sequences[0].clips[0].duration, 480000);
+    assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), tall ? 80 : 48);
+  });
+}
+
+test("tall track box selection uses the full virtualized clip height", async (t) => {
+  const page = await fixture(t, { tracks: ["v1"], clips: [{ id: "a", trackId: "v1", start: 30, duration: 1 }] });
+  await trackHeightButton(page).click(); await settle(page);
+  assert.equal(await clip(page, "a").count(), 0, "No visible clip can supply fallback geometry");
+  const lane = await page.locator('[data-et-lane="v1"]').boundingBox(), view = await page.locator(".et-scroll").boundingBox();
+  await page.mouse.move(view.x + 100, lane.y + 60); await page.mouse.down();
+  await page.mouse.move(view.x + 30 * 64 + 20, lane.y + 65); await page.mouse.up(); await settle(page);
+  assert.deepEqual((await state(page)).selected, ["a"]);
+  assert.equal((await state(page)).applied.length, 0);
+});
+
+test("track height stays fixed during a real drag and becomes available after cancellation", async (t) => {
+  const page = await fixture(t), before = await state(page), point = await center(clip(page, "a"));
+  await page.mouse.move(point.x, point.y); await page.mouse.down(); await page.mouse.move(point.x + 20, point.y);
+  assert.equal(await trackHeightButton(page).isDisabled(), true);
+  await trackHeightButton(page).dispatchEvent("click");
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 48);
+  await page.keyboard.press("Escape"); await page.mouse.up(); await settle(page);
+  assert.equal(await trackHeightButton(page).isDisabled(), false);
+  await trackHeightButton(page).click();
+  assert.equal(await page.locator(".et-lane").first().evaluate((lane) => lane.offsetHeight), 80);
+  assert.deepEqual((await state(page)).document, before.document);
 });

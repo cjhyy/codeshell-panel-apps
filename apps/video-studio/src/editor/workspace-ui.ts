@@ -58,6 +58,7 @@ export interface EditorWorkspaceOptions {
     save(value: PreviewResolution): unknown | Promise<unknown>;
   };
   showComposition?(): void;
+  showInspector?(): void;
   showShortcuts?(): void | Promise<void>;
   session: EditorSession;
   assertEditable?(): void;
@@ -157,6 +158,8 @@ export class EditorWorkspace {
   private search = "";
   private visible = true;
   private sourcePreview = false;
+  private loopPlayback = false;
+  private loopReplay?: symbol;
   private disposed = false;
   private previewQualityInteracted = false;
   private preparing?: AbortController;
@@ -185,7 +188,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select>${options.downloadFrame ? button("save-frame", "保存已应用画面 PNG", 'aria-label="保存已应用画面 PNG"') : ""}</div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}${button("loop-playback", "循环播放", 'aria-pressed="false" title="播放到当前序列末尾后从头继续"')}<button type="button" data-ew-time data-ew-action="jump-playhead" aria-label="定位播放头" title="输入秒数或帧序号定位">00:00.00</button><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select>${options.downloadFrame ? button("save-frame", "保存已应用画面 PNG", 'aria-label="保存已应用画面 PNG"') : ""}</div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -319,6 +322,21 @@ export class EditorWorkspace {
         });
       },
       selectedMarker: () => this.markers.selected,
+      canTrimAtPlayhead: (time) => !this.disposed && this.visible && !this.sourcePreview && this.playhead === time,
+      beginMarker: (kind) => {
+        if (this.disposed || !this.visible || this.sourcePreview) return;
+        const identity = this.options.session.getState().identity, sequenceId = this.sequenceId,
+          time = this.playhead, selection = JSON.stringify(this.selected);
+        this.options.showInspector?.();
+        const currentIdentity = this.options.session.getState().identity;
+        if (this.disposed || !this.visible || this.sourcePreview || this.sequenceId !== sequenceId ||
+          this.playhead !== time || JSON.stringify(this.selected) !== selection ||
+          !sameIdentity(identity, currentIdentity)) return;
+        const section = this.get("[data-ew-markers]");
+        section.hidden = false;
+        this.markers.beginShortcut(kind);
+        if (!this.disposed) section.scrollIntoView({ block: "nearest" });
+      },
       selectMarker: (id) => {
         const section = this.get("[data-ew-markers]");
         section.hidden = false;
@@ -334,12 +352,16 @@ export class EditorWorkspace {
     this.preview = new EditorPreview(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
       resolveAsset: options.resolveAsset,
       onFrame: (time) => {
+        const revision = this.revision,
+          replay = this.loopPlayback && !this.preview.playing ? Symbol() : undefined;
+        if (replay) this.loopReplay = replay;
         if (time !== this.playhead) this.exactPlayhead = false;
         this.playhead = time;
         this.timeline.updatePlayhead();
         this.updateTime();
         this.updateFrameCaptureControl();
         this.renderFrameViews();
+        this.queueLoopReplay(time, revision, replay);
       },
       onPlaybackChange: (playing) => {
         this.timeline.setPlaybackActive(playing);
@@ -403,6 +425,7 @@ export class EditorWorkspace {
     window.addEventListener("keydown", this.frameCaptureKeydown, true);
     window.addEventListener("blur", this.frameCaptureBlur);
     container.addEventListener("pointerdown", this.frameCaptureDown, true);
+    container.addEventListener("pointerdown", this.loopPlaybackDown, true);
     container.addEventListener("pointerdown", this.activateComposition, true);
     if (options.layout === "embedded")
       for (const type of this.embeddedEvents)
@@ -646,6 +669,7 @@ export class EditorWorkspace {
     button.title = `${label} · 空格`;
   }
   private cancelPreparation(): void {
+    this.loopReplay = undefined;
     if (this.preparing) this.clearAudioWarning();
     this.preparing?.abort();
     this.preparing = undefined;
@@ -654,6 +678,7 @@ export class EditorWorkspace {
     this.updatePlayButton(false);
   }
   private previewError(error: unknown): void {
+    this.loopReplay = undefined;
     if (this.disposed) return;
     this.preparedRevision = "";
     this.audio?.stream?.dispose();
@@ -741,6 +766,7 @@ export class EditorWorkspace {
   }
   async togglePlayback(): Promise<void> {
     if (this.disposed) return;
+    this.loopReplay = undefined;
     this.previewQualityInteracted = true;
     this.cancelFrameCapture();
     if (this.preparing) {
@@ -1128,6 +1154,33 @@ export class EditorWorkspace {
     }
     this.run(() => this.action(target.dataset.ewAction!));
   };
+  private loopPlaybackDown = (event: PointerEvent): void => {
+    if (event.button === 0 && event.isPrimary && event.target instanceof Element &&
+      event.target.closest('[data-ew-action="loop-playback"]')) event.preventDefault();
+  };
+  private queueLoopReplay(time: Tick, revision: string, owner?: symbol): void {
+    if (!owner || this.loopReplay !== owner) return;
+    if (!this.loopPlayback || this.preview.playing || this.preparing || this.disposed ||
+      !this.visible || this.sourcePreview || !time || revision !== this.revision) {
+      this.loopReplay = undefined;
+      return;
+    }
+    const duration = sequenceDuration(this.sequence());
+    if (this.loopReplay !== owner) return;
+    if (time !== duration || revision !== this.revision || this.playhead !== time ||
+      !this.loopPlayback || this.preview.playing || this.preparing || this.disposed ||
+      !this.visible || this.sourcePreview) {
+      this.loopReplay = undefined;
+      return;
+    }
+    queueMicrotask(() => {
+      if (this.loopReplay !== owner) return;
+      this.loopReplay = undefined;
+      if (!this.loopPlayback || this.preview.playing || this.preparing || this.disposed ||
+        !this.visible || this.sourcePreview || this.playhead !== time || revision !== this.revision) return;
+      this.run(() => this.togglePlayback());
+    });
+  }
   private readonly embeddedEvents = [
     "click",
     "input",
@@ -1176,6 +1229,9 @@ export class EditorWorkspace {
   }
   private keydown = (event: KeyboardEvent) => {
     this.previewQualityInteracted = true;
+    if (event.repeat && event.target instanceof Element &&
+      event.target.closest('[data-ew-action="loop-playback"]') &&
+      ["Enter", " ", "Spacebar"].includes(event.key)) event.preventDefault();
     if (
       (event.target as Element).closest(
         "input,textarea,select,button,[contenteditable=true],dialog",
@@ -1194,6 +1250,12 @@ export class EditorWorkspace {
     }
   };
   private async action(action: string): Promise<void> {
+    if (action === "loop-playback") {
+      this.loopReplay = undefined;
+      this.loopPlayback = !this.loopPlayback;
+      this.get('[data-ew-action="loop-playback"]').setAttribute("aria-pressed", String(this.loopPlayback));
+      return;
+    }
     if (action === "multicam") {
       const section = this.get("[data-ew-multicam]");
       section.hidden = !section.hidden;
@@ -1620,7 +1682,7 @@ export class EditorWorkspace {
       <p data-export-pcm hidden>PCM 音频：48 kHz · 16 位 · 立体声</p>
       <label><input name="captions" type="checkbox" checked>包含字幕</label>
       <div class="ew-form-row"><button type="button" data-save-export-preset>保存为工程预设</button><button type="button" data-remove-export-preset disabled>删除所选工程预设</button></div>
-      </fieldset><fieldset><legend>导出范围</legend><label>范围<select name="range"><option value="">完整所选序列</option>${ranges.map((marker) => `<option value="${esc(marker.id)}"${marker.time + marker.duration > sequenceDuration(sequence) ? " disabled" : ""}>${esc(marker.name)} · ${timeLabel(marker.time)} — ${timeLabel(marker.time + marker.duration)}${marker.time + marker.duration > sequenceDuration(sequence) ? "（超出序列时长）" : ""}</option>`).join("")}</select></label><p>范围标记只导出当前序列的这一段。可先在“标记与范围”中添加范围。</p><p data-export-range-hint hidden>仍需准备完整序列的素材与声音，长序列可能需要较长时间。</p></fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
+      </fieldset><fieldset><legend>导出范围</legend><label>范围<select name="range"><option value="">完整所选序列</option>${ranges.map((marker) => `<option value="${esc(marker.id)}"${marker.time + marker.duration > sequenceDuration(sequence) ? " disabled" : ""}>${esc(marker.name)} · ${exportRangeLabel({ start: marker.time, duration: marker.duration })}${marker.time + marker.duration > sequenceDuration(sequence) ? "（超出序列时长）" : ""}</option>`).join("")}</select></label><p>范围标记只导出当前序列的这一段。可先在“标记与范围”中添加范围。</p><p data-export-range-hint hidden>仍需准备完整序列的素材与声音，长序列可能需要较长时间。</p></fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
       <fieldset><legend>批量输出格式</legend><label><input type="checkbox" name="custom" checked>使用上方设置</label>${presets.map((item) => `<label><input type="checkbox" name="profiles" value="${esc(item.id)}">${esc(item.name)} · ${item.width} × ${item.height} · ${item.videoCodec.toUpperCase()}</label>`).join("")}</fieldset>
       </fieldset><p data-export-progress role="status">每个所选序列都会按所选格式分别导出。</p>`,
       async (form, signal) => {
@@ -1819,6 +1881,7 @@ export class EditorWorkspace {
     window.removeEventListener("keydown", this.frameCaptureKeydown, true);
     window.removeEventListener("blur", this.frameCaptureBlur);
     this.container.removeEventListener("pointerdown", this.frameCaptureDown, true);
+    this.container.removeEventListener("pointerdown", this.loopPlaybackDown, true);
     this.container.removeEventListener("pointerdown", this.activateComposition, true);
     for (const type of this.embeddedEvents)
       this.container.removeEventListener(type, this.stopLegacyEvent);

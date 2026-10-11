@@ -2201,3 +2201,69 @@ test("selected fixed gain owns exactly one visible line while selection, automat
   assert.match(await page.locator('.et-gain-status').textContent(), /自动化/); assert.ok(await yellow() > 0);
   assert.deepEqual(await page.evaluate(() => errors), []);
 });
+
+for (const width of [280, 390]) {
+  test(`track height view enlarges real thumbnails and waveform with one fixed gain line at ${width}px`, async (t) => {
+    await page.setViewportSize({ width, height: 750 });
+    t.after(async () => {
+      await page.setViewportSize({ width: 900, height: 650 });
+      await page.evaluate(() => { document.querySelector("#mount").style.width = "900px"; document.body.style.padding = "0"; });
+    });
+    await page.evaluate((width) => {
+      media.dispose(); document.querySelector("#mount").style.width = `${width - 16}px`; document.body.style.padding = "8px";
+      const seq = doc.sequences[0], voice = structuredClone(seq.clips[0]);
+      seq.tracks = [api.createTrack("v", "video", "画面"), api.createTrack("audio", "audio", "口播")];
+      doc.assets.push({ id: "voice-asset", name: "真实波形", kind: "audio", duration: 480000 });
+      voice.id = "voice"; voice.label = "口播"; voice.assetId = "voice-asset"; voice.trackId = "audio"; seq.clips.push(voice);
+      globalThis.editorHistory = new api.EditorHistory(doc); globalThis.heightSelection = ["a", "voice"];
+      timeline = new api.EditorTimeline(document.querySelector("#mount"), {
+        read: () => editorHistory.read(), identity: () => ({ documentId: doc.id, revision: editorHistory.revision, generation: 1 }),
+        selection: () => ({ sequenceId: "main", clipIds: [...heightSelection] }), select: (ids) => heightSelection = [...ids],
+        time: () => 13, seek: () => {}, apply: (ops) => editorHistory.apply(ops, editorHistory.revision), onError: (error) => errors.push(error.message),
+        media: { resolveAsset: () => sourceUrl, loadWaveform: async (id) => { requests.push({ kind: "audio", id }); return wave; } },
+      });
+      globalThis.heightView = () => {
+        const clip = document.querySelector('[data-et-clip="voice"]'), canvas = clip.querySelector("canvas"),
+          label = clip.querySelector(".et-clip-label").getBoundingClientRect(), strip = canvas.getBoundingClientRect(),
+          area = clip.querySelector(".et-gain-lines"), line = area.firstElementChild,
+          data = canvas.getContext("2d").getImageData(Math.floor(canvas.width * .75), 0, 1, canvas.height).data;
+        let ymin = canvas.height, ymax = -1, yellow = 0;
+        for (let y = 0; y < canvas.height; y++) {
+          const [r, g, b] = data.subarray(y * 4, y * 4 + 3);
+          if (r < 190 && g > 100 && b > 150) { ymin = Math.min(ymin, y); ymax = Math.max(ymax, y); }
+          if (r > 150 && g > 150 && b > 80 && b < 190) yellow++;
+        }
+        return { row: clip.parentElement.offsetHeight, clip: clip.offsetHeight, media: canvas.height, waveform: ymax - ymin + 1,
+          labelOverlap: Math.max(0, Math.min(label.bottom, strip.bottom) - Math.max(label.top, strip.top)),
+          alignment: Math.abs(clip.parentElement.getBoundingClientRect().top - document.querySelector('[data-track-head="audio"]').getBoundingClientRect().top),
+          gainArea: area.offsetHeight, gainBottom: parseFloat(getComputedStyle(line).bottom), yellow };
+      };
+    }, width);
+    const ready = (height) => page.waitForFunction((height) => {
+      const canvases = [...document.querySelectorAll("canvas.et-media-strip")];
+      return canvases.length === 2 && canvases.every((canvas) => canvas.dataset.etMediaState === "ready" && canvas.height === height);
+    }, height);
+    await ready(32);
+    const buttonBounds = await page.getByRole("button", { name: "加高轨道", exact: true }).boundingBox(), followBounds = await page.getByRole("button", { name: "播放跟随", exact: true }).boundingBox();
+    assert.ok(buttonBounds.width >= 56 && buttonBounds.x >= followBounds.x + followBounds.width, "The labeled view control must remain readable and reachable at narrow widths");
+    const before = await page.evaluate(() => editorHistory.read()), compact = await page.evaluate(() => heightView()),
+      requestsBefore = await page.evaluate(() => requests.filter((request) => request.kind === "audio").length);
+    assert.equal(compact.row, 48); assert.equal(compact.clip, 39); assert.equal(compact.gainArea, 32); assert.equal(compact.gainBottom, 9);
+    assert.equal(compact.yellow, 0);
+    await page.getByRole("button", { name: "加高轨道", exact: true }).click(); await ready(48);
+    const tall = await page.evaluate(() => heightView());
+    assert.equal(tall.row, 80); assert.equal(tall.clip, 71); assert.equal(tall.alignment, 0); assert.equal(tall.labelOverlap, 0);
+    assert.equal(tall.gainArea, 48); assert.equal(tall.gainBottom, 13); assert.equal(tall.yellow, 0);
+    assert.ok(tall.waveform > compact.waveform, JSON.stringify({ compact, tall }));
+    assert.ok(red(await page.evaluate(() => timelinePixel(20, 8))), "The taller strip contains decoded source pixels");
+    assert.equal(await page.locator("[data-et-gain-line]").count(), 2, "One selected fixed line per clip");
+    if (process.env.VIDEO_STUDIO_TRACK_HEIGHT_SCREENSHOT_DIR)
+      await page.screenshot({ path: join(process.env.VIDEO_STUDIO_TRACK_HEIGHT_SCREENSHOT_DIR, `video-studio-track-height-formal-${width}.png`) });
+    await page.getByRole("button", { name: "加高轨道", exact: true }).click(); await ready(32);
+    assert.deepEqual(await page.evaluate(() => heightView()), compact);
+    assert.deepEqual(await page.evaluate(() => editorHistory.read()), before);
+    assert.deepEqual(await page.evaluate(() => heightSelection), ["a", "voice"]);
+    assert.equal(await page.evaluate(() => requests.filter((request) => request.kind === "audio").length), requestsBefore, "Height changes reuse source waveforms");
+    assert.deepEqual(await page.evaluate(() => errors), []);
+  });
+}

@@ -51,6 +51,300 @@ after(async () => {
   await browser?.close();
 });
 
+test("timeline trim shortcuts refuse source preview, hidden workspace, active drag and disposed controls", async (t) => {
+  const page = await fixture(t);
+  await clip(page).click(); await page.evaluate(() => fixture.internals.workspace.seek(240013, true));
+  const before = await documentState(page), timeline = page.locator("[data-ew-timeline]");
+  await page.evaluate(() => fixture.sourcePreview(true)); await timeline.focus(); await page.keyboard.press("q");
+  await page.evaluate(() => { fixture.sourcePreview(false); fixture.hide(); });
+  await timeline.dispatchEvent("keydown", { key: "w", bubbles: true });
+  await page.evaluate(() => fixture.show());
+  const bounds = await clip(page).boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 18); await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 20, bounds.y + 18); await page.keyboard.press("q");
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  const oldTimeline = await timeline.elementHandle();
+  await page.evaluate(() => fixture.dispose());
+  await oldTimeline.evaluate((node) => node.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true })));
+  assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const change of ["revision", "restore-start", "sequence", "selection", "clock", "dispose"]) {
+  test(`timeline trim shortcut fences a fresh snapshot read that synchronously changes ${change}`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2 });
+    await clip(page).click(); await page.evaluate(() => fixture.internals.workspace.seek(240013, true));
+    await page.evaluate((change) => {
+      const { workspace, session } = fixture.internals, context = workspace.timeline.context, read = context.read;
+      context.read = () => {
+        const document = read(); context.read = read;
+        if (change === "dispose") workspace.dispose();
+        else if (change === "clock") workspace.seek(240014, true);
+        else if (change === "selection") context.select([]);
+        else if (change === "restore-start") {
+          // Public replacement enters its read-only phase before awaiting persistence.
+          session.replace({ ...document, name: "同 ID / 修订的新代际" });
+        } else fixture.dispatch(change === "sequence" ? [{ type: "sequence.activate", sequenceId: "sequence-2" }] : [{ type: "project.rename", name: "读取时的新修订" }], "外部变化");
+        return document;
+      };
+    }, change);
+    await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("q"); await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.sequences[0].clips.find((clip) => clip.id === "a").duration, 960000);
+    assert.equal(after.sequences[0].clips.find((clip) => clip.id === "a").start, 0);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const change of ["clock", "selection", "revision"]) {
+  test(`timeline trim shortcut cancels when the final ${change} getter mutates the actual workspace`, async (t) => {
+    const page = await fixture(t);
+    await clip(page).click(); await page.evaluate(() => fixture.internals.workspace.seek(240013, true));
+    const before = await documentState(page);
+    await page.evaluate((change) => {
+      const { workspace } = fixture.internals, timeline = workspace.timeline,
+        context = timeline.context, keep = timeline.keepAtPlayhead;
+      globalThis.trimFinalGuardEntered = false;
+      timeline.keepAtPlayhead = function (...args) {
+        timeline.keepAtPlayhead = keep;
+        const field = change === "revision" ? "identity" : "time", read = context[field];
+        context[field] = () => {
+          const saved = read(); context[field] = read; trimFinalGuardEntered = true;
+          if (change === "clock") workspace.seek(240014, true);
+          else if (change === "selection") workspace.selectClips("main", []);
+          else fixture.externalEdit();
+          return saved;
+        };
+        return keep.apply(this, args);
+      };
+    }, change);
+    await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("q"); await settle(page);
+    assert.equal(await page.evaluate(() => trimFinalGuardEntered), true);
+    assert.deepEqual((await documentState(page)).sequences[0].clips, before.sequences[0].clips);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("timeline trim shortcut uses the restored same-id same-revision generation without inheriting an old action", async (t) => {
+  const page = await fixture(t), before = await documentState(page), identity = await page.evaluate(() => fixture.state().identity);
+  await page.evaluate(async (before) => {
+    await fixture.internals.session.replace({ ...before, id: "temporary-trim-project" });
+    await fixture.internals.session.replace(before);
+  }, before); await settle(page);
+  const restored = await page.evaluate(() => fixture.state().identity);
+  assert.equal(restored.revision, identity.revision); assert.notEqual(restored.generation, identity.generation);
+  await clip(page).click(); await page.evaluate(() => fixture.internals.workspace.seek(240013, true));
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("q"); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips.find((clip) => clip.id === "a").start, 240013);
+  await page.evaluate(() => fixture.internals.workspace.options.session.undo()); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("timeline marker shortcut opens an exact point draft without changing playback, selection or history", async (t) => {
+  const page = await fixture(t);
+  await clip(page).click();
+  await page.evaluate(() => fixture.internals.workspace.seek(80085, true));
+  const before = await documentState(page), state = await page.evaluate(() => ({ selection: fixture.selection(), playing: fixture.playing(), history: fixture.state().canUndo }));
+  await page.locator("[data-ew-timeline]").focus();
+  await page.keyboard.press("m");
+  assert.equal(await page.locator(".emarker-form").count(), 1);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新标记");
+  assert.equal(await page.getByLabel("开始（秒）", { exact: true }).inputValue(), "0.333688");
+  assert.equal(await page.getByLabel("标记类型", { exact: true }).inputValue(), "point");
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => ({ selection: fixture.selection(), playing: fixture.playing(), history: fixture.state().canUndo })), state);
+  await page.getByLabel("标记名称", { exact: true }).fill("快捷审核点");
+  await page.getByRole("button", { name: "添加标记", exact: true }).click();
+  await settle(page);
+  assert.equal((await documentState(page)).sequences[0].markers[0].time, 80085);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("timeline marker shortcut opens the selected exact range including gaps", async (t) => {
+  const page = await fixture(t, { audio: true });
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { start: 80085, duration: 160160, timeMap: { points: [{ time: 0, source: 0 }, { time: 160160, source: 160160 }] } } },
+      { type: "clip.update", sequenceId: "main", clipId: "sound", patch: { start: 400400, duration: 80080, timeMap: { points: [{ time: 0, source: 0 }, { time: 80080, source: 80080 }] } } }], "准备跨空隙选区");
+    fixture.internals.workspace.selectClips("main", ["a", "sound"]);
+  });
+  const before = await documentState(page);
+  await page.locator("[data-ew-timeline]").focus();
+  await page.keyboard.press("Shift+M");
+  assert.equal(await page.locator(".emarker-form").count(), 1);
+  assert.equal(await page.getByLabel("标记类型", { exact: true }).inputValue(), "range");
+  assert.equal(await page.getByLabel("开始（秒）", { exact: true }).inputValue(), "0.333688");
+  assert.equal(await page.getByLabel("结束（秒）", { exact: true }).inputValue(), "2.002");
+  assert.match(await page.locator(".emarker-form").innerText(), /空隙/);
+  assert.deepEqual(await documentState(page), before);
+  await page.getByRole("button", { name: "添加标记", exact: true }).click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences[0].markers.map(({ time, duration }) => ({ time, duration })), [{ time: 80085, duration: 400395 }]);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+for (const draft of ["untouched new", "edited new", "edited saved"]) {
+  test(`timeline marker shortcut preserves the connected ${draft} draft after another revision`, async (t) => {
+    const page = draft === "edited saved" ? await markerDraftFixture(t) : await fixture(t);
+    if (draft !== "edited saved") {
+      await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+    }
+    if (draft !== "untouched new") await page.getByLabel("标记名称", { exact: true }).fill("尚未保存的校对草稿");
+    const form = await page.locator(".emarker-form").elementHandle(),
+      name = await page.getByLabel("标记名称", { exact: true }).inputValue();
+    await page.evaluate(() => fixture.externalEdit()); await settle(page);
+    const before = await documentState(page);
+    await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+M");
+    assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+    assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), name);
+    assert.match(await page.locator(".emarker-error").innerText(), /已有未保存/);
+    assert.deepEqual(await documentState(page), before);
+  });
+}
+
+test("timeline marker shortcut requires an actual selection instead of inventing a range", async (t) => {
+  const page = await fixture(t), before = await documentState(page);
+  await page.evaluate(() => fixture.internals.workspace.selected = ["missing-clip"]);
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+M");
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  assert.match(await page.locator(".emarker-error").innerText(), /先在时间轴选择片段/);
+  assert.deepEqual(await documentState(page), before);
+});
+
+test("timeline marker shortcut held M opens once and does not type its repeats into the new name", async (t) => {
+  const page = await fixture(t);
+  await page.locator("[data-ew-timeline]").focus();
+  await page.keyboard.down("m");
+  const form = await page.locator(".emarker-form").elementHandle();
+  await page.keyboard.down("m"); await page.keyboard.down("m"); await page.keyboard.up("m");
+  assert.equal(await form.evaluate((node) => node.isConnected), true);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新标记");
+  await page.keyboard.press("m");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新标记m", "Fresh typing in the name remains available after keyup");
+  assert.equal((await documentState(page)).sequences[0].markers.length, 0);
+});
+
+test("timeline marker shortcut freezes its draft clock while playback continues", async (t) => {
+  const page = await fixture(t, { duration: 60 * 240000 });
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.playing());
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  const draftTime = await page.evaluate(() => fixture.internals.workspace.markers.draft.time);
+  await page.waitForFunction((time) => fixture.playhead() > time, draftTime);
+  assert.equal(await page.evaluate(() => fixture.playing()), true);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.draft.time), draftTime);
+  assert.equal((await documentState(page)).sequences[0].markers.length, 0);
+});
+
+test("timeline marker shortcut does not intercept editable fields, modifiers, dialogs or outside focus", async (t) => {
+  const page = await fixture(t);
+  for (const key of ["Control+m", "Meta+m", "Alt+m"]) {
+    await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press(key);
+  }
+  const name = page.locator('[data-et-track-name="video"]');
+  await name.focus(); await page.keyboard.press("m");
+  assert.match(await name.inputValue(), /m/);
+  await page.evaluate(() => { const dialog = document.createElement("dialog"); dialog.textContent = "当前对话框"; document.body.append(dialog); dialog.show(); });
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  await page.evaluate(() => document.querySelector("dialog").remove());
+  await page.locator("[data-ew-canvas]").evaluate((node) => { node.tabIndex = 0; node.focus(); });
+  await page.keyboard.press("m");
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+});
+
+test("timeline marker shortcut leaves a native marker composition attached and focused", async (t) => {
+  const page = await markerDraftFixture(t), input = page.getByLabel("标记名称", { exact: true }),
+    form = await page.locator(".emarker-form").elementHandle(), cdp = await page.context().newCDPSession(page);
+  await input.focus(); await input.evaluate((node) => { node.select(); globalThis.markerShortcutImeEnds = []; node.addEventListener("compositionend", (event) => markerShortcutImeEnds.push(event.data)); });
+  await cdp.send("Input.imeSetComposition", { text: "未结束的标记输入", selectionStart: 8, selectionEnd: 8 });
+  await page.keyboard.press("m");
+  assert.equal(await form.evaluate((node) => node.isConnected && node === document.querySelector(".emarker-form")), true);
+  assert.equal(await input.evaluate((node) => document.activeElement === node), true);
+  assert.deepEqual(await page.evaluate(() => markerShortcutImeEnds), []);
+  assert.equal((await documentState(page)).sequences[0].markers[0].name, "审核范围");
+  await cdp.send("Input.insertText", { text: "已完成标记输入" });
+});
+
+test("timeline marker shortcut ignores source preview, hidden workspace and an active drag", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => fixture.sourcePreview(true));
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  await page.evaluate(() => { fixture.sourcePreview(false); fixture.hide(); fixture.internals.workspace.timeline.context.beginMarker("point"); fixture.show(); });
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  const bounds = await clip(page).boundingBox();
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + 18); await page.mouse.down(); await page.mouse.move(bounds.x + bounds.width / 2 + 20, bounds.y + 18);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.drag), true);
+  await page.keyboard.press("m");
+  assert.equal(await page.locator(".emarker-form").count(), 0);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+});
+
+test("timeline marker shortcut leaves a pending explicit marker save alone", async (t) => {
+  const page = await fixture(t);
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.markers.context, apply = context.apply;
+    context.apply = (...args) => new Promise((resolve, reject) => globalThis.finishShortcutMarkerSave = () => Promise.resolve(apply(...args)).then(resolve, reject));
+  });
+  await page.getByRole("button", { name: "添加标记", exact: true }).click();
+  const form = await page.locator(".emarker-form").elementHandle();
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("Shift+M");
+  assert.equal(await form.evaluate((node) => node.isConnected), true);
+  assert.equal(await page.getByRole("button", { name: "添加标记", exact: true }).isDisabled(), true);
+  assert.equal((await documentState(page)).sequences[0].markers.length, 0);
+  await page.evaluate(() => finishShortcutMarkerSave()); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].markers.length, 1);
+});
+
+for (const change of ["revision", "sequence", "dispose"]) {
+  test(`timeline marker shortcut rejects a fresh read that synchronously changes ${change}`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2 });
+    await page.evaluate((change) => {
+      const { workspace, session } = fixture.internals, context = workspace.markers.context, read = context.read;
+      context.read = () => {
+        const document = read(); context.read = read;
+        if (change === "dispose") workspace.dispose();
+        else fixture.dispatch(change === "sequence" ? [{ type: "sequence.activate", sequenceId: "sequence-2" }] : [{ type: "project.rename", name: "读取期间的新修订" }], "外部变化");
+        return document;
+      };
+    }, change);
+    await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+    assert.equal(await page.locator(".emarker-form").count(), 0);
+    assert.equal((await documentState(page)).sequences.flatMap((sequence) => sequence.markers).length, 0);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("timeline marker shortcut opens a fresh draft after same-id same-revision generation replacement", async (t) => {
+  const page = await fixture(t);
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  await page.getByLabel("标记名称", { exact: true }).fill("不能继承的旧草稿");
+  const old = await page.locator(".emarker-form").elementHandle(), before = await documentState(page), identity = await page.evaluate(() => fixture.state().identity);
+  await page.evaluate(async (before) => {
+    await fixture.internals.session.replace({ ...before, id: "temporary-marker-shortcut-project" });
+    await fixture.internals.session.replace(before);
+  }, before); await settle(page);
+  assert.equal((await page.evaluate(() => fixture.state().identity)).revision, identity.revision);
+  assert.notEqual((await page.evaluate(() => fixture.state().identity)).generation, identity.generation);
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  assert.equal(await old.evaluate((node) => node.isConnected), false);
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新标记");
+  assert.deepEqual(await documentState(page), before);
+});
+
+test("timeline marker shortcut cannot overwrite a new marker-form owner installed by its fresh read", async (t) => {
+  const page = await fixture(t);
+  await page.evaluate(() => {
+    fixture.dispatch([{ type: "marker.add", sequenceId: "main", marker: { id: "new-form-owner", time: 0, duration: 0, name: "新选择的标记", note: "", color: "#ffcc00" } }], "准备新表单所有者");
+    const markers = fixture.internals.workspace.markers, context = markers.context, read = context.read;
+    context.read = () => { const document = read(); context.read = read; markers.select("new-form-owner"); return document; };
+  });
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).inputValue(), "新选择的标记");
+  assert.equal(await page.getByRole("button", { name: "保存标记", exact: true }).count(), 1);
+  assert.equal(await page.evaluate(() => fixture.internals.workspace.markers.draft === undefined), true);
+});
+
 test("holding workspace undo and redo continues through repeated timeline key events", async (t) => {
   const page = await fixture(t),
     initial = await documentState(page);
@@ -3093,6 +3387,33 @@ test("range marker export submits only the current sequence window and restores 
   assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+for (const width of [280, 390])
+  test(`adjacent one-tick export ranges remain distinguishable at ${width}px and submit their exact interval`, async (t) => {
+    const page = await fixture(t, { width });
+    await page.evaluate(() => fixture.dispatch([
+      { type: "marker.add", sequenceId: "main", marker: { id: "tiny-first", time: 240013, duration: 1, name: '<同名>&"', note: "", color: "#ffcc00" } },
+      { type: "marker.add", sequenceId: "main", marker: { id: "tiny-next", time: 240014, duration: 1, name: '<同名>&"', note: "", color: "#ffcc00" } },
+    ], "添加相邻短范围"));
+    await settle(page);
+    const before = await documentState(page);
+    await action(page, "export").click();
+    const range = page.locator('dialog [name="range"]');
+    const first = await range.locator('[value="tiny-first"]').textContent();
+    const next = await range.locator('[value="tiny-next"]').textContent();
+    assert.notEqual(first, next, "the selectable intervals must not collapse to the same rounded label");
+    assert.equal(first, '<同名>&" · 1.000054–1.000058 秒');
+    assert.equal(next, '<同名>&" · 1.000058–1.000063 秒');
+    await range.selectOption("tiny-next");
+    assert.match(await page.getByLabel("导出摘要", { exact: true }).textContent(), /1\.000058–1\.000063 秒/);
+    await page.locator('dialog [type="submit"]').click();
+    await page.waitForFunction(() => fixture.exports.length === 1);
+    const [submitted] = await page.evaluate(() => fixture.exports);
+    assert.deepEqual(submitted.range, { start: 240014, duration: 1 });
+    assert.deepEqual(submitted.doc, before);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
 
 for (const width of [620, 390])
   test(`export summary at ${width}px wraps long sequence and profile names without blocking the bottom actions`, async (t) => {
@@ -7239,3 +7560,187 @@ test("PNG save hint follows restored preview quality while image decoding is pen
   assert.deepEqual(png.center, [255, 0, 0, 255]);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
+
+for (const width of [280, 390]) {
+  test(`track height view preserves actual focused inspector and native track IME drafts at ${width}px`, async (t) => {
+    const page = await fixture(t, { width });
+    await page.locator('[data-et-clip="a"]').click(); await settle(page);
+    const before = await documentState(page), selected = await page.evaluate(() => fixture.selection()),
+      field = page.getByLabel("水平位置（%）", { exact: true });
+    await field.fill("25"); const same = await field.elementHandle();
+    await page.getByRole("button", { name: "加高轨道", exact: true }).click(); await settle(page);
+    assert.equal(await same.evaluate((node) => node.isConnected && node === document.activeElement && node.value === "25"), true);
+    assert.deepEqual(await documentState(page), before); assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    // Restore the original inspector value before focusing the separate track-name draft.
+    await field.fill("0");
+    const input = page.getByLabel("轨道名称 画面轨", { exact: true }); await input.fill("");
+    const sameName = await input.elementHandle(), cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.imeSetComposition", { text: "加高仍保留中文", selectionStart: 7, selectionEnd: 7 });
+    await page.getByRole("button", { name: "加高轨道", exact: true }).click(); await settle(page);
+    assert.deepEqual(await sameName.evaluate((node) => ({ connected: node.isConnected, focused: node === document.activeElement, value: node.value })), { connected: true, focused: true, value: "加高仍保留中文" });
+    assert.deepEqual(await documentState(page), before);
+    await cdp.send("Input.insertText", { text: "完成中文" });
+    assert.equal(await sameName.evaluate((node) => node.value), "完成中文");
+    assert.deepEqual(await documentState(page), before);
+    await cdp.detach();
+  });
+}
+
+test("track height cannot change while an inspector finisher owns an awaited timeline gesture", async (t) => {
+  const page = await fixture(t); await page.locator('[data-et-clip="a"]').click(); await settle(page);
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const box = await page.locator('[data-et-clip="a"]').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.up(); await settle(page);
+  const toggle = page.getByRole("button", { name: "加高轨道", exact: true });
+  assert.equal(await toggle.isDisabled(), true);
+  await toggle.dispatchEvent("click");
+  assert.equal(await toggle.getAttribute("aria-pressed"), "false");
+  await releaseCanvasField(page); await settle(page);
+  assert.equal(await toggle.isDisabled(), false);
+  await toggle.click(); assert.equal(await toggle.getAttribute("aria-pressed"), "true");
+  assert.equal((await documentState(page)).revision, 4, "Only the owned field edit is saved");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const mode of ["silent", "buffer", "stream"])
+  test(`loop playback restarts the actual ${mode} clock and reuses prepared audio without editing`, async (t) => {
+    const page = await fixture(t, { duration: 48000, audio: mode !== "silent" });
+    const loop = action(page, "loop-playback");
+    assert.equal(await loop.count(), 1, "loop playback must have a visible control");
+    const before = await documentState(page);
+    const history = await page.evaluate(() => fixture.state().undoLabels);
+    await loop.click();
+    assert.equal(await loop.getAttribute("aria-pressed"), "true");
+    await page.evaluate(() => {
+      window.loopRestarts = 0;
+      let previous = fixture.playhead();
+      new MutationObserver(() => {
+        const time = fixture.playhead();
+        if (time < previous) window.loopRestarts++;
+        previous = time;
+      }).observe(document.querySelector("[data-ew-time]"), { childList: true });
+    });
+    await action(page, "play").click();
+    if (mode !== "silent") {
+      await page.waitForFunction(() => fixture.audio().length === 1);
+      await page.evaluate((stream) => fixture.resolveAudio(0, stream), mode === "stream");
+    }
+    await page.waitForFunction(() => window.loopRestarts >= 2 && fixture.playing());
+    await action(page, "play").click();
+    await page.waitForFunction(() => !fixture.playing());
+    const paused = await page.evaluate(() => fixture.playhead());
+    await page.waitForTimeout(450);
+    assert.equal(await page.evaluate(() => fixture.playhead()), paused);
+    assert.equal(await page.evaluate(() => fixture.playing()), false);
+    assert.equal(await page.evaluate(() => fixture.audio().length), mode === "silent" ? 0 : 1);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.state().undoLabels), history);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+
+for (const interrupt of ["disable", "hidden", "source", "revision", "sequence", "seek", "dispose"])
+  test(`a natural loop completion cannot restart after synchronous ${interrupt} interruption`, async (t) => {
+    const page = await fixture(t, { duration: 48000, sequenceCount: 2 });
+    await action(page, "loop-playback").click();
+    await page.evaluate((interrupt) => {
+      const workspace = fixture.internals.workspace;
+      const original = workspace.preview.options.onFrame;
+      window.loopInterrupted = false;
+      window.framesAfterLoopInterruption = [];
+      workspace.preview.options.onFrame = (time) => {
+        original(time);
+        if (window.loopInterrupted) {
+          window.framesAfterLoopInterruption.push(time);
+          return;
+        }
+        if (time !== 48000) return;
+        window.loopInterrupted = true;
+        if (interrupt === "disable") document.querySelector('[data-ew-action="loop-playback"]').click();
+        if (interrupt === "hidden") workspace.setVisible(false);
+        if (interrupt === "source") workspace.setSourcePreview(true);
+        if (interrupt === "revision") fixture.externalEdit();
+        if (interrupt === "sequence") fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列");
+        if (interrupt === "seek") window.loopInterruptionWork = workspace.seek(8000, true);
+        if (interrupt === "dispose") window.loopInterruptionWork = workspace.dispose();
+      };
+    }, interrupt);
+    await action(page, "play").click();
+    await page.waitForFunction(() => window.loopInterrupted);
+    await page.evaluate(async () => { await window.loopInterruptionWork; });
+    await page.waitForTimeout(450);
+    assert.equal(await page.evaluate(() => fixture.playing()), false);
+    assert.equal(await page.evaluate(() => window.framesAfterLoopInterruption.includes(0)), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+
+test("loop playback is a local view choice that retains an unfinished inspector field and held-key state", async (t) => {
+  const page = await fixture(t, { width: 390 });
+  await clip(page).click();
+  const input = page.getByLabel("水平位置（%）", { exact: true });
+  await input.fill("0.125");
+  const original = await input.elementHandle();
+  const before = await documentState(page);
+  const history = await page.evaluate(() => fixture.state().undoLabels);
+  const loop = action(page, "loop-playback");
+  await loop.click();
+  assert.equal(await original.evaluate((node) => node.isConnected && node === document.activeElement), true);
+  assert.equal(await input.inputValue(), "0.125");
+  assert.equal(await loop.getAttribute("aria-pressed"), "true");
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.state().undoLabels), history);
+  // Leave the input intentionally before testing native keyboard activation.
+  await input.press("Escape");
+  await loop.focus();
+  await page.keyboard.down("Enter");
+  assert.equal(await loop.getAttribute("aria-pressed"), "false");
+  await page.keyboard.down("Enter");
+  await page.keyboard.down("Enter");
+  assert.equal(await loop.getAttribute("aria-pressed"), "false");
+  await page.keyboard.up("Enter");
+  await loop.press("Enter");
+  assert.equal(await loop.getAttribute("aria-pressed"), "true");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const phase of ["frame", "range-read"])
+  for (const interrupt of ["seek-end", "hide-show", "source-return"])
+    test(`loop completion retains cancellation through ${phase} synchronous ${interrupt} read reentry`, async (t) => {
+      const page = await fixture(t, { duration: 48000 });
+      await action(page, "loop-playback").click();
+      await page.evaluate(({ phase, interrupt }) => {
+        const { workspace, session } = fixture.internals;
+        window.loopReadInterrupted = false;
+        const installRead = () => {
+          const read = session.read.bind(session);
+          session.read = () => {
+            const doc = read();
+            session.read = read;
+            window.loopReadInterrupted = true;
+            if (interrupt === "seek-end") window.loopInterruptionWork = workspace.seek(48000, true);
+            if (interrupt === "hide-show") { workspace.setVisible(false); workspace.setVisible(true); }
+            if (interrupt === "source-return") { workspace.setSourcePreview(true); workspace.setSourcePreview(false); }
+            return doc;
+          };
+        };
+        if (phase === "frame") {
+          const frame = workspace.preview.options.onFrame;
+          workspace.preview.options.onFrame = (time) => {
+            if (time === 48000 && !window.loopReadInterrupted) installRead();
+            return frame(time);
+          };
+        } else {
+          const queue = workspace.queueLoopReplay.bind(workspace);
+          workspace.queueLoopReplay = (...args) => {
+            if (args[0] === 48000 && !window.loopReadInterrupted) installRead();
+            return queue(...args);
+          };
+        }
+      }, { phase, interrupt });
+      await action(page, "play").click();
+      await page.waitForFunction(() => window.loopReadInterrupted);
+      await page.evaluate(async () => { await window.loopInterruptionWork; });
+      await page.waitForTimeout(450);
+      assert.equal(await page.evaluate(() => fixture.playing()), false);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    });

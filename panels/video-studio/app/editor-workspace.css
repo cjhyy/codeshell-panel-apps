@@ -244,6 +244,15 @@
   font-size: 11px;
   white-space: nowrap;
 }
+.ew-player [data-ew-action="loop-playback"] {
+  min-height: 28px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.ew-player [data-ew-action="loop-playback"][aria-pressed="true"] {
+  border-color: var(--accent, #b8edc8);
+  color: var(--accent, #b8edc8);
+}
 .ew-player [data-ew-time] {
   padding: 4px 6px;
   min-height: 28px;

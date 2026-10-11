@@ -34,7 +34,21 @@ before(async () => {
   // Exercise the real background media restoration without adding a production test API.
   const main = join(output, "main.mjs");
   await writeFile(main, (await readFile(main, "utf8")) +
-    "\nglobalThis.__libraryPressAudit = { restore: restoreManagedMedia, render, session: () => editorSession, pressed: () => Boolean(mediaActionPress) };\n");
+    `\nglobalThis.__libraryPressAudit = {
+      restore: restoreManagedMedia, render, session: () => editorSession,
+      pressed: () => Boolean(mediaActionPress),
+      snapshot: () => ({
+        scope: mediaActionScope(), editor: editorSession?.getState(),
+        selected: [...selectedMedia], deferredRender: deferredMediaRender,
+        press: mediaActionPress && {
+          action: mediaActionPress.button.dataset.action,
+          connected: mediaActionPress.button.isConnected,
+          pointerId: mediaActionPress.pointerId, scope: mediaActionPress.scope
+        },
+        aiApplying, mediaImporting, projectSwitching, taskStarting,
+        pendingDeletion: pendingMediaDeletion?.ids
+      })
+    };\n`);
   const video = join(directory, "library-source.mp4");
   const made = spawnSync(
     "ffmpeg",
@@ -264,6 +278,74 @@ async function assertNoResourceDeletion(page) {
     ),
     "Removing project entries must never delete managed resources or original files",
   );
+}
+
+async function observeLibraryDeletion(page) {
+  // No layout reads or action replay: retain only the native events for this one fixture.
+  await page.evaluate(() => {
+    const events = (window.__libraryDeletionEvents = []);
+    for (const type of ["pointerdown", "pointerup", "click", "pointercancel"])
+      document.addEventListener(type, (event) => {
+        if (!(event.target instanceof Element)) return;
+        const button = event.target.closest?.("[data-action]");
+        const record = {
+          time: performance.now(), type, trusted: event.isTrusted,
+          pointerId: event.pointerId, pointerType: event.pointerType,
+          x: event.clientX, y: event.clientY, detail: event.detail,
+          target: { tag: event.target.tagName, id: event.target.id, action: button?.dataset.action,
+            connected: event.target.isConnected, controlConnected: button?.isConnected,
+            disabled: button?.disabled, ariaDisabled: button?.getAttribute("aria-disabled") },
+          state: __libraryPressAudit.snapshot(),
+        };
+        events.push(record);
+        if (events.length > 80) events.shift();
+        queueMicrotask(() => {
+          record.connectedAfter = event.target.isConnected;
+          record.controlConnectedAfter = button?.isConnected;
+          record.defaultPrevented = event.defaultPrevented;
+        });
+      }, true);
+  });
+}
+
+async function retainLibraryDeletionFailure(page, error) {
+  const evidence = resolve(process.env.VIDEO_STUDIO_EXACT_EVIDENCE ??
+    resolve(root, "artifacts/video-studio/exact-browser-duration"), "library-deletion");
+  try {
+    const receipt = await page.evaluate(() => ({
+      events: window.__libraryDeletionEvents,
+      state: __libraryPressAudit.snapshot(),
+      assets: __libraryTools.read_video_project().project.assets,
+      checked: [...document.querySelectorAll("[data-select-media]:checked")]
+        .map((input) => input.dataset.selectMedia),
+      buttons: [...document.querySelectorAll('.library-panel [data-action="select-media"],.library-panel [data-action="delete-media"]')]
+        .map((button) => ({ action: button.dataset.action, connected: button.isConnected,
+          disabled: button.disabled, ariaDisabled: button.getAttribute("aria-disabled"),
+          bounds: button.getBoundingClientRect().toJSON() })),
+      dialog: { open: document.querySelector("#media-delete-dialog")?.open,
+        text: document.querySelector("#media-delete-dialog")?.textContent },
+      toast: { text: document.querySelector("#toast")?.textContent,
+        className: document.querySelector("#toast")?.className },
+      save: document.querySelector("#save-state")?.textContent,
+      writes: __libraryHostCalls.filter((call) => call.method === "media.document.set")
+        .map(({ params }) => ({ key: params.key, baseRevision: params.baseRevision })),
+      storedRevision: JSON.parse(localStorage.getItem("document:video-studio-current") ?? "null")?.revision,
+    }));
+    receipt.error = { message: error.message, stack: error.stack };
+    receipt.driver = { node: process.version, platform: process.platform,
+      arch: process.arch, chromium: browser.version() };
+    await mkdir(evidence, { recursive: true });
+    await writeFile(resolve(evidence, "receipt.json"), JSON.stringify(receipt, null, 2));
+    console.error("Synthetic library deletion failure:", JSON.stringify({
+      evidence, error: receipt.error.message, state: receipt.state,
+      events: receipt.events?.slice(-12), assets: receipt.assets.map(({ id, name }) => ({ id, name })),
+      checked: receipt.checked, dialog: receipt.dialog, toast: receipt.toast,
+      save: receipt.save, writes: receipt.writes, storedRevision: receipt.storedRevision,
+    }));
+    await page.screenshot({ path: resolve(evidence, "screen.png"), fullPage: true });
+  } catch (diagnosticError) {
+    console.error("Could not retain synthetic library deletion diagnostics:", diagnosticError);
+  }
 }
 
 test(
@@ -838,6 +920,7 @@ test(
   async () => {
     const page = await mixedPage();
     try {
+      await observeLibraryDeletion(page);
       const before = (await state(page)).project;
       const imported = before.assets.filter((asset) => asset.name.startsWith("Library-"));
       assert.ok(imported.some((asset) => asset.kind === "image"));
@@ -868,6 +951,9 @@ test(
         ),
       );
       await assertNoResourceDeletion(page);
+    } catch (error) {
+      await retainLibraryDeletionFailure(page, error);
+      throw error;
     } finally {
       await page.close();
     }

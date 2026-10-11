@@ -3,6 +3,8 @@
   --et-border: #303135;
   --et-muted: #858990;
   --et-accent: #75ddcf;
+  --et-track-height: 48px;
+  --et-strip-height: 32px;
   position: relative;
   min-width: 0;
   background: #17181a;
@@ -10,6 +12,10 @@
   font: 12px system-ui;
   outline: none;
   color-scheme: dark;
+}
+.editor-timeline.et-tall-tracks {
+  --et-track-height: 80px;
+  --et-strip-height: 48px;
 }
 .editor-timeline svg {
   flex: 0 0 auto;
@@ -112,7 +118,11 @@
   flex-shrink: 0;
   background: #202124;
 }
-.et-toolbar .et-follow[aria-pressed="true"] {
+.et-toolbar [data-et-track-height] {
+  flex: 0 0 auto;
+}
+.et-toolbar .et-follow[aria-pressed="true"],
+.et-toolbar [data-et-track-height][aria-pressed="true"] {
   color: var(--et-accent);
   background: #263633;
 }
@@ -255,7 +265,7 @@
 }
 /* Two compact rows (name + switches, mix + order) keep five tracks in a default-height timeline. */
 .et-track-head {
-  height: 48px;
+  height: var(--et-track-height);
   border-bottom: 1px solid var(--et-border);
   padding: 3px 6px;
   transition: background 120ms ease;
@@ -415,7 +425,7 @@
 }
 .et-lane {
   position: relative;
-  height: 48px;
+  height: var(--et-track-height);
   border-bottom: 1px solid #292b2f;
   background: #1a1b1e;
 }
@@ -431,7 +441,7 @@
 .et-clip {
   position: absolute;
   top: 4px;
-  height: 39px;
+  height: calc(var(--et-track-height) - 9px);
   background: #3c495c;
   border: 1px solid #637085;
   border-radius: 5px;
@@ -764,6 +774,7 @@
     display: grid;
     grid-template-columns: 14px minmax(0, 1fr) auto auto;
     grid-template-rows: 20px 18px;
+    align-content: center;
     align-items: center;
     column-gap: 3px;
     row-gap: 3px;
@@ -821,7 +832,7 @@
 }
 
 /* The fixed-gain grip stays in the visible part of a selected clip, away from edge/fade grips. */
-.et-gain-lines { position:absolute; left:0; right:0; bottom:1px; height:calc(100% - 2px); max-height:32px; pointer-events:none; z-index:2; }
+.et-gain-lines { position:absolute; left:0; right:0; bottom:1px; height:calc(100% - 2px); max-height:var(--et-strip-height); pointer-events:none; z-index:2; }
 .et-gain-lines > span { position:absolute; left:0; right:0; height:1.5px; background:#e5ed97; }
 .et-gain-handle { position:absolute; bottom:0; width:44px; height:16px; box-sizing:border-box; border:1px solid #e5ed97; border-radius:5px; background:#222a22ed; color:#fff5ad; font:10px/14px system-ui; text-align:center; cursor:ns-resize; touch-action:none; z-index:4; }
 .et-gain-handle:focus-visible { outline:2px solid white; outline-offset:1px; }

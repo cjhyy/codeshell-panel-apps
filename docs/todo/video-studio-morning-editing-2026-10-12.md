@@ -675,3 +675,63 @@ held toBlob与晚quality、自动恢复quarter后pending decode、旧blob不清�
 native touch取消等待。根16整套UI包含前者且绿，不能据此宣称Linux PR失败已修复；
 后者不属于本轮Video Studio领域1131项。已派独立调查，保留原log与具体因果边界，
 不通过盲目重跑掩盖，最终交付仍须最新head门禁。
+
+## 第十七批：快捷裁剪、标记与循环播放
+
+- 时间轴 M 按精确播放头准备点标记，Shift+M 按实际所选片段的最早开始和最晚结束
+  准备范围标记，包含片段间空隙；无实际选择时不造默认范围。复用标记草稿及显式
+  保存，脏草稿、IME、长按、dialog、隐藏或原片预览均受既有操作边界保护。窄窗
+  快捷打开标记时切换到属性区域，Main 同时保留预览质量偏好入口。
+- 轨道紧凑48px/加高80px仅是本地视图，片段及媒体strip随之增高；切换保留原生
+  草稿节点、垂直顶部轨道及可见比例、水平位置与播放头。真实缩略图与音频包络
+  两模式已验证，媒体请求仍沿既有可见范围和每轮预算。
+- 标记导出选项复用已有六位小数秒格式，不再把相邻一tick同名范围都显示为两位
+  小数的相同起止。280/390px两红转绿，真正提交仍保留原始tick和选中范围。
+- 循环播放在自然结束后调用已有播放入口，复用已准备音频与流；用户暂停、定位、
+  切质量、切工程、进入原片、隐藏、错误和关闭面板均撤销旧的自动重播意图。
+  不承诺无缝音频。独立实际自然结束审查发现同步读取重入可能重建被取消owner，
+  已改为onFrame入口捕获同一owner并贯穿fresh读取与microtask。原刺激6红转绿，
+  独立最终9/9、候选Workspace504/504及类型通过。
+- Q/W沿现有保留右/左计划，不绕过关联字幕、磁吸、锁轨或一步撤销。独立最终
+  getter读取中public seek、取消选择和外部revision变化三反例已由局部owner取消
+  与Workspace最终clock检查关闭；不增加全局协议或无界getter复读。两个方向
+  真实磁吸关联音画+来源字幕及原三个刺激独立5/5通过，待根最终统一回归。
+- 素材库偶发CI删除超时原固定head native复现30/30通过，尚未归因。只在原测试
+  失败时保存bounded原生down/up/click、选择、完整identity、存储阶段及PNG，不改
+  原断言、超时或重试策略。注入失败实证产生JSON/PNG，注入不提交。另一面板
+  Design Studio原失败日志证实down/up在手形工具，4.6ms后兼容click落在评论：
+  工具栏布局移动81px；本轮不扩展修改其业务代码。
+
+根初轮组合目标70/70通过，日志
+`/tmp/video-studio-morning-seventeenth-core-integration.log`。
+
+Q/W已整合唯一替代提交61e8d9d，未重复de2或其marker依赖；替代源代理最终
+Timeline+Workspace664/664、21目标及类型通过。根最终源码已冻结并构建：Workspace
+fc8be0b、Timeline920316c、Marker e7a5a30、Main c0a2441；根Q/W11/11、type、
+build/build:check/validate39通过。offline1131通过3可选跳过、native voice5通过
+1可选跳过、workspace docs5/5；最终完整界面1345/1345通过（757195ms）、真实媒体
+230/230通过（155364ms）。日志`/tmp/video-studio-morning-seventeenth-{full-ui,media,
+offline,typecheck,build,build-check,validate}.log`；source及生成安装包同步保存。
+独立最终实际组合6/6通过：自然第二轮末尾PNG及quality会暂停并撤销重播、M草稿
+跨两轮保留原form/name/多行note/tick、实际Q/W各一次revision后旧循环不重启、
+48/80轨高切换期间循环继续且doc/history不动。日志
+`/tmp/video-studio-root17-combo/results.log`。
+循环声音另用实际WebAudio旁路PCM捕获、保持原destination连接：buffer与跨2秒
+chunk的stream各连续三轮440/660Hz双声道正弦幅值正确；关闭循环自然结束及暂停
+后真实14336/106496frames全零，预排未来chunk未残留；仅prepare一次，dispose
+释放nodes/context且无late callback。报告`/tmp/video-studio-loop-audio-review.md`，
+脚本`/tmp/video-studio-loop-audio-review.mjs`。未验证物理声卡/Host解码，stream
+轮间调度约48/53ms（含35ms lead），不能当作无缝循环。
+
+第十六批fa6323a PR CI38184140293的唯一UI失败是旧版小时长工程zoom用例：
+`tests/video-studio-ui.test.mjs:2413`在2464等待zoom=240且scrollWidth>800000
+超时；该次素材库多选删除明确通过。其他该run jobs成功；push UI随后唯一失败为
+素材原生select-media恢复用例，预期3个checked而实际7个。两个run的旧删除用例均绿。
+保存原日志`/tmp/video-studio-sixteenth-ci-pr-failed.log`并派独立因果审查，不将
+本机绿色或旧library诊断当作此次问题已修复。
+
+后续候选在独立树审查，尚未混入本批：搜索框native focus后真实background render
+会断开原input，native fill丢失且随后select全部7而非目标3；最小活节点保留已关闭
+该实际反例，仍待最终整合。旧版zoom的同browser task现查节点和原生slider保活、
+已有标记前后定位、三分构图线及多轨转场索引也须分别完成独立验证后再合入。
+继续优化至11:00，未发布、未安装或更改工程格式与Host权限。

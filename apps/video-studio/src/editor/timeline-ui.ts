@@ -57,6 +57,10 @@ export interface EditorTimelineContext {
   beforeGesture?(signal: AbortSignal): boolean | Promise<boolean>;
   selectedMarker?(): string | undefined;
   selectMarker?(markerId: string): void;
+  /** Open a marker draft; the parent owns its form and explicit save. */
+  beginMarker?(kind: "point" | "range"): void;
+  /** Whether composition trimming is still available at the captured playhead. */
+  canTrimAtPlayhead?(time: Tick): boolean;
   time(): Tick;
   seek(time: Tick, exact?: boolean): void | Promise<void>;
   apply(operations: EditorOperation[], label: string): void | Promise<void>;
@@ -249,6 +253,7 @@ export class EditorTimeline {
   private renderedWidth = 0;
   private scale = 64;
   private snapping = true;
+  private trackHeight: 48 | 80 = 48;
   private followPlayback = true;
   private playbackActive = false;
   private followSuspended = false;
@@ -258,6 +263,7 @@ export class EditorTimeline {
   private readonly dragReadout = globalThis.document.createElement("div");
   private clipboard?: { payload: ClipClipboard; documentId: string; generation?: number };
   private clipboardPending = false;
+  private trimShortcutPending?: { cancelled: boolean };
   private drag?: Drag;
   private gestureSerial = 0;
   private dragPlanFrame?: number;
@@ -491,6 +497,8 @@ export class EditorTimeline {
     return true;
   }
   render(options: { preserveToolbar?: boolean; scrollLeft?: number } = {}): void {
+    // A synchronous view update revokes a shortcut even if a getter returns its older value.
+    if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
     if (this.destroyed || this.replacingControls) return;
     this.media.cancel();
     const focused = globalThis.document.activeElement;
@@ -614,6 +622,7 @@ export class EditorTimeline {
       `<button type="button" data-et-action="${action}" class="et-tool" aria-label="${label}" title="${label}">${timelineIcon("plus", 10)}${timelineIcon(icon, 13)}<span class="et-add-label">${label}</span></button>`;
     const markup = `<div class="et-toolbar" role="toolbar" aria-label="时间轴工具">
         <button type="button" class="et-tool et-follow" data-et-follow aria-label="播放跟随" aria-pressed="${this.followPlayback}"><span>播放跟随</span></button>
+        <button type="button" class="et-tool" data-et-track-height aria-label="加高轨道" aria-pressed="${this.trackHeight === 80}"${this.trackHeightBlocked() ? " disabled" : ""}>加高轨道</button>
         ${this.context.addText ? `<div class="et-tool-group" role="group" aria-label="添加">${button("add-text", "添加文字", "title", false, undefined, true)}</div>` : ""}
         <div class="et-tool-group" role="group" aria-label="片段编辑">${button("split", "切分", "cut", !selected.size, "S", false, "先选择一个片段", true)}${button("delete", "删除", "trash", !selected.size, "⌫", false, needSelection, true)}</div>
         <div class="et-tool-group" role="group" aria-label="复制与分组">${button("copy", "复制", "copy", !selected.size || this.clipboardPending, "⌘/Ctrl C", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("cut", "剪切", "cut", !selected.size || this.clipboardPending, "⌘/Ctrl X", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("paste", "粘贴", "paste", !this.clipboard || this.clipboardPending, "⌘/Ctrl V · 粘贴到播放头；跨序列按第 N 条同类轨道对应", false, this.clipboardPending ? "正在保存剪贴板操作" : "先复制片段")}${button("duplicate", "原位复制", "duplicate", !selected.size || this.clipboardPending, "⌘/Ctrl D · 为副本新建平行轨", false, this.clipboardPending ? "正在保存剪贴板操作" : needSelection)}${button("group", "分组", "group", selected.size < 2, "⌘/Ctrl G", false, "至少选择两个片段")}${button("ungroup", "解组", "ungroup", !selected.size, "⇧ ⌘/Ctrl G", false, needSelection)}</div>
@@ -773,6 +782,7 @@ export class EditorTimeline {
     this.syncVerticalPosition(this.container.querySelector<HTMLElement>(".et-body")!);
     this.scheduleMedia(mediaScope);
     this.updateFollowControl();
+    this.updateTrackHeightControl();
     if (this.drag?.kind === "box") this.createBox();
     if (restoreFocus && !(focused instanceof HTMLElement && focused.isConnected)) {
       const next = focusedClip
@@ -844,8 +854,7 @@ export class EditorTimeline {
         canvas.className = "et-media-strip";
         canvas.setAttribute("role", "img");
         canvas.setAttribute("aria-label", `${clip.label} · 缩略图、源音频包络和音量关键帧`);
-        // Compact lanes keep the strip as tall as the clip allows, up to the full 32px.
-        const stripHeight = Math.max(16, Math.min(32, node.clientHeight - 2));
+        const stripHeight = Math.max(16, Math.min(this.trackHeight === 80 ? 48 : 32, node.clientHeight - 2));
         Object.assign(canvas.style, {
           left: `${left - bounds.left}px`,
           width: `${right - left}px`,
@@ -897,6 +906,7 @@ export class EditorTimeline {
       ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   updatePlayhead(): void {
+    if (this.trimShortcutPending) this.trimShortcutPending.cancelled = true;
     const x = ticksToSeconds(this.context.time()) * this.scale;
     if (
       this.playbackActive && this.followPlayback && !this.followSuspended &&
@@ -948,6 +958,32 @@ export class EditorTimeline {
         ? "播放头越界时自动翻页；手动横滚可暂停本轮跟随"
         : "开启播放跟随；只影响时间轴视图";
   }
+  private trackHeightBlocked(): boolean {
+    return !!(this.destroyed || this.drag || this.pendingControl || this.pendingTrackGesture ||
+      this.trackControlPending || this.canvasFieldFinish || this.fadePending || this.clipboardPending);
+  }
+  private updateTrackHeightControl(): void {
+    const control = this.container.querySelector<HTMLButtonElement>("[data-et-track-height]");
+    if (!control) return;
+    control.disabled = this.trackHeightBlocked();
+    control.setAttribute("aria-pressed", String(this.trackHeight === 80));
+    control.title = this.trackHeight === 80
+      ? "当前为加高轨道；点击恢复紧凑视图。只调整显示，不改变工程"
+      : "加高轨道，放大缩略图和源音频包络。只调整显示，不改变工程";
+  }
+  private toggleTrackHeight(): void {
+    if (this.trackHeightBlocked()) return;
+    const body = this.container.querySelector<HTMLElement>(".et-body")!;
+    const position = body.scrollTop / this.trackHeight;
+    this.trackHeight = this.trackHeight === 48 ? 80 : 48;
+    this.container.classList.toggle("et-tall-tracks", this.trackHeight === 80);
+    // Preserve the top track and its visible fraction; the browser clamps short timelines.
+    body.scrollTop = position * this.trackHeight;
+    this.syncVerticalPosition(body);
+    this.updateTrackHeightControl();
+    // Keep every focused field and native IME node connected. Only media strips redraw.
+    this.scheduleMedia();
+  }
   /** Keyboard navigation reveals the current result without changing the document or selection. */
   private async seekVisible(time: Tick, exact = false): Promise<void> {
     await this.context.seek(time, exact);
@@ -984,6 +1020,10 @@ export class EditorTimeline {
     }
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target) return;
+    if (target.closest("[data-et-track-height]")) {
+      this.toggleTrackHeight();
+      return;
+    }
     if (target.closest("[data-et-follow]")) {
       this.followPlayback = !this.followPlayback || this.followSuspended;
       this.followSuspended = false;
@@ -1387,11 +1427,7 @@ export class EditorTimeline {
       return;
     }
     if (action === "keep-left" || action === "keep-right") {
-      if (!ids.length || sequence.clips.some((clip) =>
-        selected.has(clip.id) && (time <= clip.start || time >= clip.start + clip.duration)))
-        throw new Error("请把播放头移到每个所选片段内部，再保留左侧或右侧");
-      const operations = planClipTiming(document, sequence.id, ids, { kind: action, time });
-      await this.apply(operations, action === "keep-left" ? "保留播放头左侧" : "保留播放头右侧");
+      await this.keepAtPlayhead(document, sequence, ids, time, action);
       return;
     }
     if (action === "group") {
@@ -1463,8 +1499,53 @@ export class EditorTimeline {
       );
     }
   }
+  private async keepAtPlayhead(
+    document: EditorDocument, sequence: EditorSequence, ids: string[], time: Tick,
+    kind: "keep-left" | "keep-right", current?: () => boolean,
+  ): Promise<void> {
+    const selected = new Set(ids);
+    if (!ids.length || sequence.clips.some((clip) =>
+      selected.has(clip.id) && (time <= clip.start || time >= clip.start + clip.duration)))
+      throw new Error("请把播放头移到每个所选片段内部，再保留左侧或右侧");
+    const operations = planClipTiming(document, sequence.id, ids, { kind, time });
+    if (current && !current()) return;
+    await this.apply(operations, kind === "keep-left" ? "保留播放头左侧" : "保留播放头右侧");
+  }
+  private async shortcutTrim(kind: "keep-left" | "keep-right"): Promise<void> {
+    if (this.trimShortcutPending) return;
+    const owner = { cancelled: false };
+    this.trimShortcutPending = owner;
+    let current = () => !this.destroyed && this.trimShortcutPending === owner && !owner.cancelled;
+    try {
+      const identity = this.context.identity?.(), selection = this.context.selection(),
+        ids = [...selection.clipIds], sequenceId = selection.sequenceId, time = this.context.time(),
+        signature = JSON.stringify(ids);
+      current = () => {
+        const selected = this.context.selection(), clock = this.context.time(), latest = this.context.identity?.(),
+          available = this.context.canTrimAtPlayhead?.(time) ?? true;
+        return available && selected.sequenceId === sequenceId && JSON.stringify(selected.clipIds) === signature &&
+          clock === time && ((!identity && !latest) || sameIdentity(identity, latest)) &&
+          !this.destroyed && this.trimShortcutPending === owner && !owner.cancelled;
+      };
+      if (!current()) return;
+      const { document, sequence, selected } = this.current();
+      if (!current() || sequence.id !== sequenceId || JSON.stringify([...selected]) !== signature ||
+        (identity && (document.id !== identity.documentId || document.revision !== identity.revision))) return;
+      await this.keepAtPlayhead(document, sequence, ids, time, kind, current);
+    } catch (error) {
+      // A late failure belongs only to the original shortcut scope.
+      try { if (current()) this.context.onError(error); } catch { /* unavailable parent */ }
+    } finally {
+      if (this.trimShortcutPending === owner) this.trimShortcutPending = undefined;
+    }
+  }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
+    if (event.repeat && ["Enter", " "].includes(event.key) &&
+      event.target instanceof Element && event.target.closest("[data-et-track-height]")) {
+      event.preventDefault();
+      return;
+    }
     if (this.pendingControl) {
       event.preventDefault();
       event.stopPropagation();
@@ -1535,6 +1616,20 @@ export class EditorTimeline {
       !modified && !event.altKey && !this.drag && !this.confirmTrack && !this.menu &&
       !(event.target instanceof HTMLElement && event.target.closest("button"))
     ) {
+      if (!event.shiftKey && ["q", "w"].includes(event.key.toLowerCase())) {
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat && !this.trackControlPending && !this.fadePending && !this.clipboardPending &&
+          !this.canvasFieldFinish && !globalThis.document.querySelector("dialog[open]"))
+          void this.shortcutTrim(event.key.toLowerCase() === "q" ? "keep-right" : "keep-left");
+        return;
+      }
+      if (event.key.toLowerCase() === "m" && this.context.beginMarker &&
+        !this.trackControlPending && !this.fadePending && !this.clipboardPending && !this.trimShortcutPending &&
+        !globalThis.document.querySelector("dialog[open]")) {
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat) this.run(() => this.context.beginMarker!(event.shiftKey ? "range" : "point"));
+        return;
+      }
       const { sequence } = this.current(),
         last = lastFrameTime(sequence);
       if (event.key === "?" && this.context.showShortcuts) {
@@ -1745,7 +1840,7 @@ export class EditorTimeline {
       timeReason = inside ? "" : "请把播放头移到每个所选片段内部";
     element.innerHTML = `<div class="timeline-context-menu-title">${esc(clipLabel(clip))}${selected.size > 1 ? ` · ${selected.size} 个片段` : ""}</div>
       ${item("copy", "复制", "⌘/Ctrl C", pending)}${item("cut", "剪切", "⌘/Ctrl X", pending || lockReason)}${item("paste", "粘贴到播放头", "⌘/Ctrl V", pending || (!this.clipboard ? "请先复制片段" : ""))}${item("duplicate", "原位复制", "⌘/Ctrl D", pending)}
-      <div role="separator"></div>${item("split", "在播放头切分", "S", lockReason || timeReason)}${item("keep-left", "保留播放头左侧", "", lockReason || timeReason)}${item("keep-right", "保留播放头右侧", "", lockReason || timeReason)}
+      <div role="separator"></div>${item("split", "在播放头切分", "S", lockReason || timeReason)}${item("keep-left", "保留播放头左侧", "W", lockReason || timeReason)}${item("keep-right", "保留播放头右侧", "Q", lockReason || timeReason)}
       <div role="separator"></div>${item("group", "分组", "⌘/Ctrl G", lockReason || (selected.size < 2 ? "至少选择两个片段" : ""))}${item("ungroup", "解组", "⇧ ⌘/Ctrl G", lockReason || (!chosen.some((clip) => clip.groupId) ? "所选片段没有分组" : ""))}
       <div role="separator"></div>${item("remove", `从时间轴删除${selected.size > 1 ? ` ${selected.size} 个片段` : ""}`, "⌫", lockReason, true)}${item("cancel", "取消")}
       <p id="timeline-context-menu-note">播放头：${ticksToSeconds(time).toFixed(6)} 秒（打开菜单时）。${lockReason || timeReason || ""} 编辑可撤销；磁吸主画面轨的裁剪会联动后续片段。</p>`;
@@ -1981,7 +2076,7 @@ export class EditorTimeline {
       event.preventDefault();
       return;
     }
-    if (event.button === 0 && event.target instanceof Element && event.target.closest("[data-et-follow]")) {
+    if (event.button === 0 && event.target instanceof Element && event.target.closest("[data-et-follow],[data-et-track-height]")) {
       // A view preference must not blur or submit an unrelated property draft.
       event.preventDefault();
       return;
@@ -2109,6 +2204,7 @@ export class EditorTimeline {
         },
       };
     this.pendingControl = pending;
+    this.updateTrackHeightControl();
     let ready: boolean | Promise<boolean>;
     try {
       const signal = pending.field.controller.signal;
@@ -2130,6 +2226,7 @@ export class EditorTimeline {
     }
     if (ready === true) {
       this.pendingControl = undefined;
+      this.updateTrackHeightControl();
       return;
     }
     event.preventDefault();
@@ -2217,6 +2314,7 @@ export class EditorTimeline {
     const pending = this.pendingControl;
     if (!pending) return;
     this.pendingControl = undefined;
+    this.updateTrackHeightControl();
     pending.field.controller.abort();
     if (this.container.hasPointerCapture(pending.pointerId))
       this.container.releasePointerCapture(pending.pointerId);
@@ -2231,6 +2329,7 @@ export class EditorTimeline {
         selection: JSON.stringify(this.context.selection()), time: this.context.time(), viewport: this.gestureViewport(),
       } };
     this.pendingTrackGesture = pending;
+    this.updateTrackHeightControl();
     let ready: boolean | Promise<boolean>;
     try { ready = this.context.beforeGesture!(pending.field!.controller.signal); }
     catch (error) { this.cancelTrackGesture(); throw error; }
@@ -2242,6 +2341,7 @@ export class EditorTimeline {
     }
     if (typeof ready === "boolean") {
       this.pendingTrackGesture = undefined;
+      this.updateTrackHeightControl();
       if (ready) this.beginGesture(intent);
       else pending.field!.controller.abort();
       return;
@@ -2264,6 +2364,7 @@ export class EditorTimeline {
     try {
       if (!await ready || this.pendingTrackGesture !== pending || !this.fieldGestureCurrent(pending)) return;
       this.pendingTrackGesture = undefined;
+      this.updateTrackHeightControl();
       finishing = true;
       const serial = this.gestureSerial + 1;
       this.beginGesture(pending.intent, !pending.up);
@@ -2290,6 +2391,7 @@ export class EditorTimeline {
       : `[data-et-track-id="${CSS.escape(input.dataset.etTrackId!)}"][data-et-track-mix="${input.dataset.etTrackMix}"]`;
     let value = input.value, saved = false, finishing = false;
     this.pendingTrackGesture = pending;
+    this.updateTrackHeightControl();
     try {
       this.container.setPointerCapture(intent.pointer.pointerId);
       this.replacingControls = true;
@@ -2305,6 +2407,7 @@ export class EditorTimeline {
       if (this.pendingTrackGesture !== pending || !this.trackOwnerCurrent(owner)) return;
       finishing = true;
       this.pendingTrackGesture = undefined;
+      this.updateTrackHeightControl();
       this.render();
       if (!this.trackOwnerCurrent(owner)) return;
       const serial = this.gestureSerial + 1;
@@ -2395,6 +2498,7 @@ export class EditorTimeline {
       altKey: pointer.altKey,
     };
     this.drag = drag;
+    this.updateTrackHeightControl();
     const gainControl = kind === "gain" && clip ? this.container.querySelector<HTMLElement>(`[data-et-clip="${CSS.escape(clip.id)}"] [data-et-gain]`) : undefined;
     (gainControl || this.container).focus({ preventScroll: true });
     const identity = this.context.identity?.(), current = identity ? undefined : this.current().document,
@@ -2536,6 +2640,7 @@ export class EditorTimeline {
     const pending = this.pendingTrackGesture;
     if (!pending) return;
     this.pendingTrackGesture = undefined;
+    this.updateTrackHeightControl();
     pending.field?.controller.abort();
     if (this.container.hasPointerCapture(pending.intent.pointer.pointerId))
       this.container.releasePointerCapture(pending.intent.pointer.pointerId);
@@ -2626,7 +2731,7 @@ export class EditorTimeline {
         sample = this.container.querySelector<HTMLElement>("[data-et-clip]"),
         // Offscreen clips are virtualized; all clip kinds share the visible clip's geometry.
         clipTop = sample?.offsetTop ?? 4,
-        clipHeight = sample?.offsetHeight ?? 39;
+        clipHeight = sample?.offsetHeight ?? this.trackHeight - 9;
       for (const clip of sequence.clips) {
         const lane = this.container
           .querySelector<HTMLElement>(`[data-et-lane="${CSS.escape(clip.trackId)}"]`)!
@@ -2985,6 +3090,7 @@ export class EditorTimeline {
     drag?.trimPreview?.dispose();
     drag?.fadePreview?.dispose();
     this.drag = undefined;
+    this.updateTrackHeightControl();
     if (drag && this.container.hasPointerCapture(drag.pointerId))
       this.container.releasePointerCapture(drag.pointerId);
     this.box?.remove();
@@ -3038,6 +3144,7 @@ export class EditorTimeline {
     this.closeMenu();
     this.cancel();
     this.destroyed = true;
+    this.trimShortcutPending = undefined;
     if (this.mediaFrame !== undefined) cancelAnimationFrame(this.mediaFrame);
     this.resizeObserver?.disconnect();
     this.media.dispose();
@@ -3059,6 +3166,7 @@ export class EditorTimeline {
     this.container.removeEventListener("dragover", this.dragover);
     this.container.removeEventListener("drop", this.drop);
     this.container.removeEventListener("contextmenu", this.contextmenu);
+    this.container.classList.remove("et-tall-tracks");
     this.container.innerHTML = "";
   }
 }

@@ -1799,6 +1799,10 @@ test("composition shortcut help matches the active editor and cut navigation pre
   assert.match(await dialog.innerText(), /Ctrl C · X · V · D/);
   assert.match(await dialog.innerText(), /粘贴从播放头开始，跨序列按第 N 条同类轨道对应/);
   assert.match(await dialog.innerText(), /原位复制会为副本新建平行轨/);
+  assert.match(await dialog.innerText(), /打开点标记 \/ 所选片段范围草稿/);
+  assert.match(await dialog.innerText(), /M \/ Shift \+ M/);
+  assert.match(await dialog.innerText(), /裁头保留右侧 \/ 裁尾保留左侧/);
+  assert.match(await dialog.innerText(), /Q \/ W/);
   assert.doesNotMatch(await dialog.innerText(), /5 秒|切换磁吸/);
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
@@ -1809,6 +1813,17 @@ test("composition shortcut help matches the active editor and cut navigation pre
   await page.locator('[data-et-track-name="v1"]').focus();
   await page.keyboard.press("?");
   assert.equal(await dialog.count(), 0, "Typing a question mark must not open shortcut help");
+  assert.deepEqual(await saved(page), before);
+});
+
+test("composition marker shortcut reveals its draft in the narrow inspector panel", async (t) => {
+  const page = await openPage(t, { seed: realMediaSeed, viewport: { width: 390, height: 844 } }), before = await waitSaved(page);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "viewer");
+  await page.locator("[data-ew-timeline]").focus(); await page.keyboard.press("m");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).isVisible(), true);
+  assert.equal(await page.locator(".workspace").getAttribute("data-narrow-panel"), "inspector");
+  assert.equal(await page.locator('button[data-narrow-panel="inspector"]').getAttribute("aria-pressed"), "true");
+  assert.equal(await page.getByLabel("标记名称", { exact: true }).evaluate((node) => document.activeElement === node), true);
   assert.deepEqual(await saved(page), before);
 });
 
