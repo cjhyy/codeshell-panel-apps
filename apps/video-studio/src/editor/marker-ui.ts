@@ -109,16 +109,26 @@ export class EditorMarkers {
   }
   select(markerId: string): void {
     if (this.pending || this.disposed) return;
-    const marker = this.sequence().markers.find((m) => m.id === markerId);
-    if (!marker) return;
-    this.selectedId = markerId;
-    this.draft = undefined;
-    this.error = "";
-    this.context.onSelection(markerId);
-    this.signature = "";
-    this.render();
     const identity = this.context.identity(),
       sequenceId = this.context.selection().sequenceId;
+    const marker = this.sequence().markers.find((m) => m.id === markerId);
+    if (!marker) return;
+    // Keep the connected form and native IME when only navigating the current marker.
+    const reselecting = this.selectedId === markerId && !this.draft &&
+      this.renderedIdentity && sameIdentity(this.renderedIdentity, identity) &&
+      this.renderedSequence === sequenceId;
+    if (!reselecting) {
+      this.selectedId = markerId;
+      this.draft = undefined;
+      this.error = "";
+    }
+    this.context.onSelection(markerId);
+    if (!reselecting) {
+      this.signature = "";
+      this.render();
+    }
+    if (this.disposed || !sameIdentity(identity, this.context.identity()) ||
+      sequenceId !== this.context.selection().sequenceId || this.selectedId !== markerId) return;
     const report = (error: unknown) => {
       if (
         !this.disposed &&

@@ -27,7 +27,7 @@ import {
 } from "./operations";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, EditorTrack } from "./types";
-import type { SessionIdentity } from "./session";
+import { sameIdentity, type SessionIdentity } from "./session";
 import type { PreparedTimelineSnapshot } from "./evaluate";
 import { sequenceDuration } from "./validation";
 import {
@@ -89,6 +89,11 @@ type Drag = {
   movePreview?: EditorOperationPreview;
   trimPreview?: ClipTrimPreview;
   plan?: { key: string; operations?: EditorOperation[]; error?: unknown; reason?: string };
+};
+type RenderedMediaScope = {
+  document: EditorDocument;
+  sequence: EditorSequence;
+  identity: SessionIdentity;
 };
 const uid = (kind: string) => `${kind}-${randomId()}`;
 /** Plain explanation shown when a magnetic move lands where it started. */
@@ -198,6 +203,7 @@ export class EditorTimeline {
   private currentTrackButtons = new WeakSet<HTMLButtonElement>();
   private trackControlPending = false;
   private pendingTrackGesture?: PendingTrackGesture;
+  private canvasFieldFinish?: object;
   private box?: HTMLElement;
   private scrollPosition = 0;
   private verticalPosition = 0;
@@ -414,7 +420,14 @@ export class EditorTimeline {
         ? focused.closest<HTMLElement>("[data-et-clip]")?.dataset.etClip
         : undefined;
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
+    // Only the explicit session-owned hook permits holding this detached read until RAF.
+    const before = this.context.prepareMediaSnapshot && this.context.identity?.(),
+      identity = before ? { ...before } : undefined,
+      sequenceId = identity ? this.context.selection().sequenceId : undefined;
     const { document: project, sequence, selected } = this.current();
+    const candidate =
+      identity && sequenceId === sequence.id ? { document: project, sequence, identity } : undefined;
+    const mediaScope = candidate && this.mediaScopeCurrent(candidate) ? candidate : undefined;
     this.clearStaleClipboard(project);
     if (this.pendingTrackGesture && !this.trackOwnerCurrent(this.pendingTrackGesture.owner))
       this.cancelTrackGesture();
@@ -602,7 +615,7 @@ export class EditorTimeline {
       }
       if (options.preserveToolbar)
         this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(Math.log10(this.scale));
-      if (this.trackControlPending || this.pendingTrackGesture)
+      if (this.trackControlPending || this.pendingTrackGesture || this.canvasFieldFinish)
         for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>(`${TRACK_INPUTS},${TRACK_BUTTONS}`))
           control.disabled = true;
       if (this.pendingTrackGesture)
@@ -651,7 +664,8 @@ export class EditorTimeline {
     this.container
       .querySelector<HTMLElement>(".et-body")!
       .addEventListener("scroll", this.syncVerticalScroll, { passive: true });
-    this.syncVerticalScroll();
+    this.syncVerticalPosition(this.container.querySelector<HTMLElement>(".et-body")!);
+    this.scheduleMedia(mediaScope);
     if (this.drag?.kind === "box") this.createBox();
     if (restoreFocus && !(focused instanceof HTMLElement && focused.isConnected)) {
       const next = focusedClip
@@ -662,21 +676,35 @@ export class EditorTimeline {
   }
   private syncVerticalScroll = (): void => {
     const body = this.container.querySelector<HTMLElement>(".et-body");
-    if (!body) return;
+    // Restoring a replaced body's scrollTop queues an event for an already-rendered view.
+    if (!body || body.scrollTop === this.verticalPosition) return;
+    this.syncVerticalPosition(body);
+    this.scheduleMedia();
+  };
+  private syncVerticalPosition(body: HTMLElement): void {
     this.verticalPosition = body.scrollTop;
     // The inner horizontal scroller is a separate sticky containing block. Keep only
     // its time header fixed to the outer vertical viewport without shifting clip lanes.
     this.container.style.setProperty("--et-scroll-y", `${this.verticalPosition}px`);
-    this.scheduleMedia();
-  };
-  private scheduleMedia = (): void => {
+  }
+  private mediaScopeCurrent(scope: RenderedMediaScope): boolean {
+    return (
+      !!this.context.prepareMediaSnapshot &&
+      scope.document.id === scope.identity.documentId &&
+      scope.document.revision === scope.identity.revision &&
+      sameIdentity(scope.identity, this.context.identity?.()) &&
+      scope.sequence.id === this.context.selection().sequenceId
+    );
+  }
+  private scheduleMedia = (rendered?: RenderedMediaScope): void => {
     if (this.destroyed) return;
+    const scope = rendered && this.mediaScopeCurrent(rendered) ? rendered : undefined;
     this.media.cancel();
     if (this.mediaFrame !== undefined) cancelAnimationFrame(this.mediaFrame);
     this.mediaFrame = requestAnimationFrame(() => {
       this.mediaFrame = undefined;
       if (this.destroyed) return;
-      const { document, sequence } = this.current();
+      const { document, sequence } = scope && this.mediaScopeCurrent(scope) ? scope : this.current();
       const viewport = this.viewport().getBoundingClientRect(),
         body = this.container.querySelector<HTMLElement>(".et-body")!.getBoundingClientRect();
       const strips: TimelineMediaStrip[] = [];
@@ -816,7 +844,7 @@ export class EditorTimeline {
   private change = (event: Event) => {
     const target = event.target as HTMLInputElement;
     if (target.matches(TRACK_INPUTS)) {
-      if (this.replacingControls || this.trackControlPending || this.pendingTrackGesture || !this.trackInputCurrent(target)) return;
+      if (this.replacingControls || this.trackControlPending || this.pendingTrackGesture || this.canvasFieldFinish || !this.trackInputCurrent(target)) return;
       this.run(async () => {
         const edit = this.trackInputEdit(target);
         if (edit) await this.apply([edit.operation], edit.label);
@@ -847,10 +875,56 @@ export class EditorTimeline {
     }
     return { operation: { type: "track.update", sequenceId: sequence.id, trackId, patch }, label };
   }
+  /** The canvas may finish one owned track field before taking its gesture snapshot. */
+  finishFocusedField(signal: AbortSignal): boolean | Promise<boolean> | undefined {
+    const input = globalThis.document.activeElement;
+    if (!(input instanceof HTMLInputElement) || !input.matches(TRACK_INPUTS) || !this.container.contains(input)) return;
+    if (!this.trackInputCurrent(input) || this.trackControlPending || this.pendingTrackGesture || this.canvasFieldFinish) return false;
+    try { if (!this.trackInputEdit(input)) return true; } catch { /* The owned finisher reports and retains invalid input. */ }
+    return this.finishCanvasField(input, signal);
+  }
+  private async finishCanvasField(input: HTMLInputElement, signal: AbortSignal): Promise<boolean> {
+    const owner = this.trackInputs.get(input)!, revision = this.current().document.revision,
+      selection = JSON.stringify(this.context.selection()), time = this.context.time(), token = {},
+      selector = input.dataset.etTrackName ? `[data-et-track-name="${CSS.escape(input.dataset.etTrackName)}"]`
+        : `[data-et-track-id="${CSS.escape(input.dataset.etTrackId!)}"][data-et-track-mix="${input.dataset.etTrackMix}"]`,
+      current = (expected?: number) => !signal.aborted && this.trackOwnerCurrent(owner) && this.context.time() === time &&
+        JSON.stringify(this.context.selection()) === selection && (expected === undefined || this.current().document.revision === expected);
+    let value = input.value, saved = false;
+    const abort = () => { if (this.canvasFieldFinish === token) { this.canvasFieldFinish = undefined; this.render(); } };
+    this.canvasFieldFinish = token;
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      this.replacingControls = true;
+      try { input.blur(); } finally { this.replacingControls = false; }
+      value = input.value;
+      await Promise.resolve();
+      if (!current(revision)) return false;
+      const edit = this.trackInputEdit(input);
+      this.render();
+      if (edit) await this.apply([edit.operation], edit.label);
+      saved = true;
+      return current(revision + Number(!!edit));
+    } catch (error) {
+      if (current()) {
+        this.context.onError(error);
+        this.notice.textContent = error instanceof Error ? error.message : String(error);
+      }
+      return false;
+    } finally {
+      signal.removeEventListener("abort", abort);
+      if (this.canvasFieldFinish === token) this.canvasFieldFinish = undefined;
+      if (!this.destroyed) this.render();
+      if (!saved && current(revision)) {
+        const field = this.container.querySelector<HTMLInputElement>(selector);
+        if (field && !field.disabled) { field.value = value; field.focus({ preventScroll: true }); }
+      }
+    }
+  }
   /** Preserve the user's two explicit edits even when the first render replaces the clicked button. */
   private async trackControl(button: HTMLButtonElement): Promise<void> {
     const owner = this.trackButtons.get(button);
-    if (this.trackControlPending || this.pendingTrackGesture || button.disabled || !owner || !this.currentTrackButtons.has(button) ||
+    if (this.trackControlPending || this.pendingTrackGesture || this.canvasFieldFinish || button.disabled || !owner || !this.currentTrackButtons.has(button) ||
       !this.container.contains(button)) return;
     if (!this.trackOwnerCurrent(owner)) {
       this.render();

@@ -249,7 +249,7 @@ export class EditorWorkspace {
       apply,
       identity: () => options.session.getState().identity,
       time: () => this.playhead,
-      seek: (time) => this.seek(time),
+      seek: (time) => this.seek(time, true),
       onSelection: () => this.timeline?.render(),
       onError: options.onError,
     });
@@ -331,6 +331,7 @@ export class EditorWorkspace {
       onError: (error) => this.previewError(error),
     });
     this.canvasEditor = new EditorCanvas(this.get<HTMLCanvasElement>("[data-ew-canvas]"), {
+      beforeGesture: (signal) => this.inspector.finishFocusedField(signal) ?? this.timeline.finishFocusedField(signal) ?? true,
       read,
       identity: () => options.session.getState().identity,
       selection,
@@ -454,7 +455,7 @@ export class EditorWorkspace {
     const documentIdentity = JSON.stringify([state.identity.documentId, state.identity.generation]),
       opened = this.documentIdentity !== documentIdentity;
     this.documentIdentity = documentIdentity;
-    this.canvasEditor.cancel();
+    this.canvasEditor.refreshDocument();
     const doc = this.options.session.read();
     this.sequenceId = doc.activeSequenceId;
     const sequence = this.sequence();
@@ -609,7 +610,8 @@ export class EditorWorkspace {
    */
   async seek(time: Tick, exact = this.exactPlayhead && time === this.playhead): Promise<void> {
     if (this.disposed) return;
-    this.canvasEditor?.cancel();
+    if (time === this.playhead) this.canvasEditor?.refreshDocument();
+    else this.canvasEditor?.cancel();
     this.cancelPreparation();
     this.playhead = time;
     this.exactPlayhead = exact;

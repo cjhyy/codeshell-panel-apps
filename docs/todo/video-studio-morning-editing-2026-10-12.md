@@ -371,3 +371,33 @@ goal仍active至11:00，automation11继续保留。
   范围定位被帧量化也在独立最小修复。后台revision标记草稿的冲突契约仍只审计。
 
 11:00截止和automation11继续保留，goal仍active；未发布、未安装。
+
+## 第十批整合验证（04:26 左右）
+
+- 第九批9d3c566完整浏览器760/760通过，push与PR两套CI均成功。日志
+  `/tmp/video-studio-morning-ninth-full-ui.log`。先前两个旧菜单断言的失败已真实修复。
+- 已整合deb95c0标记导航、93568be时间轴render到RAF快照移交、9057579画布草稿边界。
+  冻结源码的timeline/timeline-media/workspace/canvas/inspector合计419/419通过；
+  offline1124项中1121通过3可选跳过、native voice5通过1可选跳过、workspace docs5/5。
+  typecheck/build/build:check/validate39全部通过。日志
+  `/tmp/video-studio-morning-tenth-{affected-ui,offline,typecheck,build,build-check,validate}.log`。
+- 属性与轨道合法草稿先按原planner提交，再继续同一次画布move/resize/crop，分别可撤销；
+  保存引起原handle位置变化时保留用户原pointer delta，fresh geometry不重新命中其他图层。
+  非法或异步失败保留可纠正草稿；取消、scope/time/selection/viewport变化、dispose同步
+  重入、原生双触、首次release与旧finally新capture均有回归。独立最终16项复核无P1/P2。
+  局部finish hook只证明合法dispatch完成，真实autosave仍沿用dirty/retry。
+- 同ID标记导航保留connected form、名称/备注/时间草稿与IME；范围起止定位精确到原tick，
+  最后边界仍限制在序列范围内。20项代理回归和390px视觉复核通过；root已查看
+  `/Users/admin/.codex/visualizations/2026/10/12/video-studio-marker-navigation/`。
+- 横滚只将显式prepareMediaSnapshot且身份/序列完整匹配的render快照移交一个RAF；
+  公共可变context、vertical/resize/refreshMedia仍fresh-read，不按可伪造identity信任缓存。
+  独立实际5000片段横/纵滚及真实像素回归覆盖，旧源多一次全文read的断言真实失败。
+  闲时32/128轨横滚全文read25.5/25.6→12.9/12.5ms，RAF15.0/39.4→2.1/26.3ms；
+  纵滚基本不变。证据`video-studio-scroll-layout/handoff.{mjs,json}`已持久保存；
+  排除decode，不把frame等待wall time当交互延迟。
+- 后续独立进行：声音淡入淡出手柄7项UI和32项clip-edits领域测试已过，独立真实PCM
+  与既有fade字段逐样本差0、390/280原生触屏操作通过，尚未整合。Inspector草稿→
+  首次timeline gesture同根因已复现并在修复；标记背景revision草稿和转场操作另树进行。
+  Canvas空白/非手柄选择仍有草稿丢失，已明确记录后续最小修复，不冒称本批覆盖。
+
+继续优化至11:00；goal及automation11保持active，未发布、未安装。

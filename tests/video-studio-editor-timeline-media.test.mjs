@@ -1781,3 +1781,387 @@ test("workspace batches strip geometry before canvas insertion through real scro
     await page.setViewportSize({ width: 900, height: 650 });
   }
 });
+
+test("owned workspace scrolling reads a legal 5000-clip document once and preserves real media", async () => {
+  await page.evaluate(async () => {
+    const template = structuredClone(doc.sequences[0]),
+      clip = template.clips[0];
+    doc.sequences = [];
+    for (let offset = 0; offset < 5000; offset += 2000) {
+      const sequence = structuredClone(template);
+      sequence.id = offset ? `inactive-${offset}` : "main";
+      sequence.tracks = Array.from({ length: 32 }, (_, index) =>
+        api.createTrack(`track-${index}`, "video"),
+      );
+      sequence.clips = Array.from(
+        { length: Math.min(2000, 5000 - offset) },
+        (_, index) => ({
+          ...structuredClone(clip),
+          id: offset + index ? `clip-${offset + index}` : "a",
+          trackId: `track-${index % 32}`,
+          start: Math.floor(index / 32) * clip.duration,
+        }),
+      );
+      doc.sequences.push(sequence);
+    }
+    await mountWorkspace();
+  });
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".et-media-strip")].length > 1 &&
+      [...document.querySelectorAll(".et-media-strip")].every(
+        (canvas) => canvas.dataset.etMediaState === "ready",
+      ),
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await page.evaluate(() => {
+    globalThis.scrollReads = 0;
+    const read = session.read.bind(session);
+    session.read = () => {
+      scrollReads++;
+      return read();
+    };
+  });
+  for (const [kind, position] of [
+    ["horizontal", 96],
+    ["vertical", 96],
+    ["horizontal", 192],
+  ]) {
+    await page.evaluate(
+      ([kind, position]) => {
+        scrollReads = 0;
+        const node = document.querySelector(
+          kind === "horizontal" ? ".et-scroll" : ".et-body",
+        );
+        if (kind === "horizontal") node.scrollLeft = position;
+        else node.scrollTop = position;
+      },
+      [kind, position],
+    );
+    await page.waitForFunction(
+      () =>
+        scrollReads > 0 &&
+        document.querySelectorAll(".et-media-strip").length > 1 &&
+        [...document.querySelectorAll(".et-media-strip")].every(
+          (canvas) => canvas.dataset.etMediaState === "ready",
+        ),
+    );
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const state = await page.evaluate(() => ({
+      reads: scrollReads,
+      top: document.querySelector(".et-body").scrollTop,
+      strips: [...document.querySelectorAll(".et-media-strip")].map(
+        (canvas) => {
+          const pixels = canvas
+            .getContext("2d")
+            .getImageData(0, 8, canvas.width, 1).data;
+          return {
+            id: canvas.parentElement.dataset.etClip,
+            width: canvas.width,
+            ready: canvas.dataset.etMediaState === "ready",
+            picture: Array.from(
+              { length: canvas.width },
+              (_, x) =>
+                (pixels[x * 4] > 180 && pixels[x * 4 + 2] < 70) ||
+                (pixels[x * 4 + 2] > 180 && pixels[x * 4] < 70),
+            ).some(Boolean),
+          };
+        },
+      ),
+      errors: [...errors],
+      identity: session.getState().identity,
+    }));
+    assert.equal(
+      state.reads,
+      1,
+      `${kind} scroll at ${position} reads the whole document once`,
+    );
+    if (position === 192)
+      assert.equal(
+        state.top,
+        96,
+        "A restored vertical position does not schedule another read",
+      );
+    assert.ok(
+      state.strips.length > 1 &&
+        state.strips.every((strip) => strip.ready && strip.picture),
+      JSON.stringify({ kind, position, strips: state.strips }),
+    );
+    assert.equal(state.identity.revision, 0);
+    assert.deepEqual(state.errors, []);
+  }
+});
+
+async function mountHandoffTimeline({ owned = true } = {}) {
+  await page.evaluate(
+    ({ owned }) => {
+      media.dispose();
+      const second = structuredClone(doc.sequences[0]);
+      second.id = "second";
+      doc.sequences.push(second);
+      globalThis.handoff = {
+        reads: 0,
+        prepared: [],
+        sequenceId: "main",
+        selected: [],
+        resource: sourceUrl,
+        identity: timelineIdentity(),
+        onRead: undefined,
+        onSelect: undefined,
+        change(mode) {
+          if (mode === "sequence") this.sequenceId = "second";
+          if (mode === "document") doc.id = "replaced";
+          if (mode === "revision") doc.revision++;
+          if (mode === "generation") this.identity.generation++;
+          this.identity.documentId = doc.id;
+          this.identity.revision = doc.revision;
+          doc.sequences.find(
+            (sequence) => sequence.id === this.sequenceId,
+          ).clips[0].timeMap.points = [
+            { time: 0, source: 480000 },
+            { time: 480000, source: 0 },
+          ];
+        },
+      };
+      const context = {
+        read: () => {
+          handoff.reads++;
+          const snapshot = structuredClone(doc),
+            effect = handoff.onRead;
+          handoff.onRead = undefined;
+          effect?.();
+          return snapshot;
+        },
+        identity: () => handoff.identity,
+        selection: () => ({
+          sequenceId: handoff.sequenceId,
+          clipIds: [...handoff.selected],
+        }),
+        select: (ids) => {
+          handoff.selected = ids;
+          const effect = handoff.onSelect;
+          handoff.onSelect = undefined;
+          effect?.();
+        },
+        time: () => 0,
+        seek: () => {},
+        apply: () => {},
+        onError: (error) => errors.push(error.message),
+        media: {
+          resolveAsset: () => handoff.resource,
+          loadWaveform: async () => wave,
+        },
+        ...(owned
+          ? {
+              prepareMediaSnapshot: (document, identity) => {
+                const sequence = document.sequences.find(
+                  (sequence) => sequence.id === handoff.sequenceId,
+                );
+                handoff.prepared.push({
+                  ...identity,
+                  sequenceId: sequence.id,
+                  source: sequence.clips[0].timeMap.points[0].source,
+                });
+                return api.prepareTimelineSnapshot(document, identity);
+              },
+            }
+          : {}),
+      };
+      handoff.context = context;
+      timeline = new api.EditorTimeline(
+        document.querySelector("#mount"),
+        context,
+      );
+    },
+    { owned },
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-et-clip="a"] canvas')?.dataset
+        .etMediaState === "ready",
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  await page.evaluate(() => {
+    handoff.reads = 0;
+    handoff.prepared = [];
+  });
+}
+async function readHandoffResult() {
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-et-clip="a"] canvas')?.dataset
+        .etMediaState === "ready",
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  return page.evaluate(() => ({
+    reads: handoff.reads,
+    prepared: handoff.prepared,
+    identity: handoff.identity,
+    pixel: timelinePixel(),
+    errors: [...errors],
+  }));
+}
+
+for (const phase of ["read", "selection", "raf"]) {
+  for (const change of ["document", "revision", "generation", "sequence"]) {
+    test(`owned render handoff re-reads after ${change} changes during ${phase}`, async () => {
+      await mountHandoffTimeline();
+      await page.evaluate(
+        ({ phase, change }) => {
+          if (phase === "read") handoff.onRead = () => handoff.change(change);
+          if (phase === "selection") {
+            handoff.selected = ["missing"];
+            handoff.onSelect = () => handoff.change(change);
+          }
+          timeline.render();
+          if (phase === "raf") handoff.change(change);
+        },
+        { phase, change },
+      );
+      const result = await readHandoffResult();
+      assert.equal(result.reads, 2);
+      assert.deepEqual(result.prepared, [
+        {
+          ...result.identity,
+          sequenceId: change === "sequence" ? "second" : "main",
+          source: 480000,
+        },
+      ]);
+      assert.ok(blue(result.pixel));
+      assert.deepEqual(result.errors, []);
+    });
+  }
+}
+
+test("identity alone does not opt a mutable public timeline into render handoff", async () => {
+  await mountHandoffTimeline({ owned: false });
+  await page.evaluate(() => {
+    timeline.refreshMedia(); // Clear the previous evaluator before same-revision public changes.
+    handoff.reads = 0;
+    timeline.render();
+    handoff.change("content");
+  });
+  const result = await readHandoffResult();
+  assert.equal(result.reads, 2);
+  assert.deepEqual(result.prepared, []);
+  assert.ok(blue(result.pixel));
+  assert.deepEqual(result.errors, []);
+});
+
+test("render handoff requires its owned hook and identity to remain present until RAF", async () => {
+  for (const missing of ["prepareMediaSnapshot", "identity"]) {
+    await page.evaluate(() => reset());
+    await mountHandoffTimeline();
+    await page.evaluate((missing) => {
+      timeline.refreshMedia();
+      handoff.reads = 0;
+      timeline.render();
+      delete handoff.context[missing];
+      handoff.change("content");
+    }, missing);
+    const result = await readHandoffResult();
+    assert.equal(result.reads, 2);
+    assert.deepEqual(result.prepared, []);
+    assert.ok(blue(result.pixel));
+    assert.deepEqual(result.errors, []);
+  }
+});
+
+test("owned render handoff preserves single-RAF behavior through reentry, refresh and disposal", async () => {
+  await mountHandoffTimeline();
+  await page.evaluate(() => {
+    handoff.selected = ["missing"];
+    handoff.onSelect = () => {
+      handoff.change("generation");
+      timeline.render();
+    };
+    timeline.render();
+  });
+  let result = await readHandoffResult();
+  assert.equal(result.reads, 3);
+  assert.equal(result.prepared.length, 1);
+  assert.equal(result.prepared[0].generation, result.identity.generation);
+  assert.ok(blue(result.pixel));
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => {
+    handoff.reads = 0;
+    handoff.prepared = [];
+    for (let index = 0; index < 5; index++) timeline.render();
+  });
+  result = await readHandoffResult();
+  assert.equal(result.reads, 5);
+  assert.equal(result.prepared.length, 1);
+  await page.evaluate(() => {
+    handoff.reads = 0;
+    handoff.prepared = [];
+    document.querySelector("#mount").style.height = "621px";
+  });
+  await page.waitForFunction(() => handoff.reads > 0);
+  result = await readHandoffResult();
+  assert.equal(
+    result.reads,
+    1,
+    "A height-only ResizeObserver notification keeps its independent read",
+  );
+  assert.equal(result.prepared.length, 1);
+  assert.ok(blue(result.pixel));
+  await page.evaluate(() => {
+    handoff.reads = 0;
+    handoff.prepared = [];
+    timeline.render();
+    handoff.resource = sourceUrl.replace("source.mp4", "reversed.mp4");
+    timeline.refreshMedia();
+  });
+  result = await readHandoffResult();
+  assert.equal(result.reads, 2);
+  assert.equal(result.prepared.length, 1);
+  assert.ok(
+    red(result.pixel),
+    "Refresh cancels the handoff and decodes new reversed bytes with the reversed map",
+  );
+  await page.evaluate(() => {
+    handoff.reads = 0;
+    handoff.prepared = [];
+    timeline.render();
+    timeline.dispose();
+    handoff.readsAtDispose = handoff.reads;
+  });
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      reads: handoff.reads,
+      stopped: handoff.readsAtDispose,
+      prepared: handoff.prepared,
+      errors,
+    })),
+    { reads: 2, stopped: 2, prepared: [], errors: [] },
+  );
+  await page.evaluate(() => {
+    document.querySelector("#mount").style.height = "";
+  });
+});

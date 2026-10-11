@@ -162,6 +162,8 @@ export class EditorInspector {
   private renderedSignature = "";
   private renderedAnimation = false;
   private replacingControls = false;
+  private readonly fieldCommitters = new WeakMap<HTMLInputElement | HTMLTextAreaElement, { initial: string; signature: string; commit: () => void }>();
+  private fieldFinish?: { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
   private copiedColor?: {
     documentId: string;
     generation?: number;
@@ -229,15 +231,22 @@ export class EditorInspector {
   }
   private report(error: unknown): void {
     const result = error instanceof Error ? error : new Error(String(error));
+    if (this.fieldFinish) this.fieldFinish.failed = true;
     this.error = result.message;
     this.context.onError(result);
   }
-  private async edit(
+  private edit(scope: Scope, label: string, patch: (clip: EditorClip) => EditorClipPatch): Promise<boolean> {
+    const result = this.editAttempt(scope, label, patch);
+    if (this.fieldFinish) this.fieldFinish.result = result;
+    return result;
+  }
+  private async editAttempt(
     scope: Scope,
     label: string,
     patch: (clip: EditorClip) => EditorClipPatch,
-  ): Promise<void> {
-    if (this.disposed || this.pending || this.replacingControls) return;
+  ): Promise<boolean> {
+    const finish = this.fieldFinish;
+    if (this.disposed || this.pending || this.replacingControls) return false;
     try {
       const fresh = this.scope();
       if (
@@ -264,17 +273,65 @@ export class EditorInspector {
           patch: patch(current),
         };
       });
-      if (!operations.length) return;
+      if (!operations.length) return false;
       this.pending = true;
       this.error = "";
       this.render();
       await this.context.apply(operations, label);
+      return true;
     } catch (error) {
-      this.report(error);
+      if (!finish?.signal.aborted) this.report(error);
+      return false;
     } finally {
       this.pending = false;
       this.render();
     }
+  }
+  /** Only the canvas boundary uses this; success means dispatch completed, not autosave. */
+  finishFocusedField(signal: AbortSignal): boolean | Promise<boolean> | undefined {
+    const input = document.activeElement;
+    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) || !this.root.contains(input)) return;
+    const field = this.fieldCommitters.get(input);
+    if (!field) return;
+    if (input.value === field.initial) return true;
+    return this.finishField(input, field, signal);
+  }
+  private fieldScopeCurrent(scope: Scope, time: Tick, revision?: number): boolean {
+    const fresh = this.scope();
+    return !this.disposed && !!fresh && this.context.time() === time &&
+      equal([scope.document.id, scope.identity?.generation, scope.sequence.id, scope.selectionIds],
+        [fresh.document.id, fresh.identity?.generation, fresh.sequence.id, fresh.selectionIds]) &&
+      (revision === undefined || fresh.revision === revision);
+  }
+  private async finishField(input: HTMLInputElement | HTMLTextAreaElement,
+    field: { signature: string; commit: () => void }, signal: AbortSignal): Promise<boolean> {
+    const scope = this.scope(), time = this.context.time(), label = input.getAttribute("aria-label")!,
+      finish = { signal, failed: false } as { signal: AbortSignal; failed: boolean; result?: Promise<boolean> };
+    let value = input.value, complete = false;
+    if (!scope || this.pending || this.disposed || signal.aborted ||
+      field.signature !== JSON.stringify([scope.identity, scope.revision, scope.sequence.id, scope.selectionIds, this.tab])) return false;
+    this.fieldFinish = finish;
+    try {
+      this.replacingControls = true;
+      try { input.blur(); } finally { this.replacingControls = false; }
+      value = input.value;
+      await Promise.resolve(); // Let the canvas install its pending pointer owner before dispatch.
+      if (signal.aborted || !this.fieldScopeCurrent(scope, time, scope.revision)) return false;
+      field.commit();
+      complete = !finish.failed && (finish.result ? await finish.result : true);
+      return complete && !signal.aborted && this.fieldScopeCurrent(scope, time, scope.revision + Number(!!finish.result));
+    } finally {
+      if (this.fieldFinish === finish) this.fieldFinish = undefined;
+      if (!complete && !signal.aborted && this.fieldScopeCurrent(scope, time, scope.revision)) {
+        this.render();
+        const current = this.root.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${CSS.escape(label)}"]`);
+        if (current && !current.disabled) { current.value = value; current.focus({ preventScroll: true }); }
+      }
+    }
+  }
+  private manageField(input: HTMLInputElement | HTMLTextAreaElement, commit: () => void): void {
+    this.fieldCommitters.set(input, { initial: input.value, signature: this.renderedSignature, commit });
+    input.addEventListener("change", commit);
   }
   private action(
     parent: HTMLElement,
@@ -340,7 +397,7 @@ export class EditorInspector {
     input.value = value === undefined ? "" : display(value);
     input.placeholder = value === undefined ? "多个值" : "";
     input.disabled = disabled;
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       try {
         if (input.value.trim() === "" || !Number.isFinite(input.valueAsNumber))
           throw new Error(`${label}需要填写数值`);
@@ -414,7 +471,7 @@ export class EditorInspector {
     input.value = value ?? "";
     input.placeholder = value === undefined ? "多个值" : "";
     if (input instanceof HTMLTextAreaElement) input.rows = 3;
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       void this.edit(scope, `修改${label}`, (clip) =>
         this.fieldPatch(scope, clip, path, input.value),
       );
@@ -480,7 +537,7 @@ export class EditorInspector {
     const value = common(scope.clips.map((clip) => String(at(clip, path))));
     input.value = value ?? "";
     input.placeholder = value === undefined ? "多个值" : "";
-    input.addEventListener("change", () => {
+    this.manageField(input, () => {
       void this.edit(scope, `修改${label}`, (clip) =>
         this.fieldPatch(scope, clip, path, input.value),
       );

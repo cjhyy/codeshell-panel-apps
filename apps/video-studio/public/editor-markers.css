@@ -30,6 +30,7 @@
 }
 .emarker-list button {
   text-align: left;
+  white-space: normal;
   overflow-wrap: anywhere;
   border-left: 4px solid;
 }

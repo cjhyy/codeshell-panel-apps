@@ -613,3 +613,34 @@ test("canvas evaluator cache follows a new session generation even for identical
   assert.equal(result.x, 0.25);
   assert.deepEqual(result.errors, []);
 });
+
+test("a synchronous selection dispatch cannot mix old target data with a new identity", async(t) => {
+ const page=await fixture(t);
+ await page.evaluate(()=>{const {controls,session}=f.internals,select=controls.context.select;let first=true;
+  controls.context.select=(ids)=>{select(ids);if(first){first=false;const clip=session.read().sequences[0].clips[0];session.dispatch([{type:"clip.update",sequenceId:"main",clipId:"picture",patch:{transform:{...clip.transform,x:.3}}}],session.getState().identity,"同步selection编辑");}};
+ });
+ await drag(page,handle(page,"move"),40,0);
+ const result=await page.evaluate(()=>({x:f.read().sequences[0].clips[0].transform.x,errors:f.errors,gesture:!!f.internals.controls.gesture}));
+ assert.equal(result.x,.3,JSON.stringify(result));assert.equal(result.gesture,false);
+});
+test("a synchronous select disposer cannot recreate a canvas gesture", async(t) => {
+ const page=await fixture(t);
+ await page.evaluate(()=>{const {controls}=f.internals,select=controls.context.select;controls.context.select=(ids)=>{select(ids);controls.dispose();};});
+ const box=await handle(page,"move").boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.up();await settle(page);
+ const result=await page.evaluate(()=>({disposed:f.internals.controls.disposed,gesture:!!f.internals.controls.gesture,pending:!!f.internals.controls.pendingGesture,errors:f.errors}));
+ assert.equal(result.disposed,true);assert.equal(result.gesture,false,JSON.stringify(result));assert.equal(result.pending,false);assert.deepEqual(result.errors,[]);
+});
+test("a synchronously disposing field hook cannot install a pending pointer after disposal", async(t) => {
+ const page=await fixture(t);
+ await page.evaluate(()=>{const {controls}=f.internals;controls.context.beforeGesture=()=>{controls.dispose();return Promise.resolve(true);};});
+ const box=await handle(page,"move").boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.up();await settle(page);
+ const result=await page.evaluate(()=>({disposed:f.internals.controls.disposed,gesture:!!f.internals.controls.gesture,pending:!!f.internals.controls.pendingGesture,errors:f.errors}));
+ assert.equal(result.disposed,true);assert.equal(result.gesture,false);assert.equal(result.pending,false,JSON.stringify(result));assert.deepEqual(result.errors,[]);
+});
+test("a synchronous field hook scope change removes its old pointer owner", async(t) => {
+ const page=await fixture(t);
+ await page.evaluate(()=>{const {controls}=f.internals;controls.context.beforeGesture=()=>{controls.context.selection=()=>({sequenceId:"main",clipIds:[]});return true;};});
+ const box=await handle(page,"move").boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.down();await page.mouse.up();
+ const result=await page.evaluate(()=>({gesture:!!f.internals.controls.gesture,pending:!!f.internals.controls.pendingGesture,errors:f.errors}));
+ assert.equal(result.gesture,false);assert.equal(result.pending,false,JSON.stringify(result));assert.deepEqual(result.errors,[]);
+});
