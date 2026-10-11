@@ -335,3 +335,39 @@ goal仍active至11:00，automation11继续保留。
   此批未包含，不能称已解决。真实workspace滚动总成本也正在独立分解审查。
 
 11:00截止和automation11保留，goal仍active。
+
+
+## 第九批整合验证（03:55 左右）
+
+- 第八批1eb1af9完整UI717项中715通过；两项失败仅旧library菜单文案及默认聚焦删除
+  断言与已扩展菜单不符。本地与push CI均仅这两项失败，媒体及offline CI成功。
+  89d5251把真实键盘删除改为从默认复制项End/ArrowUp导航，保留素材完整、资源不删、
+  one undo及窄屏键盘断言，独立library16/16通过。不能把此前715/717写成全部通过。
+- 已整合114f7a8长按一次性快捷键guard、e5e0834轨道草稿到首次选择/拖动/标尺seek、
+  f55ffe6时间轴媒体DOM批处理、89d5251旧菜单集成回归。冻结TS后的timeline/workspace/
+  timeline-media/library/main合计361/361通过；完整offline1124项中1121通过3可选跳过、
+  native voice5通过1可选跳过、workspace docs5/5；typecheck/build/build:check/validate39通过。
+  日志`/tmp/video-studio-morning-ninth-{ui,unit,typecheck,build,build-check,validate}.log`。
+- 轨道输入先按既有planner结束IME/提交合法草稿，再以fresh DOM/身份/锁轨开始原手势，
+  不放宽gesture revision fence。保存等待期间缓存最新move和首次up；取消、隐藏、blur、
+  dispose、换代/切序列、同pointerId晚回调不触及新gesture。等待时暂禁zoom/fit；第二次
+  物理点击不覆写首次up。无效输入/异步失败保留同scope可纠正草稿；真实autosave仍dirty/
+  retry。独立12项真实Chromium边界复核无P1/P2，227项代理回归通过。
+- 长按S/Delete/Backspace/Ctrl或Cmd C/X/V/D/G仅首keydown执行；松开再按可继续。逐帧
+  定位、移动、输入Backspace及连续undo/redo保留repeat；原生repeat事件及异步cut有回归。
+- scheduleMedia先读完可见clip几何，再批量插入canvas。保留原96条strip上限、顺序、
+  裁切、高度、hidden/audio/lock及全部取消/身份路径；无Map、长期cache或新public API。
+  新真实5000片段回归在旧源失败（append后264次几何读），正式源通过，含横/纵滚、
+  zoom、390px、96预算及真实红蓝媒体/声音像素。独立source复核无阻断。
+- 闲时正式f55ffe6同机12sample中位：32轨横滚RecalcStyle22.491→3.460ms，
+  纵滚27.814→3.917ms；128轨横滚92.752→13.085ms，纵滚113.513→14.064ms。
+  对应RAF128轨横125.4→39.4ms、纵157.2→48.8ms。横滚两次read仍约25.6ms、
+  纵滚一次read12.8ms；重叠指标不能相加，含frame等待wallMs不能当用户延迟。
+  证据/可重跑脚本已保留到
+  `/Users/admin/.codex/visualizations/2026/10/12/video-studio-scroll-layout/`。
+- 下一批真实审计：属性/轨道草稿→首次canvas move/resize/crop被吞；非法/异步失败
+  草稿还会被随后的canvas编辑覆盖。29项actualworkspace复现后批准局部beforeGesture
+  owner finish hook，不扩存储协议；尚未整合。标记同ID导航丢未提交名称/备注、off-frame
+  范围定位被帧量化也在独立最小修复。后台revision标记草稿的冲突契约仍只审计。
+
+11:00截止和automation11继续保留，goal仍active；未发布、未安装。

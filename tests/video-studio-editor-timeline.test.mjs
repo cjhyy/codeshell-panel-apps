@@ -264,6 +264,12 @@ async function fixture(t, options = {}) {
         timeline.render();
       },
       render: () => timeline.render(),
+      gestureState: () => {
+        const pending = timeline.pendingTrackGesture, drag = timeline.drag,
+          pointerId = pending?.intent.pointer.pointerId ?? drag?.pointerId;
+        return { pending: !!pending, drag: !!drag, pointerId, destroyed: timeline.destroyed,
+          capture: pointerId !== undefined && timeline.container.hasPointerCapture(pointerId) };
+      },
       externalTrackEdit: (trackId, patch) => {
         history.apply([{ type: "track.update", sequenceId: activeSequenceId, trackId, patch }], history.revision);
         timeline.render();
@@ -291,6 +297,7 @@ async function fixture(t, options = {}) {
         deferNext = true;
       },
       finishEdit: (failed = false) => pendingEdit?.(failed),
+      takePendingEdit: () => pendingEdit,
       switchSequence: (id = "secondary") => { activeSequenceId = id; selection = []; timeline.render(); },
       dispose: () => timeline.dispose(),
       seek: (value) => {
@@ -616,6 +623,174 @@ test("a newly locked track stops the button's second step after an awaited draft
   assert.match(result.errors[0], /轨道已锁定/);
 });
 
+for (const released of [false, true]) {
+  test(`an asynchronous track draft replays the latest pointer ${released ? "release" : "move"} without leaving an old gesture`, async (t) => {
+    const page = await fixture(t), before = (await state(page)).document,
+      point = await center(clip(page, "a")), cdp = await page.context().newCDPSession(page);
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x + 32, y: point.y, button: "left", buttons: 1 });
+    assert.equal((await page.evaluate(() => fixture.gestureState())).pending, true);
+    if (released) await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x + 64, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    if (!released) {
+      assert.equal((await page.evaluate(() => fixture.gestureState())).drag, true);
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x + 64, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+      await settle(page);
+    }
+    const result = await state(page), gesture = await page.evaluate(() => fixture.gestureState());
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 480000);
+    assert.equal(result.document.sequences[0].tracks.find((item) => item.id === "v1").volume, 0.375);
+    assert.deepEqual(result.applied.map((item) => item.label), ["调整轨道音量", "移动片段"]);
+    assert.deepEqual([gesture.pending, gesture.drag, gesture.capture], [false, false, false]);
+    assert.deepEqual(result.errors, []);
+    await page.locator("#undo").click(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+    await undo(page, before);
+  });
+}
+
+for (const ending of ["escape", "blur", "lostcapture", "generation", "document", "sequence", "dispose"]) {
+  test(`an asynchronous track draft cannot start a gesture after ${ending}`, async (t) => {
+    const page = await fixture(t, { secondSequence: true }), point = await center(clip(page, "a"));
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x + 64, point.y);
+    const pending = await page.evaluate(() => fixture.gestureState());
+    assert.equal(pending.pending, true);
+    if (ending === "escape") await page.keyboard.press("Escape");
+    if (ending === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    if (ending === "lostcapture") {
+      await page.evaluate((pointerId) => document.querySelector("#timeline").releasePointerCapture(pointerId), pending.pointerId);
+      await page.mouse.move(point.x + 65, point.y);
+    }
+    if (ending === "generation") await page.evaluate(() => fixture.restoreSameIdentity());
+    if (ending === "document") await page.evaluate(() => fixture.replaceDocument());
+    if (ending === "sequence") await page.evaluate(() => fixture.switchSequence());
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    await page.mouse.up();
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+    assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+    assert.equal(result.applied.length, 1, "only the already-submitted track draft may finish in its captured history");
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+    assert.deepEqual(result.errors, []);
+  });
+}
+
+test("native touch cancellation ends a pending track draft gesture before its asynchronous completion", async (t) => {
+  const page = await fixture(t, { touch: true }), point = { ...await center(clip(page, "a")), id: 1 },
+    input = await touchInput(page, "#timeline");
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await input.send("touchStart", [point]);
+  await input.send("touchMove", [{ ...point, x: point.x + 64 }]);
+  assert.equal((await page.evaluate(() => fixture.gestureState())).pending, true);
+  await input.send("touchCancel");
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+  assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+  assert.equal(result.applied.length, 1);
+  assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 240000);
+  assert.ok(await page.evaluate(() => touchTrace.some((event) => event.type === "pointercancel" && event.trusted)));
+  assert.deepEqual(result.errors, []);
+});
+
+for (const failed of [false, true]) {
+  test(`${failed ? "failed asynchronous" : "invalid"} track draft blocks and retains a correctable gesture input`, async (t) => {
+    const page = await fixture(t), before = (await state(page)).document;
+    if (failed) await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill(failed ? "37.5" : "401");
+    await clip(page, "a").click();
+    if (failed) await page.evaluate(() => fixture.finishEdit(true));
+    await settle(page);
+    const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+    assert.deepEqual(result.document, before);
+    assert.deepEqual(result.selected, []);
+    assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).inputValue(), failed ? "37.5" : "401");
+    assert.equal(await page.getByLabel("v1 音量百分比", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    assert.match(result.errors[0], failed ? /保存失败/ : /400/);
+    assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("50");
+    await clip(page, "a").click(); await settle(page);
+    assert.equal((await state(page)).document.sequences[0].tracks.find((item) => item.id === "v1").volume, 0.5);
+    assert.deepEqual((await state(page)).selected, ["a"]);
+  });
+}
+
+test("an old cancelled draft cannot release a newer pending gesture's capture on the same pointer", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 32, point.y);
+  await page.evaluate(() => { globalThis.firstEdit = fixture.takePendingEdit(); });
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("轨道名称 v1", { exact: true }).fill("第二次草稿");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 64, point.y);
+  await page.evaluate(() => { globalThis.secondEdit = fixture.takePendingEdit(); firstEdit(); });
+  await settle(page);
+  await page.mouse.move(point.x + 65, point.y);
+  const active = await page.evaluate(() => fixture.gestureState());
+  assert.deepEqual([active.pending, active.capture], [true, true]);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await page.evaluate(() => secondEdit(true)); await settle(page);
+  const result = await state(page), final = await page.evaluate(() => fixture.gestureState());
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, [], "a late cancelled failure cannot overwrite the new interaction");
+  assert.deepEqual([final.pending, final.drag, final.capture], [false, false, false]);
+});
+
+test("pending track drafts retain stationary Alt and freeze zoom until their pointer intent completes", async (t) => {
+  for (const alt of [false, true]) {
+    const page = await fixture(t, { ntsc: true, clips: [
+      { id: "a", trackId: "v1", start: 1, duration: 2 },
+      { id: "c", trackId: "v1", start: 6, duration: 2 },
+    ] }), point = await center(clip(page, "a"));
+    await page.evaluate(() => fixture.holdNextEdit());
+    await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+    await page.mouse.move(point.x, point.y); await page.mouse.down();
+    await page.mouse.move(point.x + 64 * 2.94, point.y);
+    const zoom = await page.locator("[data-et-zoom]").inputValue();
+    assert.equal(await page.locator("[data-et-zoom]").isDisabled(), true);
+    for (const action of ["fit", "zoom-in", "zoom-out"])
+      assert.equal(await page.locator(`[data-et-action="${action}"]`).isDisabled(), true);
+    await page.keyboard.down("Control"); await page.mouse.wheel(0, 200); await page.keyboard.up("Control");
+    assert.equal(await page.locator("[data-et-zoom]").inputValue(), zoom);
+    if (alt) await page.keyboard.down("Alt");
+    else { await page.keyboard.down("Alt"); await page.keyboard.up("Alt"); }
+    await page.evaluate(() => fixture.finishEdit()); await settle(page);
+    await page.mouse.up(); if (alt) await page.keyboard.up("Alt"); await settle(page);
+    const result = await state(page), expected = alt ? await page.evaluate(() => editor.frameToTicks(
+      editor.ticksToFrame(Math.round(3.94 * 240000), { numerator: 30000, denominator: 1001 }),
+      { numerator: 30000, denominator: 1001 },
+    )) : 4 * 240000;
+    assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, expected);
+    assert.equal(await page.locator("[data-et-snap]").isChecked(), true);
+    assert.equal(await page.locator("[data-et-zoom]").isDisabled(), false);
+    assert.deepEqual(result.errors, []);
+  }
+});
+
+test("a second physical click cannot overwrite a released gesture while its track draft is pending", async (t) => {
+  const page = await fixture(t), point = await center(clip(page, "a"));
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.getByLabel("v1 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(point.x, point.y); await page.mouse.down();
+  await page.mouse.move(point.x + 64, point.y); await page.mouse.up();
+  await page.mouse.click(point.x + 128, point.y);
+  await page.evaluate(() => fixture.finishEdit()); await settle(page);
+  const result = await state(page), after = await page.evaluate(() => fixture.gestureState());
+  assert.equal(result.document.sequences[0].clips.find((item) => item.id === "a").start, 480000);
+  assert.equal(result.applied.length, 2);
+  assert.deepEqual([after.pending, after.drag, after.capture], [false, false, false]);
+  assert.deepEqual(result.errors, []);
+});
+
 test("owned move and trim capabilities release on every interruption and old generation releases cannot commit", async (t) => {
   for (const kind of ["move", "trim"]) for (const ending of ["escape", "blur", "generation", "sequence", "dispose"]) {
     const page = await fixture(t, { secondSequence: ending === "sequence" }), before = (await state(page)).document;
@@ -737,6 +912,147 @@ async function settle(page) {
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
 }
+
+for (const { key, modifiers = [], grouped = false, pasted = false } of [
+  { key: "s" },
+  { key: "Delete" },
+  { key: "Backspace" },
+  { key: "x", modifiers: ["Control"] },
+  { key: "d", modifiers: ["Meta"] },
+  { key: "g", modifiers: ["Control"], grouped: true },
+  { key: "g", modifiers: ["Meta", "Shift"], grouped: true },
+  { key: "v", modifiers: ["Control"], pasted: true },
+]) {
+  test(`holding ${modifiers.join("+")}${key} runs one edit and a fresh press remains available`, async (t) => {
+    const page = await fixture(t);
+    await clip(page, "a").click();
+    if (grouped) {
+      await page.keyboard.down("Control");
+      await clip(page, "b").click();
+      await page.keyboard.up("Control");
+      if (modifiers.includes("Shift")) await page.keyboard.press("Control+g");
+    }
+    if (pasted) await page.keyboard.press("Control+c");
+    await page.evaluate((pasted) => {
+      fixture.seek(pasted ? 2400000 : 480000);
+      globalThis.heldEvents = [];
+      window.addEventListener(
+        "keydown",
+        (event) => heldEvents.push({ key: event.key, repeat: event.repeat }),
+        true,
+      );
+    }, pasted);
+    const before = await state(page);
+    for (const modifier of modifiers) await page.keyboard.down(modifier);
+    await page.keyboard.down(key);
+    await settle(page);
+    const first = await state(page);
+    for (let index = 0; index < 3; index++) {
+      await page.keyboard.down(key);
+      await settle(page);
+    }
+    await page.keyboard.up(key);
+    for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier);
+    const held = await state(page);
+    assert.deepEqual(held.document, first.document, "OS repeat must not add another edit");
+    assert.deepEqual(held.applied, first.applied);
+    assert.deepEqual(held.errors, []);
+    assert.equal(first.applied.length, before.applied.length + 1);
+    assert.deepEqual(
+      await page.evaluate(
+        (key) => heldEvents.filter((event) => event.key === key).map((event) => event.repeat),
+        key,
+      ),
+      [false, true, true, true],
+    );
+    if (!modifiers.includes("Shift")) {
+      if (["Delete", "Backspace", "x"].includes(key)) await clip(page, "b").click();
+      if (key === "s") await page.evaluate(() => fixture.seek(600000));
+      if (pasted) await page.evaluate(() => fixture.seek(3360000));
+      for (const modifier of modifiers) await page.keyboard.down(modifier);
+      await page.keyboard.press(key);
+      for (const modifier of [...modifiers].reverse()) await page.keyboard.up(modifier);
+      await settle(page);
+      const fresh = await state(page);
+      assert.equal(fresh.applied.length, first.applied.length + 1);
+      assert.deepEqual(fresh.errors, []);
+    }
+  });
+}
+
+test("holding copy preserves the original clipboard when selection changes before key release", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  await page.keyboard.down("Control");
+  await page.keyboard.down("c");
+  await clip(page, "a").click();
+  await clip(page, "b").click();
+  assert.deepEqual((await state(page)).selected, ["b"]);
+  await page.keyboard.down("c");
+  await page.keyboard.down("c");
+  await page.keyboard.up("c");
+  await page.keyboard.up("Control");
+  await page.evaluate(() => fixture.seek(2400000));
+  await page.keyboard.press("Control+v");
+  await settle(page);
+  const result = await state(page),
+    pasted = result.document.sequences[0].clips.find((item) => result.selected.includes(item.id));
+  assert.equal(pasted.label, "a");
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, []);
+});
+
+test("held arrows still seek and move every frame while editable track input retains native repeats", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  for (let index = 0; index < 4; index++) await page.keyboard.down("ArrowRight");
+  await page.keyboard.up("ArrowRight");
+  assert.equal((await state(page)).time, 32000);
+  assert.equal((await state(page)).applied.length, 0);
+  await page.keyboard.down("Control");
+  for (let index = 0; index < 4; index++) {
+    await page.keyboard.down("ArrowRight");
+    await settle(page);
+  }
+  await page.keyboard.up("ArrowRight");
+  await page.keyboard.up("Control");
+  const moved = await state(page);
+  assert.equal(moved.document.sequences[0].clips.find((item) => item.id === "a").start, 272000);
+  assert.equal(moved.applied.length, 4);
+  assert.deepEqual(moved.errors, []);
+  const input = page.locator('[data-et-track-name="v1"]');
+  await input.fill("abcde");
+  await page.keyboard.press("End");
+  for (let index = 0; index < 4; index++) await page.keyboard.down("Backspace");
+  await page.keyboard.up("Backspace");
+  assert.equal(await input.inputValue(), "a");
+  assert.equal((await state(page)).applied.length, 4);
+});
+
+test("a held cut stays one command before and after its asynchronous save finishes", async (t) => {
+  const page = await fixture(t);
+  await clip(page, "a").click();
+  await page.evaluate(() => fixture.holdNextEdit());
+  await page.keyboard.down("Control");
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  assert.equal((await state(page)).applied.length, 0);
+  await page.evaluate(() => fixture.finishEdit());
+  await settle(page);
+  await page.keyboard.down("x");
+  await page.keyboard.down("x");
+  await page.keyboard.up("x");
+  await page.keyboard.up("Control");
+  const result = await state(page);
+  assert.equal(result.applied.length, 1);
+  assert.deepEqual(result.errors, []);
+  await page.evaluate(() => fixture.seek(2400000));
+  await page.keyboard.press("Control+v");
+  await settle(page);
+  assert.equal((await state(page)).applied.length, 2);
+  assert.deepEqual((await state(page)).errors, []);
+});
 const clip = (page, id) => page.locator(`[data-et-clip="${id}"]`);
 async function center(locator) {
   const bounds = await locator.boundingBox();

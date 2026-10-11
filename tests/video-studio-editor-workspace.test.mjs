@@ -47,6 +47,55 @@ after(async () => {
   await browser?.close();
 });
 
+test("holding workspace undo and redo continues through repeated timeline key events", async (t) => {
+  const page = await fixture(t),
+    initial = await documentState(page);
+  await page.locator('[data-et-clip="a"]').click();
+  await page.evaluate(() => {
+    globalThis.historyKeys = [];
+    window.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key.toLowerCase() === "z")
+          historyKeys.push({ repeat: event.repeat, redo: event.shiftKey });
+      },
+      true,
+    );
+  });
+  await page.keyboard.down("Control");
+  for (let index = 0; index < 3; index++) {
+    await page.keyboard.down("ArrowRight");
+    await settle(page);
+  }
+  await page.keyboard.up("ArrowRight");
+  const moved = await documentState(page);
+  assert.equal(moved.sequences[0].clips[0].start, 24000);
+  for (let index = 0; index < 3; index++) {
+    await page.keyboard.down("z");
+    await settle(page);
+  }
+  await page.keyboard.up("z");
+  assert.deepEqual((await documentState(page)).sequences, initial.sequences);
+  await page.keyboard.down("Shift");
+  for (let index = 0; index < 3; index++) {
+    await page.keyboard.down("z");
+    await settle(page);
+  }
+  await page.keyboard.up("z");
+  await page.keyboard.up("Shift");
+  await page.keyboard.up("Control");
+  assert.deepEqual((await documentState(page)).sequences, moved.sequences);
+  assert.deepEqual(await page.evaluate(() => historyKeys), [
+    { repeat: false, redo: false },
+    { repeat: true, redo: false },
+    { repeat: true, redo: false },
+    { repeat: false, redo: true },
+    { repeat: true, redo: true },
+    { repeat: true, redo: true },
+  ]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
 async function fixture(t, options = {}) {
   let page = await browser.newPage({ viewport: { width: options.width ?? 1240, height: 900 } });
   const ownerPage = page;
@@ -564,6 +613,115 @@ test("an awaited actual session replacement prevents a captured track toggle fro
   assert.equal(track.volume, 1); assert.equal(track.muted, false);
   assert.deepEqual(await page.evaluate(() => fixture.errors), []);
   assert.equal(await page.evaluate(() => fixture.writes.some((write) => write.label === "调整轨道")), false);
+});
+
+for (const draft of [undefined, ["轨道名称 画面轨", "未提交轨道名"], ["画面轨 音量百分比", "37.5"]]) {
+  for (const gesture of ["select", "drag", "contextmenu", "seek"]) {
+    test(`the first workspace ${gesture} preserves ${draft?.[0] ?? "no track draft"} and its pointer intent`, async (t) => {
+      const page = await fixture(t), before = await documentState(page);
+      if (draft) await page.getByLabel(draft[0], { exact: true }).fill(draft[1]);
+      const box = await clip(page).boundingBox(), x = box.x + box.width / 2, y = box.y + box.height / 2;
+      if (gesture === "select") await page.mouse.click(x, y);
+      if (gesture === "drag") {
+        await page.mouse.move(x, y); await page.mouse.down();
+        await page.mouse.move(x + 64, y, { steps: 4 }); await page.mouse.up();
+      }
+      if (gesture === "contextmenu") await page.mouse.click(x, y, { button: "right" });
+      if (gesture === "seek") {
+        const ruler = await page.locator(".et-ruler").boundingBox();
+        await page.mouse.click(ruler.x + 128, ruler.y + ruler.height / 2);
+      }
+      await settle(page);
+      const after = await documentState(page), track = after.sequences[0].tracks.find((item) => item.id === "video");
+      assert.equal(track.name, draft?.[0].startsWith("轨道名称") ? draft[1] : "画面轨");
+      assert.equal(track.volume, draft?.[0].includes("音量") ? 0.375 : 1);
+      assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+      assert.equal(after.revision, before.revision + Number(!!draft) + Number(gesture === "drag"));
+      assert.equal(after.sequences[0].clips[0].start, gesture === "drag" ? 240000 : 0);
+      assert.equal(await page.evaluate(() => fixture.playhead()), gesture === "seek" ? 480000 : 0);
+      assert.deepEqual(await page.evaluate(() => fixture.selection()), gesture === "seek" ? [] : ["a"]);
+      assert.equal(await page.locator("#timeline-context-menu").count(), Number(gesture === "contextmenu"));
+      if (gesture === "drag") {
+        await action(page, "undo").click(); await settle(page);
+        const undoGesture = await documentState(page);
+        assert.equal(undoGesture.sequences[0].clips[0].start, 0);
+        assert.equal(undoGesture.sequences[0].tracks.find((item) => item.id === "video").volume, track.volume);
+      }
+    });
+  }
+}
+
+test("a native IME track name finishes once before the first real workspace drag and each edit undoes separately", async (t) => {
+  const page = await fixture(t), before = await documentState(page),
+    input = page.getByLabel("轨道名称 画面轨", { exact: true }), cdp = await page.context().newCDPSession(page),
+    box = await clip(page).boundingBox();
+  await input.fill("");
+  await input.evaluate((node) => {
+    globalThis.trackCompositionStarts = []; globalThis.trackCompositionEnds = [];
+    node.addEventListener("compositionstart", (event) => trackCompositionStarts.push(event.isTrusted));
+    node.addEventListener("compositionend", (event) => trackCompositionEnds.push(event.isTrusted));
+  });
+  await cdp.send("Input.imeSetComposition", { text: "正式画面轨", selectionStart: 5, selectionEnd: 5 });
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 64, box.y + box.height / 2, { steps: 4 }); await page.mouse.up();
+  await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.sequences[0].tracks.find((item) => item.id === "video").name, "正式画面轨");
+  assert.equal(after.sequences[0].clips[0].start, 240000);
+  assert.equal(after.revision, before.revision + 2);
+  assert.deepEqual(await page.evaluate(() => trackCompositionStarts), [true]);
+  assert.equal(await page.evaluate(() => trackCompositionEnds.length), 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  await action(page, "undo").click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips[0].start, 0);
+  assert.equal((await documentState(page)).sequences[0].tracks.find((item) => item.id === "video").name, "正式画面轨");
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("a track draft and first workspace drag retain the actual autosave dirty and retry behavior", async (t) => {
+  const page = await fixture(t), before = await documentState(page), box = await clip(page).boundingBox();
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 64, box.y + box.height / 2, { steps: 4 }); await page.mouse.up();
+  await page.waitForFunction(() => fixture.state().saveState === "failed");
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].clips[0].start, 240000);
+  assert.equal(after.sequences[0].tracks.find((item) => item.id === "video").volume, 0.375);
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, before.sequences);
+  await page.evaluate(() => fixture.writeMode("normal"));
+  await action(page, "retry-save").click();
+  await page.waitForFunction(() => fixture.state().saveState === "saved");
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, after.sequences);
+  assert.equal((await documentState(page)).revision, after.revision);
+});
+
+test("an awaited actual session replacement cancels the track draft's captured workspace gesture", async (t) => {
+  const page = await fixture(t), box = await clip(page).boundingBox();
+  await page.evaluate(() => {
+    const { workspace, session } = fixture.internals, original = workspace.timeline.context.apply;
+    workspace.timeline.context.apply = async (operations, label) => {
+      original(operations, label);
+      if (label === "调整轨道音量") {
+        const successor = fixture.read(); successor.id = "gesture-successor";
+        successor.sequences[0].tracks.find((item) => item.id === "video").volume = 1;
+        await session.replace(successor);
+      }
+    };
+  });
+  await page.getByLabel("画面轨 音量百分比", { exact: true }).fill("37.5");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 64, box.y + box.height / 2, { steps: 4 }); await page.mouse.up();
+  await page.waitForFunction(() => fixture.read().id === "gesture-successor" && fixture.state().phase === "ready");
+  await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.sequences[0].tracks.find((item) => item.id === "video").volume, 1);
+  assert.equal(after.sequences[0].clips[0].start, 0);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), []);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  assert.equal(await page.evaluate(() => fixture.writes.some((write) => write.label === "移动片段")), false);
 });
 
 test("separation opens only the selected real media and stops pending preview without changing the project", async (t) => {

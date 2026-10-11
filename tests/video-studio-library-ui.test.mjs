@@ -281,7 +281,7 @@ test(
       assert.deepEqual(await selectedClipIds(page), [second.id]);
       assert.equal(await page.locator("[data-ew-seek]").inputValue(), beforeMenu);
       assert.deepEqual((await state(page)).project, before);
-      assert.match(await context.textContent(), /素材库与原文件保留，可撤销/);
+      assert.match(await context.textContent(), /编辑可撤销/);
       await context.locator('[data-timeline-menu-action="remove"]').click();
       await saved(page);
       const changed = (await state(page)).project;
@@ -371,6 +371,15 @@ test(
       await target.focus();
       await page.keyboard.press("Shift+F10");
       await context.waitFor({ state: "visible" });
+      assert.equal(
+        await context
+          .locator('[data-timeline-menu-action="copy"]')
+          .evaluate((element) => element === document.activeElement),
+        true,
+        "The expanded menu begins at its first available command",
+      );
+      await page.keyboard.press("End");
+      await page.keyboard.press("ArrowUp");
       await page.screenshot({
         path: resolve(artifacts, "timeline-context-menu-390px.png"),
         fullPage: false,

@@ -113,6 +113,26 @@ type TrackInputOwner = {
   trackId: string;
   kind: EditorTrack["kind"];
 };
+type GesturePointer = Pick<PointerEvent, "pointerId" | "clientX" | "clientY" | "altKey">;
+type GestureIntent = {
+  pointer: GesturePointer;
+  kind: Drag["kind"];
+  clipId?: string;
+  clipKind?: EditorClip["kind"];
+  trackId?: string;
+  additive: boolean;
+  scroll: number;
+  verticalScroll: number;
+};
+type PendingTrackGesture = {
+  owner: TrackInputOwner;
+  intent: GestureIntent;
+  last: GesturePointer;
+  up?: GesturePointer;
+};
+const gesturePointer = (event: GesturePointer): GesturePointer => ({
+  pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, altKey: event.altKey,
+});
 const lastFrameTime = (sequence: EditorSequence) =>
   frameToTicks(
     ticksToFrame(Math.max(0, sequenceDuration(sequence) - 1), sequence.frameRate, "floor"),
@@ -177,6 +197,7 @@ export class EditorTimeline {
   private readonly trackButtons = new WeakMap<HTMLButtonElement, TrackInputOwner>();
   private currentTrackButtons = new WeakSet<HTMLButtonElement>();
   private trackControlPending = false;
+  private pendingTrackGesture?: PendingTrackGesture;
   private box?: HTMLElement;
   private scrollPosition = 0;
   private verticalPosition = 0;
@@ -395,6 +416,8 @@ export class EditorTimeline {
     const restoreFocus = focused instanceof HTMLElement && this.container.contains(focused);
     const { document: project, sequence, selected } = this.current();
     this.clearStaleClipboard(project);
+    if (this.pendingTrackGesture && !this.trackOwnerCurrent(this.pendingTrackGesture.owner))
+      this.cancelTrackGesture();
     if (
       this.drag && (
         project.id !== this.drag.documentId || project.revision !== this.drag.revision ||
@@ -579,8 +602,11 @@ export class EditorTimeline {
       }
       if (options.preserveToolbar)
         this.container.querySelector<HTMLInputElement>("[data-et-zoom]")!.value = String(Math.log10(this.scale));
-      if (this.trackControlPending)
+      if (this.trackControlPending || this.pendingTrackGesture)
         for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>(`${TRACK_INPUTS},${TRACK_BUTTONS}`))
+          control.disabled = true;
+      if (this.pendingTrackGesture)
+        for (const control of this.container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('[data-et-zoom],[data-et-action="fit"],[data-et-action="zoom-in"],[data-et-action="zoom-out"]'))
           control.disabled = true;
     } finally {
       this.replacingControls = false;
@@ -654,6 +680,7 @@ export class EditorTimeline {
       const viewport = this.viewport().getBoundingClientRect(),
         body = this.container.querySelector<HTMLElement>(".et-body")!.getBoundingClientRect();
       const strips: TimelineMediaStrip[] = [];
+      const attachments: { node: HTMLElement; canvas: HTMLCanvasElement }[] = [];
       this.container
         .querySelectorAll<HTMLCanvasElement>("canvas.et-media-strip")
         .forEach((canvas) => canvas.remove());
@@ -689,7 +716,7 @@ export class EditorTimeline {
           width: `${right - left}px`,
           height: `${stripHeight}px`,
         });
-        node.appendChild(canvas);
+        attachments.push({ node, canvas });
         strips.push({
           clipId: clip.id,
           canvas,
@@ -699,6 +726,9 @@ export class EditorTimeline {
           height: stripHeight,
         });
       }
+      // Measure every clip before inserting strips so each next bounds read does not
+      // force styles to update after the preceding canvas changed the live DOM.
+      for (const { node, canvas } of attachments) node.appendChild(canvas);
       const identity = this.context.identity?.();
       try {
         const snapshot = identity && this.context.prepareMediaSnapshot?.(document, identity);
@@ -786,7 +816,7 @@ export class EditorTimeline {
   private change = (event: Event) => {
     const target = event.target as HTMLInputElement;
     if (target.matches(TRACK_INPUTS)) {
-      if (this.replacingControls || this.trackControlPending || !this.trackInputCurrent(target)) return;
+      if (this.replacingControls || this.trackControlPending || this.pendingTrackGesture || !this.trackInputCurrent(target)) return;
       this.run(async () => {
         const edit = this.trackInputEdit(target);
         if (edit) await this.apply([edit.operation], edit.label);
@@ -820,7 +850,7 @@ export class EditorTimeline {
   /** Preserve the user's two explicit edits even when the first render replaces the clicked button. */
   private async trackControl(button: HTMLButtonElement): Promise<void> {
     const owner = this.trackButtons.get(button);
-    if (this.trackControlPending || button.disabled || !owner || !this.currentTrackButtons.has(button) ||
+    if (this.trackControlPending || this.pendingTrackGesture || button.disabled || !owner || !this.currentTrackButtons.has(button) ||
       !this.container.contains(button)) return;
     if (!this.trackOwnerCurrent(owner)) {
       this.render();
@@ -894,7 +924,7 @@ export class EditorTimeline {
   };
   /** Keep the visible playhead in place, or the viewport's middle when it is off screen. */
   private zoom(scale: number, offset?: number): void {
-    if (this.drag || this.destroyed || !Number.isFinite(scale)) return;
+    if (this.drag || this.pendingTrackGesture || this.destroyed || !Number.isFinite(scale)) return;
     const viewport = this.viewport(),
       { sequence } = this.current(),
       duration = Math.max(
@@ -1117,6 +1147,7 @@ export class EditorTimeline {
       return;
     }
     if (action === "fit") {
+      if (this.pendingTrackGesture) return;
       this.scale = Math.min(
         1000,
         Math.max(
@@ -1159,6 +1190,13 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
+    if (this.pendingTrackGesture) {
+      event.preventDefault();
+      if (event.key === "Escape") { this.cancel(); this.render(); }
+      else if (event.key === "Alt" && !this.pendingTrackGesture.up)
+        this.pendingTrackGesture.last = { ...this.pendingTrackGesture.last, altKey: true };
+      return;
+    }
     if (event.key === "Alt" && this.drag) {
       event.preventDefault();
       this.drag.altKey = true;
@@ -1283,6 +1321,7 @@ export class EditorTimeline {
           : undefined;
     if (action) {
       event.preventDefault();
+      if (event.repeat) return;
       this.run(() => this.action(action));
       return;
     }
@@ -1318,6 +1357,12 @@ export class EditorTimeline {
     }
   };
   private keyup = (event: KeyboardEvent): void => {
+    if (event.key === "Alt" && this.pendingTrackGesture) {
+      event.preventDefault();
+      if (!this.pendingTrackGesture.up)
+        this.pendingTrackGesture.last = { ...this.pendingTrackGesture.last, altKey: false };
+      return;
+    }
     if (event.key !== "Alt" || !this.drag) return;
     event.preventDefault();
     this.drag.altKey = false;
@@ -1609,14 +1654,87 @@ export class EditorTimeline {
       event.preventDefault();
       return;
     }
+    if (this.pendingTrackGesture || this.trackControlPending) { event.preventDefault(); return; }
     if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
+    const node = target.closest<HTMLElement>("[data-et-clip]"), intent: GestureIntent = {
+      pointer: gesturePointer(event),
+      clipId: node?.dataset.etClip,
+      kind: node ? (target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as "left" | "right" | undefined) ?? "move"
+        : target.closest(".et-ruler,.et-marker-lane,.et-playhead") ? "seek" : "box",
+      additive: event.shiftKey || event.ctrlKey || event.metaKey,
+      scroll: this.viewport().scrollLeft,
+      verticalScroll: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
+    };
+    event.preventDefault();
+    const input = globalThis.document.activeElement;
+    if (input instanceof HTMLInputElement && input.matches(TRACK_INPUTS) && this.trackInputCurrent(input)) {
+      const clip = this.current().sequence.clips.find((item) => item.id === intent.clipId);
+      intent.clipKind = clip?.kind;
+      intent.trackId = clip?.trackId;
+      this.run(() => this.trackDraftGesture(input, intent));
+      return;
+    }
+    this.run(() => this.beginGesture(intent));
+  };
+  /** A track draft must finish before the gesture takes its revision-bound document snapshot. */
+  private async trackDraftGesture(input: HTMLInputElement, intent: GestureIntent): Promise<void> {
+    const owner = this.trackInputs.get(input)!, pending: PendingTrackGesture = {
+      owner, intent, last: { ...intent.pointer },
+    }, selector = input.dataset.etTrackName ? `[data-et-track-name="${CSS.escape(input.dataset.etTrackName)}"]`
+      : `[data-et-track-id="${CSS.escape(input.dataset.etTrackId!)}"][data-et-track-mix="${input.dataset.etTrackMix}"]`;
+    let value = input.value, saved = false, finishing = false;
+    this.pendingTrackGesture = pending;
+    try {
+      this.container.setPointerCapture(intent.pointer.pointerId);
+      this.replacingControls = true;
+      try { input.blur(); this.container.focus({ preventScroll: true }); }
+      finally { this.replacingControls = false; }
+      value = input.value;
+      if (!this.trackOwnerCurrent(owner)) return;
+      const edit = this.trackInputEdit(input);
+      this.render();
+      if (this.pendingTrackGesture !== pending || !this.trackOwnerCurrent(owner)) return;
+      if (edit) await this.apply([edit.operation], edit.label);
+      saved = true;
+      if (this.pendingTrackGesture !== pending || !this.trackOwnerCurrent(owner)) return;
+      finishing = true;
+      this.pendingTrackGesture = undefined;
+      this.render();
+      if (!this.trackOwnerCurrent(owner)) return;
+      this.beginGesture(intent, !pending.up);
+      if (!this.drag) return;
+      const last = pending.up ?? pending.last;
+      this.drag.lastX = last.clientX;
+      this.drag.lastY = last.clientY;
+      this.drag.altKey = last.altKey;
+      if (pending.up) this.pointerup(pending.up);
+      else { this.updateDrag(); this.startAutoScroll(); }
+    } catch (error) {
+      if ((this.pendingTrackGesture === pending || finishing) && this.trackOwnerCurrent(owner)) {
+        this.context.onError(error);
+        this.notice.textContent = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      const active = this.pendingTrackGesture === pending;
+      if (active) this.cancelTrackGesture();
+      if ((active || finishing) && !this.pendingTrackGesture && !this.drag && this.container.hasPointerCapture(intent.pointer.pointerId))
+        this.container.releasePointerCapture(intent.pointer.pointerId);
+      if (!this.destroyed && !this.drag) this.render();
+      if (active && !saved && this.trackOwnerCurrent(owner)) {
+        const field = this.container.querySelector<HTMLInputElement>(selector);
+        if (field && !field.disabled) { field.value = value; field.focus({ preventScroll: true }); }
+      }
+    }
+  }
+  private beginGesture(intent: GestureIntent, capture = true): void {
     this.notice.textContent = "";
-    const { document, sequence, selected } = this.current();
-    const node = target.closest<HTMLElement>("[data-et-clip]"),
-      clip = sequence.clips.find((item) => item.id === node?.dataset.etClip);
-    const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+    const { document, sequence, selected } = this.current(), { pointer, kind, additive } = intent,
+      clip = sequence.clips.find((item) => item.id === intent.clipId);
+    if (intent.clipId && (!clip || (intent.clipKind && (clip.kind !== intent.clipKind || clip.trackId !== intent.trackId)) ||
+      !this.container.querySelector(`[data-et-clip="${CSS.escape(intent.clipId)}"]`)))
+      throw new Error("片段已变化，请重新选择或拖动");
     let ids = new Set(selected);
     if (clip) {
       const group = this.expanded(sequence, [clip.id]);
@@ -1626,29 +1744,17 @@ export class EditorTimeline {
         for (const id of group) ids.add(id);
       }
       this.context.select([...ids]);
-      if (!ids.has(clip.id)) {
-        this.render();
-        event.preventDefault();
-        return;
-      }
+      if (!ids.has(clip.id)) { this.render(); return; }
     }
-    const kind = clip
-      ? ((target.closest<HTMLElement>("[data-et-edge]")?.dataset.etEdge as
-          | "left"
-          | "right"
-          | undefined) ?? "move")
-      : target.closest(".et-ruler,.et-marker-lane,.et-playhead")
-        ? "seek"
-        : "box";
     this.drag = {
       kind,
-      pointerId: event.pointerId,
-      x: event.clientX,
-      y: event.clientY,
-      scroll: this.viewport().scrollLeft,
-      verticalScroll: this.container.querySelector<HTMLElement>(".et-body")!.scrollTop,
-      lastX: event.clientX,
-      lastY: event.clientY,
+      pointerId: pointer.pointerId,
+      x: pointer.clientX,
+      y: pointer.clientY,
+      scroll: intent.scroll,
+      verticalScroll: intent.verticalScroll,
+      lastX: pointer.clientX,
+      lastY: pointer.clientY,
       documentId: document.id,
       revision: document.revision,
       generation: this.context.identity?.().generation,
@@ -1666,22 +1772,35 @@ export class EditorTimeline {
           ]
         : [...ids],
       delta: 0,
-      time: this.point(event.clientX),
+      time: this.point(pointer.clientX),
       moved: false,
       additive,
-      altKey: event.altKey,
+      altKey: pointer.altKey,
     };
     this.container.focus({ preventScroll: true });
-    this.container.setPointerCapture(event.pointerId);
-    event.preventDefault();
+    if (capture) this.container.setPointerCapture(pointer.pointerId);
     if (kind === "box") this.createBox();
     if (clip)
       for (const element of this.container.querySelectorAll<HTMLElement>("[data-et-clip]")) {
         element.classList.toggle("selected", ids.has(element.dataset.etClip!));
         element.setAttribute("aria-selected", String(ids.has(element.dataset.etClip!)));
       }
-  };
+  }
+  private cancelTrackGesture(): void {
+    const pending = this.pendingTrackGesture;
+    if (!pending) return;
+    this.pendingTrackGesture = undefined;
+    if (this.container.hasPointerCapture(pending.intent.pointer.pointerId))
+      this.container.releasePointerCapture(pending.intent.pointer.pointerId);
+  }
   private pointermove = (event: PointerEvent) => {
+    const pending = this.pendingTrackGesture;
+    if (pending?.intent.pointer.pointerId === event.pointerId) {
+      if (pending.up) return;
+      if (event.buttons === 0) { this.cancelTrackGesture(); this.render(); }
+      else pending.last = gesturePointer(event);
+      return;
+    }
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     // A release this page never received must not let later hovering resume the gesture.
@@ -1977,7 +2096,12 @@ export class EditorTimeline {
       }
     });
   };
-  private pointerup = (event: PointerEvent) => {
+  private pointerup = (event: GesturePointer) => {
+    const pending = this.pendingTrackGesture;
+    if (pending?.intent.pointer.pointerId === event.pointerId) {
+      pending.up ??= gesturePointer(event);
+      return;
+    }
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     drag.lastX = event.clientX;
@@ -2024,6 +2148,7 @@ export class EditorTimeline {
     });
   };
   private cancel = () => {
+    this.cancelTrackGesture();
     this.notice.textContent = "";
     if (this.dragPlanFrame !== undefined) cancelAnimationFrame(this.dragPlanFrame);
     this.dragPlanFrame = undefined;
@@ -2050,13 +2175,18 @@ export class EditorTimeline {
       lane.classList.remove("drop-target", "drop-target-invalid");
   };
   private cancelPointer = (event: PointerEvent) => {
+    const pending = this.pendingTrackGesture;
+    if (pending?.intent.pointer.pointerId === event.pointerId) {
+      if (event.type === "lostpointercapture" && pending.up) return;
+      this.cancelTrackGesture(); this.render();
+    }
     if (this.drag?.pointerId === event.pointerId) this.cancel();
   };
   /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
   private interrupt = (event: Event) => {
     const hidden = globalThis.document.visibilityState === "hidden";
-    if (!this.drag || (event.type === "visibilitychange" && !hidden)) return;
-    this.run(() => this.cancel());
+    if ((!this.drag && !this.pendingTrackGesture) || (event.type === "visibilitychange" && !hidden)) return;
+    this.run(() => { const pending = !!this.pendingTrackGesture; this.cancel(); if (pending) this.render(); });
   };
   dispose(): void {
     this.closeMenu();

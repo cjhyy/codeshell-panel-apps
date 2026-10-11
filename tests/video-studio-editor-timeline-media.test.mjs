@@ -1549,3 +1549,235 @@ test("actual ProRes passes the single-source native proxy task and the timeline 
   assert.ok(blue(await pixel("a", 230)));
   assert.equal(await page.locator("canvas").getAttribute("data-et-media-state"), "ready");
 });
+
+
+test("workspace batches strip geometry before canvas insertion through real scrolling, zoom and narrow layout", async () => {
+  await page.evaluate(() => {
+    const template = structuredClone(doc.sequences[0]),
+      clip = template.clips[0];
+    doc.sequences = [];
+    for (let offset = 0; offset < 5000; offset += 2000) {
+      const sequence = structuredClone(template);
+      sequence.id = offset ? `inactive-${offset}` : "main";
+      sequence.tracks = Array.from({ length: 32 }, (_, index) => ({
+        ...api.createTrack(
+          `track-${index}`,
+          index % 3 === 0 ? "audio" : "video",
+        ),
+        hidden: index === 29,
+        locked: index === 31,
+      }));
+      sequence.clips = Array.from(
+        { length: Math.min(2000, 5000 - offset) },
+        (_, index) => ({
+          ...structuredClone(clip),
+          id: offset + index ? `clip-${offset + index}` : "a",
+          trackId: `track-${index % 32}`,
+          start: Math.floor(index / 32) * clip.duration,
+        }),
+      );
+      doc.sequences.push(sequence);
+    }
+    const rect = Element.prototype.getBoundingClientRect,
+      height = Object.getOwnPropertyDescriptor(
+        Element.prototype,
+        "clientHeight",
+      ),
+      append = Node.prototype.appendChild,
+      render = api.EditorTimelineMedia.prototype.renderPrepared;
+    let batch = { reads: 0, appended: [], lateReads: [] };
+    globalThis.stripProbe = { batches: [], current: [] };
+    const measured = (node) => {
+      if (!node.matches("[data-et-clip]")) return;
+      batch.reads++;
+      if (batch.appended.length) batch.lateReads.push(node.dataset.etClip);
+    };
+    Element.prototype.getBoundingClientRect = function (...args) {
+      measured(this);
+      return rect.apply(this, args);
+    };
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      ...height,
+      get() {
+        measured(this);
+        return height.get.call(this);
+      },
+    });
+    Node.prototype.appendChild = function (node) {
+      if (
+        node instanceof HTMLCanvasElement &&
+        node.classList.contains("et-media-strip")
+      )
+        batch.appended.push(this.dataset.etClip);
+      return append.call(this, node);
+    };
+    api.EditorTimelineMedia.prototype.renderPrepared = function (
+      snapshot,
+      sequenceId,
+      strips,
+      identity,
+    ) {
+      stripProbe.batches.push({
+        ...batch,
+        requested: strips.map((strip) => strip.clipId),
+      });
+      stripProbe.current = strips;
+      batch = { reads: 0, appended: [], lateReads: [] };
+      return render.call(this, snapshot, sequenceId, strips, identity);
+    };
+    stripProbe.restore = () => {
+      Element.prototype.getBoundingClientRect = rect;
+      Object.defineProperty(Element.prototype, "clientHeight", height);
+      Node.prototype.appendChild = append;
+      api.EditorTimelineMedia.prototype.renderPrepared = render;
+    };
+    stripProbe.inspect = () => {
+      const sequence = session.read().sequences[0],
+        clips = new Map(sequence.clips.map((clip) => [clip.id, clip])),
+        tracks = new Map(sequence.tracks.map((track) => [track.id, track])),
+        viewport = rect.call(document.querySelector(".et-scroll")),
+        body = rect.call(document.querySelector(".et-body")),
+        expected = [...document.querySelectorAll("[data-et-clip]")]
+          .filter((node) => {
+            const bounds = rect.call(node),
+              clip = clips.get(node.dataset.etClip);
+            return (
+              !tracks.get(clip.trackId).hidden &&
+              bounds.bottom > body.top &&
+              bounds.top < body.bottom &&
+              bounds.right > viewport.left &&
+              bounds.left < viewport.right
+            );
+          })
+          .slice(0, api.TIMELINE_MEDIA_LIMITS.strips)
+          .map((node) => node.dataset.etClip);
+      return {
+        batches: stripProbe.batches,
+        limit: api.TIMELINE_MEDIA_LIMITS.strips,
+        expected,
+        actual: [...document.querySelectorAll(".et-media-strip")].map(
+          (canvas) => canvas.parentElement.dataset.etClip,
+        ),
+        strips: stripProbe.current.map((strip) => {
+          const node = strip.canvas.parentElement,
+            bounds = rect.call(node),
+            clip = clips.get(strip.clipId),
+            track = tracks.get(clip.trackId),
+            pixels = strip.canvas
+              .getContext("2d")
+              .getImageData(0, 8, strip.canvas.width, 1).data;
+          let picture = false;
+          for (let index = 0; index < pixels.length; index += 4)
+            if (
+              (pixels[index] > 180 && pixels[index + 2] < 70) ||
+              (pixels[index + 2] > 180 && pixels[index] < 70)
+            )
+              picture = true;
+          return {
+            id: strip.clipId,
+            hidden: track.hidden,
+            audio: track.kind === "audio",
+            picture,
+            left: parseFloat(strip.canvas.style.left),
+            width: parseFloat(strip.canvas.style.width),
+            expectedLeft: Math.max(bounds.left, viewport.left) - bounds.left,
+            expectedWidth:
+              Math.min(bounds.right, viewport.right) -
+              Math.max(bounds.left, viewport.left),
+            height: strip.height,
+            expectedHeight: Math.max(
+              16,
+              Math.min(32, height.get.call(node) - 2),
+            ),
+            localStart: strip.localStart,
+            localEnd: strip.localEnd,
+            duration: clip.duration,
+          };
+        }),
+      };
+    };
+  });
+  try {
+    await page.evaluate(() => mountWorkspace());
+    const check = async () => {
+      await page.waitForFunction(
+        () =>
+          stripProbe.current.length > 1 &&
+          stripProbe.current.every(
+            (strip) =>
+              strip.canvas.isConnected &&
+              strip.canvas.dataset.etMediaState === "ready",
+          ),
+      );
+      const state = await page.evaluate(() => stripProbe.inspect());
+      assert.deepEqual(state.actual, state.expected);
+      assert.ok(state.strips.length > 1 && state.strips.length <= state.limit);
+      for (const batch of state.batches) {
+        assert.deepEqual(
+          batch.lateReads,
+          [],
+          "All live geometry reads precede the first strip insertion",
+        );
+        assert.deepEqual(
+          batch.appended,
+          batch.requested,
+          "DOM and media request order agree",
+        );
+        assert.ok(batch.reads >= batch.appended.length);
+      }
+      for (const strip of state.strips) {
+        assert.equal(strip.hidden, false);
+        assert.ok(Math.abs(strip.left - strip.expectedLeft) < 0.01);
+        assert.ok(Math.abs(strip.width - strip.expectedWidth) < 0.01);
+        assert.equal(strip.height, strip.expectedHeight);
+        assert.ok(
+          strip.localStart >= 0 &&
+            strip.localStart < strip.localEnd &&
+            strip.localEnd <= strip.duration,
+        );
+        assert.equal(
+          strip.picture,
+          !strip.audio,
+          `${strip.id} shows its actual track kind`,
+        );
+      }
+      await page.evaluate(() => {
+        stripProbe.batches = [];
+        stripProbe.current = [];
+      });
+      return state;
+    };
+    await check();
+    await page.evaluate(() => {
+      document.querySelector(".et-scroll").scrollLeft = 96;
+    });
+    await check();
+    await page.evaluate(() => {
+      document.querySelector(".et-body").scrollTop = 96;
+    });
+    await check();
+    await page.locator('[data-et-action="zoom-in"]').click();
+    await check();
+    let crowded;
+    for (let index = 0; index < 6; index++) {
+      await page.locator('[data-et-action="zoom-out"]').click();
+      crowded = await check();
+    }
+    assert.equal(
+      crowded.strips.length,
+      crowded.limit,
+      "Dense visible media respects the strip budget",
+    );
+    await page.setViewportSize({ width: 390, height: 650 });
+    await page.addStyleTag({ content: "#mount{width:390px}" });
+    await check();
+    assert.deepEqual(
+      await page.evaluate(() => session.getState().identity.revision),
+      0,
+    );
+    assert.deepEqual(await page.evaluate(() => errors), []);
+  } finally {
+    await page.evaluate(() => stripProbe.restore());
+    await page.setViewportSize({ width: 900, height: 650 });
+  }
+});
