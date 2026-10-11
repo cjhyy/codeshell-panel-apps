@@ -12,7 +12,9 @@ import { sameIdentity, type SessionIdentity } from "./session";
 import { secondsToTicks, TICKS_PER_SECOND, type Tick, type TimeMap } from "./time";
 import type { EditorClip, EditorDocument, EditorSequence, Transition } from "./types";
 
-export type EditorTimingContext = EditorInspectorContext;
+export type EditorTimingContext = EditorInspectorContext & {
+  beforeEdit?: (signal: AbortSignal) => boolean | Promise<boolean>;
+};
 const kinds: Array<[Transition["kind"], string]> = [
   ["dissolve", "叠化"],
   ["fade-black", "黑场淡入淡出"],
@@ -87,6 +89,12 @@ interface Scope {
   clips: EditorClip[];
   selectedIds: string[];
 }
+interface TimingFieldFinish {
+  scope: Scope;
+  time: Tick;
+  controller: AbortController;
+  disabled: Array<[HTMLFieldSetElement | HTMLSelectElement, boolean]>;
+}
 
 /** Mount with public/editor-timing.css; the parent session owns undo, save and playback. */
 export class EditorTiming {
@@ -99,6 +107,7 @@ export class EditorTiming {
   private activeDetails = new Set(["片段时间"]);
   private curvePage = 0;
   private transitionPair?: { scope: string; from: string; to: string };
+  private fieldFinish?: TimingFieldFinish;
   constructor(
     container: HTMLElement,
     private readonly context: EditorTimingContext,
@@ -109,16 +118,19 @@ export class EditorTiming {
   }
   dispose(): void {
     this.disposed = true;
+    this.cancelFieldFinish();
     this.transitionPair = undefined;
     this.root.remove();
   }
   private scope(): Scope | undefined {
     const document = this.context.read(),
       selection = this.context.selection(),
-      sequence = document.sequences.find((item) => item.id === selection.sequenceId);
+      sequence = document.sequences.find((item) => item.id === selection.sequenceId),
+      identity = this.context.identity ? { ...this.context.identity() } : undefined;
+    if (identity && (identity.documentId !== document.id || identity.revision !== document.revision)) return;
     if (!sequence) return;
     return {
-      identity: this.context.identity ? { ...this.context.identity() } : undefined,
+      identity,
       document,
       sequence,
       clips: sequence.clips.filter((item) => selection.clipIds.includes(item.id)),
@@ -136,6 +148,7 @@ export class EditorTiming {
     plan: (fresh: Scope) => EditorOperation[],
   ): Promise<void> {
     if (this.pending || this.disposed) return;
+    let submitted = false;
     try {
       const fresh = this.scope();
       if (
@@ -148,15 +161,20 @@ export class EditorTiming {
       )
         throw new Error("工程或选择已变化，请检查当前片段后重试");
       const operations = plan(fresh);
+      submitted = true;
       this.pending = true;
       this.root.querySelectorAll("fieldset").forEach((node) => (node.disabled = true));
       if (operations.length) await this.context.apply(operations, label);
-      if (!scope.identity || sameIdentity(scope.identity, this.context.identity?.(), false))
+      const after = this.scope();
+      if (!this.disposed && after && this.transitionScope(after) === this.transitionScope(scope))
         this.error = "";
     } catch (error) {
+      const after = this.scope();
       if (
         !this.disposed &&
-        (!scope.identity || sameIdentity(scope.identity, this.context.identity?.(), false))
+        after && (submitted ? this.transitionScope(after) === this.transitionScope(scope) :
+          (!scope.identity || sameIdentity(scope.identity, after.identity, false)) &&
+          after.document.id === scope.document.id && after.sequence.id === scope.sequence.id)
       )
         this.report(error);
     } finally {
@@ -174,6 +192,7 @@ export class EditorTiming {
     button.addEventListener("click", () => {
       if (
         !this.pending &&
+        !this.fieldFinish &&
         !this.disposed &&
         this.root.contains(button) &&
         (!identity || sameIdentity(identity, this.context.identity?.(), false))
@@ -209,7 +228,9 @@ export class EditorTiming {
       this.curvePage = 0;
     }
     this.renderedIdentity = identity;
-    if (this.pending) return;
+    const finish = this.fieldFinish;
+    if (finish && !this.fieldFinishCurrent(finish)) this.cancelFieldFinish(finish);
+    if (this.pending || this.fieldFinish) return;
     const scope = this.scope();
     if (!scope) {
       this.root.replaceChildren(element("p", "etime-note", "请选择一个时间线"));
@@ -284,10 +305,12 @@ export class EditorTiming {
       removeTransitions: remove.input.checked,
       detachCaptions: detach.input.checked,
     });
-    const edit = (label: string, action: () => ClipTimingAction) =>
-      this.submit(scope, label, (fresh) =>
-        planClipTiming(fresh.document, fresh.sequence.id, fresh.selectedIds, action(), options()),
+    const edit = (label: string, action: () => ClipTimingAction) => {
+      const choice = action(), capturedOptions = options();
+      return (current: Scope) => this.submit(current, label, (fresh) =>
+        planClipTiming(fresh.document, fresh.sequence.id, fresh.selectedIds, choice, capturedOptions),
       );
+    };
     const source = scope.clips.filter(
       (clip): clip is Extract<EditorClip, { timeMap: TimeMap }> => "timeMap" in clip,
     );
@@ -315,7 +338,7 @@ export class EditorTiming {
       controls.append(
         field("恒定速度（倍）", rate),
         pitch.node,
-        this.button(
+        this.editButton(scope,
           "应用恒定速度",
           () =>
             edit("调整恒定速度", () => ({
@@ -327,12 +350,12 @@ export class EditorTiming {
         ),
       );
       const row = element("div", "etime-actions");
-      row.append(this.button("倒放所选片段", () => edit("倒放片段", () => ({ kind: "reverse" }))));
+      row.append(this.editButton(scope, "倒放所选片段", () => edit("倒放片段", () => ({ kind: "reverse" }))));
       controls.append(row);
       const freeze = numberInput("定格时长（秒）", "2", 0.000005);
       controls.append(
         field("定格时长（秒）", freeze),
-        this.button("用播放头画面定格", () =>
+        this.editButton(scope, "用播放头画面定格", () =>
           edit("定格片段", () => ({
             kind: "freeze",
             time: this.context.time(),
@@ -350,10 +373,10 @@ export class EditorTiming {
     }
     const trims = element("div", "etime-actions");
     trims.append(
-      this.button("保留播放头左侧", () =>
+      this.editButton(scope, "保留播放头左侧", () =>
         edit("保留播放头左侧", () => ({ kind: "keep-left", time: this.context.time() })),
       ),
-      this.button("保留播放头右侧", () =>
+      this.editButton(scope, "保留播放头右侧", () =>
         edit("保留播放头右侧", () => ({ kind: "keep-right", time: this.context.time() })),
       ),
     );
@@ -440,11 +463,13 @@ export class EditorTiming {
         table.append(body);
         this.curvePage = Math.min(this.curvePage, Math.floor((draft.length - 1) / 20));
         const first = this.curvePage * 20;
+        const pointInputs: Array<[HTMLInputElement, number, "time" | "source"]> = [];
         draft.slice(first, first + 20).forEach((point, offset) => {
           const index = first + offset,
             row = element("tr"),
             time = numberInput(`节点 ${index + 1} 输出（秒）`, seconds(point.time), 0, "any"),
             source = numberInput(`节点 ${index + 1} 来源（秒）`, seconds(point.source), 0, "any");
+          pointInputs.push([time, index, "time"], [source, index, "source"]);
           time.disabled = index === 0;
           for (const [input, key] of [
             [time, "time"],
@@ -519,20 +544,24 @@ export class EditorTiming {
           content.append(nav);
         }
         content.append(
-          this.button(
+          this.editButton(scope,
             "应用分段曲线",
-            () =>
-              this.submit(scope, "编辑分段速度曲线", (fresh) => {
-                const invalid = content.querySelector<HTMLInputElement>("input:invalid");
-                if (invalid) throw new Error("节点包含无效秒数，请修正后再应用曲线");
+            () => {
+              const invalid = content.querySelector<HTMLInputElement>("input:invalid");
+              if (invalid) throw new Error("节点包含无效秒数，请修正后再应用曲线");
+              const timeMap = { points: structuredClone(draft) }, capturedOptions = options();
+              for (const [input, index, key] of pointInputs)
+                if (!input.disabled) timeMap.points[index]![key] = secondsToTicks(numeric(input));
+              return (current) => this.submit(current, "编辑分段速度曲线", (fresh) => {
                 return planClipTiming(
                   fresh.document,
                   fresh.sequence.id,
                   fresh.selectedIds,
-                  { kind: "map", timeMap: { points: structuredClone(draft) } },
-                  options(),
+                  { kind: "map", timeMap },
+                  capturedOptions,
                 );
-              }),
+              });
+            },
             true,
           ),
         );
@@ -545,6 +574,86 @@ export class EditorTiming {
   private transitionScope(scope: Scope): string {
     return JSON.stringify([scope.identity?.documentId, scope.identity?.generation, scope.document.id,
       scope.sequence.id, scope.selectedIds]);
+  }
+  private fieldFinishCurrent(finish: TimingFieldFinish, fresh = this.scope()): boolean {
+    const identity = this.context.identity?.();
+    return this.fieldFinish === finish && !this.disposed && !finish.controller.signal.aborted && !!fresh &&
+      this.context.time() === finish.time &&
+      (!fresh.identity || sameIdentity(fresh.identity, identity)) &&
+      this.transitionScope(fresh) === this.transitionScope(finish.scope) &&
+      fresh.document.revision >= finish.scope.document.revision &&
+      fresh.document.revision <= finish.scope.document.revision + 1;
+  }
+  private cancelFieldFinish(finish = this.fieldFinish): void {
+    if (!finish || this.fieldFinish !== finish) return;
+    this.fieldFinish = undefined;
+    finish.controller.abort();
+    for (const [field, disabled] of finish.disabled) field.disabled = disabled;
+  }
+  private reportEdit(error: unknown): void {
+    this.report(error);
+    let notice = this.root.querySelector<HTMLElement>(".etime-error");
+    if (!notice) { notice = element("p", "etime-error"); notice.setAttribute("role", "alert"); this.root.append(notice); }
+    notice.textContent = this.error;
+  }
+  private editButton(scope: Scope, label: string, prepare: () => (fresh: Scope) => unknown, primary = false): HTMLButtonElement {
+    const button = element("button", primary ? "etime-primary" : "", label);
+    button.type = "button";
+    // Preserve the focused inspector input until its guarded native blur has finished.
+    button.addEventListener("pointerdown", (event) => { if (event.button === 0) event.preventDefault(); });
+    button.addEventListener("click", () => {
+      if (this.disposed || this.pending || this.fieldFinish || !this.root.contains(button)) return;
+      const fresh = this.scope();
+      if (scope.identity && !sameIdentity(scope.identity, fresh?.identity, false)) return;
+      if (!fresh || this.transitionScope(fresh) !== this.transitionScope(scope) || fresh.document.revision !== scope.document.revision) {
+        this.reportEdit(new Error("工程或选择已变化，请检查当前片段后重试")); return;
+      }
+      const finish: TimingFieldFinish = { scope: fresh, time: this.context.time(), controller: new AbortController(), disabled: [] };
+      this.fieldFinish = finish;
+      const fail = (error: unknown) => {
+        if (this.fieldFinish !== finish) return;
+        try {
+          if (this.fieldFinishCurrent(finish) && this.fieldFinish === finish) this.reportEdit(error);
+        } catch {
+          // A failed scope read or error callback must still release only this edit's controls.
+        } finally {
+          this.cancelFieldFinish(finish);
+        }
+      };
+      let ready: boolean | Promise<boolean> | undefined;
+      try {
+        const run = prepare();
+        ready = this.context.beforeEdit?.(finish.controller.signal) ?? true;
+        if (this.fieldFinish !== finish || !this.fieldFinishCurrent(finish)) {
+          if (this.fieldFinish === finish) this.cancelFieldFinish();
+          else finish.controller.abort();
+          if (ready instanceof Promise) void ready.catch(() => {});
+          return;
+        }
+        const complete = (success: boolean) => {
+          if (this.fieldFinish !== finish) return;
+          try {
+            const latest = this.scope(), current = this.fieldFinishCurrent(finish, latest);
+            if (this.fieldFinish !== finish) return;
+            this.cancelFieldFinish(finish);
+            if (success && current && latest) run(latest);
+            else if (!current || latest?.document.revision !== finish.scope.document.revision) this.render();
+          } catch (error) {
+            fail(error);
+          }
+        };
+        if (typeof ready === "boolean") complete(ready);
+        else {
+          finish.disabled = Array.from(this.root.querySelectorAll<HTMLFieldSetElement | HTMLSelectElement>("fieldset,[aria-label='相邻片段']"), (field) => [field, field.disabled]);
+          for (const [field] of finish.disabled) field.disabled = true;
+          void ready.then(complete, fail);
+        }
+      } catch (error) {
+        if (ready instanceof Promise) void ready.catch(() => {});
+        fail(error);
+      }
+    });
+    return button;
   }
   private drawTransitions(scope: Scope, parent: HTMLElement): void {
     const pairs: Array<{ from: EditorClip; to: EditorClip; label: string }> = [];
@@ -638,9 +747,12 @@ export class EditorTiming {
         field("重叠安排", placement),
         note,
       );
-      const plan = (remove: boolean) =>
-        this.submit(
-          scope,
+      const plan = (remove: boolean) => {
+        // Capture these controls before a field dispatch refreshes the workspace.
+        const choice = { kind: kind.value as Transition["kind"], duration: remove ? 0 : secondsToTicks(numeric(duration)),
+          placement: placement.value as "ripple" | "overlap" };
+        return (current: Scope) => this.submit(
+          current,
           remove ? "移除转场并接成硬切" : existing ? "调整转场" : "添加转场",
           (fresh) => {
             const saved = fresh.sequence.transitions.find(
@@ -650,18 +762,19 @@ export class EditorTiming {
               id:
                 saved?.id ??
                 `transition-${Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(16).padStart(8, "0")).join("")}`,
-              kind: remove ? saved?.kind ?? "dissolve" : (kind.value as Transition["kind"]),
-              duration: remove ? saved?.duration ?? 0 : secondsToTicks(numeric(duration)),
-              placement: placement.value as "ripple" | "overlap",
+              kind: remove ? saved?.kind ?? "dissolve" : choice.kind,
+              duration: remove ? saved?.duration ?? 0 : choice.duration,
+              placement: choice.placement,
               remove,
             });
           },
         );
-      controls.append(this.button(existing ? "应用转场调整" : "添加转场", () => plan(false), true));
-      if (existing) controls.append(this.button("移除转场并接成硬切", () => plan(true)));
+      };
+      controls.append(this.editButton(scope, existing ? "应用转场调整" : "添加转场", () => plan(false), true));
+      if (existing) controls.append(this.editButton(scope, "移除转场并接成硬切", () => plan(true)));
     };
     pairInput.addEventListener("change", () => {
-      if (this.disposed || this.pending || !this.root.contains(pairInput)) return;
+      if (this.disposed || this.pending || this.fieldFinish || !this.root.contains(pairInput)) return;
       const fresh = this.scope();
       if (!fresh || this.transitionScope(fresh) !== owner || fresh.document.revision !== scope.document.revision) return;
       render();
@@ -718,15 +831,16 @@ export class EditorTiming {
         }),
       ),
     );
-    const button = this.button("整理所选画面轨间隙", () =>
-      this.submit(scope, "磁吸整理画面轨", (fresh) =>
+    const button = this.editButton(scope, "整理所选画面轨间隙", () => {
+      const trackId = track.value;
+      return (current) => this.submit(current, "磁吸整理画面轨", (fresh) =>
         planTimelineArrangement(fresh.document, fresh.sequence.id, {
           mode: fresh.sequence.timelineMode,
-          trackId: track.value,
+          trackId,
           compact: true,
         }),
-      ),
-    );
+      );
+    });
     button.disabled = !tracks.length;
     if (button.disabled) button.title = "序列里还没有画面轨";
     controls.append(button);

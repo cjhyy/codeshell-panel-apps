@@ -146,6 +146,41 @@ type PendingTrackGesture = {
   last: GesturePointer;
   up?: GesturePointer;
 };
+const CONTROL_ACTIONS = [
+  "split",
+  "delete",
+  "copy",
+  "cut",
+  "paste",
+  "duplicate",
+  "group",
+  "ungroup",
+  "fit",
+  "zoom-in",
+  "zoom-out",
+  "shortcuts",
+  "add-text",
+  "track-video",
+  "track-audio",
+  "track-text",
+] as const;
+type ControlIntent =
+  | { kind: "action"; action: (typeof CONTROL_ACTIONS)[number] }
+  | { kind: "mode"; mode: "free" | "magnetic" }
+  | {
+      kind: "track";
+      owner: TrackInputOwner;
+      operation: "toggle" | "up" | "down" | "delete-track" | "delete-confirm" | "delete-cancel";
+      toggle?: "locked" | "hidden" | "muted";
+    };
+type PendingControl = {
+  field: NonNullable<PendingTrackGesture["field"]>;
+  intent: ControlIntent;
+  pointerId: number;
+  up?: boolean;
+  ready?: boolean;
+  applying?: boolean;
+};
 type FadeOwner = {
   documentId: string;
   revision: number;
@@ -224,6 +259,8 @@ export class EditorTimeline {
   private trackControlPending = false;
   private pendingTrackGesture?: PendingTrackGesture;
   private canvasFieldFinish?: object;
+  private pendingControl?: PendingControl;
+  private suppressedControlClick?: number;
   private readonly fadeOwners = new WeakMap<HTMLElement, FadeOwner>();
   private currentFadeControls = new WeakSet<HTMLElement>();
   private fadePending = false;
@@ -453,6 +490,12 @@ export class EditorTimeline {
     const candidate =
       identity && sequenceId === sequence.id ? { document: project, sequence, identity } : undefined;
     const mediaScope = candidate && this.mediaScopeCurrent(candidate) ? candidate : undefined;
+    if (
+      this.pendingControl &&
+      !this.pendingControl.applying &&
+      !this.fieldScopeCurrent(this.pendingControl.field)
+    )
+      this.cancelControl();
     this.clearStaleClipboard(project);
     const audibleAssets = new Set(project.assets.filter((asset) => asset.kind === "audio" || asset.kind === "video").map((asset) => asset.id));
     if (this.pendingTrackGesture && (this.pendingTrackGesture.owner
@@ -846,6 +889,20 @@ export class EditorTimeline {
     }
   }
   private click = (event: MouseEvent) => {
+    if (
+      this.suppressedControlClick !== undefined &&
+      event.detail > 0 &&
+      (!(event instanceof PointerEvent) || event.pointerId === this.suppressedControlClick)
+    ) {
+      this.suppressedControlClick = undefined;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (this.pendingControl) {
+      event.preventDefault();
+      return;
+    }
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target) return;
     const control = target.closest<HTMLElement>("[data-et-action]");
@@ -1298,11 +1355,27 @@ export class EditorTimeline {
   }
   private keydown = (event: KeyboardEvent) => {
     if (event.isComposing || editableTarget(event.target)) return;
-    const fade = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>("[data-et-fade]") : undefined;
-    if (fade && !event.ctrlKey && !event.metaKey && !event.altKey &&
-      ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-      event.preventDefault(); event.stopPropagation();
-      if (!this.drag && !this.pendingTrackGesture && !this.fadePending) this.run(() => this.keyFade(fade, event));
+    if (this.pendingControl) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") this.cancelControl();
+      return;
+    }
+    const fade =
+      event.target instanceof HTMLElement
+        ? event.target.closest<HTMLElement>("[data-et-fade]")
+        : undefined;
+    if (
+      fade &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!this.drag && !this.pendingTrackGesture && !this.fadePending)
+        this.run(() => this.keyFade(fade, event));
       return;
     }
     if (this.pendingTrackGesture) {
@@ -1763,13 +1836,37 @@ export class EditorTimeline {
     return delta;
   }
   private pointerdown = (event: PointerEvent) => {
-    if (event.button === 0 && event.target instanceof Element && event.target.closest(TRACK_BUTTONS) &&
+    if (event.isPrimary) this.suppressedControlClick = undefined;
+    if (this.pendingControl && event.isPrimary && event.button === 0)
+      this.suppressedControlClick = event.pointerId;
+    if (
+      event.button === 0 &&
+      event.target instanceof Element &&
+      event.target.closest(TRACK_BUTTONS) &&
       globalThis.document.activeElement instanceof HTMLInputElement &&
-      globalThis.document.activeElement.matches(TRACK_INPUTS)) {
+      globalThis.document.activeElement.matches(TRACK_INPUTS)
+    ) {
       event.preventDefault();
       return;
     }
-    if (this.pendingTrackGesture || this.trackControlPending || this.canvasFieldFinish || this.fadePending) { event.preventDefault(); return; }
+    if (
+      this.pendingControl ||
+      this.pendingTrackGesture ||
+      this.trackControlPending ||
+      this.canvasFieldFinish ||
+      this.fadePending
+    ) {
+      event.preventDefault();
+      return;
+    }
+    if (event.button === 0 && this.context.beforeGesture && event.target instanceof Element) {
+      const button = event.target.closest<HTMLButtonElement>("button"),
+        intent = button && this.controlIntent(button);
+      if (intent) {
+        this.run(() => this.controlGesture(event, intent));
+        return;
+      }
+    }
     if (event.button !== 0 || this.drag || editableTarget(event.target)) return;
     const target = event.target instanceof HTMLElement ? event.target : undefined;
     if (!target || target.closest("button,.et-toolbar,.et-track-heads")) return;
@@ -1801,14 +1898,196 @@ export class EditorTimeline {
   }
   private fieldGestureCurrent(pending: PendingTrackGesture, exactRevision = false): boolean {
     const field = pending.field;
-    if (!field || this.destroyed || field.controller.signal.aborted) return false;
-    const identity = this.context.identity?.(), document = identity ? undefined : this.current().document,
+    return !!field && this.fieldScopeCurrent(field, exactRevision);
+  }
+  private fieldScopeCurrent(
+    field: NonNullable<PendingTrackGesture["field"]>,
+    exactRevision = false,
+  ): boolean {
+    if (this.destroyed || field.controller.signal.aborted) return false;
+    const identity = this.context.identity?.(),
+      document = identity ? undefined : this.current().document,
       revision = identity?.revision ?? document!.revision;
     return (identity?.documentId ?? document!.id) === field.identity.documentId &&
       identity?.generation === field.identity.generation &&
       revision >= field.identity.revision && revision <= field.identity.revision + Number(!exactRevision) &&
       JSON.stringify(this.context.selection()) === field.selection && this.context.time() === field.time &&
       this.gestureViewport() === field.viewport;
+  }
+  private controlIntent(button: HTMLButtonElement, checkTrackScope = true): ControlIntent | undefined {
+    if (
+      !this.container.contains(button) ||
+      button.disabled ||
+      button.getAttribute("aria-disabled") === "true"
+    )
+      return;
+    const action = button.dataset.etAction;
+    if (CONTROL_ACTIONS.includes(action as (typeof CONTROL_ACTIONS)[number]))
+      return { kind: "action", action: action as (typeof CONTROL_ACTIONS)[number] };
+    if (button.dataset.etMode === "free" || button.dataset.etMode === "magnetic")
+      return { kind: "mode", mode: button.dataset.etMode };
+    const owner = this.trackButtons.get(button);
+    if (!owner || !this.currentTrackButtons.has(button) || (checkTrackScope && !this.trackOwnerCurrent(owner))) return;
+    for (const operation of [
+      "toggle",
+      "up",
+      "down",
+      "delete-track",
+      "delete-confirm",
+      "delete-cancel",
+    ] as const) {
+      const key = `et${operation
+        .split("-")
+        .map((part) => part[0]!.toUpperCase() + part.slice(1))
+        .join("")}`;
+      if (!(key in button.dataset)) continue;
+      const toggle = button.dataset.etToggle;
+      if (operation === "toggle" && !["locked", "hidden", "muted"].includes(toggle!)) return;
+      return {
+        kind: "track",
+        owner: { ...owner },
+        operation,
+        ...(operation === "toggle" ? { toggle: toggle as "locked" | "hidden" | "muted" } : {}),
+      };
+    }
+  }
+  private matchingControl(intent: ControlIntent): HTMLButtonElement | undefined {
+    // Private DOM ownership narrows the candidate before its live track scope reads the document.
+    const signature = JSON.stringify(intent),
+      candidate = [...this.container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => JSON.stringify(this.controlIntent(button, false)) === signature,
+      );
+    return candidate && JSON.stringify(this.controlIntent(candidate)) === signature ? candidate : undefined;
+  }
+  /** Native blur may replace the pressed button; retain its meaning until the first release. */
+  private controlGesture(event: PointerEvent, intent: ControlIntent): void {
+    const identity = this.context.identity?.(),
+      document = identity ? undefined : this.current().document,
+      pending: PendingControl = {
+        intent,
+        pointerId: event.pointerId,
+        field: {
+          controller: new AbortController(),
+          identity: {
+            documentId: identity?.documentId ?? document!.id,
+            revision: identity?.revision ?? document!.revision,
+            generation: identity?.generation,
+          },
+          selection: JSON.stringify(this.context.selection()),
+          time: this.context.time(),
+          viewport: this.gestureViewport(),
+        },
+      };
+    this.pendingControl = pending;
+    let ready: boolean | Promise<boolean>;
+    try {
+      ready = this.context.beforeGesture!(pending.field.controller.signal);
+    } catch (error) {
+      event.preventDefault();
+      this.suppressedControlClick = event.pointerId;
+      if (this.pendingControl === pending) this.cancelControl();
+      throw error;
+    }
+    if (this.pendingControl !== pending || !this.fieldScopeCurrent(pending.field, true)) {
+      event.preventDefault();
+      this.suppressedControlClick = event.pointerId;
+      if (this.pendingControl === pending) this.cancelControl();
+      else pending.field.controller.abort();
+      if (ready instanceof Promise) void ready.catch(() => {});
+      return;
+    }
+    if (ready === true) {
+      this.pendingControl = undefined;
+      return;
+    }
+    event.preventDefault();
+    this.suppressedControlClick = event.pointerId;
+    if (ready === false) {
+      this.cancelControl();
+      return;
+    }
+    this.container.focus({ preventScroll: true });
+    if (this.pendingControl !== pending || !this.fieldScopeCurrent(pending.field, true)) {
+      if (this.pendingControl === pending) this.cancelControl();
+      else pending.field.controller.abort();
+      if (ready instanceof Promise) void ready.catch(() => {});
+      return;
+    }
+    this.container.setPointerCapture(event.pointerId);
+    void Promise.resolve(ready).then(
+      (accepted) => {
+        if (this.pendingControl !== pending) return;
+        pending.ready = accepted;
+        void this.finishControl(pending);
+      },
+      (error) => {
+        if (this.pendingControl === pending && this.fieldScopeCurrent(pending.field))
+          this.context.onError(error);
+        if (this.pendingControl === pending) {
+          pending.ready = false;
+          void this.finishControl(pending);
+        }
+      },
+    );
+  }
+  private async finishControl(pending: PendingControl): Promise<void> {
+    if (
+      this.pendingControl !== pending ||
+      pending.applying ||
+      pending.up === undefined ||
+      pending.ready === undefined
+    )
+      return;
+    if (!pending.up || !pending.ready || !this.fieldScopeCurrent(pending.field)) {
+      this.cancelControl();
+      return;
+    }
+    try {
+      const before = this.context.identity?.(),
+        identity = before ? { ...before } : undefined,
+        { document, sequence } = this.current(),
+        button = this.matchingControl(pending.intent),
+        after = this.context.identity?.(),
+        current = after ? undefined : this.current().document;
+      if (
+        this.pendingControl !== pending ||
+        !this.fieldScopeCurrent(pending.field) ||
+        !button ||
+        document.id !== pending.field.identity.documentId ||
+        document.revision !== (identity?.revision ?? document.revision) ||
+        document.id !== (after?.documentId ?? current!.id) ||
+        document.revision !== (after?.revision ?? current!.revision) ||
+        identity?.generation !== after?.generation ||
+        sequence.id !== JSON.parse(pending.field.selection).sequenceId
+      )
+        return;
+      pending.applying = true;
+      if (pending.intent.kind === "action")
+        await this.action(pending.intent.action, pending.field.time);
+      else if (pending.intent.kind === "mode") await this.setMode(pending.intent.mode);
+      else await this.trackControl(button);
+    } catch (error) {
+      const identity = this.context.identity?.(),
+        document = identity ? undefined : this.current().document;
+      if (
+        !this.destroyed &&
+        !pending.field.controller.signal.aborted &&
+        (identity?.documentId ?? document!.id) === pending.field.identity.documentId &&
+        identity?.generation === pending.field.identity.generation &&
+        this.context.selection().sequenceId === JSON.parse(pending.field.selection).sequenceId
+      )
+        this.context.onError(error);
+    } finally {
+      if (this.pendingControl === pending) this.cancelControl();
+    }
+  }
+  private cancelControl(): void {
+    const pending = this.pendingControl;
+    if (!pending) return;
+    this.pendingControl = undefined;
+    pending.field.controller.abort();
+    if (this.container.hasPointerCapture(pending.pointerId))
+      this.container.releasePointerCapture(pending.pointerId);
   }
   /** Keep the physical pointer intent while a different view finishes its field. */
   private focusedFieldGesture(intent: GestureIntent): void {
@@ -2069,6 +2348,10 @@ export class EditorTimeline {
       this.container.releasePointerCapture(pending.intent.pointer.pointerId);
   }
   private pointermove = (event: PointerEvent) => {
+    if (this.pendingControl?.pointerId === event.pointerId) {
+      if (this.pendingControl.up === undefined && event.buttons === 0) this.cancelControl();
+      return;
+    }
     const pending = this.pendingTrackGesture;
     if (pending?.intent.pointer.pointerId === event.pointerId) {
       if (pending.up) return;
@@ -2398,6 +2681,18 @@ export class EditorTimeline {
     });
   };
   private pointerup = (event: GesturePointer) => {
+    const control = this.pendingControl;
+    if (control?.pointerId === event.pointerId) {
+      if (control.up === undefined) {
+        const target = globalThis.document
+          .elementFromPoint(event.clientX, event.clientY)
+          ?.closest<HTMLButtonElement>("button");
+        control.up =
+          !!target && JSON.stringify(this.controlIntent(target)) === JSON.stringify(control.intent);
+        void this.finishControl(control);
+      }
+      return;
+    }
     const pending = this.pendingTrackGesture;
     if (pending?.intent.pointer.pointerId === event.pointerId) {
       pending.up ??= gesturePointer(event);
@@ -2450,6 +2745,7 @@ export class EditorTimeline {
     });
   };
   private cancel = () => {
+    this.cancelControl();
     this.cancelTrackGesture();
     this.notice.textContent = "";
     if (this.dragPlanFrame !== undefined) cancelAnimationFrame(this.dragPlanFrame);
@@ -2482,6 +2778,12 @@ export class EditorTimeline {
       lane.classList.remove("drop-target", "drop-target-invalid");
   };
   private cancelPointer = (event: PointerEvent) => {
+    const control = this.pendingControl;
+    if (
+      control?.pointerId === event.pointerId &&
+      !(event.type === "lostpointercapture" && control.up !== undefined)
+    )
+      this.cancelControl();
     const pending = this.pendingTrackGesture;
     if (pending?.intent.pointer.pointerId === event.pointerId) {
       if (event.type === "lostpointercapture" && pending.up) return;
@@ -2492,8 +2794,16 @@ export class EditorTimeline {
   /** Leaving the window or hiding the document ends a gesture whose release may never arrive. */
   private interrupt = (event: Event) => {
     const hidden = globalThis.document.visibilityState === "hidden";
-    if ((!this.drag && !this.pendingTrackGesture) || (event.type === "visibilitychange" && !hidden)) return;
-    this.run(() => { const pending = !!this.pendingTrackGesture; this.cancel(); if (pending) this.render(); });
+    if (
+      (!this.drag && !this.pendingTrackGesture && !this.pendingControl) ||
+      (event.type === "visibilitychange" && !hidden)
+    )
+      return;
+    this.run(() => {
+      const pending = !!this.pendingTrackGesture;
+      this.cancel();
+      if (pending) this.render();
+    });
   };
   dispose(): void {
     this.closeMenu();

@@ -112,6 +112,14 @@ const timeLabel = (tick: Tick) => {
     .padStart(2, "0")}:${((value % 6000) / 100).toFixed(2).padStart(5, "0")}`;
 };
 
+interface ViewReadScope {
+  document: EditorDocument;
+  identity: SessionIdentity;
+  sequenceId: string;
+  selected: string[];
+  time: Tick;
+}
+
 /** The shell only keeps selection and view state; every edit belongs to its injected session. */
 export class EditorWorkspace {
   private readonly preview: EditorPreview;
@@ -143,8 +151,8 @@ export class EditorWorkspace {
   private dialog?: HTMLDialogElement;
   private dialogAbort?: AbortController;
   private pendingExport = false;
-  /** Shared only during the synchronous, read-only view update for one preview frame. */
-  private frameDocument?: EditorDocument;
+  /** One detached document for a synchronous, read-only batch; never retained between batches. */
+  private viewReadScope?: ViewReadScope;
   private timelineSnapshot?: PreparedTimelineSnapshot;
   private timelineSnapshotIdentity?: SessionIdentity;
 
@@ -200,7 +208,7 @@ export class EditorWorkspace {
       this.get(".ew-tools").append(more);
     }
     const selection = () => ({ sequenceId: this.sequenceId, clipIds: [...this.selected] });
-    const read = () => this.frameDocument ?? options.session.read();
+    const read = () => this.readViewDocument();
     const apply = (operations: EditorOperation[], label: string) => {
       this.apply(operations, label);
     };
@@ -223,6 +231,7 @@ export class EditorWorkspace {
         : {}),
     });
     this.timing = new EditorTiming(this.get("[data-ew-timing]"), {
+      beforeEdit: (signal) => this.inspector.finishFocusedField(signal) ?? true,
       read,
       identity: () => options.session.getState().identity,
       selection,
@@ -275,11 +284,13 @@ export class EditorWorkspace {
       seek: (time, exact) => this.seek(time, exact),
       select: (ids) => {
         this.selected = ids;
-        this.inspector.render();
-        this.timing.render();
-        this.sequences.render();
-        this.multicam?.render();
-        this.canvasEditor?.render();
+        this.withReadSnapshot(() => {
+          this.inspector.render();
+          this.timing.render();
+          this.sequences.render();
+          this.multicam?.render();
+          this.canvasEditor?.render();
+        });
       },
       selectedMarker: () => this.markers.selected,
       selectMarker: (id) => {
@@ -365,17 +376,47 @@ export class EditorWorkspace {
     this.unsubscribe = options.session.subscribe((state) => this.refresh(state));
   }
 
-  private renderFrameViews(): void {
-    const previous = this.frameDocument;
-    this.frameDocument = this.options.session.read();
+  private viewReadCurrent(scope: ViewReadScope): boolean {
+    return (
+      !this.disposed &&
+      sameIdentity(scope.identity, this.options.session.getState().identity) &&
+      scope.sequenceId === this.sequenceId &&
+      scope.time === this.playhead &&
+      scope.selected.length === this.selected.length &&
+      scope.selected.every((id, index) => id === this.selected[index])
+    );
+  }
+  private readViewDocument(): EditorDocument {
+    const scope = this.viewReadScope;
+    return scope && this.viewReadCurrent(scope) ? scope.document : this.options.session.read();
+  }
+  private withReadSnapshot(render: () => void): void {
+    const identity = { ...this.options.session.getState().identity },
+      sequenceId = this.sequenceId,
+      selected = [...this.selected],
+      time = this.playhead,
+      document = this.options.session.read(),
+      scope: ViewReadScope = { document, identity, sequenceId, selected, time },
+      previous = this.viewReadScope;
+    this.viewReadScope =
+      document.id === identity.documentId &&
+      document.revision === identity.revision &&
+      this.viewReadCurrent(scope)
+        ? scope
+        : undefined;
     try {
+      render();
+    } finally {
+      this.viewReadScope = previous;
+    }
+  }
+  private renderFrameViews(): void {
+    this.withReadSnapshot(() => {
       this.inspector.renderFrame();
       this.timing.render();
       this.sequences.render();
       this.canvasEditor?.render();
-    } finally {
-      this.frameDocument = previous;
-    }
+    });
   }
 
   private get<T extends HTMLElement = HTMLElement>(selector: string): T {

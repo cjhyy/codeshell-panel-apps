@@ -533,6 +533,198 @@ const action = (page, value) => page.locator(`[data-ew-action="${value}"]`);
 const documentState = (page) => page.evaluate(() => fixture.read());
 const clip = (page, id = "a") => page.locator(`[data-et-clip="${id}"]`);
 
+async function countSelectionBatchReads(page) {
+  await page.evaluate(() => {
+    const { session, workspace } = fixture.internals,
+      read = session.read.bind(session),
+      select = workspace.timeline.context.select;
+    globalThis.selectionBatchReads = [];
+    let count;
+    session.read = () => {
+      if (count !== undefined) count++;
+      return read();
+    };
+    workspace.timeline.context.select = (ids) => {
+      const previous = count;
+      count = 0;
+      try { return select(ids); }
+      finally { selectionBatchReads.push(count); count = previous; }
+    };
+  });
+}
+
+for (const selected of ["same", "different"]) {
+  test(`a real timeline press shares one detached read across ${selected} selection views`, async (t) => {
+    const page = await fixture(t, { audio: true });
+    await clip(page).click();
+    await countSelectionBatchReads(page);
+    const id = selected === "same" ? "a" : "sound", bounds = await clip(page, id).boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    assert.deepEqual(await page.evaluate(() => selectionBatchReads), [1]);
+    assert.deepEqual(await page.evaluate(() => fixture.selection()), [id]);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.drag), true);
+    await page.mouse.move(bounds.x + bounds.width / 2 + 32, bounds.y + bounds.height / 2);
+    await page.mouse.up(); await settle(page);
+    assert.equal((await documentState(page)).sequences[0].clips.find((value) => value.id === id).start, 120000);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const field of ["track", "inspector"]) {
+  test(`a real timeline press shares its fresh selection read after finishing a ${field} draft`, async (t) => {
+    const page = await fixture(t);
+    await clip(page).click();
+    const before = await documentState(page);
+    if (field === "track") await page.locator('[data-et-track-name="video"]').fill("已提交的轨道名称");
+    else await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await countSelectionBatchReads(page);
+    const bounds = await clip(page).boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down(); await settle(page);
+    assert.deepEqual(await page.evaluate(() => selectionBatchReads), [1]);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.drag), true);
+    await page.mouse.up(); await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 1);
+    if (field === "track") assert.equal(after.sequences[0].tracks[0].name, "已提交的轨道名称");
+    else assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+    await action(page, "undo").click();
+    assert.deepEqual(semantic(await documentState(page)), semantic(before));
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const boundary of ["revision", "generation", "sequence"]) {
+  test(`a selection batch reads the actual document after a ${boundary} boundary`, async (t) => {
+    const page = await fixture(t, { sequenceCount: 2 });
+    await clip(page).click();
+    if (boundary === "revision") await page.evaluate(() => fixture.externalEdit());
+    if (boundary === "generation") await page.evaluate(() => fixture.replaceGeneration("新代际工程"));
+    if (boundary === "sequence") await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列"));
+    await settle(page); await countSelectionBatchReads(page);
+    const expected = await documentState(page), bounds = await clip(page).boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2); await page.mouse.down();
+    assert.deepEqual(await page.evaluate(() => selectionBatchReads), [1]);
+    const actual = await page.evaluate(() => {
+      const workspace = fixture.internals.workspace, document = workspace.timing.context.read();
+      return { id: document.id, revision: document.revision, name: document.name, sequenceId: workspace.getSelection().sequenceId, scope: !!workspace.viewReadScope };
+    });
+    assert.deepEqual(actual, { id: expected.id, revision: expected.revision, name: expected.name, sequenceId: expected.activeSequenceId, scope: false });
+    await page.mouse.up();
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("selection read sharing does not escape to public session reads or later microtasks", async (t) => {
+  const page = await fixture(t);
+  const result = await page.evaluate(async () => {
+    const { session, workspace } = fixture.internals, render = workspace.inspector.render.bind(workspace.inspector);
+    let shared, isolated, later;
+    workspace.inspector.render = () => {
+      shared = workspace.inspector.context.read();
+      const publicRead = session.read(); publicRead.name = "外部副本";
+      isolated = publicRead !== shared && shared === workspace.timing.context.read() && shared.name !== publicRead.name;
+      Promise.resolve().then(() => { later = workspace.inspector.context.read(); });
+      render();
+    };
+    workspace.timeline.context.select(["a"]);
+    workspace.inspector.render = render;
+    await Promise.resolve();
+    const outside = workspace.inspector.context.read();
+    outside.name = "下一次读取";
+    return { isolated, later: later !== shared, detached: outside !== later && session.read().name !== outside.name, scope: !!workspace.viewReadScope };
+  });
+  assert.deepEqual(result, { isolated: true, later: true, detached: true, scope: false });
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const failure of ["read", "consumer"]) {
+  test(`a selection ${failure} failure restores the synchronous read scope`, async (t) => {
+    const page = await fixture(t);
+    await page.evaluate((failure) => {
+      const { session, workspace } = fixture.internals, read = session.read.bind(session),
+        select = workspace.timeline.context.select, render = workspace.inspector.render.bind(workspace.inspector);
+      workspace.timeline.context.select = (ids) => {
+        workspace.timeline.context.select = select;
+        if (failure === "read") session.read = () => { session.read = read; throw new Error("本次读取失败"); };
+        else workspace.inspector.render = () => { workspace.inspector.render = render; throw new Error("本次渲染失败"); };
+        return select(ids);
+      };
+    }, failure);
+    const bounds = await clip(page).boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2); await page.mouse.down(); await page.mouse.up();
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.viewReadScope), false);
+    assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+    await countSelectionBatchReads(page);
+    await page.mouse.down();
+    assert.deepEqual(await page.evaluate(() => selectionBatchReads), [1]);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timeline.drag), true);
+    await page.mouse.up();
+  });
+}
+
+for (const reentry of ["dispatch", "selection", "time", "sequence", "dispose"]) {
+  test(`a synchronous ${reentry} reentry cannot reuse the earlier selection document`, async (t) => {
+    const page = await fixture(t, { audio: true, sequenceCount: 2 });
+    const result = await page.evaluate((reentry) => {
+      const { session, workspace } = fixture.internals, render = workspace.inspector.render.bind(workspace.inspector);
+      let stale, fresh, remaining;
+      workspace.inspector.render = () => {
+        workspace.inspector.render = render;
+        stale = workspace.inspector.context.read();
+        if (reentry === "dispatch") fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { transform: { ...stale.sequences[0].clips[0].transform, x: 0.3 } } }], "同步编辑");
+        if (reentry === "selection") workspace.timeline.context.select(["sound"]);
+        if (reentry === "time") workspace.seek(240000, true);
+        if (reentry === "sequence") fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "同步切换");
+        if (reentry === "dispose") void workspace.dispose();
+        fresh = workspace.timing.context.read();
+        remaining = { revision: fresh.revision, selected: workspace.getSelection(), time: workspace.getPlayhead(), disposed: workspace.disposed };
+        render();
+      };
+      workspace.timeline.context.select(["a"]);
+      return { reused: fresh === stale, scope: !!workspace.viewReadScope, remaining, current: session.getState().identity };
+    }, reentry);
+    assert.equal(result.reused, false);
+    assert.equal(result.scope, false);
+    assert.equal(result.remaining.revision, result.current.revision);
+    if (reentry === "selection") assert.deepEqual(result.remaining.selected.clipIds, ["sound"]);
+    if (reentry === "time") assert.equal(result.remaining.time, 240000);
+    if (reentry === "sequence") assert.equal(result.remaining.selected.sequenceId, "sequence-2");
+    if (reentry === "dispose") assert.equal(result.remaining.disposed, true);
+    if (reentry === "dispatch") assert.equal((await documentState(page)).sequences[0].clips[0].transform.x, 0.3);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("a synchronous dispatch during the batch's initial read cannot install its old snapshot", async (t) => {
+  const page = await fixture(t);
+  const result = await page.evaluate(() => {
+    const { session, workspace } = fixture.internals, read = session.read.bind(session), select = workspace.timeline.context.select;
+    workspace.timeline.context.select = (ids) => {
+      workspace.timeline.context.select = select;
+      session.read = () => {
+        session.read = read;
+        const old = read();
+        fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { transform: { ...old.sequences[0].clips[0].transform, x: 0.3 } } }], "读取时编辑");
+        return old;
+      };
+      return select(ids);
+    };
+    const render = workspace.inspector.render.bind(workspace.inspector);
+    let seen;
+    workspace.inspector.render = () => {
+      seen = workspace.inspector.context.read(); render();
+    };
+    workspace.timeline.context.select(["a"]);
+    workspace.inspector.render = render;
+    return { seen: seen.revision, current: session.getState().identity.revision, x: seen.sequences[0].clips[0].transform.x, scope: !!workspace.viewReadScope };
+  });
+  assert.deepEqual(result, { seen: result.current, current: result.current, x: 0.3, scope: false });
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "30");
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
 async function focusedTimelineIntent(page, kind, release = true) {
   const node = kind === "fade" ? clip(page, "sound").locator('[data-et-fade="fadeIn"]')
     : kind === "trim" ? clip(page).locator('[data-et-edge="left"]')
@@ -4307,3 +4499,1205 @@ for (const intent of ["selection", "move"]) for (const change of ["selection", "
     assert.deepEqual(await page.evaluate(() => fixture.errors), []);
   });
 }
+
+
+async function timelineControlDraftFixture(t, options = {}) {
+  const page = await fixture(t, { audio: true, ...options });
+  await clip(page).click();
+  await settle(page);
+  return page;
+}
+const timelineControl = (page, action) =>
+  ["muted", "locked"].includes(action)
+    ? page.locator(`[data-et-track="video"][data-et-toggle="${action}"]`)
+    : action === "magnetic"
+      ? page.locator('[data-et-mode="magnetic"]')
+      : page.locator(`[data-et-action="${action}"]`);
+for (const control of [
+  "muted",
+  "locked",
+  "delete",
+  "copy",
+  "duplicate",
+  "track-audio",
+  "magnetic",
+]) {
+  test(`the first timeline ${control} click preserves an inspector draft and separate undo`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page);
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await timelineControl(page, control).click();
+    await settle(page);
+    await page.evaluate(() => fixture.flush());
+    const after = await documentState(page),
+      sequence = after.sequences[0],
+      track = sequence.tracks.find((item) => item.id === "video");
+    if (control !== "delete")
+      assert.equal(sequence.clips.find((item) => item.id === "a").transform.x, 0.25);
+    if (["muted", "locked"].includes(control)) assert.equal(track[control], true);
+    if (control === "delete")
+      assert.equal(sequence.clips.length, before.sequences[0].clips.length - 1);
+    if (control === "copy")
+      assert.equal(
+        await page.evaluate(() => !!fixture.internals.workspace.timeline.clipboard),
+        true,
+      );
+    if (control === "duplicate")
+      assert.equal(sequence.clips.length, before.sequences[0].clips.length + 1);
+    if (control === "track-audio")
+      assert.equal(sequence.tracks.length, before.sequences[0].tracks.length + 1);
+    if (control === "magnetic") assert.equal(sequence.timelineMode, "magnetic");
+    assert.equal(after.revision, before.revision + (control === "copy" ? 1 : 2));
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), after);
+    if (control !== "copy") {
+      await action(page, "undo").click();
+      await settle(page);
+      const draftOnly = structuredClone(before.sequences);
+      draftOnly[0].clips[0].transform.x = 0.25;
+      assert.deepEqual((await documentState(page)).sequences, draftOnly);
+    }
+    await action(page, "undo").click();
+    await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const control of ["cut", "paste"]) {
+  test(`an inspector draft survives the first durable timeline ${control} click`, async (t) => {
+    const page = await timelineControlDraftFixture(t);
+    if (control === "paste") {
+      await page.evaluate(() => {
+        const clip = fixture.read().sequences[0].clips[0];
+        fixture.dispatch(
+          [
+            { type: "track.add", sequenceId: "main", track: editor.createTrack("tail", "video") },
+            {
+              type: "clip.add",
+              sequenceId: "main",
+              clip: { ...clip, id: "tail", trackId: "tail", start: 960000 },
+            },
+          ],
+          "延长序列",
+        );
+      });
+      await timelineControl(page, "copy").click();
+      await page.evaluate(() => fixture.internals.workspace.seek(960000, true));
+      await settle(page);
+    }
+    const before = await documentState(page);
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await timelineControl(page, control).click();
+    await settle(page);
+    await page.evaluate(() => fixture.flush());
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 2);
+    assert.deepEqual(await page.evaluate(() => fixture.stored()), after);
+    if (control === "cut") {
+      assert.equal(
+        after.sequences[0].clips.some((item) => item.id === "a"),
+        false,
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            fixture.internals.workspace.timeline.clipboard.payload.document.sequences[0].clips[0]
+              .audio.volume,
+        ),
+        1,
+      );
+    } else {
+      assert.equal(after.sequences[0].clips.find((item) => item.id === "a").transform.x, 0.25);
+      const added = after.sequences[0].clips.find(
+        (item) => !before.sequences[0].clips.some((old) => old.id === item.id),
+      );
+      assert.equal(added.start, 960000);
+      assert.equal(added.transform.x, 0, "paste retains the earlier copy snapshot");
+    }
+    await action(page, "undo").click();
+    await settle(page);
+    assert.equal(
+      (await documentState(page)).sequences[0].clips.find((item) => item.id === "a").transform.x,
+      0.25,
+    );
+    await action(page, "undo").click();
+    await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const failed of [false, true]) {
+  test(`${failed ? "rejected" : "invalid"} inspector input retains its draft and blocks a timeline button`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page);
+    if (failed)
+      await page.evaluate(() => {
+        const context = fixture.internals.workspace.inspector.context;
+        globalThis.restoreControlFieldApply = context.apply;
+        context.apply = () =>
+          new Promise(
+            (_resolve, reject) =>
+              (globalThis.rejectControlField = () => reject(new Error("属性提交失败"))),
+          );
+      });
+    const field = page.getByLabel("水平位置（%）", { exact: true });
+    await field.fill(failed ? "25" : "1001");
+    await timelineControl(page, "muted").click();
+    if (failed) await page.evaluate(() => rejectControlField());
+    await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await field.inputValue(), failed ? "25" : "1001");
+    assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+    assert.equal(
+      await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingControl),
+      false,
+    );
+    if (failed)
+      await page.evaluate(
+        () => (fixture.internals.workspace.inspector.context.apply = restoreControlFieldApply),
+      );
+    await field.fill("50");
+    await timelineControl(page, "muted").click();
+    await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.sequences[0].clips[0].transform.x, 0.5);
+    assert.equal(after.sequences[0].tracks[0].muted, true);
+    assert.equal((await page.evaluate(() => fixture.errors)).length, 1);
+  });
+}
+async function beginHeldControl(page, control = "muted", released = true) {
+  await holdCanvasField(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const box = await timelineControl(page, control).boundingBox(),
+    point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
+  if (released) await page.mouse.up();
+  await settle(page);
+  assert.equal(
+    await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingControl),
+    true,
+  );
+  return point;
+}
+test("an awaited timeline button retains its first release and ignores a second click or Enter", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page),
+    point = await beginHeldControl(page);
+  await page.mouse.click(point.x, point.y);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
+  await releaseCanvasField(page);
+  await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].tracks[0].muted, true);
+  assert.equal(
+    await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingControl),
+    false,
+  );
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const cancellation of [
+  "Escape",
+  "blur",
+  "pointercancel",
+  "lostcapture",
+  "generation",
+  "same-id-revision",
+  "sequence",
+  "time",
+  "selection",
+  "revision",
+  "resize",
+  "dispose",
+]) {
+  test(`an awaited inspector-to-timeline button cancels on ${cancellation}`, async (t) => {
+    const page = await timelineControlDraftFixture(t, { sequenceCount: 2 }),
+      before = await documentState(page);
+    await beginHeldControl(page, "muted", false);
+    if (cancellation === "Escape") await page.keyboard.press("Escape");
+    if (cancellation === "blur") await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    if (cancellation === "pointercancel")
+      await page.evaluate(() => {
+        const c = fixture.internals.workspace.timeline;
+        c.container.dispatchEvent(
+          new PointerEvent("pointercancel", {
+            bubbles: true,
+            pointerId: c.pendingControl.pointerId,
+          }),
+        );
+      });
+    if (cancellation === "lostcapture")
+      await page.evaluate(() => {
+        const c = fixture.internals.workspace.timeline;
+        c.container.releasePointerCapture(c.pendingControl.pointerId);
+      });
+    if (cancellation === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (cancellation === "same-id-revision")
+      await page.evaluate(async (before) => {
+        await fixture.internals.session.replace({ ...before, id: "temporary-control-project" });
+        await fixture.internals.session.replace(before);
+      }, before);
+    if (cancellation === "sequence")
+      await page.evaluate(() =>
+        fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切换序列"),
+      );
+    if (cancellation === "time")
+      await page.evaluate(() => fixture.internals.workspace.seek(240000));
+    if (cancellation === "selection")
+      await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["sound"]));
+    if (cancellation === "revision") await page.evaluate(() => fixture.externalEdit());
+    if (cancellation === "resize") await page.setViewportSize({ width: 1100, height: 780 });
+    if (cancellation === "dispose") await page.evaluate(() => fixture.dispose());
+    await page.mouse.up();
+    await settle(page);
+    const canceled = await documentState(page);
+    await releaseCanvasField(page);
+    assert.deepEqual(await documentState(page), canceled);
+    assert.equal(
+      await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingControl),
+      false,
+    );
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("moving outside a pressed timeline button cancels its action after finishing the field", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page),
+    p = await beginHeldControl(page, "muted", false);
+  await page.mouse.move(p.x + 150, p.y);
+  await page.mouse.up();
+  await releaseCanvasField(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+  assert.equal(after.sequences[0].tracks[0].muted, false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("an old control completion cannot release a new pending gesture's capture", async (t) => {
+  const page = await timelineControlDraftFixture(t);
+  await beginHeldControl(page, "muted", false);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.evaluate(() => {
+    fixture.internals.workspace.timeline.context.beforeGesture = () =>
+      new Promise((resolve) => (globalThis.resolveNewControlGesture = resolve));
+  });
+  const b = await clip(page, "sound").boundingBox();
+  await page.mouse.move(b.x + 30, b.y + 20);
+  await page.mouse.down();
+  await releaseCanvasField(page);
+  assert.equal(
+    await page.evaluate(() => {
+      const c = fixture.internals.workspace.timeline;
+      return (
+        !!c.pendingTrackGesture &&
+        c.container.hasPointerCapture(c.pendingTrackGesture.intent.pointer.pointerId)
+      );
+    }),
+    true,
+  );
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.evaluate(() => resolveNewControlGesture(true));
+  await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const key of ["Enter", "Space"]) {
+  test(`a focused timeline button activates once through native ${key}`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page),
+      button = timelineControl(page, "muted");
+    await button.focus();
+    await page.keyboard.press(key);
+    await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(after.sequences[0].tracks[0].muted, true);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("native touch finishes an inspector field before the first timeline control action", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    input = await touchInput(page, ".editor-timeline"),
+    before = await documentState(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const r = await timelineControl(page, "muted").boundingBox(),
+    p = { id: 1, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  await input.send("touchStart", [p]);
+  await input.send("touchMove", [{ ...p, x: p.x + 1 }]);
+  await input.send("touchEnd");
+  await settle(page);
+  await input.assertNative();
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].tracks[0].muted, true);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a pending inspector-to-timeline control keeps the primary native touch and ignores a second finger", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page),
+    input = await touchInput(page, ".editor-timeline");
+  await holdCanvasField(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const r = await timelineControl(page, "muted").boundingBox(),
+    first = { id: 1, x: r.x + r.width / 2, y: r.y + r.height / 2 },
+    second = { id: 2, x: first.x + 3, y: first.y + 3 };
+  await input.send("touchStart", [first]);
+  await input.send("touchStart", [first, second]);
+  const [owner, secondary] = await input.ids();
+  await page.evaluate(
+    (pointerId) =>
+      fixture.internals.workspace.timeline.container.dispatchEvent(
+        new PointerEvent("pointercancel", { bubbles: true, pointerId, pointerType: "touch" }),
+      ),
+    secondary,
+  );
+  await input.send("touchMove", [
+    { ...first, x: first.x + 1 },
+    { ...second, x: second.x + 1 },
+  ]);
+  await input.send("touchEnd", [{ ...second, x: second.x + 1 }]);
+  assert.equal(
+    await page.evaluate(() => fixture.internals.workspace.timeline.pendingControl.up),
+    undefined,
+  );
+  assert.equal(
+    await page.evaluate(() => fixture.internals.workspace.timeline.pendingControl.pointerId),
+    owner,
+  );
+  await input.send("touchEnd");
+  await releaseCanvasField(page);
+  await input.assertNative();
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].tracks[0].muted, true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("native touch cancellation blocks the old control and a new touch still activates once", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    input = await touchInput(page, ".editor-timeline"),
+    before = await documentState(page);
+  await holdCanvasField(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const r = await timelineControl(page, "muted").boundingBox(),
+    p = { id: 1, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  await input.send("touchStart", [p]);
+  await input.send("touchMove", [{ ...p, x: p.x + 1 }]);
+  await input.send("touchCancel");
+  await releaseCanvasField(page);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.equal((await documentState(page)).sequences[0].tracks[0].muted, false);
+  await input.send("touchStart", [{ ...p, id: 2 }]);
+  await input.send("touchEnd");
+  await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].tracks[0].muted, true);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+for (const pointer of ["mouse", "touch"]) {
+  test(`an asynchronous no-op field hook activates a timeline button once with ${pointer}`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page);
+    await page.evaluate(
+      () =>
+        (fixture.internals.workspace.timeline.context.beforeGesture = () => Promise.resolve(true)),
+    );
+    if (pointer === "mouse") await timelineControl(page, "muted").click();
+    else {
+      const input = await touchInput(page, ".editor-timeline"),
+        r = await timelineControl(page, "muted").boundingBox(),
+        p = { id: 1, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+      await input.send("touchStart", [p]);
+      await input.send("touchEnd");
+    }
+    await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(after.sequences[0].tracks[0].muted, true);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+test("a control rechecks exact document identity after a synchronously reentrant fresh read", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page);
+  await page.evaluate(() => {
+    fixture.internals.workspace.timeline.context.beforeGesture = () =>
+      new Promise((resolve) => (globalThis.releaseNoopControl = resolve));
+  });
+  const r = await timelineControl(page, "muted").boundingBox();
+  await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+  assert.equal(
+    await page.evaluate(() => !!fixture.internals.workspace.timeline.pendingControl),
+    true,
+  );
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timeline.context,
+      read = context.read;
+    context.read = () => {
+      context.read = read;
+      const doc = read();
+      fixture.externalEdit();
+      return doc;
+    };
+    globalThis.releaseNoopControl(true);
+  });
+  await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.sequences[0].tracks[0].muted, false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("disposing synchronously inside a control finisher does not capture or report a late failure", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page);
+  await page.evaluate(
+    () =>
+      (fixture.internals.workspace.timeline.context.beforeGesture = () => {
+        fixture.dispose();
+        return Promise.reject(new Error("旧控件已销毁"));
+      }),
+  );
+  await timelineControl(page, "muted").click();
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+test("native control focus reentry cannot replace a newer pending clip gesture", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.evaluate(() => {
+    const c = fixture.internals.workspace.timeline;
+    let once = true;
+    c.container.addEventListener(
+      "focus",
+      () => {
+        if (!once) return;
+        once = false;
+        c.cancel();
+        c.context.beforeGesture = () =>
+          new Promise((resolve) => (globalThis.finishReentrantControl = resolve));
+        const node = document.querySelector('[data-et-clip="sound"]'),
+          r = node.getBoundingClientRect();
+        node.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            pointerId: 1,
+            button: 0,
+            buttons: 1,
+            clientX: r.x + 30,
+            clientY: r.y + 20,
+            pointerType: "mouse",
+          }),
+        );
+      },
+      true,
+    );
+  });
+  const r = await timelineControl(page, "muted").boundingBox();
+  await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+  await page.mouse.down();
+  await settle(page);
+  assert.equal(
+    await page.evaluate(() => {
+      const c = fixture.internals.workspace.timeline;
+      return (
+        !!c.pendingTrackGesture &&
+        c.container.hasPointerCapture(c.pendingTrackGesture.intent.pointer.pointerId) &&
+        !c.pendingControl
+      );
+    }),
+    true,
+  );
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await page.evaluate(() => finishReentrantControl(true));
+  await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const pointer of ["mouse", "touch"]) {
+  test(`a second ${pointer} press stays blocked if an awaited control finishes before its release`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page);
+    const point = await beginHeldControl(page);
+    let input;
+    if (pointer === "mouse") await page.mouse.down();
+    else {
+      input = await touchInput(page, ".editor-timeline");
+      await input.send("touchStart", [{ id: 2, ...point }]);
+    }
+    await releaseCanvasField(page);
+    await settle(page);
+    assert.equal((await documentState(page)).sequences[0].tracks[0].muted, true);
+    if (pointer === "mouse") await page.mouse.up();
+    else await input.send("touchEnd");
+    await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 2);
+    assert.equal(after.sequences[0].tracks[0].muted, true);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const outcome of ["false", "throw"]) {
+  test(`a synchronous ${outcome} control finisher keeps the inspector draft without a native fallback action`, async (t) => {
+    const page = await timelineControlDraftFixture(t),
+      before = await documentState(page);
+    const field = page.getByLabel("水平位置（%）", { exact: true });
+    await field.fill("25");
+    await page.evaluate((outcome) => {
+      fixture.internals.workspace.timeline.context.beforeGesture = () => {
+        if (outcome === "throw") throw new Error("同步属性提交失败");
+        return false;
+      };
+    }, outcome);
+    await timelineControl(page, "muted").click();
+    await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await field.inputValue(), "25");
+    assert.equal(await field.evaluate((node) => node === document.activeElement), true);
+    assert.equal((await page.evaluate(() => fixture.errors)).length, outcome === "throw" ? 1 : 0);
+  });
+}
+
+test("an inspector draft and first timeline mute retain real autosave failure and retry", async (t) => {
+  const page = await timelineControlDraftFixture(t),
+    before = await documentState(page);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await timelineControl(page, "muted").click();
+  await page.waitForFunction(() => fixture.state().saveState === "failed");
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+  assert.equal(after.sequences[0].tracks[0].muted, true);
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, before.sequences);
+  await page.evaluate(() => fixture.writeMode("normal"));
+  await action(page, "retry-save").click();
+  await page.waitForFunction(() => fixture.state().saveState === "saved");
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, after.sequences);
+  assert.equal((await documentState(page)).revision, after.revision);
+  await action(page, "undo").click();
+  await settle(page);
+  assert.equal((await documentState(page)).sequences[0].tracks[0].muted, false);
+  assert.equal((await documentState(page)).sequences[0].clips[0].transform.x, 0.25);
+});
+test("a failed first inspector-to-cut keeps the earlier clipboard and retries through real durable storage", async (t) => {
+  const page = await timelineControlDraftFixture(t);
+  await timelineControl(page, "copy").click();
+  const before = await documentState(page);
+  const priorClipboard = await page.evaluate(() => fixture.internals.workspace.timeline.clipboard);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await timelineControl(page, "cut").click();
+  await page.waitForFunction(
+    () =>
+      fixture.state().saveState === "failed" &&
+      !fixture.internals.workspace.timeline.pendingControl,
+  );
+  const draftOnly = await documentState(page);
+  assert.equal(draftOnly.revision, before.revision + 1);
+  assert.equal(draftOnly.sequences[0].clips.find((clip) => clip.id === "a").transform.x, 0.25);
+  assert.deepEqual(
+    await page.evaluate(() => fixture.internals.workspace.timeline.clipboard),
+    priorClipboard,
+  );
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["a"]);
+  assert.deepEqual((await page.evaluate(() => fixture.stored())).sequences, before.sequences);
+  await page.evaluate(() => fixture.writeMode("normal"));
+  await timelineControl(page, "cut").click();
+  await page.waitForFunction(
+    () => !fixture.read().sequences[0].clips.some((clip) => clip.id === "a"),
+  );
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), after);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        fixture.internals.workspace.timeline.clipboard.payload.document.sequences[0].clips[0]
+          .transform.x,
+    ),
+    0.25,
+  );
+  await action(page, "undo").click();
+  await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, draftOnly.sequences);
+});
+
+test("matching a rebuilt control in a real 5000-clip workspace reads only its candidate track", async (t) => {
+  const page = await timelineControlDraftFixture(t, { clipCount: 5000 });
+  const result = await page.evaluate(() => {
+    fixture.dispatch(
+      Array.from({ length: 16 }, (_, index) => ({
+        type: "track.add",
+        sequenceId: "main",
+        track: editor.createTrack(`control-track-${index}`, "audio"),
+      })),
+      "添加轨道",
+    );
+    const c = fixture.internals.workspace.timeline;
+    const target = document.querySelector('[data-et-track="video"][data-et-toggle="muted"]');
+    const intent = c.controlIntent(target),
+      read = c.context.read;
+    let reads = 0;
+    c.context.read = () => {
+      reads++;
+      return read();
+    };
+    const matched = c.matchingControl(intent);
+    c.context.read = read;
+    return { matches: matched === target, reads };
+  });
+  assert.equal(result.matches, true);
+  assert.equal(result.reads, 1);
+});
+
+for (const actionName of ["add", "adjust", "remove"]) {
+  test(`the first transition ${actionName} saves the inspector draft and preserves the chosen transition form with separate undo`, async (t) => {
+    const page = await transitionWorkflowFixture(t);
+    await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"])); await settle(page);
+    await page.getByLabel("相邻片段", { exact: true }).selectOption("1");
+    if (actionName !== "add") {
+      await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    }
+    await page.getByLabel("转场时长（秒）", { exact: true }).fill(actionName === "remove" ? "" : "0.75");
+    await page.getByLabel("转场效果", { exact: true }).selectOption("wipe-right");
+    await page.getByLabel("重叠安排", { exact: true }).selectOption("overlap");
+    const before = await documentState(page);
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: actionName === "add" ? "添加转场" : actionName === "adjust" ? "应用转场调整" : "移除转场并接成硬切", exact: true }).click();
+    await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 2);
+    assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+    if (actionName === "remove") assert.deepEqual(after.sequences[0].transitions, []);
+    else {
+      const transition = after.sequences[0].transitions[0];
+      assert.equal(transition.fromClipId, "b"); assert.equal(transition.toClipId, "c");
+      assert.equal(transition.duration, 0.75 * 240000); assert.equal(transition.kind, "wipe-right");
+    }
+    await action(page, "undo").click(); await settle(page);
+    const firstUndo = await documentState(page);
+    assert.equal(firstUndo.sequences[0].clips[0].transform.x, 0.25);
+    assert.deepEqual(firstUndo.sequences[0].transitions, before.sequences[0].transitions);
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+async function transitionDraftFixture(t, options = {}) {
+  const page = await transitionWorkflowFixture(t, options);
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["a"])); await settle(page);
+  await page.getByLabel("相邻片段", { exact: true }).selectOption("1");
+  await page.getByLabel("转场时长（秒）", { exact: true }).fill("0.75");
+  await page.getByLabel("转场效果", { exact: true }).selectOption("push-left");
+  return page;
+}
+for (const failure of ["invalid", "reject"]) {
+  test(`a ${failure} inspector draft blocks the first transition action and retains both correctable drafts`, async (t) => {
+    const page = await transitionDraftFixture(t), before = await documentState(page);
+    if (failure === "reject") await page.evaluate(() => fixture.internals.workspace.inspector.context.apply = () => Promise.reject(new Error("转场前属性提交失败")));
+    await page.getByLabel("水平位置（%）", { exact: true }).fill(failure === "invalid" ? "1001" : "25");
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), failure === "invalid" ? "1001" : "25");
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    assert.equal(await page.getByLabel("相邻片段", { exact: true }).inputValue(), "1");
+    assert.equal(await page.getByLabel("转场时长（秒）", { exact: true }).inputValue(), "0.75");
+    assert.equal(await page.getByLabel("转场效果", { exact: true }).inputValue(), "push-left");
+    assert.equal(await page.evaluate(() => fixture.errors.length), 1);
+    assert.equal(await page.getByRole("button", { name: "添加转场", exact: true }).isDisabled(), false);
+    if (failure === "invalid") {
+      await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+      await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+      const after = await documentState(page);
+      assert.equal(after.revision, before.revision + 2); assert.equal(after.sequences[0].transitions[0].kind, "push-left");
+    }
+  });
+}
+for (const ending of ["generation", "same-id-revision", "sequence", "selection", "external-revision", "dispose"]) {
+  test(`an awaiting transition field cannot apply its old action after ${ending}`, async (t) => {
+    const page = await transitionDraftFixture(t, { sequenceCount: 2 }), original = await documentState(page);
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    const stale = await page.getByRole("button", { name: "添加转场", exact: true }).elementHandle();
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), true);
+    if (ending === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (ending === "same-id-revision") await page.evaluate(async (original) => {
+      await fixture.internals.session.replace({ ...original, id: "temporary-transition-document" });
+      await fixture.internals.session.replace(original);
+    }, original);
+    if (ending === "sequence") await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切序列"));
+    if (ending === "selection") await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["b"]));
+    if (ending === "external-revision") await page.evaluate(() => fixture.dispatch([{ type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], "锁轨"));
+    if (ending === "dispose") await page.evaluate(() => fixture.dispose());
+    const canceled = await documentState(page), selected = await page.evaluate(() => fixture.selection());
+    await releaseCanvasField(page); await stale.evaluate((button) => button.click()); await settle(page);
+    assert.deepEqual(await documentState(page), canceled); assert.deepEqual(await page.evaluate(() => fixture.selection()), selected);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("an awaited transition field ignores pointer and keyboard reentry and applies exactly once", async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  const button = page.getByRole("button", { name: "添加转场", exact: true }); await button.click(); await settle(page);
+  await button.evaluate((node) => node.click()); await page.keyboard.press("Enter");
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.deepEqual((await documentState(page)).sequences[0].transitions, []);
+  await releaseCanvasField(page);
+  assert.equal((await documentState(page)).revision, before.revision + 2);
+  assert.equal((await documentState(page)).sequences[0].transitions.length, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a no-draft transition action stays synchronous and remains keyboard accessible", async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await page.evaluate(() => {
+    document.querySelector(".editor-timing").addEventListener("click", (event) => {
+      if (event.target.textContent === "添加转场") globalThis.transitionAtClick = fixture.read().sequences[0].transitions.length;
+    });
+  });
+  await page.getByRole("button", { name: "添加转场", exact: true }).focus();
+  await page.keyboard.press("Enter"); await settle(page);
+  assert.equal(await page.evaluate(() => transitionAtClick), 1);
+  assert.equal((await documentState(page)).revision, before.revision + 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("native IME finishes exactly once before the first transition action", async (t) => {
+  const page = await transitionDraftFixture(t, { clipCount: 1 }), cdp = await page.context().newCDPSession(page),
+    input = page.getByLabel("图形填充颜色", { exact: true });
+  await page.evaluate(() => fixture.dispatch(fixture.read().sequences[0].clips.map((clip) => ({ type: "clip.update", sequenceId: "main", clipId: clip.id, patch: { duration: 4 * 240000 } })), "延长测试图形"));
+  await settle(page); await page.getByLabel("转场时长（秒）", { exact: true }).fill("0.75");
+  await input.fill(""); const before = await documentState(page);
+  await input.evaluate((node) => {
+    globalThis.transitionComposition = [];
+    globalThis.transitionCompositionStarts = [];
+    node.addEventListener("compositionstart", (event) => transitionCompositionStarts.push(event.isTrusted));
+    node.addEventListener("compositionend", (event) => transitionComposition.push(event.data));
+  });
+  await cdp.send("Input.imeSetComposition", { text: "#00ff00", selectionStart: 7, selectionEnd: 7 });
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).revision, before.revision + 2);
+  assert.equal((await documentState(page)).sequences[0].clips[0].fill, "#00ff00");
+  assert.deepEqual(await page.evaluate(() => transitionCompositionStarts), [true]);
+  assert.deepEqual(await page.evaluate(() => transitionComposition), ["#00ff00"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const change of ["dispose", "selection"]) test(`a synchronous transition boundary ${change} cannot leave a pending action`, async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await page.evaluate((change) => {
+    fixture.internals.workspace.timing.context.beforeEdit = () => {
+      if (change === "dispose") fixture.dispose();
+      else fixture.internals.workspace.selectClips("main", ["b"]);
+      return Promise.resolve(true);
+    };
+  }, change);
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("an invalid transition duration reports its error without discarding either unfinished form", async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await page.getByLabel("转场时长（秒）", { exact: true }).fill("");
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), "25");
+  assert.equal(await page.getByLabel("转场时长（秒）", { exact: true }).inputValue(), "");
+  assert.match(await page.locator(".editor-timing").getByRole("alert").innerText(), /有效的数字/);
+});
+
+test("a first transition click keeps normal autosave failure and retry semantics for both dispatched edits", async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await page.evaluate(() => fixture.writeMode("fail"));
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await page.evaluate(() => fixture.flush().catch(() => {})); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 2);
+  assert.equal(after.sequences[0].clips[0].transform.x, 0.25); assert.equal(after.sequences[0].transitions.length, 1);
+  assert.match(await page.locator("[data-ew-save]").textContent(), /保存失败/);
+  await page.evaluate(() => fixture.writeMode("normal")); await action(page, "retry-save").click();
+  await page.evaluate(() => fixture.flush()); await settle(page);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), after);
+  await action(page, "undo").click(); await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("transition planning rechecks fresh track locks after its inspector dispatch", async (t) => {
+  const page = await transitionDraftFixture(t), before = await documentState(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.inspector.context, apply = context.apply;
+    context.apply = (operations, label) => apply([...operations, { type: "track.update", sequenceId: "main", trackId: "video", patch: { locked: true } }], label);
+  });
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1); assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+  assert.deepEqual(after.sequences[0].transitions, []);
+  assert.match(await page.locator(".editor-timing").getByRole("alert").innerText(), /锁定/);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+});
+
+test("an old transition field completion cannot repeat or cancel a newer selection's action", async (t) => {
+  const page = await transitionDraftFixture(t);
+  await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["b"])); await settle(page);
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.sequences[0].transitions.length, 1);
+  await releaseCanvasField(page);
+  assert.deepEqual(await documentState(page), after);
+  assert.deepEqual(await page.evaluate(() => fixture.selection()), ["b"]);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const change of ["generation", "sequence", "selection", "dispose"]) {
+  test(`a late transition apply rejection cannot report into a different ${change} scope`, async (t) => {
+    const page = await transitionDraftFixture(t, { sequenceCount: 2 });
+    await page.evaluate(() => fixture.internals.workspace.timing.context.apply = () => new Promise((_resolve, reject) => {
+      globalThis.rejectOldTransition = () => reject(new Error("旧转场提交失败"));
+    }));
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    if (change === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (change === "sequence") await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切序列"));
+    if (change === "selection") await page.evaluate(() => fixture.internals.workspace.selectClips("main", ["b"]));
+    if (change === "dispose") await page.evaluate(() => fixture.dispose());
+    const before = await documentState(page);
+    await page.evaluate(() => rejectOldTransition()); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+    assert.equal(await page.locator(".editor-timing .etime-error").count(), 0);
+  });
+}
+
+for (const change of ["selection", "revision"]) {
+  test(`a transition finisher rechecks the owner after a synchronous read ${change}`, async (t) => {
+    const page = await transitionDraftFixture(t), before = await documentState(page);
+    await page.evaluate((change) => {
+      const context = fixture.internals.workspace.timing.context, read = context.read;
+      context.beforeEdit = () => {
+        let reads = 0;
+        context.read = () => {
+          const saved = read();
+          if (++reads === 2) {
+            context.read = read;
+            if (change === "selection") fixture.internals.workspace.selectClips("main", ["b"]);
+            else fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { transform: { ...saved.sequences[0].clips[0].transform, x: 0.3 } } }], "完成转场字段时外部编辑");
+          }
+          return saved;
+        };
+        return true;
+      };
+    }, change);
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    const after = await documentState(page);
+    assert.deepEqual(after.sequences[0].transitions, []);
+    assert.equal(after.revision, before.revision + Number(change === "revision"));
+    assert.equal(after.sequences[0].clips[0].transform.x, change === "revision" ? 0.3 : 0);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("a reentrant transition scope read cannot cancel the newly installed field owner", async (t) => {
+  const page = await transitionDraftFixture(t);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timing.context, read = context.read;
+    context.beforeEdit = () => {
+      let reads = 0;
+      context.read = () => {
+        const saved = read();
+        if (++reads === 2) {
+          context.read = read;
+          fixture.internals.workspace.selectClips("main", ["b"]);
+          context.beforeEdit = () => new Promise((resolve) => globalThis.completeNewTransition = resolve);
+          [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "添加转场").click();
+        }
+        return saved;
+      };
+      return true;
+    };
+  });
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), true);
+  assert.deepEqual((await documentState(page)).sequences[0].transitions, []);
+  await page.evaluate(() => completeNewTransition(true)); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].transitions.length, 1);
+  assert.equal((await documentState(page)).sequences[0].transitions[0].fromClipId, "b");
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("a reentrant timing render cannot abort a replacement transition field owner", async (t) => {
+  const page = await transitionDraftFixture(t);
+  await page.evaluate(() => fixture.internals.workspace.timing.context.beforeEdit = () => new Promise((resolve) => globalThis.completeOldTransition = resolve));
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  await page.evaluate(() => {
+    const timing = fixture.internals.workspace.timing, context = timing.context, read = context.read;
+    context.read = () => {
+      context.read = read;
+      const saved = read();
+      fixture.internals.workspace.selectClips("main", ["b"]);
+      context.beforeEdit = () => new Promise((resolve) => globalThis.completeNewTransition = resolve);
+      [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "添加转场").click();
+      return saved;
+    };
+    timing.render();
+  });
+  await page.evaluate(() => completeOldTransition(true)); await settle(page);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), true);
+  await page.evaluate(() => completeNewTransition(true)); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].transitions.length, 1);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+const timingSubmitLabels = { speed: "应用恒定速度", reverse: "倒放所选片段", freeze: "用播放头画面定格", left: "保留播放头左侧", right: "保留播放头右侧", curve: "应用分段曲线", arrange: "整理所选画面轨间隙" };
+async function timingSubmitFixture(t, mode, options = {}) {
+  const page = await fixture(t, options);
+  await page.evaluate((mode) => {
+    fixture.internals.workspace.selectClips("main", ["a"]);
+    if (mode === "arrange") fixture.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "a", patch: { start: 240000 } }], "设置待整理间隙");
+    fixture.internals.workspace.seek(240000, true);
+  }, mode); await settle(page);
+  if (mode === "speed") {
+    await page.getByLabel("恒定速度（倍）", { exact: true }).fill("2");
+    await page.getByLabel("变速时保持音高", { exact: true }).uncheck();
+  }
+  if (mode === "freeze") await page.getByLabel("定格时长（秒）", { exact: true }).fill("1.5");
+  if (mode === "curve") {
+    await page.locator(".editor-timing").getByText("分段速度曲线", { exact: true }).click();
+    await page.getByLabel("节点 2 输出（秒）", { exact: true }).fill("2");
+    await page.getByLabel("节点 2 输出（秒）", { exact: true }).press("Tab");
+  }
+  if (mode === "arrange") await page.locator(".editor-timing").getByText("时间线排列", { exact: true }).click();
+  return page;
+}
+function assertTimingIntent(item, mode) {
+  assert.equal(item.duration, ["speed", "curve"].includes(mode) ? 2 * 240000 : mode === "freeze" ? 1.5 * 240000 : mode === "left" ? 240000 : mode === "right" ? 3 * 240000 : 4 * 240000);
+  assert.equal(item.start, mode === "right" ? 240000 : 0);
+  if (mode === "speed") assert.equal(item.audio.preservePitch, false);
+  if (mode === "reverse") assert.equal(item.timeMap.points[0].source, 4 * 240000);
+  if (mode === "freeze") assert.deepEqual(item.timeMap.points.map((point) => point.source), [240000, 240000]);
+  if (mode === "curve") assert.deepEqual(item.timeMap.points, [{ time: 0, source: 0 }, { time: 2 * 240000, source: 4 * 240000 }]);
+}
+for (const mode of Object.keys(timingSubmitLabels)) for (const draft of [false, true]) {
+  test(`the first ${mode} Timing submit preserves ${draft ? "the inspector draft and two undo steps" : "the synchronous no-draft path"}`, async (t) => {
+    const page = await timingSubmitFixture(t, mode), before = await documentState(page);
+    if (draft) await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    else await page.evaluate(() => document.querySelector(".editor-timing").addEventListener("click", () => globalThis.timingRevisionAtClick = fixture.read().revision));
+    await page.getByRole("button", { name: timingSubmitLabels[mode], exact: true }).click(); await settle(page);
+    const after = await documentState(page);
+    assert.equal(after.revision, before.revision + 1 + Number(draft));
+    assertTimingIntent(after.sequences[0].clips[0], mode);
+    assert.equal(after.sequences[0].clips[0].transform.x, draft ? 0.25 : 0);
+    if (!draft) assert.equal(await page.evaluate(() => timingRevisionAtClick), after.revision);
+    await action(page, "undo").click(); await settle(page);
+    if (draft) {
+      assert.equal((await documentState(page)).sequences[0].clips[0].transform.x, 0.25);
+      assert.equal((await documentState(page)).sequences[0].clips[0].duration, before.sequences[0].clips[0].duration);
+      await action(page, "undo").click(); await settle(page);
+    }
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+for (const mode of Object.keys(timingSubmitLabels)) for (const failure of ["invalid", "reject"]) {
+  test(`a ${failure} inspector field blocks the ${mode} Timing action and remains correctable`, async (t) => {
+    const page = await timingSubmitFixture(t, mode), before = await documentState(page);
+    if (failure === "reject") await page.evaluate(() => fixture.internals.workspace.inspector.context.apply = () => Promise.reject(new Error("时间编辑前属性提交失败")));
+    await page.getByLabel("水平位置（%）", { exact: true }).fill(failure === "invalid" ? "1001" : "25");
+    await page.getByRole("button", { name: timingSubmitLabels[mode], exact: true }).click(); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).inputValue(), failure === "invalid" ? "1001" : "25");
+    assert.equal(await page.getByLabel("水平位置（%）", { exact: true }).evaluate((node) => node === document.activeElement), true);
+    assert.equal(await page.getByRole("button", { name: timingSubmitLabels[mode], exact: true }).isDisabled(), false);
+    assert.equal(await page.evaluate(() => fixture.errors.length), 1);
+  });
+}
+for (const mode of ["speed", "left"]) for (const change of ["generation", "sequence", "selection", "time", "revision", "dispose"]) {
+  test(`an awaited ${mode} Timing action stays canceled after ${change}`, async (t) => {
+    const page = await timingSubmitFixture(t, mode, { sequenceCount: 2 });
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: timingSubmitLabels[mode], exact: true }).click(); await settle(page);
+    if (change === "generation") await page.evaluate(() => fixture.replaceGeneration());
+    if (change === "sequence") await page.evaluate(() => fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "切序列"));
+    if (change === "selection") await page.evaluate(() => fixture.internals.workspace.selectClips("main", []));
+    if (change === "time") await page.evaluate(() => fixture.internals.workspace.seek(2 * 240000, true));
+    if (change === "revision") await page.evaluate(() => fixture.dispatch([{ type: "project.rename", name: "字段等待期间外部修订" }], "外部编辑"));
+    if (change === "dispose") await page.evaluate(() => fixture.dispose());
+    const canceled = await documentState(page), selection = await page.evaluate(() => fixture.selection());
+    await releaseCanvasField(page);
+    assert.deepEqual(await documentState(page), canceled); assert.deepEqual(await page.evaluate(() => fixture.selection()), selection);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+for (const mode of ["speed", "freeze", "curve", "arrange"]) {
+  test(`an awaited ${mode} Timing action uses captured typed inputs and options`, async (t) => {
+    const page = await timingSubmitFixture(t, mode);
+    if (mode === "speed") {
+      await page.evaluate(() => fixture.dispatch([{ type: "clip.add", sequenceId: "main", clip: { ...fixture.read().sequences[0].clips[0], id: "b", start: 4 * 240000 } }], "添加后续画面")); await settle(page);
+      await page.getByLabel("恒定速度（倍）", { exact: true }).fill("2"); await page.getByLabel("变速时保持音高", { exact: true }).uncheck();
+    }
+    if (mode === "arrange") {
+      await page.evaluate(() => fixture.dispatch([{ type: "track.add", sequenceId: "main", track: editor.createTrack("other-video", "video", "另一画面轨") }], "添加另一轨")); await settle(page);
+    }
+    await holdCanvasField(page); await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByRole("button", { name: timingSubmitLabels[mode], exact: true }).click(); await settle(page);
+    await page.evaluate((mode) => {
+      const input = (label) => document.querySelector(`[aria-label="${label}"]`);
+      if (mode === "speed") { input("恒定速度（倍）").value = "3"; input("变速时保持音高").checked = true; input("联动后续片段").checked = true; }
+      if (mode === "freeze") input("定格时长（秒）").value = "3";
+      if (mode === "curve") { input("节点 2 输出（秒）").value = "3"; input("节点 2 输出（秒）").dispatchEvent(new Event("change", { bubbles: true })); }
+      if (mode === "arrange") input("整理画面轨").value = "other-video";
+    }, mode);
+    await releaseCanvasField(page);
+    const after = await documentState(page); assertTimingIntent(after.sequences[0].clips[0], mode);
+    assert.equal(after.sequences[0].clips[0].transform.x, 0.25);
+    if (mode === "speed") assert.equal(after.sequences[0].clips[1].start, 4 * 240000);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("a Timing submit's fresh read cannot report an old scope warning after synchronous sequence activation", async (t) => {
+  const page = await timingSubmitFixture(t, "speed", { sequenceCount: 2 }), before = await documentState(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timing.context, read = context.read;
+    globalThis.timingSubmitReads = 0;
+    context.read = () => {
+      const saved = read();
+      if (++timingSubmitReads === 4) {
+        context.read = read;
+        fixture.dispatch([{ type: "sequence.activate", sequenceId: "sequence-2" }], "提交校验期间切序列");
+      }
+      return saved;
+    };
+  });
+  await page.getByRole("button", { name: "应用恒定速度", exact: true }).click(); await settle(page);
+  assert.equal(await page.evaluate(() => timingSubmitReads), 4);
+  const after = await documentState(page);
+  assert.equal(after.revision, before.revision + 1); assert.equal(after.activeSequenceId, "sequence-2");
+  assert.deepEqual(after.sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  assert.equal(await page.locator(".editor-timing .etime-error").count(), 0);
+});
+
+test("Timing speed preserves narration approval for the field and invalidates it only with the timing undo step", async (t) => {
+  const page = await timingSubmitFixture(t, "speed", { narration: true }), before = await documentState(page);
+  await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+  await page.getByRole("button", { name: "应用恒定速度", exact: true }).click(); await settle(page);
+  const after = await documentState(page);
+  assert.equal(after.production.narration.phase, "review");
+  assert.equal(after.production.narrationPreviousApproval.approvedFingerprint, "approved-original");
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).production, before.production);
+  assert.equal((await documentState(page)).sequences[0].clips[0].transform.x, 0.25);
+  await action(page, "undo").click(); await settle(page);
+  assert.deepEqual((await documentState(page)).sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const fault of ["completion-read", "rejection-read", "repeated-read", "error-callback"]) {
+  test(`a Timing field ${fault} failure releases its own controls and permits correction`, async (t) => {
+    const page = await transitionDraftFixture(t), before = await documentState(page);
+    await page.evaluate(() => {
+      fixture.internals.workspace.timing.context.beforeEdit = () => new Promise((resolve, reject) => {
+        globalThis.completeTimingFault = resolve; globalThis.rejectTimingFault = reject;
+      });
+    });
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    assert.equal(await page.getByRole("button", { name: "添加转场", exact: true }).isDisabled(), true);
+    await page.evaluate((fault) => {
+      const context = fixture.internals.workspace.timing.context, read = context.read, onError = context.onError;
+      let remaining = fault === "repeated-read" ? 2 : 1;
+      context.read = () => {
+        if (--remaining <= 0) context.read = read;
+        throw new Error("时间操作完成时读取失败");
+      };
+      if (fault === "error-callback") context.onError = (error) => {
+        context.onError = onError; onError(error); throw new Error("错误回调也失败");
+      };
+      if (fault === "rejection-read") rejectTimingFault(new Error("属性完成失败"));
+      else completeTimingFault(true);
+    }, fault); await settle(page);
+    assert.deepEqual(await documentState(page), before);
+    assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+    assert.equal(await page.getByRole("button", { name: "添加转场", exact: true }).isDisabled(), false);
+    assert.equal(await page.getByLabel("转场时长（秒）", { exact: true }).inputValue(), "0.75");
+    assert.equal(await page.getByLabel("转场效果", { exact: true }).inputValue(), "push-left");
+    assert.equal(await page.evaluate(() => fixture.errors.length), fault === "completion-read" || fault === "error-callback" ? 1 : 0);
+    await page.evaluate(() => fixture.internals.workspace.timing.context.beforeEdit = () => true);
+    await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+    assert.equal((await documentState(page)).sequences[0].transitions[0].kind, "push-left");
+  });
+}
+
+test("a failed Timing completion read cannot clean up a reentrant replacement field owner", async (t) => {
+  const page = await transitionDraftFixture(t);
+  await page.evaluate(() => fixture.internals.workspace.timing.context.beforeEdit = () => new Promise((resolve) => globalThis.completeOldTimingFault = resolve));
+  await page.getByRole("button", { name: "添加转场", exact: true }).click(); await settle(page);
+  await page.evaluate(() => {
+    const context = fixture.internals.workspace.timing.context, read = context.read;
+    context.read = () => {
+      context.read = read;
+      fixture.internals.workspace.selectClips("main", ["b"]);
+      context.beforeEdit = () => new Promise((resolve) => globalThis.completeNewTimingFault = resolve);
+      [...document.querySelectorAll(".editor-timing button")].find((button) => button.textContent === "添加转场").click();
+      throw new Error("旧时间操作读取失败");
+    };
+    completeOldTimingFault(true);
+  }); await settle(page);
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), true);
+  assert.equal(await page.getByRole("button", { name: "添加转场", exact: true }).isDisabled(), true);
+  assert.deepEqual((await documentState(page)).sequences[0].transitions, []);
+  await page.evaluate(() => completeNewTimingFault(true)); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].transitions[0].fromClipId, "b");
+  assert.equal(await page.evaluate(() => !!fixture.internals.workspace.timing.fieldFinish), false);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+for (const axis of ["输出", "来源"]) {
+  test(`the first curve apply captures the focused node's unblurred ${axis} seconds`, async (t) => {
+    const page = await timingSubmitFixture(t, "curve"), before = await documentState(page);
+    await page.getByLabel(`节点 2 ${axis}（秒）`, { exact: true }).fill(axis === "输出" ? "1.5" : "3");
+    await page.getByRole("button", { name: "应用分段曲线", exact: true }).click(); await settle(page);
+    const after = await documentState(page), item = after.sequences[0].clips[0];
+    assert.equal(after.revision, before.revision + 1);
+    assert.deepEqual(item.timeMap.points, [{ time: 0, source: 0 }, { time: (axis === "输出" ? 1.5 : 2) * 240000, source: (axis === "来源" ? 3 : 4) * 240000 }]);
+    await action(page, "undo").click(); await settle(page);
+    assert.deepEqual((await documentState(page)).sequences, before.sequences);
+    assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+  });
+}
+
+test("an invalid focused curve node remains correctable without blurring or applying its old value", async (t) => {
+  const page = await timingSubmitFixture(t, "curve"), before = await documentState(page),
+    node = page.getByLabel("节点 2 输出（秒）", { exact: true });
+  await node.fill("-1"); await page.getByRole("button", { name: "应用分段曲线", exact: true }).click(); await settle(page);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await node.inputValue(), "-1"); assert.equal(await node.evaluate((input) => input === document.activeElement), true);
+  assert.equal(await page.getByRole("button", { name: "应用分段曲线", exact: true }).isDisabled(), false);
+  assert.equal(await page.evaluate(() => fixture.errors.length), 1);
+  await node.fill("1.5"); await page.getByRole("button", { name: "应用分段曲线", exact: true }).click(); await settle(page);
+  assert.equal((await documentState(page)).sequences[0].clips[0].duration, 1.5 * 240000);
+});

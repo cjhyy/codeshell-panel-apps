@@ -37,6 +37,10 @@ before(async () => {
   const isolatedOutput = resolve(directory, "package");
   await buildProject({ ...project, output: isolatedOutput }, { log: false });
   const output = resolve(isolatedOutput, "app");
+  // Expose the bundled class only in this isolated test output for real-session read budgets.
+  const modulePath = resolve(output, "main.mjs");
+  await writeFile(modulePath, (await readFile(modulePath, "utf8")) +
+    "\nglobalThis.__mainReadSession = EditorSession; globalThis.__mainReadAudit = { session: () => editorSession, project: () => structuredClone(project) };\n");
   server = createServer(async (request, response) => {
     const path = resolve(
       output,
@@ -4316,4 +4320,102 @@ test("main freezes distinguishable sequence export titles through range export, 
     0,
     "Reload never submits duplicates",
   );
+});
+
+
+for (const editing of ["project-name", "inspector"]) test(`save-status notifications avoid repeated full-project reads after ${editing}`, async (t) => {
+  const page = await openPage(t), before = await saved(page);
+  await page.evaluate(() => {
+    const original = __mainReadSession.prototype.read;
+    globalThis.mainReadCalls = [];
+    __mainReadSession.prototype.read = function () {
+      mainReadCalls.push({ identity: this.getState().identity, stack: new Error().stack });
+      return original.call(this);
+    };
+  });
+  if (editing === "project-name") {
+    await page.locator("#project-name").fill("通知仍只更新保存状态");
+    await page.locator("#project-name").press("Tab");
+  } else {
+    await page.locator('[data-et-clip="picture"]').click();
+    await page.evaluate(() => { mainReadCalls.length = 0; });
+    await page.getByLabel("水平位置（%）", { exact: true }).fill("25");
+    await page.getByLabel("水平位置（%）", { exact: true }).press("Tab");
+  }
+  const after = await waitSaved(page); await settle(page);
+  const counts = await page.evaluate(() => Object.fromEntries(
+    ["synchronizeLegacyView", "editorStatusClipCount", "editorCaptionList"].map((name) =>
+      [name, mainReadCalls.filter((call) => call.stack.includes(name)).length]),
+  ));
+  console.log("Main shell project-read budget:", counts);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(after.name, editing === "project-name" ? "通知仍只更新保存状态" : before.name);
+  if (editing === "inspector") assert.equal(after.sequences[0].clips.find((clip) => clip.id === "picture").transform.x, 0.25);
+  // Renaming also redraws the original shell once; an inspector edit only updates its document status.
+  assert.deepEqual(counts, { synchronizeLegacyView: 1, editorStatusClipCount: Number(editing === "project-name"), editorCaptionList: Number(editing === "project-name") });
+  assert.equal(await page.locator("[data-studio-clip-count]").textContent(), "1");
+  assert.equal(await page.locator("[data-studio-caption-count]").textContent(), "1");
+  assert.equal(await page.locator("#save-state").textContent(), "已自动保存");
+});
+
+async function mainAuditCounts(page) {
+  return page.evaluate(() => ({
+    name: document.querySelector("#project-name").value,
+    revision: document.querySelector("#revision").textContent,
+    clips: document.querySelector("[data-studio-clip-count]").textContent,
+    captions: document.querySelector("[data-studio-caption-count]").textContent,
+    exportDisabled: document.querySelector('.topbar [data-action="export"]').getAttribute("aria-disabled"),
+    save: document.querySelector("#save-state").textContent,
+    error: document.querySelector("#save-state").title,
+  }));
+}
+test("main durable phase preserves old counters until the committed document becomes visible", async (t) => {
+  const page = await openPage(t), before = await saved(page), original = await mainAuditCounts(page);
+  await page.evaluate(() => {
+    const call = codeshellPanel.call;
+    codeshellPanel.call = async (method, args) => {
+      if (method === "media.document.set" && args.key === "video-studio-current") {
+        codeshellPanel.call = call;
+        await new Promise((resolve) => globalThis.releaseMainAuditWrite = resolve);
+      }
+      return call(method, args);
+    };
+    const session = __mainReadAudit.session(), doc = session.read(), seq = doc.sequences.find((s) => s.id === doc.activeSequenceId);
+    globalThis.mainAuditCommit = session.dispatchDurable([{ type: "clip.remove", sequenceId: seq.id, clipIds: seq.clips.map((c) => c.id) }], session.getState().identity, "审核删除片段");
+  });
+  await page.waitForFunction(() => !!globalThis.releaseMainAuditWrite);
+  const held = await mainAuditCounts(page);
+  assert.equal(held.save, "保存中…"); assert.equal(held.revision, original.revision);
+  assert.equal(held.clips, "1"); assert.equal(held.captions, "1");
+  assert.equal(held.exportDisabled, original.exportDisabled);
+  assert.equal(await page.evaluate(() => __mainReadAudit.session().getState().phase), "committing");
+  await page.evaluate(async () => { releaseMainAuditWrite(); await mainAuditCommit; });
+  const after = await waitSaved(page); await settle(page);
+  const committed = await mainAuditCounts(page);
+  assert.equal(after.revision, before.revision + 1);
+  assert.equal(committed.clips, "0"); assert.equal(committed.captions, "0");
+  assert.equal(committed.exportDisabled, "true");
+  assert.equal(committed.revision, `rev ${after.revision}`);
+});
+test("main synchronous read reentry cannot publish the outer stale document", async (t) => {
+  const page = await openPage(t), before = await saved(page);
+  await page.evaluate(() => {
+    const session = __mainReadAudit.session(), read = session.read;
+    session.read = function () {
+      const doc = read.call(this);
+      if (new Error().stack.includes("synchronizeLegacyView")) {
+        session.read = read;
+        const seq = doc.sequences.find((s) => s.id === doc.activeSequenceId), clip = seq.clips.find((c) => c.kind === "media");
+        session.dispatch([{ type: "project.rename", name: "审核最终同期工程" }, { type: "clip.add", sequenceId: seq.id, clip: {...structuredClone(clip), id: "audit-tail", start: clip.start + clip.duration} }], session.getState().identity, "审核同步新版本");
+      }
+      return doc;
+    };
+    session.dispatch([{ type: "project.rename", name: "不得晚写的外层旧名" }], session.getState().identity, "审核外层版本");
+  });
+  const after = await waitSaved(page); await settle(page);
+  assert.equal(after.revision, before.revision + 2);
+  const state = await mainAuditCounts(page);
+  assert.equal(state.name, "审核最终同期工程"); assert.equal(state.clips, "2"); assert.equal(state.captions, "1");
+  assert.equal(state.revision, `rev ${after.revision}`);
+  assert.equal(await page.evaluate(() => __mainReadAudit.project().name), after.name);
 });

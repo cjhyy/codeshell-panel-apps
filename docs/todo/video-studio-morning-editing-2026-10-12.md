@@ -441,3 +441,47 @@ goal仍active至11:00，automation11继续保留。
   `/tmp/video-studio-morning-eleventh-{affected-ui,offline,typecheck,build,build-check,validate}.log`。
 
 继续至11:00；goal与automation11保持active，未发布、未安装。
+
+
+## 第十二批整合验证
+
+- 第十一批891f048本地完整浏览器945/945通过，push CI成功；PR UI首次944/945，
+  旧素材批量删除一项等待完成超时。本地该项独立复跑1/1通过，PR失败job重跑成功
+  （attempt 2）；首次失败仍如实保留。第十一批媒体/offline等其余CI均通过。
+- 本批源码整合5556a63属性到首次timeline控制、ae53820属性到转场动作、32ea556
+  其余Timing提交按钮与已实证错误边界、1c9acaf主界面保存通知读取合并，以及17bae58
+  同步selection views读取合并。依赖b175/63ba未重复挑选。
+- timeline控制先捕获typed action/track intent，合法属性finish与首次primary release
+  均完成后，再用fresh owner/button执行原动作；取消、第二触点、scope/time/viewport
+  变化不回放旧intent。copy/duplicate/mute/lock/delete/add-track/magnetic等真实首击
+  基线失败已修。私有匹配先筛DOM后对单个候选fresh校验，避免5000clip多轨重复clone。
+  代理timeline/workspace377/377及独立mouse/async/sync拒绝复核通过。
+- 转场add/adjust/remove与恒速、倒放、定格、左右保留、应用分段曲线、整理画面轨，
+  先捕获raw选项/clock/曲线快照，再finish属性并fresh规划；两次修改各自可撤销。
+  no-draft仍同步dispatch。曲线Apply直接读取本页尚未change的原生输入，非法值保留
+  可纠正草稿。native排列select、曲线导航/节点增删未纳入此批finisher范围。
+  最终代理timing/workspace/inspector315/315通过；真实baseline七类draft首击均失败，
+  no-draft七类均通过，不能把baseline未涉及的入口宣称已修。
+- 独立实际复核发现并修复两项P2：初次fresh read同步切序列后，旧warning不得写到
+  后继序列；异步finish完成时单次read故障必须释放自己的owner/fieldset并报告，
+  不留下未处理拒绝或清掉新owner。固定97dd源的独立10/10通过，最终curve仅4行
+  输入采集增量另做源审，未回退这些边界。
+- main保存状态通知先检查完整identity签名，未变时不再复制工程；revision更新只读
+  一次并把该detached document用于数量及导出按钮。默认helper调用仍fresh read。
+  62项main完整UI及typecheck通过，另2项durable持有阶段/同步read重入实际回归通过。
+  工程改名仍有原shell完整重绘所需的独立helper读取；不宣称消除全部保存开销。
+- selection/frame同步只读批次共享一个detached document，borrow每次核对id/gen/rev/
+  sequence/selected IDs/time/disposed，try/finally恢复，公共Session.read继续独立clone。
+  代理workspace282/282、16新实际边界及独立源码复核通过。5000片段合法分序列后，
+  闲时同选择selection36.3→10.4ms、begin44.9→18.5ms（p9551.7→19.8）；
+  换选择40.6→14.4/48.7→22.7ms，读取分别4→1、5→2。首次移动planner仍约39ms，
+  不宣称收益；完整草稿flow仅减少本批次三读。详见
+  [可复跑脚本与测量边界](../video-studio-selection-read-benchmark.md)，before/after JSON
+  随提交保存。测量只含UI/规划，不含媒体解码或播放帧率。
+- 根最终冻结timeline/workspace/timing/inspector/main五文件UI683/683通过，typecheck、
+  build、build:check及validate39均通过；source与生成安装包同步提交。
+  日志`/tmp/video-studio-morning-twelfth-{affected-ui,typecheck,build,build-check,validate}.log`。
+  此批未改领域/渲染/原生工具，离线与媒体仍以前一批成功结果为基线；完整浏览器与
+  推送CI随后继续检查，不能提前宣称通过。播放follow及Timing边界裁剪另树后续处理。
+
+继续优化至11:00；goal与automation11保持active，未发布、未安装。

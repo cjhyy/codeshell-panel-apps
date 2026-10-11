@@ -1650,12 +1650,17 @@ function assertEditorEditable(): void {
   )
     throw new Error("自动制作正在处理当前工程，请等待完成或先停止制作");
 }
-function synchronizeLegacyView(): void {
+function synchronizeLegacyView(): EditorDocument | undefined {
   if (!editorSession) return;
-  const doc = editorSession.read();
-  const identity = editorSession.getState().identity;
+  const session = editorSession,
+    identity = session.getState().identity;
   const signature = `${identity.documentId}:${identity.generation}:${identity.revision}`;
   if (signature === legacySignature) return;
+  const doc = session.read(), current = session.getState().identity;
+  if (
+    session !== editorSession || doc.id !== identity.documentId || doc.revision !== identity.revision ||
+    !sameIdentity(identity, current)
+  ) return;
   const previousSequence = legacyView?.sequenceId;
   const previousId = project.id;
   legacyView = projectLegacyView(doc);
@@ -1673,6 +1678,7 @@ function synchronizeLegacyView(): void {
   frame = Math.min(frame, Math.max(0, duration() - 1));
   if (![...project.clips, ...(project.audioClips ?? [])].some((clip) => clip.id === selected))
     selected = project.clips[0]?.id ?? "";
+  return doc;
 }
 function legacyCandidateKey(value: Project): string {
   return JSON.stringify(validateProject(value), (_key, item) =>
@@ -5476,16 +5482,14 @@ function mountCaptionPanel(): void {
     .catch(fail);
 }
 /** The status bar counts the active editor sequence's clips; its subtitles are counted beside them. */
-function editorStatusClipCount(): number | undefined {
-  if (!editorSession) return undefined;
-  const doc = editorSession.read();
+function editorStatusClipCount(doc = editorSession?.read()): number | undefined {
+  if (!doc) return undefined;
   return (doc.sequences.find((sequence) => sequence.id === doc.activeSequenceId)?.clips ?? []).filter(
     (clip) => !isSubtitleClip(clip),
   ).length;
 }
-function editorCaptionList() {
-  if (!editorSession) return undefined;
-  const doc = editorSession.read();
+function editorCaptionList(doc = editorSession?.read()) {
+  if (!doc) return undefined;
   try {
     return listCaptions(doc, doc.activeSequenceId);
   } catch {
@@ -6136,22 +6140,23 @@ async function boot(): Promise<void> {
       refreshEditorSaveStatus();
       const previous = legacySignature;
       const previousAssets = JSON.stringify(project.assets);
-      synchronizeLegacyView();
+      const doc = synchronizeLegacyView();
       updateSave();
+      // Save-state-only notifications do not change any document-derived controls.
+      if (!doc) return;
       if (editorVisible && productionBooted && !projectSwitching) {
         const nameInput = studio.querySelector<HTMLInputElement>("#project-name");
         if (nameInput && document.activeElement !== nameInput) nameInput.value = project.name;
         const revision = studio.querySelector("#revision");
         if (revision) revision.textContent = `rev ${project.revision}`;
         const clipCount = studio.querySelector("[data-studio-clip-count]");
-        if (clipCount) clipCount.textContent = String(editorStatusClipCount() ?? 0);
+        if (clipCount) clipCount.textContent = String(editorStatusClipCount(doc) ?? 0);
         const captionCount = studio.querySelector("[data-studio-caption-count]");
-        if (captionCount) captionCount.textContent = String(editorCaptionList()?.length ?? 0);
+        if (captionCount) captionCount.textContent = String(editorCaptionList(doc)?.length ?? 0);
         const exportButton = studio.querySelector<HTMLButtonElement>(
           '.topbar [data-action="export"]',
         );
         if (exportButton) {
-          const doc = editorSession!.read();
           setAnnouncedDisabled(
             exportButton,
             "export-reason",
