@@ -105,3 +105,38 @@ Asia/Singapore 2026-10-12 11:00。截止后停止新增范围，完成已开始�
   半透明背景也与导出 matting 不一致。失败实验已从源代码移除。
 
 11:00 截止要求仍有效；不要因任何一批提交完成而提前标记整个 goal 完成。
+
+## 第二批整合验证（01:40 左右）
+
+- 集成源包含范围导出（3d645a1 + 404b1fc + 41b8a3a）、预览质量 1ff784b、
+  字幕批量 d1caacad 与稳定字幕行 a83ca475；尚在本任务分支，PR70未同步新批次。
+- 范围导出保持原始document/sequence/hash，音频截取完整48kHz混音的半开区间：
+  ceil(start/5) 至 ceil((start+duration)/5)，输出帧数为ceil(duration * fps)。
+  1tick零原样本区间补静音；范围过载警告和成片回执绑定同一range。
+  全混音缓存不会重启ducking；nested/sourceBinding字幕、转场和透明背景原窗口
+  与范围输出10帧RGB逐字节一致。范围外素材仍完整准备，UI说明时间成本。
+- 字幕1000条替换planner 12.81s→约30ms；真实DOM端到端preview/apply/undo约
+  146/354/189ms。无关刷新1000行含布局中位158.4→62.6ms，行本体29.8→14.5ms，
+  布局约85→0.4ms。整批替换全部行变化仍需重建，不承诺此处同倍速提升。
+- 预览质量默认原始，只降低合成buffer，不改工程/导出/逻辑画布坐标。
+  1080p单调色图层同机中位97.4/25.5/6.6ms；4K 394.0/98.7/24.9ms，
+  仅合成，不包含解码和原有代理准备。证据位于
+  `/Users/admin/.codex/visualizations/2026/10/12/video-studio-preview-quality/`。
+- 本批 typecheck/build/build:check/validate通过，完整离线1074项：1071通过、
+  3可选环境跳过；native voice 5通过1可选跳过；workspace documents5/5。
+  完整真实媒体222/222通过。完整UI回归545/545通过，日志
+  `/tmp/video-studio-morning-second-ui.log`；媒体日志同前缀`-media.log`。
+
+下一批并行工作：
+
+- root：词间标点/空白更正仅在原词内容及顺序完全可核对时保留真实词时间，
+  词内容变化、原对齐不完整、数值/撇号/连字符等歧义继续清除；旧译文总是清除。
+  独立分支`codex/video-studio/caption-punctuation`，以694517f作为d1依赖。
+- linked_split：逐帧workspace四次clone整文档造成1000片段约12ms、合法5000片段
+  （活动2000）约49ms的同步UI回调；采用帧内快照、prepared canvas evaluator、
+  静态inspector不重建、轻量history文档id改善；不得破坏public read复制隔离。
+- media_audit：评估画面快速对齐到画布的六个动作，纯planner+inspector，
+  保留动画关键帧，锁轨/转场/蒙版等歧义整批拒绝并解释，不改canvas-ui。
+- editing_audit：先审计字幕光标拆句/相邻合并现状和安全语义，再实现有限范围。
+
+11:00截止和goal/automation11仍然有效。未发布、未修改用户工程或调用付费模型。

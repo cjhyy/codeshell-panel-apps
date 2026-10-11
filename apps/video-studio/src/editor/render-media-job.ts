@@ -1,5 +1,6 @@
 import type { MediaJob } from "../production";
 import { taskValue } from "../sdk/panel-runtime";
+import { sameExportRange } from "./export-range";
 
 export function isCanonicalRenderTask(value: unknown): boolean {
   const job = value as any,
@@ -24,6 +25,7 @@ export function canonicalRenderMediaJob(value: unknown): MediaJob {
     const video = raw?.video;
     if (
       raw?.verified !== true ||
+      !sameExportRange(request.range, raw.range) ||
       !video ||
       !/^asset-[a-f0-9]{64}$/.test(video.id ?? "") ||
       video.sha256 !== video.id.slice(6) ||

@@ -1,4 +1,4 @@
-import { FrameCompositor } from "./compositor";
+import { FrameCompositor, type PreviewResolution } from "./compositor";
 import { prepareEvaluator } from "./evaluate";
 import { EditorMediaPool, type EditorMediaPoolOptions } from "./media-pool";
 import { frameToTicks, ticksToFrame, ticksToSeconds, secondsToTicks, type Tick } from "./time";
@@ -74,6 +74,7 @@ export class EditorPreview {
   private playhead = 0;
   /** Only a committed frame can be reused when resuming; pointer drafts cannot. */
   private renderedTime?: Tick;
+  private resolution: PreviewResolution = 1;
   private animationFrame?: number;
   private frameWork: Promise<void> = Promise.resolve();
   private fontWarningSignature = "";
@@ -142,10 +143,24 @@ export class EditorPreview {
     const frame = (draft ?? evaluator).evaluate(sequence.id, time);
     const media = await this.pool.prepare(frame, signal);
     if (signal.aborted || generation !== this.generation || this.disposed) return;
-    this.compositor.draw(this.canvas, frame, media);
+    this.compositor.draw(this.canvas, frame, media, this.resolution);
     this.renderedTime = draft ? undefined : time;
     this.playhead = time;
     this.options.onFrame?.(time);
+  }
+  /** A viewer setting only; reports whether this request committed a frame. */
+  async setResolution(value: PreviewResolution, time = this.playhead): Promise<boolean> {
+    this.active();
+    if (![1, 0.5, 0.25].includes(value)) throw new Error("预览质量无效");
+    if (value === this.resolution) return false;
+    this.pause();
+    this.resolution = value;
+    this.renderedTime = undefined;
+    this.compositor.dispose();
+    const operation = this.seek(time, { exact: true }),
+      generation = this.generation;
+    await operation;
+    return !this.disposed && generation === this.generation && this.renderedTime !== undefined;
   }
   /** A pointer gesture previews a candidate using the existing decoders; it never becomes
    * the playback document or modifies history. seek() restores the committed frame. */

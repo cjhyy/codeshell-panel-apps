@@ -28,6 +28,7 @@ import type { EditorAsset, EditorClip, EditorDocument, EditorSequence } from "./
 import { MAX_EDITOR_TICK, sequenceDuration } from "./validation";
 import { findFreeTrack, planAppendPlacement, planTextPlacement } from "./placement";
 import { EditorExportBatch } from "./export-batch";
+import type { ExportRange } from "./export-range";
 import { EditorTiming } from "./timing-ui";
 import { EditorCanvas } from "./canvas-ui";
 import { EditorSequences } from "./sequences-ui";
@@ -35,6 +36,7 @@ import { EditorMulticam, type EditorMulticamContext } from "./multicam-ui";
 import type { EditorTimelineContext } from "./timeline-ui";
 import { panelRuntimeErrorMessage } from "../sdk/panel-runtime";
 import { audioMixWarning } from "./audio-mix-report";
+import type { PreviewResolution } from "./compositor";
 
 export interface EditorWorkspaceOptions {
   layout?: "standalone" | "embedded";
@@ -56,6 +58,7 @@ export interface EditorWorkspaceOptions {
     sequenceId: string,
     profile: ExportProfile,
     signal: AbortSignal,
+    range?: ExportRange,
   ): Promise<void>;
   importMedia(): void | Promise<void>;
   openProject(): void | Promise<void>;
@@ -138,7 +141,7 @@ export class EditorWorkspace {
     container.innerHTML = `<header class="ew-header"><strong>Mimi 视频工作台</strong><input class="ew-project-name" data-ew-project-name aria-label="工程名称"><span data-ew-save role="status"></span><div class="ew-header-actions">${button("new", "新建")}${button("open", "打开")}${button("download", "工程备份")}${options.packProject ? button("pack-project", "打包工程") : ""}${options.importProjectBundle ? button("import-project-bundle", "打开工程包") : ""}${options.syncProject ? button("sync-project", "工程同步") : ""}${button("production", "制作与录音")}${button("export", "导出", 'class="ew-primary"')}</div></header>
       <nav class="ew-tools" aria-label="工程操作">${button("undo", "撤销")}${button("redo", "重做")}<label>序列 <select data-ew-sequence aria-label="当前序列"></select></label>${button("new-sequence", "新序列")}${button("sequence-settings", "画布与帧率")}${button("sequences", "序列与复合")}${button("multicam", "多机位")}<span class="ew-spacer"></span>${button("marker", "标记与范围")}${button("retry-save", "重试保存", "hidden")}</nav>
       <div class="ew-main"><aside class="ew-library" aria-label="素材与创作"><div class="ew-library-top"><h2>素材</h2>${button("import", "导入素材")}</div><input data-ew-search type="search" placeholder="搜索素材" aria-label="搜索素材"><div class="ew-create">${button("title", "文字")}${button("rectangle", "矩形")}${button("ellipse", "圆形")}</div><div class="ew-assets" data-ew-assets></div><div class="ew-production-links">${button("captions", "语音字幕")}${options.showSeparation ? button("separate", "人声与伴奏分离") : ""}${options.showAudioEnhancement ? button("enhance-audio", "降噪与响度") : ""}${button("voiceover", "配音")}${button("recording", "录音与录屏")}${button("roughcut", "AI 粗剪")}</div></aside>
-      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span></div></section>
+      <section class="ew-viewer" aria-label="视频预览"><div class="ew-canvas-wrap"><canvas data-ew-canvas aria-label="当前画面"></canvas><p data-ew-preview-error hidden role="status"></p></div><p data-ew-font-warning hidden role="status"></p><p data-ew-audio-warning hidden role="status"></p><div class="ew-player">${button("play", "播放", 'aria-label="播放"')}<output data-ew-time>00:00.00</output><input data-ew-seek type="range" min="0" max="0" value="0" step="1" aria-label="播放位置"><output data-ew-duration>00:00.00</output><span data-ew-fps></span><select data-ew-quality aria-label="预览质量" title="仅影响预览，工程和导出尺寸保持不变"><option value="1">原始质量</option><option value="0.5">1/2 质量</option><option value="0.25">1/4 质量</option></select></div></section>
       <aside class="ew-properties"><div data-ew-inspector></div><div data-ew-timing></div><div data-ew-sequences hidden></div><div data-ew-multicam hidden></div><div data-ew-markers hidden></div></aside></div><section data-ew-timeline></section>`;
     if (options.layout === "embedded") {
       for (const [action, glyph] of [
@@ -868,6 +871,22 @@ export class EditorWorkspace {
   };
   private change = (event: Event) => {
     const target = event.target as HTMLInputElement;
+    if (target.matches("[data-ew-quality]"))
+      this.run(async () => {
+        this.canvasEditor.cancel();
+        this.cancelPreparation();
+        try {
+          const drawn = await this.preview.setResolution(
+            Number(target.value) as PreviewResolution,
+            this.playhead,
+          );
+          if (drawn && !this.disposed && !this.preparing)
+            this.get("[data-ew-preview-error]").hidden = true;
+        } catch (error) {
+          this.previewError(error);
+          throw error;
+        }
+      });
     if (target.matches("[data-ew-seek]")) this.run(() => this.seek(Number(target.value)));
     if (target.matches("[data-ew-project-name]"))
       this.run(() => this.apply([{ type: "project.rename", name: target.value }], "工程重命名"));
@@ -1198,6 +1217,7 @@ export class EditorWorkspace {
     ];
     const preset = presets[0]!;
     let batch: EditorExportBatch | undefined;
+    const ranges = sequence.markers.filter((marker) => marker.duration > 0);
     const readProfile = (form: HTMLFormElement) => {
       const data = new FormData(form),
         [numerator, denominator] = String(data.get("rate")).split("/").map(Number),
@@ -1240,7 +1260,7 @@ export class EditorWorkspace {
       <p data-export-pcm hidden>PCM 音频：48 kHz · 16 位 · 立体声</p>
       <label><input name="captions" type="checkbox" checked>包含字幕</label>
       <div class="ew-form-row"><button type="button" data-save-export-preset>保存为工程预设</button><button type="button" data-remove-export-preset disabled>删除所选工程预设</button></div>
-      </fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
+      </fieldset><fieldset><legend>导出范围</legend><label>范围<select name="range"><option value="">完整所选序列</option>${ranges.map((marker) => `<option value="${esc(marker.id)}"${marker.time + marker.duration > sequenceDuration(sequence) ? " disabled" : ""}>${esc(marker.name)} · ${timeLabel(marker.time)} — ${timeLabel(marker.time + marker.duration)}${marker.time + marker.duration > sequenceDuration(sequence) ? "（超出序列时长）" : ""}</option>`).join("")}</select></label><p>范围标记只导出当前序列的这一段。可先在“标记与范围”中添加范围。</p><p data-export-range-hint hidden>仍需准备完整序列的素材与声音，长序列可能需要较长时间。</p></fieldset><fieldset><legend>导出序列</legend>${doc.sequences.map((item) => `<label><input type="checkbox" name="sequences" value="${esc(item.id)}" ${item.id === sequence.id ? "checked" : ""} ${sequenceDuration(item) ? "" : "disabled"}>${esc(item.name)}${sequenceDuration(item) ? "" : "（空序列）"}</label>`).join("")}</fieldset>
       <fieldset><legend>批量输出格式</legend><label><input type="checkbox" name="custom" checked>使用上方设置</label>${presets.map((item) => `<label><input type="checkbox" name="profiles" value="${esc(item.id)}">${esc(item.name)} · ${item.width} × ${item.height} · ${item.videoCodec.toUpperCase()}</label>`).join("")}</fieldset>
       </fieldset><p data-export-progress role="status">每个所选序列都会按所选格式分别导出。</p>`,
       async (form, signal) => {
@@ -1254,10 +1274,13 @@ export class EditorWorkspace {
             const data = new FormData(form),
               profiles = presets.filter((item) => data.getAll("profiles").includes(item.id));
             if (data.has("custom")) profiles.unshift(readProfile(form));
+            const marker = ranges.find((item) => item.id === data.get("range"));
+            if (data.get("range") && !marker) throw new Error("所选导出范围已不存在");
             const proposed = new EditorExportBatch(
               doc,
-              data.getAll("sequences").map(String),
+              marker ? [sequence.id] : data.getAll("sequences").map(String),
               profiles,
+              marker ? { start: marker.time, duration: marker.duration } : undefined,
             );
             await this.options.session.flush();
             if (signal.aborted) return;
@@ -1291,7 +1314,20 @@ export class EditorWorkspace {
     const input = <T extends HTMLInputElement | HTMLSelectElement = HTMLInputElement>(
       name: string,
     ) => form.elements.namedItem(name) as T;
+    let rangeActive = false;
+    let fullSequenceSelection = new Set([sequence.id]);
     const updateControls = () => {
+      const selectedRange = Boolean(input("range").value);
+      const choices = [...form.querySelectorAll<HTMLInputElement>('input[name="sequences"]')];
+      form.querySelector<HTMLElement>("[data-export-range-hint]")!.hidden = !selectedRange;
+      if (selectedRange && !rangeActive)
+        fullSequenceSelection = new Set(choices.filter((choice) => choice.checked).map((choice) => choice.value));
+      for (const choice of choices) {
+        if (selectedRange) choice.checked = choice.value === sequence.id;
+        else if (rangeActive) choice.checked = fullSequenceSelection.has(choice.value);
+        choice.disabled = selectedRange || !sequenceDuration(doc.sequences.find((item) => item.id === choice.value)!);
+      }
+      rangeActive = selectedRange;
       form.querySelector<HTMLFieldSetElement>("[data-export-custom]")!.disabled =
         !input("custom").checked;
       const pcm = input("format").value === "mov:prores:pcm";

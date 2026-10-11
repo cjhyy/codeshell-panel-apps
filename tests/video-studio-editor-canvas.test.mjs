@@ -127,8 +127,8 @@ async function fixture(t, options = {}) {
         {
           id: "main",
           name: "Main",
-          width: 320,
-          height: 180,
+          width: options.canvasWidth ?? 320,
+          height: options.canvasHeight ?? 180,
           frameRate: { numerator: 30, denominator: 1 },
           background: "#000000",
           timelineMode: "free",
@@ -209,6 +209,7 @@ async function fixture(t, options = {}) {
     });
     preview.setDocument(session.read());
     await preview.seek(0);
+    if (options.resolution) await preview.setResolution(options.resolution);
     controls = new api.EditorCanvas(document.querySelector("canvas"), {
       read: () => session.read(),
       identity: () => session.getState().identity,
@@ -263,6 +264,12 @@ async function fixture(t, options = {}) {
         selected = [];
         controls.render();
       },
+      selection: () => selected,
+      quality: async (value) => {
+        controls.cancel();
+        await preview.setResolution(value);
+        controls.render();
+      },
     };
   }, options);
   await settle(page);
@@ -284,6 +291,47 @@ async function drag(page, locator, dx, dy, beforeUp) {
   await settle(page);
 }
 const handle = (page, name) => page.locator(`[data-canvas-handle="${name}"]`);
+test("half and quarter previews keep odd-sized unselected hit testing and drag coordinates in project units", async (t) => {
+  for (const resolution of [0.5, 0.25]) {
+    const page = await fixture(t, { resolution, canvasWidth: 321, canvasHeight: 181 });
+    const before = await page.evaluate(() => f.read());
+    const overlay = page.locator(".editor-canvas-controls");
+    assert.equal(await overlay.getAttribute("viewBox"), "0 0 321 181");
+    assert.deepEqual(
+      await page.locator("canvas").evaluate((canvas) => [canvas.width, canvas.height]),
+      [Math.round(321 * resolution), Math.round(181 * resolution)],
+    );
+    await page.evaluate(() => f.clearSelection());
+    assert.equal(await handle(page, "move").count(), 0);
+    const box = await overlay.boundingBox();
+    const lowBounds = await page.locator("canvas").boundingBox();
+    assert.ok(Math.abs(lowBounds.width / lowBounds.height - 321 / 181) < 0.0001);
+    await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.5);
+    assert.deepEqual(await page.evaluate(() => f.selection()), ["picture"]);
+    const image = await page.locator("canvas").evaluate((canvas) => canvas.toDataURL());
+    await drag(page, handle(page, "move"), box.width * 0.1, box.height * 0.1);
+    const transform = await page.evaluate(() => f.read().sequences[0].clips[0].transform);
+    assert.ok(Math.abs(transform.x - 0.1) < 0.003, JSON.stringify(transform));
+    assert.ok(Math.abs(transform.y - 0.1) < 0.003, JSON.stringify(transform));
+    await page.evaluate(() => f.undo());
+    await settle(page);
+    assert.deepEqual(
+      await page.evaluate(() => f.read().sequences[0].clips),
+      before.sequences[0].clips,
+    );
+    assert.equal(await page.locator("canvas").evaluate((canvas) => canvas.toDataURL()), image);
+    await page.evaluate(() => f.quality(1));
+    assert.deepEqual(
+      await page.locator("canvas").evaluate((canvas) => [canvas.width, canvas.height]),
+      [321, 181],
+    );
+    const originalBounds = await page.locator("canvas").boundingBox();
+    for (const key of ["x", "y", "width", "height"])
+      assert.ok(Math.abs(originalBounds[key] - lowBounds[key]) < 0.05, key);
+    assert.deepEqual(await page.evaluate(() => f.errors), []);
+  }
+});
+
 test("two native canvas touches ignore secondary cancellation and capture loss, commit once and undo", async (t) => {
   const page = await fixture(t, { touch: true }),
     before = await page.evaluate(() => f.read()),

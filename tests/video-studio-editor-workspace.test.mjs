@@ -268,12 +268,13 @@ async function fixture(t, options = {}) {
           "导入素材",
         );
       },
-      exportSequence: async (doc, sequenceId, profile, signal) => {
+      exportSequence: async (doc, sequenceId, profile, signal, range) => {
         const attempt = {
           doc: structuredClone(doc),
           sequenceId,
           profile: structuredClone(profile),
           signal,
+          range: structuredClone(range),
         };
         exportAttempts.push(attempt);
         if (exportAttempts.length === exportHeldAt)
@@ -290,6 +291,7 @@ async function fixture(t, options = {}) {
           sequenceId,
           profile: structuredClone(profile),
           storedRevision: stored.revision,
+          range: structuredClone(range),
         });
       },
       openProject: () => events.push("open"),
@@ -1122,6 +1124,51 @@ test("a long playback preparation keeps showing how long it has been waiting", a
   await page.evaluate(() => fixture.resolveAudio(0));
 });
 
+test("preview quality is view-only, cancels pending preparation and leaves full-sized export settings", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const before = await documentState(page),
+    writes = await page.evaluate(() => fixture.writes.length);
+  const quality = page.getByLabel("预览质量", { exact: true });
+  assert.equal(await quality.inputValue(), "1");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await quality.selectOption("0.25");
+  await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 80);
+  assert.equal(await page.evaluate(() => fixture.audio()[0].aborted), true);
+  await page.evaluate(() => fixture.resolveAudio(0));
+  await settle(page);
+  assert.equal(await page.evaluate(() => fixture.playing()), false);
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.writes.length), writes);
+  assert.equal(await action(page, "undo").isDisabled(), true);
+  await action(page, "export").click();
+  assert.equal(await page.locator('dialog [name="width"]').inputValue(), "320");
+  assert.equal(await page.locator('dialog [name="height"]').inputValue(), "180");
+  await page.locator("dialog button[type=submit]").click();
+  await page.locator("dialog").waitFor({ state: "detached" });
+  const exported = await page.evaluate(() => fixture.exports[0]);
+  assert.deepEqual(exported.doc, before);
+  assert.equal(exported.profile.width, 320);
+  assert.equal(exported.profile.height, 180);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
+});
+
+test("successful quality redraw clears an earlier playback error without changing the document", async (t) => {
+  const page = await fixture(t, { audio: true });
+  const before = await documentState(page),
+    status = page.locator("[data-ew-preview-error]");
+  await action(page, "play").click();
+  await page.waitForFunction(() => fixture.audio().length === 1);
+  await page.evaluate(() => fixture.rejectAudio(0, "测试声音准备失败"));
+  await page.waitForFunction(() => fixture.errors.length === 1);
+  assert.equal(await status.isVisible(), true);
+  await page.getByLabel("预览质量", { exact: true }).selectOption("0.5");
+  await page.waitForFunction(() => document.querySelector("[data-ew-canvas]").width === 160);
+  await status.waitFor({ state: "hidden" });
+  assert.deepEqual(await documentState(page), before);
+  assert.equal(await page.evaluate(() => fixture.errors.length), 1);
+});
+
 test("failed playback preparation clears busy state and explains an outdated panel without changing edits", async (t) => {
   const page = await fixture(t, { audio: true });
   await page.evaluate(() => fixture.externalEdit());
@@ -1839,6 +1886,50 @@ test("export rejects an empty selection before any adapter call", async (t) => {
   assert.match(await page.locator(".ew-form-error").textContent(), /预设/);
   assert.equal(await page.evaluate(() => fixture.exportAttempts().length), 0);
   await page.locator("[data-ew-close]").click();
+});
+
+test("range marker export submits only the current sequence window and restores full-sequence choices", async (t) => {
+  const page = await fixture(t, { sequenceCount: 2, emptySequence: true });
+  await page.evaluate(() => fixture.dispatch([
+    { type: "marker.add", sequenceId: "main", marker: { id: "review", time: 80085, duration: 240240, name: '<审核>&"', note: "", color: "#ffcc00" } },
+    { type: "marker.add", sequenceId: "main", marker: { id: "point", time: 0, duration: 0, name: "点标记", note: "", color: "#ffcc00" } },
+    { type: "marker.add", sequenceId: "main", marker: { id: "outside", time: 3 * 240000, duration: 2 * 240000, name: "超出画面", note: "", color: "#ffcc00" } },
+  ], "添加导出范围"));
+  await settle(page);
+  const before = await documentState(page);
+  await action(page, "export").click();
+  const range = page.locator('dialog [name="range"]'),
+    main = page.locator('dialog [name="sequences"][value="main"]'),
+    other = page.locator('dialog [name="sequences"][value="sequence-2"]');
+  assert.equal(await range.locator('[value="point"]').count(), 0);
+  assert.equal(await range.locator('[value="outside"]').getAttribute("disabled"), "", JSON.stringify(before.sequences[0]));
+  assert.match(await range.locator('[value="review"]').textContent(), /<审核>&"/);
+  assert.equal(await page.locator("[data-export-range-hint]").isVisible(), false);
+  await other.check();
+  await range.selectOption("review");
+  assert.equal(await page.locator("[data-export-range-hint]").isVisible(), true);
+  assert.equal(await main.isChecked(), true);
+  assert.equal(await main.isDisabled(), true);
+  assert.equal(await other.isChecked(), false);
+  assert.equal(await other.isDisabled(), true);
+  await range.selectOption("");
+  assert.equal(await page.locator("[data-export-range-hint]").isVisible(), false);
+  assert.equal(await other.isChecked(), true);
+  assert.equal(await other.isEnabled(), true);
+  await range.selectOption("review");
+  await page.locator('dialog [name="profiles"]').first().check();
+  await page.locator('dialog [type="submit"]').click();
+  await page.waitForFunction(() => fixture.exports.length === 2);
+  const exports = await page.evaluate(() => fixture.exports);
+  assert.equal(exports[0].sequenceId, exports[1].sequenceId);
+  for (const item of exports) {
+    assert.deepEqual(item.doc, before);
+    assert.equal(item.sequenceId, "main");
+    assert.deepEqual(item.range, { start: 80085, duration: 240240 });
+  }
+  assert.deepEqual(await documentState(page), before);
+  assert.deepEqual(await page.evaluate(() => fixture.stored()), before);
+  assert.deepEqual(await page.evaluate(() => fixture.errors), []);
 });
 
 for (const width of [620, 390])

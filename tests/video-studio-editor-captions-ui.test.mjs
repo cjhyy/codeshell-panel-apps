@@ -768,3 +768,163 @@ test("replacement rejects stale and locked previews, retries a failed save, and 
   await page.waitForFunction(() => captions().every((clip) => clip.text.includes("字幕")));
   assert.equal(await page.evaluate(() => session.read().production.narration.phase), "approved");
 });
+
+test("a thousand matching subtitles preview and save as one reversible batch", async (t) => {
+  const page = await fixture(t, { inline: true });
+  await page.evaluate(() => {
+    const clips = Array.from({ length: 1000 }, (_, index) => ({
+      id: `bulk-caption-${index}`, kind: "text", role: "subtitle", label: "字幕",
+      trackId: "text", start: index * 240000, duration: 240000,
+      text: `目标 字幕 ${index}`, words: [], style: editor.defaultTextStyle(),
+      transform: editor.defaultTransform(), color: editor.defaultColorAdjustment(), blendMode: "normal",
+    }));
+    session.dispatch(clips.map((clip) => ({ type: "clip.add", sequenceId: "main", clip })),
+      session.getState().identity, "导入字幕");
+  });
+  await page.getByLabel("查找字幕文字", { exact: true }).fill("目标");
+  await page.getByLabel("替换为", { exact: true }).fill("已校对");
+  assert.match(await page.locator(".ec-find-count").textContent(), /1000 条字幕 \/ 1000 处匹配/);
+  const before = await page.evaluate(() => session.read());
+  await page.getByRole("button", { name: "预览全部替换", exact: true }).click();
+  assert.equal(await page.evaluate(() => controller.getState().candidate.operations.length), 1000);
+  assert.deepEqual(await page.evaluate(() => session.read()), before);
+  await page.getByRole("button", { name: "应用预览", exact: true }).click();
+  await page.waitForFunction(() => captions().every((clip) => clip.text.startsWith("已校对 字幕")));
+  assert.equal(await page.evaluate(() => session.read().revision), before.revision + 1);
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().every((clip) => clip.text.startsWith("目标 字幕")));
+  const restored = await page.evaluate(() => session.read());
+  assert.deepEqual(restored.sequences, before.sequences);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("unchanged caption rows retain native IME ownership through unrelated edits, neighboring saves and Undo", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const [first, second] = await page.evaluate(async () => [
+    await controller.add("main", { start: 0, text: "第一条" }),
+    await controller.add("main", { start: 6 * 240000, text: "第二条" }),
+  ]);
+  const input = page.locator(`[data-caption-id="${second}"] textarea`);
+  await input.focus();
+  await input.evaluate((node) => {
+    globalThis.nativeCaptionInput = node;
+    globalThis.captionCompositionEnds = 0;
+    node.addEventListener("compositionend", () => captionCompositionEnds++);
+    node.setSelectionRange(0, 0);
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.imeSetComposition", { text: "尚未提交", selectionStart: 4, selectionEnd: 4 });
+    const composing = await input.evaluate((node) => [node.value, node.selectionStart, node.selectionEnd]);
+    await page.evaluate(() => session.dispatch(
+      [{ type: "project.rename", name: "后台更新" }], session.getState().identity,
+    ));
+    await page.evaluate((id) => controller.updateText("main", id, "邻行已保存"), first);
+    await page.evaluate(() => session.undo());
+    assert.deepEqual(await input.evaluate((node) => [
+      node === nativeCaptionInput, node === document.activeElement,
+      node.value, node.selectionStart, node.selectionEnd, captionCompositionEnds,
+    ]), [true, true, ...composing, 0]);
+    await cdp.send("Input.insertText", { text: "确认输入" });
+    assert.equal(await page.evaluate(() => captionCompositionEnds), 1);
+    assert.ok((await input.inputValue()).includes("确认输入"));
+    assert.equal(await page.evaluate((id) => captions().find((clip) => clip.id === id).text, second), "第二条");
+    assert.deepEqual(await page.evaluate(() => errors), []);
+  } finally {
+    await cdp.detach();
+  }
+});
+
+test("keyed caption signatures refresh timing, word counts and narration badges while retained actions use fresh locks", async (t) => {
+  const page = await fixture(t, { inline: true, narration: true });
+  await page.evaluate(() => {
+    globalThis.draftRow = document.querySelector('[data-caption-id="draft-clip"]');
+    globalThis.ownRow = document.querySelector('[data-caption-id="own-clip"]');
+    const clip = captions().find((clip) => clip.id === "own-clip");
+    session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: clip.id,
+      patch: { style: { ...clip.style, fontSize: 72 } } }], session.getState().identity);
+  });
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === ownRow), true);
+  await page.evaluate(() => session.dispatch([{ type: "clip.update", sequenceId: "main", clipId: "own-clip",
+    patch: { words: [{ text: "用户自己的字幕", start: 0, end: 240000 }] } }], session.getState().identity));
+  assert.match(await page.locator('[data-caption-id="own-clip"] small').textContent(), /1 个真实词时间/);
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === ownRow), false);
+  await page.evaluate(() => controller.updateTiming("main", "draft-clip", { start: 6 * 240000, end: 7 * 240000 }));
+  assert.deepEqual(await page.locator(".ec-row").evaluateAll((nodes) => nodes.map((node) => node.dataset.captionId)), ["own-clip", "draft-clip"]);
+  assert.equal(await page.locator('[data-caption-id="draft-clip"] input[data-caption-field="start"]').inputValue(), "6.000");
+  await page.evaluate(() => {
+    const production = session.read().production;
+    session.dispatch([{ type: "project.production", data: { ...production,
+      narration: { ...production.narration, draftCaptionIds: [] } } }], session.getState().identity);
+  });
+  assert.equal(await page.locator(".ec-badge").count(), 0);
+  const own = page.locator('[data-caption-id="own-clip"]');
+  await own.locator('input[type="checkbox"]').uncheck();
+  await page.evaluate(() => {
+    globalThis.lockedRow = document.querySelector('[data-caption-id="own-clip"]');
+    session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: true } }], session.getState().identity);
+  });
+  assert.equal(await page.evaluate(() => document.querySelector('[data-caption-id="own-clip"]') === lockedRow), true);
+  assert.equal(await own.locator('input[type="checkbox"]').isChecked(), false);
+  await own.getByLabel("字幕文字", { exact: true }).fill("保留的锁轨草稿");
+  await own.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => errors.length === 1);
+  assert.match(await page.locator(".ec-status").textContent(), /锁定/);
+  assert.equal(await page.evaluate(() => captions().find((clip) => clip.id === "own-clip").text), "用户自己的字幕");
+  await page.evaluate(() => session.dispatch([{ type: "track.update", sequenceId: "main", trackId: "text", patch: { locked: false } }], session.getState().identity));
+  await own.getByRole("button", { name: "保存文字", exact: true }).click();
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "保留的锁轨草稿"));
+  await page.evaluate(() => session.undo());
+  await page.waitForFunction(() => captions().some((clip) => clip.text === "用户自己的字幕"));
+  assert.equal(await own.getByLabel("字幕文字", { exact: true }).inputValue(), "用户自己的字幕");
+  assert.equal(await page.evaluate(() => errors.length), 1);
+});
+
+test("another sequence and a new document generation never reuse old caption rows with identical displayed values", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const id = await page.evaluate(() => controller.add("main", { start: 0, text: "同一字幕" }));
+  await page.evaluate(async (id) => {
+    globalThis.previousCaptionRow = document.querySelector(`[data-caption-id="${id}"]`);
+    const sequence = structuredClone(session.read().sequences[0]);
+    sequence.id = "other";
+    session.dispatch([{ type: "sequence.add", sequence }], session.getState().identity);
+    ui.open("other");
+  }, id);
+  assert.equal(await page.locator(`[data-caption-id="${id}"]`).evaluate((node) => node !== previousCaptionRow), true);
+  await page.evaluate(async (id) => {
+    globalThis.previousCaptionRow = document.querySelector(`[data-caption-id="${id}"]`);
+    await session.replace(session.read());
+  }, id);
+  assert.deepEqual(await page.locator(`[data-caption-id="${id}"]`).evaluate((node) => [
+    node !== previousCaptionRow, previousCaptionRow.isConnected, node.querySelector("textarea").value,
+  ]), [true, false, "同一字幕"]);
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});
+
+test("a thousand-row refresh retains every unchanged node and replaces only the edited row", async (t) => {
+  const page = await fixture(t, { inline: true });
+  const result = await page.evaluate(async () => {
+    const clips = Array.from({ length: 1000 }, (_, index) => ({
+      id: `stable-caption-${index}`, kind: "text", role: "subtitle", label: "字幕",
+      trackId: "text", start: index * 240000, duration: 240000, text: `字幕 ${index}`, words: [],
+      style: editor.defaultTextStyle(), transform: editor.defaultTransform(),
+      color: editor.defaultColorAdjustment(), blendMode: "normal",
+    }));
+    session.dispatch(clips.map((clip) => ({ type: "clip.add", sequenceId: "main", clip })), session.getState().identity);
+    const rows = document.querySelector(".ec-rows"),
+      initial = [...rows.children],
+      observer = new MutationObserver(() => {});
+    observer.observe(rows, { childList: true });
+    session.dispatch([{ type: "project.rename", name: "仅改工程名" }], session.getState().identity);
+    const unchanged = [...rows.children].every((node, index) => node === initial[index]),
+      unrelatedMutations = observer.takeRecords().length;
+    await controller.updateText("main", "stable-caption-500", "只改这一条");
+    const retained = [...rows.children].filter((node, index) => node === initial[index]).length;
+    session.undo();
+    observer.disconnect();
+    return { unchanged, unrelatedMutations, retained, count: rows.children.length,
+      restored: captions().find((clip) => clip.id === "stable-caption-500").text };
+  });
+  assert.deepEqual(result, { unchanged: true, unrelatedMutations: 0, retained: 999, count: 1000, restored: "字幕 500" });
+  assert.deepEqual(await page.evaluate(() => errors), []);
+});

@@ -28,6 +28,16 @@ const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) =
 };
 const seconds = (tick: number) => (tick / 240000).toFixed(3);
 const APPROVED = new Set(["approved", "recorded", "aligned"]);
+interface CaptionRow {
+  element: HTMLElement;
+  checkbox: HTMLInputElement;
+  /** Every saved value used by the row's display or event closures. */
+  text: string;
+  start: Tick;
+  duration: Tick;
+  wordCount: number;
+  temporary: boolean;
+}
 function narration(doc: EditorDocument): {
   phase: string;
   captionBasis: string;
@@ -90,7 +100,10 @@ export class EditorCaptionsUI {
   private opened = false;
   private disposed = false;
   private focused: HTMLElement | undefined;
-  /** Unsaved row edits by clip ID; rows are rebuilt whenever the document changes. */
+  private rowSession?: EditorSession;
+  private rowScope = "";
+  private readonly rowNodes = new Map<string, CaptionRow>();
+  /** Unsaved row edits survive changes to other rows and unrelated project revisions. */
   private readonly drafts = new Map<string, { text?: string; start?: string; end?: string }>();
   constructor(
     container: HTMLElement,
@@ -264,7 +277,8 @@ export class EditorCaptionsUI {
         if (candidate?.replacement) this.assertSavedRows(ids);
         await context.controller.apply();
         if (this.disposed) return;
-        this.selected = new Set(ids.filter((id) => this.captions().some((clip) => clip.id === id)));
+        const savedIds = new Set(this.captions().map((clip) => clip.id));
+        this.selected = new Set(ids.filter((id) => savedIds.has(id)));
         this.renderRows();
         this.selectionChanged();
       }),
@@ -496,9 +510,17 @@ export class EditorCaptionsUI {
       throw new Error("匹配字幕含未保存的文字或时间，请先保存再替换；草稿已保留。");
   }
   private renderRows() {
-    const clips = this.captions(),
+    const session = this.context.session(),
+      identity = session.getState().identity,
+      scope = JSON.stringify([identity.documentId, identity.generation, this.sequenceId]),
+      clips = this.captions(),
       seq = this.sequence(),
-      drafts = this.draftIds(this.context.session().read());
+      drafts = this.draftIds(session.read());
+    if (this.rowSession !== session || this.rowScope !== scope) {
+      this.rowSession = session;
+      this.rowScope = scope;
+      this.rowNodes.clear();
+    }
     const active = document.activeElement;
     const focus =
       active instanceof HTMLElement && this.rows.contains(active) && active.dataset.captionField
@@ -513,11 +535,11 @@ export class EditorCaptionsUI {
         : undefined;
     const alive = new Set(clips.map((clip) => clip.id));
     for (const id of this.drafts.keys()) if (!alive.has(id)) this.drafts.delete(id);
-    this.rows.replaceChildren();
+    for (const id of this.rowNodes.keys()) if (!alive.has(id)) this.rowNodes.delete(id);
     this.exportButton.disabled = !clips.length;
     this.exportButton.title = clips.length ? "" : "当前序列还没有字幕";
     if (!clips.length || !seq) {
-      this.rows.append(
+      this.rows.replaceChildren(
         element(
           "p",
           this.context.currentTime
@@ -527,7 +549,21 @@ export class EditorCaptionsUI {
       );
       return;
     }
+    const ordered: HTMLElement[] = [];
     for (const clip of clips) {
+      const cached = this.rowNodes.get(clip.id),
+        temporary = drafts.has(clip.id);
+      if (
+        cached?.text === clip.text &&
+        cached.start === clip.start &&
+        cached.duration === clip.duration &&
+        cached.wordCount === clip.words.length &&
+        cached.temporary === temporary
+      ) {
+        cached.checkbox.checked = this.selected.has(clip.id);
+        ordered.push(cached.element);
+        continue;
+      }
       const row = element("article");
       row.className = "ec-row";
       row.dataset.captionId = clip.id;
@@ -555,7 +591,7 @@ export class EditorCaptionsUI {
         }),
       );
       head.append(checkbox, seek);
-      if (drafts.has(clip.id)) {
+      if (temporary) {
         const badge = element("span", "临时字幕");
         badge.className = "ec-badge";
         badge.title = "按文案估时，录音后会按真实口播重排";
@@ -622,9 +658,22 @@ export class EditorCaptionsUI {
           : "无词时间，可使用普通字幕",
       );
       row.append(head, input, actions, timing, info);
-      this.rows.append(row);
+      this.rowNodes.set(clip.id, {
+        element: row, checkbox, text: clip.text, start: clip.start, duration: clip.duration,
+        wordCount: clip.words.length, temporary,
+      });
+      ordered.push(row);
     }
-    if (!focus?.clipId) return;
+    // Remove old rows first, so inserting one changed row never detaches its unchanged neighbor.
+    const retained = new Set(ordered);
+    for (const child of [...this.rows.children])
+      if (!retained.has(child as HTMLElement)) child.remove();
+    let cursor = this.rows.firstChild;
+    for (const row of ordered) {
+      if (row === cursor) cursor = cursor.nextSibling;
+      else this.rows.insertBefore(row, cursor);
+    }
+    if (!focus?.clipId || (active instanceof HTMLElement && document.activeElement === active)) return;
     const target = [...this.rows.querySelectorAll<HTMLElement>("[data-caption-id]")]
       .find((row) => row.dataset.captionId === focus.clipId)
       ?.querySelector<HTMLInputElement | HTMLTextAreaElement>(

@@ -124,6 +124,10 @@
   }
   function reset(buffer) {
     buffer.context.reset();
+    buffer.context.scale(buffer.canvas.width / buffer.width, buffer.canvas.height / buffer.height);
+  }
+  function drawBuffer(target, buffer, x = 0) {
+    target.drawImage(buffer.canvas, x, 0, buffer.width, buffer.height);
   }
   function composite(mode) {
     return mode === "normal" ? "source-over" : mode;
@@ -151,6 +155,7 @@
     active = /* @__PURE__ */ new Set();
     allocatedPixels = 0;
     drawing = false;
+    resolution = 1;
     dispose() {
       if (this.drawing) throw new Error("正在合成画面，暂时无法释放合成器");
       for (const item of this.free) {
@@ -162,23 +167,30 @@
     }
     take(width, height) {
       dimensions(width, height);
+      const physicalWidth = Math.max(1, Math.round(width * this.resolution)), physicalHeight = Math.max(1, Math.round(height * this.resolution));
       const position = this.free.findIndex(
-        (item) => item.canvas.width === width && item.canvas.height === height
+        (item) => item.canvas.width === physicalWidth && item.canvas.height === physicalHeight
       );
       let buffer = position < 0 ? void 0 : this.free.splice(position, 1)[0];
       if (!buffer) {
-        while (this.free.length && this.allocatedPixels + width * height > MAX_ACTIVE_PIXELS) {
+        const pixels = physicalWidth * physicalHeight;
+        while (this.free.length && this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS) {
           const evicted = this.free.pop();
           this.allocatedPixels -= evicted.pixels;
           evicted.canvas.width = 1;
           evicted.canvas.height = 1;
         }
-        if (this.allocatedPixels + width * height > MAX_ACTIVE_PIXELS || this.active.size >= 64)
+        if (this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS || this.active.size >= 64)
           throw new Error("画面合成缓冲超过上限，请减小画面尺寸或减少嵌套层级");
-        const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(width, height) : Object.assign(document.createElement("canvas"), { width, height });
-        buffer = { canvas, context: context(canvas), pixels: width * height };
+        const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(physicalWidth, physicalHeight) : Object.assign(document.createElement("canvas"), {
+          width: physicalWidth,
+          height: physicalHeight
+        });
+        buffer = { canvas, context: context(canvas), pixels, width, height };
         this.allocatedPixels += buffer.pixels;
       }
+      buffer.width = width;
+      buffer.height = height;
       reset(buffer);
       this.active.add(buffer);
       return buffer;
@@ -211,16 +223,20 @@
           );
       }
     }
-    draw(canvas, frame, media) {
+    draw(canvas, frame, media, resolution = 1) {
       if (this.drawing) throw new Error("合成器不能同时绘制两个画面");
+      if (![1, 0.5, 0.25].includes(resolution)) throw new Error("预览质量无效");
       dimensions(frame.width, frame.height);
       this.preflight(frame.layers, media);
       this.drawing = true;
+      this.resolution = resolution;
       try {
-        if (canvas.width !== frame.width) canvas.width = frame.width;
-        if (canvas.height !== frame.height) canvas.height = frame.height;
+        const width = Math.max(1, Math.round(frame.width * resolution)), height = Math.max(1, Math.round(frame.height * resolution));
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
         const target = context(canvas);
         target.reset();
+        target.scale(width / frame.width, height / frame.height);
         target.fillStyle = frame.background;
         target.fillRect(0, 0, frame.width, frame.height);
         this.drawLayers(target, frame.layers, frame.width, frame.height, media);
@@ -252,7 +268,7 @@
           try {
             target.save();
             target.globalCompositeOperation = composite(layer.blendMode);
-            target.drawImage(picture.canvas, 0, 0);
+            drawBuffer(target, picture);
             target.restore();
           } finally {
             this.release(picture);
@@ -297,14 +313,15 @@
           );
         };
         const ctx = picture.context;
+        const sourceScaleX = content ? content.canvas.width / sourceWidth : 1, sourceScaleY = content ? content.canvas.height / sourceHeight : 1;
         ctx.save();
         placement(ctx);
         ctx.drawImage(
           source,
-          sourceX,
-          sourceY,
-          croppedWidth,
-          croppedHeight,
+          sourceX * sourceScaleX,
+          sourceY * sourceScaleY,
+          croppedWidth * sourceScaleX,
+          croppedHeight * sourceScaleY,
           -fittedWidth / 2,
           -fittedHeight / 2,
           fittedWidth,
@@ -314,7 +331,7 @@
         if (hasColorAdjustment(layer.color)) {
           let pixels;
           try {
-            pixels = ctx.getImageData(0, 0, width, height);
+            pixels = ctx.getImageData(0, 0, picture.canvas.width, picture.canvas.height);
           } catch {
             throw new Error(`素材画面无法读取像素进行调色：${layer.instanceId}`);
           }
@@ -332,14 +349,17 @@
               originalWidth * layer.transform.scaleX,
               originalHeight * layer.transform.scaleY
             ) / 2;
-            if (radius > 0) mask2.context.filter = `blur(${Math.min(MAX_SIDE, radius)}px)`;
+            if (radius > 0) {
+              const rasterScale = Math.min(mask2.canvas.width / width, mask2.canvas.height / height);
+              mask2.context.filter = `blur(${Math.min(MAX_SIDE, radius) * rasterScale}px)`;
+            }
             mask2.context.save();
             placement(mask2.context);
             drawMask(mask2.context, layer.mask, originX, originY, originalWidth, originalHeight);
             mask2.context.restore();
             ctx.save();
             ctx.globalCompositeOperation = layer.mask.inverted ? "destination-out" : "destination-in";
-            ctx.drawImage(mask2.canvas, 0, 0);
+            drawBuffer(ctx, mask2);
             ctx.restore();
           } finally {
             this.release(mask2);
@@ -381,30 +401,29 @@
         const draw = (ctx, picture, layer, x = 0) => {
           if (!picture || !layer) return;
           ctx.globalCompositeOperation = composite(layer.blendMode);
-          ctx.drawImage(picture.canvas, x, 0);
+          drawBuffer(ctx, picture, x);
         };
         if (transition.transitionKind === "dissolve" || transition.transitionKind === "fade-black") {
           const a = this.take(width, height), b = this.take(width, height);
           try {
-            a.context.drawImage(target.canvas, 0, 0);
-            b.context.drawImage(target.canvas, 0, 0);
+            a.context.drawImage(target.canvas, 0, 0, width, height);
+            b.context.drawImage(target.canvas, 0, 0, width, height);
             draw(a.context, from, transition.from);
             draw(b.context, to, transition.to);
             target.save();
-            target.resetTransform();
             target.clearRect(0, 0, width, height);
             if (transition.transitionKind === "fade-black") {
               target.globalCompositeOperation = "source-over";
               target.fillStyle = "#000000";
               target.fillRect(0, 0, width, height);
               target.globalAlpha = Math.abs(progress2 * 2 - 1);
-              target.drawImage(progress2 < 0.5 ? a.canvas : b.canvas, 0, 0);
+              drawBuffer(target, progress2 < 0.5 ? a : b);
             } else {
               target.globalCompositeOperation = "lighter";
               target.globalAlpha = 1 - progress2;
-              target.drawImage(a.canvas, 0, 0);
+              drawBuffer(target, a);
               target.globalAlpha = progress2;
-              target.drawImage(b.canvas, 0, 0);
+              drawBuffer(target, b);
             }
             target.restore();
           } finally {
@@ -418,23 +437,23 @@
           try {
             if ((!transition.from || transition.from.blendMode === "normal") && (!transition.to || transition.to.blendMode === "normal")) {
               a.context.globalCompositeOperation = "lighter";
-              if (from) a.context.drawImage(from.canvas, direction * progress2 * width, 0);
-              if (to) a.context.drawImage(to.canvas, -direction * (1 - progress2) * width, 0);
+              if (from) drawBuffer(a.context, from, direction * progress2 * width);
+              if (to) drawBuffer(a.context, to, -direction * (1 - progress2) * width);
               target.save();
               target.globalCompositeOperation = "source-over";
-              target.drawImage(a.canvas, 0, 0);
+              drawBuffer(target, a);
               target.restore();
             } else {
               b = this.take(width, height);
-              a.context.drawImage(target.canvas, 0, 0);
-              b.context.drawImage(target.canvas, 0, 0);
+              a.context.drawImage(target.canvas, 0, 0, width, height);
+              b.context.drawImage(target.canvas, 0, 0, width, height);
               draw(a.context, from, transition.from, direction * progress2 * width);
               draw(b.context, to, transition.to, -direction * (1 - progress2) * width);
               let backdrop, first, second;
               try {
-                backdrop = target.getImageData(0, 0, width, height);
-                first = a.context.getImageData(0, 0, width, height);
-                second = b.context.getImageData(0, 0, width, height);
+                backdrop = target.getImageData(0, 0, target.canvas.width, target.canvas.height);
+                first = a.context.getImageData(0, 0, a.canvas.width, a.canvas.height);
+                second = b.context.getImageData(0, 0, b.canvas.width, b.canvas.height);
               } catch {
                 throw new Error("素材画面无法读取像素进行推移转场");
               }
@@ -457,8 +476,8 @@
           const incomingLeft = transition.transitionKind === "wipe-right";
           const a = this.take(width, height), b = this.take(width, height);
           try {
-            a.context.drawImage(target.canvas, 0, 0);
-            b.context.drawImage(target.canvas, 0, 0);
+            a.context.drawImage(target.canvas, 0, 0, width, height);
+            b.context.drawImage(target.canvas, 0, 0, width, height);
             draw(a.context, from, transition.from);
             draw(b.context, to, transition.to);
             target.save();
@@ -468,13 +487,13 @@
             target.beginPath();
             target.rect(incomingLeft ? split : 0, 0, incomingLeft ? width - split : split, height);
             target.clip();
-            target.drawImage(a.canvas, 0, 0);
+            drawBuffer(target, a);
             target.restore();
             target.save();
             target.beginPath();
             target.rect(incomingLeft ? 0 : split, 0, incomingLeft ? split : width - split, height);
             target.clip();
-            target.drawImage(b.canvas, 0, 0);
+            drawBuffer(target, b);
             target.restore();
             target.restore();
           } finally {
@@ -603,9 +622,10 @@
     ctx.roundRect((width - boxWidth) / 2, boxTop, boxWidth, boxHeight, style.backgroundRadius);
     ctx.fill();
     ctx.shadowColor = style.shadow.color;
-    ctx.shadowBlur = style.shadow.blur;
-    ctx.shadowOffsetX = style.shadow.x;
-    ctx.shadowOffsetY = style.shadow.y;
+    const raster = ctx.getTransform();
+    ctx.shadowBlur = style.shadow.blur * Math.min(raster.a, raster.d);
+    ctx.shadowOffsetX = style.shadow.x * raster.a;
+    ctx.shadowOffsetY = style.shadow.y * raster.d;
     ctx.fillStyle = style.color;
     ctx.strokeStyle = style.strokeColor;
     ctx.lineWidth = style.strokeWidth;

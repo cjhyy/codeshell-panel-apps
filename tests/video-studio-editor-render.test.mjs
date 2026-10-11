@@ -155,6 +155,252 @@ const near = (actual, expected, epsilon = 5) =>
     assert.ok(Math.abs(value - expected[i]) <= epsilon, `${actual} != ${expected}`),
   );
 
+test("range encoding uses the original frame clock, sample crop and NTSC duration, including an empty sample interval", async () => {
+  const doc = document(), media = clip("range-source", "lower");
+  media.duration = 480000;
+  media.timeMap = api.constantTimeMap(0, 480000).timeMap;
+  doc.sequences[0].clips.push(media);
+  const before = structuredClone(doc), workDir = await mkdtemp(join(temporary, "range-export-")),
+    audioFile = join(workDir, "full.wav");
+  const audio = spawnSync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "aevalsrc='0.2*sin(2*PI*440*t)|0.2*sin(2*PI*440*t)':s=48000:d=2", "-ac", "2", "-c:a", "pcm_f32le", audioFile]);
+  assert.equal(audio.status, 0, audio.stderr.toString());
+  for (const [index, range] of [
+    { start: 264001, duration: 80080 },
+    { start: 264001, duration: 1 },
+  ].entries()) {
+    const outputPath = join(workDir, `range-${index}.mov`),
+      output = await api.exportEditorSequence({
+        document: doc, sequenceId: "main", range,
+        profile: profile({ container: "mov", videoCodec: "prores", audioCodec: "pcm", audioBitrate: 1536000, frameRate: { numerator: 30000, denominator: 1001 } }),
+        mediaFiles: new Map([["source", { path: videoPath, mimeType: "video/webm" }]]),
+        runtimeSource, workDir, audioFile, outputPath, signal: new AbortController().signal,
+      });
+    assert.equal(output.frameCount, index ? 1 : 10);
+    assert.equal(output.durationSeconds, (index ? 1 : 10) * 1001 / 30000);
+    assert.deepEqual(output.range, range);
+    const frame = spawnSync("ffmpeg", ["-v", "error", "-i", outputPath, "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]);
+    assert.equal(frame.status, 0, frame.stderr.toString());
+    near(pixel(frame.stdout, 64, 32), [0, 0, 255, 255], 8);
+    const pcm = spawnSync("ffmpeg", ["-v", "error", "-i", outputPath, "-map", "0:a:0", "-f", "f32le", "-c:a", "pcm_f32le", "pipe:1"]);
+    assert.equal(pcm.status, 0, pcm.stderr.toString());
+    assert.equal(pcm.stdout.length / 8, Math.ceil(output.durationSeconds * 48000));
+    const measure = await api.measureEditorExportAudioRange({ audioFile, range, ffmpegPath: "ffmpeg", signal: new AbortController().signal });
+    assert.equal(measure.sampleCount, index ? 0 : 16016);
+    if (index) {
+      assert.equal(measure.peak, 0);
+      assert.ok(pcm.stdout.every((byte) => byte === 0), "An interval containing no original sample encodes a silent audio track");
+    } else {
+      assert.ok(measure.peak > 0.19 && measure.peak < 0.21);
+      const firstSample = Math.ceil(range.start / 5),
+        expected = 0.2 * Math.sin(2 * Math.PI * 440 * firstSample / 48000);
+      assert.ok(Math.abs(pcm.stdout.readFloatLE(0) - expected) < 0.00004);
+      for (let sample = 16016; sample < pcm.stdout.length / 8; sample++)
+        assert.equal(pcm.stdout.readFloatLE(sample * 8), 0, "The rounded final frame is padded with silence");
+    }
+  }
+  assert.deepEqual(doc, before);
+});
+test(
+  "low-quality real-media previews match original native export composition and never change export dimensions",
+  { timeout: 60000 },
+  async (t) => {
+    const doc = document(),
+      rootSequence = doc.sequences[0];
+    rootSequence.width = 640;
+    rootSequence.height = 360;
+    rootSequence.background = "#182a37";
+    const child = {
+      ...structuredClone(rootSequence),
+      id: "child",
+      width: 320,
+      height: 180,
+      clips: [],
+    };
+    const left = clip("left", "lower"),
+      right = clip("right", "upper", 240000);
+    for (const [item, sourceStart] of [
+      [left, 0],
+      [right, 240000],
+    ]) {
+      item.duration = 8000;
+      item.timeMap = api.constantTimeMap(sourceStart, sourceStart + 8000).timeMap;
+    }
+    left.transform = { ...left.transform, fit: "stretch", scaleX: 0.5, x: -0.25 };
+    right.transform = { ...right.transform, fit: "stretch", scaleX: 0.5, x: 0.25 };
+    child.clips.push(left, right);
+    doc.sequences.push(child);
+    rootSequence.clips = [
+      {
+        id: "nested",
+        label: "真实嵌套",
+        kind: "sequence",
+        sequenceId: "child",
+        trackId: "lower",
+        start: 0,
+        duration: 8000,
+        timeMap: api.constantTimeMap(0, 8000).timeMap,
+        audio: api.defaultAudioMix(),
+        ...visual(),
+        transform: {
+          ...api.defaultTransform(),
+          scaleX: 0.8,
+          scaleY: 0.8,
+          x: 0.1,
+          y: -0.05,
+          rotation: 7,
+        },
+        mask: {
+          kind: "rectangle",
+          x: 0,
+          y: 0,
+          width: 0.9,
+          height: 0.8,
+          rotation: 0,
+          feather: 0.03,
+          inverted: false,
+        },
+      },
+    ];
+    const original = JSON.stringify(doc);
+    const compiled = await build({
+      stdin: {
+        resolveDir: root,
+        contents: `export {EditorPreview} from './apps/video-studio/src/editor/preview';`,
+      },
+      bundle: true,
+      write: false,
+      platform: "browser",
+      format: "iife",
+      globalName: "qualityApi",
+    });
+    const source = await readFile(videoPath);
+    const server = createServer((request, response) => {
+      response.setHeader("Content-Type", request.url === "/source" ? "video/webm" : "text/html");
+      if (request.url !== "/source") return response.end("<!doctype html><canvas></canvas>");
+      response.setHeader("Accept-Ranges", "bytes");
+      const range = /^bytes=(\d+)-(\d*)$/.exec(request.headers.range ?? "");
+      const start = range ? Number(range[1]) : 0,
+        end = range?.[2] ? Number(range[2]) : source.length - 1;
+      if (range) {
+        response.statusCode = 206;
+        response.setHeader("Content-Range", `bytes ${start}-${end}/${source.length}`);
+      }
+      response.setHeader("Content-Length", end - start + 1);
+      response.end(source.subarray(start, end + 1));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    const browserPath = await api.findCaptionBrowser(),
+      browser = await chromium.launch({ headless: true, executablePath: browserPath });
+    t.after(() => browser.close());
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.addScriptTag({ content: compiled.outputFiles[0].text });
+    const previews = await page.evaluate(async (doc) => {
+      const canvas = document.querySelector("canvas"),
+        preview = new qualityApi.EditorPreview(canvas, {
+          resolveAsset: () => new URL("/source", location.href).href,
+        });
+      preview.setDocument(doc);
+      await preview.seek(0);
+      const frames = [{ quality: 1, bytes: canvas.toDataURL().split(",")[1] }];
+      for (const quality of [0.5, 0.25, 1]) {
+        await preview.setResolution(quality);
+        frames.push({ quality, bytes: canvas.toDataURL().split(",")[1] });
+      }
+      await preview.dispose();
+      return frames;
+    }, doc);
+    const workDir = await mkdtemp(join(temporary, "quality-export-")),
+      settings = profile({ width: 640, height: 360, quality: { mode: "quality", value: 100 } });
+    const mediaFiles = new Map([["source", { path: videoPath, mimeType: "video/webm" }]]);
+    const native = await api.EditorFrameRenderer.create({
+      document: doc,
+      sequenceId: "main",
+      profile: settings,
+      mediaFiles,
+      runtimeSource,
+      workDir,
+      browserPath,
+      signal: new AbortController().signal,
+    });
+    t.after(() => native.close());
+    const originalFrame = PNG.sync.read(await native.render(0));
+    await native.close();
+    const originalPreview = PNG.sync.read(Buffer.from(previews[0].bytes, "base64"));
+    assert.deepEqual([originalFrame.width, originalFrame.height], [640, 360]);
+    assert.equal(Buffer.compare(originalFrame.data, originalPreview.data), 0);
+    assert.equal(
+      previews.at(-1).bytes,
+      previews[0].bytes,
+      "Restoring Original redraws identical full-resolution pixels",
+    );
+    const audioFile = join(workDir, "silence.wav"),
+      outputPath = join(workDir, "quality.mp4");
+    const silence = spawnSync("ffmpeg", [
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=48000:cl=stereo",
+      "-af",
+      "atrim=end_sample=1600",
+      "-c:a",
+      "pcm_f32le",
+      audioFile,
+    ]);
+    assert.equal(silence.status, 0, silence.stderr.toString());
+    const exported = await api.exportEditorSequence({
+      document: doc,
+      sequenceId: "main",
+      profile: settings,
+      mediaFiles,
+      runtimeSource,
+      workDir,
+      outputPath,
+      audioFile,
+      browserPath,
+      signal: new AbortController().signal,
+    });
+    assert.equal(exported.frameCount, 1);
+    const decoded = spawnSync("ffmpeg", [
+      "-v",
+      "error",
+      "-i",
+      outputPath,
+      "-frames:v",
+      "1",
+      "-f",
+      "image2pipe",
+      "-vcodec",
+      "png",
+      "pipe:1",
+    ]);
+    assert.equal(decoded.status, 0, decoded.stderr.toString());
+    const movie = PNG.sync.read(decoded.stdout);
+    assert.deepEqual([movie.width, movie.height], [640, 360]);
+    for (const frame of previews) {
+      const preview = PNG.sync.read(Buffer.from(frame.bytes, "base64"));
+      assert.deepEqual([preview.width, preview.height], [640 * frame.quality, 360 * frame.quality]);
+      for (const [x, y] of [
+        [0.35, 0.5],
+        [0.75, 0.5],
+        [0.05, 0.05],
+      ]) {
+        const at = (image) => [
+          ...image.data.subarray(
+            (Math.floor(y * image.height) * image.width + Math.floor(x * image.width)) * 4,
+            (Math.floor(y * image.height) * image.width + Math.floor(x * image.width)) * 4 + 4,
+          ),
+        ];
+        near(at(preview), at(movie), 6);
+      }
+    }
+    assert.equal(JSON.stringify(doc), original);
+  },
+);
+
 test("native frame rendering independently seeks one source twice, including backwards seeks", async (t) => {
   const doc = document(),
     seq = doc.sequences[0];
@@ -590,23 +836,26 @@ test("cancelling streamed encoding removes its incomplete output and closes rend
     { encoding: "utf8" },
   );
   assert.equal(audio.status, 0, audio.stderr);
-  const controller = new AbortController();
-  await assert.rejects(
-    api.exportEditorSequence({
-      document: doc,
-      sequenceId: "main",
-      profile: profile(),
-      mediaFiles: new Map([["source", { path: videoPath, mimeType: "video/webm" }]]),
-      runtimeSource,
-      workDir,
-      audioFile,
-      outputPath: join(workDir, "cancelled.mp4"),
-      signal: controller.signal,
-      onProgress(value) {
-        if (value.phase === "render" && value.completedFrames === 2) controller.abort();
-      },
-    }),
-    { name: "AbortError" },
-  );
-  assert.deepEqual(await readdir(workDir), ["mix.wav"]);
+  for (const range of [undefined, { start: 80085, duration: 80080 }]) {
+    const controller = new AbortController();
+    await assert.rejects(
+      api.exportEditorSequence({
+        document: doc,
+        sequenceId: "main",
+        range,
+        profile: profile(),
+        mediaFiles: new Map([["source", { path: videoPath, mimeType: "video/webm" }]]),
+        runtimeSource,
+        workDir,
+        audioFile,
+        outputPath: join(workDir, "cancelled.mp4"),
+        signal: controller.signal,
+        onProgress(value) {
+          if (value.phase === "render" && value.completedFrames === 2) controller.abort();
+        },
+      }),
+      { name: "AbortError" },
+    );
+    assert.deepEqual(await readdir(workDir), ["mix.wav"]);
+  }
 });

@@ -437,6 +437,58 @@ test("replacement preview cancels or goes stale without writes, saves once and u
   assert.deepEqual(session.read(), locked);
 });
 
+test("a thousand-caption replacement uses a fixed number of graph checks and retains detached text-edit semantics", () => {
+  const doc = generated(),
+    template = captions(doc)[0]!;
+  template.translation = {
+    original: template.text,
+    language: "en",
+    mode: "translated",
+    originalWords: structuredClone(template.words),
+  };
+  for (let index = 1; index < 1000; index++) {
+    const clip = { ...structuredClone(template), id: `caption-${index}`, start: index * 3 * T };
+    delete clip.sourceBinding;
+    doc.sequences[0]!.clips.push(clip);
+  }
+  const before = structuredClone(doc),
+    descriptor = Object.getOwnPropertyDescriptor;
+  let graphChecks = 0;
+  // Count whole document graph walks, including validation's own deep copy, rather than just structuredClone.
+  Object.getOwnPropertyDescriptor = (object, key) => {
+    if (key === "schemaVersion") graphChecks++;
+    return descriptor(object, key);
+  };
+  let plan: ReturnType<typeof planCaptionReplace>;
+  try {
+    plan = planCaptionReplace(doc, "main", "你好", "校对");
+  } finally {
+    Object.getOwnPropertyDescriptor = descriptor;
+  }
+  assert.ok(graphChecks <= 3, `${graphChecks} full graph checks must not grow with the match count`);
+  assert.equal(plan.matched, 1000);
+  assert.equal(plan.occurrences, 1000);
+  const after = applyEditorOperations(doc, plan.operations, doc.revision);
+  for (const clip of captions(after)) {
+    assert.equal(clip.text, "校对 世界");
+    assert.deepEqual(clip.words, []);
+    assert.equal(clip.translation, undefined);
+    assert.equal(clip.style.animation, "none");
+  }
+  assert.deepEqual(captions(after)[0]!.sourceBinding, template.sourceBinding);
+  const first = plan.operations[0]!;
+  assert.equal(first.type, "clip.update");
+  if (first.type === "clip.update") (first.patch.style as TextClip["style"]).shadow.blur = 9;
+  assert.deepEqual(doc, before, "Plans and their nested style patches remain detached from caller input");
+  const locked = createTrack("locked-text", "text");
+  locked.locked = true;
+  doc.sequences[0]!.tracks.push(locked);
+  doc.sequences[0]!.clips.at(-1)!.trackId = locked.id;
+  const lockedBefore = structuredClone(doc);
+  assert.throws(() => planCaptionReplace(doc, "main", "你好", "校对"), /锁定/);
+  assert.deepEqual(doc, lockedBefore, "A locked late match rejects the entire replacement batch");
+});
+
 test("SRT roundtrip preserves Unicode/multiline and explicit millisecond quantization without 30fps conversion", () => {
   const source =
     "\uFEFF1\r\n00:00:00,033 --> 00:00:01,067\r\n第一行🙂\r\n第二行\r\n\r\n2\r\n01:00:00,001 --> 01:00:01,234\r\n尾声\r\n";

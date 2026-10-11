@@ -418,6 +418,83 @@ test("switching document invalidates playback and old snapshots cannot mutate th
   assert.deepEqual(result, { playing: false, pixel: [0, 0, 255, 255] });
 });
 
+test("rapid quality changes cancel old seek results and redraw the requested exact tick", async (t) => {
+  const page = await pageFixture(t);
+  await page.evaluate(async () => {
+    await preview.dispose();
+    const seq = doc.sequences[0];
+    doc.assets = [
+      { id: "image", name: "等待中的图片", kind: "image", duration: 0, width: 128, height: 64 },
+    ];
+    seq.clips = [
+      {
+        id: "picture",
+        label: "图片",
+        kind: "media",
+        assetId: "image",
+        trackId: "video",
+        start: 0,
+        duration: 96000,
+        timeMap: {
+          points: [
+            { time: 0, source: 0 },
+            { time: 96000, source: 0 },
+          ],
+        },
+        audio: api.defaultAudioMix(),
+        transform: api.defaultTransform(),
+        color: api.defaultColorAdjustment(),
+        blendMode: "normal",
+      },
+    ];
+    globalThis.requests = [];
+    globalThis.preview = new api.EditorPreview(document.querySelector("canvas"), {
+      resolveAsset: (_id, signal) => new Promise((resolve) => requests.push({ resolve, signal })),
+      onFrame: (time) => frames.push(time),
+      onError: (error) => errors.push(String(error)),
+    });
+    preview.setDocument(doc);
+    globalThis.oldSeek = preview.seek(8000);
+  });
+  await page.waitForFunction(() => requests.length === 1);
+  await page.evaluate(() => {
+    globalThis.half = preview.setResolution(0.5, 16003);
+  });
+  await page.waitForFunction(() => requests.length === 2);
+  await page.evaluate(() => {
+    globalThis.quarter = preview.setResolution(0.25, 16003);
+  });
+  await page.waitForFunction(() => requests.length === 3);
+  const result = await page.evaluate(async () => {
+    for (const [index, request] of requests.entries())
+      request.resolve(
+        "data:image/svg+xml," +
+          encodeURIComponent(
+            `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="64"><rect width="128" height="64" fill="${index === 2 ? "blue" : "red"}"/></svg>`,
+          ),
+      );
+    const committed = await Promise.all([half, quarter]);
+    await oldSeek;
+    const canvas = document.querySelector("canvas");
+    return {
+      size: [canvas.width, canvas.height],
+      time: preview.time,
+      frames,
+      aborted: requests.map((request) => request.signal.aborted),
+      committed,
+      pixel: pixel(16, 8),
+      errors,
+    };
+  });
+  assert.deepEqual(result.size, [32, 16]);
+  assert.equal(result.time, 16003);
+  assert.deepEqual(result.frames, [16003]);
+  assert.deepEqual(result.aborted, [true, true, false]);
+  assert.deepEqual(result.committed, [false, true]);
+  assert.deepEqual(result.pixel, [0, 0, 255, 255]);
+  assert.deepEqual(result.errors, []);
+});
+
 test("resuming reuses a committed frame but redraws a pointer draft before playback", async (t) => {
   const page = await pageFixture(t);
   const result = await page.evaluate(async () => {
@@ -586,7 +663,12 @@ test(
             ...document
               .querySelector("[data-ew-canvas]")
               .getContext("2d")
-              .getImageData(48, 32, 1, 1).data,
+              .getImageData(
+                Math.floor(document.querySelector("[data-ew-canvas]").width / 2),
+                Math.floor(document.querySelector("[data-ew-canvas]").height / 2),
+                1,
+                1,
+              ).data,
           ],
           errors: workspaceErrors,
         };
@@ -678,6 +760,54 @@ test(
       dominant(result.pixel, 2);
       assert.deepEqual(result.errors, []);
     });
+    await t.test(
+      "quality changes pause real video, redraw exact ticks and reuse prepared decoders without history edits",
+      async (t) => {
+        const page = await realWorkspace(t);
+        const before = await page.evaluate(async () => {
+          await mediaFixture.workspace.togglePlayback();
+          await mediaFixture.workspace.togglePlayback();
+          await mediaFixture.workspace.seek(288003, true);
+          return {
+            counts: mediaFixture.counts(),
+            doc: mediaFixture.session.read(),
+            time: mediaFixture.workspace.currentTime(),
+          };
+        });
+        for (const [value, width, height] of [
+          ["0.5", 48, 32],
+          ["0.25", 24, 16],
+          ["1", 96, 64],
+        ]) {
+          await page.getByLabel("预览质量", { exact: true }).selectOption(value);
+          await page.waitForFunction(
+            ({ width, height }) => {
+              const canvas = document.querySelector("[data-ew-canvas]");
+              return canvas.width === width && canvas.height === height;
+            },
+            { width, height },
+          );
+          const current = await page.evaluate(() => ({
+            counts: mediaFixture.counts(),
+            doc: mediaFixture.session.read(),
+            time: mediaFixture.workspace.currentTime(),
+            pixel: mediaFixture.pixel(),
+            playing: mediaFixture.workspace.playing,
+            errors: mediaFixture.errors,
+          }));
+          assert.deepEqual(current.counts, before.counts);
+          assert.deepEqual(current.doc, before.doc);
+          assert.equal(current.time, before.time);
+          assert.equal(current.playing, false);
+          dominant(current.pixel, 1);
+          assert.deepEqual(current.errors, []);
+        }
+        await page.evaluate(() => mediaFixture.workspace.togglePlayback());
+        await page.getByLabel("预览质量", { exact: true }).selectOption("0.25");
+        await page.waitForFunction(() => !mediaFixture.workspace.playing);
+        assert.deepEqual(await page.evaluate(() => mediaFixture.counts()), before.counts);
+      },
+    );
     for (const change of ["asset", "generation", "sequence"]) {
       await t.test(
         `${change} changes invalidate prepared media and cannot reuse a previous decoder`,

@@ -806,24 +806,19 @@ export function planCaptionStyle(
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
-export function planCaptionText(
-  value: EditorDocument,
+/** Build from an already validated, detached snapshot; the caller validates the complete batch. */
+function captionTextOperations(
   sequenceId: string,
-  clipId: string,
+  clip: TextClip,
   text: string,
 ): EditorOperation[] {
-  const doc = validateEditorDocument(value),
-    clip = sequence(doc, sequenceId).clips.find(
-      (item): item is TextClip => item.id === clipId && item.kind === "text",
-    );
-  if (!clip) throw new Error("请选择有效的字幕或文字片段");
   cleanText(text, "字幕文字");
   if (text === clip.text) return [];
-  const operations: EditorOperation[] = [
+  return [
     {
       type: "clip.update",
       sequenceId,
-      clipId,
+      clipId: clip.id,
       patch: {
         text,
         words: [],
@@ -835,6 +830,20 @@ export function planCaptionText(
       },
     },
   ];
+}
+export function planCaptionText(
+  value: EditorDocument,
+  sequenceId: string,
+  clipId: string,
+  text: string,
+): EditorOperation[] {
+  const doc = validateEditorDocument(value),
+    clip = sequence(doc, sequenceId).clips.find(
+      (item): item is TextClip => item.id === clipId && item.kind === "text",
+    );
+  if (!clip) throw new Error("请选择有效的字幕或文字片段");
+  const operations = captionTextOperations(sequenceId, clip, text);
+  if (!operations.length) return [];
   applyEditorOperations(doc, operations, doc.revision);
   return operations;
 }
@@ -845,6 +854,18 @@ export interface CaptionTextMatch {
   text: string;
   occurrences: number;
 }
+function captionQuery(query: string): void {
+  if (typeof query !== "string" || !query.length || query.length > 10000 || query.includes("\0"))
+    throw new Error("请输入 1–10000 字的查找文字");
+}
+function captionTextMatches(clips: TextClip[], query: string): CaptionTextMatch[] {
+  return clips
+    .flatMap((clip) => {
+      const occurrences = clip.text.split(query).length - 1;
+      return occurrences ? [{ clipId: clip.id, start: clip.start, text: clip.text, occurrences }] : [];
+    })
+    .sort((a, b) => a.start - b.start || a.clipId.localeCompare(b.clipId));
+}
 /** Case-sensitive, non-overlapping literal matches; titles and other sequences are excluded. */
 export function findCaptionText(
   value: EditorDocument,
@@ -852,16 +873,10 @@ export function findCaptionText(
   query: string,
   clipIds?: readonly string[],
 ): CaptionTextMatch[] {
-  if (typeof query !== "string" || !query.length || query.length > 10000 || query.includes("\0"))
-    throw new Error("请输入 1–10000 字的查找文字");
+  captionQuery(query);
   const doc = validateEditorDocument(value),
     clips = selectedCaptions(sequence(doc, sequenceId), clipIds);
-  return clips
-    .flatMap((clip) => {
-      const occurrences = clip.text.split(query).length - 1;
-      return occurrences ? [{ clipId: clip.id, start: clip.start, text: clip.text, occurrences }] : [];
-    })
-    .sort((a, b) => a.start - b.start || a.clipId.localeCompare(b.clipId));
+  return captionTextMatches(clips, query);
 }
 
 /** Uses the ordinary text-edit semantics, including clearing stale word timing and translation. */
@@ -875,10 +890,13 @@ export function planCaptionReplace(
   if (typeof replacement !== "string" || replacement.length > 10000 || replacement.includes("\0"))
     throw new Error("替换文字须在 10000 字以内");
   if (query === replacement) throw new Error("查找与替换文字相同，无需修改");
-  const doc = validateEditorDocument(value),
-    matches = findCaptionText(doc, sequenceId, query, clipIds),
+  const doc = validateEditorDocument(value);
+  captionQuery(query);
+  const clips = selectedCaptions(sequence(doc, sequenceId), clipIds),
+    byId = new Map(clips.map((clip) => [clip.id, clip])),
+    matches = captionTextMatches(clips, query),
     operations = matches.flatMap((match) =>
-      planCaptionText(doc, sequenceId, match.clipId, match.text.split(query).join(replacement)),
+      captionTextOperations(sequenceId, byId.get(match.clipId)!, match.text.split(query).join(replacement)),
     );
   if (!matches.length) throw new Error("当前范围没有匹配的字幕");
   applyEditorOperations(doc, operations, doc.revision);

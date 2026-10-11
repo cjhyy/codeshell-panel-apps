@@ -64,6 +64,7 @@ export async function runEditorCli(
         "dataBase64",
         "profile",
         "preparedAudio",
+        "range",
         "sourceDuration",
         "alignment",
         "bundleHash",

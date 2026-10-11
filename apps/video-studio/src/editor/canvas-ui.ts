@@ -66,6 +66,10 @@ export class EditorCanvas {
   });
   private readonly controls = document.createElement("div");
   private readonly observer: ResizeObserver;
+  private readonly canvasStyle: Pick<
+    CSSStyleDeclaration,
+    "position" | "left" | "top" | "width" | "height" | "objectFit"
+  >;
   private mode: CanvasEditMode = "transform";
   private gesture?: Gesture;
   private pendingDraft?: EditorDocument;
@@ -75,11 +79,20 @@ export class EditorCanvas {
   private disposed = false;
   private targets: CanvasTarget[] = [];
   private target?: CanvasTarget;
+  private view?: { width: number; height: number };
   private box = { left: 0, top: 0, width: 1, height: 1, ratio: 1 };
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly context: EditorCanvasContext,
   ) {
+    this.canvasStyle = {
+      position: canvas.style.position,
+      left: canvas.style.left,
+      top: canvas.style.top,
+      width: canvas.style.width,
+      height: canvas.style.height,
+      objectFit: canvas.style.objectFit,
+    };
     this.controls.className = "editor-canvas-toolbar";
     this.controls.setAttribute("aria-label", "画布工具");
     for (const mode of ["transform", "crop", "mask"] as const) {
@@ -107,7 +120,7 @@ export class EditorCanvas {
       this.cancel();
       this.layout();
     });
-    this.observer.observe(canvas);
+    this.observer.observe(canvas.parentElement!);
     window.addEventListener("blur", this.cancelEvent);
     this.render();
   }
@@ -125,22 +138,41 @@ export class EditorCanvas {
     );
   }
   private layout(): void {
-    const rect = this.canvas.getBoundingClientRect(),
-      parent = this.canvas.parentElement!.getBoundingClientRect();
-    const width = this.target?.canvas.width ?? this.canvas.width,
-      height = this.target?.canvas.height ?? this.canvas.height;
-    const ratio = Math.min(rect.width / width, rect.height / height);
+    const container = this.canvas.parentElement!,
+      parent = container.getBoundingClientRect(),
+      style = getComputedStyle(container);
+    const width = this.view?.width ?? this.canvas.width,
+      height = this.view?.height ?? this.canvas.height;
+    const paddingLeft = parseFloat(style.paddingLeft),
+      paddingTop = parseFloat(style.paddingTop),
+      availableWidth = container.clientWidth - paddingLeft - parseFloat(style.paddingRight),
+      availableHeight = container.clientHeight - paddingTop - parseFloat(style.paddingBottom),
+      ratio = Math.min(availableWidth / width, availableHeight / height),
+      displayWidth = width * ratio,
+      displayHeight = height * ratio;
     if (!(ratio > 0)) return;
+    const left = paddingLeft + (availableWidth - displayWidth) / 2,
+      top = paddingTop + (availableHeight - displayHeight) / 2;
     this.box = {
-      left: rect.left + (rect.width - width * ratio) / 2,
-      top: rect.top + (rect.height - height * ratio) / 2,
-      width: width * ratio,
-      height: height * ratio,
+      left: parent.left + container.clientLeft + left,
+      top: parent.top + container.clientTop + top,
+      width: displayWidth,
+      height: displayHeight,
       ratio,
     };
+    // CSS containment follows the project aspect, not the rounded low-resolution bitmap.
+    // This keeps odd-sized previews and their handles in the same place at every quality.
+    Object.assign(this.canvas.style, {
+      position: "absolute",
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${displayWidth}px`,
+      height: `${displayHeight}px`,
+      objectFit: "fill",
+    });
     Object.assign(this.overlay.style, {
-      left: `${this.box.left - parent.left}px`,
-      top: `${this.box.top - parent.top}px`,
+      left: `${left}px`,
+      top: `${top}px`,
       width: `${this.box.width}px`,
       height: `${this.box.height}px`,
     });
@@ -247,8 +279,11 @@ export class EditorCanvas {
       if (this.current(this.gesture)) return;
       this.cancel();
     }
-    const selection = this.context.selection();
-    this.targets = canvasTargets(this.context.read(), selection.sequenceId, this.context.time());
+    const selection = this.context.selection(),
+      document = this.context.read(),
+      sequence = document.sequences.find((item) => item.id === selection.sequenceId);
+    this.view = sequence ? { width: sequence.width, height: sequence.height } : undefined;
+    this.targets = canvasTargets(document, selection.sequenceId, this.context.time());
     this.target =
       selection.clipIds.length === 1
         ? this.targets.find((item) => item.clip.id === selection.clipIds[0])
@@ -457,5 +492,6 @@ export class EditorCanvas {
     window.removeEventListener("blur", this.cancelEvent);
     this.overlay.remove();
     this.controls.remove();
+    Object.assign(this.canvas.style, this.canvasStyle);
   }
 }

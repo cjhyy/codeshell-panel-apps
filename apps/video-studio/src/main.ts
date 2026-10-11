@@ -102,6 +102,7 @@ import type { EditorDocument } from "./editor/types";
 import { applyEditorOperations, type EditorOperation } from "./editor/operations";
 import { sequenceDuration } from "./editor/validation";
 import { formatFrameRate, secondsToTicks, ticksToSeconds } from "./editor/time";
+import type { ExportRange } from "./editor/export-range";
 import { browserExportReason, recordEditorSequence } from "./editor/browser-export";
 import {
   legacyClipIssue,
@@ -5559,6 +5560,7 @@ async function submitEditorExport(
   signal?: AbortSignal,
   origin: "editor" | "production" = "editor",
   beforeSubmit?: () => void,
+  range?: ExportRange,
 ): Promise<{ jobId: string; job: ReturnType<typeof taskValue> }> {
   if (origin === "production") assertProductionPublicationEditable();
   else assertEditorEditable();
@@ -5579,11 +5581,15 @@ async function submitEditorExport(
     transferId: transfer.transferId,
     snapshot: prepared?.snapshot ?? transfer.snapshot,
     preparedAudio: prepared?.audio,
+    ...(range ? { range } : {}),
     beforeSubmit,
     onProgress: (item) => toast(`准备导出 · ${item.completed}/${item.total}`),
   });
   transfer.snapshot = snapshot;
-  editorExportJobs?.track(job, `${doc.name} · ${profile.name}`);
+  const rangeLabel = range
+    ? ` · ${ticksToSeconds(range.start).toFixed(3)}–${ticksToSeconds(range.start + range.duration).toFixed(3)} 秒`
+    : "";
+  editorExportJobs?.track(job, `${doc.name}${rangeLabel} · ${profile.name}`);
   toast("导出已进入后台任务，可继续编辑；任务会保留这次提交的工程版本");
   return { jobId: job.id, job };
 }
@@ -5911,8 +5917,8 @@ function mountEditorWorkspace(): void {
       };
     },
     exportSequence: panel
-      ? async (doc, sequenceId, profile, signal) => {
-          await submitEditorExport(doc, sequenceId, profile, signal);
+      ? async (doc, sequenceId, profile, signal, range) => {
+          await submitEditorExport(doc, sequenceId, profile, signal, "editor", undefined, range);
         }
       : undefined,
     importMedia: () => {

@@ -12,7 +12,8 @@ import { fitVisualSource } from "./visual-layout";
 
 type Surface = HTMLCanvasElement | OffscreenCanvas;
 type Context = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
-type Buffer = { canvas: Surface; context: Context; pixels: number };
+type Buffer = { canvas: Surface; context: Context; pixels: number; width: number; height: number };
+export type PreviewResolution = 1 | 0.5 | 0.25;
 type LayoutLine = { text: string; start: number };
 const MAX_SIDE = 8192;
 const MAX_ACTIVE_PIXELS = 128 * 1024 * 1024;
@@ -33,6 +34,11 @@ function context(canvas: Surface): Context {
 function reset(buffer: Buffer): void {
   // A reset also removes a previous clipping region. clearRect alone does not.
   buffer.context.reset();
+  buffer.context.scale(buffer.canvas.width / buffer.width, buffer.canvas.height / buffer.height);
+}
+/** Buffers use fewer physical pixels while all layout, crop and transforms stay in project units. */
+function drawBuffer(target: Context, buffer: Buffer, x = 0): void {
+  target.drawImage(buffer.canvas, x, 0, buffer.width, buffer.height);
 }
 function composite(mode: EvaluatedVisualLayer["blendMode"]): GlobalCompositeOperation {
   return mode === "normal" ? "source-over" : mode;
@@ -102,6 +108,7 @@ export class FrameCompositor {
   private active = new Set<Buffer>();
   private allocatedPixels = 0;
   private drawing = false;
+  private resolution: PreviewResolution = 1;
 
   dispose(): void {
     if (this.drawing) throw new Error("正在合成画面，暂时无法释放合成器");
@@ -114,26 +121,34 @@ export class FrameCompositor {
   }
   private take(width: number, height: number): Buffer {
     dimensions(width, height);
+    const physicalWidth = Math.max(1, Math.round(width * this.resolution)),
+      physicalHeight = Math.max(1, Math.round(height * this.resolution));
     const position = this.free.findIndex(
-      (item) => item.canvas.width === width && item.canvas.height === height,
+      (item) => item.canvas.width === physicalWidth && item.canvas.height === physicalHeight,
     );
     let buffer = position < 0 ? undefined : this.free.splice(position, 1)[0];
     if (!buffer) {
-      while (this.free.length && this.allocatedPixels + width * height > MAX_ACTIVE_PIXELS) {
+      const pixels = physicalWidth * physicalHeight;
+      while (this.free.length && this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS) {
         const evicted = this.free.pop()!;
         this.allocatedPixels -= evicted.pixels;
         evicted.canvas.width = 1;
         evicted.canvas.height = 1;
       }
-      if (this.allocatedPixels + width * height > MAX_ACTIVE_PIXELS || this.active.size >= 64)
+      if (this.allocatedPixels + pixels > MAX_ACTIVE_PIXELS || this.active.size >= 64)
         throw new Error("画面合成缓冲超过上限，请减小画面尺寸或减少嵌套层级");
       const canvas =
         typeof OffscreenCanvas !== "undefined"
-          ? new OffscreenCanvas(width, height)
-          : Object.assign(document.createElement("canvas"), { width, height });
-      buffer = { canvas, context: context(canvas), pixels: width * height };
+          ? new OffscreenCanvas(physicalWidth, physicalHeight)
+          : Object.assign(document.createElement("canvas"), {
+              width: physicalWidth,
+              height: physicalHeight,
+            });
+      buffer = { canvas, context: context(canvas), pixels, width, height };
       this.allocatedPixels += buffer.pixels;
     }
+    buffer.width = width;
+    buffer.height = height;
     reset(buffer);
     this.active.add(buffer);
     return buffer;
@@ -177,16 +192,22 @@ export class FrameCompositor {
     canvas: Surface,
     frame: EvaluatedFrame,
     media: ReadonlyMap<string, CanvasImageSource>,
+    resolution: PreviewResolution = 1,
   ): void {
     if (this.drawing) throw new Error("合成器不能同时绘制两个画面");
+    if (![1, 0.5, 0.25].includes(resolution)) throw new Error("预览质量无效");
     dimensions(frame.width, frame.height);
     this.preflight(frame.layers, media);
     this.drawing = true;
+    this.resolution = resolution;
     try {
-      if (canvas.width !== frame.width) canvas.width = frame.width;
-      if (canvas.height !== frame.height) canvas.height = frame.height;
+      const width = Math.max(1, Math.round(frame.width * resolution)),
+        height = Math.max(1, Math.round(frame.height * resolution));
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
       const target = context(canvas);
       target.reset();
+      target.scale(width / frame.width, height / frame.height);
       target.fillStyle = frame.background;
       target.fillRect(0, 0, frame.width, frame.height);
       this.drawLayers(target, frame.layers, frame.width, frame.height, media);
@@ -230,7 +251,7 @@ export class FrameCompositor {
         try {
           target.save();
           target.globalCompositeOperation = composite(layer.blendMode);
-          target.drawImage(picture.canvas, 0, 0);
+          drawBuffer(target, picture);
           target.restore();
         } finally {
           this.release(picture);
@@ -282,14 +303,16 @@ export class FrameCompositor {
         );
       };
       const ctx = picture.context;
+      const sourceScaleX = content ? content.canvas.width / sourceWidth : 1,
+        sourceScaleY = content ? content.canvas.height / sourceHeight : 1;
       ctx.save();
       placement(ctx);
       ctx.drawImage(
         source,
-        sourceX,
-        sourceY,
-        croppedWidth,
-        croppedHeight,
+        sourceX * sourceScaleX,
+        sourceY * sourceScaleY,
+        croppedWidth * sourceScaleX,
+        croppedHeight * sourceScaleY,
         -fittedWidth / 2,
         -fittedHeight / 2,
         fittedWidth,
@@ -299,7 +322,7 @@ export class FrameCompositor {
       if (hasColorAdjustment(layer.color)) {
         let pixels: ImageData;
         try {
-          pixels = ctx.getImageData(0, 0, width, height);
+          pixels = ctx.getImageData(0, 0, picture.canvas.width, picture.canvas.height);
         } catch {
           throw new Error(`素材画面无法读取像素进行调色：${layer.instanceId}`);
         }
@@ -320,14 +343,17 @@ export class FrameCompositor {
                 originalHeight * layer.transform.scaleY,
               )) /
             2;
-          if (radius > 0) mask.context.filter = `blur(${Math.min(MAX_SIDE, radius)}px)`;
+          if (radius > 0) {
+            const rasterScale = Math.min(mask.canvas.width / width, mask.canvas.height / height);
+            mask.context.filter = `blur(${Math.min(MAX_SIDE, radius) * rasterScale}px)`;
+          }
           mask.context.save();
           placement(mask.context);
           drawMask(mask.context, layer.mask, originX, originY, originalWidth, originalHeight);
           mask.context.restore();
           ctx.save();
           ctx.globalCompositeOperation = layer.mask.inverted ? "destination-out" : "destination-in";
-          ctx.drawImage(mask.canvas, 0, 0);
+          drawBuffer(ctx, mask);
           ctx.restore();
         } finally {
           this.release(mask);
@@ -380,7 +406,7 @@ export class FrameCompositor {
       ) => {
         if (!picture || !layer) return;
         ctx.globalCompositeOperation = composite(layer.blendMode);
-        ctx.drawImage(picture.canvas, x, 0);
+        drawBuffer(ctx, picture, x);
       };
       if (transition.transitionKind === "dissolve" || transition.transitionKind === "fade-black") {
         const a = this.take(width, height),
@@ -388,25 +414,24 @@ export class FrameCompositor {
         try {
           // Evaluate each endpoint against the same backdrop, preserving endpoint blend modes.
           // Adding weighted premultiplied images avoids source-over's dark crossfade midpoint.
-          a.context.drawImage(target.canvas, 0, 0);
-          b.context.drawImage(target.canvas, 0, 0);
+          a.context.drawImage(target.canvas, 0, 0, width, height);
+          b.context.drawImage(target.canvas, 0, 0, width, height);
           draw(a.context, from, transition.from);
           draw(b.context, to, transition.to);
           target.save();
-          target.resetTransform();
           target.clearRect(0, 0, width, height);
           if (transition.transitionKind === "fade-black") {
             target.globalCompositeOperation = "source-over";
             target.fillStyle = "#000000";
             target.fillRect(0, 0, width, height);
             target.globalAlpha = Math.abs(progress * 2 - 1);
-            target.drawImage(progress < 0.5 ? a.canvas : b.canvas, 0, 0);
+            drawBuffer(target, progress < 0.5 ? a : b);
           } else {
             target.globalCompositeOperation = "lighter";
             target.globalAlpha = 1 - progress;
-            target.drawImage(a.canvas, 0, 0);
+            drawBuffer(target, a);
             target.globalAlpha = progress;
-            target.drawImage(b.canvas, 0, 0);
+            drawBuffer(target, b);
           }
           target.restore();
         } finally {
@@ -426,23 +451,23 @@ export class FrameCompositor {
             (!transition.to || transition.to.blendMode === "normal")
           ) {
             a.context.globalCompositeOperation = "lighter";
-            if (from) a.context.drawImage(from.canvas, direction * progress * width, 0);
-            if (to) a.context.drawImage(to.canvas, -direction * (1 - progress) * width, 0);
+            if (from) drawBuffer(a.context, from, direction * progress * width);
+            if (to) drawBuffer(a.context, to, -direction * (1 - progress) * width);
             target.save();
             target.globalCompositeOperation = "source-over";
-            target.drawImage(a.canvas, 0, 0);
+            drawBuffer(target, a);
             target.restore();
           } else {
             b = this.take(width, height);
-            a.context.drawImage(target.canvas, 0, 0);
-            b.context.drawImage(target.canvas, 0, 0);
+            a.context.drawImage(target.canvas, 0, 0, width, height);
+            b.context.drawImage(target.canvas, 0, 0, width, height);
             draw(a.context, from, transition.from, direction * progress * width);
             draw(b.context, to, transition.to, -direction * (1 - progress) * width);
             let backdrop: ImageData, first: ImageData, second: ImageData;
             try {
-              backdrop = target.getImageData(0, 0, width, height);
-              first = a.context.getImageData(0, 0, width, height);
-              second = b.context.getImageData(0, 0, width, height);
+              backdrop = target.getImageData(0, 0, target.canvas.width, target.canvas.height);
+              first = a.context.getImageData(0, 0, a.canvas.width, a.canvas.height);
+              second = b.context.getImageData(0, 0, b.canvas.width, b.canvas.height);
             } catch {
               throw new Error("素材画面无法读取像素进行推移转场");
             }
@@ -477,8 +502,8 @@ export class FrameCompositor {
         const a = this.take(width, height),
           b = this.take(width, height);
         try {
-          a.context.drawImage(target.canvas, 0, 0);
-          b.context.drawImage(target.canvas, 0, 0);
+          a.context.drawImage(target.canvas, 0, 0, width, height);
+          b.context.drawImage(target.canvas, 0, 0, width, height);
           draw(a.context, from, transition.from);
           draw(b.context, to, transition.to);
           target.save();
@@ -488,13 +513,13 @@ export class FrameCompositor {
           target.beginPath();
           target.rect(incomingLeft ? split : 0, 0, incomingLeft ? width - split : split, height);
           target.clip();
-          target.drawImage(a.canvas, 0, 0);
+          drawBuffer(target, a);
           target.restore();
           target.save();
           target.beginPath();
           target.rect(incomingLeft ? 0 : split, 0, incomingLeft ? split : width - split, height);
           target.clip();
-          target.drawImage(b.canvas, 0, 0);
+          drawBuffer(target, b);
           target.restore();
           target.restore();
         } finally {
@@ -685,9 +710,11 @@ function drawText(
   ctx.roundRect((width - boxWidth) / 2, boxTop, boxWidth, boxHeight, style.backgroundRadius);
   ctx.fill();
   ctx.shadowColor = style.shadow.color;
-  ctx.shadowBlur = style.shadow.blur;
-  ctx.shadowOffsetX = style.shadow.x;
-  ctx.shadowOffsetY = style.shadow.y;
+  // Canvas shadows use physical bitmap units, unlike font/stroke/layout under the CTM.
+  const raster = ctx.getTransform();
+  ctx.shadowBlur = style.shadow.blur * Math.min(raster.a, raster.d);
+  ctx.shadowOffsetX = style.shadow.x * raster.a;
+  ctx.shadowOffsetY = style.shadow.y * raster.d;
   ctx.fillStyle = style.color;
   ctx.strokeStyle = style.strokeColor;
   ctx.lineWidth = style.strokeWidth;

@@ -1,3 +1,5 @@
+import { sameExportRange } from "./export-range";
+
 /** Measurements from the actual shared PCM mix, before playback/encoding can clip it. */
 export interface EditorAudioMixReport {
   sampleCount: number;
@@ -44,7 +46,8 @@ export function exportAudioMixWarning(result: any, request: any): string {
     !/^[a-f0-9]{64}$/.test(request?.documentHash ?? "") ||
     result.audioMix?.documentHash !== request.documentHash ||
     typeof request.sequenceId !== "string" ||
-    result.audioMix.sequenceId !== request.sequenceId
+    result.audioMix.sequenceId !== request.sequenceId ||
+    !sameExportRange(request.range, result.audioMix.range)
   )
     return "";
   try {
