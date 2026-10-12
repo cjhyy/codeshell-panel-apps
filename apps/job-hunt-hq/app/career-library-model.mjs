@@ -289,10 +289,9 @@ function upsert(kind, stateInput, value, options = {}) {
   if (!existing && (!input.id || kind === "sources")) existing = state[field].find((item) => sameIdentity(kind, item, input));
   const merged = { ...existing, ...input };
   if (kind === "sources" && !Object.hasOwn(input, "contentHash") && Object.hasOwn(input, "excerpt")) merged.contentHash = "";
-  if (kind === "qa" && actor === "agent") {
-    merged.answer = existing?.answer || "";
-    if (Object.hasOwn(input, "answer") || Object.hasOwn(input, "draftAnswer")) merged.draftAnswer = text(input.draftAnswer || input.answer);
-  }
+  // The caller may be transcribing the person's actual words from this chat.
+  // Keep that answer independent of an AI expression draft. Trust is carried
+  // by status/pending review, never inferred merely from which field was used.
   let next = normalizeRecord(kind, { ...merged, id: existing?.id || stableId(kind, input) });
   if (kind === "sources" && !next.externalId && !next.url && !next.localRef && !next.excerpt) throw new Error("材料需要 externalId、url、localRef 或实际内容");
   if (kind === "episodes" && !next.title) throw new Error("经历事件需要 title");
@@ -528,7 +527,7 @@ export function syncLegacyCareerQa(stateInput = {}, resumeInput = {}, options = 
     };
     // New projection content has not been reviewed as a library fact, even if
     // an old resume marks it answered. Explicit user answer saves can confirm.
-    if (targeted && actor === "user") Object.assign(qaInput, { answer, draftAnswer: "" });
+    if (targeted) Object.assign(qaInput, { answer, ...(actor === "user" ? { draftAnswer: "" } : {}) });
     else qaInput.draftAnswer = answer;
     state = upsertCareerQa(state, qaInput, { actor: targeted ? actor : "agent", confirm: targeted && actor === "user" && options.confirm === true && question.status === "answered", now });
     return { ...question, careerQaId: id };

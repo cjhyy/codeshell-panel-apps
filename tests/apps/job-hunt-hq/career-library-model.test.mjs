@@ -176,20 +176,35 @@ test("withdrawing source or episode confirmation invalidates dependent facts eve
 test("AI answer suggestions stay separate from the person's answer and preserve revisions", () => {
   const state = reviewedLibrary();
   const qa = state.careerQa[0];
-  const proposed = upsertCareerQa(state, { id: qa.id, answer: "AI 的新回答", status: "confirmed" }, agent);
+  const proposed = upsertCareerQa(state, { id: qa.id, draftAnswer: "AI 的新表达", status: "confirmed" }, agent);
   assert.equal(proposed.careerQa[0].answer, qa.answer);
-  assert.equal(proposed.careerQa[0].draftAnswer, "AI 的新回答");
+  assert.equal(proposed.careerQa[0].draftAnswer, "AI 的新表达");
   const accepted = applyCareerPendingRevision(proposed, "qa", qa.id, user);
   assert.equal(accepted.careerQa[0].answer, qa.answer);
-  assert.equal(accepted.careerQa[0].draftAnswer, "AI 的新回答");
+  assert.equal(accepted.careerQa[0].draftAnswer, "AI 的新表达");
   assert.equal(accepted.careerQa[0].status, "confirmed");
   assert.equal(accepted.careerQa[0].pendingRevision, null);
-  assert.equal(accepted.careerQa[0].revisions.at(-1).content.answer, qa.answer);
-  const fresh = upsertCareerQa({}, { question: "为什么？", answer: "模型推断" }, agent);
-  assert.equal(fresh.careerQa[0].answer, "");
-  assert.equal(fresh.careerQa[0].draftAnswer, "模型推断");
+  const fresh = upsertCareerQa({}, { question: "为什么？", answer: "本人聊天原话", draftAnswer: "模型表达草稿" }, agent);
+  assert.equal(fresh.careerQa[0].answer, "本人聊天原话");
+  assert.equal(fresh.careerQa[0].draftAnswer, "模型表达草稿");
   assert.equal(fresh.careerQa[0].status, "draft");
-  assert.throws(() => upsertCareerQa(fresh, { id: fresh.careerQa[0].id }, user), /实际回答/);
+  const expressionOnly = upsertCareerQa({}, { question: "为什么？", draftAnswer: "只有表达建议" }, agent);
+  assert.throws(() => upsertCareerQa(expressionOnly, { id: expressionOnly.careerQa[0].id }, user), /实际回答/);
+});
+
+test("chat factual answers remain independent drafts and reviewed answers survive factual update proposals", () => {
+  let state = upsertCareerQa({}, { question: "为什么这样选？", answer: "本人第一次原话", draftAnswer: "第一版表达" }, agent);
+  const id = state.careerQa[0].id;
+  state = upsertCareerQa(state, { id, answer: "本人补充原话", draftAnswer: "补充后的表达" }, agent);
+  assert.equal(state.careerQa[0].answer, "本人补充原话");
+  assert.equal(state.careerQa[0].draftAnswer, "补充后的表达");
+  assert.equal(state.careerQa[0].revisions[0].content.answer, "本人第一次原话");
+  assert.equal(state.careerQa[0].status, "draft");
+  state = upsertCareerQa(state, { id }, user);
+  const proposed = upsertCareerQa(freeze(state), { id, answer: "本人在后续聊天的新补充", draftAnswer: "新补充的表达" }, agent);
+  assert.equal(proposed.careerQa[0].answer, "本人补充原话");
+  assert.equal(proposed.careerQa[0].pendingRevision.content.answer, "本人在后续聊天的新补充");
+  assert.equal(proposed.careerQa[0].pendingRevision.content.draftAnswer, "新补充的表达");
 });
 
 test("the same wording remains distinct across episodes and repeat extraction is idempotent", () => {
@@ -296,8 +311,8 @@ test("legacy answer writes continue after migration and AI updates preserve a re
   assert.equal(JSON.stringify(state), before);
   assert.equal(synced.careerQa.length, 1);
   assert.equal(synced.careerQa[0].answer, "后来本人复核的真实原因");
-  assert.equal(synced.careerQa[0].draftAnswer, "AI 根据旧入口补的答案");
-  assert.equal(synced.careerQa[0].pendingRevision.content.draftAnswer, "AI 根据旧入口补的答案");
+  assert.equal(synced.careerQa[0].draftAnswer, "");
+  assert.equal(synced.careerQa[0].pendingRevision.content.answer, "AI 根据旧入口补的答案");
   assert.equal(synced.resume.candidateQuestions[0].careerQaId, id);
   const repeated = syncLegacyCareerQa(synced, synced.resume, { ...agent, questionId: "q1" });
   assert.deepEqual(repeated.careerQa, synced.careerQa);
