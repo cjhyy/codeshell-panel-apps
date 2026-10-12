@@ -30,7 +30,8 @@ strengths and gaps. Never manufacture an interview, answer, or accomplishment.
 - If practice reveals a missing real-world decision, contribution, result,
   tradeoff, or retrospective, save a draft through `save_candidate_context({qa: {...}})` only
   within the user's requested scope. Ask for the actual fact and its Source;
-  only a direct Panel confirmation makes it reusable as verified evidence.
+  only explicit factual verification from the current chat user (quoted in top-level
+  `confirmation`) or direct Panel review makes it reusable as verified evidence.
   Keep internal source excerpts private throughout practice and export.
 
 ## Select one primary mode

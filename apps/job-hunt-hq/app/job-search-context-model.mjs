@@ -9,6 +9,7 @@ export const JOB_SEARCH_CONTEXT_SCOPES = Object.freeze([
   "career_sources",
   "career_episodes",
   "career_qa",
+  "career_versions",
   "jobs",
   "job",
   "resumes",
@@ -83,6 +84,30 @@ function resumeSummary(resume) {
     claimCount: list(resume?.claimEvidence).length,
     candidateQuestionCount: list(resume?.candidateQuestions).length,
     updatedAt: text(resume?.updatedAt),
+  };
+}
+
+function careerVersionMetadata(version) {
+  const count = (field) =>
+    Number.isSafeInteger(version?.counts?.[field]) && version.counts[field] >= 0
+      ? version.counts[field]
+      : 0;
+  return {
+    id: text(version?.id).slice(0, 100),
+    title: text(version?.title).slice(0, 240),
+    summary: text(version?.summary).slice(0, 2000),
+    createdAt: text(version?.createdAt).slice(0, 80),
+    sessionId: text(version?.sessionId).slice(0, 100),
+    baseVersionId: text(version?.baseVersionId).slice(0, 100),
+    path: text(version?.path).slice(0, 240),
+    status: "saved",
+    counts: Object.fromEntries(
+      ["sources", "episodes", "qa", "total", "unresolved", "pending"].map((field) => [
+        field,
+        count(field),
+      ]),
+    ),
+    ...(/^[a-f0-9]{64}$/.test(text(version?.sha256)) ? { sha256: version.sha256 } : {}),
   };
 }
 
@@ -549,12 +574,44 @@ export function buildJobSearchContext(input, query = {}) {
   const interviewSets = list(input.interviewSets);
   const mockSessions = list(input.mockSessions);
   const envelope = baseEnvelope(input, scope);
+  const versionId = text(query.versionId || query.version_id);
   let result;
 
   switch (scope) {
+    case "career_versions": {
+      const versions = list(input.careerLibraryVersions);
+      const search = text(query.search).slice(0, 200).toLocaleLowerCase();
+      const selected = versions
+        .filter((version) =>
+          versionId
+            ? text(version?.id) === versionId
+            : !search ||
+              [text(version?.title), text(version?.summary)]
+                .join(" ")
+                .toLocaleLowerCase()
+                .includes(search),
+        )
+        .sort((left, right) => text(right?.createdAt).localeCompare(text(left?.createdAt)));
+      if (versionId && !selected.length) throw new Error(`未找到经历库版本：${versionId}`);
+      result = {
+        ...envelope,
+        careerLibraryVersions: page(
+          selected,
+          versionId ? 0 : cursor,
+          versionId ? 1 : Math.min(limit, 25),
+          careerVersionMetadata,
+        ),
+        filters: { versionId, search },
+        libraryVersionPolicy:
+          "Named versions preserve an immutable private library, including drafts and pending revisions. Saving a version does not confirm every fact, generate a resume, or authorize publication. Metadata does not include snapshot contents; read career_sources, career_episodes or career_qa with the exact version_id to inspect historical facts. Historical reads are not current writable state.",
+      };
+      break;
+    }
     case "career_sources":
     case "career_episodes":
     case "career_qa": {
+      if (versionId && text(input.libraryVersion?.id) !== versionId)
+        throw new Error(`经历库历史快照未加载：${versionId}；不能以当前资料代替历史版本`);
       const sourceId = text(query.sourceId || query.source_id);
       const episodeId = text(query.episodeId || query.episode_id);
       const qaId = text(query.qaId || query.qa_id);
@@ -587,17 +644,23 @@ export function buildJobSearchContext(input, query = {}) {
       if (id && !records.items.length) throw new Error(`未找到职业资料：${id}`);
       result = {
         ...envelope,
+        ...(input.libraryVersion
+          ? { libraryVersion: careerVersionMetadata(input.libraryVersion), historical: true }
+          : {}),
         [field]: records,
         filters: {
           sourceId,
           episodeId,
           qaId,
+          versionId,
           search: text(query.search),
           status: text(query.status) || "active",
         },
         careerPolicy: {
           confirmation:
-            "Only direct user actions confirm career facts; Agent writes remain draft or pending revisions.",
+            "Confirm facts only from an explicit current-chat user verification quoted in top-level confirmation, or a direct Panel review. Without it, Agent writes remain draft or pending revisions. Saving a library version is separate from fact confirmation.",
+          history:
+            "A historical libraryVersion is immutable reference material. Read the current working record before proposing changes; never silently write a historical snapshot back as current state.",
           publication:
             "Career facts and source excerpts are private. User confirmation does not authorize publication of internal content.",
           practice:
@@ -860,6 +923,7 @@ export function buildJobSearchContext(input, query = {}) {
           sourceMaterials: list(input.sourceMaterials).length,
           careerEpisodes: list(input.careerEpisodes).length,
           careerQa: list(input.careerQa).length,
+          careerLibraryVersions: list(input.careerLibraryVersions).length,
           jobs: jobs.length,
           jobLeads: list(input.jobLeads).length,
           jdIntakeItems: list(input.jdIntakeItems).length,

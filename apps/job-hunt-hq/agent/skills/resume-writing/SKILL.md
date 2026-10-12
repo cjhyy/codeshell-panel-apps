@@ -31,7 +31,8 @@ material, and keep every public claim defensible in an interview.
   changes invalidate stale verification; a text locator alone cannot do that.
 - Preserve existing `candidate_questions[].career_qa_id` links when carrying
   private questions into a new revision. A newly saved answer remains a career
-  draft or pending revision until the candidate confirms it in the Panel.
+  draft or pending revision until the candidate explicitly verifies its facts in
+  the current chat (quoted in top-level `confirmation`) or reviews it in the Panel.
 - Preserve internal source excerpts and confidential project details in the
   private library. A confirmed fact still requires an appropriate public
   paraphrase; confirmation does not authorize publishing Slack messages,

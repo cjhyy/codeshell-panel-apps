@@ -7,7 +7,7 @@
     "en": "Job Hunt HQ",
     "zh-CN": "求职作战室"
   },
-  "description": "Maintain a private career fact library with traceable sources, real project episodes, and user-confirmed QA; derive evidence-backed resumes and separate interview practice from career facts.",
+  "description": "Use the current CodeShell chat to build a private, versioned library of experiences, decisions and factual QA from authorized Slack/GitHub sources; generate a resume only when requested.",
   "entry": "app/index.html",
   "icon": "layout-dashboard",
   "placement": "right-dock",
@@ -42,7 +42,7 @@
     "tools": [
       {
         "name": "get_job_search_context",
-        "description": "Read a bounded slice of Job Hunt HQ state. Defaults to a lightweight summary; use scope plus opaque IDs for exact career sources, episodes, factual QA, jobs, resumes, interview sets, questions, sessions, discovery, or paginated catalogs. Career catalogs return summaries; pass an exact source_id, episode_id, or qa_id for one full record.",
+        "description": "Read bounded Job Hunt HQ context. Use career_versions for named knowledge-library version metadata and counts only; pass version_id with career_sources, career_episodes or career_qa to read an immutable historical snapshot. Career catalogs return summaries; exact source_id, episode_id or qa_id retrieves one record. Other scopes cover jobs, resumes and interview practice. Never treat a historical snapshot as current writable state.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -54,6 +54,7 @@
                 "career_sources",
                 "career_episodes",
                 "career_qa",
+                "career_versions",
                 "jobs",
                 "job",
                 "resumes",
@@ -147,6 +148,13 @@
               "minimum": 1,
               "maximum": 50,
               "description": "Catalog page size. scope=interview is additionally capped at 5 full questions per response and returns nextCursor."
+            },
+            "version_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "description": "Exact named knowledge-library version ID. With scope=career_versions returns metadata/counts only; with career_sources, career_episodes or career_qa reads that immutable historical snapshot. Omit for current working library. This is separate from resume_id.",
+              "pattern": "^career-version-[A-Za-z0-9_-]{1,80}$"
             }
           },
           "additionalProperties": false
@@ -313,7 +321,7 @@
       },
       {
         "name": "save_candidate_context",
-        "description": "Save candidate facts in exactly one mode: a complete profile/repositories/work_history replacement, or one incremental source, episode, or qa object for the private career library. Agent career writes always remain draft or pending revisions. Never impersonate user confirmation, publish private excerpts, or mix modes.",
+        "description": "Save one mode: source, episode or qa; library_version preview/save; or complete legacy profile/repositories/work_history. Preview reads differences without writing. Save an immutable named library version only when requested in this chat; preserve drafts/pending, do not confirm all facts or generate a resume. Top-level confirmation is only for one source/episode/qa and must quote the current chat user's explicit factual verification. Never invent approval or publish private evidence.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -466,7 +474,7 @@
                 "status": {
                   "type": "string",
                   "enum": ["draft"],
-                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
                 }
               },
               "required": ["provider"],
@@ -557,7 +565,7 @@
                 "status": {
                   "type": "string",
                   "enum": ["draft"],
-                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
                 }
               },
               "required": ["title"],
@@ -585,11 +593,13 @@
                 },
                 "answer": {
                   "type": "string",
-                  "maxLength": 12000
+                  "maxLength": 12000,
+                  "description": "The candidate's actual factual answer supplied in the current chat or existing record. Preserve uncertainty and original meaning; AI-invented or polished expression belongs only in draftAnswer. Unconfirmed answers remain drafts."
                 },
                 "draftAnswer": {
                   "type": "string",
-                  "maxLength": 12000
+                  "maxLength": 12000,
+                  "description": "Optional AI expression or interview wording, separate from the candidate's actual answer. Improving wording does not verify facts."
                 },
                 "sourceIds": {
                   "type": "array",
@@ -603,11 +613,67 @@
                 "status": {
                   "type": "string",
                   "enum": ["draft"],
-                  "description": "Agent writes always remain draft. Only a direct user action in the Panel can confirm facts; do not send actor, confirm, or confirmation metadata."
+                  "description": "Optional draft status. Without a valid top-level confirmation quote from the current chat user, writes remain draft or pending revisions. Do not send status=confirmed or impersonate actor/confirm metadata."
                 }
               },
               "required": ["question"],
               "additionalProperties": false
+            },
+            "confirmation": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000,
+              "description": "Optional only with one source, episode or qa. Exact current chat user wording explicitly verifying the submitted facts, including a real answer when confirming QA. Never invent, paraphrase as approval, copy a source participant, or infer confirmation from a request to collect, polish or save a library version. Omit when unconfirmed; the write remains draft/pending. Do not send actor/confirm/confirmation metadata inside the record."
+            },
+            "library_version": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": ["preview", "save"],
+                  "description": "preview reads the current working library and differences since the previous saved version without writing; save freezes it as a named immutable knowledge-library version after the user explicitly requests it in this chat."
+                },
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "Optional stable ID for an idempotent save retry. Reuse only for the same version/content; never overwrite an existing named version.",
+                  "pattern": "^career-version-[A-Za-z0-9_-]{1,80}$"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240,
+                  "description": "Required for save: a recognizable knowledge-library version title, not a software release or resume title."
+                },
+                "summary": {
+                  "type": "string",
+                  "maxLength": 2000,
+                  "description": "Concise summary of this conversation and its material additions/changes; preserve uncertainty and missing facts."
+                }
+              },
+              "required": ["action"],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "action": {
+                      "enum": ["preview"]
+                    }
+                  },
+                  "not": {
+                    "required": ["id"]
+                  }
+                },
+                {
+                  "properties": {
+                    "action": {
+                      "enum": ["save"]
+                    }
+                  },
+                  "required": ["title"]
+                }
+              ]
             }
           },
           "additionalProperties": false,
@@ -624,6 +690,12 @@
                   },
                   {
                     "required": ["qa"]
+                  },
+                  {
+                    "required": ["library_version"]
+                  },
+                  {
+                    "required": ["confirmation"]
                   }
                 ]
               }
@@ -646,6 +718,9 @@
                   },
                   {
                     "required": ["qa"]
+                  },
+                  {
+                    "required": ["library_version"]
                   }
                 ]
               }
@@ -668,6 +743,9 @@
                   },
                   {
                     "required": ["qa"]
+                  },
+                  {
+                    "required": ["library_version"]
                   }
                 ]
               }
@@ -690,6 +768,37 @@
                   },
                   {
                     "required": ["episode"]
+                  },
+                  {
+                    "required": ["library_version"]
+                  }
+                ]
+              }
+            },
+            {
+              "required": ["library_version"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "required": ["repositories"]
+                  },
+                  {
+                    "required": ["work_history"]
+                  },
+                  {
+                    "required": ["source"]
+                  },
+                  {
+                    "required": ["episode"]
+                  },
+                  {
+                    "required": ["qa"]
+                  },
+                  {
+                    "required": ["confirmation"]
                   }
                 ]
               }

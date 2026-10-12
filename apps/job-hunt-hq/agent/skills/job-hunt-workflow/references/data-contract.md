@@ -51,6 +51,7 @@ outcome remains Panel-local telemetry; do not duplicate it into
   "careerEpisodes": [],
   "careerQa": [],
   "careerLibraryMigrationVersion": 1,
+  "careerLibraryVersions": [],
   "jobs": [],
   "repos": [],
   "experiences": [],
@@ -85,7 +86,16 @@ Read through `get_job_search_context`:
 - `scope: "career_sources"`, optionally exact `source_id`;
 - `scope: "career_episodes"`, optionally exact `episode_id` or related `source_id`;
 - `scope: "career_qa"`, optionally exact `qa_id`, parent `episode_id`, or related
-  `source_id`.
+  `source_id`;
+- `scope: "career_versions"`, optionally exact `version_id`, for named
+  knowledge-library version metadata/counts only.
+
+Pass `version_id` with `career_sources`, `career_episodes`, or `career_qa` to read
+the chosen immutable historical snapshot instead of the current working library.
+The response includes `libraryVersion` metadata and `historical: true`. An absent
+or unreadable historical version is an error, never a fallback to current facts.
+Historical reads do not authorize writing old content over current records; read
+the current record again before proposing a change.
 
 All catalogs support `search`, `status`, `cursor`, and `limit`; follow the page's
 `nextCursor`. Catalogs return summaries; exact IDs return the chosen record's
@@ -105,8 +115,8 @@ Agent write schemas use nested camelCase objects, not the snake_case aliases
 used by older tools:
 
 `save_candidate_context` accepts exactly one mode per call: `source`, `episode`,
-`qa`, or the complete legacy `profile` + `repositories` + `work_history`
-replacement. The incremental modes preserve unrelated facts and legacy
+`qa`, `library_version`, or the complete legacy `profile` + `repositories` +
+`work_history` replacement. The incremental modes preserve unrelated facts and legacy
 collections. Do not combine modes or send empty legacy arrays to accompany a
 career record. This keeps the package compatible with the Host's 16-tool limit.
 
@@ -154,19 +164,93 @@ evidence.
 Answers and AI drafts are separately bounded to 12,000 characters. Do not put an
 invented first-person answer in `answer`; draft wording belongs in `draftAnswer`.
 
-Every Agent write remains draft. Tools reject extra `actor`, `confirm`, and
-confirmation metadata; their optional `status` accepts only `draft`. Only a
-direct Panel user action can confirm. Edits to a confirmed episode or QA become
-pending revisions, preserving confirmed content until the user adopts or rejects
-them. Source changes move dependent facts back to `needs_review`; rereading or
-AI regeneration does not reconfirm them. Keep revision/provenance records in the
-project and never bypass this behavior by editing snapshot JSON manually.
+Without explicit factual confirmation, Agent writes remain draft or pending.
+The optional top-level `confirmation` string (1–1,000 characters) is permitted
+only alongside one `source`, `episode`, or `qa`. It must quote the current chat
+user's actual words explicitly verifying those exact submitted facts. The
+handler records the confirmation as a user-confirmed save; for QA, preserve the
+user's real factual `answer`. Do not invent, infer or paraphrase approval, or
+reuse another source participant's message. A request to read a link, polish
+wording, or save a version is not confirmation of every fact. Direct Panel
+review is also available; do not force the user to repeat chat verification.
+Nested `actor`, `confirm`, `confirmedAt` and `confirmedBy` remain forbidden;
+optional record `status` accepts only `draft`, never Agent-selected `confirmed`.
+Do not mix top-level `confirmation` with `library_version` or legacy replacement.
+Unconfirmed edits to reviewed episodes or QA preserve reviewed text in place
+and create pending revisions. Source changes mark dependent facts `needs_review`;
+rereading or AI regeneration does not reconfirm them. Never bypass the contract
+by manually editing the project snapshot JSON.
 One serialized record is limited to 280 KiB and 40 retained history/revision
 entries. An over-limit write fails while preserving the prior record; the
 model never silently removes history to make it fit. Explain the failure and,
 when further collection is wanted, create a separate continuation linked by
 the original stable ID in its excerpt/narrative and provenance. Keep the
 original identity and history readable instead of rewriting it as a new source.
+
+## Named knowledge-library versions
+
+This is the conversational artifact, separate from software releases and resume
+`versions`. The current working library remains editable. A named version is an
+immutable snapshot of its sources, experiences/decisions and factual QA,
+including draft status, pending proposals and provenance as they were then.
+Saving a version does not confirm every fact, generate a resume, restore old
+content, or permit publication.
+
+```json
+{"library_version": {"action": "preview"}}
+```
+
+Use `save_candidate_context` in this mode before finalizing the conversation.
+Preview returns bounded differences against the previous saved version and
+unresolved/pending counts without writing. Describe those changes and gaps in
+chat. When the current chat user requests saving this version:
+
+```json
+{"library_version": {"action": "save", "title": "缓存方案：决策与复盘", "summary": "记录本人行动、替代方案与选择原因，保留尚待核实的结果。"}}
+```
+
+`library_version` accepts only `action` (`preview` or `save`), optional `title`
+(1–240 characters, required for save), optional `summary` (at most 2,000
+characters), and optional stable `id` for save retries. Preview does not accept
+an `id`. A save ID matches `career-version-[A-Za-z0-9_-]{1,80}`. Reuse an ID only
+for an identical save; a version cannot be overwritten with changed content.
+This mode is mutually exclusive with every other candidate mode and cannot
+carry factual `confirmation`. All modes use the same existing tool, preserving
+the 16-tool Host limit.
+
+The root's `careerLibraryVersions` is a metadata index. Entries have:
+
+```json
+{
+  "id": "career-version-example",
+  "title": "缓存方案：决策与复盘",
+  "summary": "本轮整理的内容与仍未解决的问题",
+  "createdAt": "ISO-8601",
+  "sessionId": "current-session-id",
+  "baseVersionId": "previous-library-version-id or empty string",
+  "path": "career-data/library-versions/career-version-example.json",
+  "status": "saved",
+  "counts": {"sources": 1, "episodes": 1, "qa": 2, "total": 4, "unresolved": 1, "pending": 0}
+}
+```
+
+An optional `sha256` contains a verified 64-character lowercase content hash.
+Immutable snapshot files live at the indexed path; keep their complete content
+out of the metadata/context index. Large versions may reference immutable shards
+under `career-data/panel-shards/g-<generation>/`; keep the version manifest and
+all its referenced shards together. `scope: "career_versions"` returns only these
+metadata fields, with search and pagination (at most 25 versions per page), or
+one exact `version_id`. To read a historical source/episode/QA, combine its exact
+record ID with `version_id` on the corresponding existing career scope. Context
+limits still apply; never expand an entire knowledge-library version into chat.
+
+To back up all named versions, preserve the entire project's `career-data/`
+directory and `job-hunt-panel.json`, including independent version files,
+referenced shards, and original source files. A Panel structured-snapshot
+recovery archive contains only its root and directly referenced shards; it can
+restore the current working library and version index, not independent named
+snapshots or external original files. Missing version files or referenced shards
+must fail explicitly; never substitute the current library for historical data.
 
 These facts and excerpts are private. User confirmation establishes accuracy;
 it does not authorize publishing internal Slack text, code, metrics, or links.
@@ -212,8 +296,10 @@ text and every referenced shard, including unknown legacy fields. Completion is
 published only after all parts succeed. Missing, altered or incomplete parts,
 invalid shard references and project changes prevent reconstruction or migration.
 The serialized archive is limited to 128 MiB. This is a structured-snapshot
-archive, not a copy of JD originals, photos, external source files or browser
-drafts. Do not delete incomplete or historical generations during task execution.
+archive, not a copy of independently stored named library versions, JD originals,
+photos, external source files or browser drafts. Preserve the entire project
+`career-data/` directory to back up those independent files. Do not delete
+incomplete or historical generations during task execution.
 `readSnapshotBackup` validates and reconstructs without changing project files;
 there is no automatic restore or downgrade. A recovery-selection/confirmation
 interface is still pending.

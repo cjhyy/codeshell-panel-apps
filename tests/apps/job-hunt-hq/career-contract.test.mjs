@@ -97,13 +97,23 @@ test("career Agent schemas cannot impersonate user confirmation", () => {
   assert.equal(qa.properties.draftAnswer.maxLength, 12000);
 });
 
-test("published Host accepts four candidate write modes and rejects mixed or incomplete modes", () => {
+test("published Host accepts five candidate write modes and rejects mixed or incomplete modes", () => {
   const name = "save_candidate_context";
   const schema = tools.get(name).inputSchema;
   for (const input of [
     { source: { provider: "file", excerpt: "Synthetic source" } },
     { episode: { title: "Synthetic episode", actions: ["Verified action"] } },
     { qa: { question: "What was the decision?", draftAnswer: "Draft wording" } },
+    { library_version: { action: "preview" } },
+    { library_version: { action: "save", title: "Recovery decision discussion" } },
+    {
+      library_version: {
+        action: "save",
+        id: "career-version-recovery",
+        title: "Recovery decision discussion",
+        summary: "Preserve open questions and pending changes.",
+      },
+    },
     { profile: {}, repositories: [], work_history: [] },
   ])
     assert.equal(validateToolArgsStrict(name, input, schema), null);
@@ -116,18 +126,152 @@ test("published Host accepts four candidate write modes and rejects mixed or inc
     { episode: { title: "Episode", actor: "user" } },
     { qa: { question: "Question" }, confirm: true },
     { qa: { question: "Question" }, actor: "user" },
+    { library_version: { action: "publish", title: "Invalid action" } },
+    { library_version: { action: "save" } },
+    { library_version: { action: "save", title: "" } },
+    { library_version: { action: "save", title: "Title", id: "../../version" } },
+    { library_version: { action: "preview", id: "career-version-recovery" } },
+    { library_version: { action: "preview" }, qa: { question: "Question" } },
+    { library_version: { action: "save", title: "Title" }, profile: {} },
+  ])
+    assert.notEqual(validateToolArgsStrict(name, input, schema), null);
+});
+
+test("explicit chat confirmation is bounded and exclusive to one career record mode", () => {
+  const name = "save_candidate_context";
+  const schema = tools.get(name).inputSchema;
+  assert.equal(schema.properties.confirmation.maxLength, 1000);
+  for (const input of [
+    { source: { provider: "slack", excerpt: "My message" } },
+    { episode: { title: "Recovery decision" } },
+    { qa: { question: "Why recovery?", answer: "I needed safe retries." } },
+  ]) {
+    assert.equal(
+      validateToolArgsStrict(name, { ...input, confirmation: "I confirm these exact facts." }, schema),
+      null,
+    );
+  }
+  for (const input of [
+    { confirmation: "I confirm." },
+    { qa: { question: "Question" }, confirmation: "" },
+    { qa: { question: "Question" }, confirmation: "A".repeat(1001) },
+    { qa: { question: "Question", confirmation: "I confirm." } },
+    { profile: {}, repositories: [], work_history: [], confirmation: "I confirm." },
+    { library_version: { action: "preview" }, confirmation: "I confirm." },
+    { library_version: { action: "save", title: "Title" }, confirmation: "I confirm." },
   ])
     assert.notEqual(validateToolArgsStrict(name, input, schema), null);
 });
 
 test("read schema advertises separate career scopes and exact opaque IDs", () => {
   const schema = tools.get("get_job_search_context").inputSchema.properties;
-  for (const scope of ["career_sources", "career_episodes", "career_qa"])
+  for (const scope of ["career_sources", "career_episodes", "career_qa", "career_versions"])
     assert(schema.scope.enum.includes(scope));
-  for (const field of ["source_id", "episode_id", "qa_id"])
+  for (const field of ["source_id", "episode_id", "qa_id", "version_id"])
     assert.equal(schema[field].maxLength, 100);
   for (const status of ["draft", "confirmed", "needs_review", "archived"])
     assert(schema.status.enum.includes(status));
+});
+
+test("named library version context returns bounded metadata without snapshot or working facts", () => {
+  const input = fixture();
+  input.careerLibraryVersions = Array.from({ length: 60 }, (_, index) => ({
+    id: `career-version-${index}`,
+    title: `Decision ${index}`,
+    summary: "中".repeat(2000),
+    createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
+    sessionId: "chat-one",
+    baseVersionId: index ? `career-version-${index - 1}` : "",
+    path: `career-data/library-versions/career-version-${index}.json`,
+    status: "saved",
+    counts: { sources: 1, episodes: 1, qa: 2, total: 4, unresolved: 1, pending: 1 },
+    sha256: "a".repeat(64),
+    snapshot: { sourceMaterials: [{ excerpt: "PRIVATE_INLINE_SNAPSHOT".repeat(1000) }] },
+    unexpected: "PRIVATE_UNEXPECTED_FIELD",
+  }));
+  const before = JSON.stringify(input);
+  const result = buildJobSearchContext(input, { scope: "career_versions", limit: 50 });
+  assert.equal(result.careerLibraryVersions.total, 60);
+  assert.equal(result.careerLibraryVersions.items.length, 25);
+  assert.equal(result.careerLibraryVersions.nextCursor, 25);
+  assert.equal(result.careerLibraryVersions.items[0].id, "career-version-59");
+  assert.equal(result.careerLibraryVersions.items[0].sha256, "a".repeat(64));
+  assert(jobSearchContextJsonBytes(result) <= JOB_SEARCH_CONTEXT_MAX_BYTES);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|UNRELATED_/);
+  assert.equal(JSON.stringify(input), before);
+  const second = buildJobSearchContext(input, {
+    scope: "career_versions",
+    cursor: result.careerLibraryVersions.nextCursor,
+    limit: 25,
+  });
+  assert.equal(second.careerLibraryVersions.items[0].id, "career-version-34");
+  const exact = buildJobSearchContext(input, {
+    scope: "career_versions",
+    version_id: "career-version-4",
+  });
+  assert.equal(exact.careerLibraryVersions.items.length, 1);
+  assert.equal(exact.careerLibraryVersions.items[0].title, "Decision 4");
+  assert.deepEqual(exact.careerLibraryVersions.items[0].counts, {
+    sources: 1, episodes: 1, qa: 2, total: 4, unresolved: 1, pending: 1,
+  });
+  assert.doesNotMatch(JSON.stringify(exact), /PRIVATE_|UNRELATED_/);
+  const searched = buildJobSearchContext(input, { scope: "career_versions", search: "Decision 59" });
+  assert.equal(searched.careerLibraryVersions.total, 1);
+  assert.throws(
+    () => buildJobSearchContext(input, { scope: "career_versions", versionId: "career-version-absent" }),
+    /未找到经历库版本/,
+  );
+});
+
+test("historical career reads identify the loaded version and never silently fall back to current data", () => {
+  const input = fixture();
+  const libraryVersion = {
+    id: "career-version-past",
+    title: "Prior discussion",
+    createdAt: "2026-10-11",
+    counts: { sources: 2, episodes: 2, qa: 2, total: 6, unresolved: 1, pending: 0 },
+    snapshot: { private: "PRIVATE_UNBOUNDED_SNAPSHOT" },
+  };
+  for (const scope of ["career_sources", "career_episodes", "career_qa"]) {
+    assert.throws(
+      () => buildJobSearchContext(input, { scope, versionId: libraryVersion.id }),
+      /历史快照未加载/,
+    );
+    assert.throws(
+      () => buildJobSearchContext({ ...input, libraryVersion }, { scope, version_id: "career-version-other" }),
+      /历史快照未加载/,
+    );
+    const result = buildJobSearchContext({ ...input, libraryVersion }, { scope, version_id: libraryVersion.id });
+    assert.equal(result.historical, true);
+    assert.equal(result.libraryVersion.id, libraryVersion.id);
+    assert.equal(result.filters.versionId, libraryVersion.id);
+    assert.equal(Object.hasOwn(result.libraryVersion, "snapshot"), false);
+  }
+  const current = buildJobSearchContext(input, { scope: "career_qa" });
+  assert.equal(Object.hasOwn(current, "libraryVersion"), false);
+  assert.equal(Object.hasOwn(current, "historical"), false);
+});
+
+test("workflow documentation agrees with the conversational version and confirmation tool schemas", async () => {
+  const base = new URL("../../../apps/job-hunt-hq/agent/skills/job-hunt-workflow/", import.meta.url);
+  const documents = await Promise.all(
+    ["SKILL.md", "references/workflows.md", "references/data-contract.md"].map((path) =>
+      readFile(new URL(path, base), "utf8"),
+    ),
+  );
+  for (const content of documents) {
+    assert.match(content, /library_version/);
+    assert.match(content, /career_versions/);
+    assert.match(content, /confirmation/);
+    assert.doesNotMatch(content, /Only a direct Panel user action can confirm|Even when a\s+user expresses agreement in chat, ask them to use the Panel/);
+  }
+  const examples = [...documents[2].matchAll(/```json\n(\{"library_version"[^\n]+\})\n```/g)];
+  assert.equal(examples.length, 2);
+  for (const [, source] of examples)
+    assert.equal(
+      validateToolArgsStrict("save_candidate_context", JSON.parse(source), tools.get("save_candidate_context").inputSchema),
+      null,
+    );
 });
 
 test("resume claims can retain bounded stable references to confirmed career facts", () => {

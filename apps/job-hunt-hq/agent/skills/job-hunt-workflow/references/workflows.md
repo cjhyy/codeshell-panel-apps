@@ -6,57 +6,66 @@ Reuse the same candidate evidence across jobs, but write each job-specific
 artifact with its own opaque `job_id`. Jobs in `inbox` are discovery results,
 not evidence of user interest.
 
-## Maintain a private career library
+## Chat → experiences, decisions and QA → named library version
 
-Use this module to record real project stories, recover specific decisions and
-contributions, or organize authorized Slack/GitHub material for future resume
-and interview use. It does not require a JD or start an interview practice set.
+Use this module when the user shares authorized Slack/GitHub data and wants to
+build a personal knowledge library in the current CodeShell session. The Panel
+shows results, differences and history; manual entry is supplemental. This does
+not require a JD, create an interview practice set, release software, or generate
+a resume.
 
-1. Read summary counts, then search the relevant `career_sources`,
-   `career_episodes`, or `career_qa` catalog. Read exact IDs before revising an
-   existing record; reuse them instead of producing parallel copies.
-2. Collect only the sources requested or needed for the current episode. For
-   Slack, read the complete relevant thread context through the available
-   connected tool, preserving permalink/thread ID, authors, dates, and a
-   minimal excerpt. For GitHub, inspect the substantive diff and confirm the
-   candidate's author identity; record the exact PR/commit and distinguish
-   personal work from team work. Do not equate repository ownership or merge
-   authorship with implementation. Do not send messages or broaden collection
-   to unrelated workspaces or repositories.
-   `source.excerpt` holds at most 16,000 characters. For longer threads, save
-   each message as its own source or keep the complete collected text in
-   `career-data/source-materials/` with a `localRef`. Record the actual pages,
-   messages, and missing/truncated ranges. If a GitHub patch is partial or
-   unavailable, keep that boundary explicit. Never describe a silently sliced
-   excerpt as a complete saved thread or complete diff review.
-3. Invoke `save_candidate_context({source: {...}})` with `source` containing provenance and content
-   actually read. Prefer stable provider/externalId identity and a content hash
-   when known. Never invent an author, hash, timestamp, or locator. A source
-   record is not proof by itself that every statement is the candidate's work.
-4. Build a draft `episode`: title/project, background/problem, `myRole`,
-   `actions` and `alternatives` arrays, decision/reason/tradeoffs,
-   results/retrospective, tags, and existing `sourceIds`. Keep unknown fields
-   empty. Cite the materials that support each personal contribution.
-5. Ask one high-value factual question at a time: what the candidate personally
-   owned, the chosen option and its alternatives, why, an actual outcome, or a
-   lesson. Invoke `save_candidate_context({qa: {...}})` with the exact `episodeId`, question,
-   candidate's actual `answer`, optional AI `draftAnswer`, and supporting
-   `sourceIds`. Do not manufacture an answer to complete the story.
-6. Agent writes remain draft. The user reviews the stored episode/QA and uses
-   the Panel's confirmation action. Never pass `actor`, `confirm`, or
-   `status: "confirmed"` through an Agent tool, even after verbal agreement.
-7. If later collection changes a source, dependent confirmed facts need review
-   again. An Agent edit to a confirmed episode/QA becomes a pending revision;
-   the user chooses whether to adopt it. Do not overwrite the confirmed text
-   or claim a draft was adopted.
-   A record exceeding 280 KiB or 40 retained revisions fails without deleting
-   prior content. Report the failed save and preserve the original record. Use
-   a separate continuation with an explicit reference to the prior record if
-   more collection is needed; do not trim history or fake a refresh to proceed.
-8. Use confirmed, current facts to inform a Base Resume or practice answer only
-   when that next task is requested. Keep internal source excerpts, factual QA,
-   proprietary details, and sensitive links out of public resumes and PDFs.
-   Confirmation is not publication permission.
+1. Read summary counts and the latest `career_versions` metadata. Search current
+   `career_sources`, `career_episodes` or `career_qa` before adding records;
+   read exact IDs before revisions and reuse them to avoid duplicates.
+2. Read only selected links or connected data needed for this conversation.
+   For Slack, read the relevant thread through authorized connected tools and
+   preserve permalink/thread ID, authors, timestamps, and actual context.
+   For GitHub, inspect substantive PR/commit changes and verify personal
+   authorship; distinguish team work from the candidate's own contribution.
+   Never send messages or widen collection to unrelated private data.
+   Save the material actually read with `save_candidate_context({source: {...}})`.
+   Keep excerpts within 16,000 characters; store separate message sources or
+   the complete collected text under `career-data/source-materials/` and use
+   `localRef` when needed. Record missing pages or truncated patches honestly.
+3. Discuss one meaningful factual gap at a time. Record the background/problem,
+   `myRole`, personal `actions`, considered `alternatives`, the `decision`,
+   `reason`, `tradeoffs`, actual `results`, and `retrospective`. Save an
+   `episode` with the existing supporting `sourceIds`; unknowns remain unknown.
+4. Save actual chat answers through `save_candidate_context({qa: {...}})` with
+   exact `episodeId`, question, category, `answer`, and supporting `sourceIds`.
+   Keep optional AI wording in `draftAnswer`; it is not a substitute for the
+   user's actual answer or verified accomplishments.
+5. Working records remain draft or pending by default. When the current chat
+   user explicitly verifies the submitted facts, quote their original words in
+   top-level `confirmation` on that one `source`, `episode`, or `qa` call.
+   Do not invent approval, infer it from a request to save the library, or send
+   `actor`, `confirm`, or nested confirmation metadata. Direct Panel review is
+   also supported, but explicit chat confirmation need not be repeated there.
+6. Call `save_candidate_context({library_version: {action: "preview"}})`.
+   This does not write. Show a concise account of what was added or changed
+   since the last saved version, what remains uncertain, and any pending
+   proposals. Resolve only the gaps the user wants to address this time.
+7. When the user says to save this version, call
+   `save_candidate_context({library_version: {action: "save", title: "...", summary: "..."}})`.
+   Optional `id` is a stable `career-version-...` ID for idempotent retries of
+   this same save. The named version freezes the current library, including
+   drafts, pending revisions and their provenance. Saving is not blanket fact
+   confirmation, publication consent, or resume generation. Report the actual
+   saved version ID/title; on failure keep the working data and report failure.
+8. To revisit a version, read `career_versions` with its exact `version_id` for
+   metadata/counts, then use that `version_id` with the needed career scope and
+   exact source/episode/QA ID or pagination. Never request the entire immutable
+   snapshot as Agent context. Historical records are read-only; read the
+   current working record before proposing a later edit. Never silently
+   replace current data with a historical snapshot.
+9. Later source changes return dependent confirmed facts to `needs_review`.
+   Unconfirmed AI edits to reviewed episodes/QA become pending revisions;
+   previously reviewed text stays intact. Over-limit record writes preserve
+   original content and history (280 KiB, 40 retained revisions); explain the
+   failure and use an explicitly linked continuation if more material is wanted.
+10. Derive a resume or practice story only when that separate task is requested.
+    Use current confirmed facts for public claims; keep internal source text,
+    private QA and sensitive links out of public resumes/PDFs.
 
 Career-library QA captures facts. Resume-specific private QA can help improve a
 particular revision; interview-bank questions and practice attempts train how to

@@ -1,6 +1,6 @@
 ---
 name: job-hunt-workflow
-description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use to maintain a private career fact library of source materials, real project episodes, and factual QA; organize authorized Slack threads or verified GitHub work into draft career evidence; initialize or repair a job-search workspace; import JDs; discover or compare jobs; research companies; write source-backed Base Resumes and JD Variants; curate interview questions; practice or review interviews; update application progress; or execute a user-selected combination.
+description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use the current chat to organize authorized Slack/GitHub sources, discuss real experiences and decision reasons, maintain factual QA, preview changes, and save immutable named knowledge-library versions; initialize or repair a job-search workspace; import JDs; discover or compare jobs; research companies; write source-backed Base Resumes and JD Variants; curate interview questions; practice or review interviews; update application progress; or execute a user-selected combination.
 ---
 
 # Job Hunt Workflow
@@ -9,66 +9,84 @@ Keep the conversation in the current CodeShell session. Do not create a second
 chat surface or ask the user to open another repository. The enabled Panel App,
 its tools, and this Skill are one project-scoped product.
 
-## Maintain the career fact library
+## Build knowledge-library versions through the current chat
 
-Career facts are durable material for many future resumes and interviews. Keep
-three separate layers: original `sourceMaterials`, attributable
-`careerEpisodes`, and factual `careerQa`. This library is distinct from the
-interview question bank, practice answers, AI scores, and resume revisions.
-An improved practice answer is not a newly verified accomplishment.
+The primary workflow is conversational: the user shares a Slack/GitHub link or
+selects already connected data, discusses an experience in this session, and
+asks to save a new version of their experiences, decisions and factual QA.
+Keep three separate layers: original `sourceMaterials`, attributable
+`careerEpisodes`, and factual `careerQa`. The Panel is for reviewing the
+library, differences, and historical versions; manual forms are optional.
+A knowledge-library version is distinct from a software release, a resume
+revision, interview questions, practice answers, and AI scores. Do not generate
+a resume unless the user requests one.
 
 - Read `career_sources`, `career_episodes`, or `career_qa` catalogs with
-  `search`, `status`, and pagination. Read one full record with the exact
-  `source_id`, `episode_id`, or `qa_id`. Use `episode_id` to read QA for one
-  episode, or `source_id` to inspect dependent facts.
-- Save one record at a time through `save_candidate_context` with exactly one
-  nested `source`, `episode`, or `qa` argument. Do not mix these incremental
-  modes or include `profile`, `repositories`, or `work_history` in the same
-  call. The legacy complete replacement requires all three of those fields.
-  Use the nested schema's camelCase field names.
-  Save useful drafts early, leave missing facts empty, and keep the candidate's
-  actual `answer` separate from an AI-proposed `draftAnswer`.
-- Agent tool calls always create drafts or pending revisions. Never send
-  `actor: "user"`, `confirm`, or invented confirmation metadata. Even when a
-  user expresses agreement in chat, ask them to use the Panel's confirmation
-  action after reviewing the stored fact. Only that action confirms a fact.
-- An edit to a confirmed episode or QA is a pending revision; preserve the
-  confirmed text until the user reviews it. If source content changes, dependent
-  facts must return to review. Do not silently re-confirm them.
-- For an authorized Slack thread, preserve its permalink, workspace/channel
-  and thread identity, visible authors, timestamps, necessary context, and a
-  concise excerpt. Other participants' claims and team activity do not prove
-  the candidate's role. Never search unrelated channels or send messages.
-  Source excerpts are limited to 16,000 characters. For a longer thread, save
-  messages as separate sources or preserve the complete collected text under
-  `career-data/source-materials/` and reference it with `localRef`. Record the
-  pages/messages actually read and any missing or truncated content; never
-  silently slice a thread and claim the whole thread was saved.
-- For GitHub evidence, verify the repository, exact commit/PR, author identity,
-  and substantive diff before attributing a contribution. Repository access,
-  a PR title, merge attribution, or a project README alone does not establish
-  personal authorship. Separate shared work from the candidate's own actions.
-  Preserve the collection boundary when a patch is missing or truncated; an
-  excerpt does not establish that the complete diff was reviewed.
+  `search`, `status`, and pagination. Read a record with its exact `source_id`,
+  `episode_id`, or `qa_id` before proposing changes. Reuse existing IDs.
+- Collect only the links or connected data authorized for this conversation.
+  For Slack, preserve permalink, workspace/channel/thread identity, visible
+  authors, timestamps and relevant context. For GitHub, verify the exact
+  PR/commit, substantive diff and personal author identity; repository access,
+  ownership, titles or merge attribution alone do not establish personal work.
+  Do not search unrelated channels/repos or send messages.
+- Discuss one high-value missing fact at a time: background, the candidate's
+  own responsibility and action, considered alternatives, the decision, why,
+  tradeoffs, actual outcomes, or retrospective. Keep unknowns explicit.
+  Save the user's actual factual answer in `answer`; AI-polished expression
+  belongs in `draftAnswer` and must not replace the original meaning.
+- Save working records through `save_candidate_context` using exactly one
+  nested `source`, `episode`, or `qa` object. These incremental modes preserve
+  unrelated data. Do not combine them with each other, `library_version`, or
+  the complete legacy `profile` + `repositories` + `work_history` replacement.
+- Unconfirmed writes remain drafts or pending revisions. If the current chat
+  user explicitly verifies these exact facts, pass their actual original words
+  in top-level `confirmation` with that one `source`, `episode`, or `qa`.
+  Never invent or infer confirmation, quote another source participant as the
+  user, send `actor`/`confirm`, or mark an AI expression as verified. Merely
+  asking to read a link, polish wording, or save a version is not factual
+  confirmation. The user can also review facts directly in the Panel; do not
+  require them to repeat an explicit chat confirmation in a manual form.
+- Before finalizing this conversation's work, call
+  `save_candidate_context({library_version: {action: "preview"}})` to read the
+  changes since the last saved knowledge-library version without writing.
+  Explain the additions, revisions, unresolved facts, and pending proposals
+  in chat. When the user asks to save this version, call the same tool with
+  `library_version: {action: "save", title: "...", summary: "..."}`. An optional
+  stable `id` makes a retry idempotent; reuse it only for that exact version.
+  Saving freezes the current sources, experiences, decisions and QA, including
+  draft/pending state. It does not confirm every fact or create a resume.
+- Read `scope: "career_versions"` for bounded version metadata and counts,
+  optionally exact `version_id`. To inspect historical material, pass that
+  `version_id` with `career_sources`, `career_episodes`, or `career_qa` and
+  exact record IDs or pagination. Metadata never expands into the whole
+  library. Historical snapshots are immutable reference material; read the
+  current working record before proposing updates, and never silently restore
+  a historical version over current data.
+- An unconfirmed AI edit to a reviewed episode or QA remains a pending
+  revision, preserving the reviewed text. Source changes return dependent
+  facts to review; rereading or AI regeneration does not reconfirm them.
+- Source excerpts are limited to 16,000 characters. For longer Slack threads,
+  save separate message sources or preserve the full text actually collected
+  under `career-data/source-materials/` with `localRef`. Record actual pages,
+  messages, missing ranges and truncated patches; never claim a complete read
+  after silently slicing the input. A save does not fetch source content.
 - Use only connected tools and project files actually available in this run.
-  Saving a source does not fetch Slack/GitHub content automatically; record an
-  honest limitation if a source is inaccessible.
-- Keep internal messages, code, Source excerpts, and factual QA private.
+  Explain inaccessible sources honestly; never invent authors, dates, hashes,
+  metrics, personal ownership or results to fill gaps.
+- Keep internal messages, code, source excerpts and factual QA private.
   Confirmation establishes factual accuracy, not permission to publish.
-  Resume writing may paraphrase non-sensitive, user-authorized contributions;
-  do not automatically copy internal details or source links into public files.
-- When requested to derive a resume, use only current user-confirmed episodes
-  and factual QA, paraphrase appropriate public-safe contributions, and attach
-  exact `source_ids`, `episode_ids`, and `qa_ids` on each derived
-  `claim_evidence` entry. Preserve ordinary Source explanations. A changed
-  source or episode must invalidate dependent claim verification before export.
-- A record can retain at most 40 revisions and 280 KiB of serialized content.
-  If saving reaches either limit, keep the original record and history intact,
-  explain the failed write, and create an explicitly linked continuation when
-  the user wants to keep adding material. Never delete history to force a save.
+  Generate public-safe resume paraphrases only when separately requested,
+  using current confirmed facts and exact `source_ids`, `episode_ids`, and
+  `qa_ids` on each derived claim. Never copy private excerpts automatically.
+- A working record retains at most 40 revisions and 280 KiB of serialized
+  content. On a failed write, preserve all prior data and explain the failure;
+  use an explicitly linked continuation when wanted. Never delete history to
+  force a save. Named knowledge-library versions remain immutable.
 
-Read the career-library module in [references/workflows.md](references/workflows.md)
-for collection, guided fact-finding, and revision steps.
+Read [references/workflows.md](references/workflows.md) for conversational
+collection and versioning, and [references/data-contract.md](references/data-contract.md)
+for the exact tool shapes.
 
 ## Resolve jobs and tasks independently
 
