@@ -115,7 +115,7 @@ Agent write schemas use nested camelCase objects, not the snake_case aliases
 used by older tools:
 
 `save_candidate_context` accepts exactly one mode per call: `source`, `episode`,
-`qa`, `library_version`, or the complete legacy `profile` + `repositories` +
+`qa`, `library_version`, `career_update`, or the complete legacy `profile` + `repositories` +
 `work_history` replacement. The incremental modes preserve unrelated facts and legacy
 collections. Do not combine modes or send empty legacy arrays to accompany a
 career record. This keeps the package compatible with the Host's 16-tool limit.
@@ -182,7 +182,8 @@ wording, or save a version is not confirmation of every fact. Direct Panel
 review is also available; do not force the user to repeat chat verification.
 Nested `actor`, `confirm`, `confirmedAt` and `confirmedBy` remain forbidden;
 optional record `status` accepts only `draft`, never Agent-selected `confirmed`.
-Do not mix top-level `confirmation` with `library_version` or legacy replacement.
+Do not mix top-level `confirmation` with `library_version`, `career_update` or
+legacy replacement.
 Unconfirmed edits to reviewed episodes or QA preserve reviewed text in place
 and create pending revisions. Source changes mark dependent facts `needs_review`;
 rereading or AI regeneration does not reconfirm them. Never bypass the contract
@@ -193,6 +194,36 @@ model never silently removes history to make it fit. Explain the failure and,
 when further collection is wanted, create a separate continuation linked by
 the original stable ID in its excerpt/narrative and provenance. Keep the
 original identity and history readable instead of rewriting it as a new source.
+
+## JSON update interface
+
+For chat-generated JSON, read [career-update.md](career-update.md), the strict
+[career-update.schema.json](career-update.schema.json), and the complete
+[synthetic example](career-update.example.json). The File tool writes an
+incremental UTF-8 document under `career-data/updates/<safe-name>.json`; it must
+be at most 128 KiB, with required `sources`, `episodes`, and `qa` arrays of at
+most 25 records each and at least one record in total. It is not a Panel snapshot
+and writing the file does not import anything.
+
+`save_candidate_context({career_update: {action: "preview", path: "..."}})`
+validates and previews without merging or saving a version. `apply` requires the
+exact opaque 64-character lowercase hex `preview_token` returned by preview;
+preview forbids that field. The path accepts only
+`career-data/updates/[A-Za-z0-9_-]{1,100}.json`, with no nested paths or traversal.
+`career_update` is exclusive with all other write modes and `confirmation`,
+keeping the same 16 tools. When saving is already authorized, apply directly;
+when only a file/preview was requested, stop at that requested result.
+
+Apply atomically merges the incoming records and saves the document's named
+version. Existing reviewed content remains pending until verified separately;
+actual `answer` and AI `draftAnswer` stay distinct. The token binds the original
+file bytes, project identity, career collections and version index; any change
+requires a new preview. Same version ID plus identical file bytes is an
+idempotent retry preserving later working edits; changed bytes cannot reuse the
+saved ID. The saved version's internal `updateSha256` records the original file
+hash and is not permitted as an input JSON field. Independent snapshot/file
+preservation follows the named-version rules below. No HTTP endpoint or
+background file scanning is involved, and apply never generates a resume.
 
 ## Named knowledge-library versions
 

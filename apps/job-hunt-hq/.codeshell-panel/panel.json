@@ -321,7 +321,7 @@
       },
       {
         "name": "save_candidate_context",
-        "description": "Save one mode: source, episode or qa; library_version preview/save; or complete legacy profile/repositories/work_history. Preview reads differences without writing. Save an immutable named library version only when requested in this chat; preserve drafts/pending, do not confirm all facts or generate a resume. Top-level confirmation is only for one source/episode/qa and must quote the current chat user's explicit factual verification. Never invent approval or publish private evidence.",
+        "description": "Save one mode: source/episode/qa, library_version preview/save, career_update preview/apply from a strict project JSON file, or complete legacy candidate data. Preview never changes the library. career_update apply requires its preview_token and atomically merges records plus a named version when saving is authorized. Top-level confirmation only quotes current-chat factual verification for one career record. Versions preserve draft/pending states and do not generate a resume.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -684,6 +684,52 @@
                   "required": ["title"]
                 }
               ]
+            },
+            "career_update": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": ["preview", "apply"],
+                  "description": "preview validates the JSON and shows proposed changes without importing it; apply atomically merges the previewed records and saves its named library version when the current user has authorized saving."
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 124,
+                  "pattern": "^career-data/updates/[A-Za-z0-9_-]{1,100}\\.json$",
+                  "description": "Current-project UTF-8 JSON file conforming to references/career-update.schema.json, at most 128 KiB. Write it through the available File tool; never write job-hunt-panel.json directly."
+                },
+                "preview_token": {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$",
+                  "description": "Exact opaque SHA-256 token returned by preview; required for apply, forbidden for preview. File, working library, version index or project changes invalidate it. Do not invent a token."
+                }
+              },
+              "required": ["action", "path"],
+              "additionalProperties": false,
+              "oneOf": [
+                {
+                  "properties": {
+                    "action": {
+                      "enum": ["preview"]
+                    }
+                  },
+                  "not": {
+                    "required": ["preview_token"]
+                  }
+                },
+                {
+                  "properties": {
+                    "action": {
+                      "enum": ["apply"]
+                    }
+                  },
+                  "required": ["preview_token"]
+                }
+              ]
             }
           },
           "additionalProperties": false,
@@ -706,6 +752,9 @@
                   },
                   {
                     "required": ["confirmation"]
+                  },
+                  {
+                    "required": ["career_update"]
                   }
                 ]
               }
@@ -731,6 +780,9 @@
                   },
                   {
                     "required": ["library_version"]
+                  },
+                  {
+                    "required": ["career_update"]
                   }
                 ]
               }
@@ -756,6 +808,9 @@
                   },
                   {
                     "required": ["library_version"]
+                  },
+                  {
+                    "required": ["career_update"]
                   }
                 ]
               }
@@ -781,6 +836,9 @@
                   },
                   {
                     "required": ["library_version"]
+                  },
+                  {
+                    "required": ["career_update"]
                   }
                 ]
               }
@@ -806,6 +864,40 @@
                   },
                   {
                     "required": ["qa"]
+                  },
+                  {
+                    "required": ["confirmation"]
+                  },
+                  {
+                    "required": ["career_update"]
+                  }
+                ]
+              }
+            },
+            {
+              "required": ["career_update"],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": ["profile"]
+                  },
+                  {
+                    "required": ["repositories"]
+                  },
+                  {
+                    "required": ["work_history"]
+                  },
+                  {
+                    "required": ["source"]
+                  },
+                  {
+                    "required": ["episode"]
+                  },
+                  {
+                    "required": ["qa"]
+                  },
+                  {
+                    "required": ["library_version"]
                   },
                   {
                     "required": ["confirmation"]

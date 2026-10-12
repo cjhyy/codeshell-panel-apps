@@ -1,6 +1,6 @@
 ---
 name: job-hunt-workflow
-description: Operate the project-bound Job Hunt HQ panel from the current CodeShell session. Use the current chat to organize authorized Slack/GitHub sources, discuss real experiences and decision reasons, maintain factual QA, preview changes, and save immutable named knowledge-library versions; initialize or repair a job-search workspace; import JDs; discover or compare jobs; research companies; write source-backed Base Resumes and JD Variants; curate interview questions; practice or review interviews; update application progress; or execute a user-selected combination.
+description: Operate project-bound Job Hunt HQ from the current CodeShell chat. Maintain private experiences, decisions and factual QA; produce strict JSON updates and named library versions; or perform requested job, resume and interview tasks.
 ---
 
 # Job Hunt Workflow
@@ -21,6 +21,16 @@ A knowledge-library version is distinct from a software release, a resume
 revision, interview questions, practice answers, and AI scores. Do not generate
 a resume unless the user requests one.
 
+- When chat should produce a JSON file for the Panel, read
+  [references/career-update.md](references/career-update.md), the linked
+  [JSON Schema](references/career-update.schema.json), and the complete
+  [synthetic example](references/career-update.example.json). Write the update
+  through the available File tool, then use `save_candidate_context`'s
+  `career_update` preview/apply mode. Apply the returned token directly when
+  saving is already authorized; this atomically merges the records and saves
+  their named version. A file or working-library change requires a new preview.
+  Writing the file alone does not import it; never write Panel snapshots,
+  start an HTTP port or scan the update directory in the background.
 - Read `career_sources`, `career_episodes`, or `career_qa` catalogs with
   `search`, `status`, and pagination. Read a record with its exact `source_id`,
   `episode_id`, or `qa_id` before proposing changes. Reuse existing IDs.
@@ -37,7 +47,9 @@ a resume unless the user requests one.
   belongs in `draftAnswer` and must not replace the original meaning.
 - Save working records through `save_candidate_context` using exactly one
   nested `source`, `episode`, or `qa` object. These incremental modes preserve
-  unrelated data. Do not combine them with each other, `library_version`, or
+  unrelated data. For file-backed batches use `career_update` instead; do not
+  pre-save its records individually. Do not combine these modes with each other,
+  `library_version`, `career_update`, or
   the complete legacy `profile` + `repositories` + `work_history` replacement.
 - Unconfirmed writes remain drafts or pending revisions. If the current chat
   user explicitly verifies these exact facts, pass their actual original words

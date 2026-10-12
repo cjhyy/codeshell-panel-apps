@@ -15,6 +15,12 @@ const manifest = JSON.parse(
   ),
 );
 const tools = new Map(manifest.agent.tools.map((tool) => [tool.name, tool]));
+const careerReference = new URL(
+  "../../../apps/job-hunt-hq/agent/skills/job-hunt-workflow/references/",
+  import.meta.url,
+);
+const updateSchema = JSON.parse(await readFile(new URL("career-update.schema.json", careerReference), "utf8"));
+const updateExample = JSON.parse(await readFile(new URL("career-update.example.json", careerReference), "utf8"));
 
 function fixture() {
   return {
@@ -97,7 +103,7 @@ test("career Agent schemas cannot impersonate user confirmation", () => {
   assert.equal(qa.properties.draftAnswer.maxLength, 12000);
 });
 
-test("published Host accepts five candidate write modes and rejects mixed or incomplete modes", () => {
+test("published Host accepts six candidate write modes and rejects mixed or incomplete modes", () => {
   const name = "save_candidate_context";
   const schema = tools.get(name).inputSchema;
   for (const input of [
@@ -106,6 +112,8 @@ test("published Host accepts five candidate write modes and rejects mixed or inc
     { qa: { question: "What was the decision?", draftAnswer: "Draft wording" } },
     { library_version: { action: "preview" } },
     { library_version: { action: "save", title: "Recovery decision discussion" } },
+    { career_update: { action: "preview", path: "career-data/updates/chat-one.json" } },
+    { career_update: { action: "apply", path: "career-data/updates/chat-one.json", preview_token: "a".repeat(64) } },
     {
       library_version: {
         action: "save",
@@ -135,6 +143,93 @@ test("published Host accepts five candidate write modes and rejects mixed or inc
     { library_version: { action: "save", title: "Title" }, profile: {} },
   ])
     assert.notEqual(validateToolArgsStrict(name, input, schema), null);
+});
+
+test("JSON update tool accepts only reviewed project files and the apply token shape", () => {
+  const name = "save_candidate_context";
+  const schema = tools.get(name).inputSchema;
+  const preview = { action: "preview", path: "career-data/updates/decision-notes_1.json" };
+  const apply = { ...preview, action: "apply", preview_token: "a".repeat(64) };
+  assert.equal(validateToolArgsStrict(name, { career_update: preview }, schema), null);
+  assert.equal(validateToolArgsStrict(name, { career_update: apply }, schema), null);
+  for (const path of [
+    "job-hunt-panel.json", "career-data/updates/../snapshot.json", "/career-data/updates/notes.json",
+    "career-data/updates/nested/notes.json", "career-data/updates/.json",
+    "career-data/updates/notes.backup.json", `career-data/updates/${"a".repeat(101)}.json`,
+  ])
+    assert.notEqual(validateToolArgsStrict(name, { career_update: { ...preview, path } }, schema), null);
+  for (const input of [
+    { ...preview, action: "import" },
+    { ...preview, preview_token: "a".repeat(64) },
+    { action: "apply", path: preview.path },
+    { ...apply, preview_token: "invented" },
+    { ...apply, preview_token: "A".repeat(64) },
+    { ...apply, actor: "user" },
+  ])
+    assert.notEqual(validateToolArgsStrict(name, { career_update: input }, schema), null);
+  for (const other of [
+    { source: { provider: "manual", excerpt: "Text" } },
+    { episode: { title: "Decision" } },
+    { qa: { question: "Why?" } },
+    { library_version: { action: "preview" } },
+    { profile: {}, repositories: [], work_history: [] },
+    { confirmation: "I confirm these facts." },
+  ])
+    assert.notEqual(validateToolArgsStrict(name, { career_update: preview, ...other }, schema), null);
+});
+
+test("the complete synthetic JSON update passes the official strict validator", () => {
+  assert.equal(validateToolArgsStrict("career-update.json", updateExample, updateSchema), null);
+  assert(new TextEncoder().encode(JSON.stringify(updateExample)).byteLength < 128 * 1024);
+  for (const [kind, plural] of [["source", "sources"], ["episode", "episodes"], ["qa", "qa"]]) {
+    const record = updateSchema.$defs[kind];
+    assert.equal(record.additionalProperties, false);
+    assert(record.required.includes("id"));
+    assert.equal(updateSchema.properties[plural].maxItems, 25);
+    assert.deepEqual(record.properties.status.enum, ["draft"]);
+  }
+  assert.deepEqual(updateSchema.$defs.qa.properties.category.enum, [
+    "ownership", "scope", "impact", "decision", "collaboration", "failure", "context",
+  ]);
+  assert.equal(updateSchema.$defs.episode.properties.period.maxLength, 240);
+  assert.equal(updateSchema.$defs.episode.properties.repoId.maxLength, 100);
+  assert.equal(updateSchema.$defs.episode.properties.experienceId.maxLength, 100);
+  assert.equal(updateSchema.$defs.source.properties.connectionId.maxLength, 240);
+  const unassigned = structuredClone(updateExample);
+  unassigned.qa[0].episodeId = "";
+  assert.equal(validateToolArgsStrict("career-update.json", unassigned, updateSchema), null);
+});
+
+test("strict JSON update rejects unknown metadata, invalid identity, missing structure and oversized arrays", () => {
+  const reject = change => {
+    const candidate = structuredClone(updateExample);
+    change(candidate);
+    assert.notEqual(validateToolArgsStrict("career-update.json", candidate, updateSchema), null);
+  };
+  reject(doc => { doc.format = "other-format"; });
+  reject(doc => { doc.schemaVersion = 2; });
+  reject(doc => { delete doc.qa; });
+  reject(doc => { doc.sources = []; doc.episodes = []; doc.qa = []; });
+  reject(doc => { doc.resume = { markdown: "Not a career update" }; });
+  reject(doc => { doc.confirmation = "Import must not confirm facts"; });
+  reject(doc => { doc.version.id = "../existing-version"; });
+  reject(doc => { doc.version.title = ""; });
+  reject(doc => { doc.version.summary = "a".repeat(2001); });
+  reject(doc => { doc.version.updateSha256 = "a".repeat(64); });
+  reject(doc => { doc.sources[0].id = "career-episode-wrong-kind"; });
+  reject(doc => { delete doc.sources[0].provider; });
+  reject(doc => { delete doc.sources[0].externalId; delete doc.sources[0].excerpt; });
+  reject(doc => { doc.sources[0].actor = "user"; });
+  reject(doc => { delete doc.episodes[0].title; });
+  reject(doc => { doc.episodes[0].actions = ["a".repeat(1001)]; });
+  reject(doc => { doc.episodes[0].sourceIds = ["../source"]; });
+  reject(doc => { doc.qa[0].episodeId = "career-source-wrong-kind"; });
+  reject(doc => { delete doc.qa[0].question; });
+  reject(doc => { doc.qa[0].category = "invented-category"; });
+  reject(doc => { doc.qa[0].status = "confirmed"; });
+  reject(doc => { doc.qa[0].confirmedAt = "2026-10-12"; });
+  for (const plural of ["sources", "episodes", "qa"])
+    reject(doc => { doc[plural] = Array.from({ length: 26 }, () => structuredClone(doc[plural][0])); });
 });
 
 test("explicit chat confirmation is bounded and exclusive to one career record mode", () => {

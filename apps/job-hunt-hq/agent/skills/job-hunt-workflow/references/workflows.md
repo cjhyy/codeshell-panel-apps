@@ -6,6 +6,19 @@ Reuse the same candidate evidence across jobs, but write each job-specific
 artifact with its own opaque `job_id`. Jobs in `inbox` are discovery results,
 not evidence of user interest.
 
+## Produce a JSON update for the Panel
+
+When the requested output is a JSON file the Panel can use, read
+[career-update.md](career-update.md), its [schema](career-update.schema.json),
+and [synthetic example](career-update.example.json). Collect and discuss facts
+in the current chat, write only the incremental update through the File tool,
+then use `career_update` preview. Present changes and unresolved facts; if saving
+is already authorized, apply with the exact returned token. Do not pre-save the
+batch's records or separately create its library version: apply atomically merges
+both. Changed file or library state invalidates the token. The file alone does
+not import, confirm facts, publish evidence or generate a resume. This workflow
+coexists with the direct single-record workflow below.
+
 ## Chat → experiences, decisions and QA → named library version
 
 Use this module when the user shares authorized Slack/GitHub data and wants to

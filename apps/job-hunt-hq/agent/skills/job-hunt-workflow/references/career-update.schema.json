@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeshell.local/schemas/career-update-v1.json",
+  "title": "CodeShell career update",
+  "description": "A strict incremental private career-library update. The UTF-8 JSON file must be at most 128 KiB. Parsing alone does not import it; preview then apply through save_candidate_context. Runtime also rejects duplicate JSON keys/record identities, unresolved references and whitespace-only required fields.",
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string",
+      "enum": [
+        "codeshell.career-update"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "version": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^career-version-[A-Za-z0-9_-]{1,80}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "episodes": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "$ref": "#/$defs/episode"
+      }
+    },
+    "qa": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "$ref": "#/$defs/qa"
+      }
+    }
+  },
+  "required": [
+    "format",
+    "schemaVersion",
+    "version",
+    "sources",
+    "episodes",
+    "qa"
+  ],
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "properties": {
+        "sources": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "episodes": {
+          "minItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "qa": {
+          "minItems": 1
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^career-source-[A-Za-z0-9_-]{1,80}$",
+          "description": "Stable record identity; reuse the exact existing ID when updating a record."
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 80,
+          "minLength": 1,
+          "description": "Provenance such as slack, github, file, or user. This does not imply personal ownership."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Recognizable title for the source material actually read."
+        },
+        "connectionId": {
+          "type": "string",
+          "maxLength": 240,
+          "description": "Exact opaque ID of the authorized Link connection used to read this source. Preserve it on refresh so equal provider message/repository IDs from different accounts stay separate. Never invent an ID."
+        },
+        "externalId": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "occurredAt": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "fetchedAt": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "excerpt": {
+          "type": "string",
+          "maxLength": 16000
+        },
+        "contentHash": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "localRef": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft"
+          ],
+          "description": "Optional draft state only. This JSON update cannot confirm facts; changes to reviewed records remain pending revisions."
+        }
+      },
+      "required": [
+        "id",
+        "provider"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "externalId"
+          ],
+          "properties": {
+            "externalId": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "localRef"
+          ],
+          "properties": {
+            "localRef": {
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "excerpt"
+          ],
+          "properties": {
+            "excerpt": {
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "episode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^career-episode-[A-Za-z0-9_-]{1,80}$",
+          "description": "Stable record identity; reuse the exact existing ID when updating a record."
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 240,
+          "minLength": 1
+        },
+        "project": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "background": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "problem": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "myRole": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "alternatives": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "decision": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "tradeoffs": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "results": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "retrospective": {
+          "type": "string",
+          "maxLength": 12000
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1
+          }
+        },
+        "sourceIds": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^career-source-[A-Za-z0-9_-]{1,80}$"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft"
+          ],
+          "description": "Optional draft state only. This JSON update cannot confirm facts; changes to reviewed records remain pending revisions."
+        },
+        "period": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "repoId": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "experienceId": {
+          "type": "string",
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "additionalProperties": false
+    },
+    "qa": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^career-qa-[A-Za-z0-9_-]{1,80}$",
+          "description": "Stable record identity; reuse the exact existing ID when updating a record."
+        },
+        "episodeId": {
+          "type": "string",
+          "maxLength": 100,
+          "oneOf": [
+            {
+              "enum": [
+                ""
+              ]
+            },
+            {
+              "pattern": "^career-episode-[A-Za-z0-9_-]{1,80}$",
+              "minLength": 1
+            }
+          ]
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 80,
+          "enum": [
+            "ownership",
+            "scope",
+            "impact",
+            "decision",
+            "collaboration",
+            "failure",
+            "context"
+          ]
+        },
+        "question": {
+          "type": "string",
+          "maxLength": 1200,
+          "minLength": 1
+        },
+        "answer": {
+          "type": "string",
+          "maxLength": 12000,
+          "description": "The candidate's actual factual answer supplied in the current chat or existing record. Preserve uncertainty and original meaning; AI-invented or polished expression belongs only in draftAnswer. Unconfirmed answers remain drafts."
+        },
+        "draftAnswer": {
+          "type": "string",
+          "maxLength": 12000,
+          "description": "Optional AI expression or interview wording, separate from the candidate's actual answer. Improving wording does not verify facts."
+        },
+        "sourceIds": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^career-source-[A-Za-z0-9_-]{1,80}$"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft"
+          ],
+          "description": "Optional draft state only. This JSON update cannot confirm facts; changes to reviewed records remain pending revisions."
+        }
+      },
+      "required": [
+        "id",
+        "question"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
