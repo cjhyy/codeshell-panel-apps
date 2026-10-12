@@ -8,6 +8,7 @@ import {
   applyCareerPendingRevision,
   searchCareerLibrary,
   migrateCareerLibrary,
+  syncLegacyCareerQa,
   careerRecordId,
   CAREER_RECORD_MAX_BYTES,
 } from "../../../apps/job-hunt-hq/app/career-library-model.mjs";
@@ -144,6 +145,19 @@ test("identical reingestion cannot undo a user title or confirmation", () => {
   assert.equal(repeated.sourceMaterials[0].pendingRevision, null);
 });
 
+test("withdrawing source or episode confirmation invalidates dependent facts even without text changes", () => {
+  let state = reviewedLibrary();
+  const episodeId = state.careerEpisodes[0].id;
+  state = upsertCareerQa(state, { episodeId, question: "只关联经历的回答", answer: "本人实际行动", sourceIds: [] }, user);
+  for (const status of ["draft", "needs_review", "archived"]) {
+    const source = upsertCareerSource(state, { id: state.sourceMaterials[0].id, status }, { actor: "user", now: later });
+    assert.equal(source.careerEpisodes[0].status, "needs_review");
+    assert.ok(source.careerQa.every((item) => item.status === "needs_review"));
+    const episode = upsertCareerEpisode(state, { id: episodeId, status }, { actor: "user", now: later });
+    assert.ok(episode.careerQa.every((item) => item.status === "needs_review"));
+  }
+});
+
 test("AI answer suggestions stay separate from the person's answer and preserve revisions", () => {
   const state = reviewedLibrary();
   const qa = state.careerQa[0];
@@ -151,8 +165,10 @@ test("AI answer suggestions stay separate from the person's answer and preserve 
   assert.equal(proposed.careerQa[0].answer, qa.answer);
   assert.equal(proposed.careerQa[0].draftAnswer, "AI 的新回答");
   const accepted = applyCareerPendingRevision(proposed, "qa", qa.id, user);
-  assert.equal(accepted.careerQa[0].answer, "AI 的新回答");
-  assert.equal(accepted.careerQa[0].draftAnswer, "");
+  assert.equal(accepted.careerQa[0].answer, qa.answer);
+  assert.equal(accepted.careerQa[0].draftAnswer, "AI 的新回答");
+  assert.equal(accepted.careerQa[0].status, "confirmed");
+  assert.equal(accepted.careerQa[0].pendingRevision, null);
   assert.equal(accepted.careerQa[0].revisions.at(-1).content.answer, qa.answer);
   const fresh = upsertCareerQa({}, { question: "为什么？", answer: "模型推断" }, agent);
   assert.equal(fresh.careerQa[0].answer, "");
@@ -238,6 +254,74 @@ test("demo data and sample records never become personal facts during migration"
   const samples = migrateCareerLibrary({ repos: [{ id: "sample", name: "Sample", summary: "Demo", sample: true }], experiences: [{ company: "Demo", role: "Demo", demo: true }], resume: { sample: true, candidateQuestions: [{ question: "Demo" }] } });
   assert.equal(samples.careerEpisodes.length, 0);
   assert.equal(samples.careerQa.length, 0);
+});
+
+test("legacy answer writes continue after migration and AI updates preserve a reviewed career answer", () => {
+  const original = { profile: { name: "候选人" }, resume: { versionId: "r1", candidateQuestions: [{ id: "q1", category: "decision", question: "为什么选择？", answer: "旧简历里的回答", status: "answered" }] } };
+  let state = migrateCareerLibrary(original);
+  const id = state.careerQa[0].id;
+  state = upsertCareerQa(state, { id, answer: "后来本人复核的真实原因", draftAnswer: "" }, user);
+  state = { ...state, resume: { ...state.resume, candidateQuestions: [{ ...state.resume.candidateQuestions[0], answer: "AI 根据旧入口补的答案" }] } };
+  const before = JSON.stringify(freeze(state));
+  const synced = syncLegacyCareerQa(state, state.resume, { ...agent, questionId: "q1" });
+  assert.equal(JSON.stringify(state), before);
+  assert.equal(synced.careerQa.length, 1);
+  assert.equal(synced.careerQa[0].answer, "后来本人复核的真实原因");
+  assert.equal(synced.careerQa[0].draftAnswer, "AI 根据旧入口补的答案");
+  assert.equal(synced.careerQa[0].pendingRevision.content.draftAnswer, "AI 根据旧入口补的答案");
+  assert.equal(synced.resume.candidateQuestions[0].careerQaId, id);
+  const repeated = syncLegacyCareerQa(synced, synced.resume, { ...agent, questionId: "q1" });
+  assert.deepEqual(repeated.careerQa, synced.careerQa);
+});
+
+test("new resume versions reuse an immediate predecessor QA without replaying old answers", () => {
+  const predecessor = { versionId: "r1", candidateQuestions: [{ id: "q1", category: "decision", question: "为什么选择？", relatedClaim: "某次方案选择", answer: "旧投影回答", status: "answered" }] };
+  let state = migrateCareerLibrary({ resume: predecessor, versions: [predecessor] });
+  const id = state.careerQa[0].id;
+  state = upsertCareerQa(state, { id, answer: "库里重新审核的答案", draftAnswer: "" }, user);
+  const resume = { versionId: "r2", candidateQuestions: [{ ...predecessor.candidateQuestions[0], id: "new-projection-id" }, { id: "q2", category: "impact", question: "最终结果如何？", answer: "AI 建议效果", status: "answered" }] };
+  state = { ...state, resume, versions: [...state.versions, resume] };
+  const synced = syncLegacyCareerQa(state, resume, { ...agent, predecessor });
+  assert.equal(synced.careerQa.length, 2);
+  assert.equal(synced.resume.candidateQuestions[0].careerQaId, id);
+  assert.equal(synced.versions.at(-1).candidateQuestions[0].careerQaId, id);
+  assert.equal(synced.careerQa[0].answer, "库里重新审核的答案");
+  assert.equal(synced.careerQa[0].draftAnswer, "");
+  assert.equal(synced.careerQa[0].pendingRevision, null);
+  assert.equal(synced.careerQa[1].status, "draft");
+  assert.equal(synced.careerQa[1].answer, "");
+  assert.equal(synced.careerQa[1].draftAnswer, "AI 建议效果");
+  assert.deepEqual(syncLegacyCareerQa(synced, synced.resume, agent), synced);
+});
+
+test("explicit legacy user answers can confirm while unrelated resumes retain separate QAs", () => {
+  let state = { careerLibraryMigrationVersion: 1, resume: { versionId: "r1", candidateQuestions: [{ id: "q1", question: "为什么选择？", answer: "本人补充的原因", status: "answered", sourceRefs: ["slack:thread-real-reference"] }] } };
+  state = syncLegacyCareerQa(state, state.resume, { ...user, questionId: "q1" });
+  const firstId = state.careerQa[0].id;
+  assert.equal(state.careerQa[0].status, "confirmed");
+  assert.equal(state.careerQa[0].answer, "本人补充的原因");
+  assert.equal(state.careerQa[0].draftAnswer, "");
+  assert.ok(state.careerQa[0].sourceIds.every((id) => state.sourceMaterials.some((item) => item.id === id)));
+  const next = { versionId: "unrelated", candidateQuestions: [{ id: "q1", question: "为什么选择？", answer: "另一段经历原因", status: "answered" }] };
+  state = syncLegacyCareerQa({ ...state, resume: next }, next, agent);
+  assert.equal(state.careerQa.length, 2);
+  assert.notEqual(state.resume.candidateQuestions[0].careerQaId, firstId);
+  assert.equal(state.careerQa[1].status, "draft");
+  const malformed = { ...next, candidateQuestions: [{ ...next.candidateQuestions[0], careerQaId: "missing" }] };
+  assert.throws(() => syncLegacyCareerQa({ ...state, resume: malformed }, malformed, agent), /不存在/);
+  assert.throws(() => syncLegacyCareerQa(state, next, { ...agent, questionId: "missing" }), /不存在/);
+  assert.equal(syncLegacyCareerQa({ demo: true }, next, agent).careerQa.length, 0);
+});
+
+test("generated prompts omitted by the resume carry-over window are still stored in the career library", () => {
+  const incoming = Array.from({ length: 12 }, (_, index) => ({ id: `q${index}`, question: `新生成的问题 ${index}`, category: "context" }));
+  const resume = { versionId: "r1", candidateQuestions: incoming.slice(0, 8) };
+  const synced = syncLegacyCareerQa({ resume, careerLibraryMigrationVersion: 1 }, resume, { ...agent, additionalQuestions: incoming });
+  assert.equal(synced.resume.candidateQuestions.length, 8);
+  assert.equal(synced.careerQa.length, 12);
+  assert.ok(synced.resume.candidateQuestions.every((item) => item.careerQaId));
+  assert.deepEqual(syncLegacyCareerQa(synced, synced.resume, { ...agent, additionalQuestions: incoming }), synced);
+  assert.throws(() => syncLegacyCareerQa({ resume: { candidateQuestions: incoming } }, { candidateQuestions: incoming }, agent), /稳定 ID/);
 });
 
 test("normalization is deterministic and a full history fails before losing any old revision", () => {

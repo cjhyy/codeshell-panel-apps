@@ -348,8 +348,9 @@ function upsert(kind, stateInput, value, options = {}) {
   }
   assertRecordBudget(next);
   state[field] = existing ? state[field].map((item) => item.id === existing.id ? next : item) : [...state[field], next];
-  if (existing && (changed || (wantsArchive && existing.status !== "archived")) && kind === "sources") invalidateSourceDependents(state, existing.id, now);
-  if (existing && (changed || (wantsArchive && existing.status !== "archived")) && kind === "episodes") invalidateEpisodeDependents(state, existing.id, now);
+  const withdrawnConfirmation = existing?.status === "confirmed" && next.status !== "confirmed";
+  if (existing && (changed || withdrawnConfirmation || (wantsArchive && existing.status !== "archived")) && kind === "sources") invalidateSourceDependents(state, existing.id, now);
+  if (existing && (changed || withdrawnConfirmation || (wantsArchive && existing.status !== "archived")) && kind === "episodes") invalidateEpisodeDependents(state, existing.id, now);
   return state;
 }
 
@@ -375,10 +376,8 @@ export function applyCareerPendingRevision(stateInput, kindInput, id, options = 
     return state;
   }
   const proposed = { ...record.pendingRevision.content };
-  if (kind === "qa" && proposed.draftAnswer) {
-    proposed.answer = proposed.draftAnswer;
-    proposed.draftAnswer = "";
-  }
+  // A reviewed expression is still separate from the candidate's factual
+  // answer. Changing that fact requires an explicit edit to the answer field.
   return upsert(kind, state, { id, ...proposed }, { ...options, actor: "user", confirm: true, now });
 }
 
@@ -426,6 +425,101 @@ function demo(value) {
   return input.sample === true || input.demo === true || input.isDemo === true || ["sample", "demo"].includes(input.origin);
 }
 
+function legacyQuestionRef(resume, question, index = 0) {
+  return `resume:${text(resume.versionId || resume.id, 100) || "unversioned"}:question:${text(question.id, 100) || `index-${index}`}`;
+}
+
+function linkedLegacyQa(state, resume, question, index) {
+  const explicitId = text(question.careerQaId || question.career_qa_id, 100);
+  if (explicitId) {
+    const record = state.careerQa.find((item) => item.id === explicitId);
+    if (!record) throw new Error(`简历问答关联的长期经历问答不存在：${explicitId}`);
+    return record;
+  }
+  const ref = legacyQuestionRef(resume, question, index);
+  return state.careerQa.find((item) => item.legacyRefs.includes(ref));
+}
+
+// This bridge runs at legacy write boundaries, independently of the one-time
+// migration. A resume carries a stable careerQaId; regenerating a resume cannot
+// replay a stale answer over an answer reviewed later in the private library.
+export function syncLegacyCareerQa(stateInput = {}, resumeInput = {}, options = {}) {
+  let state = withLibrary(stateInput);
+  const resume = object(resumeInput);
+  const projectedQuestions = Array.isArray(resume.candidateQuestions) ? resume.candidateQuestions : [];
+  const questions = [...projectedQuestions];
+  // Resume projections cap their visible prompts. Preserve every incoming
+  // generated prompt in the library before that projection window drops it.
+  for (const question of Array.isArray(options.additionalQuestions) ? options.additionalQuestions : []) {
+    if (!questions.some((item) => (question?.id && item?.id === question.id) || fingerprint(item?.question) === fingerprint(question?.question))) questions.push(question);
+  }
+  if (demo(state) || demo(resume) || (state.profile?.name === "林默" && String(state.profile?.contact || "").includes("linmo@example.com"))) return state;
+  if (questions.length && !text(resume.versionId || resume.id, 100)) throw new Error("同步经历问答前简历版本需要稳定 ID");
+  const targetedId = text(options.questionId, 100);
+  if (targetedId && !questions.some((item) => text(item?.id, 100) === targetedId)) throw new Error("需要同步的简历问答不存在");
+  const predecessor = object(options.predecessor);
+  const oldQuestions = Array.isArray(predecessor.candidateQuestions) ? predecessor.candidateQuestions : [];
+  const actor = options.actor === "user" ? "user" : "agent";
+  const now = text(options.now, 80) || new Date().toISOString();
+  const makeSource = (ref, title, excerpt) => {
+    const id = `${PREFIXES.sources}-${hash(`legacy:${ref}`)}`;
+    if (!state.sourceMaterials.some((item) => item.id === id)) state = upsertCareerSource(state, {
+      id, provider: "legacy", externalId: ref, title, excerpt,
+      localRef: `job-hunt-panel.json#${ref}`, legacyRefs: [ref],
+    }, { actor: "agent", now });
+    return careerRecordId("sources", { id, provider: "legacy", externalId: ref }, state);
+  };
+  const linkedQuestions = questions.map((question, index) => {
+    if (!question || demo(question) || !text(question.question, 1200)) return question;
+    let existing = linkedLegacyQa(state, resume, question, index);
+    if (!existing && oldQuestions.length) {
+      const previousIndex = oldQuestions.findIndex((item) =>
+        (question.id && item.id === question.id) ||
+        (fingerprint(item.question) === fingerprint(question.question) &&
+          fingerprint(item.category || "context") === fingerprint(question.category || "context") &&
+          fingerprint(item.relatedClaim) === fingerprint(question.relatedClaim)));
+      if (previousIndex >= 0) existing = linkedLegacyQa(state, predecessor, oldQuestions[previousIndex], previousIndex);
+    }
+    // Reusing an existing question only adds its stable projection link. Answer
+    // changes must come from an explicit legacy answer action, not draft carry.
+    if (existing && (!targetedId || question.id !== targetedId)) return { ...question, careerQaId: existing.id };
+    const ref = legacyQuestionRef(resume, question, index);
+    const evidence = (Array.isArray(resume.claimEvidence) ? resume.claimEvidence : []).find((item) => fingerprint(item.claim) === fingerprint(question.relatedClaim));
+    const sourceIds = [...new Set([
+      ...(existing?.sourceIds || []),
+      ...(existing ? [] : [makeSource(ref, question.question, text(question.answer) || text(question.why))]),
+      ...list(evidence?.sourceIds, 40, 100).filter((id) => state.sourceMaterials.some((item) => item.id === id)),
+      ...list(question.sourceRefs, 8, 500).map((sourceRef) => makeSource(sourceRef, "简历问答记录来源", sourceRef)),
+    ])];
+    if (sourceIds.length > 40) throw new Error("这条经历问答的关联来源超过 40 条，请先合并来源；原回答未被覆盖");
+    const episodeIds = list(evidence?.episodeIds, 40, 100).filter((id) => state.careerEpisodes.some((item) => item.id === id));
+    for (const source of Array.isArray(evidence?.sources) ? evidence.sources : []) {
+      const episode = state.careerEpisodes.find((item) => source.kind === "repo" ? item.repoId && item.repoId === source.locator : source.kind === "experience" && item.experienceId && item.experienceId === source.locator);
+      if (episode && !episodeIds.includes(episode.id)) episodeIds.push(episode.id);
+    }
+    const id = existing?.id || `${PREFIXES.qa}-${hash(`legacy:${ref}`)}`;
+    const answer = text(question.answer);
+    const targeted = Boolean(targetedId && question.id === targetedId);
+    const qaInput = existing ? { id, sourceIds } : {
+      id, question: question.question, category: question.category,
+      episodeId: episodeIds.length === 1 ? episodeIds[0] : "", sourceIds, legacyRefs: [ref],
+    };
+    // New projection content has not been reviewed as a library fact, even if
+    // an old resume marks it answered. Explicit user answer saves can confirm.
+    if (targeted && actor === "user") Object.assign(qaInput, { answer, draftAnswer: "" });
+    else qaInput.draftAnswer = answer;
+    state = upsertCareerQa(state, qaInput, { actor: targeted ? actor : "agent", confirm: targeted && actor === "user" && options.confirm === true && question.status === "answered", now });
+    return { ...question, careerQaId: id };
+  });
+  const projectedLinks = linkedQuestions.slice(0, projectedQuestions.length);
+  const linkedResume = { ...resume, candidateQuestions: projectedLinks };
+  const resumeId = text(resume.versionId || resume.id, 100);
+  const sameResume = (item) => item === resumeInput || (resumeId && text(item?.versionId || item?.id, 100) === resumeId);
+  if (sameResume(state.resume)) state.resume = linkedResume;
+  if (Array.isArray(state.versions)) state.versions = state.versions.map((item) => sameResume(item) ? { ...item, candidateQuestions: projectedLinks.map((question) => question && typeof question === "object" ? { ...question } : question) } : item);
+  return state;
+}
+
 // Legacy arrays stay intact. The new drafts retain explicit references to the
 // originals rather than upgrading an old summary or an AI answer to a fact.
 export function migrateCareerLibrary(stateInput = {}) {
@@ -439,7 +533,7 @@ export function migrateCareerLibrary(stateInput = {}) {
   const makeLegacySource = (ref, title, excerpt) => {
     const sourceId = `${PREFIXES.sources}-${hash(`legacy:${ref}`)}`;
     if (!state.sourceMaterials.some((item) => item.id === sourceId)) state = upsertCareerSource(state, { id: sourceId, provider: "legacy", externalId: ref, title, excerpt, localRef: `job-hunt-panel.json#${ref}`, legacyRefs: [ref] }, options);
-    return sourceId;
+    return careerRecordId("sources", { id: sourceId, provider: "legacy", externalId: ref }, state);
   };
   for (const [field, kind] of [["repos", "repo"], ["experiences", "experience"]]) {
     for (const [index, item] of (Array.isArray(state[field]) ? state[field] : []).entries()) {
