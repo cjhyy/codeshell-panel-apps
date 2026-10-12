@@ -1,5 +1,6 @@
 /* Design Studio Panel App runtime. */
 /* global document, localStorage, requestAnimationFrame, window */
+import { projectContextChanged } from "./project-context.mjs";
 
 import {
   alignNodeTrees,
@@ -6284,10 +6285,9 @@ function updateContext(next) {
     next && typeof next === "object" && !Array.isArray(next)
       ? { ...next, busy: next.busy === true, trusted: next.trusted === true }
       : { busy: false, trusted: false };
-  const nextWorkspaceRoot = typeof nextContext.cwd === "string" ? nextContext.cwd : null;
   const workspaceChanged =
     contextInitialized &&
-    (previousWorkspaceRoot !== nextWorkspaceRoot || context.sessionId !== nextContext.sessionId);
+    projectContextChanged(context, nextContext);
   if (workspaceChanged) {
     finishInlineTextEdit();
     resetPolishTargets();

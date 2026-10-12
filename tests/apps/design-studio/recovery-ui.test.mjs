@@ -55,7 +55,7 @@ async function fixture(t) {
     await new Promise((resolve) => server.close(resolve));
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, deferContext = false, initialPath = null, sharedInitialPath = false } = {}) {
+  async function page({ cwd = "/project/A", scope = cwd, sessionId = scope, projectScope, deferContext = false, initialPath = null, sharedInitialPath = false } = {}) {
     const initialScope = scope;
     const context = await browser.newContext({ acceptDownloads: true });
     contexts.push(context);
@@ -107,11 +107,12 @@ async function fixture(t) {
       if (method === "agent.submitPrompt") return { accepted: true };
       throw Error(`Unsupported ${method}`);
     });
-    await page.addInitScript(({ cwd, scope, sessionId, deferContext }) => {
+    await page.addInitScript(({ cwd, scope, sessionId, projectScope, deferContext }) => {
       let hostScope = scope;
       const context = {
         cwd,
         sessionId,
+        ...(projectScope ? { projectScope } : {}),
         trusted: true,
         visible: true,
         busy: false,
@@ -134,13 +135,14 @@ async function fixture(t) {
           window.tools[name] = callback;
         },
       };
-      window.switchProject = (cwd, scope = cwd, sessionId = scope) => {
+      window.switchProject = (cwd, scope = cwd, sessionId = scope, projectScope = context.projectScope) => {
         hostScope = scope;
         context.cwd = cwd;
         context.sessionId = sessionId;
+        context.projectScope = projectScope;
         listener?.({ ...context });
       };
-    }, { cwd, scope, sessionId, deferContext });
+    }, { cwd, scope, sessionId, projectScope, deferContext });
     await page.goto(`${origin}/index.html`);
     if (!deferContext) await page.waitForFunction(() =>
       /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state")?.textContent ?? ""),
@@ -195,6 +197,21 @@ test("actual design windows preserve conflicting drafts, download backups and ex
   await b.locator("#recovery-reload").click();
   await b.waitForFunction(() => document.querySelectorAll("#active-page option").length === 3);
   assert.deepEqual(f.records.get(recoveryKey), saved);
+});
+
+test("Host proof changes isolate same-path same-session designs and late recovery receipts", { timeout: 20000 }, async t => {
+  const proof = projectId => ({ version: 1, environmentId: "fixture", projectId, rootId: "root-" + projectId });
+  const f = await fixture(t), page = await f.page({ cwd: "/workspace", scope: "A", sessionId: "shared-chat", projectScope: proof("A") });
+  const pending = f.pauseResponse("A", "storage.compareAndSet");
+  await page.locator("#add-page").click();
+  await pending.entered;
+  await page.evaluate(projectScope => window.switchProject("/workspace", "B", "shared-chat", projectScope), proof("B"));
+  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 1);
+  pending.release();
+  await page.waitForFunction(() => /新设计|已打开|已恢复/.test(document.querySelector("#repo-link-state").textContent));
+  assert.equal(f.calls.some(call => call.scope === "B" && call.method === "storage.compareAndSet"), false);
+  await page.evaluate(projectScope => window.switchProject("/workspace", "A", "shared-chat", projectScope), proof("A"));
+  await page.waitForFunction(() => document.querySelectorAll("#active-page option").length === 2);
 });
 
 test("switching project before autosave never submits the previous draft to the new Host scope", async (t) => {

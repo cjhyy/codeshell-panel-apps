@@ -9,7 +9,7 @@ import { chromium } from "playwright";
 const root = fileURLToPath(new URL("../../../apps/quant-lab/app/", import.meta.url));
 const manifest = JSON.parse(await readFile(new URL("../../../apps/quant-lab/.codeshell-panel/panel.json", import.meta.url)));
 
-async function fixture(t, { offline = false, deferInitial = false, width = 390, holdModuleRestore } = {}) {
+async function fixture(t, { offline = false, deferInitial = false, width = 390, holdModuleRestore, scoped = false } = {}) {
   const server = createServer(async (request, response) => {
     const path = resolve(root, `.${new URL(request.url, "http://test").pathname}`);
     if (!path.startsWith(root)) return response.writeHead(403).end();
@@ -67,11 +67,12 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390, 
       if (method === "automations.list" || method === "agent.task.list") return [];
       throw Error(`Fixture does not provide ${method}`);
     });
-    await page.addInitScript(({ permissions, deferInitial }) => {
+    await page.addInitScript(({ permissions, deferInitial, scoped }) => {
       let binding = { project: "A", sessionId: "chat-A" }, listener;
       const projectedContext = () => ({ busy: false, visible: false,
         ...(permissions.includes("context.workspace") ? { cwd: "/workspace", trusted: true } : {}),
         ...(permissions.includes("context.session") && binding.sessionId ? { sessionId: binding.sessionId } : {}),
+        ...(scoped ? { projectScope: { version: 1, environmentId: "fixture", projectId: binding.project, rootId: "root-" + binding.project } } : {}),
         availableMethods: ["storage.get", "storage.set", "storage.getSnapshot", "storage.compareAndSet", "workspace.info", "workspace.list", "workspace.readText"],
       });
       window.__quantLabTestHostCallLimits = { maxCalls: 10000, backgroundCalls: 10000, windowMs: 10 };
@@ -82,7 +83,7 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390, 
         registerTool() {},
       };
       window.switchExecution = (sessionId, project = "A") => { binding = { sessionId, project }; listener?.(projectedContext()); };
-    }, { permissions: manifest.permissions, deferInitial });
+    }, { permissions: manifest.permissions, deferInitial, scoped });
   }
   await page.goto(`${origin}/index.html`);
   if (!deferInitial && holdModuleRestore !== "A") await page.waitForFunction(() => document.querySelector("#run-state").textContent === "已完成", null, { timeout: 10000 }).catch(error => {
@@ -101,6 +102,35 @@ async function fixture(t, { offline = false, deferInitial = false, width = 390, 
 
 const configWrites = f => f.calls.filter(call => call.method === "storage.compareAndSet" && call.params.key.startsWith("configuration."));
 const parameter = (page, value) => page.waitForFunction(value => document.querySelector("#fast-period").value === value && !document.querySelector("#fast-period").disabled, String(value));
+
+test("Host project identity isolates same-path same-session parameters and their retained backups", { timeout: 20000 }, async t => {
+  const f = await fixture(t, { scoped: true });
+  await f.page.locator('[data-module-tab="research"]').tap();
+  const pending = f.hold("write");
+  await f.page.locator("#fast-period").fill("18");
+  await pending.ready;
+  await f.page.locator("#fast-period").fill("19");
+  await f.page.evaluate(() => window.switchExecution("chat-A", "B"));
+  await parameter(f.page, 9);
+  pending.release();
+  await f.page.locator('[data-module-tab="research"]').tap();
+  const download = f.page.waitForEvent("download");
+  await f.page.locator("#backtest-storage-backup").tap();
+  const backup = JSON.parse(await readFile(await (await download).path(), "utf8"));
+  assert.equal(backup.fields.fastPeriod, "9");
+  assert.equal(backup.projectIdentity, JSON.stringify([1, "fixture", "B", "root-B"]));
+  assert.equal(backup.retainedDrafts[0].fields.fastPeriod, "19");
+  assert.equal(backup.retainedDrafts[0].projectIdentity, JSON.stringify([1, "fixture", "A", "root-A"]));
+  assert.equal(configWrites(f).length, 1, "queued A writes cannot enter B even when cwd and sessionId match");
+  await f.page.locator("#backtest-storage-file").setInputFiles({ name: "project-A.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ format: backup.format, version: backup.version, ...backup.retainedDrafts[0] })) });
+  await f.page.waitForFunction(() => document.querySelector("#toast").textContent.includes("请选择当前项目"));
+  assert.equal(configWrites(f).length, 1, "a same-path backup with a different project proof cannot overwrite B");
+  await f.page.evaluate(() => window.switchExecution("chat-A", "A"));
+  await parameter(f.page, 19);
+  assert.match(await f.page.locator("#backtest-storage-status").textContent(), /未确认草稿/);
+  assert.deepEqual(f.errors, []);
+});
 
 test("same-path execution switches detach queued writes and retain downloadable drafts without changing project storage keys", { timeout: 20000 }, async t => {
   assert.ok(manifest.permissions.includes("context.session"), "fixture must use the actual granted context projection");

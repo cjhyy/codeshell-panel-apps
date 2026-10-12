@@ -68,6 +68,10 @@ npm test -- --suite video-studio
 
 Run `npm run test:build` for build-contract changes. Run `npm run check` before
 release for source types, deterministic committed builds, and all offline suites.
+`shared/project-context.mjs` is the source for the execution identity helpers in
+Design Studio, Job Hunt HQ and Quant Lab. After editing it, run
+`node scripts/sync-project-context.mjs`; the default gate checks that the three
+installable copies match.
 `npm test` runs the suites without rebuilding; `tests/suites.mjs` owns that catalog.
 TypeScript tests are bundled to temporary Node 20-compatible ESM by
 `scripts/run-typescript-tests.mjs`. The Video Studio suite includes its native
@@ -162,6 +166,22 @@ reviewed `process` permission. Model versions, installers, inference adapters,
 and application workflows belong in those Panel tools. Host changes should
 provide reusable file, permission, process, or media capabilities rather than
 hardcode a Panel's models or product rules.
+
+## Real Host storage check
+
+With a separately built compatible CodeShell server package, run:
+
+```sh
+npm run test:host-storage -- /absolute/path/to/codeshell/packages/server
+```
+
+This runs the existing Design recovery, portable/legacy design backup and Job Hunt
+draft checks against the real `PanelRuntimeServices`, with temporary projects,
+temporary homes, a credential-free environment and a JavaScript network guard.
+It verifies disk persistence, concurrent writes, restarts, revoked access and
+restoration without reading personal projects. It is separate from the default
+gate because the Host is a different repository. It does not establish physical
+phone, provider, operating-system network isolation or deployed Cloud acceptance.
 
 ## Pull requests
 
